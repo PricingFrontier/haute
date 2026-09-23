@@ -11,7 +11,8 @@ These packages come from the
 found several generations of machinery for the same concern side by side:
 two thousand-line execution cores, a chunked runner with one consumer, a
 static memory prover beside the hard worker caps, and one process-wide lock
-that serialises unrelated optimiser work.
+that serialises unrelated optimiser work. `EXEC-R09` comes from the CI
+investigation on pull request #231.
 
 ## Priorities
 
@@ -24,6 +25,7 @@ that serialises unrelated optimiser work.
 | EXEC-R06 | Planned | P3 | Process and host memory are read by one module. |
 | EXEC-R07 | Planned | P3 | `ExecutionContext` is split into cancellation, admission, and evidence parts. |
 | EXEC-R08 | Planned | P3 | Graph traversal has one implementation. |
+| EXEC-R09 | Planned | P2 | A capped Linux worker without a delegated cgroup has room for the threads it needs, and a real overrun is a typed memory-limit failure. |
 
 ## Planned improvements
 
@@ -33,7 +35,8 @@ runner's only consumer. `EXEC-R04` is a decision that `EXEC-R05` should wait
 for, because the walker's shape depends on whether projection proofs survive;
 `EXEC-R05` needs only the recorded decision, not its implementation.
 `EXEC-R06`–`EXEC-R08` are independent and can be taken whenever their files
-are next open.
+are next open. `EXEC-R09` is independent of the others and does not wait for
+the `EXEC-R04` decision.
 
 ### EXEC-R01 — The streaming chunk size is process configuration
 **Why:** `temporary_streaming_chunk_size` takes the module-level
@@ -283,3 +286,44 @@ topology, projection, trace and recovery suites pass.
 `src/haute/projection.py::_canonical_topological_ranks`;
 `src/haute/executor.py::_preview_preparation_order`;
 `src/haute/trace.py::_trace_preparation_order`.
+
+### EXEC-R09 — An address-space cap leaves room for a worker's threads
+**Why:** On Linux a capped worker gets a cgroup v2 `memory.max` where one is
+delegated, and otherwise `RLIMIT_AS`, which caps virtual address space rather
+than memory in use. A Polars worker reserves far more address space than it
+touches. Measured on Python 3.11, the node-data worker in
+`test_a_real_isolated_worker_builds_and_publishes` grows by about 2 GB of virtual
+address space with 4 Polars threads (51 OS threads), and by about 7.8 GB with
+32, for a 1,000-row job whose resident memory stays small. Under the test's
+1 GiB growth budget the worker cannot start its result-queue thread
+(`RuntimeError: can't start new thread`; Polars reports `could not spawn
+threads` with `EAGAIN`), so the job ends in error. CI passes only on runners
+that delegate a cgroup: the test failed twice on pull request #231, passed on
+rerun, and fails on every revision under WSL. Any capped surface on a Linux
+host without cgroup delegation, such as a Docker container, can fail the same
+way, and the failure reads as an internal error rather than a memory limit.
+
+**Plan:** Measure address-space growth against resident growth for each capped
+surface (preview, trace, Explore, node data, JSON-cache builds, output writes,
+training preparation, deploy batch scoring) on a host without cgroup
+delegation. Decide how the `RLIMIT_AS` fallback sizes its ceiling (for example
+the baseline plus the budget plus an allowance for the Polars thread pool, or a
+smaller Polars pool inside capped workers), or whether an address-space cap can
+serve as a hard cap at all, and specify the decision in the execution-engine
+specification. A worker that cannot create a thread under its cap reports the
+typed memory-limit failure.
+
+**Acceptance:** On a Linux host without cgroup delegation, every capped surface
+completes a small job within its specified budget; a job that genuinely
+exceeds its budget is still refused with the typed memory-limit failure, never
+a `RuntimeError`; `test_a_real_isolated_worker_builds_and_publishes` passes under
+WSL and on every CI runner.
+
+**Dependencies:** None. `EXEC-R04` decides whether hard caps become the only
+memory-safety mechanism; this package makes the Linux fallback cap fit for
+that role either way.
+
+**Evidence:** `src/haute/_native_memory_limit.py::NativeMemoryLease`;
+`src/haute/_native_memory_limit.py::_linux_virtual_bytes`;
+`src/haute/_worker_isolation.py::_isolated_worker_entrypoint`;
+`tests/test_node_data_routes.py::test_a_real_isolated_worker_builds_and_publishes`.
