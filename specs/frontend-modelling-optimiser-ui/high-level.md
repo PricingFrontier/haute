@@ -152,9 +152,12 @@ strip; it never falls through to CatBoost. Pane ownership:
   (CatBoost); family/link/dispersion/intercept/metrics and regularization (GLM). GLM families and
   links come from the table the backend validates against (RustyStats supports only identity,
   log, and logit links), and the Tweedie variance power is bounded to 1 to 2. GLM's
-  regularization section is always visible: choosing a type writes visible cross-validation
-  defaults (5 folds, minimum deviance, seed 42); penalty mode is Cross-validated or a Fixed alpha;
-  Elastic Net keeps its explicit L1 ratio gate; inline messages explain why regularization cannot
+  regularization section is always visible: the selected type is indicated by its button without
+  a duplicate heading badge. Choosing a type writes cross-validation defaults (5 folds, minimum
+  deviance, seed 42), while the seed is hidden; penalty mode is Cross-validated or a Fixed alpha;
+  choosing Elastic Net stores an L1 ratio of 0.5 when absent and shows its slider immediately,
+  without explanatory copy or setup controls. Older Elastic Net configurations with no ratio
+  remain invalid until the slider is changed; inline messages explain why regularization cannot
   combine with automatically smoothed splines or robust standard errors; and a Solver disclosure
   holds maximum iterations, tolerance, and robust standard errors. Its read-only
   algorithm context reads **Algorithm Rustystats**, while the stored algorithm remains `glm`.
@@ -242,22 +245,23 @@ strip; it never falls through to CatBoost. Pane ownership:
   bare node label otherwise — and offers existing experiment names through a lazily fetched
   datalist while connected; the suggestions are keyed to the resolved tracking destination, so a
   destination switch clears them, refetches on the next focus, and discards any in-flight
-  response from the previous destination), followed by the "Log run to MLflow" action with its
-  one-line resolved-destination status, or the off-reason with a "Configure MLflow" link. There is
+  response from the previous destination), followed by the "Log run to MLflow" action.
+  When unavailable, it shows the reason and a "Configure MLflow" link. The selected destination is
+  already visible in the selector; Export omits the extra location text, including `mlruns`. There is
   no registry field: haute logs candidate runs, and registering or promoting a model happens
   outside haute.
   **Model file** writes a copy of the trained model and its feature contract into the project
   and behaves like a file Data Output with a `models/` folder in place of `outputs/`. A
   required "Filename or path" picker (typed or browsed, persisted as `model_export_path`, no
-  default) says filenames save in the project's `models/` folder, paths are relative to the
-  project root, and the model's extension (`.cbm` for CatBoost, `.rsglm` for GLM) is added if
-  omitted. Once a path is set, the server-resolved "Destination: {path}" is shown before
-  saving, with an alert when the path's extension does not match the model format (which
-  keeps **Save model to file** disabled) or when the destination cannot be resolved. Saving
+  default) retains the folder browser and selected-path display without instructional prose.
+  The resolved destination is shown when it differs from the selected path, so a selected
+  full filepath is not repeated. An alert appears when the path's extension does not match
+  the model format (which keeps **Save model to file** disabled) or when the destination
+  cannot be resolved. Saving
   never silently replaces a file: an existing destination shows the server's message with a
   **Replace existing file** confirmation that retries with overwrite. Success names both
   written project-relative paths; a failure shows the server's detail. Both actions act on the node's last completed training result. Without one they stay visible but
-  disabled beneath a note to train the model first; while a training job for the node runs they
+  disabled without a train-first note; while a training job for the node runs they
   are disabled beneath a note that export resumes when it completes; and when the training
   configuration has changed since that result, a warning says exports use the last trained
   model. The export fields (`mlflow_destination`, `mlflow_experiment`,

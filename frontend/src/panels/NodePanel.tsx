@@ -19,7 +19,7 @@ import {
   type LoadAvailability,
 } from "../types/node"
 import type { PipelineDiagnostic } from "../types/pipelineDocument"
-import useUIStore, { type ExplorePane } from "../stores/useUIStore"
+import useUIStore, { type ExplorePane, type ModellingPane } from "../stores/useUIStore"
 import useNodeDataStore, { profileForConsumer } from "../stores/useNodeDataStore"
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -1364,6 +1364,11 @@ function NodePanelContent({
   const rememberedExplorePane = useUIStore((s) => s.explorePanes[node.id])
   const setExplorePane = useUIStore((s) => s.setExplorePane)
   const rememberedModellingPane = useUIStore((s) => s.modellingPanes[node.id])
+  // The lazily loaded modelling editor owns issue derivation; the panel only badges tabs.
+  const [modellingPaneIssues, setModellingPaneIssues] = useState<{ nodeId: string; panes: readonly ModellingPane[] }>({ nodeId: "", panes: [] })
+  const onModellingPaneIssuesChange = useCallback((nodeId: string, panes: readonly ModellingPane[]) => {
+    setModellingPaneIssues({ nodeId, panes })
+  }, [])
   const setModellingPane = useUIStore((s) => s.setModellingPane)
   const hasActiveTrainJob = useNodeResultsStore((s) => Boolean(s.trainJobs[node.id]))
   const activeSource = useSettingsStore((s) => s.activeSource)
@@ -1527,11 +1532,16 @@ function NodePanelContent({
   const modellingPanes = modellingPanesFor(algorithm)
   const showModellingPanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.MODELLING && modellingPanes.length > 0
   const activeModellingPane = showModellingPanes ? resolveModellingPane(algorithm, rememberedModellingPane) : "target"
+  const flaggedModellingPanes = showModellingPanes && modellingPaneIssues.nodeId === node.id
+    ? modellingPaneIssues.panes
+    : []
   const modellingTabs = modellingPanes.map((pane) => ({
     ...pane,
     indicator: pane.key === "train" && hasActiveTrainJob
       ? { kind: "active" as const, label: "Training is running" }
-      : undefined,
+      : flaggedModellingPanes.includes(pane.key)
+        ? { kind: "warning" as const, label: `${pane.label} needs attention`, compact: true }
+        : undefined,
   }))
 
   const accentColor = NODE_TYPE_META[nodeType as NodeTypeValue]?.color ?? "var(--accent)"
@@ -1557,6 +1567,7 @@ function NodePanelContent({
       pivotColumns={pivotColumns}
       activeExplorePane={activeExplorePane}
       activeModellingPane={activeModellingPane}
+      onModellingPaneIssuesChange={onModellingPaneIssuesChange}
       onDeleteEdge={onDeleteEdge}
       onDeleteSubmodelInputPort={
         readOnly || documentReadOnly ? undefined : onDeleteSubmodelInputPort

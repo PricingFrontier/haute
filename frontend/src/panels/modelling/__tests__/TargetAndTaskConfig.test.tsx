@@ -27,10 +27,9 @@ function makeProps(overrides: Partial<TargetAndTaskConfigProps> = {}): TargetAnd
 describe("TargetAndTaskConfig", () => {
   it("renders target column select with all columns as options", () => {
     render(<TargetAndTaskConfig {...makeProps()} />)
-    const selects = screen.getAllByRole("combobox")
-    // First select is target
-    const targetSelect = selects[0]
-    expect(targetSelect).toHaveValue("loss_amount")
+    const targetSelect = screen.getByRole("button", { name: "Target column" })
+    expect(targetSelect).toHaveTextContent("loss_amount")
+    fireEvent.click(targetSelect)
     // All columns should be options
     COLUMNS.forEach(c => {
       expect(screen.getAllByText(new RegExp(c.name)).length).toBeGreaterThan(0)
@@ -40,17 +39,16 @@ describe("TargetAndTaskConfig", () => {
   it("calls onUpdate when target column changes", () => {
     const onUpdate = vi.fn()
     render(<TargetAndTaskConfig {...makeProps({ onUpdate })} />)
-    const selects = screen.getAllByRole("combobox")
-    fireEvent.change(selects[0], { target: { value: "age" } })
+    fireEvent.click(screen.getByRole("button", { name: "Target column" }))
+    fireEvent.click(screen.getByRole("option", { name: /age.*Int64/ }))
     expect(onUpdate).toHaveBeenCalledWith("target", "age")
   })
 
   it("calls onUpdate when weight column changes", () => {
     const onUpdate = vi.fn()
     render(<TargetAndTaskConfig {...makeProps({ onUpdate })} />)
-    const selects = screen.getAllByRole("combobox")
-    // Second select is weight
-    fireEvent.change(selects[1], { target: { value: "exposure" } })
+    fireEvent.click(screen.getByRole("button", { name: "Weight column" }))
+    fireEvent.click(screen.getByRole("option", { name: /exposure.*Float64/ }))
     expect(onUpdate).toHaveBeenCalledWith("weight", "exposure")
   })
 
@@ -98,18 +96,18 @@ describe("TargetAndTaskConfig", () => {
     expect(onUpdate).toHaveBeenCalledWith("loss_function", null)
   })
 
-  it("shows the Tweedie slider at 1.5 without an intermediate warning action", () => {
+  it("shows missing Tweedie power as unset instead of implying a saved value", () => {
     render(<TargetAndTaskConfig {...makeProps({ config: { loss_function: "Tweedie", variance_power: null } })} />)
     expect(screen.getByText(/Variance power/)).toBeInTheDocument()
-    expect(screen.getByRole("slider")).toHaveValue("1.5")
-    expect(screen.getByText("1.50")).toBeInTheDocument()
+    expect(screen.queryByRole("slider")).toBeNull()
+    expect(screen.getByRole("spinbutton", { name: "Variance power" })).toHaveValue(null)
     expect(screen.queryByRole("button", { name: /Set variance power/ })).not.toBeInTheDocument()
   })
 
   it("shows a previously stored Tweedie variance power", () => {
     render(<TargetAndTaskConfig {...makeProps({ config: { loss_function: "Tweedie", variance_power: 1.7 } })} />)
     expect(screen.getByRole("slider")).toHaveValue("1.7")
-    expect(screen.getByText("1.70")).toBeInTheDocument()
+    expect(screen.getByRole("spinbutton", { name: "Variance power" })).toHaveValue(1.7)
   })
 
   it("selecting Tweedie initializes an absent variance power in the same update", () => {
@@ -184,4 +182,28 @@ describe("TargetAndTaskConfig", () => {
     fireEvent.click(within(screen.getByRole("group", { name: "Metrics" })).getByRole("button", { name: "Gini" }))
     expect(onUpdate).toHaveBeenCalledWith("metrics", ["rmse"])
   })
+  it("supports precise Tweedie power while rejecting boundary drafts", () => {
+    const onUpdate = vi.fn()
+    render(<TargetAndTaskConfig {...makeProps({ onUpdate, config: { loss_function: "Tweedie", variance_power: 1.5 } })} />)
+    const input = screen.getByRole("spinbutton", { name: "Variance power" })
+    fireEvent.change(input, { target: { value: "1.99" } })
+    fireEvent.blur(input)
+    expect(onUpdate).toHaveBeenLastCalledWith("variance_power", 1.99)
+    onUpdate.mockClear()
+    fireEvent.change(input, { target: { value: "2" } })
+    fireEvent.blur(input)
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(input).toHaveAttribute("aria-invalid", "true")
+  })
+  it("offers numeric columns only for weight and offset", () => {
+    render(<TargetAndTaskConfig {...makeProps()} />)
+    fireEvent.click(screen.getByRole("button", { name: "Weight column" }))
+    expect(screen.queryByRole("option", { name: /region/ })).toBeNull()
+    expect(screen.queryByRole("option", { name: /loss_amount/ })).toBeNull()
+    fireEvent.click(screen.getByRole("option", { name: /^None$/ }))
+    fireEvent.click(screen.getByRole("button", { name: "Offset column" }))
+    expect(screen.getByRole("option", { name: /exposure/ })).toBeInTheDocument()
+    expect(screen.queryByRole("option", { name: /region/ })).toBeNull()
+  })
+
 })

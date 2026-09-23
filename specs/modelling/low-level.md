@@ -1,5 +1,45 @@
 # Modelling — Low-Level Specification
 
+## Validation workspace presentation
+
+`ModellingPreview` owns the active result pane, Focus view and a shared AvE/PDP
+feature selection/search. Node/result changes reset these selections. It passes
+controlled feature state into both diagnostic panes. The feature picker uses the
+union of AvE/PDP feature names in result order, preserving feature names verbatim
+(including commas), and explicitly distinguishes unavailable diagnostics.
+
+`PreviewPanelFrame` accepts opt-in initial height, height-change callback and
+focused/fill-height presentation. `useUIStore` remembers only the modelling docked
+height (initially 420px) for the session. Existing generic preview defaults remain
+256px. Focus view reuses `ModalShell` in an optionally inactive/docked state so the
+same React subtree remains mounted through focus transitions. The modal manages
+Escape, keyboard focus containment and restoration. Collapse and drag controls
+are omitted while focused; returning restores the docked height.
+Global graph shortcuts ignore events inside an active modal, so Escape only exits
+Focus view. Focus navigation includes disclosure summaries and excludes closed
+disclosure contents.
+
+`PreviewPanelTabs` has an opt-in result-workspace appearance: content-sized,
+sentence-case tabs with readable labels and an underline. Existing tab keyboard
+navigation and other callers' appearance remain unchanged. The result content
+uses container queries, so layout responds to the actual pane rather than the
+browser width.
+
+`ChartScaffold` provides a `ResponsiveChart` render-prop wrapper that measures its
+container through ResizeObserver and supplies the current pixel width; no SVG
+viewBox scaling is used to shrink chart labels. Existing explicit width/height
+chart props remain usable. Axis text is 12px, legends wrap, reference/grid colours
+use theme tokens, and charts provide accessible names. Shared numeric-domain and
+tick helpers account for zero/constant ranges and reserve margins for labels.
+AvE and PDP reuse this scaffold with one controlled feature browser and an
+accessible value disclosure. Rendering never changes the underlying result data.
+
+Targeted frontend verification covers focus entry/exit and retained selection,
+session height memory, resizing, shared AvE/PDP state and unavailable features,
+categorical vs numeric AvE marks, missing/single-valued PDP data, Lorenz-only
+results, residual ticks, signed feature importance/filtering, coefficient search/
+keyboard sorting and invalid inference, and disclosed Summary evidence.
+
 ## Module map
 
 | File | Responsibility |
@@ -230,6 +270,14 @@
    failure); clamp the estimated row limit against any user-supplied `row_limit`;
    `build_train_params` (the same builder export uses); `_check_gpu_vram_before_launch` (VRAM
    feasibility check — see Edge cases);
+   both `_estimate_ram` and `POST /estimate` obtain their RAM evidence through
+   `_training_preparation.estimate_training_memory`. It resolves and leases a
+   `TRAINING_PREP` seed plan with `_training_required_columns_by_node` using
+   `open_resolved_seed_plan` (no input preparation), and passes the plan's
+   `estimation_graph` to `estimate_safe_training_rows` while the leases remain held.
+   The existing seed rules reject stale, wrong-source, or insufficient-column
+   snapshots; multipart generations contribute every part. Neither estimation nor
+   a cache miss executes pipeline code or publishes cache data;
    compute required-column demand per node (`_training_required_columns_by_node`);
    create an admitted `ExecutionContext` with the already-registered cancellation token
    (RAM ceiling + cancellation) via
@@ -439,7 +487,8 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
    callbacks retain cancellation and memory checkpoints; a progress-only caller
    receives iteration updates even without an execution context.
    CatBoost callback iteration numbers are already one-based; the displayed count
-   and loss-history iteration retain that value, ending at the configured limit.
+   and loss-history iteration retain that value, with the final fit ending at the
+   validation-derived tree count when validation is enabled.
 4. **Run bounded tuning when configured** — `_run_tuning_trials` writes/reloads the
    tuning plan, uses one seeded Optuna `TPESampler` through sequential ask/tell, runs
    every baseline/sampled candidate on the exact same validation fits, persists every
@@ -449,8 +498,23 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
 5. **Persist selection results** — `_run_evaluation` writes and strictly reloads
    `{model}.evaluation-results.json`, aggregates only from that reloaded evidence, and
    writes/reloads `{model}.evaluation-report.json`. Every summary metric is weighted by
-   validation rows and linked to the exact plan/results digests.
-6. **Perform one final fit** — an internal clone uses
+   validation rows and linked to the exact plan/results digests. The report's
+   `fit_count` is the selection-fit count plus one final refit, or the selection-fit
+   count alone when `refit_on_development=false` (tuning trials are counted by the
+   tuning report, not here). For an ordinary
+   CatBoost run with validation, the reloaded `best_iteration` values determine the
+   final iteration count through `validation_weighted_tree_count` (one-based, weighted
+   by validation rows, capped by the configured ceiling). Missing best iterations fail
+   clearly. The final parameters replace CatBoost iteration aliases and remove
+   early-stopping controls; with no validation
+   or with GLM, parameters remain unchanged. The completed result carries the derived
+   `final_tree_count` through the worker and response contract. On-demand MLflow export
+   projects the recorded fixed parameters with that count; results without it
+   retain their original parameters. A refit at a small derived count can predict a
+   constant; CatBoost then reports NaN `PredictionValuesChange` importances (a
+   zero total change), which `CatBoostAlgorithm` records as `0.0` because no
+   feature moves the prediction. Infinite importances are not masked.
+6. **Perform the deployable fit** — normally an internal clone uses
    `EvaluationPlan.final_mask`: every development row is training data and final-test
    rows, if any, occupy the internal holdout partition. `_train_model` resolves the
    algorithm and projections; `_compute_metrics` reads the chosen diagnostics
@@ -462,6 +526,14 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
    orchestrator maps internal partition names to public `development`/`final_test`
    labels, attaches the evaluation/tuning reports, and saves the native model plus
    feature contract.
+   With `refit_on_development=false`, accepted only for fixed single holdout
+   validation, the sole selection child instead runs its full training and
+   diagnostic pipeline and saves the model. Its selection mask additionally marks
+   final-test rows as held out; no final clone is created. The persisted validation
+   metric comes from that saved model, and the response reports `fit_count=1`,
+   `refit_on_development=false`, and validation diagnostics when no test exists.
+   The actual CatBoost tree count is read from the saved model. Older configs and
+   result payloads default to `refit_on_development=true`.
 7. **Log once, after evidence is attached** — when an MLflow experiment is configured,
    the outer orchestration calls `_log_to_mlflow` once with selected final parameters,
    canonical result labels, evaluation/tuning summaries and artifact paths, reusing the
@@ -478,7 +550,9 @@ omit it retain the constructor-only internal/test-seam split pipeline described 
 `TrainingJob`'s own default (so the script stays readable), plus a `__main__` block
 that runs the job and prints its metrics. `_training_job_uses_tweedie_variance_power`
 decides whether `variance_power` needs to be rendered (CatBoost `Tweedie` loss, or GLM
-`family == "tweedie"`). `mlflow_destination` is rendered only when the node stores an
+`family == "tweedie"`). `refit_on_development=False` is rendered whenever the node
+keeps its holdout-validation fit, because that is a different saved model than the
+default refit. `mlflow_destination` is rendered only when the node stores an
 explicit key; an Auto node leaves it unrendered so the exported script resolves the
 destination in the environment it runs in. The exported script keeps standalone
 training's optional logging (a run is logged only when `mlflow_experiment` is set) and
@@ -1104,7 +1178,8 @@ potentially large copy on its threadpool.
 - `glm_fit_kwargs` passes a positive `alpha` as a fixed penalty with `l1_ratio` and never
   `regularization` (RustyStats ignores `alpha` whenever `regularization` is set). An absent
   or zero `alpha` cross-validates with the configured `cv_folds`, `cv_selection`, and
-  `cv_seed`, which the objective gate requires, so the selected penalty is reproducible.
+  `cv_seed`; an absent seed resolves to 42 in effective GLM params, so the selected penalty
+  is reproducible without an editable seed control. Explicit seed values are preserved.
   Regularisation is refused with penalised smooth splines, and robust standard errors with
   regularisation, monotonicity, or penalised smooth splines.
 - CatBoost's offset baseline is only honoured when supplied through a `Pool`; a
@@ -1539,8 +1614,8 @@ The implementation seams are:
   job's total elapsed time separately.
 - `POST /api/modelling/estimate` calls the same planner over the same eligible rows and
   returns only bounded counts/ranges. The editor shows this neutral exact preview once
-  enough fields are valid; malformed or incomplete configuration remains a click-time
-  validation issue rather than an estimate-warning state. `TrainService.evaluation_preview`
+  enough fields are valid; malformed or incomplete configuration is reported inline
+  and in the Train readiness summary. `TrainService.evaluation_preview`
   materialises only the target and evaluation key in process, under its own seed plan
   (`open_seed_plan` with `training_seed_plan_request`) held through collection: it reads a
   training run's capture of the modelling node's producer when one covers its demand, and
@@ -1554,6 +1629,69 @@ Focused evidence lives in `tests/test_evaluation.py`,
 `tests/test_training_worker_protocol.py`, `tests/test_modelling_routes.py`, and
 `tests/test_modelling_export.py`. Frontend guard, config, preview, summary and progress
 suites prove the same canonical vocabulary and bounded lifecycle end to end.
+
+### Training configuration controls and readiness
+
+- The shared `components/form/ConfigSection` renders an unboxed section heading and
+  consistent heading-to-content spacing. `TargetAndTaskConfig`, `SplitAndMetricsConfig`
+  and `EvaluationAllocation` use it for their sections, including the single allocation
+  summary at the top of Split. There is no separate exact-evaluation section.
+- `NodePanel` renders modelling and Explore configuration tabs through the same
+  `PreviewPanelTabs` default appearance, with `equalWidth` and the node's accent.
+  Modelling configuration must not opt into the separate result-workspace appearance.
+- Display labels use Training / Validation / Test, with Holdout validation for
+  `validation.method="single"`. The `development_rows` aggregate is labelled
+  Training + validation in single-split previews and Training for CV/no-validation;
+  per-fit train counts remain separately labelled Training rows per fit. Result
+  `development` diagnostics are Training diagnostics (in-sample final-refit data),
+  and `final_test` displays as Test. Internal keys and split calculations are unchanged.
+- `CommonFeatureConfig` keeps aligned inclusion, feature, type and monotonicity
+  columns. Type labels use `getDtypeColor`; monotonicity uses the existing coloured
+  ↓ / − / ↑ buttons with accessible names and pressed states. Excluded and nonnumeric
+  features keep those controls disabled, and excluding a feature preserves its saved
+  constraint for re-inclusion.
+- `trainingObjective.ts` shares evaluation issue detection between Split, tab readiness
+  and Train. Fraction sums at or above one are invalid for non-temporal single
+  validation. CatBoost Tweedie power is a finite number in the open interval (1, 2),
+  mirrored by `_train_config.py`; `src/haute/modelling/_evaluation.py` rejects impossible fraction sums.
+- `SplitAndMetricsConfig` starts with a Row limit section, before allocation and split
+  settings. `ModellingConfig` passes the persisted `row_limit` and its update callback
+  to this control for CatBoost and GLM. The existing immediate numeric updates, empty
+  value mapping to `null`, and minimum of 0 remain unchanged. Train no longer renders
+  a row-limit input but still uses the value for memory estimates.
+  Split uses percent inputs but persists fractions and keeps numeric
+  drafts until commit. `EvaluationAllocation` shows labelled training/validation/final-test
+  selection partitions. An exact compatible evaluation preview supplies actual proportions and
+  formatted row counts. CV summaries retain concise per-fit ranges and label folds or
+  expanding windows. Allocation summaries omit instructional prose about selection,
+  refitting and held-out tests. Temporal allocation waits for exact counts.
+  Test set (%) is always visible for random/group splits, defaults to 0 when `test`
+  is absent, and accepts 0 inclusive through 100 exclusive. Committing 0 removes
+  `evaluation.test`; positive values persist `{size: percent / 100}`. Existing
+  configured percentages are retained. Temporal Test starts is always visible;
+  setting a date persists `{start: date}`, and clearing it removes `evaluation.test`.
+  Strategy changes retain compatible test settings only, without inventing a test
+  percentage or empty test boundary. No test-set checkbox is rendered.
+  Split strategy, Validation strategy and Test set use plain section headings.
+  The evaluation seed remains persisted for reproducibility (default 42) and is
+  preserved when editing validation or final-test settings; the Split pane has no
+  seed input.
+- Hyperparameter formatting never substitutes display-only defaults. The algorithm
+  gateway persists new-node defaults. Fixed mode exposes one always-visible JSON
+  editor, with no individual parameter inputs or advanced disclosure. JSON edits
+  preserve arbitrary keys and merge reserved settings from their owning controls;
+  omitted parameters remain library-managed rather than gaining display-only defaults.
+- Tuning changes only tuning configuration. It reports final-test presence with a
+  Split navigation action and shows trial count times validation fits plus one final
+  fit. Invalid local parameter/search-space drafts remain visible across pane changes.
+- Both algorithms expose Parameters. GLM regularization describes penalty-selection
+  CV separately from evaluation CV. Readiness issues map to panes, and Train links to
+  their controls. The run summary reflects effective feature selection and evaluation.
+- Estimate failures show the server's detail. Evaluation-preview failures are shown
+  with Split feedback; other estimate failures are labelled memory-estimate failures,
+  without asserting training success. Split has no loading message beneath its settings;
+  the allocation summary still updates when the exact preview arrives.
+
 ### Training allocation ordering (cache implementation correction)
 
 CatBoost constructs its training Pool and releases the raw training frame,

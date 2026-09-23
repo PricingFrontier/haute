@@ -1057,15 +1057,16 @@ describe("NodePanel", () => {
     const rendered = renderPanel({ node: supported })
     const tablist = screen.getByRole("tablist", { name: "Modelling panes" })
 
-    expect(within(tablist).getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
-      "Target",
-      "Features",
-      "Params",
-      "Split",
-      "Train",
-      "Export",
+    expect(within(tablist).getAllByRole("tab").map((tab) => tab.id.replace("modelling-", "").replace("-tab", ""))).toEqual([
+      "target",
+      "features",
+      "params",
+      "split",
+      "train",
+      "export",
     ])
     expect(modellingConfigProps.at(-1)?.activePane).toBe("target")
+    expect(within(tablist).getByRole("tab", { name: /Parameters/ })).toBeInTheDocument()
 
     rendered.unmount()
     renderPanel({
@@ -1096,7 +1097,7 @@ describe("NodePanel", () => {
     expect(screen.queryByRole("tablist", { name: "Modelling panes" })).toBeNull()
   })
 
-  it.each([undefined, "params"] as const)("shows five GLM modelling panes and maps remembered %s to Target", (rememberedPane) => {
+  it.each([undefined, "params"] as const)("shows six GLM modelling panes and restores remembered %s", (rememberedPane) => {
     useUIStore.setState({
       modellingPanes: rememberedPane === undefined ? {} : { model_glm: rememberedPane },
     })
@@ -1115,12 +1116,38 @@ describe("NodePanel", () => {
     })
 
     const tablist = screen.getByRole("tablist", { name: "Modelling panes" })
-    expect(within(tablist).getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
-      "Target", "Features", "Split", "Train", "Export",
+    expect(within(tablist).getAllByRole("tab").map((tab) => tab.id.replace("modelling-", "").replace("-tab", ""))).toEqual([
+      "target", "features", "params", "split", "train", "export",
     ])
-    expect(within(tablist).getByRole("tab", { name: "Target" })).toHaveAttribute("aria-selected", "true")
-    expect(modellingConfigProps.at(-1)?.activePane).toBe("target")
+    expect(within(tablist).getByRole("tab", { name: /Parameters/ })).toBeInTheDocument()
+    expect(within(tablist).getByRole("tab", { name: rememberedPane === "params" ? /Parameters/ : "Target" })).toHaveAttribute("aria-selected", "true")
+    expect(modellingConfigProps.at(-1)?.activePane).toBe(rememberedPane ?? "target")
     expect(onUpdateNode).not.toHaveBeenCalled()
+  })
+
+  it("badges exactly the modelling panes the editor reports for this node", () => {
+    renderPanel({
+      node: makeNode({
+        id: "model_badges",
+        data: { label: "ML", description: "", nodeType: "modelling", config: { algorithm: "catboost" } },
+      }),
+    })
+    const tablist = screen.getByRole("tablist", { name: "Modelling panes" })
+    const report = modellingConfigProps.at(-1)?.onPaneIssuesChange as
+      (nodeId: string, panes: readonly string[]) => void
+
+    act(() => report("model_badges", ["params", "split"]))
+    expect(within(tablist).getByRole("tab", { name: "Parameters" })).toHaveAccessibleDescription("Parameters needs attention")
+    expect(within(tablist).getByRole("tab", { name: "Split" })).toHaveAccessibleDescription("Split needs attention")
+    expect(within(tablist).getByRole("tab", { name: "Target" })).not.toHaveAccessibleDescription()
+
+    // A report left behind by another node's editor never badges this one.
+    act(() => report("other_node", ["target"]))
+    expect(within(tablist).getByRole("tab", { name: "Target" })).not.toHaveAccessibleDescription()
+    expect(within(tablist).getByRole("tab", { name: "Split" })).not.toHaveAccessibleDescription()
+
+    act(() => report("model_badges", []))
+    expect(within(tablist).getByRole("tab", { name: "Parameters" })).not.toHaveAccessibleDescription()
   })
 
   it("remembers the active modelling pane by node", () => {
@@ -1144,42 +1171,6 @@ describe("NodePanel", () => {
 
     expect(useUIStore.getState().modellingPanes.model_1).toBe("features")
     expect(modellingConfigProps.at(-1)?.activePane).toBe("features")
-  })
-
-  it("keeps every setup tab plain regardless of configuration completeness", () => {
-    const cases = [
-      { algorithm: "catboost" },
-      { algorithm: "glm", family: "poisson" },
-      {
-        algorithm: "glm",
-        family: "poisson",
-        terms: { age: { type: "linear" } },
-        regularization: "elastic_net",
-      },
-    ]
-
-    cases.forEach((config, index) => {
-      const rendered = renderPanel({
-        node: makeNode({
-          id: `model_${index}`,
-          data: {
-            label: "ML",
-            description: "",
-            nodeType: "modelling",
-            config: { ...config },
-          },
-        }),
-      })
-      const panes = config.algorithm === "catboost"
-        ? ["Target", "Features", "Params", "Split"]
-        : ["Target", "Features", "Split"]
-      for (const pane of panes) {
-        expect(screen.getByRole("tab", { name: pane })).not.toHaveAccessibleDescription()
-      }
-      expect(screen.queryByText("Needs attention")).not.toBeInTheDocument()
-      expect(modellingConfigProps.at(-1)).not.toHaveProperty("objectiveIssue")
-      rendered.unmount()
-    })
   })
 
   it("marks Train while this node has an active job", () => {

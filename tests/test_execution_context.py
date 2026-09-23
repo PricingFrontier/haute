@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock, patch
 
 import polars as pl
@@ -655,6 +656,233 @@ def test_heavy_execution_admission_counts_in_flight_budget(
         second.release_admission()
     finally:
         first.release_admission()
+
+
+_PREVIEW_HOLDER = "training_prep:training_evaluation_preview"
+
+
+def _pin_ten_gib_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_execution_memory_env(monkeypatch)
+    gib = 1024 * 1024 * 1024
+    monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * gib)
+
+
+def test_training_admission_waits_out_an_evaluation_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    preview = create_admitted_execution_context(
+        operation="training_evaluation_preview",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    releaser = threading.Timer(0.2, preview.release_admission)
+    started = time.monotonic()
+    releaser.start()
+    try:
+        training = create_admitted_execution_context(
+            operation="training_pipeline",
+            profile=ExecutionProfile.TRAINING_PREP,
+            memory_sampler=lambda: 100,
+            wait_out_holders={_PREVIEW_HOLDER},
+            wait_seconds=10.0,
+        )
+    finally:
+        releaser.join()
+        preview.release_admission()
+    waited = time.monotonic() - started
+    training.release_admission()
+    # Admitted by the release notification, well before the wait bound.
+    assert 0.15 <= waited < 5.0
+
+
+def test_training_admission_keeps_waiting_when_a_preview_takes_the_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _execution_admission as admission_mod
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    original_wait = admission_mod._wait_out_in_flight_holders
+    interlopers: list[ExecutionContext] = []
+    releasers: list[threading.Timer] = []
+
+    def wait_then_lose_the_race(*args: object, **kwargs: object) -> None:
+        original_wait(*args, **kwargs)  # type: ignore[arg-type]
+        if not interlopers:
+            # Another preview reserves between the wait and the reservation.
+            interloper = create_admitted_execution_context(
+                operation="training_evaluation_preview",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_sampler=lambda: 100,
+            )
+            interlopers.append(interloper)
+            releaser = threading.Timer(0.2, interloper.release_admission)
+            releasers.append(releaser)
+            releaser.start()
+
+    monkeypatch.setattr(admission_mod, "_wait_out_in_flight_holders", wait_then_lose_the_race)
+    try:
+        training = create_admitted_execution_context(
+            operation="training_pipeline",
+            profile=ExecutionProfile.TRAINING_PREP,
+            memory_sampler=lambda: 100,
+            wait_out_holders={_PREVIEW_HOLDER},
+            wait_seconds=10.0,
+        )
+        training.release_admission()
+    finally:
+        for releaser in releasers:
+            releaser.join()
+        for interloper in interlopers:
+            interloper.release_admission()
+    assert len(interlopers) == 1
+
+
+def test_training_admission_retries_when_the_preview_releases_after_the_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _execution_admission as admission_mod
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    original_admit = admission_mod._admit_once
+    attempts: list[str] = []
+
+    def refused_by_a_preview_that_then_releases(**kwargs: Any) -> ExecutionContext:
+        attempts.append(kwargs["operation"])
+        if len(attempts) == 1:
+            # The reservation lost to a preview that has released by the time
+            # admission decides whether to keep waiting: no holders remain.
+            raise ExecutionAdmissionError(
+                kwargs["operation"],
+                profile=kwargs["profile"],
+                memory_limit_bytes=kwargs["budget"].memory_limit_bytes,
+                rss_at_admission_bytes=100,
+                reason="in_flight_memory_budget_exceeded",
+                in_flight_operations=(_PREVIEW_HOLDER,),
+            )
+        return original_admit(**kwargs)
+
+    monkeypatch.setattr(admission_mod, "_admit_once", refused_by_a_preview_that_then_releases)
+    training = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+        wait_out_holders={_PREVIEW_HOLDER},
+        wait_seconds=10.0,
+    )
+    training.release_admission()
+    assert attempts == ["training_pipeline", "training_pipeline"]
+
+
+def test_training_admission_does_not_wait_for_a_budget_it_can_never_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    monkeypatch.setenv("HAUTE_TRAINING_MEMORY_LIMIT_MB", str(64 * 1024))
+    started = time.monotonic()
+    with pytest.raises(ExecutionAdmissionError) as exc_info:
+        create_admitted_execution_context(
+            operation="training_pipeline",
+            profile=ExecutionProfile.TRAINING_PREP,
+            memory_sampler=lambda: 100,
+            wait_out_holders={_PREVIEW_HOLDER},
+            wait_seconds=10.0,
+        )
+    assert time.monotonic() - started < 1.0
+    assert exc_info.value.reason == "in_flight_memory_budget_exceeded"
+
+
+def test_training_admission_refuses_at_once_behind_other_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    running = create_admitted_execution_context(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    try:
+        started = time.monotonic()
+        with pytest.raises(ExecutionAdmissionError) as exc_info:
+            create_admitted_execution_context(
+                operation="training_pipeline",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_sampler=lambda: 100,
+                wait_out_holders={_PREVIEW_HOLDER},
+                wait_seconds=10.0,
+            )
+        assert time.monotonic() - started < 1.0
+        assert exc_info.value.reason == "in_flight_memory_budget_exceeded"
+        assert exc_info.value.in_flight_operations == ("training_prep:training_pipeline",)
+    finally:
+        running.release_admission()
+
+
+def test_training_admission_refuses_when_a_preview_outlasts_the_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    preview = create_admitted_execution_context(
+        operation="training_evaluation_preview",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    try:
+        started = time.monotonic()
+        with pytest.raises(ExecutionAdmissionError) as exc_info:
+            create_admitted_execution_context(
+                operation="training_pipeline",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_sampler=lambda: 100,
+                wait_out_holders={_PREVIEW_HOLDER},
+                wait_seconds=0.3,
+            )
+        assert time.monotonic() - started >= 0.3
+        assert exc_info.value.in_flight_operations == (_PREVIEW_HOLDER,)
+    finally:
+        preview.release_admission()
+
+
+def test_waiting_training_admission_honours_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import create_admitted_execution_context
+
+    _pin_ten_gib_host(monkeypatch)
+    preview = create_admitted_execution_context(
+        operation="training_evaluation_preview",
+        profile=ExecutionProfile.TRAINING_PREP,
+        memory_sampler=lambda: 100,
+    )
+    token = ExecutionCancellationToken()
+    canceller = threading.Timer(0.2, token.cancel)
+    canceller.start()
+    try:
+        started = time.monotonic()
+        with pytest.raises(ExecutionCancelledError):
+            create_admitted_execution_context(
+                operation="training_pipeline",
+                profile=ExecutionProfile.TRAINING_PREP,
+                memory_sampler=lambda: 100,
+                cancellation_token=token,
+                wait_out_holders={_PREVIEW_HOLDER},
+                wait_seconds=10.0,
+            )
+        assert time.monotonic() - started < 2.0
+    finally:
+        canceller.join()
+        preview.release_admission()
 
 
 def test_heavy_admission_releases_reservation_when_context_construction_fails(

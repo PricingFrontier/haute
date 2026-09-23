@@ -10,12 +10,9 @@ function editableProjection(
 
 export function formatHyperparameters(
   params: Record<string, unknown>,
-  defaultParams: Record<string, unknown> = {},
   reservedKeys: readonly string[] = [],
 ): string {
-  const projection = editableProjection(params, reservedKeys)
-  const displayed = Object.keys(projection).length > 0 ? projection : defaultParams
-  return JSON.stringify(displayed, null, 2)
+  return JSON.stringify(editableProjection(params, reservedKeys), null, 2)
 }
 
 export function parseHyperparameters(

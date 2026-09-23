@@ -52,6 +52,7 @@ def _examples():
             "params": {"iterations": 17, "depth": 3},
             "evaluation": {"method": "holdout", "test_size": 0.25},
             "tuning": {"enabled": True, "n_trials": 3},
+            "refit_on_development": False,
             "mlflow_experiment": "Pricing",
             "output_dir": "models/output",
             "model_export_path": "output/frequency.cbm",

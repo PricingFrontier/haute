@@ -1,9 +1,10 @@
-import { cleanup, render, screen } from "@testing-library/react"
-import { afterEach, describe, expect, it } from "vitest"
+import { act, cleanup, render, screen } from "@testing-library/react"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   ChartEmptyState,
   ChartLegend,
   ChartSvg,
+  ResponsiveChart,
   MODELLING_CHART_AXIS_FONT_SIZE,
   MODELLING_CHART_AXIS_TEXT_COLOR,
   MODELLING_CHART_GRID_COLOR,
@@ -12,6 +13,42 @@ import {
 afterEach(cleanup)
 
 describe("ChartScaffold", () => {
+  it("remeasures chart geometry without scaling down its label text", () => {
+    let resize: ResizeObserverCallback
+    const disconnect = vi.fn()
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          resize = callback
+        }
+        observe() {}
+        disconnect = disconnect
+      },
+    )
+    const { unmount } = render(
+      <ResponsiveChart>
+        {(width) => (
+          <ChartSvg width={width} height={240} ariaLabel="Responsive chart">
+            <text fontSize={12}>Label</text>
+          </ChartSvg>
+        )}
+      </ResponsiveChart>,
+    )
+    act(() =>
+      resize([{ contentRect: { width: 410 } } as ResizeObserverEntry], {} as ResizeObserver),
+    )
+    expect(screen.getByRole("img")).toHaveAttribute("width", "410")
+    act(() =>
+      resize([{ contentRect: { width: 820 } } as ResizeObserverEntry], {} as ResizeObserver),
+    )
+    expect(screen.getByRole("img")).toHaveAttribute("width", "820")
+    expect(screen.getByText("Label")).toHaveAttribute("font-size", "12")
+    expect(screen.getByRole("img")).not.toHaveAttribute("viewBox")
+    unmount()
+    expect(disconnect).toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
   it("renders the shared modelling chart svg shell without owning chart geometry", () => {
     const { container } = render(
       <ChartSvg width={320} height={160} className="mt-1" data-testid="chart-shell">
@@ -23,16 +60,14 @@ describe("ChartScaffold", () => {
     expect(svg).toHaveAttribute("width", "320")
     expect(svg).toHaveAttribute("height", "160")
     expect(svg).toHaveClass("mt-1")
-    expect(svg.getAttribute("style")).toContain("background: var(--bg-input)")
-    expect(svg.getAttribute("style")).toContain("border-radius: 6px")
-    expect(svg.getAttribute("style")).toContain("border: 1px solid var(--border)")
+    expect(svg.getAttribute("style")).toContain("display: block")
     expect(container.querySelector("path")?.getAttribute("d")).toBe("M0,0 L10,10")
   })
 
   it("keeps repeated axis constants in one modelling-local module", () => {
-    expect(MODELLING_CHART_GRID_COLOR).toBe("rgba(255,255,255,.06)")
+    expect(MODELLING_CHART_GRID_COLOR).toBe("var(--border)")
     expect(MODELLING_CHART_AXIS_TEXT_COLOR).toBe("var(--text-muted)")
-    expect(MODELLING_CHART_AXIS_FONT_SIZE).toBe(10)
+    expect(MODELLING_CHART_AXIS_FONT_SIZE).toBe(12)
   })
 
   it("renders the shared full-panel empty state", () => {
@@ -61,7 +96,7 @@ describe("ChartScaffold", () => {
     const swatches = screen.getAllByTestId("chart-legend-swatch")
     expect(swatches[0]).toHaveClass("w-3", "h-0.5")
     expect(swatches[0]).toHaveStyle({ background: "green" })
-    expect(swatches[1]).toHaveStyle({ background: "gold" })
+    expect(swatches[1]).not.toHaveStyle({ background: "gold" })
     expect(swatches[1].getAttribute("style")).toContain("border-top: 1px dashed gold")
     expect(swatches[2]).toHaveClass("w-3", "h-2", "rounded-sm")
     expect(swatches[2]).toHaveStyle({ background: "grey", opacity: "0.7" })

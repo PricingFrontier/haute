@@ -17,8 +17,10 @@ function formatMb(mb: number): string {
 }
 
 export type TrainingActionsAndResultsProps = {
-  /** Validation messages to reveal after an invalid training attempt. */
+  /** Current readiness issues, shown before submission. */
   validationMessages?: readonly string[]
+  validationDestinations?: readonly string[]
+  onValidationMessageClick?: (index: number) => void
   training: boolean
   trainProgress: TrainProgress | null
   estimatedRemainingSeconds?: number | null
@@ -41,6 +43,8 @@ export type TrainingActionsAndResultsProps = {
 
 export function TrainingActionsAndResults({
   validationMessages = [],
+  validationDestinations = [],
+  onValidationMessageClick,
   training,
   trainProgress,
   estimatedRemainingSeconds = null,
@@ -135,7 +139,10 @@ export function TrainingActionsAndResults({
       {ramEstimateError && !ramEstimateLoading && !ramEstimate && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}>
           <AlertTriangle size={12} className="shrink-0" style={{ color: "var(--warning-strong)" }} />
-          <span style={{ color: "var(--warning)" }}>RAM estimate unavailable - training will still work</span>
+          <div style={{ color: "var(--warning)" }}>
+            <p className="font-medium">{ramEstimateError.startsWith("Evaluation preview failed:") ? "Evaluation preview failed" : "Memory estimate unavailable"}</p>
+            <p className="mt-1 break-words">{ramEstimateError.replace(/^Evaluation preview failed:\s*/, "")}</p>
+          </div>
         </div>
       )}
       {ramEstimate && !ramEstimateLoading && adjusted && (
@@ -215,8 +222,10 @@ export function TrainingActionsAndResults({
             <div className="min-w-0" style={{ color: "var(--warning)" }}>
               <div className="font-medium">Complete before training</div>
               <ul className="mt-1 list-disc space-y-1 pl-4">
-                {validationMessages.map((message) => (
-                  <li key={message}>{message}</li>
+                {validationMessages.map((message, index) => (
+                  <li key={message}>{message}
+                    {onValidationMessageClick && <button type="button" className="ml-2 font-medium underline underline-offset-2" onClick={() => onValidationMessageClick(index)}>Go to {validationDestinations[index]}</button>}
+                  </li>
                 ))}
               </ul>
             </div>

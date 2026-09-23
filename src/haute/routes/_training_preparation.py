@@ -33,7 +33,14 @@ from haute._execution_context import (
 )
 from haute._graph_utils import upstream_node_ids
 from haute._logging import get_logger
-from haute._seed_plans import SeedPlan, SeedPlanHandoff, SeedPlanRequest, open_seed_plan
+from haute._ram_estimate import RamEstimate
+from haute._seed_plans import (
+    SeedPlan,
+    SeedPlanHandoff,
+    SeedPlanRequest,
+    open_resolved_seed_plan,
+    open_seed_plan,
+)
 from haute._types import GraphNode, PipelineGraph
 from haute.errors import BoundedMemoryUnsupportedError, HauteValidationError
 from haute.execution import (
@@ -582,6 +589,28 @@ def training_seed_plan_request(
         profile=ExecutionProfile.TRAINING_PREP,
         required_columns_by_node=required_columns_by_node,
     )
+
+
+def estimate_training_memory(
+    graph: PipelineGraph,
+    node_id: str,
+    *,
+    source: str = "live",
+) -> RamEstimate:
+    """Estimate from the snapshots training can reuse, without preparing inputs."""
+    from haute._node_snapshots import NodeSnapshotStore
+    from haute._ram_estimate import estimate_safe_training_rows
+    from haute._sandbox import _get_project_root
+
+    node = _find_modelling_node(graph, node_id)
+    required = _training_required_columns_by_node(node_id, node.data.config)
+    # Resolving (rather than opening with input preparation) only reads existing
+    # cache evidence. Keep the generations leased through all metadata reads.
+    with open_resolved_seed_plan(
+        training_seed_plan_request(graph, node_id, source, required),
+        store=NodeSnapshotStore(_get_project_root()),
+    ) as plan:
+        return estimate_safe_training_rows(plan.estimation_graph(graph), node_id, source=source)
 
 
 @dataclass(frozen=True)

@@ -11,9 +11,8 @@ import { glmCrossValidates } from "../panels/modelling/glmFamilies"
  * Frontend mirror of the backend's target/objective validation.
  *
  * The backend remains authoritative. This helper aggregates every currently
- * applicable issue so an invalid Train press can show one complete banner
- * without sending a request. Configuration panes and tabs never consume these
- * issues or reveal them proactively.
+ * applicable issue for inline feedback, pane readiness and the Train summary.
+ * Invalid configurations never submit a training request.
  */
 
 export type TrainingConfigurationIssueCode =
@@ -30,6 +29,7 @@ export type TrainingConfigurationIssueCode =
   | "catboost-loss-function"
   | "catboost-tweedie-variance-power"
   | "evaluation-config"
+  | "final-refit"
   | "tuning-config"
 
 export type TrainingConfigurationIssue = {
@@ -37,24 +37,35 @@ export type TrainingConfigurationIssue = {
   message: string
 }
 
-export function trainingConfigurationIssues(
-  config: Record<string, unknown>,
-): TrainingConfigurationIssue[] {
-  const issues: TrainingConfigurationIssue[] = []
-  const target = config.target
-  if (typeof target !== "string" || target.trim() === "") {
-    issues.push({
-      code: "training-target",
-      message: "Select a target column.",
-    })
+/**
+ * The reported metrics training will use: explicit `metrics`, else the
+ * objective-implied defaults. Mirrors the backend's `effective_metrics`.
+ */
+export function effectiveMetrics(config: Record<string, unknown>): string[] {
+  if (Array.isArray(config.metrics) && config.metrics.length > 0) {
+    return config.metrics.filter((metric): metric is string => typeof metric === "string")
   }
+  const glm = String(config.algorithm ?? "catboost").toLowerCase() === "glm"
+  const objective = String((glm ? config.family : config.loss_function) ?? "").toLowerCase()
+  if (
+    config.task === "classification"
+    || ["binomial", "quasibinomial", "logloss", "crossentropy"].includes(objective)
+  ) {
+    return ["auc", "logloss"]
+  }
+  if (["poisson", "quasipoisson", "negbinomial"].includes(objective)) return ["gini", "poisson_deviance"]
+  if (objective === "tweedie") return ["gini", "tweedie_deviance"]
+  return ["gini", "rmse"]
+}
 
+export function evaluationConfigurationIssues(rawEvaluation: unknown): TrainingConfigurationIssue[] {
+  const issues: TrainingConfigurationIssue[] = []
   const evaluation = (
-    config.evaluation !== null
-    && typeof config.evaluation === "object"
-    && !Array.isArray(config.evaluation)
+    rawEvaluation !== null
+    && typeof rawEvaluation === "object"
+    && !Array.isArray(rawEvaluation)
   )
-    ? config.evaluation as Record<string, unknown>
+    ? rawEvaluation as Record<string, unknown>
     : null
   const validation = (
     evaluation?.validation !== null
@@ -110,10 +121,14 @@ export function trainingConfigurationIssues(
       && temporalValidationTimestamp < temporalTestTimestamp
     )
   )
+  const invalidFractionSum = strategy !== "temporal" && method === "single"
+    && typeof validation?.size === "number" && typeof test?.size === "number"
+    && validation.size + test.size >= 1
   const validEvaluation = (
     evaluation?.schema_version === 1
     && ["random", "group", "temporal"].includes(String(strategy))
     && validTest
+    && !invalidFractionSum
     && validTemporalBoundaryOrder
     && (
       strategy === "temporal"
@@ -153,9 +168,40 @@ export function trainingConfigurationIssues(
   if (!validEvaluation) {
     issues.push({
       code: "evaluation-config",
-      message:
-        "Complete the evaluation workflow: data structure, validation, and " +
-        "any required group/date fields.",
+      message: invalidFractionSum
+        ? "Validation and test must total below 100% so training retains some rows."
+        : !validTemporalBoundaryOrder
+          ? "Validation must start before the test set."
+          : "Complete the split settings: split strategy, validation strategy, and required group/date fields.",
+    })
+  }
+
+  return issues
+}
+
+export function trainingConfigurationIssues(
+  config: Record<string, unknown>,
+): TrainingConfigurationIssue[] {
+  const issues: TrainingConfigurationIssue[] = []
+  const target = config.target
+  if (typeof target !== "string" || target.trim() === "") {
+    issues.push({
+      code: "training-target",
+      message: "Select a target column.",
+    })
+  }
+
+  issues.push(...evaluationConfigurationIssues(config.evaluation))
+  const evaluation = config.evaluation as Record<string, unknown> | undefined
+  const validation = evaluation?.validation as Record<string, unknown> | undefined
+  const method = validation?.method
+  const refit = config.refit_on_development
+  if ((refit !== undefined && typeof refit !== "boolean") || (
+    refit === false && method !== "single"
+  )) {
+    issues.push({
+      code: "final-refit",
+      message: "Skipping the final refit requires holdout validation.",
     })
   }
 
@@ -167,7 +213,13 @@ export function trainingConfigurationIssues(
     ? config.tuning as Record<string, unknown>
     : null
   if (tuning) {
-    const metrics = Array.isArray(config.metrics) ? config.metrics : []
+    if (refit === false && method === "single") {
+      issues.push({
+        code: "final-refit",
+        message: "Parameter tuning requires a final refit.",
+      })
+    }
+    const metrics = effectiveMetrics(config)
     const searchSpace = (
       tuning.search_space !== null
       && typeof tuning.search_space === "object"
@@ -265,14 +317,12 @@ export function trainingConfigurationIssues(
     ) {
       issues.push({
         code: "glm-elastic-net-l1-ratio",
-        message:
-          "Set the elastic-net L1 ratio (0 fits Ridge, 1 fits LASSO) - an " +
-          "unset value would silently fit pure Ridge.",
+        message: "Choose an L1 ratio.",
       })
     }
 
     if (glmCrossValidates(config)) {
-      const missing = ([["cv_folds", "folds"], ["cv_selection", "selection rule"], ["cv_seed", "seed"]] as const)
+      const missing = ([["cv_folds", "folds"], ["cv_selection", "selection rule"]] as const)
         .filter(([key]) => config[key] === undefined || config[key] === null || config[key] === "")
         .map(([, label]) => label)
       if (missing.length > 0) {
@@ -331,14 +381,30 @@ export function trainingConfigurationIssues(
     })
   } else if (
     String(lossFunction) === "Tweedie"
-    && (config.variance_power === undefined || config.variance_power === null)
+    && (typeof config.variance_power !== "number" || !Number.isFinite(config.variance_power)
+      || config.variance_power <= 1 || config.variance_power >= 2)
   ) {
     issues.push({
       code: "catboost-tweedie-variance-power",
       message:
-        "Set the Tweedie variance power (1=Poisson, 2=Gamma) - an unset " +
-        "value would silently train at power 1.5.",
+        "Set the Tweedie variance power greater than 1 and less than 2.",
     })
   }
   return issues
+}
+
+/** Destination of a readiness issue, shared by tabs and the Train summary. */
+export function trainingIssuePane(issue: TrainingConfigurationIssue): "target" | "features" | "params" | "split" {
+  switch (issue.code) {
+    case "evaluation-config": return "split"
+    case "final-refit": return "split"
+    case "catboost-params":
+    case "tuning-config":
+    case "glm-elastic-net-l1-ratio":
+    case "glm-cross-validation":
+    case "glm-smooth-regularization":
+    case "glm-robust-standard-errors": return "params"
+    case "glm-terms": return "features"
+    default: return "target"
+  }
 }

@@ -9,6 +9,7 @@ import { CHART_COLORS } from "../../theme/colors"
 import {
   ChartEmptyState,
   ChartLegend,
+  ResponsiveChart,
   ChartSvg,
   MODELLING_CHART_AXIS_FONT_SIZE,
   MODELLING_CHART_AXIS_TEXT_COLOR,
@@ -29,16 +30,24 @@ const EMPTY_VALID_HISTORY_MESSAGE = "No valid loss history data available"
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value)
 
-export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
+export function LossTab({ result, width, height = 280 }: LossTabProps) {
+  return (
+    <ResponsiveChart width={width}>
+      {(measuredWidth) => <LossTabChart result={result} width={measuredWidth} height={height} />}
+    </ResponsiveChart>
+  )
+}
+
+function LossTabChart({ result, width, height }: Required<LossTabProps>) {
   const lossHistory = result.loss_history
   if (!lossHistory || lossHistory.length < 2) {
     return <ChartEmptyState>No loss history data available</ChartEmptyState>
   }
 
   // Find train and eval loss keys
-  const keys = Object.keys(lossHistory[0]).filter(k => k !== "iteration")
-  const trainKey = keys.find(k => k.startsWith("train_"))
-  const evalKey = keys.find(k => k.startsWith("eval_"))
+  const keys = Object.keys(lossHistory[0]).filter((k) => k !== "iteration")
+  const trainKey = keys.find((k) => k.startsWith("train_"))
+  const evalKey = keys.find((k) => k.startsWith("eval_"))
   if (!trainKey) {
     return <ChartEmptyState>No loss keys found in history</ChartEmptyState>
   }
@@ -93,25 +102,43 @@ export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
   const nGridY = 5
   const nGridX = Math.min(5, lossHistory.length - 1)
   const gridYValues = Array.from({ length: nGridY + 1 }, (_, i) => yLo + (i / nGridY) * ySpan)
-  const gridXIndices = Array.from({ length: nGridX + 1 }, (_, i) => Math.round((i / nGridX) * (lossHistory.length - 1)))
+  const gridXIndices = Array.from({ length: nGridX + 1 }, (_, i) =>
+    Math.round((i / nGridX) * (lossHistory.length - 1)),
+  )
 
   // Best iteration vertical line
   const bestIteration = result.best_iteration
-  const bestX = isFiniteNumber(bestIteration) ? xScale(Math.min(Math.max(bestIteration, 0), lossHistory.length - 1)) : null
+  const bestX = isFiniteNumber(bestIteration)
+    ? xScale(Math.min(Math.max(bestIteration, 0), lossHistory.length - 1))
+    : null
 
   // Metric name from key (strip "train_" prefix)
   const metricName = trainKey.replace("train_", "")
 
   return (
     <div>
-      <ChartSvg width={width} height={height}>
+      <ChartSvg width={width} height={height} ariaLabel="Loss history chart">
+        <title>Loss history by iteration</title>
         {/* Horizontal grid lines + y-axis labels */}
         {gridYValues.map((v, i) => {
           const y = yScale(v)
           return (
             <g key={`gy-${i}`}>
-              <line x1={marginLeft} y1={y} x2={marginLeft + chartW} y2={y} stroke={MODELLING_CHART_GRID_COLOR} strokeWidth={1} />
-              <text x={marginLeft - 6} y={y + 3} textAnchor="end" fontSize={MODELLING_CHART_AXIS_FONT_SIZE} fill={MODELLING_CHART_AXIS_TEXT_COLOR}>
+              <line
+                x1={marginLeft}
+                y1={y}
+                x2={marginLeft + chartW}
+                y2={y}
+                stroke={MODELLING_CHART_GRID_COLOR}
+                strokeWidth={1}
+              />
+              <text
+                x={marginLeft - 6}
+                y={y + 3}
+                textAnchor="end"
+                fontSize={MODELLING_CHART_AXIS_FONT_SIZE}
+                fill={MODELLING_CHART_AXIS_TEXT_COLOR}
+              >
                 {v.toPrecision(3)}
               </text>
             </g>
@@ -124,8 +151,21 @@ export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
           const iter = lossHistory[idx]?.iteration ?? idx
           return (
             <g key={`gx-${i}`}>
-              <line x1={x} y1={marginTop} x2={x} y2={marginTop + chartH} stroke={MODELLING_CHART_GRID_COLOR} strokeWidth={1} />
-              <text x={x} y={marginTop + chartH + 16} textAnchor="middle" fontSize={MODELLING_CHART_AXIS_FONT_SIZE} fill={MODELLING_CHART_AXIS_TEXT_COLOR}>
+              <line
+                x1={x}
+                y1={marginTop}
+                x2={x}
+                y2={marginTop + chartH}
+                stroke={MODELLING_CHART_GRID_COLOR}
+                strokeWidth={1}
+              />
+              <text
+                x={x}
+                y={marginTop + chartH + 16}
+                textAnchor="middle"
+                fontSize={MODELLING_CHART_AXIS_FONT_SIZE}
+                fill={MODELLING_CHART_AXIS_TEXT_COLOR}
+              >
                 {iter}
               </text>
             </g>
@@ -133,7 +173,13 @@ export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
         })}
 
         {/* X-axis label */}
-        <text x={marginLeft + chartW / 2} y={height - 4} textAnchor="middle" fontSize={MODELLING_CHART_AXIS_FONT_SIZE} fill={MODELLING_CHART_AXIS_TEXT_COLOR}>
+        <text
+          x={marginLeft + chartW / 2}
+          y={height - 4}
+          textAnchor="middle"
+          fontSize={MODELLING_CHART_AXIS_FONT_SIZE}
+          fill={MODELLING_CHART_AXIS_TEXT_COLOR}
+        >
           Iteration
         </text>
 
@@ -152,14 +198,21 @@ export function LossTab({ result, width = 700, height = 280 }: LossTabProps) {
         {/* Best iteration line */}
         {bestX != null && (
           <line
-            x1={bestX} y1={marginTop} x2={bestX} y2={marginTop + chartH}
-            stroke={BEST_COLOR} strokeWidth={1} strokeDasharray="5,3"
+            x1={bestX}
+            y1={marginTop}
+            x2={bestX}
+            y2={marginTop + chartH}
+            stroke={BEST_COLOR}
+            strokeWidth={1}
+            strokeDasharray="5,3"
           />
         )}
 
         {/* Loss curves */}
         <path d={makePath(trainKey)} fill="none" stroke={TRAIN_COLOR} strokeWidth={1.5} />
-        {evalKey && <path d={makePath(evalKey)} fill="none" stroke={EVAL_COLOR} strokeWidth={1.5} />}
+        {evalKey && (
+          <path d={makePath(evalKey)} fill="none" stroke={EVAL_COLOR} strokeWidth={1.5} />
+        )}
       </ChartSvg>
 
       {/* Legend */}

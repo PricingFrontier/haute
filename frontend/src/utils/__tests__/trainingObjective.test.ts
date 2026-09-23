@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { trainingConfigurationIssues } from "../trainingObjective"
+import { effectiveMetrics, trainingConfigurationIssues } from "../trainingObjective"
 
 describe("trainingConfigurationIssues", () => {
   const evaluation = {
@@ -20,6 +20,18 @@ describe("trainingConfigurationIssues", () => {
       "evaluation-config",
       "catboost-loss-function",
     ])
+  })
+
+  it.each([1, 2, 0, NaN, Infinity, "1.5"])("rejects invalid CatBoost Tweedie power %s", (variance_power) => {
+    expect(trainingConfigurationIssues({ algorithm: "catboost", target: "y", loss_function: "Tweedie", variance_power, evaluation }))
+      .toEqual([expect.objectContaining({ code: "catboost-tweedie-variance-power" })])
+  })
+
+  it.each([0.5, 0.8])("rejects validation plus final test consuming all rows (%s)", (size) => {
+    const issues = trainingConfigurationIssues({ algorithm: "catboost", target: "y", loss_function: "RMSE",
+      evaluation: { ...evaluation, validation: { method: "single", size }, test: { size: 0.5 } },
+    })
+    expect(issues).toEqual([expect.objectContaining({ code: "evaluation-config", message: expect.stringMatching(/below 100%/) })])
   })
 
   it("reports conditional CatBoost Tweedie configuration", () => {
@@ -86,10 +98,10 @@ describe("trainingConfigurationIssues", () => {
   })
 
   it.each([
-    [{}, ["folds", "selection rule", "seed"]],
-    [{ alpha: 0, cv_folds: 5, cv_selection: "min" }, ["seed"]],
-  ])("requires every cross-validation setting when the penalty is cross-validated %#", (settings, missing) => {
-    expect(trainingConfigurationIssues({
+    [{}, ["folds", "selection rule"]],
+    [{ alpha: 0, cv_folds: 5, cv_selection: "min" }, []],
+  ])("requires editable cross-validation settings while defaulting the hidden seed %#", (settings, missing) => {
+    const issues = trainingConfigurationIssues({
       algorithm: "glm",
       target: "loss",
       family: "poisson",
@@ -97,10 +109,11 @@ describe("trainingConfigurationIssues", () => {
       regularization: "ridge",
       evaluation,
       ...settings,
-    })).toEqual([{
+    })
+    expect(issues).toEqual(missing.length ? [{
       code: "glm-cross-validation",
       message: `Set the cross-validation ${missing.join(", ")} so the selected penalty is reproducible.`,
-    }])
+    }] : [])
   })
 
   it("refuses regularization with automatic splines and robust standard errors with invalid inference", () => {
@@ -216,5 +229,44 @@ describe("trainingConfigurationIssues", () => {
         },
       }).map((issue) => issue.code),
     ).toEqual(["evaluation-config"])
+  })
+})
+
+describe("effectiveMetrics", () => {
+  it.each([
+    [{ algorithm: "catboost", loss_function: "RMSE" }, ["gini", "rmse"]],
+    [{ algorithm: "catboost", loss_function: "Poisson" }, ["gini", "poisson_deviance"]],
+    [{ algorithm: "catboost", loss_function: "Tweedie" }, ["gini", "tweedie_deviance"]],
+    [{ algorithm: "catboost", loss_function: "Logloss", task: "regression" }, ["auc", "logloss"]],
+    [{ algorithm: "catboost", task: "classification" }, ["auc", "logloss"]],
+    [{ algorithm: "glm", family: "negbinomial", loss_function: "RMSE" }, ["gini", "poisson_deviance"]],
+    [{ algorithm: "glm", family: "binomial" }, ["auc", "logloss"]],
+    [{ algorithm: "glm" }, ["gini", "rmse"]],
+    [{ algorithm: "catboost", loss_function: "Poisson", metrics: ["mae"] }, ["mae"]],
+    [{ algorithm: "catboost", loss_function: "Poisson", metrics: [] }, ["gini", "poisson_deviance"]],
+  ])("mirrors the backend objective defaults for %j", (config, metrics) => {
+    expect(effectiveMetrics(config)).toEqual(metrics)
+  })
+
+  it("accepts a tuning metric implied by the objective when metrics are unset", () => {
+    const issues = trainingConfigurationIssues({
+      algorithm: "catboost",
+      target: "y",
+      loss_function: "Poisson",
+      evaluation: {
+        schema_version: 1,
+        strategy: "random",
+        seed: 42,
+        validation: { method: "single", size: 0.2 },
+      },
+      tuning: {
+        schema_version: 1,
+        trial_count: 5,
+        seed: 1,
+        metric: "poisson_deviance",
+        search_space: { depth: [4, 6] },
+      },
+    })
+    expect(issues.map((issue) => issue.code)).not.toContain("tuning-config")
   })
 })

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
 import { PdpTab } from "../PdpTab"
 import { makeTrainResult } from "../../../test-utils/factories"
 
@@ -99,7 +99,7 @@ describe("PdpTab", () => {
     const { container } = render(<PdpTab result={result} />)
 
     expect(container.querySelector("svg")).toBeInTheDocument()
-    expect(screen.getByText("(missing)")).toBeInTheDocument()
+    expect(within(screen.getByRole("img", { name: "Partial dependence for territory" })).getByText("(missing)")).toBeInTheDocument()
     expect(screen.queryByText("null")).not.toBeInTheDocument()
   })
 })

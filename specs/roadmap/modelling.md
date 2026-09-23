@@ -13,6 +13,12 @@ Current behaviour is specified in
 CatBoost's Features pane keeps the current include/exclude cards and
 monotonicity arrows unchanged.
 
+The [model-family expansion plan](#model-family-expansion-proposed-22-september-2026)
+also covers adding XGBoost, LightGBM, and InterpretML EBM throughout training,
+evaluation, scoring, explanation, persistence, MLflow, and deployment. That
+proposal is separate from the approved GLM design below; it does not claim
+the new families are implemented or their change contracts approved.
+
 ## Priorities
 
 | Package | State | Priority | Outcome |
@@ -26,6 +32,16 @@ monotonicity arrows unchanged.
 | MOD-T06 | Planned | P1 | One offset meaning for GLM and CatBoost (a positive exposure multiplier under a log link), carried through training, saved models, and every scoring path. |
 | MOD-T07 | Planned | P1 | A strict, dtype-aware GLM term contract and order-independent interaction resolution that never builds a design different from the configuration. |
 | MOD-T08 | Planned | P2 | The GLM pane mirrors the backend contract, keeps every saved term and interaction visible and repairable, supports reference levels, and loses its duplicated code. |
+| MOD-M00 | Proposed | P2 | Resolve dependency, EBM persistence, and engine capability probes; define the spec-first delivery contracts. |
+| MOD-M01 | Proposed | P2 | Extend the existing algorithm and scoring abstractions with explicit capabilities and shared prediction contracts. |
+| MOD-M02 | Proposed | P2 | Train, reload, and score XGBoost with categorical, weight, offset, and stopping consistency. |
+| MOD-M03 | Proposed | P2 | Train, reload, and score LightGBM with categorical, weight, offset, and stopping consistency. |
+| MOD-M04 | Proposed | P2 | Train, reload, and score EBM with explicit budgets and native additive terms. |
+| MOD-M05 | Proposed | P2 | Extend evaluation, bounded tuning, resource control, and worker lifecycle to all three families. |
+| MOD-M06 | Proposed | P2 | Carry complete model artifacts through exports, MLflow, code generation, and deployment. |
+| MOD-M07 | Proposed | P2 | Expose family-appropriate configuration, diagnostics, and trace explanations. |
+| MOD-M08 | Proposed | P2 | Prove complete lifecycle parity and publish the supported CPU feature matrix. |
+| MOD-M09 | Deferred | P3 | Add verified XGBoost and LightGBM GPU configurations after the CPU release. |
 
 ## Design (approved 16 September 2026; revised after Codex plan review and for RustyStats 0.9.0)
 
@@ -1238,3 +1254,737 @@ trains a GLM with an automatic spline and sees its coefficients.
 `frontend/src/panels/modelling/GLMTermsConfig.tsx`;
 `frontend/src/panels/modelling/GLMInteractionsConfig.tsx`;
 `frontend/src/panels/NodePanel.tsx`; `frontend/e2e/core-flows.spec.ts`.
+
+## Model-family expansion (proposed 22 September 2026)
+
+### Outcome and scope
+
+Add three first-class modelling choices: **XGBoost**, **LightGBM**, and
+**Explainable Boosting Machine (EBM), using InterpretML**. Each must work from
+configuration through training, evaluation, cancellation, saved results,
+model export, MLflow candidate logging, Model Score, trace, and deployment.
+A selector entry or a successful in-memory fit alone does not complete a family.
+
+Keep `catboost` and `glm` as the existing algorithm IDs. Add `xgboost`,
+`lightgbm`, and `ebm`; retain `rustystats` as the GLM's scoring flavor.
+EBM is a separate additive model family, not an additional RustyStats GLM
+family or a GLM term encoding.
+
+This plan uses the current working tree, including ongoing evaluation and
+training-configuration edits. Before implementation, reconcile those changes
+and the existing MOD-T packages against actual code; do not overwrite them or
+assume a roadmap's historical status reflects what is already implemented.
+Only roadmap documents change as part of this planning task. Proposed module
+names, config additions, and defaults below become binding only when the
+owning specifications receive their change contracts.
+
+### What the repository already provides
+
+| Existing surface | Reuse and specific extension required |
+|---|---|
+| `src/haute/modelling/_algorithms.py` | `BaseAlgorithm`, `FitResult`, and `ALGORITHM_REGISTRY` exist. The interface includes fit, prediction, importance, and save, but does not describe all capabilities. |
+| `src/haute/modelling/_training_job.py` | The lifecycle, partitioned input, evaluation, diagnostic batches, and artifact ownership are reusable. `_train_model` currently treats every non-GLM as CatBoost, constructs CatBoost pools, and injects its loss. This must change before registering another algorithm. |
+| `src/haute/modelling/_train_config.py` | Shared GUI/script validation and kwargs assembly exist. Objective gates, metrics, feature controls, and offset-link resolution currently distinguish GLM from CatBoost. |
+| `src/haute/routes/_training_preparation.py` | Column demand, snapshot seeding, materialisation, and resource admission exist. Explicit CatBoost projection and VRAM assumptions need capability-aware dispatch. |
+| `src/haute/modelling/_evaluation.py`, `src/haute/modelling/_tuning.py` | Reproducible evaluation plans and bounded Optuna tuning exist. Tuning currently gates on CatBoost, and final refitting assumes `iterations` and a tree count. |
+| `src/haute/modelling/_feature_contract.py` | Ordered features, types, categorical domains, target/task, offset, and contract hashing already exist. Extend their use instead of adding a competing feature-schema validator. |
+| `src/haute/_model_flavors.py`, `src/haute/_mlflow_io.py`, `src/haute/_model_scorer.py` | Explicit flavors, loaders, input preparation, batch/eager scoring, feature checks, and caches exist. Native discovery and dispatch currently support `.cbm` and `.rsglm`, alongside generic pyfunc models. |
+| `src/haute/modelling/_model_export.py`, `src/haute/modelling/_candidate_run.py`, `src/haute/modelling/_mlflow_log.py` | Native suffix selection, owned artifacts, training identity, and common candidate logging exist. Suffixes, signature logging, evidence files, and identity fields need extension. |
+| `src/haute/_model_explainability.py` | CatBoost SHAP and RustyStats contributions already reconcile contributions against predictions. New engines must meet the same standard. |
+| `frontend/src/panels/ModellingConfig.tsx` and `frontend/src/panels/modelling/` | Gateway, panes, feature cards, target controls, JSON parameters, results, and export flows exist. Several unions, pane lists, objective gates, and suffix maps contain exactly two algorithms. |
+| `src/haute/deploy/` | Shared scoring and artifact bundling exist; local native artifacts and deployment dependency generation require explicit support for the new formats. |
+
+Two existing contracts especially constrain this work: classification scoring
+emits a class prediction plus `<output_col>_proba` for the binary positive-class
+probability; multiclass probabilities are explicitly rejected. External
+pickle/joblib loading uses exact vetted globals/classes in
+`src/haute/_sandbox.py`, not a trusted-package prefix. The current allowlist
+already names some XGBoost/LightGBM sklearn classes; that is not evidence that
+their full training or model lifecycle is supported.
+
+### Recommended first-release capability matrix
+
+The following is the proposed supported subset, not a catalogue of every
+upstream library feature. A capability appears in the UI only after its
+complete lifecycle is covered.
+
+| Capability | XGBoost | LightGBM | EBM |
+|---|---|---|---|
+| CPU regression | Squared error, absolute error, Poisson, Gamma, Tweedie | Squared error, absolute error, Poisson, Gamma, Tweedie | RMSE, Poisson, Gamma, Tweedie |
+| Classification | Binary logistic | Binary logistic | Binary log loss |
+| Mixed numeric/categorical features | Native categorical tree training with fixed encoding | Native categorical tree training with fixed encoding | Native nominal/continuous terms |
+| Sample weights | Yes | Yes | Yes |
+| Regression offset/exposure | Explicit raw-margin baseline | Explicit initial score plus scoring-time baseline | Explicit initial score at fit and predict |
+| Numeric monotone constraints | Supported combinations only | Supported combinations only | Main-effect constraints; exclude interactions involving constrained features |
+| Shared evaluation and bounded tuning | Yes | Yes | Yes, using explicit round budgets |
+| Early stopping on Haute's validation fit | Yes | Yes | Disabled initially; see evaluation design |
+| Local explanations | Native tree contributions | Native tree contributions | Exact additive term contributions |
+| Distinctive results | Gain importance and contribution summary | Gain/split importance and contribution summary | Shape functions, term importance, pairwise interaction surfaces |
+| GPU in initial release | No | No | No GPU option |
+
+Multiclass/multioutput, ranking, survival, custom Python objectives/callbacks,
+distributed training, warm starts, DART/alternative boosters, arbitrary imported
+model formats, automatic cross-family model selection, EBM model editing,
+differential privacy, and ONNX are outside the first release. They must be
+rejected when requested through raw config as well as absent from controls.
+Existing CatBoost and RustyStats capabilities remain as currently specified.
+
+All three new engines should be ordinary installed choices, consistent with
+the existing core CatBoost/RustyStats dependencies. Add `xgboost`, `lightgbm`,
+and the minimal `interpret-core` distribution, subject to the supported-platform
+probe. InterpretML documents `interpret-core` as sufficient for EBM fitting,
+prediction, serialization, and explanations; the full visualization dependency
+stack is unnecessary for Haute's own UI.
+[InterpretML deployment guide](https://interpret.ml/docs/deployment-guide.html)
+
+### Configuration and extension design
+
+Extend the existing registry with a small typed algorithm descriptor. It should
+identify the implementation, supported tasks/objectives, allowed feature
+controls, offset links, device support, stopping/refit policy, diagnostic
+methods, serialization format, and runtime requirements. Keep import-heavy
+engine implementations lazy. Do not introduce a dynamically loaded plugin
+system, duplicate training orchestrator, or universal UI schema framework.
+
+Use descriptors to drive validation and narrow dispatch in existing owners.
+Expose serializable capability metadata to the frontend through a typed
+modelling endpoint, with shared fixtures checking frontend/backend agreement.
+The frontend can keep family-specific presentation components. Availability
+and an explanatory error must be shown if a required engine cannot import;
+never quietly select CatBoost instead.
+
+Keep shared top-level roles and controls: target, task, weight, offset,
+feature selection, evaluation, metrics, and tuning. For the new families,
+propose one top-level `objective` with a finite, family-specific set of native
+names; do not force them through CatBoost's `loss_function`. Preserve current
+CatBoost `loss_function` and GLM `family`/`link` contracts. Resolve all three
+representations internally to a typed objective description containing target
+domain, prediction link, metric defaults, and supported baseline semantics.
+An explicit objective remains required; a library default must not choose the
+meaning of a model.
+
+Keep `variance_power` explicit for Tweedie and validate `1 < p < 2` for these
+new engines. Proposed objective mappings are:
+
+| Meaning | XGBoost | LightGBM | EBM |
+|---|---|---|---|
+| Squared-error regression | `reg:squarederror` | `regression` | `rmse` |
+| Absolute-error regression | `reg:absoluteerror` | `regression_l1` | Outside initial subset |
+| Nonnegative Poisson response | `count:poisson` | `poisson` | `poisson_deviance` |
+| Positive Gamma response | `reg:gamma` | `gamma` | `gamma_deviance` |
+| Nonnegative Tweedie response | `reg:tweedie` plus variance power | `tweedie` plus variance power | `tweedie_deviance:variance_power=...` assembled by the adapter |
+| Binary probability | `binary:logistic` | `binary` | `log_loss` |
+
+The adapters own native parameter translation. Names and supported values
+must be checked against the versions selected by MOD-M00.
+[XGBoost parameters](https://xgboost.readthedocs.io/en/stable/parameter.html),
+[LightGBM parameters](https://lightgbm.readthedocs.io/en/stable/Parameters.html),
+[EBM regressor API](https://interpret.ml/docs/python/api/ExplainableBoostingRegressor.html),
+[EBM classifier API](https://interpret.ml/docs/python/api/ExplainableBoostingClassifier.html)
+
+Resolve reported metric defaults from objective meaning: RMSE/MAE for their
+matching error objectives, Poisson/Tweedie deviance with the configured power,
+Gamma deviance for Gamma, and AUC/log loss for binary classification. Add
+weighted Gamma deviance to the existing metric registry and frontend options
+with explicit target/prediction domain checks. Preserve the current Lorenz
+Gini definition; it is not automatically the classification `2 * AUC - 1`.
+Users can choose additional compatible metrics without changing the fit loss.
+
+Raw `params` must have a validated, documented allowlist per family. Reject
+unknown keys and conflicting aliases, including keys reserved by Haute:
+objective, feature names/order, categorical encoding, device/thread limits,
+random seeds, callbacks, validation data, and baseline arrays. Engine warnings
+about ignored parameters must not become successful runs. Store configured and
+effective parameters separately in candidate evidence so native defaults and
+resolved budgets can be reproduced.
+
+Preserve CatBoost's current feature-weight meaning only for CatBoost.
+XGBoost sampling weights and LightGBM split penalties are different controls;
+do not reuse `feature_weights` under the same label for them. GLM terms remain
+GLM-only. EBM interactions and feature types are their own validated config,
+with pairwise interactions specified by feature names and resolved to indices
+after feature order is fixed.
+
+### Data and prediction contracts
+
+The decisive invariant is that training evaluation, reloaded artifacts,
+GUI preview, batch scoring, generated scripts, MLflow serving, and deployment
+produce the same values for the same model and rows within a specified numeric
+tolerance. Use one prediction adapter per engine for these paths.
+
+1. **Column roles and order.** Extend existing demand planning to project only
+   features plus target, weight, offset, split/group/time and ID roles where
+   needed. Role columns never enter model features accidentally. Resolve an
+   ordered feature list once; persist any native safe-name mapping if a library
+   restricts feature-name characters. Detect collisions rather than renaming
+   ambiguously. Specify accepted Boolean, numeric, String, Categorical and Enum
+   inputs; reject dates, nested types, unsupported decimals and infinities with
+   instructions to transform them upstream. Integer-as-category requires an
+   explicit upstream cast to a supported categorical dtype; never infer it
+   from cardinality.
+2. **Categoricals.** Fit inferred vocabularies/encodings using each training
+   partition only. An explicit authored categorical domain is schema, not a
+   learned full-dataset vocabulary. Persist domain order and null semantics;
+   never reconstruct category codes independently in each score batch. Retain
+   Haute's explicit domain validation. Initially reject values outside the
+   fitted/declared domain with the feature and offending values identified;
+   never silently turn an unseen category into a missing value. Validation-fold
+   failures must explain that users can declare the domain upstream or change
+   the split. Native missing values use a separate representation, with no
+   collision between null and a literal string such as `"__missing__"`.
+3. **Target and weight gates.** Validate the objective's response domain before
+   launching a native fit. Validate finite nonnegative weights with positive
+   total mass; enforce existing null-target policy and report removed rows.
+   Apply rules identically in HTTP, direct `TrainingJob`, and script export.
+   Preserve the current distinction between a regression proportion response
+   and discrete classification labels.
+4. **Binary classes.** Require exactly two training classes; persist their typed
+   mapping and positive class. Boolean/0-1 targets use true/1; other two-label
+   targets require an explicit positive-class selection. Reject unknown labels,
+   single-class fits, and multiclass input early. Metrics consume encoded labels
+   and positive-class probabilities. Model Score retains original-label
+   `prediction` and `prediction_proba`, using an explicit 0.5 decision threshold
+   and specified equality rule. Do not replace its label column with a
+   probability. Keep raw margins, probabilities, and labels distinct internally.
+5. **Offsets.** For supported regression objectives, preserve Haute's meaning:
+   identity-link offsets add on the raw scale; log-link offsets are strictly
+   positive exposure multipliers transformed with `log`. Persist the column,
+   link and transform. Train, validate, explain, save/load and score with it
+   exactly once. Missing, null, non-finite or nonpositive log exposures fail.
+   Initially reject classification offsets for the new families; log-odds
+   offsets need a separate user-facing contract. A weight is never substituted
+   for exposure, nor is a target silently divided by it.
+6. **Finite outputs and batches.** Check row count, order, prediction shape,
+   probability bounds and finite results; empty batches return correctly typed
+   empty outputs without calling native predictors. Preserve collision checks
+   for output names and original input columns. Avoid mutating cached models
+   during predictions; prove supported concurrent scoring or serialize access
+   explicitly if an engine requires it.
+
+XGBoost supports categorical recoding, but its documentation still requires
+care around unseen categories. LightGBM's category codes have integer/range
+requirements and its native predictor can treat unseen values as missing.
+Haute's explicit contract must run before these library behaviors.
+[XGBoost categorical data](https://xgboost.readthedocs.io/en/stable/tutorials/categorical.html),
+[LightGBM categorical data](https://lightgbm.readthedocs.io/en/stable/Advanced-Topics.html)
+
+### Training adapters, evaluation, and tuning
+
+Keep partitioning, evaluation plans, job state, artifacts and diagnostics in
+the existing orchestration. Move native data construction behind an adapter
+preparation/fit boundary: it receives projected train/validation inputs and
+returns an owned prepared representation. Release a raw training frame after
+creating its native representation and before materialising validation where
+the engine permits it. Retain CatBoost's current allocation order rather than
+flattening every engine into a memory-heavy generic pandas fit.
+
+Use XGBoost's native `DMatrix`/histogram training and LightGBM's native `Dataset`
+and training API for direct control over baselines, callbacks and saved boosters.
+Use InterpretML's regressor/classifier APIs for EBM. Prototype ordinary CPU
+datasets first; adopt quantile matrices or direct Arrow/Polars paths only after
+they preserve the same contract and demonstrate a material memory benefit.
+
+For XGBoost, supply `base_margin` during training and prediction when an offset
+is configured. Select the best boosting range explicitly or save a model
+trimmed to it; do not depend on sklearn wrapper behavior after loading a native
+booster. The native and sklearn prediction APIs differ in how they use early
+stopping. For LightGBM, supply training/validation `init_score`, and specify the
+selected iteration count for prediction and persistence. Its scoring adapter
+must add the row baseline to the raw tree score before the inverse link;
+verify this with and without serialization to prevent omission or double use.
+[XGBoost prediction](https://xgboost.readthedocs.io/en/stable/prediction.html),
+[XGBoost base margins](https://xgboost.readthedocs.io/en/stable/tutorials/intercept.html),
+[LightGBM prediction and persistence](https://lightgbm.readthedocs.io/en/stable/pythonapi/lightgbm.Booster.html)
+
+Preserve the existing distinction between model-selection evidence and the
+untouched final test. All families consume the same saved evaluation plan,
+including temporal/grouped/fold constraints. Category inference, EBM binning,
+interaction selection, parameter selection and stopping must not inspect the
+final test. Native validation metrics and Haute's weighted selection metric
+must be labelled separately if they differ; persist metric direction and the
+stopping criterion. Undefined fold metrics, including AUC on one class, need
+the existing explicit failure/evidence behavior, never a fabricated score.
+
+For EBM initially set `validation_size=0` and `early_stopping_rounds=0`, and
+require a visible bounded `max_rounds`. Fit only the training partition; evaluate
+externally on Haute's validation partition. This avoids accidental internal
+random validation that violates grouped/temporal plans, and avoids concatenating
+external validation rows into the data used to learn bins or interactions.
+Keep bagging within training data. Its best-iteration information can be
+stage/bag-shaped, so do not compress it into a CatBoost tree-count field.
+EBM's documented `init_score`, term-score and bagging APIs provide the relevant
+seams, but exact behavior must be probed on the pinned version.
+[EBM regressor API](https://interpret.ml/docs/python/api/ExplainableBoostingRegressor.html)
+
+Extend bounded Optuna tuning with small validated spaces per family. Start
+with depth/leaves, learning rate, leaf regularization and sampling controls for
+trees; bins, leaf size, learning rate, round budget and a bounded interaction
+count for EBM. The objective, task, category policy, evaluation split and offset
+semantics remain fixed for a study. Persist seed, sampler version, effective
+trial parameters, fit counts and failures. Do not run trials in parallel by
+default. Enforce total fits, rounds and resource limits before starting work.
+
+Refitting becomes an explicit family policy. XGBoost/LightGBM can reuse Haute's
+validation-weighted budget approach. Normalize XGBoost's zero-based best
+iteration with `+1`, while preserving LightGBM's already-counted best iteration;
+verify each convention in the pinned API and record positive round counts. EBM
+refits with the winning explicit round budget, bag and interaction settings;
+there is no invented `final_tree_count`. Extend tuning evidence with a typed
+family-specific refit budget, and update all maintained consumers in the same
+change. Final-test rows never choose this budget. Library model continuation
+and LightGBM's separate native leaf-refit API are not Haute's final retraining.
+
+### Artifacts, model loading, and deployment
+
+Prefer native inference artifacts for tree models: XGBoost UBJSON (`.ubj`) and
+LightGBM's saved model text under an unambiguous Haute suffix (`.lgbm`). XGBoost
+documents stable model serialization separately from Python memory snapshots;
+use model serialization for durable artifacts.
+[XGBoost model IO](https://xgboost.readthedocs.io/en/stable/tutorials/saving_model.html)
+
+Propose `.ebm` for a precisely specified EBM serialization, with a release gate
+in MOD-M00. The preferred initial implementation is a joblib serialization
+loaded through Haute's existing restricted loader, with only the exact audited
+InterpretML classes/scaffolding needed by the pinned release added to its
+allowlist. Audit reconstruction methods and fitted state, remove transient
+callback/process references, and validate loaded estimator type, dimensions,
+finite scores, term indices, bins, links and task before inference. Do not add
+an `interpret.*` wildcard or call unrestricted `pickle.load`/`joblib.load`.
+InterpretML documents pickle for full-object persistence; JSON export alone
+does not establish a supported load-and-score round trip. If the restricted
+route fails the security/portability probe, stop and resolve a data-only format
+design before EBM implementation proceeds. Do not quietly ship an unsafe loader
+or an independently implemented EBM scorer.
+[InterpretML serialization guidance](https://interpret.ml/docs/faq.html)
+
+For each new engine, package the model with the existing per-model feature
+contract and a required, strict model-metadata sidecar. The sidecar records:
+algorithm/flavor and artifact format; producer/runtime versions; objective/link;
+original/native feature-name mapping; categorical encoding and null policy;
+typed class mapping/positive class; offset semantics; effective scoring budget;
+and model/contract hashes. Avoid storing full training data. Keep feature-domain
+truth in the existing feature contract, referencing its hash instead of copying
+it into a second mutable schema.
+
+Treat this as one logical artifact set in `CandidateRun`, worker delivery,
+Save Model, MLflow logging, download, and deployment. Write atomically, reject
+partial/mismatched sets, preserve per-model filenames and job ownership, and
+include every prediction-affecting member in cache identity and invalidation.
+Copying a model file without its required metadata must yield an actionable
+error. Match the repository's canonical-only policy: preserve the currently
+supported CatBoost/RustyStats representations and add one canonical format per
+new family, without historical-format adapters or guessing unknown formats.
+
+Extend `MODEL_FILE_SUFFIXES`, API literals, frontend suffixes, file pickers,
+artifact discovery, loaders, explainability dispatch and score configuration
+together. Distinguish known native artifacts from explicit generic MLflow
+pyfunc models. Resolve multiple candidate artifacts deterministically from
+metadata/config or fail as ambiguous; an unknown suffix must not choose a
+different algorithm accidentally.
+
+Extend MLflow candidate logging and signatures using the same feature and
+prediction contract. Native MLflow XGBoost/LightGBM flavors are usable only if
+their scoring entry point retains Haute's categories, positive-class and offset
+semantics. The default plan is a thin Haute pyfunc wrapper over the complete
+artifact set for new families, plus the engine-native file as an artifact.
+Loaders must recover the native adapter for local scoring/explanations. Reuse
+the GLM pyfunc pattern; do not embed trained objects in closure pickles. EBM
+uses the same wrapper boundary. Registration/promotion remains external to
+training, consistent with the existing candidate-run contract.
+
+Generated training scripts must still go through `_train_config.py` and
+`TrainingJob`, so GUI and script config/hash/effective-parameter handling agree.
+Model Score code generation must select the same artifact and adapter. Extend
+native artifact bundling and generated requirements for the existing container
+and Databricks paths; include sidecars, exact required libraries and relevant
+OpenMP/native runtime prerequisites. Prove CPU inference in a clean environment
+with no training-process state. This does not expand the set of deployment
+platforms that Haute currently implements.
+
+### User experience, diagnostics, and explanations
+
+Add three gateway cards with concise differences and supported tasks. Reuse
+the feature, target, evaluation, training and export layout. Family-specific
+parameter controls should start with a short useful set and retain validated
+advanced JSON. Display effective thread/round/bag limits and the chosen objective.
+Hide or explain unavailable controls, while the backend independently rejects
+them. EBM gets clear main-effect and pairwise-interaction controls, and no GPU
+switch or GLM standard-error settings.
+
+Define family switching as a real state transition: keep applicable shared
+column roles/evaluation settings, isolate parameter drafts by family, and
+require a valid objective for the selected family. Do not leave active
+CatBoost/GLM keys in another adapter's payload. Retain the last successful
+result with its original model identity, visibly mark it as stale, and prevent
+exports from combining new config with an older fitted model. Extend training
+identity, result restoration and cache keys for every new semantic field.
+Unresolved columns, parameters and saved values stay visible and repairable.
+
+Reuse common metric/validation charts where their statistical meaning applies.
+For trees, expose the importance method and units: gain, split count and SHAP
+summary are different quantities. Zero-importance/unused features must remain
+accounted for. Retain explicit errors for failed optional diagnostics and
+distinguish unsupported diagnostics from errors; do not return fabricated
+empty success data. Keep SHAP/PDP sampling deterministic and bounded, and route
+their predictions through the shared adapter including offsets and categories.
+
+Use native XGBoost `pred_contribs` and LightGBM `pred_contrib` for local tree
+contributions. For EBM, return native term scores and intercept, preserving an
+interaction as one multi-feature term. Do not relabel EBM terms as SHAP, spread
+interaction importance arbitrarily over individual features, or display GLM
+p-values/AIC as if they applied. Persist/display shape-function bins, category
+labels, missing-value bins, term weights, and pairwise surfaces. If bag-to-bag
+variation is shown, label it as such; it is not automatically a confidence
+interval.
+
+Every explanation must reconstruct the raw margin, including the correct
+baseline, and its inverse link must reproduce the served response/probability.
+For log/logit models, contributions add in log/log-odds space; show response
+scale values separately. Keep the baseline separate or already included in the
+intercept according to the engine's documented output, never twice. Extend
+trace method identifiers, error metadata and `ModelScoreDetail.tsx` together,
+including binary explanations against the probability rather than the class
+label. EBM's additive form is the basis of its explanation, not a post-hoc
+approximation.
+[EBM model structure](https://interpret.ml/docs/ebm.html),
+[EBM term contributions](https://interpret.ml/docs/python/api/ExplainableBoostingClassifier.html)
+
+### Resource use, packaging, and operational behavior
+
+Stay inside the existing worker/job framework. Reuse cancellation fencing,
+timeouts, superseded-job checks, artifact cleanup and last-good-result ownership.
+Test cancellation during native fit as well as between phases. Native callbacks
+should emit bounded progress updates and honour cancellation where supported;
+worker termination remains necessary when native calls cannot cooperate.
+EBM progress is stages/bags/rounds, not a fabricated single tree iteration.
+
+Set one effective CPU budget across Haute jobs, Optuna, native OpenMP threads
+and EBM joblib parallelism. Start EBM with `n_jobs=1` inside a worker so the
+existing process-tree cancellation contract is preserved; enable parallel bags
+only with explicit resource accounting and child-process cleanup evidence.
+Never allow a default `n_jobs=-1` per fold/trial to oversubscribe the machine.
+Reuse execution-context memory checks, but add measured family-specific
+estimates for native datasets, category conversions, histogram/bin storage,
+bags and interaction arrays. CatBoost's pool/VRAM formula must not be reused as
+an estimate for another library. Unknown estimates are surfaced as unknown,
+not replaced with an invented safe row limit. Never silently downsample.
+
+MOD-M00 chooses tested dependency ranges and locks exact versions. Check the
+currently supported Python 3.11-3.13/platform matrix, the existing nonblocking
+future-Python probe, NumPy 2, pandas <3, Polars/Arrow, sklearn, MLflow and native
+runtime compatibility. Confirm wheels and installation size on Windows,
+Linux and macOS, including supported architectures. Record package licenses
+and notices as part of normal distribution work. Do not promise exact version
+floors until the compatibility probe passes. Keep model caches bounded and
+score from immutable loaded state, recording engine version in model cards and
+candidate metadata. Verify repeated fits, loads and failed runs release memory.
+
+### Verification and release acceptance
+
+Use the repository's red-green workflow: specs first, smallest failing test,
+implementation, targeted module checks, then cross-stack verification for the
+boundaries changed. Extend existing test modules and parametrizations where
+they express the shared contract; add small engine-specific tests for native
+semantics. Real tiny fitted models are required for persistence, categories,
+baselines and contribution reconciliation; mocks alone cannot prove them.
+
+| Acceptance area | Minimum decisive evidence |
+|---|---|
+| Config and capabilities | Every supported task/objective reaches its engine; missing/unknown objectives, conflicting reserved params, unsupported devices/controls and invalid target domains fail consistently in frontend, HTTP and scripts. |
+| Shared preparation | Correct ordered feature projection and role exclusions; numeric/null and categorical/null fixtures; declared and inferred domains; different category encounter orders across score batches; unseen category and unsupported dtype failures. |
+| Native fit | Tiny weighted regression, binary classification and positive-link regression for each family; checks that weights affect fit, offsets affect fit and predictions, seeds are passed, and each allowed objective has a native smoke case. |
+| Scoring parity | In-memory evaluation equals save/reload, local Model Score, eager/batch, exported script, MLflow wrapper and deployed scorer on the same fixture; binary labels and positive probabilities both checked. Compare to the native library as an independent oracle. |
+| Stopping and refit | A fit that stops early scores with the selected range before/after save; zero/one-based boundaries covered; no-validation behavior defined; EBM fixed-round final refit records its actual settings. |
+| Evaluation leakage | No final-test rows in fit/binning/category inference/interaction selection/tuning/stopping; temporal/grouped plans respected; fold-specific categories and missing classes handled explicitly. |
+| Explanations | Bias plus contributions equals raw prediction, inverse link equals served prediction, with/without exposure and after reload; EBM pairwise terms remain intact and shapes agree with native term outputs. |
+| Artifacts and trust | Missing/mismatched/tampered sidecars and ambiguous artifacts fail; altered sidecars invalidate caches; EBM restricted loader permits intended models and rejects unapproved globals/crafted payloads. Hashes detect integrity drift, not authenticity. |
+| Lifecycle and UI | Train/cancel/retry/save/reload/score per family, stale result after family switch, restored runs, late worker events, and last successful artifacts surviving a failed/cancelled replacement. |
+| Resource and package | Projected wide-data input, bounded threads/fits/rounds, repeated-load memory check, clean CPU install/score in CI and representative high-cardinality/bag/interaction memory measurements. |
+
+Relevant current backend homes include `tests/test_train_config_builder.py`,
+`tests/test_target_task_gate.py`, `tests/test_training_catboost_projection.py`,
+`tests/test_training_memory_safety.py`, `tests/test_training_worker_protocol.py`,
+`tests/test_training_evaluation.py`, `tests/test_training_tuning.py`,
+`tests/test_training_contract_per_model.py`,
+`tests/test_modelling_train_score_contract.py`, `tests/test_mlflow_io.py`,
+`tests/test_model_explainability.py`, `tests/test_model_export.py`,
+`tests/test_modelling_export.py`, and `tests/test_model_score_codegen.py`.
+Keep CatBoost-specific tests for its optimized path; add shared tests alongside
+them rather than simply renaming assertions to cover unrelated engines.
+Extend the frontend modelling/editor tests and one parameterized lifecycle
+browser scenario per new family, with a separate EBM interaction-view case.
+
+During implementation run a single new test, then its affected module and
+touched-file ruff/format checks; run backend typing or frontend typecheck/lint
+when their contracts change. Reserve full compatibility, coverage, mutation,
+performance, build and browser gates for CI. For this document-only change,
+roadmap/link accuracy and a diff review are sufficient; no model training suite
+is required.
+
+Release requires the capability matrix to be accurate, all three complete
+CPU lifecycles green, current CatBoost/RustyStats contracts unchanged, and
+unsupported features rejected clearly. Update user guides, assistant authoring
+guidance/examples, model cards, install/deploy docs and the model-node index.
+Fold implemented change contracts into present-tense owning specs, update module
+ownership for new files, and remove completed roadmap packages under the normal
+repository lifecycle. Do not make unfinished choices selectable in a release.
+
+### Delivery order and unresolved release gates
+
+Recommended order: MOD-M00, MOD-M01, XGBoost as the first complete vertical
+slice (MOD-M02 with the relevant parts of MOD-M05/M06/M07), then LightGBM,
+then EBM, followed by MOD-M08. EBM persistence should be probed in MOD-M00,
+before the UI or adapter is built, even though its full integration comes later.
+Each family slice must include save/reload/score rather than postponing all
+serving work until the end. Shared evaluation, persistence and frontend owners
+should have one writer at a time. Independent adapter work can run in parallel
+only after the contracts and common seams are settled.
+
+The root owns requirement decisions, architecture, test oracles, diff review
+and completion. Bounded workers may implement a specified adapter or execute
+predefined checks; they must preserve the existing in-flight changes and may
+not independently redesign the contracts.
+
+There are three genuine pre-implementation gates: supported package/wheel
+versions, a reviewed EBM persistence round trip, and native baseline/category/
+stopping behavior on those versions. All have explicit probes in MOD-M00.
+The plan recommends CPU-first, binary classification, strict category domains,
+and EBM fixed-round training so those product choices do not remain ambiguous.
+GPU, EBM internal early stopping, and richer classification are subsequent
+features requiring their own contracts; they are not hidden prerequisites for
+the CPU release. Calendar estimates should follow MOD-M00 because native
+packaging and EBM persistence can materially change the work.
+
+## Model-family expansion work packages
+
+### MOD-M00 — Validate engine contracts and define the specifications
+
+**Why:** Upstream feature lists do not prove compatible wheels, secure EBM
+persistence, or Haute-equivalent prediction semantics.
+
+**Plan:** Run small isolated probes for each proposed dependency range on the
+supported runtimes: weighted numeric/categorical regression, binary outputs,
+log-link offsets, native save/load, stopping ranges, and explanation sums.
+Probe EBM restricted joblib loading and callback/process state explicitly.
+Record exact versions and reproducible commands, then write approved change
+contracts before production changes in modelling, modelling UI, model registry,
+pipeline config, codegen, deploy, sandbox and build specs as applicable. Follow
+the temporary contract records required by `specs/README.md`; do not label this
+proposal itself approved. Update locks only as part of the dependency change.
+
+**Acceptance:** A compact capability/version matrix with actual probe output;
+EBM format and exact loader additions decided; no failed platform silently
+excluded; spec acceptance cases cover the supported subset and failure rules.
+
+**Dependencies:** Current working-tree modelling/evaluation changes reconciled;
+no need to implement the unrelated remainder of the GLM roadmap first.
+
+**Evidence:** `pyproject.toml`; `uv.lock`; `src/haute/_sandbox.py`;
+`src/haute/modelling/_algorithms.py`; `specs/README.md`.
+
+### MOD-M01 — Extend common algorithm and prediction seams
+
+**Why:** Registering a third class currently routes it into CatBoost data and
+objective handling, while scorer flavors and result contracts remain closed.
+
+**Plan:** Add the typed descriptor/capability boundary; extract native
+preparation ownership from `_train_model`; extend config/objective/target gates,
+projection, binary class mapping and prediction methods. Add a strict metadata
+contract for new families, preserving the existing feature-contract authority.
+Generalize only the seams needed by these engines and retain CatBoost/GLM
+semantics. Expose a typed frontend capability description.
+
+**Acceptance:** Existing CatBoost/RustyStats targeted contracts remain green;
+unsupported algorithms and controls fail before native work; one contract
+fixture checks capability/config agreement across backend and frontend.
+
+**Dependencies:** MOD-M00.
+
+**Evidence:** `src/haute/modelling/_train_config.py`;
+`src/haute/modelling/_training_job.py`; `src/haute/modelling/_feature_contract.py`;
+`src/haute/routes/_training_preparation.py`; `src/haute/_model_scorer.py`;
+`src/haute/_types.py`; `src/haute/schemas.py`; `frontend/src/api/types.ts`.
+
+### MOD-M02 — Implement the XGBoost vertical slice
+
+**Why:** XGBoost requires its own data, objective, categorical, baseline and
+native inference behavior.
+
+**Plan:** Add a dedicated adapter module beside the existing algorithms; use
+CPU histogram trees, explicit objective translation, trained categorical
+mapping, weights, offsets, callbacks and selected-round prediction. Save UBJSON
+plus required metadata and connect loader/score/export/UI paths using MOD-M06
+and MOD-M07 contracts. Add native contribution support.
+
+**Acceptance:** Real weighted regression, binary and log-link examples meet
+all prediction parity gates, including early stop, changed category order,
+offsets, save/reload and raw-contribution reconstruction.
+
+**Dependencies:** MOD-M01; the XGBoost portions of MOD-M05/M06/M07 land with it.
+
+**Evidence:** `src/haute/modelling/_algorithms.py`;
+`src/haute/_mlflow_io.py`; `src/haute/_model_explainability.py`;
+`tests/test_modelling_train_score_contract.py`.
+
+### MOD-M03 — Implement the LightGBM vertical slice
+
+**Why:** LightGBM's category encodings, native initial scores and model
+persistence cannot be inferred from the XGBoost or CatBoost implementation.
+
+**Plan:** Add its dedicated CPU GBDT adapter, canonical parameter validation,
+Dataset ownership, training-only category construction, weight/init-score
+handling, native callbacks, selected-round save/predict and gain/contribution
+outputs. Reuse the common artifact and user-facing lifecycle.
+
+**Acceptance:** The parity fixtures pass through a reloaded native model;
+initial scores are included exactly once, unseen categories follow Haute's
+policy, and conflicting LightGBM parameter aliases fail visibly.
+
+**Dependencies:** MOD-M01; preferably MOD-M02 to validate the shared seams;
+the LightGBM portions of MOD-M05/M06/M07.
+
+**Evidence:** `src/haute/modelling/_training_job.py`;
+`src/haute/modelling/_train_config.py`; `src/haute/_model_scorer.py`;
+`tests/test_training_contract_per_model.py`.
+
+### MOD-M04 — Implement EBM and its term representation
+
+**Why:** EBM uses additive terms and bags, with different persistence,
+explanation and validation requirements from a tree ensemble.
+
+**Plan:** Add an InterpretML adapter using explicit nominal/continuous feature
+types, sample weights, regression initial scores, fixed training-round limits,
+and bounded main/pairwise terms. Disable hidden validation/stopping. Persist
+through the reviewed MOD-M00 format and report stage/bag detail without inventing
+a tree count. Add shape-function and native term outputs.
+
+**Acceptance:** Numeric/mixed and binary fits round-trip through the restricted
+loader; intercept/terms/offset reconstruct served predictions; interaction
+membership and constrained-feature exclusions are validated; no external
+validation/final-test rows enter EBM fit or binning.
+
+**Dependencies:** MOD-M01 and the resolved MOD-M00 EBM loader gate; EBM portions
+of MOD-M05/M06/M07.
+
+**Evidence:** `src/haute/_sandbox.py`; `src/haute/modelling/_result_types.py`;
+`src/haute/modelling/_training_job.py`; `src/haute/_model_explainability.py`.
+
+### MOD-M05 — Integrate evaluation, tuning, and bounded workers
+
+**Why:** The current tuner and refit budget are CatBoost-specific, and native
+threads/bags could bypass existing resource and cancellation expectations.
+
+**Plan:** Add family-specific search-space validation and refit policies;
+retain shared plans, deterministic seeds, final-test separation and candidate
+evidence. Extend progress payloads only where necessary for bags/stages. Add
+CPU/memory budget mapping and real cancellation/cleanup behavior per engine.
+
+**Acceptance:** A bounded study per family selects and refits reproducibly;
+fit limits and split constraints hold; failures/cancellation do not publish
+partial artifacts or destroy the previous successful model; resource estimates
+are supported by representative measurements.
+
+**Dependencies:** MOD-M01; each native adapter for its integration cases.
+
+**Evidence:** `src/haute/modelling/_tuning.py`;
+`src/haute/modelling/_evaluation.py`; `src/haute/routes/_training_worker.py`;
+`src/haute/routes/_training_evaluation.py`; `src/haute/_ram_estimate.py`;
+`tests/test_training_tuning.py`; `tests/test_training_worker_protocol.py`.
+
+### MOD-M06 — Complete artifact, MLflow, codegen, and deploy paths
+
+**Why:** A fitted model is unusable if its categories, baseline, selected
+iterations or runtime dependencies are lost when saved or deployed.
+
+**Plan:** Extend suffix/type contracts, complete-artifact manifests, atomic
+copy/save, loading and cache identity; add the common pyfunc boundary and native
+discovery; wire scripts, score codegen and deployment bundling/dependencies.
+Apply native validation and restricted EBM loading consistently to local,
+MLflow and deployed paths.
+
+**Acceptance:** Each family scores identically through all supported paths in
+the parity table, including a clean CPU environment; incomplete sets and
+version/contract mismatches fail clearly; malicious EBM payloads remain blocked.
+
+**Dependencies:** MOD-M01, plus each adapter as its vertical slice is implemented.
+
+**Evidence:** `src/haute/modelling/_model_export.py`;
+`src/haute/modelling/_candidate_run.py`; `src/haute/modelling/_mlflow_log.py`;
+`src/haute/modelling/_glm_pyfunc.py`; `src/haute/modelling/_export.py`;
+`src/haute/_model_flavors.py`; `src/haute/_mlflow_io.py`;
+`src/haute/deploy/_bundler.py`; `src/haute/deploy/_container.py`;
+`src/haute/deploy/_mlflow.py`; `tests/test_model_score_codegen.py`.
+
+### MOD-M07 — Deliver family-specific configuration and explanation UX
+
+**Why:** Two-algorithm assumptions are embedded in controls, readiness gates,
+pane routing, save APIs and result rendering; EBM needs a different explanation.
+
+**Plan:** Extend the gateway, typed capabilities, family parameter controls,
+class selection, features, exports and result restoration. Implement explicit
+family-switch/stale-result semantics. Add tree contribution diagnostics and
+EBM term/shape/interaction views with method, units and prediction-scale labels.
+Update trace error handling and rendering in the same slice.
+
+**Acceptance:** UI cannot submit a configuration the backend rejects for a
+known capability mismatch; switching preserves applicable inputs and the last
+successful model's identity; EBM terms and pairwise surfaces are inspectable;
+trace contributions reconcile to the displayed prediction/probability.
+
+**Dependencies:** MOD-M01 capability contracts; each adapter's diagnostic schema.
+
+**Evidence:** `frontend/src/panels/ModellingConfig.tsx`;
+`frontend/src/panels/ModellingPreview.tsx`;
+`frontend/src/panels/modelling/modellingPanes.ts`;
+`frontend/src/panels/modelling/HyperparametersConfig.tsx`;
+`frontend/src/panels/modelling/modelExport.ts`;
+`frontend/src/utils/trainingObjective.ts`;
+`frontend/src/utils/modellingExportConfig.ts`;
+`frontend/src/panels/editors/ModelScoreEditor.tsx`;
+`frontend/src/trace/ModelScoreDetail.tsx`.
+
+### MOD-M08 — Verify and publish the complete CPU release
+
+**Why:** Passing adapter tests does not establish train-to-deploy consistency,
+supported-platform installation or a truthful user-facing feature matrix.
+
+**Plan:** Run targeted parity/lifecycle tests and the authoritative CI gates;
+update dependency/build metadata, guides, assistant examples, workflow coverage
+inventory and owning specs. Benchmark representative wide and categorical
+inputs plus EBM interaction/bag sizes. Review the actual diffs and test evidence
+against every acceptance row before making all three gateway choices available.
+
+**Acceptance:** All supported CPU model paths pass, including current
+CatBoost/RustyStats regressions; documented features match exposed controls;
+package/runtime requirements and EBM format limits are recorded; no incomplete
+family is presented as production-ready.
+
+**Dependencies:** MOD-M02 through MOD-M07.
+
+**Evidence:** `tests/workflow_coverage.toml`; `.github/workflows/ci.yml`;
+`frontend/e2e/core-flows.spec.ts`;
+`docs/building-models/nodes/model-training.md`;
+`docs/building-models/nodes/model-score.md`;
+`src/haute/assistant/assets/authoring_guide.md`.
+
+### MOD-M09 — Add separately verified GPU capabilities
+
+**Why:** GPU availability and training behavior depend on engine, package,
+platform, build and hardware; the current CatBoost toggle is not portable.
+
+**Plan:** After CPU delivery, define a separate capability matrix and probes
+for XGBoost CUDA and LightGBM's supported GPU backends. Add actual device checks,
+engine-specific memory estimates, supported objective/constraint combinations,
+progress/cancellation evidence, numerical tolerances, and CPU serving parity.
+Fail an explicit unavailable GPU request without retrying on CPU. Keep EBM CPU
+unless a separately verified implementation provides another capability.
+
+**Acceptance:** Only combinations backed by a real GPU CI or recorded hardware
+probe become selectable; artifacts score correctly on CPU deployments; no
+memory, device, objective or stopping mismatch is concealed by a fallback.
+
+**Dependencies:** MOD-M08 and access to the advertised GPU environments.
+
+**Evidence:** `src/haute/routes/_training_preparation.py`;
+`src/haute/_host_memory.py`; `src/haute/_ram_estimate.py`;
+`tests/test_training_memory_safety.py`.

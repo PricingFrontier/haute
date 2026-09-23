@@ -1,266 +1,273 @@
-/**
- * Actual vs Expected (AvE) tab for the ModellingPreview panel.
- *
- * Left panel: feature browser (search + importance bars)
- * Right panel: dual-axis SVG chart for the selected feature
- *   - Bars = exposure (grey, right y-axis)
- *   - Lines = avg_actual (green) + avg_predicted (purple)
- *   - X-axis = bin labels
- */
-import { useState, useMemo, useCallback, useEffect } from "react"
+/** Actual/expected outcomes and aligned exposure, sharing feature context with PDP. */
+import { useState } from "react"
+import type { TrainAvePerFeatureRow } from "../../api/types"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { CHART_COLORS } from "../../theme/colors"
 import {
   ChartEmptyState,
   ChartLegend,
   ChartSvg,
-  MODELLING_CHART_AXIS_FONT_SIZE as AXIS_FONT_SIZE,
-  MODELLING_CHART_AXIS_TEXT_COLOR as AXIS_TEXT_COLOR,
-  MODELLING_CHART_GRID_COLOR as GRID_COLOR,
+  ResponsiveChart,
+  MODELLING_CHART_AXIS_FONT_SIZE as FONT,
+  MODELLING_CHART_AXIS_TEXT_COLOR as TEXT,
+  MODELLING_CHART_GRID_COLOR as GRID,
 } from "./ChartScaffold"
-import { FeatureBrowser, type FeatureItem } from "./FeatureBrowser"
+import {
+  chartAxisLabel,
+  chartDomain,
+  chartLabelIndices,
+  chartTicks,
+  formatChartNumber,
+} from "./chartGeometry"
+import { FeatureBrowser } from "./FeatureBrowser"
+import { useDiagnosticFeature, type SharedFeatureBrowser } from "./useDiagnosticFeature"
 
-interface AveTabProps {
+export function AveTab({
+  result,
+  featureBrowser,
+}: {
   result: TrainResult
-}
-
-const ACTUAL_COLOR = CHART_COLORS.actual
-const PREDICTED_COLOR = CHART_COLORS.predicted
-const EXPOSURE_COLOR = "rgba(255,255,255,.12)"
-
-type AveBin = { label: string; exposure: number; avg_actual: number; avg_predicted: number }
-type AveFeature = { feature: string; type: string; bins: AveBin[] }
-
-export function AveTab({ result }: AveTabProps) {
-  const aveData = result.ave_per_feature
-
-  // Build feature list sorted by importance
-  const featureItems: FeatureItem[] = useMemo(() => {
-    if (!aveData || aveData.length === 0) return []
-    // Build importance lookup from feature_importance
-    const impMap = new Map<string, number>()
-    for (const fi of result.feature_importance) {
-      impMap.set(fi.feature, fi.importance)
-    }
-    return aveData.map(f => ({
-      feature: f.feature,
-      importance: impMap.get(f.feature) ?? 0,
-    }))
-  }, [aveData, result.feature_importance])
-
-  const featureKey = useMemo(() => featureItems.map(f => f.feature).join(","), [featureItems])
-
-  const [selectedFeature, setSelectedFeature] = useState<string | null>(
-    featureItems.length > 0 ? featureItems[0].feature : null,
+  featureBrowser?: SharedFeatureBrowser
+}) {
+  const importance = new Map(
+    result.feature_importance.map((item) => [item.feature, item.importance]),
   )
-
-  /* eslint-disable react-hooks/set-state-in-effect -- reset selection on new data */
-  useEffect(() => {
-    if (featureItems.length > 0) {
-      const names = featureKey.split(",")
-      if (!selectedFeature || !names.includes(selectedFeature)) {
-        setSelectedFeature(names[0])
-      }
-    }
-  }, [featureKey, selectedFeature, featureItems.length])
-  /* eslint-enable react-hooks/set-state-in-effect */
-
-  const handleSelect = useCallback((feature: string) => {
-    setSelectedFeature(feature)
-  }, [])
-
-  const selectedData: AveFeature | null = useMemo(() => {
-    if (!selectedFeature || !aveData) return null
-    return aveData.find(f => f.feature === selectedFeature) ?? null
-  }, [selectedFeature, aveData])
-
-  if (!aveData || aveData.length === 0) {
-    return <ChartEmptyState>No AvE data available</ChartEmptyState>
-  }
-
+  const browser = useDiagnosticFeature(
+    result.ave_per_feature.map((item) => ({
+      feature: item.feature,
+      importance: importance.get(item.feature) ?? 0,
+    })),
+    featureBrowser,
+  )
+  const data = result.ave_per_feature.find((item) => item.feature === browser.selected)
+  if (!browser.features.length) return <ChartEmptyState>No AvE data available</ChartEmptyState>
   return (
-    <div className="flex h-full" style={{ minHeight: 200 }}>
-      <FeatureBrowser
-        features={featureItems}
-        selected={selectedFeature}
-        onSelect={handleSelect}
-      />
-      <div className="flex-1 px-3 py-1 overflow-auto">
-        {selectedData ? (
-          <AveChart data={selectedData} />
+    <div className="validation-feature-layout">
+      <FeatureBrowser {...browser} />
+      <div className="min-w-0">
+        {data ? (
+          <AveChart key={data.feature} data={data} />
         ) : (
-          <ChartEmptyState>Select a feature</ChartEmptyState>
+          <ChartEmptyState>No AvE data for {browser.selected}</ChartEmptyState>
         )}
       </div>
     </div>
   )
 }
 
-// ─── AvE Chart ────────────────────────────────────────────────────
-
-function AveChart({ data }: { data: AveFeature }) {
-  const bins = data.bins
-  if (bins.length === 0) {
-    return (
-      <div className="text-xs" style={{ color: "var(--text-muted)" }}>No bins for {data.feature}</div>
-    )
-  }
-
-  const width = 520
-  const height = 240
-  const marginLeft = 55
-  const marginRight = 55
-  const marginTop = 24
-  const marginBottom = 50
-  const chartW = width - marginLeft - marginRight
-  const chartH = height - marginTop - marginBottom
-
-  // Scales
-  const allAvgVals = bins.flatMap(b => [b.avg_actual, b.avg_predicted])
-  const yMin = allAvgVals.reduce((a, b) => Math.min(a, b), Infinity)
-  const yMax = allAvgVals.reduce((a, b) => Math.max(a, b), -Infinity)
-  const yPad = (yMax - yMin) * 0.1 || 0.001
-  const yLo = yMin - yPad
-  const yHi = yMax + yPad
-  const ySpan = yHi - yLo
-
-  const maxExposure = bins.map(b => b.exposure).reduce((a, b) => Math.max(a, b), -Infinity)
-
-  const barGroupW = chartW / bins.length
-  const barW = barGroupW * 0.6
-
-  const xCenter = (i: number) => marginLeft + i * barGroupW + barGroupW / 2
-  const yScale = (v: number) => marginTop + chartH - ((v - yLo) / ySpan) * chartH
-  const yExpScale = (v: number) => marginTop + chartH - (v / (maxExposure || 1)) * chartH
-
-  // Grid
-  const nGridY = 4
-  const gridYValues = Array.from({ length: nGridY + 1 }, (_, i) => yLo + (i / nGridY) * ySpan)
-
-  // Line paths
-  const actualPath = bins
-    .map((b, i) => `${i === 0 ? "M" : "L"}${xCenter(i).toFixed(1)},${yScale(b.avg_actual).toFixed(1)}`)
-    .join(" ")
-  const predictedPath = bins
-    .map((b, i) => `${i === 0 ? "M" : "L"}${xCenter(i).toFixed(1)},${yScale(b.avg_predicted).toFixed(1)}`)
-    .join(" ")
-
-  // Truncate long labels
-  const truncLabel = (s: string, maxLen: number) => s.length > maxLen ? s.slice(0, maxLen - 1) + "\u2026" : s
-
+function AveChart({ data }: { data: TrainAvePerFeatureRow }) {
+  const [activeBin, setActiveBin] = useState<number | null>(null)
+  const { bins } = data
+  if (!bins.length) return <ChartEmptyState>No bins for {data.feature}</ChartEmptyState>
+  const selected = activeBin === null ? null : bins[activeBin]
   return (
-    <div>
-      <div className="text-xs font-medium mb-1" style={{ color: "var(--text-primary)" }}>
-        {data.feature}
-        <span className="ml-2 text-[10px]" style={{ color: "var(--text-muted)" }}>({data.type})</span>
+    <>
+      <div className="validation-chart-title">
+        <div>
+          <h4 className="validation-feature-heading">{data.feature}</h4>
+          <p className="validation-chart-description">{data.type} · actual vs expected</p>
+        </div>
+        <ChartLegend
+          items={[
+            { label: "Actual", color: CHART_COLORS.actual },
+            { label: "Expected", color: CHART_COLORS.predicted, swatch: "dashed" },
+          ]}
+        />
       </div>
-      <ChartSvg width={width} height={height}>
-        {/* Horizontal grid lines + left y-axis labels */}
-        {gridYValues.map((v, i) => {
-          const y = yScale(v)
-          return (
-            <g key={`gy-${i}`}>
-              <line x1={marginLeft} y1={y} x2={marginLeft + chartW} y2={y} stroke={GRID_COLOR} strokeWidth={1} />
-              <text x={marginLeft - 6} y={y + 3} textAnchor="end" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
-                {v.toPrecision(3)}
-              </text>
-            </g>
+      <ResponsiveChart>
+        {(width) => {
+          const left = 68,
+            right = 20,
+            top = 32,
+            plotBottom = 240,
+            height = 292
+          const plotWidth = Math.max(1, width - left - right)
+          const groupWidth = plotWidth / bins.length
+          const x = (i: number) => left + (i + 0.5) * groupWidth
+          const [low, high] = chartDomain(
+            bins.flatMap((bin) => [bin.avg_actual, bin.avg_predicted]),
           )
-        })}
-
-        {/* Right y-axis labels (exposure) */}
-        {[0, 0.5, 1].map((frac, i) => {
-          const expVal = frac * maxExposure
-          const y = yExpScale(expVal)
+          const y = (value: number) =>
+            plotBottom - ((value - low) / (high - low)) * (plotBottom - top)
+          const indices = chartLabelIndices(bins.length, plotWidth, 96)
+          const path = (kind: "avg_actual" | "avg_predicted") =>
+            bins.map((bin, i) => `${i ? "L" : "M"}${x(i)},${y(bin[kind])}`).join(" ")
+          const maxExposure = Math.max(...bins.map((bin) => bin.exposure), 0)
           return (
-            <text key={`exp-${i}`} x={width - marginRight + 6} y={y + 3} textAnchor="start" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR} opacity={0.5}>
-              {expVal >= 1000 ? `${(expVal / 1000).toFixed(0)}K` : expVal.toFixed(0)}
-            </text>
+            <>
+              <ChartSvg
+                width={width}
+                height={height}
+                ariaLabel={`Actual vs expected for ${data.feature}`}
+              >
+                <text x={left} y={16} fontSize={FONT} fill={TEXT}>
+                  Average outcome
+                </text>
+                {chartTicks(low, high).map((value) => (
+                  <g key={value}>
+                    <line x1={left} x2={width - right} y1={y(value)} y2={y(value)} stroke={GRID} />
+                    <text
+                      x={left - 8}
+                      y={y(value) + 4}
+                      textAnchor="end"
+                      fontSize={FONT}
+                      fill={TEXT}
+                    >
+                      {formatChartNumber(value)}
+                    </text>
+                  </g>
+                ))}
+                {data.type === "numeric" && (
+                  <>
+                    <path
+                      data-series="actual-line"
+                      d={path("avg_actual")}
+                      fill="none"
+                      stroke={CHART_COLORS.actual}
+                      strokeWidth={2}
+                    />
+                    <path
+                      d={path("avg_predicted")}
+                      fill="none"
+                      stroke={CHART_COLORS.predicted}
+                      strokeWidth={2}
+                      strokeDasharray="6 4"
+                    />
+                  </>
+                )}
+                {bins.map((bin, i) => (
+                  <g key={i}>
+                    <circle cx={x(i)} cy={y(bin.avg_actual)} r={3.5} fill={CHART_COLORS.actual} />
+                    <rect
+                      x={x(i) - 3}
+                      y={y(bin.avg_predicted) - 3}
+                      width={6}
+                      height={6}
+                      fill={CHART_COLORS.predicted}
+                    />
+                    {indices.has(i) && (
+                      <text
+                        x={x(i)}
+                        y={plotBottom + 20}
+                        textAnchor={i === 0 ? "start" : i === bins.length - 1 ? "end" : "middle"}
+                        fontSize={FONT}
+                        fill={TEXT}
+                      >
+                        {bin.label.length > 12 ? `${bin.label.slice(0, 11)}…` : bin.label}
+                      </text>
+                    )}
+                    <rect
+                      x={left + i * groupWidth}
+                      y={top}
+                      width={groupWidth}
+                      height={plotBottom - top}
+                      fill="transparent"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`${bin.label}. Actual: ${bin.avg_actual}. Expected: ${bin.avg_predicted}. Exposure: ${bin.exposure}`}
+                      onMouseEnter={() => setActiveBin(i)}
+                      onFocus={() => setActiveBin(i)}
+                      onClick={() => setActiveBin(i)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault()
+                          setActiveBin(i)
+                        }
+                      }}
+                      style={{ outlineOffset: -2 }}
+                    />
+                  </g>
+                ))}
+                <text
+                  x={left + plotWidth / 2}
+                  y={height - 6}
+                  textAnchor="middle"
+                  fontSize={FONT}
+                  fill={TEXT}
+                >
+                  <title>{data.feature}</title>
+                  {chartAxisLabel(data.feature, plotWidth)}
+                </text>
+                {activeBin !== null && (
+                  <line
+                    x1={x(activeBin)}
+                    x2={x(activeBin)}
+                    y1={top}
+                    y2={plotBottom}
+                    stroke={TEXT}
+                    opacity={0.4}
+                    pointerEvents="none"
+                  />
+                )}
+              </ChartSvg>
+              <ChartSvg width={width} height={86} ariaLabel={`Exposure for ${data.feature}`}>
+                <text x={left} y={15} fontSize={FONT} fill={TEXT}>
+                  Exposure
+                </text>
+                <text x={width - right} y={15} textAnchor="end" fontSize={FONT} fill={TEXT}>
+                  0–{formatChartNumber(maxExposure)}
+                </text>
+                {bins.map((bin, i) => {
+                  const barHeight = maxExposure > 0 ? (bin.exposure / maxExposure) * 48 : 0
+                  return (
+                    <rect
+                      key={i}
+                      x={x(i) - groupWidth * 0.3}
+                      y={78 - barHeight}
+                      width={groupWidth * 0.6}
+                      height={barHeight}
+                      rx={2}
+                      fill="var(--text-muted)"
+                      opacity={activeBin === i ? 0.65 : 0.3}
+                    >
+                      <title>
+                        {bin.label}: {bin.exposure.toLocaleString()} exposure
+                      </title>
+                    </rect>
+                  )
+                })}
+              </ChartSvg>
+            </>
           )
-        })}
-
-        {/* Exposure bars */}
-        {bins.map((b, i) => {
-          const cx = xCenter(i)
-          const barH = (b.exposure / (maxExposure || 1)) * chartH
-          return (
-            <rect
-              key={`exp-${i}`}
-              x={cx - barW / 2}
-              y={marginTop + chartH - barH}
-              width={barW}
-              height={barH}
-              fill={EXPOSURE_COLOR}
-              rx={1}
-            />
-          )
-        })}
-
-        {/* Actual line */}
-        <path d={actualPath} fill="none" stroke={ACTUAL_COLOR} strokeWidth={1.5} />
-        {bins.map((b, i) => (
-          <circle key={`a-${i}`} cx={xCenter(i)} cy={yScale(b.avg_actual)} r={2.5} fill={ACTUAL_COLOR} />
-        ))}
-
-        {/* Predicted line */}
-        <path d={predictedPath} fill="none" stroke={PREDICTED_COLOR} strokeWidth={1.5} />
-        {bins.map((b, i) => (
-          <circle key={`p-${i}`} cx={xCenter(i)} cy={yScale(b.avg_predicted)} r={2.5} fill={PREDICTED_COLOR} />
-        ))}
-
-        {/* X-axis bin labels */}
-        {bins.map((b, i) => {
-          const cx = xCenter(i)
-          const label = truncLabel(b.label, 10)
-          // Rotate labels if there are many bins
-          const rotate = bins.length > 6
-          return (
-            <text
-              key={`xl-${i}`}
-              x={cx}
-              y={marginTop + chartH + (rotate ? 12 : 14)}
-              textAnchor={rotate ? "end" : "middle"}
-              fontSize={bins.length > 12 ? 8 : AXIS_FONT_SIZE}
-              fill={AXIS_TEXT_COLOR}
-              transform={rotate ? `rotate(-45,${cx},${marginTop + chartH + 12})` : undefined}
-            >
-              {label}
-            </text>
-          )
-        })}
-
-        {/* Axis labels */}
-        <text
-          x={10}
-          y={marginTop + chartH / 2}
-          textAnchor="middle"
-          fontSize={AXIS_FONT_SIZE}
-          fill={AXIS_TEXT_COLOR}
-          transform={`rotate(-90,10,${marginTop + chartH / 2})`}
-        >
-          Avg value
-        </text>
-        <text
-          x={width - 8}
-          y={marginTop + chartH / 2}
-          textAnchor="middle"
-          fontSize={AXIS_FONT_SIZE}
-          fill={AXIS_TEXT_COLOR}
-          opacity={0.5}
-          transform={`rotate(90,${width - 8},${marginTop + chartH / 2})`}
-        >
-          Exposure
-        </text>
-      </ChartSvg>
-
-      {/* Legend */}
-      <ChartLegend
-        items={[
-          { label: "Actual", color: ACTUAL_COLOR },
-          { label: "Predicted", color: PREDICTED_COLOR },
-          { label: "Exposure", color: EXPOSURE_COLOR, swatch: "bar" },
-        ]}
-      />
-    </div>
+        }}
+      </ResponsiveChart>
+      <div className="validation-bin-detail" role="status" aria-live="polite">
+        {selected ? (
+          <>
+            <strong>{selected.label}</strong>
+            <span>Actual: {selected.avg_actual}</span>
+            <span>Expected: {selected.avg_predicted}</span>
+            <span>Exposure: {selected.exposure.toLocaleString()}</span>
+          </>
+        ) : (
+          <span>Hover or focus a bin to inspect its values.</span>
+        )}
+      </div>
+      <details className="validation-values">
+        <summary>View bin values</summary>
+        <div className="overflow-x-auto">
+          <table className="validation-value-table" aria-label="AvE bin values">
+            <thead>
+              <tr>
+                <th>Bin</th>
+                <th>Actual</th>
+                <th>Expected</th>
+                <th>Exposure</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bins.map((bin, i) => (
+                <tr key={i}>
+                  <td>{bin.label}</td>
+                  <td>{bin.avg_actual}</td>
+                  <td>{bin.avg_predicted}</td>
+                  <td>{bin.exposure.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </>
   )
 }

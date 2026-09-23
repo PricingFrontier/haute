@@ -97,6 +97,26 @@ describe("useKeyboardShortcuts", () => {
     expect(params.handleSave).toHaveBeenCalledOnce()
   })
 
+  it("keeps modal keyboard interactions from closing or changing the background graph", () => {
+    const dialog = document.createElement("div")
+    dialog.setAttribute("role", "dialog")
+    dialog.setAttribute("aria-modal", "true")
+    const button = document.createElement("button")
+    dialog.append(button)
+    document.body.append(dialog)
+    try {
+      fireKeyFrom(button, "Escape")
+      fireKeyFrom(button, "z", { ctrlKey: true })
+      fireKeyFrom(button, "a", { ctrlKey: true })
+      expect(params.closePanel).not.toHaveBeenCalled()
+      expect(params.clearTrace).not.toHaveBeenCalled()
+      expect(params.undo).not.toHaveBeenCalled()
+      expect(params.setNodes).not.toHaveBeenCalled()
+    } finally {
+      dialog.remove()
+    }
+  })
+
   it("Ctrl+Z calls undo", () => {
     fireKey("z", { ctrlKey: true })
     expect(params.undo).toHaveBeenCalledOnce()

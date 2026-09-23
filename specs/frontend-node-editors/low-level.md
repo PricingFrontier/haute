@@ -58,7 +58,7 @@
 | `frontend/src/panels/editors/shared/tableClipboard.ts` | Clipboard parsing/writing and TSV/CSV download helpers shared by editable grids. |
 | `frontend/src/utils/buildGraph.ts` | Cross-component dependency owned by [frontend-graph-canvas](../frontend-graph-canvas/low-level.md); Data Output consumes the canonical graph payload and request-identity projection. |
 | `frontend/src/utils/configField.ts`, `frontend/src/utils/banding.ts` | Typed config readers and Banding classification owned by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md) and consumed by node editors. |
-| `frontend/src/components/form/index.ts`, `frontend/src/components/form/CommittedTextField.tsx`, `frontend/src/components/form/ConfigCheckbox.tsx`, `frontend/src/components/form/EditorLabel.tsx` | Form barrel, committed text/area drafts, config checkboxes, and accessible editor labels owned by [frontend-shared](../frontend-shared/low-level.md). |
+| `frontend/src/components/form/index.ts`, `frontend/src/components/form/CommittedTextField.tsx`, `frontend/src/components/form/ConfigCheckbox.tsx`, `frontend/src/components/form/EditorLabel.tsx`, `frontend/src/components/form/ConfigSection.tsx` | Form barrel, committed text/area drafts, config checkboxes, accessible editor labels, and the open heading-and-fields section layout shared by configuration panes, owned by [frontend-shared](../frontend-shared/low-level.md). |
 
 ## Key types and data structures
 

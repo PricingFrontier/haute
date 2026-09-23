@@ -1563,6 +1563,73 @@ def test_multipart_seed_estimate_counts_every_part(project: Path, store: NodeSna
         assert frame["a"].to_list() == list(reversed(range(total_rows)))
 
 
+@pytest.mark.parametrize("cache_state", ["fresh", "missing", "stale", "incomplete", "other_source"])
+def test_training_ram_estimates_use_only_usable_snapshots(
+    project: Path,
+    store: NodeSnapshotStore,
+    monkeypatch: pytest.MonkeyPatch,
+    cache_state: str,
+) -> None:
+    from haute.routes._job_store import JobStore
+    from haute.routes._train_service import TrainService
+    from haute.routes.modelling import estimate_training
+    from haute.schemas import TrainEstimateRequest
+    from tests.job_store_support import seed_job
+
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("A", NodeType.POLARS, _code("df = widen(src)")),
+            ("T", NodeType.MODELLING, {"target": "a", "feature_columns": ["h"]}),
+        ],
+        [("src", "A"), ("A", "T")],
+    )
+    if cache_state != "missing":
+        source = "batch" if cache_state == "other_source" else "live"
+        identity = _identity(store, graph, "A", source)
+        artifact = store.stage_node_output(identity)
+        names = ["a"] if cache_state == "incomplete" else ["a", "h"]
+        for part in range(2):
+            pl.DataFrame({"a": [part * 2, part * 2 + 1], "h": [1, 1]}).select(names).write_parquet(
+                artifact.part_path(part)
+            )
+        store.publish_node_output(
+            identity,
+            artifact,
+            columns=NodeSnapshotColumns.of(names),
+            dependencies={},
+            explicit=True,
+            profile=ExecutionProfile.NODE_SNAPSHOT,
+        ).close()
+        if cache_state == "stale":
+            graph.node_map["A"].data.config["code"] = "df = widen(src).head(3)"
+
+    def no_execution(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("RAM estimation must not execute or prepare pipeline inputs")
+
+    monkeypatch.setattr("haute.executor._build_node_fn", no_execution)
+    monkeypatch.setattr("haute._input_preparation.prepare_input_snapshots", no_execution)
+    monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 1024**3)
+
+    response = estimate_training(TrainEstimateRequest(graph=graph, node_id="T"))
+    jobs = JobStore()
+    seed_job(jobs, "ram", {"status": "running"})
+    try:
+        _warning, _limit, rows, columns = TrainService(jobs)._estimate_ram(graph, "T", None, "ram")
+    finally:
+        jobs.delete_job("ram")
+
+    expected_rows = 4 if cache_state == "fresh" else None
+    assert response.total_rows == rows == expected_rows
+    if cache_state == "fresh":
+        assert response.bytes_per_row == 2 * 8 * 3
+        assert columns == 2
+    else:
+        assert response.bytes_per_row == columns == 0
+    assert _staging_dirs(store) == []
+
+
 def test_lazy_run_join_capture_is_chunked_into_parts(
     project: Path, store: NodeSnapshotStore
 ) -> None:

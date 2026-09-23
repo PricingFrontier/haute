@@ -956,6 +956,7 @@ export interface EvaluationReport {
   validation_method: "none" | "single" | "cross_validation"
   validation_fit_count: number
   fit_count: number
+  refit_on_development?: boolean
   development_rows: number
   final_test_rows: number
   selection_fits: EvaluationFit[]
@@ -1012,11 +1013,12 @@ export interface TrainResponse {
   model_path: string
   development_rows: number
   final_test_rows: number
-  diagnostics_set: "development" | "final_test"
+  diagnostics_set: "development" | "validation" | "final_test"
   features: string[]
   cat_features: string[]
   error: string | null
   best_iteration: number | null
+  final_tree_count?: number | null
   loss_history: Array<{ iteration: number; [key: string]: number }>
   loss_history_truncated: boolean
   double_lift: TrainDoubleLiftRow[]

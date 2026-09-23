@@ -1,341 +1,271 @@
-/**
- * Partial Dependence Plot (PDP) tab for the ModellingPreview panel.
- *
- * Left panel: feature browser (same shared FeatureBrowser component)
- * Right panel: SVG chart
- *   - Numeric features: line chart of avg_prediction vs feature value
- *   - Categorical features: bar chart (one bar per category)
- */
-import { useState, useMemo, useCallback, useEffect } from "react"
-import type { PdpFeatureRow, PdpGridPoint } from "../../api/types"
+/** Partial dependence with the same feature context as actual/expected diagnostics. */
+import { useState } from "react"
+import type { PdpFeatureRow } from "../../api/types"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { CHART_COLORS } from "../../theme/colors"
 import {
   ChartEmptyState,
   ChartSvg,
-  MODELLING_CHART_AXIS_FONT_SIZE,
-  MODELLING_CHART_AXIS_TEXT_COLOR,
-  MODELLING_CHART_GRID_COLOR,
+  ResponsiveChart,
+  MODELLING_CHART_AXIS_FONT_SIZE as FONT,
+  MODELLING_CHART_AXIS_TEXT_COLOR as TEXT,
+  MODELLING_CHART_GRID_COLOR as GRID,
 } from "./ChartScaffold"
-import { FeatureBrowser, type FeatureItem } from "./FeatureBrowser"
+import {
+  chartAxisLabel,
+  chartDomain,
+  chartLabelIndices,
+  chartTicks,
+  formatChartNumber,
+} from "./chartGeometry"
+import { FeatureBrowser } from "./FeatureBrowser"
+import { useDiagnosticFeature, type SharedFeatureBrowser } from "./useDiagnosticFeature"
 
-interface PdpTabProps {
+const levelLabel = (value: string | number | null) => (value === null ? "(missing)" : String(value))
+
+export function PdpTab({
+  result,
+  featureBrowser,
+}: {
   result: TrainResult
-}
-
-const LINE_COLOR = CHART_COLORS.predicted
-const BAR_COLOR = CHART_COLORS.predicted
-
-export function PdpTab({ result }: PdpTabProps) {
-  const pdpData = result.pdp_data
-
-  // Build feature list sorted by importance
-  const featureItems: FeatureItem[] = useMemo(() => {
-    if (!pdpData || pdpData.length === 0) return []
-    const impMap = new Map<string, number>()
-    for (const fi of result.feature_importance) {
-      impMap.set(fi.feature, fi.importance)
-    }
-    return pdpData.map(f => ({
-      feature: f.feature,
-      importance: impMap.get(f.feature) ?? 0,
-    }))
-  }, [pdpData, result.feature_importance])
-
-  const featureKey = useMemo(() => featureItems.map(f => f.feature).join(","), [featureItems])
-
-  const [selectedFeature, setSelectedFeature] = useState<string | null>(
-    featureItems.length > 0 ? featureItems[0].feature : null,
+  featureBrowser?: SharedFeatureBrowser
+}) {
+  const importance = new Map(
+    result.feature_importance.map((item) => [item.feature, item.importance]),
   )
-
-  /* eslint-disable react-hooks/set-state-in-effect -- reset selection on new data */
-  useEffect(() => {
-    if (featureItems.length > 0) {
-      const names = featureKey.split(",")
-      if (!selectedFeature || !names.includes(selectedFeature)) {
-        setSelectedFeature(names[0])
-      }
-    }
-  }, [featureKey, selectedFeature, featureItems.length])
-  /* eslint-enable react-hooks/set-state-in-effect */
-
-  const handleSelect = useCallback((feature: string) => {
-    setSelectedFeature(feature)
-  }, [])
-
-  const selectedData: PdpFeatureRow | null = useMemo(() => {
-    if (!selectedFeature || !pdpData) return null
-    return pdpData.find(f => f.feature === selectedFeature) ?? null
-  }, [selectedFeature, pdpData])
-
-  if (!pdpData || pdpData.length === 0) {
-    return <ChartEmptyState>No PDP data available</ChartEmptyState>
-  }
-
+  const browser = useDiagnosticFeature(
+    result.pdp_data.map((item) => ({
+      feature: item.feature,
+      importance: importance.get(item.feature) ?? 0,
+    })),
+    featureBrowser,
+  )
+  const data = result.pdp_data.find((item) => item.feature === browser.selected)
+  if (!browser.features.length) return <ChartEmptyState>No PDP data available</ChartEmptyState>
   return (
-    <div className="flex h-full" style={{ minHeight: 200 }}>
-      <FeatureBrowser
-        features={featureItems}
-        selected={selectedFeature}
-        onSelect={handleSelect}
-      />
-      <div className="flex-1 px-3 py-1 overflow-auto">
-        {selectedData ? (
-          <PdpChart data={selectedData} />
+    <div className="validation-feature-layout">
+      <FeatureBrowser {...browser} />
+      <div className="min-w-0">
+        {data ? (
+          <PdpChart key={data.feature} data={data} />
         ) : (
-          <ChartEmptyState>Select a feature</ChartEmptyState>
+          <ChartEmptyState>No PDP data for {browser.selected}</ChartEmptyState>
         )}
       </div>
     </div>
   )
 }
-
-// ─── PDP Chart ────────────────────────────────────────────────────
 
 function PdpChart({ data }: { data: PdpFeatureRow }) {
-  const grid = data.grid
-  if (data.error || data.error_type) {
-    return <PdpErrorState data={data} />
-  }
-
-  if (grid.length === 0) {
+  const [activePoint, setActivePoint] = useState<number | null>(null)
+  if (data.error || data.error_type)
     return (
-      <div className="text-xs" style={{ color: "var(--text-muted)" }}>No PDP data for {data.feature}</div>
-    )
-  }
-
-  const isNumeric = data.type === "numeric"
-
-  return (
-    <div>
-      <div className="text-xs font-medium mb-1" style={{ color: "var(--text-primary)" }}>
-        {data.feature}
-        <span className="ml-2 text-[10px]" style={{ color: "var(--text-muted)" }}>({data.type})</span>
-      </div>
-      {isNumeric ? (
-        <PdpLineChart grid={grid} />
-      ) : (
-        <PdpBarChart grid={grid} />
-      )}
-    </div>
-  )
-}
-
-function PdpErrorState({ data }: { data: PdpFeatureRow }) {
-  return (
-    <div
-      role="alert"
-      aria-label="PDP diagnostic failed"
-      className="rounded-md px-3 py-2 text-xs"
-      style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}
-    >
-      <div className="font-medium" style={{ color: "var(--text-primary)" }}>
-        PDP unavailable for {data.feature}
-        <span className="ml-2 text-[10px]" style={{ color: "var(--text-muted)" }}>({data.type})</span>
-      </div>
-      {data.error_type && (
-        <div className="mt-2 font-mono text-[10px]" style={{ color: "var(--warning)" }}>
-          {data.error_type}
+      <div
+        role="alert"
+        aria-label="PDP diagnostic failed"
+        className="rounded-md px-4 py-3 text-[13px]"
+        style={{
+          background: "var(--warning-soft-subtle)",
+          border: "1px solid var(--warning-border)",
+        }}
+      >
+        <div className="font-medium" style={{ color: "var(--text-primary)" }}>
+          PDP unavailable for {data.feature}
         </div>
-      )}
-      {data.error && (
-        <div className="mt-1 break-words whitespace-pre-wrap" style={{ color: "var(--warning)" }}>
-          {data.error}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ─── Numeric PDP: Line Chart ──────────────────────────────────────
-
-function PdpLineChart({ grid }: { grid: PdpGridPoint[] }) {
-  const width = 520
-  const height = 220
-  const marginLeft = 55
-  const marginRight = 16
-  const marginTop = 16
-  const marginBottom = 36
-  const chartW = width - marginLeft - marginRight
-  const chartH = height - marginTop - marginBottom
-
-  const xVals = grid.map(p => Number(p.value))
-  const yVals = grid.map(p => p.avg_prediction)
-
-  const xMin = xVals.reduce((a, b) => Math.min(a, b), Infinity)
-  const xMax = xVals.reduce((a, b) => Math.max(a, b), -Infinity)
-  const xRange = xMax - xMin || 1
-  const yMin = yVals.reduce((a, b) => Math.min(a, b), Infinity)
-  const yMax = yVals.reduce((a, b) => Math.max(a, b), -Infinity)
-  const yPad = (yMax - yMin) * 0.1 || 0.001
-  const yLo = yMin - yPad
-  const yHi = yMax + yPad
-  const ySpan = yHi - yLo
-
-  const xScale = (v: number) => marginLeft + ((v - xMin) / xRange) * chartW
-  const yScale = (v: number) => marginTop + chartH - ((v - yLo) / ySpan) * chartH
-
-  // Grid lines
-  const nGridY = 4
-  const nGridX = Math.min(5, grid.length - 1)
-  const gridYValues = Array.from({ length: nGridY + 1 }, (_, i) => yLo + (i / nGridY) * ySpan)
-  const gridXIndices = grid.length === 1
-    ? [0]
-    : Array.from({ length: nGridX + 1 }, (_, i) => Math.round((i / nGridX) * (grid.length - 1)))
-
-  // Line path
-  const linePath = grid
-    .map((p, i) => `${i === 0 ? "M" : "L"}${xScale(Number(p.value)).toFixed(1)},${yScale(p.avg_prediction).toFixed(1)}`)
-    .join(" ")
-
-  return (
-    <>
-      <ChartSvg width={width} height={height}>
-        {/* Grid */}
-        {gridYValues.map((v, i) => {
-          const y = yScale(v)
-          return (
-            <g key={`gy-${i}`}>
-              <line x1={marginLeft} y1={y} x2={marginLeft + chartW} y2={y} stroke={MODELLING_CHART_GRID_COLOR} strokeWidth={1} />
-              <text x={marginLeft - 6} y={y + 3} textAnchor="end" fontSize={MODELLING_CHART_AXIS_FONT_SIZE} fill={MODELLING_CHART_AXIS_TEXT_COLOR}>
-                {v.toPrecision(3)}
-              </text>
-            </g>
-          )
-        })}
-        {gridXIndices.map((idx, i) => {
-          const v = Number(grid[idx].value)
-          const x = xScale(v)
-          return (
-            <g key={`gx-${i}`}>
-              <line x1={x} y1={marginTop} x2={x} y2={marginTop + chartH} stroke={MODELLING_CHART_GRID_COLOR} strokeWidth={1} />
-              <text x={x} y={marginTop + chartH + 14} textAnchor="middle" fontSize={MODELLING_CHART_AXIS_FONT_SIZE} fill={MODELLING_CHART_AXIS_TEXT_COLOR}>
-                {v.toPrecision(3)}
-              </text>
-            </g>
-          )
-        })}
-
-        {/* Line + dots */}
-        <path d={linePath} fill="none" stroke={LINE_COLOR} strokeWidth={1.5} />
-        {grid.map((p, i) => (
-          <circle key={i} cx={xScale(Number(p.value))} cy={yScale(p.avg_prediction)} r={2.5} fill={LINE_COLOR} />
-        ))}
-
-        {/* Axis labels */}
-        <text x={marginLeft + chartW / 2} y={height - 4} textAnchor="middle" fontSize={MODELLING_CHART_AXIS_FONT_SIZE} fill={MODELLING_CHART_AXIS_TEXT_COLOR}>
-          Feature value
-        </text>
-        <text
-          x={10}
-          y={marginTop + chartH / 2}
-          textAnchor="middle"
-          fontSize={MODELLING_CHART_AXIS_FONT_SIZE}
-          fill={MODELLING_CHART_AXIS_TEXT_COLOR}
-          transform={`rotate(-90,10,${marginTop + chartH / 2})`}
-        >
-          Avg prediction
-        </text>
-      </ChartSvg>
-    </>
-  )
-}
-
-// ─── Categorical PDP: Bar Chart ───────────────────────────────────
-
-function PdpBarChart({ grid }: { grid: PdpGridPoint[] }) {
-  const width = 520
-  const height = 220
-  const marginLeft = 55
-  const marginRight = 16
-  const marginTop = 16
-  const marginBottom = 50
-  const chartW = width - marginLeft - marginRight
-  const chartH = height - marginTop - marginBottom
-
-  const yVals = grid.map(p => p.avg_prediction)
-  const yMin = Math.min(0, yVals.reduce((a, b) => Math.min(a, b), Infinity))
-  const yMax = yVals.reduce((a, b) => Math.max(a, b), -Infinity) * 1.1
-  const ySpan = yMax - yMin || 1
-
-  const barGroupW = chartW / grid.length
-  const barW = barGroupW * 0.6
-
-  const xCenter = (i: number) => marginLeft + i * barGroupW + barGroupW / 2
-  const yScale = (v: number) => marginTop + chartH - ((v - yMin) / ySpan) * chartH
-  const zeroY = yScale(0)
-
-  // Grid lines
-  const nGridY = 4
-  const gridYValues = Array.from({ length: nGridY + 1 }, (_, i) => yMin + (i / nGridY) * ySpan)
-
-  const truncLabel = (s: string, maxLen: number) => s.length > maxLen ? s.slice(0, maxLen - 1) + "\u2026" : s
-
-  return (
-    <>
-      <ChartSvg width={width} height={height}>
-        {/* Grid */}
-        {gridYValues.map((v, i) => {
-          const y = yScale(v)
-          return (
-            <g key={`gy-${i}`}>
-              <line x1={marginLeft} y1={y} x2={marginLeft + chartW} y2={y} stroke={MODELLING_CHART_GRID_COLOR} strokeWidth={1} />
-              <text x={marginLeft - 6} y={y + 3} textAnchor="end" fontSize={MODELLING_CHART_AXIS_FONT_SIZE} fill={MODELLING_CHART_AXIS_TEXT_COLOR}>
-                {v.toPrecision(3)}
-              </text>
-            </g>
-          )
-        })}
-
-        {/* Bars */}
-        {grid.map((p, i) => {
-          const cx = xCenter(i)
-          const barH = Math.abs(p.avg_prediction - 0) / ySpan * chartH
-          const barY = p.avg_prediction >= 0 ? yScale(p.avg_prediction) : zeroY
-          const label = truncLabel(p.value === null ? "(missing)" : String(p.value), 10)
-          const rotate = grid.length > 5
-          return (
-            <g key={i}>
-              <rect
-                x={cx - barW / 2}
-                y={barY}
-                width={barW}
-                height={barH}
-                fill={BAR_COLOR}
-                opacity={0.7}
-                rx={1}
-              />
-              <text
-                x={cx}
-                y={marginTop + chartH + (rotate ? 12 : 14)}
-                textAnchor={rotate ? "end" : "middle"}
-                fontSize={grid.length > 10 ? 8 : MODELLING_CHART_AXIS_FONT_SIZE}
-                fill={MODELLING_CHART_AXIS_TEXT_COLOR}
-                transform={rotate ? `rotate(-45,${cx},${marginTop + chartH + 12})` : undefined}
-              >
-                {label}
-              </text>
-            </g>
-          )
-        })}
-
-        {/* Zero line */}
-        {yMin < 0 && (
-          <line x1={marginLeft} y1={zeroY} x2={marginLeft + chartW} y2={zeroY} stroke="rgba(255,255,255,.15)" strokeWidth={1} />
+        {data.error_type && (
+          <div className="mt-2 font-mono text-xs" style={{ color: "var(--warning)" }}>
+            {data.error_type}
+          </div>
         )}
-
-        {/* Axis labels */}
-        <text
-          x={10}
-          y={marginTop + chartH / 2}
-          textAnchor="middle"
-          fontSize={MODELLING_CHART_AXIS_FONT_SIZE}
-          fill={MODELLING_CHART_AXIS_TEXT_COLOR}
-          transform={`rotate(-90,10,${marginTop + chartH / 2})`}
-        >
-          Avg prediction
-        </text>
-      </ChartSvg>
+        {data.error && (
+          <div className="mt-1 break-words whitespace-pre-wrap" style={{ color: "var(--warning)" }}>
+            {data.error}
+          </div>
+        )}
+      </div>
+    )
+  if (!data.grid.length) return <ChartEmptyState>No PDP data for {data.feature}</ChartEmptyState>
+  const selected = activePoint === null ? null : data.grid[activePoint]
+  return (
+    <>
+      <div className="validation-chart-title">
+        <div>
+          <h4 className="validation-feature-heading">{data.feature}</h4>
+          <p className="validation-chart-description">{data.type} · partial dependence</p>
+        </div>
+      </div>
+      <ResponsiveChart>
+        {(width) => {
+          const left = 68,
+            right = 24,
+            top = 32,
+            bottom = 248,
+            height = 300
+          const plotWidth = Math.max(1, width - left - right)
+          const values = data.grid.map((point) => point.avg_prediction)
+          if (data.type !== "numeric") {
+            const [low, high] = chartDomain(values, true)
+            const barWidth = Math.max(1, width * 0.6 - 76)
+            const x = (value: number) => 4 + ((value - low) / (high - low)) * (barWidth - 8)
+            return (
+              <div role="img" aria-label={`Partial dependence for ${data.feature}`}>
+                <div className="mb-3 text-xs" style={{ color: TEXT }}>
+                  Average prediction · baseline at zero
+                </div>
+                {data.grid.map((point, i) => (
+                  <div
+                    key={i}
+                    className="grid items-center gap-3 py-2"
+                    style={{
+                      gridTemplateColumns: "minmax(0, 2fr) minmax(0, 3fr)",
+                      borderBottom: "1px solid var(--border)",
+                    }}
+                  >
+                    <span
+                      className="break-words text-[13px]"
+                      style={{ color: "var(--text-secondary)" }}
+                    >
+                      {levelLabel(point.value)}
+                    </span>
+                    <div className="flex min-w-0 items-center gap-2">
+                      <svg width={barWidth} height={28} className="shrink-0" aria-hidden="true">
+                        <line x1={x(0)} x2={x(0)} y1={2} y2={26} stroke={TEXT} />
+                        <rect
+                          x={Math.min(x(0), x(point.avg_prediction))}
+                          y={6}
+                          width={Math.abs(x(point.avg_prediction) - x(0))}
+                          height={16}
+                          rx={2}
+                          fill={CHART_COLORS.predicted}
+                          opacity={0.8}
+                        />
+                      </svg>
+                      <span className="text-xs tabular-nums" title={String(point.avg_prediction)}>
+                        {formatChartNumber(point.avg_prediction)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )
+          }
+          const [low, high] = chartDomain(values)
+          const xValues = data.grid.map((point) => Number(point.value))
+          const [xLow, xHigh] = chartDomain(xValues)
+          const x = (value: number) => left + ((value - xLow) / (xHigh - xLow)) * plotWidth
+          const y = (value: number) => bottom - ((value - low) / (high - low)) * (bottom - top)
+          const indices = chartLabelIndices(data.grid.length, plotWidth)
+          const path = data.grid
+            .map(
+              (point, i) => `${i ? "L" : "M"}${x(Number(point.value))},${y(point.avg_prediction)}`,
+            )
+            .join(" ")
+          return (
+            <ChartSvg
+              width={width}
+              height={height}
+              ariaLabel={`Partial dependence for ${data.feature}`}
+            >
+              <text x={left} y={16} fontSize={FONT} fill={TEXT}>
+                Average prediction
+              </text>
+              {chartTicks(low, high).map((value) => (
+                <g key={value}>
+                  <line x1={left} x2={width - right} y1={y(value)} y2={y(value)} stroke={GRID} />
+                  <text x={left - 8} y={y(value) + 4} textAnchor="end" fontSize={FONT} fill={TEXT}>
+                    {formatChartNumber(value)}
+                  </text>
+                </g>
+              ))}
+              <path d={path} fill="none" stroke={CHART_COLORS.predicted} strokeWidth={2} />
+              {data.grid.map((point, i) => (
+                <g key={i}>
+                  <circle
+                    cx={x(Number(point.value))}
+                    cy={y(point.avg_prediction)}
+                    r={3}
+                    fill={CHART_COLORS.predicted}
+                  />
+                  <circle
+                    cx={x(Number(point.value))}
+                    cy={y(point.avg_prediction)}
+                    r={10}
+                    fill="transparent"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`${data.feature}: ${levelLabel(point.value)}. Average prediction: ${point.avg_prediction}`}
+                    onMouseEnter={() => setActivePoint(i)}
+                    onFocus={() => setActivePoint(i)}
+                    onClick={() => setActivePoint(i)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault()
+                        setActivePoint(i)
+                      }
+                    }}
+                  />
+                  {indices.has(i) && (
+                    <text
+                      x={x(Number(point.value))}
+                      y={bottom + 22}
+                      textAnchor="middle"
+                      fontSize={FONT}
+                      fill={TEXT}
+                    >
+                      {formatChartNumber(Number(point.value))}
+                    </text>
+                  )}
+                </g>
+              ))}
+              <text
+                x={left + plotWidth / 2}
+                y={height - 5}
+                textAnchor="middle"
+                fontSize={FONT}
+                fill={TEXT}
+              >
+                <title>{data.feature}</title>
+                {chartAxisLabel(data.feature, plotWidth)}
+              </text>
+            </ChartSvg>
+          )
+        }}
+      </ResponsiveChart>
+      {data.type === "numeric" && (
+        <div className="validation-bin-detail" role="status" aria-live="polite">
+          {selected ? (
+            <>
+              <strong>
+                {data.feature}: {levelLabel(selected.value)}
+              </strong>
+              <span>Average prediction: {selected.avg_prediction}</span>
+            </>
+          ) : (
+            <span>Hover or focus a point to inspect its prediction.</span>
+          )}
+        </div>
+      )}
+      <details className="validation-values">
+        <summary>View prediction values</summary>
+        <div className="overflow-x-auto">
+          <table className="validation-value-table" aria-label="PDP values">
+            <thead>
+              <tr>
+                <th>{data.feature}</th>
+                <th>Average prediction</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.grid.map((point, i) => (
+                <tr key={i}>
+                  <td>{levelLabel(point.value)}</td>
+                  <td>{point.avg_prediction}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
     </>
   )
 }

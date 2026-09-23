@@ -82,6 +82,7 @@ GLM_REGULARIZATIONS: frozenset[str] = frozenset({"ridge", "lasso", "elastic_net"
 GLM_CV_SELECTIONS: frozenset[str] = frozenset({"min", "1se"})
 GLM_ROBUST_STANDARD_ERRORS: frozenset[str] = frozenset({"HC0", "HC1", "HC2", "HC3"})
 GLM_CV_FOLDS_RANGE = (2, 20)
+GLM_CV_DEFAULT_SEED = 42
 GLM_MAX_ITER_RANGE = (1, 10_000)
 
 
@@ -447,7 +448,10 @@ def _effective_glm_params(config: Mapping[str, Any]) -> dict[str, Any]:
     ``exclude`` is a CatBoost lever; a GLM feature is in the model exactly
     when it has a term or is an interaction factor, so nothing is narrowed.
     """
-    return {key: config[key] for key in GLM_CONFIG_KEYS if key in config}
+    params = {key: config[key] for key in GLM_CONFIG_KEYS if key in config}
+    if glm_cross_validates(params) and not _configured(params, "cv_seed"):
+        params["cv_seed"] = GLM_CV_DEFAULT_SEED
+    return params
 
 
 def _effective_monotone_constraints(config: Mapping[str, Any]) -> Any:
@@ -481,12 +485,13 @@ def training_objective_issue(config: Mapping[str, Any]) -> str | None:
             "silently train under the library default."
         )
     variance_power = config.get("variance_power")
-    if str(loss_function) == "Tweedie" and variance_power is None:
-        return (
-            "Tweedie loss has no variance power. Set it explicitly "
-            "(1=Poisson, 2=Gamma) — an unset value would silently train "
-            "at power 1.5."
-        )
+    if str(loss_function) == "Tweedie" and (
+        isinstance(variance_power, bool)
+        or not isinstance(variance_power, (int, float))
+        or not math.isfinite(variance_power)
+        or not 1 < variance_power < 2
+    ):
+        return "Tweedie variance power must be a finite number greater than 1 and less than 2."
     return None
 
 
@@ -565,6 +570,13 @@ def build_training_job_kwargs(
         evaluation=evaluation,
         configured_metrics=metrics,
     )
+    refit_on_development = config.get("refit_on_development", True)
+    if not isinstance(refit_on_development, bool):
+        raise TrainingConfigError("refit_on_development must be a boolean")
+    if not refit_on_development and evaluation["validation"]["method"] != "single":
+        raise TrainingConfigError("Skipping the final refit requires holdout validation")
+    if not refit_on_development and tuning is not None:
+        raise TrainingConfigError("Parameter tuning requires a final refit")
 
     destination = config.get("mlflow_destination") or ""
     if destination not in ("", "databricks", "server"):
@@ -588,6 +600,7 @@ def build_training_job_kwargs(
         "params": params,
         "evaluation": evaluation,
         "tuning": tuning,
+        "refit_on_development": refit_on_development,
         "metrics": metrics,
         "mlflow_experiment": config.get("mlflow_experiment") or None,
         "output_dir": config.get("output_dir", "outputs"),

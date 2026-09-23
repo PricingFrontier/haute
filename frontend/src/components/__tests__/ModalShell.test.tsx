@@ -133,4 +133,36 @@ describe("ModalShell", () => {
     fireEvent.keyDown(document, { key: "Tab", shiftKey: true })
     expect(document.activeElement).toBe(screen.getByText("Last"))
   })
+
+  it("focus trap: includes disclosure summaries and skips their collapsed contents", () => {
+    renderShell({
+      children: (
+        <>
+          <button>First</button>
+          <details>
+            <summary>Details</summary>
+            <button>Hidden action</button>
+          </details>
+        </>
+      ),
+    })
+    screen.getByText("First").focus()
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true })
+    expect(document.activeElement).toBe(screen.getByText("Details"))
+    fireEvent.keyDown(document, { key: "Tab" })
+    expect(document.activeElement).toBe(screen.getByText("First"))
+  })
+
+  it("focus trap: Shift+Tab from the initially focused container reaches its last control", () => {
+    renderShell({
+      children: (
+        <>
+          <button>First</button>
+          <button>Last</button>
+        </>
+      ),
+    })
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Tab", shiftKey: true })
+    expect(document.activeElement).toBe(screen.getByText("Last"))
+  })
 })

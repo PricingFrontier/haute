@@ -58,14 +58,12 @@ export function ExportPane({
   trainedResultStale,
   trainedResultExpired = false,
 }: ExportPaneProps) {
-  const exportBlockedReason = training
+  const exportableJobId = training ? null : trainedJobId
+  const exportNotice = training
     ? "Training is running - export is available when it completes."
-    : trainedJobId === null
-      ? trainedResultExpired
-        ? "The last training result for this node is no longer available (the server restarted or it expired). Train this model again to export it."
-        : "Train this model to export it."
+    : trainedJobId === null && trainedResultExpired
+      ? "The last training result for this node is no longer available (the server restarted or it expired). Train this model again to export it."
       : null
-  const exportableJobId = exportBlockedReason === null ? trainedJobId : null
   const { receipts, refresh: refreshReceipts } = useExportReceipts(exportableJobId)
 
   // Where this node logs is its own config, so every derived value below —
@@ -91,12 +89,12 @@ export function ExportPane({
 
   return (
     <>
-      {exportBlockedReason !== null && (
+      {exportNotice !== null && (
         <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-          {exportBlockedReason}
+          {exportNotice}
         </p>
       )}
-      {exportBlockedReason === null && trainedResultStale && (
+      {exportableJobId !== null && trainedResultStale && (
         <div
           className="flex items-start gap-2 rounded-lg px-3 py-2 text-xs"
           style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}
@@ -119,6 +117,7 @@ export function ExportPane({
           <FieldHelpIcon label={MLFLOW_MANUAL_HELP} ariaLabel="About MLflow logging" />
         </div>
         <MlflowDestinationSelector
+          showDestinationDetails={false}
           value={mlflowDestination}
           onChange={(value) => onUpdate("mlflow_destination", mlflowDestinationConfigValue(value))}
         />

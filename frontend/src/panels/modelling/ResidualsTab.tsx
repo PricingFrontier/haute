@@ -1,62 +1,65 @@
-/**
- * Residuals tab for the ModellingPreview panel.
- *
- * Two charts side by side (or stacked if narrow):
- * 1. Residuals Histogram — weighted count by residual bin
- * 2. Actual vs Predicted Scatter — up to 2000 points
- */
 import { useMemo } from "react"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { CHART_COLORS } from "../../theme/colors"
 import {
   ChartEmptyState,
+  ChartLegend,
   ChartSvg,
-  MODELLING_CHART_AXIS_FONT_SIZE as AXIS_FONT_SIZE,
-  MODELLING_CHART_AXIS_TEXT_COLOR as AXIS_TEXT_COLOR,
-  MODELLING_CHART_GRID_COLOR as GRID_COLOR,
+  MODELLING_CHART_AXIS_FONT_SIZE as axisFontSize,
+  MODELLING_CHART_AXIS_TEXT_COLOR as axisTextColor,
+  MODELLING_CHART_GRID_COLOR as gridColor,
+  ResponsiveChart,
 } from "./ChartScaffold"
+import { chartDomain, chartTicks, formatChartNumber } from "./chartGeometry"
 
 interface ResidualsTabProps {
   result: TrainResult
   width?: number
   height?: number
 }
+type HistogramBin = { bin_center: number; count: number; weighted_count: number }
+type ScatterPoint = { actual: number; predicted: number; weight: number }
+const barColor = CHART_COLORS.predicted
+const zeroLineColor = CHART_COLORS.residualZero
+const scatterColor = CHART_COLORS.predicted
+const referenceColor = "var(--text-muted)"
 
-const BAR_COLOR = CHART_COLORS.predicted
-const ZERO_LINE_COLOR = CHART_COLORS.residualZero
-const SCATTER_COLOR = CHART_COLORS.predicted
-const REF_LINE_COLOR = "rgba(255,255,255,.25)"
-
-export function ResidualsTab({ result, width = 340, height = 240 }: ResidualsTabProps) {
-  const hasHistogram = result.residuals_histogram && result.residuals_histogram.length > 0
-  const hasScatter = result.actual_vs_predicted && result.actual_vs_predicted.length > 0
-
-  if (!hasHistogram && !hasScatter) {
+export function ResidualsTab({ result, width, height = 280 }: ResidualsTabProps) {
+  const hasHistogram = Boolean(result.residuals_histogram?.length)
+  const hasScatter = Boolean(result.actual_vs_predicted?.length)
+  if (!hasHistogram && !hasScatter)
     return <ChartEmptyState>No residuals data available</ChartEmptyState>
-  }
-
   return (
-    <div className="flex gap-4 flex-wrap">
-      {hasHistogram && (
-        <ResidualsHistogram
-          data={result.residuals_histogram!}
-          stats={result.residuals_stats}
-          width={width}
-          height={height}
-        />
-      )}
-      {hasScatter && (
-        <ActualVsPredictedScatter
-          data={result.actual_vs_predicted!}
-          width={width}
-          height={height}
-        />
-      )}
-    </div>
+    <ResponsiveChart width={width}>
+      {(containerWidth) => {
+        const twoColumns = containerWidth >= 760 && hasHistogram && hasScatter
+        const chartWidth = twoColumns ? Math.max(280, (containerWidth - 24) / 2) : containerWidth
+        return (
+          <section
+            className={twoColumns ? "grid grid-cols-2 gap-6" : "space-y-6"}
+            aria-label="Residual validation charts"
+          >
+            {hasHistogram && (
+              <ResidualsHistogram
+                data={result.residuals_histogram!}
+                stats={result.residuals_stats}
+                width={chartWidth}
+                height={height}
+              />
+            )}
+            {hasScatter && (
+              <ActualVsPredictedScatter
+                data={result.actual_vs_predicted!}
+                width={chartWidth}
+                height={height}
+              />
+            )}
+          </section>
+        )
+      }}
+    </ResponsiveChart>
   )
 }
-
-// ─── Residuals Histogram ──────────────────────────────────────────
 
 function ResidualsHistogram({
   data,
@@ -64,224 +67,297 @@ function ResidualsHistogram({
   width,
   height,
 }: {
-  data: { bin_center: number; count: number; weighted_count: number }[]
+  data: HistogramBin[]
   stats?: Record<string, number>
   width: number
   height: number
 }) {
-  const marginLeft = 50
-  const marginRight = 12
-  const marginTop = 12
-  const marginBottom = 36
-  const chartW = width - marginLeft - marginRight
-  const chartH = height - marginTop - marginBottom
-
-  const maxCount = data.map(d => d.weighted_count).reduce((a, b) => Math.max(a, b), -Infinity)
-  const xMin = data.map(d => d.bin_center).reduce((a, b) => Math.min(a, b), Infinity)
-  const xMax = data.map(d => d.bin_center).reduce((a, b) => Math.max(a, b), -Infinity)
-  const xRange = xMax - xMin || 1
-  const barW = (chartW / data.length) * 0.85
-
-  const xScale = (v: number) => marginLeft + ((v - xMin) / xRange) * chartW
-  const yScale = (v: number) => marginTop + chartH - (v / (maxCount || 1)) * chartH
-
-  // Zero line position
-  const zeroX = xMin <= 0 && xMax >= 0 ? xScale(0) : null
-
-  // Grid lines
-  const nGridY = 4
-  const gridYValues = Array.from({ length: nGridY + 1 }, (_, i) => (i / nGridY) * maxCount)
-
+  const marginLeft = 68,
+    marginRight = 24,
+    marginTop = 16,
+    marginBottom = 42
+  const plotWidth = Math.max(1, width - marginLeft - marginRight),
+    plotHeight = Math.max(1, height - marginTop - marginBottom)
+  const centers = data.map((bin) => bin.bin_center),
+    sortedCenters = [...centers].sort((left, right) => left - right)
+  const positiveSteps = sortedCenters
+    .slice(1)
+    .map((value, index) => value - sortedCenters[index])
+    .filter((value) => value > 0)
+  const binStep = positiveSteps.length ? Math.min(...positiveSteps) : 1
+  const [xMin, xMax] = [Math.min(...centers) - binStep / 2, Math.max(...centers) + binStep / 2]
+  const xSpan = xMax - xMin || 1
+  const maxCount = Math.max(0, ...data.map((bin) => bin.weighted_count))
+  const yMax = maxCount || 1
+  const xScale = (value: number) => marginLeft + ((value - xMin) / xSpan) * plotWidth
+  const yScale = (value: number) => marginTop + plotHeight - (value / yMax) * plotHeight
+  const barWidth = Math.min(
+    plotWidth,
+    Math.abs(xScale(centers[0] + binStep / 2) - xScale(centers[0] - binStep / 2)) * 0.85,
+  )
+  const tickCount = width < 400 ? 3 : 5
+  const hasZeroReference = xMin <= 0 && xMax >= 0
   return (
     <div>
-      <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-        Residuals Distribution
-      </label>
-      <ChartSvg width={width} height={height} className="mt-1">
-        {/* Horizontal grid lines + y-axis labels */}
-        {gridYValues.map((v, i) => {
-          const y = yScale(v)
-          return (
-            <g key={`gy-${i}`}>
-              <line x1={marginLeft} y1={y} x2={marginLeft + chartW} y2={y} stroke={GRID_COLOR} strokeWidth={1} />
-              <text x={marginLeft - 6} y={y + 3} textAnchor="end" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
-                {v >= 1000 ? `${(v / 1000).toFixed(0)}K` : v.toFixed(0)}
-              </text>
-            </g>
-          )
-        })}
-
-        {/* Bars */}
-        {data.map((d, i) => {
-          const cx = xScale(d.bin_center)
-          const barH = (d.weighted_count / (maxCount || 1)) * chartH
+      <h4 className="text-[15px] font-medium" style={{ color: "var(--text-primary)" }}>
+        Residuals distribution
+      </h4>
+      <div className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+        Weighted residual counts by bin
+      </div>
+      <ChartSvg
+        width={width}
+        height={height}
+        className="mt-1"
+        ariaLabel="Residuals distribution histogram"
+      >
+        <title>Residuals distribution histogram</title>
+        {chartTicks(0, yMax, 5).map((value) => (
+          <g key={value}>
+            <line
+              x1={marginLeft}
+              y1={yScale(value)}
+              x2={marginLeft + plotWidth}
+              y2={yScale(value)}
+              stroke={gridColor}
+            />
+            <text
+              x={marginLeft - 6}
+              y={yScale(value) + 4}
+              textAnchor="end"
+              fontSize={axisFontSize}
+              fill={axisTextColor}
+            >
+              {formatChartNumber(value)}
+            </text>
+          </g>
+        ))}
+        {chartTicks(xMin, xMax, tickCount).map((value, index, all) => (
+          <text
+            key={value}
+            x={xScale(value)}
+            y={marginTop + plotHeight + 15}
+            textAnchor={index === 0 ? "start" : index === all.length - 1 ? "end" : "middle"}
+            fontSize={axisFontSize}
+            fill={axisTextColor}
+          >
+            {formatChartNumber(value)}
+          </text>
+        ))}
+        {data.map((bin, index) => {
+          const barHeight = (bin.weighted_count / yMax) * plotHeight
           return (
             <rect
-              key={i}
-              x={cx - barW / 2}
-              y={marginTop + chartH - barH}
-              width={barW}
-              height={barH}
-              fill={BAR_COLOR}
+              key={index}
+              data-testid="residual-histogram-bar"
+              x={xScale(bin.bin_center) - barWidth / 2}
+              y={marginTop + plotHeight - barHeight}
+              width={barWidth}
+              height={barHeight}
+              fill={barColor}
               opacity={0.6}
               rx={1}
             />
           )
         })}
-
-        {/* Zero line */}
-        {zeroX != null && (
+        {hasZeroReference && (
           <line
-            x1={zeroX} y1={marginTop} x2={zeroX} y2={marginTop + chartH}
-            stroke={ZERO_LINE_COLOR} strokeWidth={1} strokeDasharray="4,3"
+            x1={xScale(0)}
+            y1={marginTop}
+            x2={xScale(0)}
+            y2={marginTop + plotHeight}
+            stroke={zeroLineColor}
+            strokeDasharray="4,3"
           />
         )}
-
-        {/* X-axis label */}
-        <text x={marginLeft + chartW / 2} y={height - 4} textAnchor="middle" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
+        <text
+          x={marginLeft + plotWidth / 2}
+          y={height - 4}
+          textAnchor="middle"
+          fontSize={axisFontSize}
+          fill={axisTextColor}
+        >
           Residual
         </text>
-
-        {/* Y-axis label */}
         <text
-          x={10}
-          y={marginTop + chartH / 2}
+          x={12}
+          y={marginTop + plotHeight / 2}
           textAnchor="middle"
-          fontSize={AXIS_FONT_SIZE}
-          fill={AXIS_TEXT_COLOR}
-          transform={`rotate(-90,10,${marginTop + chartH / 2})`}
+          fontSize={axisFontSize}
+          fill={axisTextColor}
+          transform={`rotate(-90,12,${marginTop + plotHeight / 2})`}
         >
           Weighted count
         </text>
       </ChartSvg>
-
-      {/* Stats annotation */}
-      {stats && ["mean", "std", "skew"].some(name => Number.isFinite(stats[name])) && (
-        <div className="flex gap-3 mt-1.5 text-[10px] font-mono" style={{ color: "var(--text-muted)" }}>
-          {([
-            ["mean", "Mean"],
-            ["std", "Std"],
-            ["skew", "Skew"],
-          ] as const).map(([name, label]) => (
-            Number.isFinite(stats[name]) && (
-              <span key={name}>
-                {label}:{" "}
-                <span style={{ color: "var(--text-primary)" }}>
-                  {stats[name].toFixed(4)}
-                </span>
-              </span>
-            )
-          ))}
-        </div>
-      )}
+      <ChartLegend
+        compact
+        items={[
+          { label: "Weighted count", color: barColor, swatch: "bar" },
+          ...(hasZeroReference
+            ? [{ label: "Zero residual", color: zeroLineColor, dashed: true }]
+            : []),
+        ]}
+      />
+      {stats && <StatsRow stats={stats} />}
     </div>
   )
 }
 
-// ─── Actual vs Predicted Scatter ──────────────────────────────────
+function StatsRow({ stats }: { stats: Record<string, number> }) {
+  const entries = (
+    [
+      ["mean", "Mean"],
+      ["std", "Std"],
+      ["skew", "Skew"],
+    ] as const
+  ).filter(([name]) => Number.isFinite(stats[name]))
+  if (!entries.length) return null
+  return (
+    <div
+      className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[12px] font-mono"
+      style={{ color: "var(--text-muted)" }}
+    >
+      {entries.map(([name, label]) => (
+        <span key={name}>
+          {label}: <span style={{ color: "var(--text-primary)" }}>{stats[name].toFixed(4)}</span>
+        </span>
+      ))}
+    </div>
+  )
+}
 
 function ActualVsPredictedScatter({
   data,
   width,
   height,
 }: {
-  data: { actual: number; predicted: number; weight: number }[]
+  data: ScatterPoint[]
   width: number
   height: number
 }) {
-  const marginLeft = 50
-  const marginRight = 12
-  const marginTop = 12
-  const marginBottom = 36
-  const chartW = width - marginLeft - marginRight
-  const chartH = height - marginTop - marginBottom
-
-  // Subsample to max 2000 points
-  const points = useMemo(() => {
-    if (data.length <= 2000) return data
-    const step = data.length / 2000
-    const sampled: typeof data = []
-    for (let i = 0; i < 2000; i++) {
-      sampled.push(data[Math.floor(i * step)])
-    }
-    return sampled
-  }, [data])
-
-  const allVals = points.flatMap(p => [p.actual, p.predicted])
-  const vMin = allVals.reduce((a, b) => Math.min(a, b), Infinity)
-  const vMax = allVals.reduce((a, b) => Math.max(a, b), -Infinity)
-  const vRange = vMax - vMin || 1
-  const padding = vRange * 0.05
-  const lo = vMin - padding
-  const hi = vMax + padding
-  const span = hi - lo
-
-  const xScale = (v: number) => marginLeft + ((v - lo) / span) * chartW
-  const yScale = (v: number) => marginTop + chartH - ((v - lo) / span) * chartH
-
-  // Grid lines
-  const nGrid = 4
-  const gridValues = Array.from({ length: nGrid + 1 }, (_, i) => lo + (i / nGrid) * span)
-
+  const marginLeft = 68,
+    marginRight = 24,
+    marginTop = 16,
+    marginBottom = 42
+  const plotWidth = Math.max(1, width - marginLeft - marginRight),
+    plotHeight = Math.max(1, height - marginTop - marginBottom)
+  const points = useMemo(
+    () =>
+      data.length <= 2000
+        ? data
+        : Array.from(
+            { length: 2000 },
+            (_, index) => data[Math.floor((index * data.length) / 2000)],
+          ),
+    [data],
+  )
+  const [domainLow, domainHigh] = chartDomain(
+    points.flatMap((point) => [point.actual, point.predicted]),
+  )
+  const domainSpan = domainHigh - domainLow
+  const xScale = (value: number) => marginLeft + ((value - domainLow) / domainSpan) * plotWidth
+  const yScale = (value: number) =>
+    marginTop + plotHeight - ((value - domainLow) / domainSpan) * plotHeight
+  const tickCount = width < 400 ? 3 : 5
   return (
     <div>
-      <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-        Actual vs Predicted
-      </label>
-      <ChartSvg width={width} height={height} className="mt-1">
-        {/* Grid lines + labels */}
-        {gridValues.map((v, i) => {
-          const x = xScale(v)
-          const y = yScale(v)
-          return (
-            <g key={`grid-${i}`}>
-              <line x1={marginLeft} y1={y} x2={marginLeft + chartW} y2={y} stroke={GRID_COLOR} strokeWidth={1} />
-              <line x1={x} y1={marginTop} x2={x} y2={marginTop + chartH} stroke={GRID_COLOR} strokeWidth={1} />
-              <text x={marginLeft - 6} y={y + 3} textAnchor="end" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
-                {v.toPrecision(3)}
-              </text>
-              <text x={x} y={marginTop + chartH + 14} textAnchor="middle" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
-                {v.toPrecision(3)}
-              </text>
-            </g>
-          )
-        })}
-
-        {/* 45-degree reference line */}
+      <h4 className="text-[15px] font-medium" style={{ color: "var(--text-primary)" }}>
+        Actual vs predicted
+      </h4>
+      <div className="text-[12px]" style={{ color: "var(--text-muted)" }}>
+        Observed values compared with predictions
+      </div>
+      <ChartSvg
+        width={width}
+        height={height}
+        className="mt-1"
+        ariaLabel="Actual versus predicted scatter plot"
+      >
+        <title>Actual versus predicted scatter plot; identity line marks equal values</title>
+        {chartTicks(domainLow, domainHigh, tickCount).map((value, index, all) => (
+          <g key={value}>
+            <line
+              x1={marginLeft}
+              y1={yScale(value)}
+              x2={marginLeft + plotWidth}
+              y2={yScale(value)}
+              stroke={gridColor}
+            />
+            <line
+              x1={xScale(value)}
+              y1={marginTop}
+              x2={xScale(value)}
+              y2={marginTop + plotHeight}
+              stroke={gridColor}
+            />
+            <text
+              x={marginLeft - 6}
+              y={yScale(value) + 4}
+              textAnchor="end"
+              fontSize={axisFontSize}
+              fill={axisTextColor}
+            >
+              {formatChartNumber(value)}
+            </text>
+            <text
+              x={xScale(value)}
+              y={marginTop + plotHeight + 15}
+              textAnchor={index === 0 ? "start" : index === all.length - 1 ? "end" : "middle"}
+              fontSize={axisFontSize}
+              fill={axisTextColor}
+            >
+              {formatChartNumber(value)}
+            </text>
+          </g>
+        ))}
         <line
-          x1={xScale(lo)} y1={yScale(lo)} x2={xScale(hi)} y2={yScale(hi)}
-          stroke={REF_LINE_COLOR} strokeWidth={1} strokeDasharray="4,3"
+          x1={xScale(domainLow)}
+          y1={yScale(domainLow)}
+          x2={xScale(domainHigh)}
+          y2={yScale(domainHigh)}
+          stroke={referenceColor}
+          strokeDasharray="4,3"
         />
-
-        {/* Scatter points */}
-        {points.map((p, i) => (
+        <title>Identity line: actual equals predicted</title>
+        {points.map((point, index) => (
           <circle
-            key={i}
-            cx={xScale(p.actual)}
-            cy={yScale(p.predicted)}
+            key={index}
+            cx={xScale(point.actual)}
+            cy={yScale(point.predicted)}
             r={2}
-            fill={SCATTER_COLOR}
+            fill={scatterColor}
             opacity={0.4}
           />
         ))}
-
-        {/* Axis labels */}
-        <text x={marginLeft + chartW / 2} y={height - 4} textAnchor="middle" fontSize={AXIS_FONT_SIZE} fill={AXIS_TEXT_COLOR}>
+        <text
+          x={marginLeft + plotWidth / 2}
+          y={height - 4}
+          textAnchor="middle"
+          fontSize={axisFontSize}
+          fill={axisTextColor}
+        >
           Actual
         </text>
         <text
-          x={10}
-          y={marginTop + chartH / 2}
+          x={12}
+          y={marginTop + plotHeight / 2}
           textAnchor="middle"
-          fontSize={AXIS_FONT_SIZE}
-          fill={AXIS_TEXT_COLOR}
-          transform={`rotate(-90,10,${marginTop + chartH / 2})`}
+          fontSize={axisFontSize}
+          fill={axisTextColor}
+          transform={`rotate(-90,12,${marginTop + plotHeight / 2})`}
         >
           Predicted
         </text>
       </ChartSvg>
-
-      <div className="mt-1 text-[10px]" style={{ color: "var(--text-muted)" }}>
+      <ChartLegend
+        compact
+        items={[
+          { label: "Predictions", color: scatterColor },
+          { label: "Identity (actual = predicted)", color: referenceColor, swatch: "dashed" },
+        ]}
+      />
+      <div className="mt-1 text-[12px]" style={{ color: "var(--text-muted)" }}>
         {data.length > 2000
           ? `Showing 2,000 of ${data.length.toLocaleString()} points (sampled)`
           : `${data.length.toLocaleString()} points`}

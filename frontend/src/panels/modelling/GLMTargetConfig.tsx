@@ -3,10 +3,13 @@ import type { OnUpdateConfig } from "../editors"
 import { ApiError } from "../../api/client"
 import type { DispersionParam } from "../../api/types"
 import { configField } from "../../utils/configField"
+import { effectiveMetrics } from "../../utils/trainingObjective"
 import { toggleButtonStyle } from "./styles"
 import { FailoverHelp } from "./FailoverHelp"
 import { OffsetFieldLabel } from "./OffsetFieldLabel"
 import { GLM_FAMILY_LINKS, isGlmFamily, type GlmFamily } from "./glmFamilies"
+import { ColumnSelector } from "./ColumnSelector"
+import { isNumericDtype } from "../../utils/polarsDtypes"
 
 type Column = { name: string; dtype: string }
 
@@ -72,11 +75,15 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
   const family = configField(config, "family", "")
   const link = configField(config, "link", "")
   const intercept = configField(config, "intercept", true)
-  const metrics = configField<string[]>(config, "metrics", ["gini", "poisson_deviance"])
+  const metrics = effectiveMetrics(config)
   const links: readonly string[] = isGlmFamily(family) ? GLM_FAMILY_LINKS[family] : []
   const canonicalLink = links[0]
   const linkUnavailable = link !== "" && !links.includes(link)
   const theta = config.theta
+  const offset = configField(config, "offset", "")
+  const targetColumns = columns.filter((column) => column.name !== weight && column.name !== offset)
+  const weightColumns = columns.filter((column) => isNumericDtype(column.dtype) && column.name !== target && column.name !== offset)
+  const offsetColumns = columns.filter((column) => isNumericDtype(column.dtype) && column.name !== target && column.name !== weight)
 
   const handleEstimate = async (param: DispersionParam) => {
     if (!onEstimateDispersion || estimating) return
@@ -112,57 +119,17 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
   return (
     <div>
       <p className="text-[10px] mb-1" aria-label="Selected algorithm">Algorithm <strong>Rustystats</strong></p>
-      <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-        Target & Weight
-      </label>
+      <h3 className="text-[14px] font-semibold" style={{ color: "var(--text-primary)" }}>Target and objective</h3>
       <div className="mt-1.5 space-y-2">
         {/* Target */}
         <div>
-          <label className="text-xs" style={{ color: "var(--text-secondary)" }}>Target column</label>
-          <select
-            value={target}
-            onChange={(e) => onUpdate("target", e.target.value)}
-            className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
-            style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-          >
-            <option value="">Select target...</option>
-            {columns.map(c => <option key={c.name} value={c.name}>{c.name} ({c.dtype})</option>)}
-          </select>
-        </div>
-
-        {/* Weight */}
-        <div>
-          <label className="text-xs" style={{ color: "var(--text-secondary)" }}>Weight column (optional)</label>
-          <select
-            value={weight}
-            onChange={(e) => onUpdate("weight", e.target.value)}
-            className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
-            style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-          >
-            <option value="">None</option>
-            {columns.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
-          </select>
-        </div>
-
-        {/* Offset */}
-        <div>
-          <OffsetFieldLabel />
-          <select
-            value={configField(config, "offset", "")}
-            onChange={(e) => onUpdate("offset", e.target.value || null)}
-            className="w-full mt-0.5 px-2.5 py-1.5 rounded-lg text-xs font-mono"
-            style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-          >
-            <option value="">None</option>
-            {columns.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
-          </select>
+          <label className="text-[13px]" style={{ color: "var(--text-secondary)" }}>Target column</label>
+          <ColumnSelector label="Target column" value={target} columns={targetColumns} onChange={(next) => onUpdate("target", next)} placeholder="Select target…" />
         </div>
 
         {/* Family */}
         <div>
-          <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-            Family
-          </label>
+            <h3 className="text-[14px] font-semibold" style={{ color: "var(--text-primary)" }}>Family</h3>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {FAMILIES.map(f => {
               const selected = family === f.value
@@ -195,7 +162,7 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
         {/* Link function: the links RustyStats supports for the family. */}
         {links.length > 0 && (
           <div>
-            <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
+            <label className="text-sm font-semibold" style={{ color: "var(--text-muted)" }}>
               Link Function
             </label>
             <div className="mt-1.5 flex flex-wrap gap-1.5">
@@ -307,6 +274,19 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
           </div>
         )}
 
+        <h3 className="text-[14px] font-semibold" style={{ color: "var(--text-primary)" }}>Weight and offset</h3>
+        {/* Weight */}
+        <div>
+          <label className="text-[13px]" style={{ color: "var(--text-secondary)" }}>Weight column (optional)</label>
+          <ColumnSelector label="Weight column" value={weight} columns={weightColumns} onChange={(next) => onUpdate("weight", next)} optional />
+        </div>
+
+        {/* Offset */}
+        <div>
+          <OffsetFieldLabel />
+          <ColumnSelector label="Offset column" value={offset} columns={offsetColumns} onChange={(next) => onUpdate("offset", next || null)} optional />
+        </div>
+
         {/* Intercept */}
         <label className="flex items-center gap-2 cursor-pointer select-none">
           <input
@@ -320,9 +300,7 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
 
         {/* Metrics */}
         <div>
-          <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
-            Metrics
-          </label>
+          <h3 className="text-[14px] font-semibold" style={{ color: "var(--text-primary)" }}>Metrics</h3>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {GLM_METRICS.map(m => {
               const selected = metrics.includes(m.value)

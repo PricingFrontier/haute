@@ -94,7 +94,7 @@ test.describe("core browser flows", () => {
     ).toBeVisible({ timeout: 120_000 })
     await expect(page.getByText("Model Info")).toBeVisible()
     await expect(
-      page.getByRole("columnheader", { name: "Development rows", exact: true }),
+      page.getByRole("term").filter({ hasText: /^Training rows$/ }),
     ).toBeVisible()
     const modelResultTabs = page.getByRole("tablist", { name: "Model result panes" })
     await expect(modelResultTabs.getByRole("tab", { name: "Summary", exact: true })).toBeVisible()
@@ -156,6 +156,8 @@ test.describe("core browser flows", () => {
     await expect(
       page.getByText(/Model trained - results in preview panel below/i),
     ).toBeVisible({ timeout: 120_000 })
+    // GLM fit details are collapsed under the Summary's "Fit details" disclosure.
+    await page.getByText("Fit details", { exact: true }).click()
     await expect(page.getByRole("table", { name: "Smooth terms" })).toBeVisible()
     const resultTabs = page.getByRole("tablist", { name: "Model result panes" })
     await resultTabs.getByRole("tab", { name: "Coefficients", exact: true }).click()

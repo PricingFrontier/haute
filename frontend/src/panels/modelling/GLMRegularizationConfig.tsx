@@ -3,7 +3,6 @@ import { ChevronRight } from "lucide-react"
 
 import type { OnUpdateConfig } from "../editors"
 import { configField } from "../../utils/configField"
-import { MODEL_COLORS } from "../../theme/colors"
 import { toggleButtonStyle } from "./styles"
 import { FailoverHelp } from "./FailoverHelp"
 import {
@@ -29,16 +28,9 @@ const REGULARIZATION_TYPES = [
   { value: "elastic_net", label: "Elastic Net" },
 ] as const
 
-const L1_RATIO_HELP =
-  "Elastic Net blends Ridge (L2) and LASSO (L1); the L1 ratio sets the mix. " +
-  "There is no sensible default - leaving it unset would silently fit pure " +
-  "Ridge, so a choice is required. Pick a mix, or collapse to Ridge (0) or " +
-  "LASSO (1). Your last mix value is kept if you switch back."
-
 const PENALTY_HELP =
-  "Cross-validated chooses the penalty strength on held-out folds of the " +
-  "training data; the seed fixes the folds so the same data selects the same " +
-  "penalty. Fixed uses the alpha you enter."
+  "Penalty-selection cross-validation chooses the penalty strength on held-out folds of the " +
+  "training data. Fixed uses the alpha you enter."
 
 const SOLVER_HELP =
   "Leave maximum iterations and tolerance blank to use RustyStats' defaults. " +
@@ -94,27 +86,18 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
       onUpdate("regularization", null)
       return
     }
-    // The cross-validation settings are written visibly when absent so the
-    // selected penalty is reproducible; existing values are kept.
+    // Store reproducible cross-validation defaults when absent; preserve existing values.
     const missing = Object.fromEntries(
       Object.entries(GLM_CV_DEFAULTS).filter(([key]) => config[key] === undefined || config[key] === null),
     )
-    onUpdate({ regularization: value, ...missing })
+    const l1RatioDefault = value === "elastic_net" && !l1RatioSet ? { l1_ratio: 0.5 } : {}
+    onUpdate({ regularization: value, ...missing, ...l1RatioDefault })
   }
 
   return (
     <div>
-      <h3
-        className="flex items-center gap-1 text-[11px] font-bold uppercase tracking-[0.08em]"
-        style={{ color: "var(--text-muted)" }}
-      >
+      <h3 className="text-sm font-semibold" style={{ color: "var(--text-muted)" }}>
         Regularization
-        {isActive && (
-          <span className="font-normal text-[10px] px-1.5 py-0.5 rounded-full"
-            style={{ background: MODEL_COLORS.accentSoft, color: MODEL_COLORS.accent }}>
-            {regularization}
-          </span>
-        )}
       </h3>
 
       <div className="mt-1.5 space-y-2">
@@ -123,6 +106,7 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
             <button
               key={r.value}
               type="button"
+              aria-pressed={regularization === r.value}
               onClick={() => chooseType(r.value)}
               className="px-2.5 py-1 rounded-md text-xs font-mono transition-colors"
               style={toggleButtonStyle(regularization === r.value)}
@@ -201,20 +185,6 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
                     <option value="1se">One standard error</option>
                   </select>
                 </label>
-                <label className="flex flex-col text-xs" style={LABEL_STYLE}>
-                  Seed
-                  <NumberField
-                    label="Cross-validation seed"
-                    value={numberOrUndefined(config.cv_seed)}
-                    min={0}
-                    step={1}
-                    integer
-                    required
-                    className={INPUT_CLASS}
-                    style={INPUT_STYLE}
-                    onCommit={(value) => onUpdate("cv_seed", value)}
-                  />
-                </label>
               </div>
             ) : (
               <label className="flex flex-col text-xs" style={LABEL_STYLE}>
@@ -236,51 +206,17 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
 
             {regularization === "elastic_net" && (
               <div>
-                <label className="flex items-center gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
-                  L1 ratio (0=Ridge, 1=Lasso)
-                  <FailoverHelp label={L1_RATIO_HELP} />
-                </label>
-                <div className="flex gap-1.5 mt-1">
-                  <button
-                    type="button"
-                    onClick={() => onUpdate("l1_ratio", 0)}
-                    className="px-2 py-0.5 rounded text-[10px] font-mono transition-colors"
-                    style={toggleButtonStyle(l1RatioSet && l1Ratio === 0)}
-                  >
-                    Fit Ridge (0)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onUpdate("l1_ratio", 1)}
-                    className="px-2 py-0.5 rounded text-[10px] font-mono transition-colors"
-                    style={toggleButtonStyle(l1RatioSet && l1Ratio === 1)}
-                  >
-                    Fit LASSO (1)
-                  </button>
+                <label className="text-[11px]" style={{ color: "var(--text-muted)" }} htmlFor={`${solverId}-l1-ratio`}>L1 ratio</label>
+                <input
+                  id={`${solverId}-l1-ratio`}
+                  type="range" min={0} max={1} step={0.05}
+                  value={l1Ratio}
+                  onChange={(e) => onUpdate("l1_ratio", parseFloat(e.target.value))}
+                  className="w-full mt-1.5"
+                />
+                <div className="text-[11px] font-mono text-right" style={{ color: "var(--text-muted)" }}>
+                  {l1RatioSet ? l1Ratio.toFixed(2) : "Not set"}
                 </div>
-                {l1RatioSet ? (
-                  <>
-                    <input
-                      type="range" min={0} max={1} step={0.05}
-                      aria-label="L1 ratio"
-                      value={l1Ratio}
-                      onChange={(e) => onUpdate("l1_ratio", parseFloat(e.target.value))}
-                      className="w-full mt-1.5"
-                    />
-                    <div className="text-[11px] font-mono text-right" style={{ color: "var(--text-muted)" }}>
-                      {l1Ratio.toFixed(2)}
-                    </div>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => onUpdate("l1_ratio", 0.5)}
-                    className="w-full mt-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium"
-                    style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)", color: "var(--warning)" }}
-                  >
-                    Set L1 ratio mix (required for Elastic Net)
-                  </button>
-                )}
               </div>
             )}
           </>
@@ -291,7 +227,7 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
             type="button"
             aria-expanded={solverOpen}
             aria-controls={solverId}
-            className="focus-ring flex items-center gap-0.5 rounded text-[11px] font-bold uppercase tracking-[0.08em]"
+            className="focus-ring flex items-center gap-0.5 rounded text-sm font-semibold"
             style={{ color: "var(--text-muted)" }}
             onClick={() => setSolverOpen(!solverOpen)}
           >

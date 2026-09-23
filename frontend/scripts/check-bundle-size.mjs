@@ -45,7 +45,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // rating editors' own reads, and the execution-diagnostics indicator — almost
 // all of it lazy panel code. The complete production bundle is 1,400.2 KiB;
 // 1,410 KiB restores about 10 KiB of aggregate headroom.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1410
+// The modelling UI redesign (validation workspace, allocation preview, run
+// summary, column selector and pane readiness) is lazy modelling-panel code and
+// brings the complete production bundle to 1,412.8 KiB; 1,423 KiB restores
+// about 10 KiB of aggregate headroom with the startup and vendor caps unchanged.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1423
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
@@ -125,7 +129,12 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // on data the panel is already showing. The lazy-only preload guard above still
 // passes, so nothing was pulled forward by accident. The merged initial bundle
 // is 290.2 KiB; 292 KiB restores ~1.8 KiB of headroom on the same terms.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 292
+// The modelling validation focus view adds ~0.6 KiB to shared eager components:
+// ModalShell's inline (inactive) mode and closed-disclosure focus trap, the
+// preview frame's focus and remembered-height options, and the results tab
+// appearance. The modelling panes themselves stay lazy. The merged initial
+// bundle is 292.3 KiB; 294 KiB restores ~1.7 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 294
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely
