@@ -80,6 +80,8 @@ def _examples():
             "feature_weights": {"_age": 0.8},
             "fold_column": "_fold",
             "id_columns": ["_identifier"],
+            "positive_class": "claim",
+            "device": "gpu",
         }
     )
     optimiser = by_type[NodeType.OPTIMISER]

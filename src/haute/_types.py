@@ -622,6 +622,9 @@ class ModellingConfig(TypedDict, total=False):
     id_columns: list[str]
     categorical_levels: dict[str, list[str | None]]
     mlflow_destination: str  # "" | "databricks" | "server" | "local"; absent = auto
+    # Binary classification: the label trained as positive (absent = True / 1)
+    positive_class: str | int | float | bool
+    device: str  # "cpu" | "gpu" (GPU-capable families only: XGBoost); absent = "cpu"
 
 
 class OptimiserConfig(TypedDict, total=False):
