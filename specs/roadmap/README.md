@@ -27,13 +27,13 @@ or maintenance issue; `P3` opportunistic work.
 | [Execution engine](execution-engine.md) | Process-global configuration lock, chunked runner, memory-safety mechanism, one execution walker | `EXEC-R01` |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E09` |
 | [Expression parsing](expression-parsing.md) | Traced formulas evaluated by Polars | `EXPR-R01` |
-| [Frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md) | Shared result tabs, target configuration and charts | `FMO-R01` |
+| [Frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md) | Shared result tabs, target configuration and charts; why a training estimate is unavailable | `FMO-R01` |
 | [Frontend node editors](frontend-node-editors.md) | Shared editor pieces and one dispatcher | `FNE-R01` |
 | [Frontend shared](frontend-shared.md) | Job polling, repeated helpers, results store | `FSH-R01` |
 | [IO layer](io-layer.md) | One dtype vocabulary, one atomic write and file lock | `IO-R01` |
 | [JSON shredding](json-shredding.md) | One non-finite float encoding, explicit output nesting | `JSON-R01` |
 | [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients | `MLF-R02` |
-| [Modelling](modelling.md) | RustyStats 0.9.0 upgrade, GLM terms and interactions; proposed XGBoost, LightGBM, and EBM lifecycle support; estimate failures, invariant checks | `MOD-T00` |
+| [Modelling](modelling.md) | RustyStats 0.9.0 upgrade, GLM terms and interactions; proposed XGBoost, LightGBM, and EBM lifecycle support; invariant checks | `MOD-T00` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers, auto-range, input isolation, frontier selection | `OPT-P11` |
 | [Pipeline config](pipeline-config.md) | Silent key drops, repair, save validation, the error a rejected config reports, project context, typed configs, node specification | `PCFG-R05` |
 | [Sandbox security](sandbox-security.md) | One path-containment check, the node-code guard | `SBX-R01` |
