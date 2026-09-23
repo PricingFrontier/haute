@@ -41,7 +41,8 @@ In scope:
   WebSocket client registry and broadcast fan-out, and the on-disk sidecar (`.haute.json`)
   format.
 - The pipeline routes (`haute.routes.pipeline`): list/get/save/preview/trace/output-write
-  and output-destination preview, their
+  and output-destination preview, the editor's execution settings (the streaming chunk
+  size, `GET`/`PUT /api/execution-settings`), their
   request-supersession and concurrency-limiting behaviour, and the transactional save
   service (`haute.routes._save_pipeline`).
 - The file-browsing and schema-inspection routes (`haute.routes.files`), the utility-script
@@ -389,8 +390,8 @@ ledger capture.
 
 `SavePipelineService.validate_graph(...)` is the public, no-write validation
 entry point used by both `save(...)` and assistant dry-run. It performs the
-same singleton, data-I/O, Edge Join role/key/topology, sanitized-name,
-load-error, API-input and path validation that can be decided without staging
+same singleton, data-I/O, declared-config-key, Edge Join role/key/topology,
+sanitized-name, load-error, API-input and path validation that can be decided without staging
 files. Edge Join validation uses the canonical backend join validators, not a
 save- or assistant-specific approximation. Save invokes it before any write,
 so the validation paths cannot drift.

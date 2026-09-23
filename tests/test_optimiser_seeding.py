@@ -460,12 +460,11 @@ def test_estimate_seeds_setup_capture(project: Path, monkeypatch: pytest.MonkeyP
 def test_optimiser_leaves_no_checkpoint_directory(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Solve, auto-range, and the estimate write no checkpoint directory or cache entry."""
+    """Solve, auto-range, and the estimate write no checkpoint directory."""
     import tempfile
 
     from fastapi.testclient import TestClient
 
-    from haute._dataframe_execution_cache import DataFrameExecutionCache
     from haute.server import app
 
     created: list[str] = []
@@ -476,13 +475,7 @@ def test_optimiser_leaves_no_checkpoint_directory(
         created.append(Path(path).name)
         return path
 
-    stored: list[Any] = []
     monkeypatch.setattr(tempfile, "mkdtemp", recording_mkdtemp)
-    monkeypatch.setattr(
-        DataFrameExecutionCache,
-        "store_artifact",
-        lambda self, *args, **kwargs: stored.append(args),
-    )
     client = TestClient(app, raise_server_exceptions=False)
     graph = _online_chain(project)
 
@@ -504,7 +497,6 @@ def test_optimiser_leaves_no_checkpoint_directory(
         if name.startswith(checkpoint_prefixes)
         and not name.startswith("haute_frontier_range_parts_")
     ] == []
-    assert stored == []
 
 
 def _poll(client: Any, route: str, job_id: str) -> str:

@@ -111,6 +111,16 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/WarehouseListResponse"},
         },
     },
+    "/api/execution-settings": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/ExecutionSettings"},
+        },
+        "PUT": {
+            "request_ref": "#/components/schemas/ExecutionSettings",
+            "success_schema": {"$ref": "#/components/schemas/ExecutionSettings"},
+        },
+    },
     "/api/explore/pivots/cancel/{job_id}": {
         "POST": {
             "request_ref": None,

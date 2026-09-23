@@ -46,7 +46,7 @@ logger = get_logger(component="cache")
 #
 # v5: canonical-JSON encoder unification (W2.13).  The two divergent
 # encoders (``_canonicalise`` here vs ``_normalise_execution_policy``
-# in ``_dataframe_execution_cache``) were replaced by the single
+# in the dataframe execution cache, since removed) were replaced by the single
 # :func:`canonical_json`.  Node-config digest material switched from
 # spaced ``json.dumps`` separators to the canonical compact form, so
 # every node with a non-empty config produces different digest bytes.
@@ -91,7 +91,6 @@ class CacheConsumer(StrEnum):
     GRAPH_STRUCTURE = "graph_structure"
     GRAPH_EXECUTION = "graph_execution"
     PREVIEW_TRACE = "preview_trace"
-    DATAFRAME_EXECUTION = "dataframe_execution"
     RUNTIME_GRAPH_INPUT = "runtime_graph_input"
     DEPLOY_SCHEMA = "deploy_schema"
     MODEL_CONTRACT = "model_contract"
@@ -380,39 +379,6 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
                 ),
             },
             excluded={},
-        ),
-        CacheConsumer.DATAFRAME_EXECUTION: _consumer_contract(
-            CacheConsumer.DATAFRAME_EXECUTION,
-            version=2,
-            fields=(
-                "namespace",
-                "node_id",
-                "lineage_fingerprint",
-                "source",
-                "profile",
-                "input_fingerprint",
-                "required_columns",
-                "extra_keys",
-                "execution_policy",
-            ),
-            consumed={
-                CacheInputClass.NODE_CONFIG: ("lineage_fingerprint",),
-                CacheInputClass.UPSTREAM_LINEAGE: ("lineage_fingerprint",),
-                CacheInputClass.EDGE_WIRING: ("lineage_fingerprint",),
-                CacheInputClass.USER_CODE: ("lineage_fingerprint",),
-                CacheInputClass.SOURCE_SELECTION: ("source",),
-                CacheInputClass.RUNTIME_FILES: ("input_fingerprint",),
-                CacheInputClass.ARTIFACTS: ("input_fingerprint",),
-                CacheInputClass.REQUEST_SHAPE: (
-                    "namespace",
-                    "node_id",
-                    "profile",
-                    "required_columns",
-                    "extra_keys",
-                ),
-                CacheInputClass.EXECUTION_POLICY: ("execution_policy",),
-            },
-            excluded={CacheInputClass.ROW_LIMIT: _FULL_FRAME_NO_ROW_LIMIT},
         ),
         CacheConsumer.RUNTIME_GRAPH_INPUT: _consumer_contract(
             CacheConsumer.RUNTIME_GRAPH_INPUT,

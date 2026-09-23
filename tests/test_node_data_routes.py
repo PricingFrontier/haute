@@ -21,7 +21,7 @@ from haute._node_snapshots import (
     NodeSnapshotColumns,
     NodeSnapshotStore,
 )
-from haute._polars_utils import current_streaming_chunk_size, temporary_streaming_chunk_size
+from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
 from haute.routes import _node_data_service as service_mod
 from tests.conftest import make_edge, make_graph
 
@@ -1387,7 +1387,7 @@ def test_a_build_whose_seed_is_replaced_before_it_publishes_is_not_reported_cach
 
 @pytest.mark.usefixtures("in_process_worker")
 def test_explicit_build_of_a_join_is_chunked_and_equals_native(
-    client: TestClient, project: Path
+    client: TestClient, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     claims_path = project / "claims.parquet"
     pl.DataFrame(
@@ -1463,7 +1463,9 @@ def test_explicit_build_of_a_join_is_chunked_and_equals_native(
     ).model_dump()
 
     # 100 rows in chunks of 40: three parts, without a query per two rows.
-    job = _cache(client, graph, "explore", streaming_chunk_size=40)
+    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    set_streaming_chunk_size(40)
+    job = _cache(client, graph, "explore")
     assert job["status"] == "completed"
 
     resolver = _resolver(project, graph)
@@ -1605,7 +1607,7 @@ def _captured_join_graph(project: Path, claims_path: Path) -> dict[str, Any]:
     ).model_dump()
 
 
-def test_an_explicit_build_and_its_captures_share_the_requested_chunk_size(
+def test_an_explicit_build_and_its_captures_share_the_editor_chunk_size(
     client: TestClient,
     project: Path,
     in_process_worker: None,
@@ -1632,20 +1634,23 @@ def test_an_explicit_build_and_its_captures_share_the_requested_chunk_size(
     monkeypatch.setattr(haute._execute_lazy, "write_parts", _recording_write_parts)
     monkeypatch.setattr(haute._chunked_writes, "write_parts", _recording_write_parts)
 
+    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    editor_size = 200
+    set_streaming_chunk_size(editor_size)
+
     graph = _captured_join_graph(project, claims_path)
-    requested_size = 200
-    job = _cache(client, graph, "explore", streaming_chunk_size=requested_size)
+    job = _cache(client, graph, "explore")
     assert job["status"] == "completed"
 
     assert len(recorded) >= 2
     for ambient, chunk_rows in recorded:
         effective_size = chunk_rows if chunk_rows is not None else ambient
-        assert effective_size == requested_size
-        assert ambient == requested_size
+        assert effective_size == editor_size
+        assert ambient == editor_size
 
     captures = job["execution_metrics"]["shared_snapshot_captures"]
     join_capture = next(c for c in captures if c["node_id"] == "join_node")
-    assert join_capture["write_chunk_rows"] == requested_size
+    assert join_capture["write_chunk_rows"] == editor_size
 
     resolver = _resolver(project, graph)
     identity = resolver.node_output_slot("target_node").identity(
@@ -1665,50 +1670,6 @@ def test_an_explicit_build_and_its_captures_share_the_requested_chunk_size(
         .sort("policy_id")
     )
     assert_frame_equal(gen_df.select(expected.columns), expected)
-
-
-def test_a_build_without_a_chunk_size_leaves_the_ambient_size_alone(
-    client: TestClient,
-    project: Path,
-    in_process_worker: None,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    claims_path = project / "claims.parquet"
-    pl.DataFrame(
-        {
-            "policy_id": list(range(1000)),
-            "claim_amount": [float(i * 10) for i in range(1000)],
-        }
-    ).write_parquet(claims_path)
-
-    recorded: list[tuple[int, int | None]] = []
-    real_write_parts = haute._chunked_writes.write_parts
-
-    def _recording_write_parts(*args: Any, **kwargs: Any) -> Any:
-        ambient = current_streaming_chunk_size()
-        chunk_rows = kwargs.get("chunk_rows")
-        recorded.append((ambient, chunk_rows))
-        return real_write_parts(*args, **kwargs)
-
-    monkeypatch.setattr(service_mod, "write_parts", _recording_write_parts, raising=False)
-    monkeypatch.setattr(haute._execute_lazy, "write_parts", _recording_write_parts)
-    monkeypatch.setattr(haute._chunked_writes, "write_parts", _recording_write_parts)
-
-    graph = _captured_join_graph(project, claims_path)
-    ambient_size = 350
-    assert ambient_size != current_streaming_chunk_size()
-
-    with temporary_streaming_chunk_size(ambient_size):
-        job = _cache(client, graph, "explore")
-        assert job["status"] == "completed"
-        assert len(recorded) >= 2
-        for ambient, chunk_rows in recorded:
-            effective_size = chunk_rows if chunk_rows is not None else ambient
-            assert effective_size == ambient_size
-            assert ambient == ambient_size
-        assert current_streaming_chunk_size() == ambient_size
-
-    assert current_streaming_chunk_size() != ambient_size
 
 
 @pytest.mark.usefixtures("in_process_worker")
@@ -1770,7 +1731,9 @@ def test_explicit_build_of_a_chunk_local_filter_is_input_sliced_and_equals_nativ
         }
     ).model_dump()
 
-    job = _cache(client, graph, "explore", streaming_chunk_size=200)
+    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    set_streaming_chunk_size(200)
+    job = _cache(client, graph, "explore")
     assert job["status"] == "completed"
 
     assert len(recorded_writes) == 1

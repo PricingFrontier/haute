@@ -20,7 +20,7 @@ root directory and pipeline entry file, including scaffolding a new one via `hau
 **In scope:** the `Pipeline`/`Submodel`/`NodeRegistry` decorator API and its standalone
 `run()`/`score()` executor; per-node-type config dict construction and its cross-check against
 a user-declared `contract=`; the sidecar JSON path conventions, read/write helpers, and the
-write-time key allowlist; the per-node-type recognised config contract; converting parsed source into the graph models
+declared config keys that parse and save enforce; the per-node-type recognised config contract; converting parsed source into the graph models
 (explicit `connect()` edges and implicit parameter-name-matching edges — never invented
 ones); the topology-only shape contracts (currently: Explore node in/out-degree); Haute
 project-root and pipeline-file discovery; and `haute init` project scaffolding.
@@ -364,21 +364,23 @@ other input names in a snippet must be kept in sync by the author.
 The component leans hard on failing loudly rather than guessing: duplicate node names,
 `async def` node bodies, ambiguous pipeline auto-discovery, a `contract=` declaration that
 disagrees with what the config implies, and a missing sidecar for a folder-backed node type
-all raise a specific, named error rather than silently picking a default. The one deliberate
-exception is unrecognised config keys, which are logged at WARNING and otherwise ignored —
-both when a node's config is first built and again when it is written back to its sidecar —
-so a stale or externally-introduced key is observable without turning every load into a hard
-failure.
+all raise a specific, named error rather than silently picking a default. Unrecognised config
+keys follow the same rule. A key the node type does not declare fails the parse with a
+`ConfigError` naming the node and the key, and a save that carries one is refused before
+anything is written. A key that is dropped and logged would lose persisted work without the
+user seeing it. The editor opens a pipeline whose sidecar carries such a key in recovery,
+where only that node is unavailable, and the node's repair removes the key while keeping it
+in the recovery evidence.
 
 Config that is genuinely code (pricing logic, transforms) lives in the `.py` function body;
 everything else declarative lives in a JSON sidecar. This keeps generated/round-tripped
 Python readable — no large JSON blobs embedded as string literals — while letting the GUI
 edit the declarative parts without ever touching Python source.
 
-Sidecar writes pass every config dict through an allowlist derived from each node type's
-`TypedDict` annotations before serialising, dropping (and logging) anything outside it. This
-catches off-spec keys smuggled in by external tooling, a not-yet-hardened code path, or a
-frontend bug, without failing the save itself.
+A node type's declared keys are its `TypedDict` annotations plus the universal keys. The same
+set is checked at parse, at save validation, and again at the sidecar write boundary. An
+off-spec key from external tooling, a not-yet-hardened code path, or a frontend bug therefore
+fails the operation that carries it, and no code path removes a key and continues.
 
 Rating-step sidecars have one canonical persisted entry shape: ordered row arrays. Reads and
 writes validate that shape directly. Object-key maps are not accepted because a JSON object key
@@ -447,9 +449,10 @@ function name becomes the graph node id, so a silent collision would drop a node
 with the contract derived from the rest of the node's config raises, naming which side
 (inputs/outputs) mismatched and what was missing or extra on each. Ambiguous or absent
 pipeline-file resolution raises, enumerating every candidate it considered. Not being inside
-a Haute project (no `haute.toml`, or no git repository above it) raises. Unrecognised config
-keys are logged at WARNING and dropped or ignored rather than failing the surrounding operation,
-except retired identity fields whose presence is an explicit contract error. Optimiser
+a Haute project (no `haute.toml`, or no git repository above it) raises. An unrecognised config
+key is a `ConfigError` at parse that names the node and the key, and a save that carries one is
+refused with HTTP 400 naming both, before any file is written. Retired identity fields are
+refused with their own targeted message. Optimiser
 `data_input`/`banding_source` and Optimiser Apply `ratebook_input` persist exact incoming-edge
 names and are never remapped from node ids; an unmatched name fails graph/runtime validation.
 Plural discovery still skips a candidate whose contents cannot be read.

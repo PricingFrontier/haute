@@ -333,6 +333,10 @@ Out of scope (owned elsewhere):
   model artifact found."
 - Loading a local file with an unsupported extension via
   `load_local_model`: `NotImplementedError`.
+- A CatBoost model whose metadata cannot be read: `ConfigError` naming the
+  model file or run artifact. Only an absent offset key means the model was
+  trained without an offset. An unreadable one is never taken to mean that,
+  because the model would then score from baseline zero.
 - A model artifact that is still corrupt/unloadable after the one bounded
   retry: `RuntimeError` naming the run ID, artifact path, flavor, and the
   last underlying error.

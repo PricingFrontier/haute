@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 import pytest
 from click.testing import CliRunner
 from hypothesis import settings as hypothesis_settings
@@ -104,6 +105,22 @@ def _restore_mlflow_databricks_binding() -> Iterator[None]:
     from haute._mlflow_utils import _restore_mlflow_databricks_credentials
 
     _restore_mlflow_databricks_credentials()
+
+
+@pytest.fixture(autouse=True)
+def _restore_streaming_chunk_size() -> Iterator[None]:
+    """Put back the process-wide Polars streaming chunk size after each test.
+
+    ``set_streaming_chunk_size`` (directly or through ``PUT
+    /api/execution-settings``) sets it for the whole process, so a test's tiny
+    chunk size would otherwise reach whichever test runs next on the same
+    worker. Polars caches the value and rereads ``POLARS_STREAMING_CHUNK_SIZE``
+    only through its ``Config`` API, so editing the environment (as
+    ``monkeypatch.delenv`` does) cannot restore it.
+    """
+    before = os.environ.get("POLARS_STREAMING_CHUNK_SIZE")
+    yield
+    pl.Config.set_streaming_chunk_size(None if before is None else int(before))
 
 
 @pytest.fixture(autouse=True)

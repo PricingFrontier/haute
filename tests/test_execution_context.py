@@ -3166,7 +3166,7 @@ async def test_sink_route_creates_lazy_sink_execution_context(monkeypatch, tmp_p
     captured = {}
 
     def fake_execute_sink(*args, **_kwargs):
-        captured["budget"] = args[8]
+        captured["budget"] = args[7]
         return WriteOutputResponse(status="ok")
 
     with patch.object(

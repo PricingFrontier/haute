@@ -211,7 +211,6 @@ export default function OptimiserConfig({
         graph: buildGraphCb(),
         node_id: nodeId,
         source: activeSource,
-        streamingChunkSize: useSettingsStore.getState().streamingChunkSize,
         signal,
       }),
     [buildGraphCb, nodeId, activeSource],
@@ -271,7 +270,6 @@ export default function OptimiserConfig({
       const result = await solveOptimiser({
         graph: buildGraphCb(),
         node_id: nodeId,
-        streamingChunkSize: useSettingsStore.getState().streamingChunkSize,
       })
       if (!isDocumentExecutionFenceCurrent(documentFence)) return
       if (result.status === "started" && result.job_id) {

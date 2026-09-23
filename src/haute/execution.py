@@ -9,10 +9,6 @@ evolve.
 
 from __future__ import annotations
 
-import atexit
-import shutil
-import tempfile
-import threading
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -38,20 +34,6 @@ from haute._cache import (
 )
 from haute._cache import (
     _pipeline_dir as _cache_pipeline_dir,
-)
-from haute._dataframe_execution_cache import (
-    CacheArtifactCorruptError,
-    CacheArtifactMissingError,
-    CacheArtifactTooLargeError,
-    DataFrameExecutionCache,
-    DataFrameExecutionCacheEntry,
-    DataFrameExecutionCacheError,
-    DataFrameExecutionCacheKey,
-    DataFrameExecutionCacheRequest,
-    dataframe_execution_cache_key,
-    dataframe_execution_cache_profile,
-    dataframe_execution_policy_fingerprint,
-    materialize_lazy_frame_with_cache,
 )
 from haute._estimate_calibration import calibrate_materialisation_bytes
 from haute._execution_context import ExecutionContext, ExecutionProfile
@@ -108,16 +90,6 @@ if TYPE_CHECKING:
 __all__ = [
     "AllExceptColumns",
     "BoundedDiagnosticCollection",
-    "CacheArtifactCorruptError",
-    "CacheArtifactMissingError",
-    "CacheArtifactTooLargeError",
-    "DataFrameExecutionCache",
-    "DataFrameExecutionCacheEntry",
-    "DataFrameExecutionCacheError",
-    "DataFrameExecutionCacheKey",
-    "DataFrameExecutionCacheRequest",
-    "dataframe_execution_policy_fingerprint",
-    "dataframe_execution_cache_profile",
     "LazyExecutionResult",
     "DiagnosticDetailState",
     "ExecutionBoundedness",
@@ -129,17 +101,11 @@ __all__ = [
     "ProjectionPlan",
     "ProjectionRequest",
     "build_linear_execution_chain_functions",
-    "build_dataframe_execution_cache_request",
     "canonical_dataframe_execution_graph",
     "dataframe_frame_input_fingerprint",
     "dataframe_graph_input_fingerprint",
     "dataframe_paths_input_fingerprint",
-    "default_dataframe_execution_cache",
-    "dataframe_lazy_execution_policy",
-    "dataframe_execution_cache_key",
     "execute_lazy_graph",
-    "invalidate_dataframe_execution_cache",
-    "materialize_lazy_frame_with_cache",
     "plan_prepared_execution_strategy",
     "plan_execution_strategy",
     "plan_projection",
@@ -154,9 +120,6 @@ _PREVIEW_CONTRACT_FINGERPRINT_VERSION = 1
 
 LazyExecutionResult = tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]
 
-_DEFAULT_DATAFRAME_EXECUTION_CACHE_ROOT: Path | None = None
-_DEFAULT_DATAFRAME_EXECUTION_CACHE: DataFrameExecutionCache | None = None
-_DEFAULT_DATAFRAME_EXECUTION_CACHE_LOCK = threading.Lock()
 _AUTO_MATERIALISATION_ESTIMATE = object()
 _DATAFRAME_ROW_HASH_ENCODING = "polars-u64-le:v1"
 _SOURCE_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
@@ -172,33 +135,6 @@ _LOCAL_RUNTIME_INPUT_PATH_FIELDS_BY_NODE_TYPE: dict[NodeType, tuple[str, ...]] =
     # ``model/model.cbm``), not a path on the Haute project filesystem.
     NodeType.MODEL_SCORE: ("feature_contract_path",),
 }
-
-
-def default_dataframe_execution_cache() -> DataFrameExecutionCache:
-    """Return the process-local backend dataframe execution cache.
-
-    Created lazily on first use so that pure-import callers (CI smoke tests,
-    metadata scanners) do not leave a temp directory behind.  The root is
-    cleaned up at interpreter exit.
-    """
-    global _DEFAULT_DATAFRAME_EXECUTION_CACHE, _DEFAULT_DATAFRAME_EXECUTION_CACHE_ROOT
-    with _DEFAULT_DATAFRAME_EXECUTION_CACHE_LOCK:
-        if _DEFAULT_DATAFRAME_EXECUTION_CACHE is None:
-            root = Path(tempfile.mkdtemp(prefix="haute_dfexec_cache_"))
-            cache = DataFrameExecutionCache(root=root)
-            atexit.register(lambda: shutil.rmtree(root, ignore_errors=True))
-            _DEFAULT_DATAFRAME_EXECUTION_CACHE_ROOT = root
-            _DEFAULT_DATAFRAME_EXECUTION_CACHE = cache
-        return _DEFAULT_DATAFRAME_EXECUTION_CACHE
-
-
-def invalidate_dataframe_execution_cache() -> None:
-    """Clear every materialized backend dataframe artifact owned by this process."""
-
-    with _DEFAULT_DATAFRAME_EXECUTION_CACHE_LOCK:
-        cache = _DEFAULT_DATAFRAME_EXECUTION_CACHE
-    if cache is not None:
-        cache.invalidate()
 
 
 def canonical_dataframe_execution_graph(graph: PipelineGraph) -> PipelineGraph:
@@ -808,68 +744,6 @@ def _finalise_execution_strategy(
     )
 
 
-def _normalise_policy_column_demand(
-    demand: Iterable[str] | AllExceptColumns | None,
-) -> object:
-    if demand is None:
-        return None
-    if isinstance(demand, AllExceptColumns):
-        return {
-            "kind": "all_except",
-            "required_columns": sorted(demand.required_columns),
-            "excluded_columns": sorted(demand.excluded_columns),
-        }
-    if isinstance(demand, str | bytes):
-        raise TypeError("required column policy demand must be an iterable of names")
-    columns: set[str] = set()
-    for column in demand:
-        if not isinstance(column, str) or not column:
-            raise ValueError("required column policy demand must contain non-empty strings")
-        columns.add(column)
-    return sorted(columns)
-
-
-def dataframe_lazy_execution_policy(
-    *,
-    target_node_id: str | None,
-    source_by_node: Mapping[str, str] | None = None,
-    required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
-    preserve_node_ids: Iterable[str] | None = None,
-    enforce_contracts: bool = False,
-    preamble_ns_supplied: bool = False,
-) -> Mapping[str, object]:
-    """Return the non-graph policy payload used for dataframe execution keys."""
-
-    normalised_sources: dict[str, str] = {}
-    for node_id, source in (source_by_node or {}).items():
-        if not isinstance(node_id, str) or not node_id:
-            raise ValueError("source_by_node keys must be non-empty strings")
-        if not isinstance(source, str) or not source:
-            raise ValueError("source_by_node values must be non-empty strings")
-        normalised_sources[node_id] = source
-
-    normalised_required: dict[str, object] = {}
-    for node_id, demand in (required_columns_by_node or {}).items():
-        if not isinstance(node_id, str) or not node_id:
-            raise ValueError("required_columns_by_node keys must be non-empty strings")
-        normalised_required[node_id] = _normalise_policy_column_demand(demand)
-
-    preserved: set[str] = set()
-    for node_id in preserve_node_ids or ():
-        if not isinstance(node_id, str) or not node_id:
-            raise ValueError("preserve_node_ids must contain non-empty strings")
-        preserved.add(node_id)
-
-    return {
-        "target_node_id": target_node_id,
-        "source_by_node": dict(sorted(normalised_sources.items())),
-        "required_columns_by_node": dict(sorted(normalised_required.items())),
-        "preserve_node_ids": sorted(preserved),
-        "enforce_contracts": bool(enforce_contracts),
-        "preamble_ns_supplied": bool(preamble_ns_supplied),
-    }
-
-
 def _runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
     resolved = path.resolve()
     if not resolved.exists():
@@ -1449,62 +1323,6 @@ def preview_lineage_cache_key(
     return lineage_cache_key(request)
 
 
-def build_dataframe_execution_cache_request(
-    graph: PipelineGraph,
-    *,
-    node_ids: Iterable[str],
-    namespace: str,
-    source: str,
-    profile: ExecutionProfile | str,
-    input_fingerprint: str,
-    target_node_id: str | None,
-    source_by_node: Mapping[str, str] | None = None,
-    required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
-    preserve_node_ids: Iterable[str] | None = None,
-    enforce_contracts: bool = False,
-    preamble_ns_supplied: bool = False,
-    cache: DataFrameExecutionCache | None = None,
-    streaming_chunk_size: int | None = None,
-    fast_checkpoint: bool = True,
-) -> DataFrameExecutionCacheRequest:
-    """Build a validated cache request for one lazy execution run."""
-
-    graph = canonical_dataframe_execution_graph(graph)
-    node_id_list = list(node_ids)
-    if not node_id_list:
-        raise ValueError("node_ids must contain at least one node ID")
-    policy = dataframe_lazy_execution_policy(
-        target_node_id=target_node_id,
-        source_by_node=source_by_node,
-        required_columns_by_node=required_columns_by_node,
-        preserve_node_ids=preserve_node_ids,
-        enforce_contracts=enforce_contracts,
-        preamble_ns_supplied=preamble_ns_supplied,
-    )
-    memo = GraphFingerprintMemo()
-    keys_by_node: dict[str, DataFrameExecutionCacheKey] = {}
-    for node_id in node_id_list:
-        demand = (required_columns_by_node or {}).get(node_id)
-        required_columns = None if isinstance(demand, AllExceptColumns) else demand
-        keys_by_node[node_id] = dataframe_execution_cache_key(
-            graph,
-            node_id=node_id,
-            namespace=namespace,
-            source=source,
-            profile=profile,
-            input_fingerprint=input_fingerprint,
-            required_columns=required_columns,
-            execution_policy=policy,
-            memo=memo,
-        )
-    return DataFrameExecutionCacheRequest(
-        cache=cache if cache is not None else default_dataframe_execution_cache(),
-        keys_by_node=keys_by_node,
-        streaming_chunk_size=streaming_chunk_size,
-        fast_checkpoint=fast_checkpoint,
-    )
-
-
 def execute_lazy_graph(
     graph: PipelineGraph,
     build_node_fn: Callable[..., Any],
@@ -1517,7 +1335,6 @@ def execute_lazy_graph(
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
     execution_context: ExecutionContext | None = None,
     source_by_node: Mapping[str, str] | None = None,
-    dataframe_cache_request: DataFrameExecutionCacheRequest | None = None,
     schema_only: bool = False,
     runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None,
     prepare_inputs: bool = True,
@@ -1534,8 +1351,7 @@ def execute_lazy_graph(
     Supply ``runtime_source_frames_by_node`` when source nodes are injected
     DataFrames and group-by admission must estimate those request-local inputs.
     A ``snapshot_plan`` (``haute._seed_plans``) makes the run seed from and
-    capture into shared snapshots; without one nothing is captured, and only a
-    ``dataframe_cache_request`` (deploy scoring) materialises node outputs.
+    capture into shared snapshots; without one nothing is captured.
     ``join_recipes``, when given, receives the recipe of every edge join the
     run builds, so a caller writing one in full can write it in chunks;
     ``write_recipes``, when given, receives the recipe of every single-input
@@ -1556,7 +1372,6 @@ def execute_lazy_graph(
         required_columns_by_node=required_columns_by_node,
         execution_context=execution_context,
         source_by_node=source_by_node,
-        dataframe_cache_request=dataframe_cache_request,
         schema_only=schema_only,
         runtime_source_frames_by_node=runtime_source_frames_by_node,
         prepare_inputs=prepare_inputs,

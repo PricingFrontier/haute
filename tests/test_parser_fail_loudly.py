@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import polars as pl
 import pytest
@@ -99,92 +98,86 @@ class TestItem18ConfigPathFailsLoudly:
     def test_missing_config_raises_config_error(self, tmp_path: Path) -> None:
         """Legitimately missing config file → ``ConfigError``, not silent empty dict."""
         # No config file exists at the referenced path.
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            with pytest.raises(ConfigError):
-                _resolve_node_config(
-                    {"config": "config/data_input/does_not_exist.json"},
-                    body="",
-                    param_names=[],
-                    n_params=0,
-                    base_dir=tmp_path,
-                    func_name="does_not_exist",
-                    explicit_node_type=NodeType.DATA_INPUT,
-                )
+        with pytest.raises(ConfigError):
+            _resolve_node_config(
+                {"config": "config/data_input/does_not_exist.json"},
+                body="",
+                param_names=[],
+                n_params=0,
+                base_dir=tmp_path,
+                func_name="does_not_exist",
+                explicit_node_type=NodeType.DATA_INPUT,
+            )
 
     def test_missing_config_error_names_original_path(self, tmp_path: Path) -> None:
         """The raised ``ConfigError`` must surface the original (possibly
         mangled) path so the user can see what was actually referenced."""
         referenced_path = "config/data_input/missing_file.json"
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            with pytest.raises(ConfigError) as exc_info:
-                _resolve_node_config(
-                    {"config": referenced_path},
-                    body="",
-                    param_names=[],
-                    n_params=0,
-                    base_dir=tmp_path,
-                    func_name="missing_file",
-                    explicit_node_type=NodeType.DATA_INPUT,
-                )
-            # Either the rendered string or the structured context must
-            # contain the original path verbatim (without the "forward
-            # slash normalization" mask).
-            rendered = str(exc_info.value)
-            ctx_values = [str(v) for v in exc_info.value.context.values()]
-            path_present = referenced_path in rendered or any(
-                referenced_path in v for v in ctx_values
+        with pytest.raises(ConfigError) as exc_info:
+            _resolve_node_config(
+                {"config": referenced_path},
+                body="",
+                param_names=[],
+                n_params=0,
+                base_dir=tmp_path,
+                func_name="missing_file",
+                explicit_node_type=NodeType.DATA_INPUT,
             )
-            assert path_present, (
-                f"Original path {referenced_path!r} missing from error context. "
-                f"Got: {rendered!r} / context={exc_info.value.context!r}"
-            )
+        # Either the rendered string or the structured context must
+        # contain the original path verbatim (without the "forward
+        # slash normalization" mask).
+        rendered = str(exc_info.value)
+        ctx_values = [str(v) for v in exc_info.value.context.values()]
+        path_present = referenced_path in rendered or any(referenced_path in v for v in ctx_values)
+        assert path_present, (
+            f"Original path {referenced_path!r} missing from error context. "
+            f"Got: {rendered!r} / context={exc_info.value.context!r}"
+        )
 
     def test_missing_config_error_contains_remediation_hint(self, tmp_path: Path) -> None:
         """Users should get actionable guidance (e.g. "check the path",
         "create the file", or similar) — not a bare error string."""
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            with pytest.raises(ConfigError) as exc_info:
-                _resolve_node_config(
-                    {"config": "config/banding/no_such_band.json"},
-                    body="",
-                    param_names=["df"],
-                    n_params=1,
-                    base_dir=tmp_path,
-                    func_name="no_such_band",
-                    explicit_node_type=NodeType.BANDING,
-                )
-            # A "remediation hint" is any human-pointing follow-up — we
-            # accept any of these signal strings (case-insensitive).
-            rendered = str(exc_info.value).lower()
-            hint_signals = ("check", "verify", "create", "exist", "path", "hint")
-            assert any(s in rendered for s in hint_signals), (
-                f"Error should include remediation guidance. Got: {rendered!r}"
+        with pytest.raises(ConfigError) as exc_info:
+            _resolve_node_config(
+                {"config": "config/banding/no_such_band.json"},
+                body="",
+                param_names=["df"],
+                n_params=1,
+                base_dir=tmp_path,
+                func_name="no_such_band",
+                explicit_node_type=NodeType.BANDING,
             )
+        # A "remediation hint" is any human-pointing follow-up — we
+        # accept any of these signal strings (case-insensitive).
+        rendered = str(exc_info.value).lower()
+        hint_signals = ("check", "verify", "create", "exist", "path", "hint")
+        assert any(s in rendered for s in hint_signals), (
+            f"Error should include remediation guidance. Got: {rendered!r}"
+        )
 
     def test_no_silent_load_error_marker_written(self, tmp_path: Path) -> None:
         """After the fix, a missing config must NOT silently return a dict
         containing ``_load_error`` — it must raise instead."""
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            # The old behaviour returned ``(node_type, {"_load_error": ...})``.
-            # The new behaviour is to raise.  Either way the internal
-            # marker must never surface.
-            try:
-                _, cfg = _resolve_node_config(
-                    {"config": "config/data_input/missing.json"},
-                    body="",
-                    param_names=[],
-                    n_params=0,
-                    base_dir=tmp_path,
-                    explicit_node_type=NodeType.DATA_INPUT,
-                )
-            except ConfigError:
-                return  # raising is acceptable
-            # If it does NOT raise, then at minimum it must not have
-            # inserted a silent _load_error marker.
-            assert "_load_error" not in cfg, (
-                "Silent _load_error marker is a fallback that hides the real "
-                "path problem. Fail loudly instead."
+        # The old behaviour returned ``(node_type, {"_load_error": ...})``.
+        # The new behaviour is to raise.  Either way the internal
+        # marker must never surface.
+        try:
+            _, cfg = _resolve_node_config(
+                {"config": "config/data_input/missing.json"},
+                body="",
+                param_names=[],
+                n_params=0,
+                base_dir=tmp_path,
+                explicit_node_type=NodeType.DATA_INPUT,
             )
+        except ConfigError:
+            return  # raising is acceptable
+        # If it does NOT raise, then at minimum it must not have
+        # inserted a silent _load_error marker.
+        assert "_load_error" not in cfg, (
+            "Silent _load_error marker is a fallback that hides the real "
+            "path problem. Fail loudly instead."
+        )
 
     def test_windows_path_recovery_is_not_silent(self, tmp_path: Path) -> None:
         """Even when a recovery-by-func-name scan would succeed, it must not
@@ -201,31 +194,30 @@ class TestItem18ConfigPathFailsLoudly:
         # silently recovered from this via ``find_config_by_func_name``.
         mangled_path = "config/\x08anding/age_band.json"
 
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            # Expected post-fix: either (a) raise ConfigError because the
-            # original path was bogus, or (b) require an explicit opt-in
-            # kwarg for recovery.  Default behaviour must NOT silently load
-            # the recovered config.
-            try:
-                _, loaded = _resolve_node_config(
-                    {"config": mangled_path},
-                    body="",
-                    param_names=["df"],
-                    n_params=1,
-                    base_dir=tmp_path,
-                    func_name="age_band",
-                    explicit_node_type=NodeType.BANDING,
-                )
-            except ConfigError:
-                return  # raising is acceptable and preferred
-            # If the call does not raise, it must not have returned a
-            # silently-recovered config either.  A successful recovery
-            # without an explicit opt-in kwarg violates the fail-loudly
-            # contract.
-            assert loaded.get("factors") != cfg["factors"], (
-                "Silent Windows path recovery must not succeed without an "
-                "explicit opt-in kwarg. Default behaviour must fail loudly."
+        # Expected post-fix: either (a) raise ConfigError because the
+        # original path was bogus, or (b) require an explicit opt-in
+        # kwarg for recovery.  Default behaviour must NOT silently load
+        # the recovered config.
+        try:
+            _, loaded = _resolve_node_config(
+                {"config": mangled_path},
+                body="",
+                param_names=["df"],
+                n_params=1,
+                base_dir=tmp_path,
+                func_name="age_band",
+                explicit_node_type=NodeType.BANDING,
             )
+        except ConfigError:
+            return  # raising is acceptable and preferred
+        # If the call does not raise, it must not have returned a
+        # silently-recovered config either.  A successful recovery
+        # without an explicit opt-in kwarg violates the fail-loudly
+        # contract.
+        assert loaded.get("factors") != cfg["factors"], (
+            "Silent Windows path recovery must not succeed without an "
+            "explicit opt-in kwarg. Default behaviour must fail loudly."
+        )
 
     def test_invalid_json_raises_config_error(self, tmp_path: Path) -> None:
         """Corrupted JSON (as opposed to missing file) also fails loudly."""
@@ -234,17 +226,16 @@ class TestItem18ConfigPathFailsLoudly:
         bad = cfg_dir / "broken.json"
         bad.write_text("{ this is not valid json")
 
-        with patch("haute._config_builder.warn_unrecognized_config_keys"):
-            with pytest.raises(ConfigError):
-                _resolve_node_config(
-                    {"config": "config/data_input/broken.json"},
-                    body="",
-                    param_names=[],
-                    n_params=0,
-                    base_dir=tmp_path,
-                    func_name="broken",
-                    explicit_node_type=NodeType.DATA_INPUT,
-                )
+        with pytest.raises(ConfigError):
+            _resolve_node_config(
+                {"config": "config/data_input/broken.json"},
+                body="",
+                param_names=[],
+                n_params=0,
+                base_dir=tmp_path,
+                func_name="broken",
+                explicit_node_type=NodeType.DATA_INPUT,
+            )
 
 
 # ===========================================================================

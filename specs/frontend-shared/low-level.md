@@ -26,7 +26,7 @@
 | `frontend/src/utils/operationToken.ts` | `nextOperationToken`: a process-unique token that tells one asynchronous operation apart from the operation that replaced it. |
 | `frontend/src/panels/dataPointIdentity.ts` | `buildNodeDataCacheIdentity`: the identity that gates a consumer's `point` request — its upstream subgraph plus the original of every instance in it, each node's data-affecting configuration, every edge with its handles, the submodels, and the preamble. |
 | `frontend/src/components/DataCacheStatus.tsx`, `frontend/src/components/dataCacheLabels.ts` | The shared data-cache state and its status and detail text: state label and colour, progress and cancel while a build runs, the snapshot's rows, size, and retention, and the statement that replaces the state for a point read straight from its file. Starting a build is not among them: the node's Refresh button does that. |
-| `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, streaming chunk size, section open/closed state, the MLflow destinations inventory cache (fetched once with probing, re-fetched by `invalidateMlflow()`), data sources, file-listing cache. The pure destination helpers live in `frontend/src/utils/mlflowDestinations.ts`, and the shared per-node control is the destination selector component described under the MLflow destination surface below. |
+| `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, the server's streaming chunk size (loaded from and written to `/api/execution-settings`), section open/closed state, the MLflow destinations inventory cache (fetched once with probing, re-fetched by `invalidateMlflow()`), data sources, file-listing cache. The pure destination helpers live in `frontend/src/utils/mlflowDestinations.ts`, and the shared per-node control is the destination selector component described under the MLflow destination surface below. |
 | `frontend/src/stores/useToastStore.ts` | Zustand store: toast queue with dedup, capped at 10 entries. |
 | `frontend/src/stores/useUIStore.ts` | Zustand store: modal/panel open flags (git/utility/imports/assistant, mutually exclusive by construction — each setter clears the others), sync banner, node panel width, per-node Explore/modelling selection memory (editor pane, preview pane, and the configured chart/pivot Configure-subview ids), hover highlight, node search open flag. |
 | `frontend/src/theme/colors.ts` | CSS-variable-backed colour token constants (`STRUCTURE_COLORS`, `STATUS_COLORS`, `MODEL_COLORS`, `CHART_COLORS`, `SYNTAX_COLORS`) plus the fixed `NODE_GROUP_COLORS`, `PIVOT_CHART_COLORS`, and `PIVOT_CONDITIONAL_FORMAT_COLORS` visualisation palettes. |
@@ -46,7 +46,7 @@
 | `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
 | `frontend/src/components/Toolbar.tsx` | App top chrome: 56px 2-tier stacked column layout with package-derived browser version, source selector, undo/redo with visible text labels, integer-ms timing and memory breakdowns, Submodel/Instance selection actions, utility/imports buttons, assistant and a Help menu (external Documentation link, Hotkeys opening the keyboard-shortcuts modal, and Report a bug linking to a new GitHub issue; focus lands on the first item, arrows move, Escape closes and returns focus to Help), zoom in/out, centre/layout, and Save + Commit nested under `BranchIndicator`. Actions share the `.toolbar-btn` surface; selection actions carry `aria-disabled` rather than `disabled` so unavailable actions stay focusable with informative tooltips. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). The Source selector (on the shared `.toolbar-btn` surface and type) and a Pipeline button share a two-row grid column, so the Pipeline button is exactly as wide as the selector above it whatever the active source is named; the Pipeline button reads "Calculating" under automatic calculation and "Manual" under manual, and opens `PipelineSettingsModal` from the toolbar's own local state, unlike the MLflow modal's UI-store flag. The preview row limit and streaming chunk size live in that pane, not in the toolbar. |
 | `frontend/src/components/MlflowSettingsModal.tsx` | `ModalShell`-based MLflow destinations inventory editor: an MLflow server URL field, a Local folder field showing the resolved folder, a read-only Databricks block (selected profile, the dedicated MLflow host, or the missing configuration), one Test action per remote with its inline categorised result, and Save through `PUT /api/mlflow/settings` (`tracking_uri` and `folder` only) followed by `invalidateMlflow()`. Rendered by the toolbar while the UI store's MLflow-settings-open flag is set; opened from each node's MLflow gear or greyed light. |
-| `frontend/src/components/PipelineSettingsModal.tsx` | `ModalShell`-based Pipeline settings pane: a Calculation radio group (Automatic / Manual, session-only UI-store state); a Preview section with the preview row limit (0 = no limit, negatives clamp to 0) and streaming chunk size (clamped to the backend bounds, non-numeric input ignored) fields, both writing `useSettingsStore` and suppressing native spinners; then the Cached data inventory: every node of the open pipeline with its state, size, cached-at time, build duration and per-entry clear control; a group for cached data belonging to no node of it; and a footnote for unattributed bytes. No budget cards, limit variables or generation counts. Reads `POST /api/cache/nodes` on open, explicit Refresh and successful clear. Rendered by the toolbar from its own local open state and opened by the toolbar's Pipeline button. |
+| `frontend/src/components/PipelineSettingsModal.tsx` | `ModalShell`-based Pipeline settings pane: a Calculation radio group (Automatic / Manual, session-only UI-store state); a Preview section with the preview row limit (0 = no limit, negatives clamp to 0) and streaming chunk size (clamped to the backend bounds, non-numeric input ignored) fields, both writing `useSettingsStore` and suppressing native spinners. The chunk size is loaded from the server when the pane opens (reopened while a save is in flight, it shows that save's outcome instead) and committed to it on blur or Enter, never per keystroke; saves reach the server in order, and a failed commit restores the server's value and reports the error in a toast; then the Cached data inventory: every node of the open pipeline with its state, size, cached-at time, build duration and per-entry clear control; a group for cached data belonging to no node of it; and a footnote for unattributed bytes. No budget cards, limit variables or generation counts. Reads `POST /api/cache/nodes` on open, explicit Refresh and successful clear. Rendered by the toolbar from its own local open state and opened by the toolbar's Pipeline button. |
 | `frontend/src/components/PreviewOutOfDateBadge.tsx` | "Out of date" marker in the data-preview header, shown only under manual calculation when the displayed stored preview's structural version or node-data epoch is behind the current one; isolated so its store subscriptions re-render only the badge. |
 | `frontend/src/components/BreakdownDropdown.tsx` | Sorted, accessible timing/memory breakdown disclosure used by the shared toolbar. |
 | `frontend/src/panels/ImportsPanel.tsx` | Active pipeline-imports right panel: `PanelShell` plus `CodeEditor`, explanatory always-included imports, and callback-only preamble mutation/close handling. `App.tsx` supplies the graph-store-backed preamble and selects it through `importsOpen`. |
@@ -116,8 +116,8 @@
   independently rejects a late response whose captured fence is no longer
   current or whose renderable graph is no longer synchronised.
   `CachedSolveResult` additionally carries both `result` (current,
-  possibly frontier-point-derived) and `originalResult` (the as-solved
-  baseline), so switching frontier points never loses the original. A
+  possibly a frontier point's server summary applied) and `originalResult`
+  (the as-solved baseline), so switching frontier points never loses the original. A
   direct `complete*Job` call with no active job recorded (no in-flight
   `ActiveSolveJob`/`ActiveTrainJob` to read `source`/`structuralVersion`
   from) falls back to `source: ""` and `structuralVersion: -1` — sentinels
@@ -260,18 +260,19 @@ are safe to call during render because they only ever read the memoized
 derived cache or recompute it inline — they never call `set()`.
 
 **Frontier point selection** (`selectFrontierPoint`,
-`updateFrontierAfterSelect`): selecting a point is a pure local
-re-derivation (`deriveSolveResultForFrontierPoint`) from the cached
-frontier's `points` array — no network call. `updateFrontierAfterSelect` is
-the network-driven counterpart used after an explicit backend
-`/optimiser/frontier/select`; it validates the echoed `point_index` matches
-the request, merges the richer per-point fields the backend returned back
-into the cached frontier's `points` array (so later re-selecting that point
-doesn't need another round trip), and — critically — if the user has since
-selected a *different* point while the request was in flight, it keeps the
-frontier-array enrichment but does not regress the displayed
-`result`/`selectedPointIndex` to the stale response's point (the
-"stale-response guard").
+`updateFrontierAfterSelect`): selecting a point applies the server's summary
+for it (`frontier.point_summaries[i]`, derived by the optimiser's
+`frontier_point_summary`) to `originalResult` — no network call, and nothing
+is derived from the frontier row; a `null` summary field clears that field.
+A completed solve with frontier points selects point 0.
+`updateFrontierAfterSelect` is the network-driven counterpart used after an
+explicit backend `/optimiser/frontier/select` (ratebook materialisation); it
+validates the echoed `point_index` matches the request, stores the response
+as that point's summary (so later re-selecting that point doesn't need
+another round trip), and — critically — if the user has since selected a
+*different* point while the request was in flight, it keeps the stored
+summary but does not regress the displayed `result`/`selectedPointIndex` to
+the stale response's point (the "stale-response guard").
 
 **Background job polling** (`JobPollingController` + `useJobPolling` +
 `useBackgroundJobs`): `useBackgroundJobs` mounts four `useJobPolling`
@@ -413,8 +414,10 @@ button opens a "Pipeline settings" pane. Its first section, Calculation, is a
 radio group (one tab stop, arrow keys move and select) choosing Automatic or
 Manual calculation (`useUIStore.calculationMode`, session-only, starting
 Automatic; behaviour in the canvas spec's Manual calculation rule). Its Preview section holds the preview
-row limit and streaming chunk size; both apply to the next preview, exactly as
-they did when the fields sat in the toolbar. Below it, the "Cached data" section
+row limit, which applies to the next preview, and the streaming chunk size, an
+editor-wide server setting: the field shows the server's value when the pane opens,
+and a change is sent to the server, which applies it to every execution started
+afterwards. Requests carry no chunk size. Below it, the "Cached data" section
 lists the current pipeline's node data and cached data
 outside it, with size, status, cached-at time, build duration and per-entry clear
 controls, under a bare "Cached data" heading with no explanatory copy. There are no budget cards, caps, quota variables

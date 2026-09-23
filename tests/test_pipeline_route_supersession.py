@@ -6,7 +6,6 @@ import asyncio
 import threading
 import time
 from collections.abc import Awaitable, Callable, Hashable
-from contextlib import nullcontext
 from dataclasses import FrozenInstanceError
 from typing import TypeAlias
 
@@ -252,11 +251,6 @@ async def test_preview_returns_404_when_executor_omits_target_node(
     from haute.server import app
 
     monkeypatch.setattr(route_mod, "execute_graph", lambda *args, **kwargs: {})
-    monkeypatch.setattr(
-        route_mod,
-        "temporary_streaming_chunk_size",
-        lambda _chunk_size: nullcontext(),
-    )
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -352,11 +346,6 @@ async def test_preview_limits_blocking_workers_across_distinct_keys(
     from haute.server import app
 
     monkeypatch.setattr(route_mod, "_preview_work_slots", asyncio.Semaphore(2))
-    monkeypatch.setattr(
-        route_mod,
-        "temporary_streaming_chunk_size",
-        lambda _chunk_size: nullcontext(),
-    )
 
     limit_reached = threading.Event()
     extra_worker_started_before_release = threading.Event()
@@ -1303,11 +1292,6 @@ async def test_trace_limits_blocking_workers_across_distinct_keys(
     from haute.server import app
 
     monkeypatch.setattr(route_mod, "_trace_work_slots", asyncio.Semaphore(2))
-    monkeypatch.setattr(
-        route_mod,
-        "temporary_streaming_chunk_size",
-        lambda _chunk_size: nullcontext(),
-    )
 
     limit_reached = threading.Event()
     extra_worker_started_before_release = threading.Event()

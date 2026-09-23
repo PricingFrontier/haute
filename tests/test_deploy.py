@@ -1279,6 +1279,7 @@ class TestValidators:
     def test_validate_passes_for_good_config(self, full_graph: dict) -> None:
         from haute.deploy._bundler import collect_artifacts
         from haute.deploy._config import DeployConfig, ResolvedDeploy
+        from haute.deploy._project_modules import ProjectModules
         from haute.deploy._pruner import find_output_node, prune_for_deploy
         from haute.deploy._schema import infer_input_schema, infer_output_schema
         from haute.deploy._validators import validate_deploy
@@ -1302,6 +1303,7 @@ class TestValidators:
             artifacts=artifacts,
             input_schema=input_schema,
             output_schema=output_schema,
+            project_modules=ProjectModules(utility=None, unbundled_imports=()),
             removed_node_ids=removed,
         )
 
@@ -1310,6 +1312,7 @@ class TestValidators:
     def test_score_test_quotes(self, full_graph: dict) -> None:
         from haute.deploy._bundler import collect_artifacts
         from haute.deploy._config import DeployConfig, ResolvedDeploy
+        from haute.deploy._project_modules import ProjectModules
         from haute.deploy._pruner import find_output_node, prune_for_deploy
         from haute.deploy._schema import infer_input_schema, infer_output_schema
         from haute.deploy._validators import score_test_quotes
@@ -1334,6 +1337,7 @@ class TestValidators:
             artifacts=artifacts,
             input_schema=input_schema,
             output_schema=output_schema,
+            project_modules=ProjectModules(utility=None, unbundled_imports=()),
             removed_node_ids=removed,
         )
 

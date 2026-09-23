@@ -60,7 +60,7 @@ def _reject_bool_chunk_size(value: object) -> object:
 
 
 StreamingChunkSize = Annotated[
-    int | None,
+    int,
     BeforeValidator(_reject_bool_chunk_size),
     Field(ge=1, le=10_000_000),
 ]
@@ -807,7 +807,6 @@ class PreviewNodeRequest(BaseModel):
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: str = "live"
     requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
-    streaming_chunk_size: StreamingChunkSize = None
     # Frame label selected for a multi-frame target. Single-frame targets
     # ignore it. It is part of the preview cache identity.
     port_label: str | None = None
@@ -824,7 +823,6 @@ class RecoveryPreviewRequest(BaseModel):
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: str = "live"
     requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
-    streaming_chunk_size: StreamingChunkSize = None
     port_label: str | None = None
 
 
@@ -934,7 +932,6 @@ class TraceRequest(BaseModel):
     row_limit: int = Field(default=100, ge=1, le=10000)
     source: str = "live"
     row_values: dict[str, Any] | None = None
-    streaming_chunk_size: StreamingChunkSize = None
     # The ``seed_plan`` of the preview this trace explains: the trace reads
     # exactly those generations and nothing else, even if snapshots now exist.
     seed_plan: list[TraceSeedPlanEntry]
@@ -1059,6 +1056,19 @@ class TraceResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# /api/execution-settings
+# ---------------------------------------------------------------------------
+
+
+class ExecutionSettings(BaseModel):
+    """The editor's execution settings: one value for the server process."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    streaming_chunk_size: StreamingChunkSize
+
+
+# ---------------------------------------------------------------------------
 # /api/pipeline/write-output
 # ---------------------------------------------------------------------------
 
@@ -1078,7 +1088,6 @@ class WriteOutputRequest(BaseModel):
     graph: Graph
     node_id: str
     source: str = "live"
-    streaming_chunk_size: StreamingChunkSize = None
     overwrite: StrictBool = False
 
 
@@ -1260,7 +1269,6 @@ class NodeDataRequest(BaseModel):
 
 class NodeDataRunRequest(NodeDataRequest):
     refresh: bool = False
-    streaming_chunk_size: StreamingChunkSize = None
 
 
 class NodeDataPointRef(BaseModel):
@@ -1543,7 +1551,6 @@ class ExplorePivotRunRequest(BaseModel):
     node_id: str
     pivot: dict[str, Any]
     source: str = "live"
-    streaming_chunk_size: StreamingChunkSize = None
 
 
 class ExplorePivotRunResponse(BaseModel):
@@ -1681,7 +1688,6 @@ class ExplorePivotMembersRequest(BaseModel):
     field: str
     source: str = "live"
     search: str | None = None
-    streaming_chunk_size: StreamingChunkSize = None
 
 
 class ExplorePivotMembersResponse(BaseModel):
@@ -2013,7 +2019,6 @@ class TrainRequest(BaseModel):
     graph: Graph
     node_id: str
     source: str = "live"
-    streaming_chunk_size: StreamingChunkSize = None
 
 
 TrainingFeatureSelectionMode = Literal["explicit", "all_except", "glm_terms"]
@@ -3122,7 +3127,6 @@ class MlflowModelVersionSummary(BaseModel):
 class OptimiserSolveRequest(BaseModel):
     graph: Graph
     node_id: str
-    streaming_chunk_size: StreamingChunkSize = None
 
 
 class OptimiserSolveResponse(BaseModel):
@@ -3145,7 +3149,6 @@ class OptimiserEstimateRequest(BaseModel):
     graph: Graph
     node_id: str
     source: str = "live"
-    streaming_chunk_size: StreamingChunkSize = None
 
 
 class OptimiserEstimateResponse(BaseModel):
@@ -3168,7 +3171,6 @@ class OptimiserEstimateResponse(BaseModel):
 class OptimiserFrontierAutoRangeRequest(BaseModel):
     graph: Graph
     node_id: str
-    streaming_chunk_size: StreamingChunkSize = None
 
 
 class OptimiserFrontierRange(BaseModel):
@@ -3228,7 +3230,6 @@ class OptimiserFrontierRequest(BaseModel):
     job_id: str
     threshold_ranges: dict[str, list[float]] = Field(default_factory=dict)
     n_points_per_dim: int = Field(default=5, ge=1, le=100)
-    streaming_chunk_size: StreamingChunkSize = None
 
     @field_validator("threshold_ranges", mode="after")
     @classmethod
@@ -3250,6 +3251,8 @@ class OptimiserFrontierRequest(BaseModel):
 class OptimiserFrontierResponse(BaseModel):
     status: str
     points: list[dict[str, Any]] = Field(default_factory=list)
+    point_summaries: list[OptimiserFrontierPointSummary] = Field(default_factory=list)
+    """The server's summary of each returned point, in point order."""
     n_points: int = 0
     points_returned: int = 0
     constraint_names: list[str] = Field(default_factory=list)
@@ -3298,6 +3301,28 @@ class OptimiserScenarioValueStats(BaseModel):
 class OptimiserScenarioValueHistogram(BaseModel):
     counts: list[int] = Field(default_factory=list)
     edges: list[float] = Field(default_factory=list)
+
+
+class OptimiserFrontierPointSummary(BaseModel):
+    """Every result field of one frontier point that differs from its solve.
+
+    ``None`` means the point has no such field: applying the summary to the
+    solve's result removes it.
+    """
+
+    total_objective: float
+    constraints: dict[str, float]
+    lambdas: dict[str, float]
+    converged: bool
+    iterations: int | None
+    cd_iterations: int | None
+    clamp_rate: float | None
+    history: list[OptimiserHistoryEntry] | None
+    scenario_value_stats: OptimiserScenarioValueStats | None
+    scenario_value_histogram: OptimiserScenarioValueHistogram | None
+    factor_tables: dict[str, list[dict[str, Any]]] | None
+    warning: str | None
+    frontier_error: str | None
 
 
 class OptimiserSolveResult(BaseModel):

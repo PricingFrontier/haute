@@ -1373,7 +1373,6 @@ describe("NodePanel", () => {
       field: "premium",
       source: "live",
       search: "north",
-      streamingChunkSize: 500_000,
       signal,
     })
 

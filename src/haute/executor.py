@@ -2164,7 +2164,6 @@ def prepare_data_output(
     source: str = "live",
     *,  # pragma: no mutate
     execution_context: ExecutionContext | None = None,  # pragma: no mutate
-    streaming_chunk_size: int | None = None,  # pragma: no mutate
     project_root: str | Path | None = None,  # pragma: no mutate
     overwrite: bool = False,  # pragma: no mutate
     staging_path: str | Path | None = None,  # pragma: no mutate
@@ -2201,7 +2200,6 @@ def prepare_data_output(
                 output_node_id,
                 source,
                 execution_context=admitted_context,
-                streaming_chunk_size=streaming_chunk_size,
                 project_root=project_root,
                 overwrite=overwrite,
                 staging_path=staging_path,
@@ -2242,12 +2240,7 @@ def prepare_data_output(
 
     output_scenario = _data_output_scenario(graph, source)
 
-    from haute._polars_utils import (
-        DEFAULT_STREAMING_CHUNK_SIZE,
-        _malloc_trim,
-        streaming_collect,
-        temporary_streaming_chunk_size,
-    )
+    from haute._polars_utils import _malloc_trim, streaming_collect
 
     # Joins and fan-outs are captured into shared snapshots under the seed
     # plan, so Polars sees each as an independent plan (#24206) and the next
@@ -2256,11 +2249,6 @@ def prepare_data_output(
     retain_staging = False
 
     try:
-        # The request's chunk size governs the whole run: every capture and
-        # the output write stream with it.
-        plans.enter_context(
-            temporary_streaming_chunk_size(streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE)
-        )
         # The engine fills this while it runs; the Data Output's own write reads
         # its entry to slice the frame rather than sink the whole of it.
         output_write_recipes: dict[str, Any] = {}
@@ -2544,7 +2532,6 @@ def write_data_output(
     source: str = "live",
     *,  # pragma: no mutate
     execution_context: ExecutionContext | None = None,  # pragma: no mutate
-    streaming_chunk_size: int | None = None,  # pragma: no mutate
     project_root: str | Path | None = None,  # pragma: no mutate
     overwrite: bool = False,
 ) -> WriteOutputResponse:
@@ -2560,7 +2547,6 @@ def write_data_output(
                 output_node_id,
                 source,
                 execution_context=admitted_context,
-                streaming_chunk_size=streaming_chunk_size,
                 project_root=project_root,
                 overwrite=overwrite,
             )
@@ -2575,7 +2561,6 @@ def write_data_output(
             output_node_id,
             source,
             execution_context=execution_context,
-            streaming_chunk_size=streaming_chunk_size,
             project_root=project_root,
             overwrite=overwrite,
         )

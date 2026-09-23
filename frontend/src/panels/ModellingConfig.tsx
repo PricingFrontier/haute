@@ -488,7 +488,6 @@ export default function ModellingConfig({
         graph: submittedGraph,
         node_id: nodeId,
         source: useSettingsStore.getState().activeSource,
-        streamingChunkSize: useSettingsStore.getState().streamingChunkSize,
       })
       if (!isDocumentExecutionFenceCurrent(documentFence)) return
       if (result.status === "started" && result.job_id) {

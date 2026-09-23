@@ -26,11 +26,7 @@ from haute._mlflow_utils import (
     mlflow_fluent_operation,
     set_experiment_creating_workspace_folder,
 )
-from haute._polars_utils import (
-    DEFAULT_STREAMING_CHUNK_SIZE,
-    streaming_collect,
-    temporary_streaming_chunk_size,
-)
+from haute._polars_utils import streaming_collect
 from haute._rating import is_rating_dtype_descriptor
 from haute._sandbox import _get_project_root
 from haute._types import SolveResultLike
@@ -42,6 +38,13 @@ from haute.routes._background_jobs import (
 from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_http_exception,
+)
+from haute.routes._frontier_point_summary import (
+    NON_CONVERGED_WARNING,
+    FrontierPointDataError,
+    apply_frontier_point_summary,
+    finite_frontier_value,
+    frontier_point_summary,
 )
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, validate_safe_path
 from haute.routes._job_lifecycle import JobLifecycle, TerminalReason, require_job_status
@@ -117,17 +120,6 @@ _FRONTIER_APPLY_HANDLE_PREFIX = "frontier_apply_result:"
 _MAX_FRONTIER_APPLY_ARTIFACTS = 8
 _frontier_state_lock = threading.RLock()
 _frontier_jobs = CancellableJobRegistry()
-_FRONTIER_POINT_SPECIFIC_RESULT_KEYS = (
-    "iterations",
-    "cd_iterations",
-    "clamp_rate",
-    "history",
-    "scenario_value_stats",
-    "scenario_value_histogram",
-    "factor_tables",
-    "warning",
-    "frontier_error",
-)
 _CONSTRAINT_THRESHOLD_KEYS = ("min", "max", "min_pct", "max_pct")
 
 
@@ -356,21 +348,19 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
             non_null_counts = pl.col("scenario_count").filter(
                 pl.col(quote_id_col).is_not_null(),
             )
-            chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
-            with temporary_streaming_chunk_size(chunk_size):
-                row = streaming_collect(
-                    scenario_counts.select(
-                        pl.col("scenario_count")
-                        .filter(pl.col(quote_id_col).is_null())
-                        .sum()
-                        .alias("null_quote_id_row_count"),
-                        pl.col(quote_id_col).is_not_null().sum().alias("quote_count"),
-                        non_null_counts.min().alias("scenarios_per_quote_min"),
-                        non_null_counts.max().alias("scenarios_per_quote_max"),
-                        non_null_counts.mean().alias("scenarios_per_quote_mean"),
-                        non_null_counts.sum().alias("expanded_row_count"),
-                    ),
-                ).row(0, named=True)
+            row = streaming_collect(
+                scenario_counts.select(
+                    pl.col("scenario_count")
+                    .filter(pl.col(quote_id_col).is_null())
+                    .sum()
+                    .alias("null_quote_id_row_count"),
+                    pl.col(quote_id_col).is_not_null().sum().alias("quote_count"),
+                    non_null_counts.min().alias("scenarios_per_quote_min"),
+                    non_null_counts.max().alias("scenarios_per_quote_max"),
+                    non_null_counts.mean().alias("scenarios_per_quote_mean"),
+                    non_null_counts.sum().alias("expanded_row_count"),
+                ),
+            ).row(0, named=True)
             null_quote_id_rows = int(row["null_quote_id_row_count"] or 0)
             if null_quote_id_rows > 0:
                 # Same contract (status + message) as the solve path's
@@ -468,18 +458,10 @@ def _with_bounded_frontier_apply_handle(
 
 
 def _as_finite_float(value: Any, *, field: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        raise HTTPException(
-            status_code=500,
-            detail=f"Frontier point data is malformed: field {field!r} is missing",
-        )
-    result = float(value)
-    if result != result or result in (float("inf"), float("-inf")):
-        raise HTTPException(
-            status_code=500,
-            detail=f"Frontier point data is malformed: field {field!r} is not finite",
-        )
-    return result
+    try:
+        return finite_frontier_value(value, field=field)
+    except FrontierPointDataError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 def _frontier_points_or_raise(
@@ -520,77 +502,6 @@ def _frontier_point_or_raise(
     return points[point_index], frontier_data
 
 
-def _add_frontier_point_lambda(
-    lambdas: dict[str, float],
-    name: Any,
-    value: Any,
-    *,
-    field: str,
-) -> None:
-    if not isinstance(name, str) or not name:
-        raise HTTPException(
-            status_code=500,
-            detail="Frontier point data is malformed: lambda names must be non-empty strings",
-        )
-    parsed_value = _as_finite_float(value, field=field)
-    existing_value = lambdas.get(name)
-    if existing_value is not None and abs(existing_value - parsed_value) > 1e-9:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Frontier point data is malformed: conflicting lambda for {name!r}",
-        )
-    lambdas[name] = parsed_value
-
-
-def _frontier_point_lambdas(point: dict[str, Any]) -> dict[str, float]:
-    lambdas: dict[str, float] = {}
-    for key, value in point.items():
-        if key.startswith("lambda_"):
-            _add_frontier_point_lambda(
-                lambdas,
-                key.removeprefix("lambda_"),
-                value,
-                field=key,
-            )
-    if not lambdas:
-        raise HTTPException(status_code=400, detail="Frontier point has no lambda values")
-    return lambdas
-
-
-def _frontier_point_constraint_value(point: dict[str, Any], name: str) -> float:
-    total_key = f"total_{name}"
-    if total_key in point:
-        return _as_finite_float(point[total_key], field=total_key)
-    constraints = point.get("constraints")
-    if isinstance(constraints, dict) and name in constraints:
-        return _as_finite_float(constraints[name], field=f"constraints.{name}")
-    if name in point:
-        return _as_finite_float(point[name], field=name)
-    return _as_finite_float(None, field=total_key)
-
-
-def _scenario_stats_from_frontier_point(point: dict[str, Any]) -> dict[str, float] | None:
-    if "sv_mean" not in point:
-        return None
-    field_map = {
-        "mean": "sv_mean",
-        "std": "sv_std",
-        "min": "sv_min",
-        "p5": "sv_p5",
-        "p25": "sv_p25",
-        "p50": "sv_median",
-        "p75": "sv_p75",
-        "p95": "sv_p95",
-        "max": "sv_max",
-        "pct_increase": "sv_pct_increase",
-        "pct_decrease": "sv_pct_decrease",
-    }
-    return {
-        out_key: _as_finite_float(point.get(in_key), field=in_key)
-        for out_key, in_key in field_map.items()
-    }
-
-
 def _base_result_for_frontier(job: Mapping[str, Any]) -> dict[str, Any]:
     base_result = job.get("base_result")
     if isinstance(base_result, dict):
@@ -627,57 +538,20 @@ def _base_result_for_frontier_recompute(job: Mapping[str, Any]) -> dict[str, Any
 def _frontier_point_result_dict(job: Mapping[str, Any], point_index: int) -> dict[str, Any]:
     point, frontier_data = _frontier_point_or_raise(job, point_index)
     constraint_names = frontier_data.get("constraint_names", [])
-    if not isinstance(constraint_names, list):
+    if not isinstance(constraint_names, list) or not all(
+        isinstance(name, str) for name in constraint_names
+    ):
         raise HTTPException(status_code=500, detail="Job frontier constraint names are invalid")
-
-    lambdas = _frontier_point_lambdas(point)
-    constraints: dict[str, float] = {}
-    for name in constraint_names:
-        if not isinstance(name, str):
-            raise HTTPException(status_code=500, detail="Job frontier constraint names are invalid")
-        constraints[name] = _frontier_point_constraint_value(point, name)
-
-    if not isinstance(point.get("converged"), bool):
-        raise HTTPException(status_code=400, detail="Frontier point field 'converged' is missing")
+    try:
+        summary = frontier_point_summary(point, constraint_names)
+    except FrontierPointDataError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     base_result = _base_result_for_frontier(job)
-    result_dict = dict(base_result)
-    for key in _FRONTIER_POINT_SPECIFIC_RESULT_KEYS:
-        result_dict.pop(key, None)
-    result_dict.update(
-        {
-            "total_objective": _as_finite_float(
-                point.get("total_objective"),
-                field="total_objective",
-            ),
-            "baseline_objective": float(base_result.get("baseline_objective", 0.0)),
-            "constraints": constraints,
-            "baseline_constraints": dict(base_result.get("baseline_constraints", {})),
-            "lambdas": lambdas,
-            "converged": bool(point["converged"]),
-            "selected_frontier_point": point_index,
-        }
-    )
-    if "iterations" in point:
-        result_dict["iterations"] = int(_as_finite_float(point["iterations"], field="iterations"))
-    if "cd_iterations" in point:
-        result_dict["cd_iterations"] = int(
-            _as_finite_float(point["cd_iterations"], field="cd_iterations")
-        )
-    if "clamp_rate" in point:
-        result_dict["clamp_rate"] = _as_finite_float(point["clamp_rate"], field="clamp_rate")
-
-    scenario_stats = _scenario_stats_from_frontier_point(point)
-    if scenario_stats is not None:
-        result_dict["scenario_value_stats"] = scenario_stats
-        result_dict.pop("scenario_value_histogram", None)
-
-    if result_dict["converged"]:
-        result_dict.pop("warning", None)
-    else:
-        result_dict["warning"] = (
-            "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
-        )
+    result_dict = apply_frontier_point_summary(base_result, summary)
+    result_dict["baseline_objective"] = float(base_result.get("baseline_objective", 0.0))
+    result_dict["baseline_constraints"] = dict(base_result.get("baseline_constraints", {}))
+    result_dict["selected_frontier_point"] = point_index
     return result_dict
 
 
@@ -871,9 +745,7 @@ def _materialised_ratebook_result_dict(
     if materialised["converged"]:
         materialised.pop("warning", None)
     else:
-        materialised["warning"] = (
-            "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
-        )
+        materialised["warning"] = NON_CONVERGED_WARNING
     return materialised
 
 
@@ -943,8 +815,6 @@ def _materialise_ratebook_frontier_point(
     job_id: str,
     point_index: int,
     result_dict: dict[str, Any],
-    *,
-    streaming_chunk_size: int | None = None,
 ) -> tuple[Mapping[str, Any], dict[str, Any], SolveResultLike]:
     job = _store.require_completed_job(job_id)
     cached_result = _cached_materialised_ratebook_frontier_result(
@@ -976,7 +846,6 @@ def _materialise_ratebook_frontier_point(
         factor_level_counts = _ratebook_factor_level_counts_from_artifact(
             factors_handle,
             factor_columns,
-            streaming_chunk_size=streaming_chunk_size,
         )
     factor_level_order = job.get(_RATEBOOK_FACTOR_LEVEL_ORDER_KEY) or {}
     factor_dtypes = job.get("factor_dtypes")
@@ -1329,16 +1198,13 @@ def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
     from haute._ram_estimate import _detailed_ancestor_source_metadata
 
     body = cast(OptimiserEstimateRequest, _prepare_optimiser_execution_request(body))
-    total_rows: int | None = None
-    try:
-        source_metadata = _detailed_ancestor_source_metadata(
-            body.graph,
-            body.node_id,
-            body.source,
-        )
-        total_rows = source_metadata.row_count
-    except Exception as exc:
-        logger.warning("optimiser_estimate_failed", error=str(exc), node_id=body.node_id)
+    # The resolver answers an unknown source size with no row count; anything
+    # it raises is a failure, not an unknown total.
+    total_rows = _detailed_ancestor_source_metadata(
+        body.graph,
+        body.node_id,
+        body.source,
+    ).row_count
 
     try:
         metrics = _optimiser_input_metrics(body)

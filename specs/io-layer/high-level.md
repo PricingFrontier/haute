@@ -101,8 +101,8 @@ short parent-chosen staging token, so after the worker dies the parent reconcile
 those: a pointer already naming the generation means the build succeeded and is recorded
 as such, an unreferenced renamed generation under that identifier or the staging directory
 under that token is removed, nothing else is touched, and a fresh generation published
-meanwhile by another process is reused rather than reported as a failure. Execution,
-preview, and dataframe caches key a snapshot-backed input by its
+meanwhile by another process is reused rather than reported as a failure. Execution
+and preview caches key a snapshot-backed input by its
 generation pointer and its current source signature, so a mutated source misses every
 cache and reaches preparation, and a refreshed generation changes the pointer and
 therefore every later key.

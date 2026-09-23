@@ -25,8 +25,8 @@ from haute._code_extraction import (
 from haute._config_io import NODE_TYPE_TO_FOLDER, has_config_folder, load_node_config
 from haute._config_validation import (
     reject_removed_config_keys,
+    reject_unrecognized_config_keys,
     validate_node_config,
-    warn_unrecognized_config_keys,
 )
 from haute._contracts import Contract, get_column_contract
 from haute._edge_join import normalise_edge_join_decorator_kwargs
@@ -569,5 +569,5 @@ def _resolve_node_config(
     if user_contract is not None:
         config["contract"] = user_contract
 
-    warn_unrecognized_config_keys(node_type, config)
+    reject_unrecognized_config_keys(node_type, config, node_label=func_name)
     return node_type, config

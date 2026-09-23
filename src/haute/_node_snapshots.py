@@ -500,7 +500,7 @@ def node_snapshot_signature(
     recorded as dependencies and column sets widen a generation.
     """
     from haute._builders import resolve_instance_nodes
-    from haute._dataframe_execution_cache import _upstream_subgraph
+    from haute._graph_utils import upstream_subgraph
     from haute.execution import (
         canonical_dataframe_execution_graph,
         dataframe_graph_input_fingerprint,
@@ -510,7 +510,7 @@ def node_snapshot_signature(
         raise TypeError("enforce_contracts must be a bool")
     # An instance node executes its original's config, so its signature does too.
     canonical = canonical_dataframe_execution_graph(resolve_instance_nodes(graph))
-    lineage = _upstream_subgraph(canonical, node_id)
+    lineage = upstream_subgraph(canonical, node_id)
     inputs = checked_cache_inputs(
         CacheConsumer.NODE_SNAPSHOT_SIGNATURE,
         {

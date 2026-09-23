@@ -231,7 +231,7 @@ tabular persistence; the removed `dataSource` and `dataSink` types have no compa
 | Component | Covers |
 |---|---|
 | [execution-engine](execution-engine/high-level.md) | Graph execution: executor, lazy evaluation, topological ordering, admission control, worker isolation, chunking |
-| [caching](caching/high-level.md) | Dataframe execution cache, fingerprint/stat-gated/LRU caches, hashing, structured API-input cache routes |
+| [caching](caching/high-level.md) | Seed plans and the shared snapshot layer, fingerprint/stat-gated/LRU caches, hashing, structured API-input cache routes |
 | [pipeline-config](pipeline-config/high-level.md) | Pipeline/graph configuration model, builders, validation, config IO, project scaffolding |
 | [codegen](codegen/high-level.md) | Python code generation from pipeline configs, code extraction, AST helpers |
 | [expression-parsing](expression-parsing/high-level.md) | Parsing user expressions and pipeline code into structured form |

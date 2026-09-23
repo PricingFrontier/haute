@@ -20,7 +20,10 @@ from tests.optimiser_fixtures import poll_frontier_until_done
 pytestmark = pytest.mark.perf
 
 _LARGE_FRONTIER_POINT_COUNT = FRONTIER_POINT_LIMIT * 25
-_MAX_CAPPED_FRONTIER_RESPONSE_BYTES = 350_000
+# Each returned point carries its library row and the server's summary of it
+# (about 450 bytes for these rows), so the capped response grows with the
+# returned points only, never with the full frontier.
+_MAX_CAPPED_FRONTIER_RESPONSE_BYTES = FRONTIER_POINT_LIMIT * 500
 
 
 @pytest.fixture()
@@ -60,7 +63,7 @@ class _FrontierFrameSlice:
     def __len__(self) -> int:
         return self._row_count
 
-    def to_dicts(self) -> list[dict[str, float]]:
+    def to_dicts(self) -> list[dict[str, float | bool]]:
         self._parent.slice_to_dicts_calls += 1
         self._parent.serialized_rows += self._row_count
         return [
@@ -68,6 +71,7 @@ class _FrontierFrameSlice:
                 "lambda_loss_ratio": float(idx) / 10_000.0,
                 "loss_ratio": 0.8 + float(idx % 50) / 1_000.0,
                 "total_objective": 100_000.0 + float(idx),
+                "converged": True,
             }
             for idx in range(self._row_count)
         ]

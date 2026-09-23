@@ -298,8 +298,8 @@ class TestFinalizeFrontier:
         mock_solver = MagicMock()
         mock_points = MagicMock()
         mock_points.to_dicts.return_value = [
-            {"total_objective": 100.0, "total_loss": 0.92, "lambda_loss": 0.01},
-            {"total_objective": 105.0, "total_loss": 0.95, "lambda_loss": 0.02},
+            {"total_objective": 100.0, "total_loss": 0.92, "lambda_loss": 0.01, "converged": True},
+            {"total_objective": 105.0, "total_loss": 0.95, "lambda_loss": 0.02, "converged": True},
         ]
         mock_points.__len__ = lambda self: 2
         mock_frontier_result = MagicMock()
@@ -350,8 +350,8 @@ class TestFinalizeFrontier:
         mock_solver = MagicMock()
         mock_points = MagicMock()
         mock_points.to_dicts.return_value = [
-            {"total_objective": 100.0, "total_loss": 0.92, "lambda_loss": 0.01},
-            {"total_objective": 105.0, "total_loss": 0.95, "lambda_loss": 0.02},
+            {"total_objective": 100.0, "total_loss": 0.92, "lambda_loss": 0.01, "converged": True},
+            {"total_objective": 105.0, "total_loss": 0.95, "lambda_loss": 0.02, "converged": True},
         ]
         mock_points.__len__ = lambda self: 2
         mock_frontier_result = MagicMock()
@@ -487,7 +487,14 @@ class TestFinalizeFrontier:
         mock_solver = MagicMock()
         mock_points = MagicMock()
         mock_points.to_dicts.return_value = [
-            {"total_objective": 100.0, "total_loss": 0.92, "lambda_loss": 0.01},
+            {
+                "total_objective": 100.0,
+                "total_loss": 0.92,
+                "lambda_loss": 0.01,
+                "total_zero_cstr": 0.95,
+                "lambda_zero_cstr": 0.0,
+                "converged": True,
+            },
         ]
         mock_points.__len__ = lambda self: 1
         mock_frontier_result = MagicMock()

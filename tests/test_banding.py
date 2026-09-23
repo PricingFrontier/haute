@@ -1234,7 +1234,7 @@ class TestBandingEditorMetadata:
                 }
             ]
         }
-        result = _prepare_config_for_sidecar(NodeType.BANDING, config)
+        result = _prepare_config_for_sidecar(NodeType.BANDING, config, node_label="banding")
         assert "_prevRules" not in result["factors"][0]
         assert "_id" not in result["factors"][0]["rules"][0]
         assert result["factors"][0]["banding"] == "continuous"
@@ -1244,7 +1244,7 @@ class TestBandingEditorMetadata:
         from haute._config_io import _prepare_config_for_sidecar
 
         config = {"factors": [{"column": "x", "rules": []}]}
-        result = _prepare_config_for_sidecar(NodeType.BANDING, config)
+        result = _prepare_config_for_sidecar(NodeType.BANDING, config, node_label="banding")
         assert result == config
 
 

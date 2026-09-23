@@ -74,6 +74,27 @@
           "lambda_loss": 0.2
         }
       ],
+      "point_summaries": [
+        {
+          "total_objective": 123.0,
+          "constraints": {
+            "loss": 0.9
+          },
+          "lambdas": {
+            "loss": 0.2
+          },
+          "converged": true,
+          "iterations": null,
+          "cd_iterations": null,
+          "clamp_rate": null,
+          "history": null,
+          "scenario_value_stats": null,
+          "scenario_value_histogram": null,
+          "factor_tables": null,
+          "warning": null,
+          "frontier_error": null
+        }
+      ],
       "n_points": 1,
       "points_returned": 1,
       "constraint_names": [
@@ -90,6 +111,27 @@
       {
         "total_objective": 123.0,
         "lambda_loss": 0.2
+      }
+    ],
+    "point_summaries": [
+      {
+        "total_objective": 123.0,
+        "constraints": {
+          "loss": 0.9
+        },
+        "lambdas": {
+          "loss": 0.2
+        },
+        "converged": true,
+        "iterations": null,
+        "cd_iterations": null,
+        "clamp_rate": null,
+        "history": null,
+        "scenario_value_stats": null,
+        "scenario_value_histogram": null,
+        "factor_tables": null,
+        "warning": null,
+        "frontier_error": null
       }
     ],
     "n_points": 1,

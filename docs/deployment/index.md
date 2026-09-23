@@ -31,8 +31,8 @@ When a CI runner invokes `haute deploy`, Haute:
 
 1. **Parses your pipeline** - reads your Python file and builds a graph of all the steps
 2. **Prunes to the scoring path** - removes training steps, data exports, and anything not needed for live scoring
-3. **Collects artifacts** - finds all the model files (e.g. `.cbm`, `.pkl`) your pipeline references and bundles them
-4. **Validates** - runs your test quotes through the pruned pipeline to make sure it works
+3. **Collects artifacts** - finds all the model files (e.g. `.cbm`, `.pkl`) your pipeline references and bundles them, together with your pipeline's `utility/` package
+4. **Validates** - runs your test quotes through the pruned pipeline to make sure it works. Your preamble can import from `utility/`; an import of any other file in your project is refused, because the deployed pipeline would not have it, so keep shared helpers in `utility/`
 5. **Packages and uploads** - wraps everything into the format the selected target expects and uploads it where supported
 6. **Dispatches by target** - Databricks creates or updates Model Serving; `container` returns the image for a separate hosting step; the Azure, ECS, and GCP adapters fail after building/pushing because their service-update integrations are not implemented
 

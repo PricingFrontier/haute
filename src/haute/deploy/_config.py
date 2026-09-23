@@ -13,6 +13,7 @@ from typing import Any
 from haute._io import read_user_text
 from haute._logging import get_logger
 from haute.assistant._config import ASSISTANT_EGRESS_TOML_KEYS, ASSISTANT_TOML_KEYS
+from haute.deploy._project_modules import ProjectModules, resolve_project_modules
 from haute.deploy._pruner import (
     find_deploy_input_nodes,
     find_output_node,
@@ -499,6 +500,7 @@ class ResolvedDeploy:
     artifacts: dict[str, Path]
     input_schema: dict[str, str]
     output_schema: dict[str, str]
+    project_modules: ProjectModules
     execution_policy: dict[str, Any] = field(default_factory=dict)
     removed_node_ids: list[str] = field(default_factory=list)
     snapshot_provenance: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -710,6 +712,7 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
                     available_fields=available,
                 )
             output_schema = {field: output_schema[field] for field in fields}
+        project_modules = resolve_project_modules(pruned_graph.preamble or "", pipeline_dir)
     except BaseException:
         resources.close()
         raise
@@ -732,6 +735,7 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         artifacts=artifacts,
         input_schema=input_schema,
         output_schema=output_schema,
+        project_modules=project_modules,
         execution_policy=execution_policy,
         removed_node_ids=removed_ids,
         snapshot_provenance=snapshot_provenance,

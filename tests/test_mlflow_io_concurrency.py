@@ -291,6 +291,9 @@ class _StubCatBoost:
     def get_cat_feature_indices(self) -> list[int]:
         return []
 
+    def get_metadata(self) -> dict[str, str]:
+        return {}
+
 
 class TestLoadModelSingleFlight:
     """``load_mlflow_model`` itself is single-flight per artifact: while one

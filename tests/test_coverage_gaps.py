@@ -33,10 +33,10 @@ class TestConfigValidationEdgeCases:
 
     def test_underscore_prefixed_keys_ignored(self):
         """Keys starting with '_' should NOT be flagged as unrecognised."""
-        from haute._config_validation import warn_unrecognized_config_keys
+        from haute._config_validation import unrecognized_config_keys
         from haute._types import NodeType
 
-        bad = warn_unrecognized_config_keys(
+        bad = unrecognized_config_keys(
             NodeType.POLARS,
             {"code": "x", "_internal_marker": True, "_debug": 99},
         )
@@ -44,14 +44,14 @@ class TestConfigValidationEdgeCases:
 
     def test_submodel_port_has_no_valid_keys(self):
         """SUBMODEL_PORT is not in the TypedDict registry — returns []."""
-        from haute._config_validation import VALID_KEYS, warn_unrecognized_config_keys
+        from haute._config_validation import VALID_KEYS, unrecognized_config_keys
         from haute._types import NodeType
 
         # SUBMODEL_PORT should not appear in VALID_KEYS (no TypedDict for it)
         assert NodeType.SUBMODEL_PORT not in VALID_KEYS
 
         # Therefore validation returns empty (nothing to validate against)
-        bad = warn_unrecognized_config_keys(
+        bad = unrecognized_config_keys(
             NodeType.SUBMODEL_PORT,
             {"anything": 42, "goes": True},
         )
@@ -75,38 +75,12 @@ class TestConfigValidationEdgeCases:
         for uk in _UNIVERSAL_KEYS:
             assert uk in keys
 
-    def test_node_label_used_in_warning(self, capsys):
-        """When node_label is provided, it appears in the warning log."""
-        from haute._config_validation import warn_unrecognized_config_keys
-        from haute._types import NodeType
-
-        warn_unrecognized_config_keys(
-            NodeType.OUTPUT,
-            {"bad_key": 1},
-            node_label="my_custom_label",
-        )
-        out = capsys.readouterr().out
-        assert "my_custom_label" in out
-
-    def test_node_type_value_used_when_no_label(self, capsys):
-        """When node_label is empty, the node type value is used in the log."""
-        from haute._config_validation import warn_unrecognized_config_keys
-        from haute._types import NodeType
-
-        warn_unrecognized_config_keys(
-            NodeType.OUTPUT,
-            {"bogus": 1},
-            node_label="",
-        )
-        out = capsys.readouterr().out
-        assert "output" in out
-
     def test_column_renames_universal_key(self):
         """column_renames should be accepted for any node type."""
-        from haute._config_validation import warn_unrecognized_config_keys
+        from haute._config_validation import unrecognized_config_keys
         from haute._types import NodeType
 
-        bad = warn_unrecognized_config_keys(
+        bad = unrecognized_config_keys(
             NodeType.POLARS,
             {"code": "x", "column_renames": {"old": "new"}},
         )

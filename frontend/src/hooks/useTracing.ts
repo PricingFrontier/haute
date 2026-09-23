@@ -230,7 +230,6 @@ export default function useTracing({
   previewSeedPlan,
 }: TracingParams): TracingReturn {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
-  const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
   const activeSource = useSettingsStore((s) => s.activeSource)
   const structuralVersion = useGraphStore((s) => s.structuralVersion)
   const nodeDataEpoch = useNodeDataStore((s) => s.epoch)
@@ -282,7 +281,6 @@ export default function useTracing({
     structuralVersion,
     activeSource,
     rowLimit,
-    streamingChunkSize,
     targetNodeId: selectedNode?.id ?? null,
   })
   const recoveryContextToken = useMemo<object>(
@@ -401,7 +399,6 @@ export default function useTracing({
         identity_digest: entry.identity_digest,
         generation_id: entry.generation_id,
       })),
-      streamingChunkSize,
       signal: controller.signal,
     })
       .then((data) => {
@@ -464,7 +461,7 @@ export default function useTracing({
           traceAbort.current = null
         }
       })
-  }, [selectedNode, nodes, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, streamingChunkSize, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan])
+  }, [selectedNode, nodes, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, activeSource, semanticContext, semanticContextToken, recoveryContextToken, refreshPreview, previewSeedPlan])
 
   const handleCellClick = startTrace
   const cancelTrace = clearTrace

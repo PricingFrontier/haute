@@ -210,7 +210,11 @@ def test_data_output_over_a_chunk_local_recipe_is_written_input_sliced(
         {"id": "e1", "source": "F", "target": "out"},
     ]
 
-    write = _write(monkeypatch, graph, streaming_chunk_size=40)
+    from haute._polars_utils import set_streaming_chunk_size
+
+    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    set_streaming_chunk_size(40)
+    write = _write(monkeypatch, graph)
 
     assert write.status_code == 200, write.body
     metrics = write.metrics
@@ -307,8 +311,6 @@ def test_data_output_leaves_no_checkpoint_directory(
 ) -> None:
     import tempfile
 
-    from haute._dataframe_execution_cache import DataFrameExecutionCache
-
     created: list[str] = []
     mkdtemp = tempfile.mkdtemp
 
@@ -317,20 +319,13 @@ def test_data_output_leaves_no_checkpoint_directory(
         created.append(Path(path).name)
         return path
 
-    stored: list[Any] = []
     monkeypatch.setattr(tempfile, "mkdtemp", recording_mkdtemp)
-    monkeypatch.setattr(
-        DataFrameExecutionCache,
-        "store_artifact",
-        lambda self, *args, **kwargs: stored.append(args),
-    )
     _inline_worker(monkeypatch)
 
     write = _write(monkeypatch, _graph(project))
 
     assert write.status_code == 200, write.body
     assert not [name for name in created if name.startswith("haute_sink_")]
-    assert stored == []
 
 
 @pytest.mark.parametrize(
@@ -589,7 +584,6 @@ def test_cancelling_the_request_stops_parent_preparation(
             PipelineGraph.model_validate(_graph(project)),
             "out",
             "live",
-            None,
             project,
             True,
             None,
@@ -656,7 +650,6 @@ def test_request_cancelled_while_preparation_succeeds_starts_no_worker(
                 PipelineGraph.model_validate(_graph(project)),
                 "out",
                 "live",
-                None,
                 project,
                 True,
                 None,

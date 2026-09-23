@@ -262,15 +262,13 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
     body = body.model_copy(update={"graph": graph})
     node = _find_modelling_node(body.graph, body.node_id)
 
-    try:
-        ram_est = estimate_training_memory(
-            body.graph,
-            body.node_id,
-            source=body.source,
-        )
-    except Exception as exc:
-        logger.warning("estimate_failed", error=str(exc), node_id=body.node_id)
-        return TrainEstimateResponse()
+    # A size the estimator cannot prove comes back as an estimate without a
+    # total; an exception here is a failure and reaches the error path.
+    ram_est = estimate_training_memory(
+        body.graph,
+        body.node_id,
+        source=body.source,
+    )
 
     # estimated_bytes already includes all training phases (evaluation
     # partitions, pools, CatBoost internals, diagnostics, and bounded tuning).

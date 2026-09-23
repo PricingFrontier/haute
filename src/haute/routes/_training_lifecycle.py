@@ -1578,7 +1578,6 @@ class TrainService:
             parquet_path=tmp_parquet,
             config=dict(body.graph.node_map[body.node_id].data.config),
             project_root=str(_get_project_root()),
-            streaming_chunk_size=body.streaming_chunk_size,
             row_limit=row_limit,
             exclude=list(exclude) if exclude else None,
             keep_columns=list(keep_columns) if keep_columns else None,

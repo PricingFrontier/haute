@@ -4,9 +4,10 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/routes/optimiser.py` | FastAPI router (`/api/optimiser/*`). Owns request/response assembly, frontier-point summary derivation, artifact-payload building/validation for save and MLflow log, and the module-level `_store`/`_solve_service` singletons. |
+| `src/haute/routes/optimiser.py` | FastAPI router (`/api/optimiser/*`). Owns request/response assembly, frontier-point selection, artifact-payload building/validation for save and MLflow log, and the module-level `_store`/`_solve_service` singletons. |
 | `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService` and its supporting free functions: pipeline execution, schema/value-contract validation, quote-grid construction, solver dispatch (online and ratebook), background frontier-auto-range estimation, ownership-marked apply/ratebook-factor artifact persistence and stale-startup reporting, and ratebook factor-table canonicalisation/serialisation. |
 | `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT`, `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_apply_preview_payload`, `limited_frontier_payload`. |
+| `src/haute/routes/_frontier_point_summary.py` | The one derivation of a frontier point's solve summary: `frontier_point_summary` (from a `price-contour` frontier row), `apply_frontier_point_summary` (overlays it on a base result) and `FrontierPointDataError` (a malformed point, carrying the HTTP status the route reports). See Frontier point summaries below. |
 | `src/haute/_builders.py` | Cross-component runtime registry owned by [execution-engine](../execution-engine/low-level.md). The optimiser component consumes its optimiser-apply online/ratebook closures; saved artifact validation and trace reconstruction must remain contract-compatible with those closures. |
 | `src/haute/_optimiser_io.py` | Loads a previously saved optimiser artifact for an optimiser-apply node — from a local JSON file (content-hash cached) or from MLflow (`load_mlflow_optimiser_artifact(..., destination="")`, cached on the resolved backend identity plus run-id/version, so the same run on two destinations never aliases and an unresolvable destination fails before any cache lookup). Analogous to `_mlflow_io.py` and `_io.py`. |
 | `src/haute/_optimiser_apply_explainability.py` | Builds a structured trace-detail payload for one clicked optimiser-apply output row, for both online and ratebook modes. Consumed by the tracing subsystem, not exposed as its own route. |
@@ -38,7 +39,7 @@ in `optimiser.py`). Instance state:
 ### `SolveContext` (`src/haute/routes/_optimiser_service.py`, frozen dataclass)
 
 Per-solve context threaded through `_solve_online`/`_solve_ratebook`: job id, node id, mode,
-store, execution context, streaming chunk size, single-flight key, required worker `start_time`,
+store, execution context, single-flight key, required worker `start_time`,
 and a `check_cancelled` callable — the single object both solver code paths use to check for
 cooperative cancellation. The orchestration context may omit `start_time` before
 `_launch_background` resolves it, but both solver entry points fail loudly if they receive a
@@ -55,8 +56,8 @@ context without the resolved value rather than silently resetting elapsed-time a
   `(chunk_size, provenance)`, recording whether a chunk
   size came from explicit config or a byte-budget policy.
 - `FrontierAutoRangeContext` (`src/haute/routes/_optimiser_service.py`, frozen) — per-job bundle
-  of chunk size, partition count,
-  execution context, and streaming chunk size for one auto-range run.
+  of chunk size, partition count, and
+  execution context for one auto-range run.
 - `_ScenarioFrontierRangeAccumulator` (`src/haute/routes/_optimiser_service.py`) — a
   disk-bucketed accumulator that combines
   per-quote scenario min/max across many batches by hash-partitioning into parquet parts and
@@ -183,7 +184,7 @@ input, or the streaming path's base below the scenario expander — carries what
 there, and the following solve (and the input estimate, which reads the data input with the
 solve's columns) seeds instead of recomputing. A node the solve reads whole carries no demand
 and is not widened. Auto-range uses that same `_execute_pipeline` boundary and request context;
-there is no second planning policy or private dataframe-cache namespace.
+there is no second planning policy.
 
 Every failure mode in this thread (cancellation, `HTTPException`, memory-admission error,
 bounded-streaming-unsupported error, or a bare exception) is mapped to a terminal job-store
@@ -193,7 +194,7 @@ caller except through the status-polling endpoint.
 ### Solver execution (`_launch_background` → `_solve_online` / `_solve_ratebook`)
 
 The spawned solver thread updates progress to "Solving", then — inside
-`temporary_streaming_chunk_size(...)` and an execution-context stage — calls:
+an execution-context stage — calls:
 
 - **Online** (`_solve_online`): constructs `price_contour.OnlineOptimiser(objective,
   constraints, max_iter, tolerance, record_history)` and solves directly against the passed
@@ -252,7 +253,7 @@ HTTP 422; the 422 mapping remains for bounded streaming-collect failures.
 
 - `start_frontier_auto_range` — **background**: under `_start_lock`, idempotently
   returns the existing job id if an auto-range job with the same graph fingerprint and node id is
-  already running (request-only `streaming_chunk_size` is not part of this key; unlike
+  already running (unlike
   `start()`'s stricter conflict behaviour), otherwise creates a cancellable job, registers it,
   and spawns a worker thread.
 - `_run_frontier_auto_range_job` dispatches to `_run_streaming_frontier_auto_range_job`
@@ -292,7 +293,9 @@ phase and a background sweep phase, mirroring the solve submission pattern:
    `ratebook_factors`/`factor_columns` kwargs to `solver.frontier(...)`, while online omits them.
    A cancellation checkpoint runs before and after the external frontier call. The response is
    capped via `haute.routes._optimiser_limits.limited_frontier_payload` (caps to
-   `FRONTIER_POINT_LIMIT` while always reporting the true total and truncation flag) and the
+   `FRONTIER_POINT_LIMIT` while always reporting the true total and truncation flag, and attaches
+   `point_summaries`, one `frontier_point_summary` per returned point in point order; a point that
+   cannot be summarised fails the frontier) and the
    result stored as both the size-limited `result["frontier"]` and the raw `frontier_data` field
    on the *parent solve job* (via `_store.atomic_update(parent_job_id, ..., expected_status=
    "completed")` — 409-shaped as a `contract_error` on the frontier job if the solve job's state
@@ -330,12 +333,25 @@ running frontier job to `cancelled`. A terminal job is returned unchanged. The w
 
 `POST /frontier/select` (`haute.routes.optimiser.select_frontier_point`) resolves one frontier
 point's totals/constraints/lambdas into a full result summary
-(`_frontier_point_result_dict`) without re-solving; for a ratebook job with
+(`_frontier_point_result_dict`, which applies `frontier_point_summary` to the base result, so it
+equals the point's entry in `point_summaries`) without re-solving; for a ratebook job with
 `include_ratebook_tables` requested, it additionally *materialises* that point by re-running the
 already-built solver against the point's lambdas
 (`haute.routes.optimiser._materialise_ratebook_frontier_point`) —
 cached if the job's current result already matches that point's lambdas exactly, otherwise
 re-solved and the job updated atomically (409 if the job's state changed concurrently).
+
+### Frontier point summaries
+
+A frontier point's summary holds every result field that differs from the solve it was swept
+from: total objective, constraint totals (from `total_<name>`, else a nested constraints map,
+else the bare name), lambdas (from the `lambda_<name>` columns), converged, iterations, CD
+iterations, clamp rate, history, scenario-value stats (from the `sv_*` columns), scenario-value
+histogram, factor tables, the non-converged warning and the frontier error. Every field is
+always present and `null` where the point has none; applying the summary to a base result
+removes a `null` field. A point with no lambdas or no `converged` is a 400 when selected, and a
+missing or non-finite number or conflicting lambdas a 500; while the frontier is being built
+either fails the frontier.
 
 ### Apply preview (`POST /apply`, `haute.routes.optimiser.apply_lambdas`)
 
@@ -613,7 +629,9 @@ returned as a generic `status: "error"` payload.
 - **One blocking solve process-wide, plus graph/node setup single-flight.**
   `_check_no_concurrent_jobs` scans the shared optimiser store and blocks a second solve for any
   graph/node. `estimate`, `frontier_auto_range`, and `frontier_recompute` are explicitly excluded
-  (`_NON_BLOCKING_RUNNING_JOB_TYPES`), so they do not reserve that global solve slot. Independently,
+  (`_NON_BLOCKING_RUNNING_JOB_TYPES`), so they do not reserve that global solve slot, and none of them
+  waits on a running solve: no optimiser path holds a lock across its work to apply the streaming
+  chunk size. Independently,
   the graph/node coordinator prevents a solve setup and a background auto-range setup from
   overlapping on the same graph/node; synchronous estimate does not use that coordinator.
 - **`_ESTIMATE_JOB_TYPE` is assigned by `/estimate`, not by frontier auto-range.**
@@ -625,6 +643,11 @@ returned as a generic `status: "error"` payload.
   structured HTTP 507 response with optimiser-estimate-specific user wording, never a generic
   HTTP 500. The job tag is what lets `_NON_BLOCKING_RUNNING_JOB_TYPES` exempt an in-flight
   `/estimate` call from `_check_no_concurrent_jobs`'s store-wide scan.
+- **`/estimate`'s `total_rows` is null only when the source size is unknown.**
+  `_detailed_ancestor_source_metadata` answers an unknown size itself, with no row count:
+  live data without Parquet backing, or a source whose metadata read raises `OSError`,
+  `TypeError` or `ValueError`. The route does not catch anything else it raises. An
+  unexpected failure is an error response, never an estimate with the total missing.
 - **std of a single-quote scenario-value distribution is hardcoded to `0.0`.**
   `_compute_scenario_value_stats` special-cases `n == 1` rather than calling Polars' sample
   standard deviation (`ddof=1`), which is undefined (`null`) for a single observation and would
@@ -816,7 +839,7 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   does the same at its pre-expansion base, so the solve seeds the base and builds nothing above
   it; the input estimate seeds
   setup's capture; and a real solve, auto-range, and estimate through the routes create no
-  checkpoint directory and no dataframe-cache entry.
+  checkpoint directory.
 - **`tests/test_optimiser_service_validation.py`** — focused unit tests for
   `_validate_and_project`'s non-finite/overflow/null-quote-id detection (including float64→
   float32 overflow rejection) and end-to-end single-/multi-quote real-solver lifecycle tests

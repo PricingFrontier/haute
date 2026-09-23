@@ -1897,7 +1897,7 @@ def test_a_requested_column_the_node_no_longer_produces_is_refused_as_without_a_
 
 
 def test_preview_join_capture_is_chunked_into_parts_and_downstream_reads_them(
-    project: Path, api: Any, store: NodeSnapshotStore
+    project: Path, api: Any, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     n_rows = 10
     pl.DataFrame(
@@ -1939,7 +1939,11 @@ def test_preview_join_capture_is_chunked_into_parts_and_downstream_reads_them(
         source_file=str(project / "main.py"),
     )
 
-    first_body = _post_preview(api, graph, "banding", streaming_chunk_size=2)
+    from haute._polars_utils import set_streaming_chunk_size
+
+    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
+    set_streaming_chunk_size(2)
+    first_body = _post_preview(api, graph, "banding")
 
     assert _plan_of(first_body) == [("join_node", "captured")]
     captures = first_body["execution_metrics"]["shared_snapshot_captures"]
@@ -1967,7 +1971,7 @@ def test_preview_join_capture_is_chunked_into_parts_and_downstream_reads_them(
     from haute.executor import _preview_cache
 
     _preview_cache.clear()
-    second_body = _post_preview(api, graph, "banding", streaming_chunk_size=2)
+    second_body = _post_preview(api, graph, "banding")
     assert _plan_of(second_body) == [("join_node", "seeded")]
     second_rows = pl.DataFrame(second_body["preview"]).sort("identifier")
     assert_frame_equal(second_rows.select(expected_sorted.columns), expected_sorted)

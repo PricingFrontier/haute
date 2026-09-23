@@ -7,7 +7,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from haute._logging import get_logger
 from haute._mlflow_utils import (
@@ -112,40 +112,30 @@ def deploy_to_mlflow(
         manifest_path = build_dir / "deploy_manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2))
 
-        # 3. Build artifact dict for mlflow.pyfunc.log_model
-        artifacts: dict[str, str] = {
-            "deploy_manifest": str(manifest_path),
-        }
-        for artifact_name, artifact_path in resolved.artifacts.items():
-            artifacts[artifact_name] = str(artifact_path)
+        # 3. The model to log: code, artefacts, project modules, signature, environment
+        model_arguments = _pyfunc_model_arguments(resolved, manifest_path)
 
         for node_id, source in resolved.model_sources.items():
             _log(model_source_line(node_id, source))
 
-        # 4. Build MLflow model signature
-        signature = _build_signature(resolved)
-
-        # 5. Set experiment - append endpoint suffix for staging isolation
+        # 4. Set experiment - append endpoint suffix for staging isolation
         experiment_name = build_experiment_name(config)
         _log(f"Setting experiment: {experiment_name}")
         set_experiment_creating_workspace_folder(mlflow, experiment_name)
 
-        # 6. Log the model
+        # 5. Log the model
         _log("Logging model to MLflow (this may take a minute)...")
         with mlflow.start_run(run_name=f"deploy-{model_name}"):
             mlflow.log_dict(manifest, "deploy_manifest.json")
 
             mlflow.pyfunc.log_model(
                 name="model",
-                python_model=_MODEL_CODE_PATH,
-                artifacts=artifacts,
-                signature=signature,
-                conda_env=_conda_env(resolved),
                 registered_model_name=uc_model_name,
+                **model_arguments,
             )
 
         _log(f"Model logged. Fetching registered version for {uc_model_name}...")
-        # 7. Get the registered model version
+        # 6. Get the registered model version
         client = mlflow.tracking.MlflowClient()
         versions = search_versions(client, uc_model_name)
         if not versions:
@@ -160,7 +150,7 @@ def deploy_to_mlflow(
 
         _log(f"Model URI: {model_uri}")
 
-        # 8. Create or update the serving endpoint
+        # 7. Create or update the serving endpoint
         _log(f"Creating/updating serving endpoint: {config.effective_endpoint_name}...")
         endpoint_url = _create_or_update_serving_endpoint(
             config=config,
@@ -226,6 +216,26 @@ def get_deploy_status(
         "latest_stage": getattr(latest, "current_stage", "None"),
         "status": latest.status,
         "run_id": latest.run_id or "",
+    }
+
+
+def _pyfunc_model_arguments(resolved: ResolvedDeploy, manifest_path: Path) -> dict[str, Any]:
+    """The pyfunc model a deploy logs: code, artefacts, project modules, signature, env.
+
+    The bundled ``utility`` package is the model's only code path; MLflow copies
+    it under the model's ``code/`` directory and puts that on ``sys.path`` when
+    the model loads, so the served preamble imports the validated files.
+    """
+    artifacts: dict[str, str] = {"deploy_manifest": str(manifest_path)}
+    for artifact_name, artifact_path in resolved.artifacts.items():
+        artifacts[artifact_name] = str(artifact_path)
+    utility = resolved.project_modules.utility
+    return {
+        "python_model": _MODEL_CODE_PATH,
+        "artifacts": artifacts,
+        "code_paths": [str(utility)] if utility is not None else None,
+        "signature": _build_signature(resolved),
+        "conda_env": _conda_env(resolved),
     }
 
 

@@ -715,6 +715,10 @@ export interface MlflowDestinationsResponse {
   detail: string
 }
 
+export interface ExecutionSettings {
+  streaming_chunk_size: number
+}
+
 export interface MlflowSettingsResponse {
   section_present: boolean
   tracking_uri: string
@@ -1564,9 +1568,31 @@ export type FrontierPoint = Record<string, unknown> & {
   lambdas?: Record<string, number>
 }
 
+/** The server's summary of one frontier point: every result field that
+ *  differs from its solve, `null` where the point has none (applying it
+ *  clears that field). Mirrors `OptimiserFrontierPointSummary` in
+ *  `src/haute/schemas.py`. */
+export interface FrontierPointSummary {
+  total_objective: number
+  constraints: Record<string, number>
+  lambdas: Record<string, number>
+  converged: boolean
+  iterations: number | null
+  cd_iterations: number | null
+  clamp_rate: number | null
+  history: OptimiserHistoryEntry[] | null
+  scenario_value_stats: OptimiserScenarioValueStats | null
+  scenario_value_histogram: OptimiserScenarioValueHistogram | null
+  factor_tables: Record<string, Record<string, unknown>[]> | null
+  warning: string | null
+  frontier_error: string | null
+}
+
 export interface FrontierResponse {
   status: string
   points: FrontierPoint[]
+  /** One server summary per point, in point order. */
+  point_summaries: FrontierPointSummary[]
   n_points: number
   points_returned: number
   constraint_names: string[]

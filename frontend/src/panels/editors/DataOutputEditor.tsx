@@ -147,9 +147,6 @@ export default function DataOutputEditor({
 }) {
   const { capabilities, error } = useIoCapabilities()
   const { allNodes, edges, submodels, preamble } = useGraph()
-  const streamingChunkSize = useSettingsStore(
-    (state) => state.streamingChunkSize,
-  )
   const activeSource = useSettingsStore((state) => state.activeSource)
   const writeState = useOutputWriteStore((state) => state.writes[nodeId])
   const beginWrite = useOutputWriteStore((state) => state.begin)
@@ -191,9 +188,8 @@ export default function DataOutputEditor({
         nodeId,
         config,
         source: activeSource,
-        streamingChunkSize,
       }),
-    [activeSource, config, graph, nodeId, streamingChunkSize],
+    [activeSource, config, graph, nodeId],
   )
   const isWriting = writeState?.phase === "writing"
   const visibleState =
@@ -272,7 +268,6 @@ export default function DataOutputEditor({
         graph,
         nodeId,
         source: activeSource,
-        streamingChunkSize,
         overwrite,
       })
       completeWrite(nodeId, requestId, requestIdentity, {

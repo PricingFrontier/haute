@@ -145,7 +145,9 @@ def _patched_loaders(downloader: _PayloadDownloader):
         ),
         patch(
             "haute._mlflow_io._wrap_catboost",
-            side_effect=lambda raw: ScoringModel(model=raw, feature_names=["x"], flavor="catboost"),
+            side_effect=lambda raw, *, source: ScoringModel(
+                model=raw, feature_names=["x"], flavor="catboost"
+            ),
         ),
     ):
         yield

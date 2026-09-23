@@ -185,7 +185,6 @@ class TestExecuteSinkDataOutput:
             PipelineGraph(),
             "sink",
             "batch",
-            123,
             str(tmp_path),
             False,
             None,
@@ -217,7 +216,6 @@ class TestExecuteSinkDataOutput:
                 PipelineGraph(),
                 "sink",
                 "batch",
-                None,
                 str(tmp_path),
                 False,
                 None,
@@ -284,7 +282,6 @@ class TestExecuteSinkDataOutput:
                 PipelineGraph(),
                 "sink",
                 "batch",
-                None,
                 tmp_path,
                 False,
                 final,
@@ -318,7 +315,6 @@ class TestExecuteSinkDataOutput:
                 PipelineGraph(),
                 "sink",
                 "batch",
-                None,
                 tmp_path,
                 False,
                 None,
@@ -339,7 +335,6 @@ class TestExecuteSinkDataOutput:
                 PipelineGraph(),
                 "sink",
                 "batch",
-                None,
                 tmp_path,
                 False,
                 None,
@@ -363,7 +358,6 @@ class TestExecuteSinkDataOutput:
                 PipelineGraph(),
                 "sink",
                 "batch",
-                None,
                 tmp_path,
                 False,
                 None,
@@ -517,7 +511,6 @@ class TestExecuteSinkDataOutput:
                 graph=None,  # type: ignore[arg-type]
                 output_node_id="sink",
                 source="batch",
-                streaming_chunk_size=None,
                 project_root=tmp_path,
                 overwrite=False,
                 final_path=final,
@@ -576,7 +569,6 @@ class TestExecuteSinkDataOutput:
                 graph=None,  # type: ignore[arg-type]
                 output_node_id="sink",
                 source="batch",
-                streaming_chunk_size=None,
                 project_root=tmp_path,
                 overwrite=False,
                 final_path=final,
@@ -2457,7 +2449,7 @@ class TestSidecarPersistence:
             "arguments": {"separator": ";"},
             "_editorOnly": {"open": True},
         }
-        prepared = _prepare_config_for_sidecar(NodeType.DATA_INPUT, config)
+        prepared = _prepare_config_for_sidecar(NodeType.DATA_INPUT, config, node_label="source")
         assert prepared == {
             "inputType": "file",
             "format": "csv",
@@ -2772,3 +2764,116 @@ def test_prepare_database_output_without_staging_path_is_transactional(
     assert prepared.staging_path is None
     assert prepared.transactional is True
     assert prepared.response.row_count == 1
+
+
+def _sink_route_graph() -> PipelineGraph:
+    return PipelineGraph(
+        nodes=[
+            GraphNode(id="s", data=NodeData(label="s", nodeType=NodeType.DATA_INPUT)),
+            GraphNode(
+                id="sink",
+                data=NodeData(
+                    label="sink",
+                    nodeType=NodeType.DATA_OUTPUT,
+                    config={
+                        "outputType": "file",
+                        "format": "parquet",
+                        "mode": "sink",
+                        "path": "sink_failure.parquet",
+                        "arguments": {},
+                    },
+                ),
+            ),
+        ],
+        edges=[GraphEdge(id="e_s_sink", source="s", target="sink")],
+    )
+
+
+@pytest.mark.usefixtures("_widen_sandbox_root")
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_status"),
+    [
+        ("contract", 422),
+        ("bounded", 422),
+        ("destination", 409),
+        ("memory", 507),
+        ("unknown_envelope", 500),
+        ("native_rss", 507),
+        ("native_unsupported", 507),
+        ("crashed_memory", 507),
+        ("crashed", 500),
+        ("remote_memory", 507),
+        ("remote", 500),
+    ],
+)
+def test_isolated_sink_failures_map_to_stable_http_contracts(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_kind: str,
+    expected_status: int,
+) -> None:
+    """Each output-worker failure maps to one status, and a 500 never leaks
+    the child's private message or traceback."""
+    from haute._worker_isolation import (
+        IsolatedWorkerCrashedError,
+        IsolatedWorkerMemoryLimitExceededError,
+        IsolatedWorkerMemoryLimitUnsupportedError,
+        IsolatedWorkerRemoteError,
+    )
+    from haute.routes import pipeline as pipeline_route
+    from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+
+    failure: BaseException
+    if failure_kind in {"contract", "bounded", "destination", "memory"}:
+        payload = {"error_code": "test"} if failure_kind in {"contract", "memory"} else None
+        failure = pipeline_route._OutputWriteWorkerError(
+            {
+                "contract": "contract",
+                "bounded": "bounded",
+                "destination": "destination_exists",
+                "memory": "memory",
+            }[failure_kind],
+            f"{failure_kind} failure",
+            payload,
+        )
+    elif failure_kind == "unknown_envelope":
+        failure = pipeline_route._OutputWriteWorkerError("unknown", "unknown failure")
+    elif failure_kind == "native_rss":
+        failure = IsolatedWorkerMemoryLimitExceededError(rss_bytes=200, rss_limit_bytes=100)
+    elif failure_kind == "native_unsupported":
+        failure = IsolatedWorkerMemoryLimitUnsupportedError(memory_limit_bytes=100)
+    elif failure_kind == "crashed_memory":
+        failure = IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=100)
+    elif failure_kind == "crashed":
+        failure = IsolatedWorkerCrashedError(exitcode=1, memory_limit_bytes=100)
+    elif failure_kind == "remote_memory":
+        failure = IsolatedWorkerRemoteError(
+            remote_type="MemoryError",
+            remote_message="private memory detail",
+            remote_traceback="private traceback",
+        )
+    else:
+        failure = IsolatedWorkerRemoteError(
+            remote_type="RuntimeError",
+            remote_message="private child detail",
+            remote_traceback="private traceback",
+        )
+
+    def _fail(*_args: object, **_kwargs: object) -> None:
+        raise failure
+
+    monkeypatch.setattr(pipeline_route, "_output_write_transaction", _fail)
+    response = client.post(
+        "/api/pipeline/write-output",
+        json={"graph": _sink_route_graph().model_dump(), "node_id": "sink"},
+    )
+
+    assert response.status_code == expected_status
+    if expected_status == 500:
+        expected_detail = (
+            "Internal server error"
+            if failure_kind == "unknown_envelope"
+            else _INTERNAL_ERROR_DETAIL
+        )
+        assert response.json()["detail"] == expected_detail
+        assert "private" not in response.text

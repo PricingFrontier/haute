@@ -1372,7 +1372,6 @@ function NodePanelContent({
   const setModellingPane = useUIStore((s) => s.setModellingPane)
   const hasActiveTrainJob = useNodeResultsStore((s) => Boolean(s.trainJobs[node.id]))
   const activeSource = useSettingsStore((s) => s.activeSource)
-  const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
   const documentDiagnostics = useDocumentStatusStore((s) => s.diagnostics)
   const canRepair = useDocumentStatusStore((s) => s.capabilities?.can_repair === true)
   const reservedApiInputFrameLabels = useDocumentStatusStore(
@@ -1410,18 +1409,17 @@ function NodePanelContent({
         field,
         source: activeSource,
         search: search || undefined,
-        streamingChunkSize,
         signal,
       })
     },
-    // Keyed by the Explore cache identity hash (plus the fetch chunk size):
-    // any render that keeps the same hash captures a graph snapshot whose
-    // data-affecting parts are identical, so display-only pivot edits do not
-    // churn the loader or reload members, while a hash change rebuilds the
-    // closure with the new graph/source in the same render that re-keys the
-    // member picker — there is no ref-update ordering to race against.
+    // Keyed by the Explore cache identity hash: any render that keeps the
+    // same hash captures a graph snapshot whose data-affecting parts are
+    // identical, so display-only pivot edits do not churn the loader or
+    // reload members, while a hash change rebuilds the closure with the new
+    // graph/source in the same render that re-keys the member picker — there
+    // is no ref-update ordering to race against.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [exploreConfigHash, streamingChunkSize],
+    [exploreConfigHash],
   )
 
   const effectiveReadOnly = readOnly || scopedSaving

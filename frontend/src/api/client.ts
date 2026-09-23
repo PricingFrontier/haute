@@ -58,6 +58,7 @@ import type {
   InputCacheBuildResponse,
   InputCacheCancelResponse,
   InputCacheJobStatusResponse,
+  ExecutionSettings,
   InputCacheSnapshotResponse,
   JsonCacheBuildResponse,
   JsonCacheProgressResponse,
@@ -170,6 +171,7 @@ import {
   parseJsonCacheSchemaInferenceResponse,
   parseJsonCacheStatusResponse,
   parseMlflowDestinationsResponse,
+  parseExecutionSettings,
   parseMlflowSettingsResponse,
   parseMlflowTestConnectionResponse,
   parseMlflowExperiments,
@@ -838,7 +840,6 @@ export interface PreviewNodeArgs {
    * multi-table apiInput). Sent as `port_label`; part of the backend preview
    * cache key, so each frame is a distinct cache entry. */
   portLabel?: string
-  streamingChunkSize?: number
   signal?: AbortSignal
   timeout?: number
 }
@@ -851,7 +852,6 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
     source,
     requestedPreviewColumns,
     portLabel,
-    streamingChunkSize,
     signal,
     timeout = 120_000,
   } = args
@@ -864,7 +864,6 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
       source: source ?? "live",
       ...(requestedPreviewColumns ? { requested_preview_columns: requestedPreviewColumns } : {}),
       ...(portLabel !== undefined ? { port_label: portLabel } : {}),
-      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
     },
     { signal, timeout },
   ).then((data) => parsePreviewNodeResponse(data) as PreviewNodeResponse)
@@ -925,7 +924,6 @@ export interface RecoveryPreviewNodeArgs {
   source?: string
   requestedPreviewColumns?: string[]
   portLabel?: string
-  streamingChunkSize?: number
   signal?: AbortSignal
   timeout?: number
 }
@@ -941,7 +939,6 @@ export function previewRecoveryNode(
     source,
     requestedPreviewColumns,
     portLabel,
-    streamingChunkSize,
     signal,
     timeout = 120_000,
   } = args
@@ -955,7 +952,6 @@ export function previewRecoveryNode(
       source: source ?? "live",
       ...(requestedPreviewColumns ? { requested_preview_columns: requestedPreviewColumns } : {}),
       ...(portLabel !== undefined ? { port_label: portLabel } : {}),
-      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
     },
     { signal, timeout },
   ).then((data) => parsePreviewNodeResponse(data) as PreviewNodeResponse)
@@ -1041,24 +1037,19 @@ export interface TraceCellArgs {
   /** The `seed_plan` of the preview being traced: the trace reads exactly
    * those generations, and none when it is empty. */
   seed_plan: TraceSeedPlanEntry[]
-  streamingChunkSize?: number
   signal?: AbortSignal
   timeout?: number
 }
 
 export function traceCell(args: TraceCellArgs): Promise<TraceResponse> {
-  const { streamingChunkSize, signal, timeout = 120_000, ...payload } = args
-  const body = streamingChunkSize !== undefined
-    ? { ...payload, streaming_chunk_size: streamingChunkSize }
-    : payload
-  return post<unknown>("/api/pipeline/trace", body, { signal, timeout }).then(parseTraceResponse)
+  const { signal, timeout = 120_000, ...payload } = args
+  return post<unknown>("/api/pipeline/trace", payload, { signal, timeout }).then(parseTraceResponse)
 }
 
 export interface WriteOutputArgs {
   graph: GraphPayload
   nodeId: string
   source?: string
-  streamingChunkSize?: number
   overwrite?: boolean
   signal?: AbortSignal
   timeout?: number
@@ -1090,7 +1081,6 @@ export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse>
     graph,
     nodeId,
     source,
-    streamingChunkSize,
     overwrite,
     signal,
     timeout = 300_000,
@@ -1102,7 +1092,6 @@ export function writeOutput(args: WriteOutputArgs): Promise<WriteOutputResponse>
       node_id: nodeId,
       source: source ?? "live",
       overwrite: overwrite ?? false,
-      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
     },
     { signal, timeout },
   ).then(parseWriteOutputResponse)
@@ -1274,15 +1263,14 @@ export function getNodeDataPoint(args: NodeDataArgs): Promise<NodeDataPointRespo
 }
 
 export function runNodeData(
-  args: NodeDataArgs & { refresh?: boolean; streamingChunkSize?: number; timeout?: number },
+  args: NodeDataArgs & { refresh?: boolean; timeout?: number },
 ): Promise<NodeDataRunResponse> {
-  const { streamingChunkSize, signal, timeout = 300_000, ...payload } = args
+  const { signal, timeout = 300_000, ...payload } = args
   return post<unknown>(
     "/api/node-data/run",
     {
       ...payload,
       source: payload.source ?? "live",
-      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
     },
     { signal, timeout },
   ).then(parseNodeDataRunResponse)
@@ -1389,7 +1377,6 @@ export interface RunExploreArgs {
   node_id: string
   source?: string
   refresh?: boolean
-  streamingChunkSize?: number
   signal?: AbortSignal
   timeout?: number
 }
@@ -1399,17 +1386,15 @@ export interface RunExplorePivotArgs {
   node_id: string
   pivot: Record<string, unknown>
   source?: string
-  streamingChunkSize?: number
   signal?: AbortSignal
   timeout?: number
 }
 
 export function runExplorePivot(args: RunExplorePivotArgs): Promise<ExplorePivotRunResponse> {
-  const { streamingChunkSize, signal, timeout = 300_000, ...payload } = args
+  const { signal, timeout = 300_000, ...payload } = args
   return post<unknown>("/api/explore/pivots/run", {
     ...payload,
     source: payload.source ?? "live",
-    ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
   }, { signal, timeout }).then(parseExplorePivotRunResponse)
 }
 
@@ -1435,7 +1420,6 @@ export interface FetchExplorePivotMembersArgs {
   field: string
   source?: string
   search?: string | null
-  streamingChunkSize?: number
   signal?: AbortSignal
   timeout?: number
 }
@@ -1443,11 +1427,10 @@ export interface FetchExplorePivotMembersArgs {
 export function fetchExplorePivotMembers(
   args: FetchExplorePivotMembersArgs,
 ): Promise<ExplorePivotMembersResponse> {
-  const { streamingChunkSize, signal, timeout, ...payload } = args
+  const { signal, timeout, ...payload } = args
   return post<unknown>("/api/explore/pivots/members", {
     ...payload,
     source: payload.source ?? "live",
-    ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
   }, { signal, timeout }).then(parseExplorePivotMembersResponse)
 }
 
@@ -1489,20 +1472,18 @@ export interface TrainModelArgs {
   graph: GraphPayload
   node_id: string
   source?: string
-  streamingChunkSize?: number
   signal?: AbortSignal
   timeout?: number
 }
 
 export function trainModel(args: TrainModelArgs): Promise<TrainResponse> {
   // Pipeline execution can take minutes for large datasets - use a 10-minute timeout
-  const { streamingChunkSize, signal, timeout = 600_000, ...payload } = args
+  const { signal, timeout = 600_000, ...payload } = args
   return post<unknown>(
     "/api/modelling/train",
     {
       ...payload,
       source: payload.source ?? "live",
-      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
     },
     { signal, timeout },
   ).then(async (data) => (await import("../types/trainGuards")).parseTrainResponse(data))
@@ -1556,17 +1537,13 @@ export function saveTrainedModel(
 export interface SolveOptimiserArgs {
   graph: GraphPayload
   node_id: string
-  streamingChunkSize?: number
   signal?: AbortSignal
   timeout?: number
 }
 
 export function solveOptimiser(args: SolveOptimiserArgs): Promise<OptimiserSolveResponse> {
-  const { streamingChunkSize, signal, timeout = 300_000, ...payload } = args
-  const body = streamingChunkSize !== undefined
-    ? { ...payload, streaming_chunk_size: streamingChunkSize }
-    : payload
-  return post<unknown>("/api/optimiser/solve", body, { signal, timeout })
+  const { signal, timeout = 300_000, ...payload } = args
+  return post<unknown>("/api/optimiser/solve", payload, { signal, timeout })
     .then(parseSolveOptimiserResponse)
 }
 
@@ -1574,7 +1551,6 @@ export interface EstimateOptimiserSolveArgs {
   graph: GraphPayload
   node_id: string
   source?: string
-  streamingChunkSize?: number
   signal?: AbortSignal
   timeout?: number
 }
@@ -1582,13 +1558,12 @@ export interface EstimateOptimiserSolveArgs {
 export function estimateOptimiserSolve(
   args: EstimateOptimiserSolveArgs,
 ): Promise<OptimiserEstimate> {
-  const { streamingChunkSize, signal, timeout = 30_000, ...payload } = args
+  const { signal, timeout = 30_000, ...payload } = args
   return post<unknown>(
     "/api/optimiser/estimate",
     {
       ...payload,
       source: payload.source ?? "live",
-      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
     },
     { signal, timeout },
   ).then(parseOptimiserEstimateResponse)
@@ -1637,7 +1612,6 @@ export function getFrontierStatus(
 export interface StartOptimiserFrontierAutoRangeArgs {
   graph: GraphPayload
   node_id: string
-  streamingChunkSize?: number
   signal?: AbortSignal
   timeout?: number
 }
@@ -1645,11 +1619,8 @@ export interface StartOptimiserFrontierAutoRangeArgs {
 export function startOptimiserFrontierAutoRange(
   args: StartOptimiserFrontierAutoRangeArgs,
 ): Promise<FrontierAutoRangeStartResponse> {
-  const { streamingChunkSize, signal, timeout, ...payload } = args
-  const body = streamingChunkSize !== undefined
-    ? { ...payload, streaming_chunk_size: streamingChunkSize }
-    : payload
-  return post<unknown>("/api/optimiser/frontier/auto-range/start", body, { signal, timeout })
+  const { signal, timeout, ...payload } = args
+  return post<unknown>("/api/optimiser/frontier/auto-range/start", payload, { signal, timeout })
     .then(parseFrontierAutoRangeStartResponse)
 }
 
@@ -1782,6 +1753,28 @@ export function inferJsonCacheSchema(
     payload,
     { timeout: JSON_CACHE_INFER_TIMEOUT_MS, ...options },
   ).then(parseJsonCacheSchemaInferenceResponse)
+}
+
+// ---------------------------------------------------------------------------
+// Execution settings (server-owned, editor-wide: the streaming chunk size)
+// ---------------------------------------------------------------------------
+
+export function getExecutionSettings(
+  options?: { signal?: AbortSignal },
+): Promise<ExecutionSettings> {
+  return request<unknown>("/api/execution-settings", options).then(parseExecutionSettings)
+}
+
+export function putExecutionSettings(
+  streamingChunkSize: number,
+  options?: { signal?: AbortSignal },
+): Promise<ExecutionSettings> {
+  return request<unknown>("/api/execution-settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ streaming_chunk_size: streamingChunkSize }),
+    ...options,
+  }).then(parseExecutionSettings)
 }
 
 // ---------------------------------------------------------------------------

@@ -185,6 +185,62 @@ class TestCatBoostPredictOffset:
         with pytest.raises(ConfigError, match="records offset column 'exposure' but not how"):
             load_local_model(str(model_path), "regression")
 
+    def _save_with_unreadable_metadata(
+        self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> Path:
+        from catboost import CatBoostRegressor
+
+        algo, model = _fit_catboost(_freq_frame(), offset="exposure")
+        model_path = haute_scratch / "freq_unreadable_metadata.cbm"
+        algo.save(model, model_path)
+
+        def _unreadable(_model: object) -> object:
+            raise RuntimeError("metadata store unavailable")
+
+        monkeypatch.setattr(CatBoostRegressor, "get_metadata", _unreadable)
+        return model_path
+
+    def test_catboost_model_with_unreadable_metadata_is_refused(
+        self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unreadable metadata cannot tell an offset-free model from one
+        trained with an offset, so the model is refused, naming its file,
+        rather than scored from baseline zero."""
+        from haute._mlflow_io import load_local_model
+
+        model_path = self._save_with_unreadable_metadata(haute_scratch, monkeypatch)
+
+        with pytest.raises(ConfigError, match="freq_unreadable_metadata.cbm") as refused:
+            load_local_model(str(model_path), "regression")
+        assert isinstance(refused.value.__cause__, RuntimeError)
+
+    def test_mlflow_catboost_model_with_unreadable_metadata_is_refused_once(
+        self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusal names the run artifact and is not retried as a corrupt
+        download: re-fetching the same bytes cannot make the metadata readable."""
+        from unittest.mock import MagicMock, patch
+
+        from haute._mlflow_io import _load_with_bounded_retry
+
+        model_path = self._save_with_unreadable_metadata(haute_scratch, monkeypatch)
+
+        with (
+            patch(
+                "haute._mlflow_io._resolve_artifact_local", return_value=str(model_path)
+            ) as resolve,
+            pytest.raises(ConfigError, match=r"run 'run-7'.*artifact 'model\.cbm'"),
+        ):
+            _load_with_bounded_retry(
+                mlflow_mod=MagicMock(),
+                backend=MagicMock(),
+                run_id="run-7",
+                artifact="model.cbm",
+                flavor="catboost",
+                task="regression",
+            )
+        assert resolve.call_count == 1
+
     def test_predict_missing_offset_column_fails_loud(self) -> None:
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")
         df = _freq_frame()
@@ -711,6 +767,59 @@ class TestCanvasScorerOffset:
                 task="regression",
                 output_col="prediction",
             ).collect()
+
+    @staticmethod
+    def _score_raw_catboost(model: object, df: pl.DataFrame) -> pl.DataFrame:
+        from haute._model_scorer import score_frame
+
+        return score_frame(
+            model=model,
+            lf=df.drop("claim_count").lazy(),
+            features=["age", "region"],
+            cat_feature_names=frozenset({"region"}),
+            flavor="catboost",
+        ).collect()
+
+    def test_raw_catboost_scoring_propagates_an_unreadable_offset_column(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A raw model's offset is read from its metadata; a failed read is
+        raised, never taken as "no offset" and scored from baseline zero."""
+        from catboost import CatBoostRegressor
+
+        df = _freq_frame()
+        _algo, model = _fit_catboost(df, offset="exposure")
+
+        def _unreadable(_model: object) -> object:
+            raise RuntimeError("offset metadata unavailable")
+
+        monkeypatch.setattr(CatBoostRegressor, "get_metadata", _unreadable)
+
+        with pytest.raises(RuntimeError, match="offset metadata unavailable"):
+            self._score_raw_catboost(model, df)
+
+    def test_raw_catboost_scoring_propagates_an_unreadable_offset_link(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A link read that fails is that failure, not the "retrain" refusal
+        meant for a model that recorded its offset column without a link."""
+        from catboost import CatBoostRegressor
+
+        from haute.modelling._algorithms import CATBOOST_OFFSET_METADATA_KEY
+
+        df = _freq_frame()
+        _algo, model = _fit_catboost(df, offset="exposure")
+
+        class _LinkUnreadable:
+            def get(self, key: str) -> str:
+                if key == CATBOOST_OFFSET_METADATA_KEY:
+                    return "exposure"
+                raise RuntimeError("offset link metadata unavailable")
+
+        monkeypatch.setattr(CatBoostRegressor, "get_metadata", lambda _model: _LinkUnreadable())
+
+        with pytest.raises(RuntimeError, match="offset link metadata unavailable"):
+            self._score_raw_catboost(model, df)
 
 
 class _FakePyfunc:

@@ -372,7 +372,7 @@ class TestWrappers:
         model.feature_names_ = ["a", "b", "c"]
         model.get_cat_feature_indices.return_value = [2]
 
-        sm = _wrap_catboost(model)
+        sm = _wrap_catboost(model, source="test model")
         assert sm.flavor == "catboost"
         assert sm.feature_names == ["a", "b", "c"]
         assert sm.cat_feature_names == frozenset({"c"})
@@ -384,7 +384,7 @@ class TestWrappers:
         model.feature_names_ = ["x", "y"]
         model.get_cat_feature_indices.return_value = []
 
-        sm = _wrap_catboost(model)
+        sm = _wrap_catboost(model, source="test model")
         assert sm.cat_feature_names == frozenset()
 
     def test_wrap_pyfunc(self):
@@ -796,6 +796,9 @@ class _SingleColumnProbaModel:
 
     def predict_proba(self, x_data):
         return np.full((len(np.asarray(x_data)), 1), self.proba)
+
+    def get_metadata(self):
+        return {}
 
 
 def _train_real_catboost_classifier(n_classes: int, seed: int = 7):
