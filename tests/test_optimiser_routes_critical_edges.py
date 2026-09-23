@@ -117,22 +117,28 @@ def test_estimate_schema_rejects_numeric_quote_ids() -> None:
 
 
 def test_frontier_lambda_rejects_empty_name() -> None:
-    from haute.routes.optimiser import _add_frontier_point_lambda
+    from haute.routes._frontier_point_summary import (
+        FrontierPointDataError,
+        add_frontier_point_lambda,
+    )
 
-    with pytest.raises(HTTPException) as exc_info:
-        _add_frontier_point_lambda({}, "", 0.2, field="lambda")
+    with pytest.raises(FrontierPointDataError) as exc_info:
+        add_frontier_point_lambda({}, "", 0.2, field="lambda")
 
     assert exc_info.value.status_code == 500
-    assert exc_info.value.detail == (
+    assert str(exc_info.value) == (
         "Frontier point data is malformed: lambda names must be non-empty strings"
     )
 
 
 def test_frontier_lambda_rejects_conflicting_value() -> None:
-    from haute.routes.optimiser import _add_frontier_point_lambda
+    from haute.routes._frontier_point_summary import (
+        FrontierPointDataError,
+        add_frontier_point_lambda,
+    )
 
-    with pytest.raises(HTTPException) as exc_info:
-        _add_frontier_point_lambda(
+    with pytest.raises(FrontierPointDataError) as exc_info:
+        add_frontier_point_lambda(
             {"volume": 0.2},
             "volume",
             0.4,
@@ -140,7 +146,7 @@ def test_frontier_lambda_rejects_conflicting_value() -> None:
         )
 
     assert exc_info.value.status_code == 500
-    assert exc_info.value.detail == (
+    assert str(exc_info.value) == (
         "Frontier point data is malformed: conflicting lambda for 'volume'"
     )
 
@@ -721,7 +727,14 @@ def test_run_frontier_returns_409_when_atomic_update_loses_race(
     artefacts created up to this point must be cleaned up and a 409 raised."""
     solver = MagicMock()
     solver.frontier.return_value = SimpleNamespace(
-        points=pl.DataFrame({"total_objective": [100.0], "volume": [0.9], "lambda_volume": [0.25]})
+        points=pl.DataFrame(
+            {
+                "total_objective": [100.0],
+                "volume": [0.9],
+                "lambda_volume": [0.25],
+                "converged": [True],
+            }
+        )
     )
     seed_job(
         clean_job_store,
@@ -1683,7 +1696,14 @@ def test_run_frontier_rejects_invalid_apply_handle_shape(
     silently dropping the handle."""
     solver = MagicMock()
     solver.frontier.return_value = SimpleNamespace(
-        points=pl.DataFrame({"total_objective": [100.0], "volume": [0.9], "lambda_volume": [0.25]})
+        points=pl.DataFrame(
+            {
+                "total_objective": [100.0],
+                "volume": [0.9],
+                "lambda_volume": [0.25],
+                "converged": [True],
+            }
+        )
     )
     seed_job(
         clean_job_store,

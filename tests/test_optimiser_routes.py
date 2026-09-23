@@ -6203,6 +6203,7 @@ class TestFrontierRoute:
                     "total_objective": [100.0],
                     "volume": [0.9],
                     "lambda_volume": [0.25],
+                    "converged": [True],
                 }
             )
         )
@@ -6247,6 +6248,7 @@ class TestFrontierRoute:
                     "volume": [0.9],
                     "loss": [12.0],
                     "lambda_volume": [0.25],
+                    "converged": [True],
                 }
             )
         )
@@ -6320,6 +6322,7 @@ class TestFrontierRoute:
                             "total_objective": [100.0],
                             "loss_ratio": [0.9],
                             "lambda_loss_ratio": [0.25],
+                            "converged": [True],
                         }
                     )
                 )
@@ -6511,6 +6514,7 @@ class TestFrontierRoute:
                     "total_objective": [100.0],
                     "volume": [0.9],
                     "lambda_volume": [0.25],
+                    "converged": [True],
                 }
             )
         )
@@ -9575,8 +9579,8 @@ class TestFinalizeSolveResult:
         mock_solver = MagicMock()
         frontier_points = MagicMock()
         frontier_points.to_dicts.return_value = [
-            {"total_objective": 100, "lambda_volume": 0.3},
-            {"total_objective": 110, "lambda_volume": 0.5},
+            {"total_objective": 100, "total_volume": 0.9, "lambda_volume": 0.3, "converged": True},
+            {"total_objective": 110, "total_volume": 0.95, "lambda_volume": 0.5, "converged": True},
         ]
         frontier_points.__len__ = lambda self: 2
         mock_solver.frontier.return_value = SimpleNamespace(points=frontier_points)
@@ -9707,7 +9711,14 @@ class TestFinalizeSolveResult:
         )
         solve_result = self._make_solve_result()
         mock_solver = MagicMock()
-        frontier_points = pl.DataFrame({"total_objective": list(range(FRONTIER_POINT_LIMIT + 1))})
+        frontier_points = pl.DataFrame(
+            {
+                "total_objective": list(range(FRONTIER_POINT_LIMIT + 1)),
+                "total_volume": [0.9] * (FRONTIER_POINT_LIMIT + 1),
+                "lambda_volume": [0.3] * (FRONTIER_POINT_LIMIT + 1),
+                "converged": [True] * (FRONTIER_POINT_LIMIT + 1),
+            }
+        )
         mock_solver.frontier.return_value = SimpleNamespace(points=frontier_points)
         mock_grid = MagicMock()
 
@@ -9739,7 +9750,15 @@ class TestFinalizeSolveResult:
                 self.size = size
 
             def to_dicts(self):
-                return [{"total_objective": i} for i in range(self.size)]
+                return [
+                    {
+                        "total_objective": i,
+                        "total_volume": 0.9,
+                        "lambda_volume": 0.3,
+                        "converged": True,
+                    }
+                    for i in range(self.size)
+                ]
 
         class HugePoints:
             def __len__(self) -> int:
@@ -9851,8 +9870,8 @@ class TestFinalizeSolveResult:
         mock_solver = MagicMock()
         frontier_points = MagicMock()
         frontier_points.to_dicts.return_value = [
-            {"total_objective": 100, "lambda_volume": 0.3},
-            {"total_objective": 110, "lambda_volume": 0.5},
+            {"total_objective": 100, "total_volume": 0.9, "lambda_volume": 0.3, "converged": True},
+            {"total_objective": 110, "total_volume": 0.95, "lambda_volume": 0.5, "converged": True},
         ]
         frontier_points.__len__ = lambda self: 2
         mock_solver.frontier.return_value = SimpleNamespace(points=frontier_points)
@@ -10489,9 +10508,9 @@ class TestRunFrontierUnit:
         mock_solver = MagicMock()
         frontier_points = MagicMock()
         frontier_points.to_dicts.return_value = [
-            {"obj": 100, "lambda_vol": 0.3},
-            {"obj": 110, "lambda_vol": 0.5},
-            {"obj": 120, "lambda_vol": 0.7},
+            {"total_objective": 100, "total_volume": 0.9, "lambda_volume": 0.3, "converged": True},
+            {"total_objective": 110, "total_volume": 0.92, "lambda_volume": 0.5, "converged": True},
+            {"total_objective": 120, "total_volume": 0.94, "lambda_volume": 0.7, "converged": True},
         ]
         frontier_points.__len__ = lambda self: 3
         mock_solver.frontier.return_value = SimpleNamespace(points=frontier_points)
@@ -10823,7 +10842,15 @@ class TestRunFrontierUnit:
         clean_job_store,
     ):
         mock_solver = MagicMock()
-        points = [{"obj": i, "lambda_vol": i / 100} for i in range(FRONTIER_POINT_LIMIT + 1)]
+        points = [
+            {
+                "total_objective": i,
+                "total_volume": 0.9,
+                "lambda_volume": i / 100 + 0.01,
+                "converged": True,
+            }
+            for i in range(FRONTIER_POINT_LIMIT + 1)
+        ]
         frontier_points = pl.DataFrame(points)
         mock_solver.frontier.return_value = SimpleNamespace(points=frontier_points)
 
@@ -10849,6 +10876,7 @@ class TestRunFrontierUnit:
         )
         assert data["n_points"] == FRONTIER_POINT_LIMIT + 1
         assert len(data["points"]) == FRONTIER_POINT_LIMIT
+        assert len(data["point_summaries"]) == FRONTIER_POINT_LIMIT
         assert data["points_returned"] == FRONTIER_POINT_LIMIT
         assert data["points_limit"] == FRONTIER_POINT_LIMIT
         assert data["points_truncated"] is True
@@ -10863,7 +10891,15 @@ class TestRunFrontierUnit:
                 self.size = size
 
             def to_dicts(self):
-                return [{"obj": i, "lambda_vol": i / 100} for i in range(self.size)]
+                return [
+                    {
+                        "total_objective": i,
+                        "total_volume": 0.9,
+                        "lambda_volume": i / 100 + 0.01,
+                        "converged": True,
+                    }
+                    for i in range(self.size)
+                ]
 
         class HugePoints:
             def __len__(self) -> int:
@@ -13298,6 +13334,7 @@ class TestSolveRatebookUnit:
                 "total_objective": [100.0],
                 "volume": [0.9],
                 "lambda_volume": [0.25],
+                "converged": [True],
             }
         )
         config = {
@@ -15610,26 +15647,32 @@ class TestOptimiserHelperValidators:
         assert "capped frontier payload" in exc.value.detail
 
     def test_frontier_point_lambdas_no_lambda_keys(self) -> None:
-        from haute.routes.optimiser import _frontier_point_lambdas
+        from haute.routes._frontier_point_summary import (
+            FrontierPointDataError,
+            frontier_point_lambdas,
+        )
 
-        with pytest.raises(HTTPException) as exc:
-            _frontier_point_lambdas({"total_objective": 1.0})
-        assert "no lambda" in exc.value.detail
+        with pytest.raises(FrontierPointDataError) as exc:
+            frontier_point_lambdas({"total_objective": 1.0})
+        assert "no lambda" in str(exc.value)
 
     def test_frontier_point_lambdas_rejects_bool_values(self) -> None:
         """``isinstance(True, int)`` is True; bool keys must not become lambdas."""
-        from haute.routes.optimiser import _frontier_point_lambdas
+        from haute.routes._frontier_point_summary import (
+            FrontierPointDataError,
+            frontier_point_lambdas,
+        )
 
-        with pytest.raises(HTTPException):
-            _frontier_point_lambdas({"lambda_volume": True})
+        with pytest.raises(FrontierPointDataError):
+            frontier_point_lambdas({"lambda_volume": True})
 
     def test_frontier_point_constraint_value_falls_back_through_chain(self) -> None:
         """The fallback chain: total_<name> → constraints[<name>] → bare <name>."""
-        from haute.routes.optimiser import _frontier_point_constraint_value
+        from haute.routes._frontier_point_summary import frontier_point_constraint_value
 
         # total_<name> wins.
         assert (
-            _frontier_point_constraint_value(
+            frontier_point_constraint_value(
                 {"total_volume": 0.9, "constraints": {"volume": 0.7}, "volume": 0.5},
                 "volume",
             )
@@ -15637,26 +15680,29 @@ class TestOptimiserHelperValidators:
         )
         # No total_, falls back to constraints dict.
         assert (
-            _frontier_point_constraint_value(
+            frontier_point_constraint_value(
                 {"constraints": {"volume": 0.7}, "volume": 0.5},
                 "volume",
             )
             == 0.7
         )
         # Falls back to bare key.
-        assert _frontier_point_constraint_value({"volume": 0.5}, "volume") == 0.5
+        assert frontier_point_constraint_value({"volume": 0.5}, "volume") == 0.5
 
     def test_frontier_point_constraint_value_missing_raises(self) -> None:
-        from haute.routes.optimiser import _frontier_point_constraint_value
+        from haute.routes._frontier_point_summary import (
+            FrontierPointDataError,
+            frontier_point_constraint_value,
+        )
 
-        with pytest.raises(HTTPException) as exc:
-            _frontier_point_constraint_value({"other": 1}, "volume")
+        with pytest.raises(FrontierPointDataError) as exc:
+            frontier_point_constraint_value({"other": 1}, "volume")
         assert exc.value.status_code == 500
 
     def test_scenario_stats_returns_none_when_absent(self) -> None:
-        from haute.routes.optimiser import _scenario_stats_from_frontier_point
+        from haute.routes._frontier_point_summary import frontier_point_scenario_value_stats
 
-        assert _scenario_stats_from_frontier_point({"total_objective": 1.0}) is None
+        assert frontier_point_scenario_value_stats({"total_objective": 1.0}) is None
 
     def test_base_result_for_frontier_uses_base_when_present(self) -> None:
         from haute.routes.optimiser import _base_result_for_frontier
@@ -16318,6 +16364,7 @@ class TestOptimiserMutationBoundaries:
                     "total_objective": [42.0],
                     "volume": [0.9],
                     "lambda_volume": [0.0],
+                    "converged": [True],
                 }
             )
         )
@@ -16386,6 +16433,7 @@ class TestOptimiserMutationBoundaries:
                     "total_objective": [42.0],
                     "volume": [0.9],
                     "lambda_volume": [0.0],
+                    "converged": [True],
                 }
             )
         )
@@ -16435,6 +16483,7 @@ class TestOptimiserMutationBoundaries:
                     "total_objective": [50.0, 60.0],
                     "volume": [0.8, 0.95],
                     "lambda_volume": [0.0, 0.7128],
+                    "converged": [True, True],
                 }
             )
         )

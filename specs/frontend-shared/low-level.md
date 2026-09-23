@@ -116,8 +116,8 @@
   independently rejects a late response whose captured fence is no longer
   current or whose renderable graph is no longer synchronised.
   `CachedSolveResult` additionally carries both `result` (current,
-  possibly frontier-point-derived) and `originalResult` (the as-solved
-  baseline), so switching frontier points never loses the original. A
+  possibly a frontier point's server summary applied) and `originalResult`
+  (the as-solved baseline), so switching frontier points never loses the original. A
   direct `complete*Job` call with no active job recorded (no in-flight
   `ActiveSolveJob`/`ActiveTrainJob` to read `source`/`structuralVersion`
   from) falls back to `source: ""` and `structuralVersion: -1` — sentinels
@@ -260,18 +260,19 @@ are safe to call during render because they only ever read the memoized
 derived cache or recompute it inline — they never call `set()`.
 
 **Frontier point selection** (`selectFrontierPoint`,
-`updateFrontierAfterSelect`): selecting a point is a pure local
-re-derivation (`deriveSolveResultForFrontierPoint`) from the cached
-frontier's `points` array — no network call. `updateFrontierAfterSelect` is
-the network-driven counterpart used after an explicit backend
-`/optimiser/frontier/select`; it validates the echoed `point_index` matches
-the request, merges the richer per-point fields the backend returned back
-into the cached frontier's `points` array (so later re-selecting that point
-doesn't need another round trip), and — critically — if the user has since
-selected a *different* point while the request was in flight, it keeps the
-frontier-array enrichment but does not regress the displayed
-`result`/`selectedPointIndex` to the stale response's point (the
-"stale-response guard").
+`updateFrontierAfterSelect`): selecting a point applies the server's summary
+for it (`frontier.point_summaries[i]`, derived by the optimiser's
+`frontier_point_summary`) to `originalResult` — no network call, and nothing
+is derived from the frontier row; a `null` summary field clears that field.
+A completed solve with frontier points selects point 0.
+`updateFrontierAfterSelect` is the network-driven counterpart used after an
+explicit backend `/optimiser/frontier/select` (ratebook materialisation); it
+validates the echoed `point_index` matches the request, stores the response
+as that point's summary (so later re-selecting that point doesn't need
+another round trip), and — critically — if the user has since selected a
+*different* point while the request was in flight, it keeps the stored
+summary but does not regress the displayed `result`/`selectedPointIndex` to
+the stale response's point (the "stale-response guard").
 
 **Background job polling** (`JobPollingController` + `useJobPolling` +
 `useBackgroundJobs`): `useBackgroundJobs` mounts four `useJobPolling`

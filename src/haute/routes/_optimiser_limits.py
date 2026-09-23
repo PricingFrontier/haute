@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from haute.routes._frontier_point_summary import frontier_point_summary
+
 APPLY_PREVIEW_ROW_LIMIT = 100
 FRONTIER_POINT_LIMIT = 2_000
 
@@ -98,6 +100,7 @@ def limited_frontier_payload(
     return {
         "status": "ok",
         "points": points,
+        "point_summaries": [frontier_point_summary(point, constraint_names) for point in points],
         "n_points": total_points,
         "points_returned": len(points),
         "constraint_names": constraint_names,

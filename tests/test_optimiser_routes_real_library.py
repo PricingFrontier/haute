@@ -573,6 +573,51 @@ class TestOnlineApplyDetailRealSchema:
         assert replay["preview"] == data["preview"]
 
 
+@pytest.mark.usefixtures("_widen_sandbox_root")
+class TestFrontierPointSummaryContract:
+    def test_each_point_summary_is_what_selecting_the_point_returns(self, client, tmp_path):
+        """The frontier carries the server's summary of every point, and selecting
+        a point returns exactly that summary, including the scenario-value stats
+        the library reports for the point in its ``sv_*`` columns."""
+        df = _scored_frame(n_quotes=5, n_steps=3)
+        path = tmp_path / "online_frontier_summaries.parquet"
+        df.write_parquet(path)
+        job_id = _solve_completed(client, _online_graph(str(path)))
+
+        frontier_status = run_frontier_and_wait(
+            client,
+            {
+                "job_id": job_id,
+                "threshold_ranges": {"volume": [4.0, 6.0]},
+                "n_points_per_dim": 3,
+            },
+        )
+        assert frontier_status["status"] == "completed", frontier_status.get("message", "")
+        frontier = frontier_status["result"]
+        summaries = frontier["point_summaries"]
+        assert len(summaries) == len(frontier["points"]) == 3
+
+        # The browser reads the frontier from the solve job, not the sweep job.
+        solve_status = _poll_until_done(client, job_id)
+        assert solve_status["result"]["frontier"]["point_summaries"] == summaries
+
+        for index, summary in enumerate(summaries):
+            point = frontier["points"][index]
+            assert summary["scenario_value_stats"]["mean"] == point["sv_mean"]
+            assert summary["lambdas"] == {"volume": point["lambda_volume"]}
+            response = client.post(
+                "/api/optimiser/frontier/select",
+                json={"job_id": job_id, "point_index": index},
+            )
+            assert response.status_code == 200, response.text
+            selected = response.json()
+            assert selected["point_index"] == index
+            for field, value in summary.items():
+                # The select response reports "no tables" as {} rather than null.
+                expected = {} if field == "factor_tables" and value is None else value
+                assert selected.get(field) == expected, field
+
+
 # ---------------------------------------------------------------------------
 # 4. Frontier compute budget — RED (opaque 500) → GREEN (422, both numbers)
 # ---------------------------------------------------------------------------

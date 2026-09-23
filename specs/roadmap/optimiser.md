@@ -17,7 +17,6 @@ Current behaviour is specified in [the optimiser specification](../optimiser/low
 | OPT-P14 | Planned | P2 | Complete solver/result publication extraction. |
 | OPT-P15 | Planned | P2 | One auto-range job remains; the chunked path and its disk-bucket reducer go only if one streaming group-by keeps within the specified memory bound. |
 | OPT-P16 | Planned | P2 | Optimiser inputs are materialised in a hard-capped worker, not on a server thread. |
-| OPT-P18 | Planned | P2 | Selecting a frontier point is computed once, by the server. |
 
 ## Planned improvements
 
@@ -203,28 +202,3 @@ background jobs; `ROAD-WORKER-04` remains the package for the solver itself.
 `src/haute/routes/_optimiser_service.py::_build_grid`;
 `src/haute/routes/_training_preparation.py`; `src/haute/_worker_protocol.py`;
 `tests/test_optimiser_golden.py`.
-
-### OPT-P18 — Selecting a frontier point is server-authoritative
-**Why:** A frontier point is turned into a solve summary twice: by
-`_frontier_point_result_dict` on the server and by
-`deriveSolveResultForFrontierPoint` in the browser's results store, and the
-two disagree. The browser accepts two lambda shapes (a nested `lambdas`
-object or flat `lambda_*` fields), silently falls back to the original
-`converged`, `baseline_objective` and `baseline_constraints` when a field is
-absent, and keeps the scenario histogram that the server drops; the server
-rejects a point without `converged`. The non-converged warning text is
-duplicated in both languages.
-
-**Plan:** Use the server's selection result as the only derivation and delete
-the browser copy. If the browser needs the summary without a round trip,
-include the derived summary for each point in the frontier response.
-
-**Acceptance:** No frontend code derives a solve summary from a frontier row;
-selecting a point shows exactly the server's summary; a point missing
-required fields is an error in one place.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/routes/optimiser.py::_frontier_point_result_dict`;
-`src/haute/routes/optimiser.py::select_frontier_point`;
-`frontend/src/stores/useNodeResultsStore.ts::deriveSolveResultForFrontierPoint`.

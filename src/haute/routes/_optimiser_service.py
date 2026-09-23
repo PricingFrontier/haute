@@ -107,6 +107,7 @@ from haute.routes._contract_errors import (
     contract_error_job_fields,
     contract_error_terminal_reason,
 )
+from haute.routes._frontier_point_summary import NON_CONVERGED_WARNING
 from haute.routes._helpers import find_typed_node
 from haute.routes._job_lifecycle import (
     TERMINAL_REASONS,
@@ -2704,9 +2705,7 @@ def _finalize_solve_result(
     if extra_fields:
         result_dict.update(extra_fields)
     if not solve_result.converged:
-        result_dict["warning"] = (
-            "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
-        )
+        result_dict["warning"] = NON_CONVERGED_WARNING
 
     # ── Compute efficient frontier when explicitly requested (non-fatal) ────
     frontier_data = None

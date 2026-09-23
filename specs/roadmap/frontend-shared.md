@@ -19,8 +19,7 @@ Generating the API contract is planned in the
 
 ## Planned improvements
 
-`FSH-R01` fixes a leak and goes first. `FSH-R03` follows `OPT-P18`, which
-removes the largest piece of domain logic from the store.
+`FSH-R01` fixes a leak and goes first.
 
 ### FSH-R01 — Every job wait uses the shared poller
 **Why:** A shared `jobPollingController` and `useJobPolling` exist, but there
@@ -85,19 +84,19 @@ component tests pass.
 `frontend/src/panels/editors/_shared.tsx`; `frontend/src/api/assistant.ts`.
 
 ### FSH-R03 — The results store holds results
-**Why:** `useNodeResultsStore.ts` (1,568 lines) combines the store with four
-recency caches, module-level derived-preview caches, frontier-row validation
-helpers and optimiser domain derivation, including the frontier-point
-summary that disagrees with the server (`OPT-P18`).
+**Why:** `useNodeResultsStore.ts` combines the store with four recency
+caches, module-level derived-preview caches and optimiser logic that
+applies the server's frontier-point summaries and converts select
+responses into them.
 
-**Plan:** After `OPT-P18`, move the remaining validation to the generated
-parsers (`API-R03`) and the derived caches into selectors, leaving the store
-with state and actions.
+**Plan:** Move the remaining validation to the generated parsers
+(`API-R03`), the optimiser logic into an optimiser module and the derived
+caches into selectors, leaving the store with state and actions.
 
 **Acceptance:** The store module contains no response validation or domain
 derivation; its tests cover state transitions only.
 
-**Dependencies:** `OPT-P18` (optimiser); `API-R03` (server API).
+**Dependencies:** `API-R03` (server API).
 
-**Evidence:** `frontend/src/stores/useNodeResultsStore.ts::deriveSolveResultForFrontierPoint`;
+**Evidence:** `frontend/src/stores/useNodeResultsStore.ts::applyFrontierPointSummary`;
 `frontend/src/stores/useNodeResultsStore.ts::hashConfig`.

@@ -2703,6 +2703,21 @@ describe("API response guards", () => {
     expect(parseFrontierResponse({
       status: "ok",
       points: [{ total_objective: 1 }],
+      point_summaries: [{
+        total_objective: 1,
+        constraints: { loss: 1 },
+        lambdas: { loss: 0.1 },
+        converged: true,
+        iterations: null,
+        cd_iterations: null,
+        clamp_rate: null,
+        history: null,
+        scenario_value_stats: null,
+        scenario_value_histogram: null,
+        factor_tables: null,
+        warning: null,
+        frontier_error: null,
+      }],
       n_points: 2001,
       points_returned: 1,
       constraint_names: ["loss"],
@@ -2711,6 +2726,67 @@ describe("API response guards", () => {
     }).points_truncated).toBe(true)
     expect(selected.lambdas.loss).toBe(0.3)
     expect(saved.path).toBe("optimiser_output.py")
+  })
+
+  it("rejects frontier payloads without one point summary per point", () => {
+    const summary = {
+      total_objective: 1,
+      constraints: { loss: 1 },
+      lambdas: { loss: 0.1 },
+      converged: true,
+      iterations: null,
+      cd_iterations: null,
+      clamp_rate: null,
+      history: null,
+      scenario_value_stats: null,
+      scenario_value_histogram: null,
+      factor_tables: null,
+      warning: null,
+      frontier_error: null,
+    }
+    expect(() =>
+      parseFrontierResponse({
+        status: "ok",
+        points: [{ total_objective: 1 }, { total_objective: 2 }],
+        point_summaries: [summary],
+        n_points: 2,
+        points_returned: 2,
+        constraint_names: ["loss"],
+        points_limit: 2000,
+        points_truncated: false,
+      }),
+    ).toThrow(/one summary per point, got 1 for 2 points/)
+  })
+
+  it("rejects a frontier point summary missing a field but accepts it as null", () => {
+    const summary = {
+      total_objective: 1,
+      constraints: { loss: 1 },
+      lambdas: { loss: 0.1 },
+      converged: true,
+      iterations: null,
+      cd_iterations: null,
+      clamp_rate: null,
+      history: null,
+      scenario_value_stats: null,
+      scenario_value_histogram: null,
+      factor_tables: null,
+      warning: null,
+      frontier_error: null,
+    }
+    const payload = (pointSummary: Record<string, unknown>) => ({
+      status: "ok",
+      points: [{ total_objective: 1 }],
+      point_summaries: [pointSummary],
+      n_points: 1,
+      points_returned: 1,
+      constraint_names: ["loss"],
+      points_limit: 2000,
+      points_truncated: false,
+    })
+    const { warning: _warning, ...withoutWarning } = summary; void _warning
+    expect(() => parseFrontierResponse(payload(withoutWarning))).toThrow(/point_summaries`\[0\]\.warning to be present/)
+    expect(parseFrontierResponse(payload(summary)).point_summaries[0]?.warning).toBeNull()
   })
 
   it("rejects malformed execution metric pressure and admission fields", () => {
