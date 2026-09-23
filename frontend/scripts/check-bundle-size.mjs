@@ -129,7 +129,12 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // on data the panel is already showing. The lazy-only preload guard above still
 // passes, so nothing was pulled forward by accident. The merged initial bundle
 // is 290.2 KiB; 292 KiB restores ~1.8 KiB of headroom on the same terms.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 292
+// The modelling validation focus view adds ~0.6 KiB to shared eager components:
+// ModalShell's inline (inactive) mode and closed-disclosure focus trap, the
+// preview frame's focus and remembered-height options, and the results tab
+// appearance. The modelling panes themselves stay lazy. The merged initial
+// bundle is 292.3 KiB; 294 KiB restores ~1.7 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 294
 
 // Chunks that should only be fetched when their preview or editor is needed.
 // If one appears as a startup modulepreload, the app has likely
