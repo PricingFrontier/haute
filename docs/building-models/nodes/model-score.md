@@ -50,7 +50,17 @@ The most common setup  - loading a registered model for regression:
 
 Use `regression` when your model predicts a number (frequency, severity, premium). Use `classification` when your model predicts a category or probability (e.g. likelihood of claim, fraud detection).
 
-A run logged by haute's Model Training node records its task. When you pick such a run or registered version, Model Score takes the task from it and shows it read-only. A model logged elsewhere may not record one, so you choose the task yourself. Either way, scoring a CatBoost model as the wrong task fails with an error naming the task it was trained for.
+A run logged by haute's Model Training node records its task. When you pick such a run or registered version, Model Score takes the task from it and shows it read-only. A model logged elsewhere may not record one, so you choose the task yourself. Either way, scoring a model as the wrong task fails with an error naming the task it was trained for.
+
+### Model files
+
+Model Score loads the native model a Model Training run logged: CatBoost (`.cbm`),
+XGBoost (`.ubj`), LightGBM (`.lgbm`), EBM (`.ebm`) or GLM (`.rsglm`), or an MLflow pyfunc
+model. XGBoost and LightGBM files describe their own inputs and offset. An EBM file is
+the bare estimator, so it loads only with the feature contract Model Training logged
+beside it, and only under the `interpret-core` version that contract records; a
+contract for a different loss or version is refused rather than scored. Categorical
+values a tree or EBM model never saw fail instead of scoring as missing.
 
 ### Post-scoring code
 

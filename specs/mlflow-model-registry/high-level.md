@@ -182,7 +182,11 @@ Out of scope (owned elsewhere):
   `predict_proba`; a model whose `predict_proba` returns more than two
   classes' worth of probabilities is rejected rather than silently
   reporting one arbitrary class's probability as "the" positive-class
-  value.
+  value. When a classification Model Score node's feature contract records
+  Haute class labels (every Haute-trained binary classifier scores a
+  probability), its column contract declares that column as produced, so
+  deployed projection and output mappings can use it; a prediction-only
+  classifier declares none.
 - A per-prediction explanation reconstructs the traced prediction from
   its own decomposition (SHAP values for CatBoost, contribution terms for
   RustyStats) and verifies the reconstruction matches the model's actual

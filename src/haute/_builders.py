@@ -1122,8 +1122,8 @@ def _validated_model_score_source(
 
 
 def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
-    out = config.get("output_column", "prediction")
-    produced = {out} if out else {"prediction"}
+    out = config.get("output_column", "prediction") or "prediction"
+    produced = {out}
 
     # Post-processing code can reference arbitrary columns — opaque. A nonempty
     # step list is a postprocessing program or incomplete build-time error,
@@ -1146,6 +1146,14 @@ def _model_score_columns(config: dict[str, Any]) -> _ColumnContract:
             # The offset is a required scoring input (not a feature) —
             # upstream pruning must not drop it.
             referenced.add(contract.offset_column)
+        if (
+            config.get("task") == "classification"
+            and contract.model is not None
+            and contract.model.class_labels is not None
+        ):
+            # A Haute-trained binary classifier always scores its positive-class
+            # probability; a prediction-only classifier records no class labels.
+            produced = {*produced, f"{out}_proba"}
         return produced, referenced
 
     if _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY in config:

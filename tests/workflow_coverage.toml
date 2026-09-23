@@ -870,6 +870,39 @@ command = 'uv run pytest tests/test_train_service_coverage.py tests/test_trainin
 result = "607 passed in 55.68s"
 
 [[scenarios]]
+id = "W08-S03"
+workflow = "W08"
+contract = "specs/modelling/high-level.md#behaviour"
+state = "covered"
+entry_point = "http"
+tier = "workflow"
+lane = "backend"
+real = ["training-worker", "scorer", "native-engines"]
+stubbed = []
+tests = [
+  "tests/test_model_family_acceptance.py::test_native_training_lifecycle_keeps_the_last_good_model",
+  "tests/test_model_family_acceptance.py::test_a_native_fit_stops_at_the_first_progress_report_after_cancellation",
+  "tests/test_model_family_acceptance.py::test_regression_scores_identically_on_every_path",
+  "tests/test_model_family_acceptance.py::test_classification_labels_follow_the_probability_on_every_path",
+  "tests/test_model_family_acceptance.py::test_invalid_binary_targets_fail_before_fitting",
+  "tests/test_model_family_acceptance.py::test_the_exported_training_script_trains_the_same_model",
+  "tests/test_model_family_acceptance.py::test_a_prediction_only_classifier_deploys_its_labels",
+  "tests/test_xgboost_family.py::test_early_stopping_selects_what_native_xgboost_selects",
+  "tests/test_lightgbm_family.py::test_fitting_with_the_offset_as_init_score_matches_an_independent_native_fit",
+  "tests/test_ebm_family.py::test_selection_fits_see_training_rows_and_the_refit_development_rows",
+  "tests/test_ebm_family.py::test_published_responses_match_the_staged_ebm_artifacts",
+  "frontend/e2e/core-flows.spec.ts::trains an XGBoost node and saves its model file",
+  "frontend/e2e/core-flows.spec.ts::trains a LightGBM node and saves its model file",
+  "frontend/e2e/core-flows.spec.ts::chooses an EBM interaction, trains it, and reads the interaction surface",
+]
+invariant = "Every native family (CatBoost, XGBoost, LightGBM, EBM) trains, cancels, fails and retrains through the real service with a real fit; a cancelled or failed run publishes nothing and the last completed model still loads and scores; a cancelled native fit stops at its next progress report and saves nothing; eager, batched, pyfunc, deployed-graph and Model Score runtime scoring agree, an executed exported training script trains the same model as the canvas config, a prediction-only classifier still deploys its labels, labels follow probability above 0.5, and selected rounds, offsets and EBM row routing match independent native oracles."
+
+[scenarios.evidence]
+commit = "62c9acc8"
+command = 'uv run pytest "tests/test_model_family_acceptance.py::test_native_training_lifecycle_keeps_the_last_good_model" "tests/test_model_family_acceptance.py::test_a_native_fit_stops_at_the_first_progress_report_after_cancellation" "tests/test_model_family_acceptance.py::test_regression_scores_identically_on_every_path" "tests/test_model_family_acceptance.py::test_classification_labels_follow_the_probability_on_every_path" "tests/test_model_family_acceptance.py::test_invalid_binary_targets_fail_before_fitting" "tests/test_model_family_acceptance.py::test_the_exported_training_script_trains_the_same_model" "tests/test_model_family_acceptance.py::test_a_prediction_only_classifier_deploys_its_labels" "tests/test_xgboost_family.py::test_early_stopping_selects_what_native_xgboost_selects" "tests/test_lightgbm_family.py::test_fitting_with_the_offset_as_init_score_matches_an_independent_native_fit" "tests/test_ebm_family.py::test_selection_fits_see_training_rows_and_the_refit_development_rows" "tests/test_ebm_family.py::test_published_responses_match_the_staged_ebm_artifacts" -q -p no:warnings'
+result = "33 passed in 73.85s; plus the three family browser scenarios (5 modelling scenarios passed in 2.0m)"
+
+[[scenarios]]
 id = "W09-S01"
 workflow = "W09"
 contract = "specs/optimiser/low-level.md#edge-cases-and-invariants"

@@ -61,6 +61,16 @@ uv sync --no-managed-python --no-python-downloads
 
 Calling the environment's Python explicitly means activation is optional. Once it is activated, the shorter `python -m haute serve` is equivalent. Both module forms and `haute serve` invoke the same command implementation and accept the same options. You can use the module form for every command, such as `python -m haute init` or `python -m haute lint`. If the approved Python interpreter itself is blocked, IT must permit or provision that runtime; Haute does not bypass operating-system policy.
 
+### macOS: XGBoost or LightGBM will not load
+
+The macOS wheels of XGBoost and LightGBM use the system's OpenMP runtime, which macOS does not ship. If training or scoring an XGBoost or LightGBM model fails with an error mentioning `libomp.dylib`, install it with [Homebrew](https://brew.sh) and restart `haute serve`:
+
+```bash
+brew install libomp
+```
+
+Windows and Linux installs need no extra step.
+
 **`haute serve` doesn't open anything in my browser**
 
 Look at the terminal output for a line like `Running on http://localhost:8000`. Copy that address and paste it into your browser. If you see an error, make sure your virtual environment is active (`(.venv)` in your prompt).

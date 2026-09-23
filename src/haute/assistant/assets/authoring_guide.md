@@ -109,6 +109,16 @@ passthrough.
 Make joins explicit about their keys and join type, and name derived columns so
 downstream steps can refer to them without guessing.
 
+A modelling node's `algorithm` (`catboost`, `xgboost`, `lightgbm`, `ebm`, or
+`glm`) is fixed when the node is created: to try another family, add a new
+node rather than editing `algorithm`.  For the tree and EBM families, put the
+loss in `loss_function` and the family's own keys in `params` (`iterations`,
+`num_boost_round`, `num_iterations`, or EBM's required `max_rounds`); never set
+objectives, threads, seeds, or aliases there.  An EBM never stops early, so give
+it an explicit `max_rounds`.  A GLM is different: it has no `loss_function` or
+`params`, and is configured by top-level `family`, `link`, `terms` and
+`interactions` instead.
+
 ## A safe editing pattern
 
 1. Read the saved graph before editing; node ids are the function names.

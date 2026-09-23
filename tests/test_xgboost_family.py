@@ -550,3 +550,63 @@ def test_disabled_early_stopping_refits_with_every_fitted_round(tmp_path: Path) 
     )
     assert result.evaluation["selection_fits"][0]["best_iteration"] == 29
     assert result.final_tree_count == 30
+
+
+def test_early_stopping_selects_what_native_xgboost_selects() -> None:
+    """An independent native early-stopped fit is the oracle for the selected
+    round: the adapter's zero-based best_iteration, its trimmed round count and
+    its predictions must all equal native XGBoost's."""
+    from haute.modelling._xgboost import XGBoostAlgorithm
+
+    data = frame(900)
+    train_rows, valid_rows = data.head(700), data.tail(200)
+    params = {"eta": 0.9, "max_depth": 6}
+    fitted = XGBoostAlgorithm().fit(
+        train_rows,
+        ["region", "age"],
+        ["region"],
+        "severity",
+        None,
+        {**params, "num_boost_round": 500, "early_stopping_rounds": 3},
+        "regression",
+        eval_df=valid_rows,
+        loss="RMSE",
+        threads=1,
+        seed=0,
+    )
+
+    def native_matrix(rows: pl.DataFrame) -> xgb.DMatrix:
+        return xgb.DMatrix(
+            pd.DataFrame(
+                {
+                    "region": pd.Categorical(rows["region"].to_list(), categories=LEVELS),
+                    "age": rows["age"].to_numpy(),
+                }
+            ),
+            label=rows["severity"].to_numpy(),
+            enable_categorical=True,
+        )
+
+    dtrain = native_matrix(train_rows)
+    oracle = xgb.train(
+        {
+            **params,
+            "objective": "reg:squarederror",
+            "tree_method": "hist",
+            "seed": 0,
+            "nthread": 1,
+            "verbosity": 0,
+        },
+        dtrain,
+        num_boost_round=500,
+        evals=[(dtrain, "train"), (native_matrix(valid_rows), "validation")],
+        early_stopping_rounds=3,
+        verbose_eval=False,
+    )
+    assert fitted.best_iteration == oracle.best_iteration
+    assert fitted.rounds_fitted == oracle.best_iteration + 1
+    assert fitted.stopping_reason == "validation"
+    selected = oracle[: oracle.best_iteration + 1]
+    np.testing.assert_allclose(
+        fitted.model.predict(data), selected.predict(native_matrix(data)), rtol=1e-6
+    )

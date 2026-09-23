@@ -32,7 +32,6 @@ families are implemented or their change contracts approved.
 | MOD-T06 | Planned | P1 | One offset meaning for GLM and CatBoost (a positive exposure multiplier under a log link), carried through training, saved models, and every scoring path. |
 | MOD-T07 | Planned | P1 | A strict, dtype-aware GLM term contract and order-independent interaction resolution that never builds a design different from the configuration. |
 | MOD-T08 | Planned | P2 | The GLM pane mirrors the backend contract, keeps every saved term and interaction visible and repairable, supports reference levels, and loses its duplicated code. |
-| MOD-F05 | Proposed | P2 | Verify and publish the CPU release and its feature matrix. |
 | MOD-F06 | Deferred | P3 | Add verified XGBoost and LightGBM GPU configurations after the CPU release. |
 
 ## Design (approved 16 September 2026; revised after Codex plan review and for RustyStats 0.9.0)
@@ -1868,8 +1867,9 @@ lifecycle. Do not make unfinished choices selectable in a release.
 
 ### Delivery order and release gates
 
-Order: the XGBoost, LightGBM and EBM slices are in place; next the release
-check (MOD-F05). Each slice ships save/reload/score, MLflow, codegen, deployment, UI
+Order: the XGBoost, LightGBM and EBM slices and the CPU release check are in
+place; the [release check](mod-f05-release-check.md) records the acceptance
+evidence and benchmarks. Each slice ships save/reload/score, MLflow, codegen, deployment, UI
 and explanations for its family; no serving work is postponed to the end.
 Shared evaluation, persistence and frontend owners have one writer at a time,
 so slices run sequentially.
@@ -1889,30 +1889,6 @@ not hidden prerequisites for the CPU release.
 
 ## Model-family expansion work packages
 
-### MOD-F05 — Verify and publish the CPU release
-
-**Why:** Passing slice tests does not establish supported-platform
-installation or a truthful user-facing feature matrix.
-
-**Plan:** Run the authoritative CI gates; update dependency/build metadata,
-guides, assistant examples, workflow coverage inventory and owning specs.
-Benchmark representative wide and categorical inputs plus EBM interaction
-sizes. Review the actual diffs and test evidence against every acceptance row
-before release.
-
-**Acceptance:** All shipped CPU model paths pass, including current
-CatBoost/RustyStats regressions; documented features match exposed controls;
-package/runtime requirements and EBM format limits are recorded; no incomplete
-family is presented as production-ready.
-
-**Dependencies:** None; every family slice is in place.
-
-**Evidence:** `tests/workflow_coverage.toml`; `.github/workflows/ci.yml`;
-`frontend/e2e/core-flows.spec.ts`;
-`docs/building-models/nodes/model-training.md`;
-`docs/building-models/nodes/model-score.md`;
-`src/haute/assistant/assets/authoring_guide.md`.
-
 ### MOD-F06 — Add separately verified GPU capabilities
 
 **Why:** GPU availability and training behavior depend on engine, package,
@@ -1931,7 +1907,7 @@ implementation provides another capability.
 probe become selectable; artifacts score correctly on CPU deployments; no
 memory, device, objective or stopping mismatch is concealed by a fallback.
 
-**Dependencies:** MOD-F05 and access to the advertised GPU environments.
+**Dependencies:** Access to the advertised GPU environments.
 
 **Evidence:** `src/haute/routes/_training_preparation.py`;
 `src/haute/_host_memory.py`; `src/haute/_ram_estimate.py`;
