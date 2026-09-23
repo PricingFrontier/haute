@@ -93,8 +93,8 @@ def test_catboost_loss_translation_and_gamma_rejection() -> None:
 def test_config_builder_rejects_gamma_and_unknown_algorithms_for_every_consumer() -> None:
     with pytest.raises(TrainingConfigError, match="does not support the Gamma loss"):
         build_training_job_kwargs(catboost_config(loss_function="Gamma"), data="d.parquet")
-    with pytest.raises(TrainingConfigError, match="Unknown algorithm: lightgbm"):
-        build_training_job_kwargs(catboost_config(algorithm="lightgbm"), data="d.parquet")
+    with pytest.raises(TrainingConfigError, match="Unknown algorithm: unregistered"):
+        build_training_job_kwargs(catboost_config(algorithm="unregistered"), data="d.parquet")
 
 
 def test_catboost_params_stay_open_but_thread_count_is_owned_by_the_allotment() -> None:
@@ -131,7 +131,7 @@ def test_direct_training_job_applies_the_same_parameter_rules() -> None:
     with pytest.raises(TrainingConfigError, match="cannot set 'thread_count'"):
         TrainingJob(name="t", data=frame, target="y", params={"thread_count": 2})
     with pytest.raises(TrainingConfigError, match="Unknown algorithm"):
-        TrainingJob(name="t", data=frame, target="y", algorithm="lightgbm")
+        TrainingJob(name="t", data=frame, target="y", algorithm="unregistered")
 
 
 def test_allowlisted_family_rejects_reserved_alias_duplicate_and_unknown_keys() -> None:

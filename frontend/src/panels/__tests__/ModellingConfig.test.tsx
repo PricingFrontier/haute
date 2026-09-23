@@ -326,6 +326,21 @@ describe("Training configuration readiness", () => {
     }
     expect(Object.keys(tuned.tuning.search_space).sort()).toEqual(["eta", "lambda", "max_depth"])
   })
+  it("starts a LightGBM study from LightGBM's own parameter keys (MOD-F03)", () => {
+    const { props } = renderConfig({
+      activePane: "params",
+      config: { _nodeId: "lgbm", algorithm: "lightgbm", target: "loss_ratio", loss_function: "RMSE", params: {} },
+    })
+    fireEvent.click(screen.getByRole("radio", { name: "Tune parameters" }))
+    const tuned = (props.onUpdate as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as {
+      tuning: { search_space: Record<string, unknown> }
+    }
+    expect(Object.keys(tuned.tuning.search_space).sort()).toEqual([
+      "learning_rate",
+      "min_data_in_leaf",
+      "num_leaves",
+    ])
+  })
   it("shows issues before Train and links to the affected pane", () => {
     renderConfig({ activePane: "train", config: { _nodeId: "readiness", algorithm: "catboost", target: "loss_ratio" } })
     expect(screen.getByRole("alert")).toHaveTextContent("Choose a training loss")
@@ -479,6 +494,16 @@ describe("ModellingConfig", () => {
       })
     })
 
+    it("clicking LightGBM in the picker seeds LightGBM's own parameters (MOD-F03)", () => {
+      const { props } = renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
+      fireEvent.click(screen.getByText("LightGBM"))
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        algorithm: "lightgbm",
+        params: { num_iterations: 1000, learning_rate: 0.05, num_leaves: 31, early_stopping_round: 50 },
+        evaluation: expect.objectContaining({ schema_version: 1 }),
+      })
+    })
+
     it("offers XGBoost the Gamma loss but not CrossEntropy (MOD-F02)", () => {
       renderConfig({
         config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "xgboost", params: {} },
@@ -560,6 +585,15 @@ describe("ModellingConfig", () => {
       const textarea = screen.getByLabelText("XGBoost hyperparameters JSON")
       fireEvent.change(textarea, { target: { value: '{"objective":"reg:squarederror"}' } })
       expect(screen.getAllByText(/objective is managed elsewhere/).length).toBeGreaterThan(0)
+    })
+
+    it("LightGBM's editor refuses a Haute-owned key (MOD-F03)", () => {
+      renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "lightgbm", params: {} },
+      })
+      const textarea = screen.getByLabelText("LightGBM hyperparameters JSON")
+      fireEvent.change(textarea, { target: { value: '{"seed":1}' } })
+      expect(screen.getAllByText(/seed is managed elsewhere/).length).toBeGreaterThan(0)
     })
 
     it("autosaves arbitrary algorithm parameters", () => {
@@ -1688,8 +1722,8 @@ describe("ModellingConfig", () => {
       expect(screen.queryByRole("tabpanel")).toBeNull()
       cleanup()
 
-      renderConfig({ config: { _nodeId: "node_1", algorithm: "lightgbm" } })
-      expect(screen.getByRole("alert")).toHaveTextContent("Unsupported modelling algorithm: lightgbm.")
+      renderConfig({ config: { _nodeId: "node_1", algorithm: "unregistered" } })
+      expect(screen.getByRole("alert")).toHaveTextContent("Unsupported modelling algorithm: unregistered.")
     })
 
     it("keeps the selected algorithm immutable and renders exactly one owning pane for both algorithms", () => {

@@ -539,7 +539,7 @@ def _inverse_link(link: str, margin: float) -> float:
     return margin
 
 
-def explain_xgboost_prediction(
+def explain_native_prediction(
     scoring_model: Any,
     input_row: dict[str, Any],
     *,
@@ -547,23 +547,30 @@ def explain_xgboost_prediction(
     prediction_value: Any = None,
     max_contributions: int | None = None,
 ) -> dict[str, Any]:
-    """Native XGBoost contributions for one traced prediction.
+    """Native contributions for one traced prediction of an XGBoost or LightGBM model.
 
-    The bias carries the row's offset (``base_margin``), so bias plus
-    contributions is the raw margin; its inverse link must reproduce the
-    served response, or the positive-class probability for a classifier.
+    The bias carries the row's offset, so bias plus contributions is the raw
+    margin; its inverse link must reproduce the served response, or the
+    positive-class probability for a classifier. XGBoost accumulates its
+    contributions in float32, so its margin check uses the named float32 bound.
     """
     import polars as pl
 
-    if getattr(scoring_model, "flavor", "") != "xgboost":
-        raise ModelExplanationError("XGBoost explanation requires an XGBoost model.")
+    from haute._model_flavors import NATIVE_WRAPPER_FLAVORS
+
+    flavor = str(getattr(scoring_model, "flavor", ""))
+    if flavor not in NATIVE_WRAPPER_FLAVORS:
+        raise ModelExplanationError(
+            "Native contribution explanation requires an XGBoost or LightGBM model."
+        )
+    label = "XGBoost" if flavor == "xgboost" else "LightGBM"
     model = scoring_model.raw_model
     features = list(model.features)
     columns = [*features, *([model.offset_column] if model.offset_column else [])]
     missing = [column for column in columns if column not in input_row]
     if missing:
         raise ModelExplanationError(
-            f"XGBoost explanation input is missing columns: {', '.join(missing)}"
+            f"{label} explanation input is missing columns: {', '.join(missing)}"
         )
     row = pl.DataFrame(
         {column: [input_row[column]] for column in columns},
@@ -573,20 +580,24 @@ def explain_xgboost_prediction(
     values = np.asarray(contributions.values[0], dtype=np.float64)
     bias = float(contributions.bias[0])
     if not np.isfinite(values).all() or not np.isfinite(bias):
-        raise ModelExplanationError("XGBoost contributions are not finite.")
+        raise ModelExplanationError(f"{label} contributions are not finite.")
     margin = float(model.predict_margin(row)[0])
     reconstructed = float(bias + values.sum())
-    tolerance = prediction_tolerance(margin, relative=FLOAT32_CONTRIBUTION_TOLERANCE)
+    tolerance = (
+        prediction_tolerance(margin, relative=FLOAT32_CONTRIBUTION_TOLERANCE)
+        if flavor == "xgboost"
+        else prediction_tolerance(margin)
+    )
     if abs(reconstructed - margin) > tolerance:
         raise ModelExplanationError(
-            "XGBoost explanation does not match the model margin: "
+            f"{label} explanation does not match the model margin: "
             f"contributions reconstruct {reconstructed}, model margin is {margin}."
         )
     response = float(model.predict_response(row)[0])
     linked = _inverse_link(model.link, margin)
     if abs(linked - response) > prediction_tolerance(response):
         raise ModelExplanationError(
-            "XGBoost explanation's inverse link does not reproduce the model response: "
+            f"{label} explanation's inverse link does not reproduce the model response: "
             f"{linked} versus {response}."
         )
     traced = _as_float(
@@ -597,7 +608,7 @@ def explain_xgboost_prediction(
     output_difference = None if traced is None else float(traced - response)
     if output_difference is not None and abs(output_difference) > prediction_tolerance(response):
         raise ModelExplanationError(
-            "XGBoost explanation does not match the traced prediction: "
+            f"{label} explanation does not match the traced prediction: "
             f"model predicts {response}, traced output is {traced}."
         )
 
@@ -628,8 +639,8 @@ def explain_xgboost_prediction(
 
     output_space = {"identity": "response", "log": "log", "logit": "log_odds"}[model.link]
     return {
-        "type": "xgboost_contributions",
-        "method": "xgboost_contributions",
+        "type": f"{flavor}_contributions",
+        "method": f"{flavor}_contributions",
         "status": "ok",
         "link": model.link,
         "output_space": output_space,
@@ -655,7 +666,7 @@ def _config_requests_supported_explanation(config: dict[str, Any]) -> bool:
     if source_type not in {"run", "registered"}:
         return False
     artifact_path = str(config.get("artifact_path", ""))
-    return artifact_path.endswith((".cbm", ".rsglm", ".ubj"))
+    return artifact_path.endswith((".cbm", ".rsglm", ".ubj", ".lgbm"))
 
 
 def explanation_error_metadata_for_config(config: dict[str, Any]) -> dict[str, str]:
@@ -682,6 +693,8 @@ def explanation_error_metadata_for_config(config: dict[str, Any]) -> dict[str, s
         method = "catboost_shap"
     elif artifact_path.endswith(".ubj"):
         method = "xgboost_contributions"
+    elif artifact_path.endswith(".lgbm"):
+        method = "lightgbm_contributions"
     else:
         logger.warning(
             "explanation_error_metadata_unsupported_artifact",
@@ -725,8 +738,8 @@ def explain_model_score_from_config(
             task=config.get("task", "regression"),
             prediction_value=effective_prediction,
         )
-    if getattr(scoring_model, "flavor", "") == "xgboost":
-        return explain_xgboost_prediction(
+    if getattr(scoring_model, "flavor", "") in ("xgboost", "lightgbm"):
+        return explain_native_prediction(
             scoring_model,
             input_row,
             task=config.get("task", "regression"),

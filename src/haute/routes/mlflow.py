@@ -537,7 +537,7 @@ def list_runs(
         "model",
         description=(
             "Filter runs by artifact type: "
-            "'model' for any native model artifact (.cbm, .rsglm, .ubj), "
+            "'model' for any native model artifact (.cbm, .rsglm, .ubj, .lgbm), "
             "'optimiser' for optimiser results (optimiser_result.json)"
         ),
     ),

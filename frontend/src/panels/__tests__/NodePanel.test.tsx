@@ -1090,7 +1090,7 @@ describe("NodePanel", () => {
           label: "ML",
           description: "",
           nodeType: "modelling",
-          config: { algorithm: "lightgbm" },
+          config: { algorithm: "unregistered" },
         },
       }),
     })

@@ -18,6 +18,7 @@
         "Tweedie"
       ]
     },
+    "monotone_unsupported_losses": [],
     "refit_policy": "validation_weighted_rounds",
     "reserved_params": [
       "class_names",
@@ -49,6 +50,7 @@
     "feature_controls": [],
     "label": "GLM",
     "losses": {},
+    "monotone_unsupported_losses": [],
     "refit_policy": "none",
     "reserved_params": [],
     "round_key": null,
@@ -59,6 +61,79 @@
       "regression"
     ],
     "validation_only_params": []
+  },
+  "lightgbm": {
+    "allowed_params": [
+      "bagging_fraction",
+      "bagging_freq",
+      "cat_l2",
+      "cat_smooth",
+      "early_stopping_round",
+      "feature_fraction",
+      "lambda_l1",
+      "lambda_l2",
+      "learning_rate",
+      "max_bin",
+      "max_cat_threshold",
+      "max_cat_to_onehot",
+      "max_depth",
+      "min_data_in_leaf",
+      "min_data_per_group",
+      "min_gain_to_split",
+      "min_sum_hessian_in_leaf",
+      "num_iterations",
+      "num_leaves"
+    ],
+    "feature_controls": [
+      "monotone_constraints"
+    ],
+    "label": "LightGBM",
+    "losses": {
+      "classification": [
+        "Logloss"
+      ],
+      "regression": [
+        "RMSE",
+        "MAE",
+        "Poisson",
+        "Gamma",
+        "Tweedie"
+      ]
+    },
+    "monotone_unsupported_losses": [
+      "MAE"
+    ],
+    "refit_policy": "validation_weighted_rounds",
+    "reserved_params": [
+      "bagging_seed",
+      "boosting",
+      "categorical_feature",
+      "data_random_seed",
+      "device_type",
+      "feature_fraction_seed",
+      "init_score",
+      "linear_tree",
+      "metric",
+      "monotone_constraints",
+      "num_threads",
+      "objective",
+      "seed",
+      "tweedie_variance_power",
+      "verbosity"
+    ],
+    "round_key": "num_iterations",
+    "round_key_aliases": [
+      "num_iterations"
+    ],
+    "suffix": ".lgbm",
+    "supports_tuning": true,
+    "tasks": [
+      "classification",
+      "regression"
+    ],
+    "validation_only_params": [
+      "early_stopping_round"
+    ]
   },
   "xgboost": {
     "allowed_params": [
@@ -97,6 +172,7 @@
         "Tweedie"
       ]
     },
+    "monotone_unsupported_losses": [],
     "refit_policy": "validation_weighted_rounds",
     "reserved_params": [
       "base_margin",

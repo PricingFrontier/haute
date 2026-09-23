@@ -49,6 +49,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_algorithm_base.py` | `BaseAlgorithm`, `FitResult` and `IterationCallback`, shared by every adapter without importing the registry. |
 | `src/haute/modelling/_native_encoding.py` | Shared categorical encoding for the native-dataset families: `fit_categorical_levels` and `encode_frame`. |
 | `src/haute/modelling/_xgboost.py` | The XGBoost adapter: `XGBoostModel` (self-describing booster wrapper) and `XGBoostAlgorithm`. |
+| `src/haute/modelling/_lightgbm.py` | The LightGBM adapter: `LightGBMModel` (self-describing model-text wrapper) and `LightGBMAlgorithm`. |
 | `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC (re-exported from the base module), `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
 | `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; `prepare_glm_design()` (frame-dtype validation, reference-level translation, interaction resolution); `glm_fit_kwargs()` (fixed or cross-validated penalty, solver controls, robust standard errors); `GLMAlgorithm.glm_result()` over `glm_inference`, `glm_coefficient_rows`, `glm_relativity_rows`, `glm_fit_statistics`, `glm_smooth_term_rows`, and `glm_regularization_summary`; `estimate_glm_dispersion()` profile-likelihood estimation. |
 | `src/haute/modelling/_training_job.py` | `TrainingJob` orchestrator — prepare one eligible source, persist/reload its evaluation plan, run selection or tuning fits, perform one deployable final fit, compute diagnostics, stage artifacts, and optionally log once to MLflow; also defines `TrainResult` and intermediate stage types. |
@@ -1798,9 +1799,14 @@ used for staged input.
   weights and classification offsets, supplies `hist`, the job seed, the thread allotment and
   `tweedie_variance_power`, trains with the validation partition as the early-stopping set, and
   slices the booster to `best_iteration + 1`. The `xgboost` scoring flavor passes Polars frames
-  (with the offset column) to the wrapper; `explain_xgboost_prediction` checks that bias plus
-  contributions equals the margin within `FLOAT32_CONTRIBUTION_TOLERANCE` and that the inverse
-  link reproduces the response.
+  (with the offset column) to the wrapper; `explain_native_prediction` checks that bias plus
+  contributions equals the margin (within `FLOAT32_CONTRIBUTION_TOLERANCE` for XGBoost's float32
+  sums, `prediction_tolerance` otherwise) and that the inverse link reproduces the response.
+  `NATIVE_WRAPPER_SUFFIXES` / `NATIVE_WRAPPER_FLAVORS` in `src/haute/_model_flavors.py` map
+  `.ubj` → `xgboost` and `.lgbm` → `lightgbm`; artifact discovery, local loading
+  (`_load_wrapper_model`), offset passthrough, class-label dtypes and the identity objective
+  check (the descriptor's native objective against the wrapper's `objective()`) all dispatch on
+  that set.
 - The `xgboost` descriptor's allowlist is `num_boost_round`, `early_stopping_rounds`, `eta`,
   `max_depth`, `max_leaves`, `grow_policy`, `min_child_weight`, `gamma`, `max_delta_step`,
   `subsample`, `colsample_bytree`, `colsample_bylevel`, `colsample_bynode`, `lambda`, `alpha`,
@@ -1810,43 +1816,41 @@ used for staged input.
   `feature_types`, `monotone_constraints`, `interaction_constraints`, `callbacks` and
   `base_margin`; `learning_rate`, `min_split_loss`, `reg_lambda`, `reg_alpha` and
   `n_estimators` are rejected aliases.
-
-## Approved change contract — LightGBM adapter parameters and behaviour
-
-- **Current limitation.** No LightGBM adapter exists.
-- **Unresolved target.** Descriptor: losses `RMSE` → `regression`, `MAE` → `regression_l1`,
-  `Poisson` → `poisson`, `Gamma` → `gamma`, `Tweedie` → `tweedie` with
-  `tweedie_variance_power`, `Logloss` → `binary`, links as for XGBoost; `round_key`
-  `num_iterations`; `refit_policy` `validation_weighted_rounds`; feature controls
-  `monotone_constraints`; suffix `.lgbm`; distribution `lightgbm`. `allowed_params`:
-  `num_iterations`, `early_stopping_round`, `learning_rate`, `num_leaves`, `max_depth`,
-  `min_data_in_leaf`, `min_sum_hessian_in_leaf`, `feature_fraction`, `bagging_fraction`,
-  `bagging_freq`, `lambda_l1`, `lambda_l2`, `min_gain_to_split`, `max_bin`,
-  `max_cat_to_onehot`, `max_cat_threshold`, `cat_smooth`, `cat_l2`, `min_data_per_group`.
-  `reserved_params`: `objective`, `tweedie_variance_power`, `boosting`, `metric`,
-  `num_threads`, `device_type`, `seed`, `bagging_seed`, `feature_fraction_seed`,
-  `data_random_seed`, `categorical_feature`, `monotone_constraints`, `linear_tree`,
-  `init_score`, `verbosity`. `param_aliases`: the pinned release's complete alias table for
-  every allowed and reserved key (for example `num_leaf`, `max_leaves` → `num_leaves`; `eta`,
-  `shrinkage_rate` → `learning_rate`; `num_boost_round`, `n_estimators` → `num_iterations`;
-  `subsample` → `bagging_fraction`), snapshotted into the descriptor and checked against the
-  installed release by a test. Data: a `Dataset` whose categoricals follow the shared
-  categorical encoding, weights, and `init_score` of the transformed offset for train and validation.
-  Stopping: `best_iteration` is a one-based count and the model is saved with
-  `num_iteration=best_iteration`; `rounds_fitted` is the reloaded model's
-  `current_iteration()`, and `stopping_reason` is `native_exhaustion` when that is below the
-  configured ceiling without validation stopping. Prediction adds the transformed offset to
-  `raw_score=True` output before the inverse link. Contributions: `pred_contrib`, with the
-  offset added to the bias column by the adapter.
-- **Non-goals.** GPU devices, `linear_tree`, native `refit` and model continuation.
-- **Failure and compatibility semantics.** A contract whose `loss` disagrees with the model
-  text's `objective=` line fails at load.
-- **Acceptance evidence.** New tests: one fit per loss; the null and `"__missing__"`
-  categorical fixture fitting, reloading and scoring as for XGBoost; offset added exactly once
-  through a reloaded model; alias-table drift test against the installed release; a constant-feature fit
-  recording `native_exhaustion`; alias and duplicate-key rejection; contribution reconciliation
-  including the offset.
-- **Roadmap package.** [MOD-F03](../roadmap/modelling.md#mod-f03--decide-on-and-deliver-the-complete-lightgbm-slice).
+- `LightGBMModel` in `src/haute/modelling/_lightgbm.py` wraps the booster with the same record,
+  persisted as one `haute:` JSON line inserted before LightGBM's `pandas_categorical:` line of
+  the `.lgbm` model text (LightGBM's loader ignores it). It exposes `encoded`, `baseline`,
+  `predict_margin` (`raw_score=True` output plus the transformed offset), `predict_response`,
+  `predict`, `predict_proba`, `contributions` (native `pred_contrib`, the adapter adding the
+  offset to the bias column), `save`, `load` (which refuses text without exactly one `haute:`
+  record) and `objective` (the model text's `objective=` line).
+- `LightGBMAlgorithm.fit` resolves the loss through the `lightgbm` descriptor, rejects feature
+  weights and classification offsets, supplies `gbdt`, the job seed, the thread allotment
+  (`num_threads`), `tweedie_variance_power` and positional `monotone_constraints`, builds train
+  and validation `Dataset`s with `init_score`, and stops early through `lgb.early_stopping`
+  (`early_stopping_round`, default 50). An early-stopped booster is rebuilt from
+  `model_to_string(num_iteration=best_iteration)`, and `FitResult.best_iteration` is that
+  one-based count minus one. `rounds_fitted` is the booster's `current_iteration()`;
+  `stopping_reason` is `none` at the ceiling, `validation` after early stopping, and
+  `native_exhaustion` otherwise. Importances are total gain. With a validation set but
+  early stopping disabled (a non-positive round count), both native adapters report
+  `best_iteration = rounds_fitted - 1`, so `validation_weighted_tree_count` has every fold's count.
+- The `lightgbm` descriptor's losses are `RMSE` → `regression`, `MAE` → `regression_l1`,
+  `Poisson` → `poisson`, `Gamma` → `gamma`, `Tweedie` → `tweedie`, `Logloss` → `binary`. Its
+  allowlist is `num_iterations`, `early_stopping_round`, `learning_rate`, `num_leaves`,
+  `max_depth`, `min_data_in_leaf`, `min_sum_hessian_in_leaf`, `feature_fraction`,
+  `bagging_fraction`, `bagging_freq`, `lambda_l1`, `lambda_l2`, `min_gain_to_split`, `max_bin`,
+  `max_cat_to_onehot`, `max_cat_threshold`, `cat_smooth`, `cat_l2`, `min_data_per_group`; Haute
+  owns `objective`, `tweedie_variance_power`, `boosting`, `metric`, `num_threads`,
+  `device_type`, `seed`, `bagging_seed`, `feature_fraction_seed`, `data_random_seed`,
+  `categorical_feature`, `monotone_constraints`, `linear_tree`, `init_score` and `verbosity`.
+  `param_aliases` snapshots LightGBM 4.7's complete alias table for those keys, and a test fails
+  when the installed release's table differs. `validate_params` reports an alias of a
+  Haute-owned key as Haute-owned, and any other alias with its canonical key.
+- `AlgorithmDescriptor.monotone_unsupported_losses` (LightGBM: `MAE`, whose `regression_l1`
+  objective refuses them) drives `monotone_constraint_issue`, raised by
+  `build_training_job_kwargs` for the effective (non-excluded) constraints and by the adapter
+  before fitting; the capability fixture carries it to the frontend's `monotone-loss` readiness
+  issue on the Features pane.
 
 ## Approved change contract — EBM adapter parameters and behaviour
 

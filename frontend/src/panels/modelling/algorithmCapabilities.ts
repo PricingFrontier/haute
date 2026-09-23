@@ -20,6 +20,8 @@ export type AlgorithmCapability = {
   validation_only_params: string[]
   suffix: string
   supports_tuning: boolean
+  /** Losses whose native objective refuses monotone constraints. */
+  monotone_unsupported_losses: string[]
 }
 
 export const ALGORITHM_CAPABILITIES = capabilities as Record<string, AlgorithmCapability>

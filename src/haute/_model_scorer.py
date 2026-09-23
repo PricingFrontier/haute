@@ -26,6 +26,7 @@ from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
 from haute._model_flavors import _SUPPORTED_FLAVORS as _SUPPORTED_MODEL_FLAVORS
+from haute._model_flavors import NATIVE_WRAPPER_FLAVORS
 from haute._model_flavors import ModelFlavor as _ModelFlavor
 from haute._polars_utils import bounded_collect_batches
 from haute._types import _Frame
@@ -553,7 +554,7 @@ def _model_offset_column(model: Any, flavor: _ModelFlavor) -> str | None:
         from haute._mlflow_io import rustystats_offset_column
 
         return rustystats_offset_column(model)
-    if flavor == "xgboost":
+    if flavor in NATIVE_WRAPPER_FLAVORS:
         return model.offset_column  # type: ignore[no-any-return]
     return None
 
@@ -568,7 +569,7 @@ def _model_offset_link(model: Any, flavor: _ModelFlavor) -> str | None:
         from haute._mlflow_io import rustystats_offset_link
 
         return rustystats_offset_link(model)
-    if flavor == "xgboost":
+    if flavor in NATIVE_WRAPPER_FLAVORS:
         return model.offset_link  # type: ignore[no-any-return]
     return None
 
@@ -651,7 +652,7 @@ def _catboost_baseline_pool(
 # can re-inject into an opaque pyfunc).  CatBoost is the exception — its offset
 # is a numeric ``Pool`` baseline, never a design-matrix column.
 _OFFSET_PASSTHROUGH_FLAVORS: frozenset[_ModelFlavor] = frozenset(
-    {"rustystats", "pyfunc", "xgboost"}
+    {"rustystats", "pyfunc", *NATIVE_WRAPPER_FLAVORS}
 )
 
 
@@ -1835,10 +1836,10 @@ def _declared_score_dtypes(
     proba_dtype = pl.Float64 if include_proba else None
     if task != "classification":
         return pl.Float64, proba_dtype
-    if flavor == "xgboost":
+    if flavor in NATIVE_WRAPPER_FLAVORS:
         raw = getattr(scoring_model, "raw_model", scoring_model)
         if raw.class_labels is None:
-            raise ValueError("XGBoost classification model has no recorded class labels")
+            raise ValueError(f"{flavor} classification model has no recorded class labels")
         return pl.Series("prediction", list(raw.class_labels)).dtype, proba_dtype
     if flavor != "catboost":
         return None

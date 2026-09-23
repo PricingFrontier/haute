@@ -129,6 +129,23 @@ def _patient_preparation_join(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_mlflow_fluent_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give every test fresh MLflow fluent globals.
+
+    ``set_tracking_uri``, ``set_registry_uri`` and ``set_experiment`` write
+    process-global state, so a test that resolves a destination or starts a run
+    would otherwise hand its URI or experiment ID to whichever test runs next on
+    the worker (seen as "Could not find experiment with ID ..." against a fresh
+    local store). monkeypatch restores the originals after the test.
+    """
+    monkeypatch.setattr("mlflow.tracking._tracking_service.utils._tracking_uri", None)
+    monkeypatch.setattr("mlflow.tracking._model_registry.utils._registry_uri", None)
+    monkeypatch.setattr("mlflow.tracking.fluent._active_experiment_id", None)
+    # set_experiment also exports the ID; monkeypatch unsets it again afterwards.
+    monkeypatch.delenv("MLFLOW_EXPERIMENT_ID", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_mlflow_telemetry(monkeypatch: pytest.MonkeyPatch):
     """Keep the suite hermetic: MLflow must not phone home from a test.
 

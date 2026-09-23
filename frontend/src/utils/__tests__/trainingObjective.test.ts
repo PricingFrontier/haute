@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { effectiveMetrics, trainingConfigurationIssues } from "../trainingObjective"
+import { effectiveMetrics, trainingConfigurationIssues, trainingIssuePane } from "../trainingObjective"
 
 describe("trainingConfigurationIssues", () => {
   const evaluation = {
@@ -32,6 +32,24 @@ describe("trainingConfigurationIssues", () => {
       evaluation: { ...evaluation, validation: { method: "single", size }, test: { size: 0.5 } },
     })
     expect(issues).toEqual([expect.objectContaining({ code: "evaluation-config", message: expect.stringMatching(/below 100%/) })])
+  })
+
+  it("refuses LightGBM monotonicity under MAE on the Features pane (MOD-F03)", () => {
+    const base = { algorithm: "lightgbm", target: "y", loss_function: "MAE", evaluation }
+    const issues = trainingConfigurationIssues({ ...base, monotone_constraints: { age: 1 } })
+    expect(issues).toEqual([expect.objectContaining({
+      code: "monotone-loss",
+      message: expect.stringMatching(/LightGBM cannot apply monotonicity constraints with the MAE loss/),
+    })])
+    expect(trainingIssuePane(issues[0])).toBe("features")
+    // Dormant (excluded) constraints, other losses and other families are fine.
+    expect(trainingConfigurationIssues({ ...base, monotone_constraints: { age: 1 }, exclude: ["age"] })).toEqual([])
+    // Explicit feature_columns override a stale exclusion, as in the backend.
+    expect(trainingConfigurationIssues({
+      ...base, monotone_constraints: { age: 1 }, exclude: ["age"], feature_columns: ["age"],
+    }).map((issue) => issue.code)).toEqual(["monotone-loss"])
+    expect(trainingConfigurationIssues({ ...base, loss_function: "RMSE", monotone_constraints: { age: 1 } })).toEqual([])
+    expect(trainingConfigurationIssues({ ...base, algorithm: "xgboost", monotone_constraints: { age: 1 } })).toEqual([])
   })
 
   it("reports conditional CatBoost Tweedie configuration", () => {

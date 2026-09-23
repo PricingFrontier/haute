@@ -796,7 +796,9 @@ class TestLogExperiment:
         candidate = _candidate(tmp_path, suffix=".pkl")
         with (
             _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m,
-            pytest.raises(HauteValidationError, match="expected one of .cbm, .rsglm"),
+            pytest.raises(
+                HauteValidationError, match=r"expected one of \.cbm, \.lgbm, \.rsglm, \.ubj"
+            ),
         ):
             log_experiment(experiment_name="exp", candidate=candidate)
         m.catboost_log_model.assert_not_called()

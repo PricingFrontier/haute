@@ -88,3 +88,12 @@ class BaseAlgorithm(ABC):
     @abstractmethod
     def save(self, model: Any, path: Path) -> None:
         """Save the model to disk."""
+
+
+@dataclass
+class Contributions:
+    """Additive explanation of raw margins: ``bias + values.sum(axis=1)``."""
+
+    bias: np.ndarray
+    values: np.ndarray
+    terms: list[tuple[str, ...]]

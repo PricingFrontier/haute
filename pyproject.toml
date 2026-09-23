@@ -52,6 +52,8 @@ dependencies = [
     # Both install the same ``xgboost`` import package: never hold both.
     "xgboost-cpu>=3.2,<3.3; sys_platform != 'darwin'",
     "xgboost>=3.2,<3.3; sys_platform == 'darwin'",
+    # LightGBM's macOS wheel also loads libomp from the system (Homebrew).
+    "lightgbm>=4.7,<5",
     # Tuning owns a reproducibility-sensitive seeded TPE contract. Keep the
     # supported Optuna sampler implementation within one pinned 4.x minor.
     "optuna>=4.9.0,<4.10",

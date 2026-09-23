@@ -1366,6 +1366,7 @@ class TestFindModelArtifact:
         #   then list_artifacts(run_id, "custom_model") → sub_contents (no .cbm) → raises
         # _find_artifact_by_extension(.rsglm): same 2 calls → raises
         # _find_artifact_by_extension(.ubj): same 2 calls → raises
+        # _find_artifact_by_extension(.lgbm): same 2 calls → raises
         # _find_model_artifact pyfunc check: list_artifacts(run_id) → [subdir] (not "model")
         #   then iterate dirs: list_artifacts(run_id, "custom_model") → sub_contents (has MLmodel)
         client.list_artifacts.side_effect = [
@@ -1375,6 +1376,8 @@ class TestFindModelArtifact:
             sub_contents,  # rsglm: subdir (no .rsglm)
             [subdir],  # ubj: top level
             sub_contents,  # ubj: subdir (no .ubj)
+            [subdir],  # lgbm: top level
+            sub_contents,  # lgbm: subdir (no .lgbm)
             [subdir],  # pyfunc: top level "model" dir check
             sub_contents,  # pyfunc: subdir listing with MLmodel
         ]
@@ -2250,7 +2253,7 @@ class TestFlavorSsot:
         # A flavor outside the SSOT fails loudly rather than being scored
         # through the wrong (catboost-shaped) input contract.
         with pytest.raises(ValueError, match="Unknown model flavor"):
-            _prepare_predict_frame(df, features, frozenset(), "lightgbm")  # type: ignore[arg-type]
+            _prepare_predict_frame(df, features, frozenset(), "unregistered")  # type: ignore[arg-type]
 
     def test_unknown_flavor_error_enumerates_the_ssot(self):
         """The rejection message lists the SSOT flavors, not a hardcoded copy."""
@@ -2258,7 +2261,7 @@ class TestFlavorSsot:
 
         df = pl.DataFrame({"a": [1.0]})
         with pytest.raises(ValueError) as exc:
-            _prepare_predict_frame(df, ["a"], frozenset(), "lightgbm")  # type: ignore[arg-type]
+            _prepare_predict_frame(df, ["a"], frozenset(), "unregistered")  # type: ignore[arg-type]
         message = str(exc.value)
         for flavor in _SUPPORTED_FLAVORS:
             assert flavor in message

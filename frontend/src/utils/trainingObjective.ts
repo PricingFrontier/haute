@@ -29,6 +29,7 @@ export type TrainingConfigurationIssueCode =
   | "catboost-params"
   | "catboost-loss-function"
   | "catboost-tweedie-variance-power"
+  | "monotone-loss"
   | "evaluation-config"
   | "final-refit"
   | "tuning-config"
@@ -392,7 +393,37 @@ export function trainingConfigurationIssues(
         "Set the Tweedie variance power greater than 1 and less than 2.",
     })
   }
+  const capability = algorithmCapability(algorithm)
+  if (
+    lossFunction
+    && capability?.monotone_unsupported_losses.includes(String(lossFunction))
+    && hasMonotoneConstraints(config)
+  ) {
+    issues.push({
+      code: "monotone-loss",
+      message:
+        `${capability.label} cannot apply monotonicity constraints with the ${String(lossFunction)} ` +
+        "loss; remove them from the Features pane or choose another loss.",
+    })
+  }
   return issues
+}
+
+function hasMonotoneConstraints(config: Record<string, unknown>): boolean {
+  const constraints = config.monotone_constraints
+  if (constraints === null || typeof constraints !== "object" || Array.isArray(constraints)) {
+    return false
+  }
+  // Mirrors the backend's _excluded_feature_names: explicit feature_columns win
+  // over a stale exclusion, so a constraint on such a feature stays active.
+  const explicit = new Set(
+    Array.isArray(config.feature_columns) ? config.feature_columns.map(String) : [],
+  )
+  const excluded = new Set(
+    (Array.isArray(config.exclude) ? config.exclude.map(String) : [])
+      .filter((name) => !explicit.has(name)),
+  )
+  return Object.keys(constraints).some((name) => !excluded.has(name))
 }
 
 /** Destination of a readiness issue, shared by tabs and the Train summary. */
@@ -406,7 +437,8 @@ export function trainingIssuePane(issue: TrainingConfigurationIssue): "target" |
     case "glm-cross-validation":
     case "glm-smooth-regularization":
     case "glm-robust-standard-errors": return "params"
-    case "glm-terms": return "features"
+    case "glm-terms":
+    case "monotone-loss": return "features"
     default: return "target"
   }
 }

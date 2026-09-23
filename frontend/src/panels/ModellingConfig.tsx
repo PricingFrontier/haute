@@ -91,17 +91,30 @@ const XGBOOST_DEFAULT_PARAMS: Record<string, unknown> = {
   early_stopping_rounds: 50,
 }
 
+const LIGHTGBM_DEFAULT_PARAMS: Record<string, unknown> = {
+  num_iterations: 1000,
+  learning_rate: 0.05,
+  num_leaves: 31,
+  early_stopping_round: 50,
+}
+
 const STARTER_SEARCH_SPACES: Record<string, Record<string, unknown>> = {
   xgboost: {
     max_depth: [4, 6, 8],
     eta: [0.03, 0.1, 0.3],
     lambda: [1, 3, 10],
   },
+  lightgbm: {
+    num_leaves: [15, 31, 63],
+    learning_rate: [0.03, 0.05, 0.1],
+    min_data_in_leaf: [20, 50, 100],
+  },
 }
 
 const DEFAULT_PARAMS: Record<string, Record<string, unknown>> = {
   catboost: CATBOOST_DEFAULT_PARAMS,
   xgboost: XGBOOST_DEFAULT_PARAMS,
+  lightgbm: LIGHTGBM_DEFAULT_PARAMS,
 }
 
 const CATBOOST_RESERVED_PARAM_KEYS = ["task_type"] as const
@@ -154,6 +167,8 @@ const ALGORITHM_DESCRIPTIONS: Record<string, string> = {
   glm: "Generalised linear model - interpretable coefficients, regulatory-friendly",
   xgboost:
     "Gradient boosting - histogram trees with native categoricals and early stopping on CPU",
+  lightgbm:
+    "Gradient boosting - fast leaf-wise trees with native categoricals and early stopping on CPU",
 }
 
 function AlgorithmGateway({ onUpdate }: { onUpdate: OnUpdateConfig }) {

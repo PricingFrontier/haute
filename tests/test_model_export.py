@@ -83,4 +83,9 @@ def test_reserved_device_names_and_nul_bytes_are_malformed(project: Path) -> Non
 
 
 def test_every_algorithm_has_a_model_file_suffix() -> None:
-    assert dict(MODEL_FILE_SUFFIXES) == {"catboost": ".cbm", "glm": ".rsglm", "xgboost": ".ubj"}
+    assert dict(MODEL_FILE_SUFFIXES) == {
+        "catboost": ".cbm",
+        "glm": ".rsglm",
+        "xgboost": ".ubj",
+        "lightgbm": ".lgbm",
+    }

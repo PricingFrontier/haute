@@ -819,6 +819,10 @@ from haute.modelling._xgboost import XGBoostAlgorithm  # noqa: E402
 
 ALGORITHM_REGISTRY["xgboost"] = XGBoostAlgorithm
 
+from haute.modelling._lightgbm import LightGBMAlgorithm  # noqa: E402
+
+ALGORITHM_REGISTRY["lightgbm"] = LightGBMAlgorithm
+
 # Register GLM if RustyStats is installed (lazy import keeps it optional)
 try:
     from haute.modelling._rustystats import GLMAlgorithm

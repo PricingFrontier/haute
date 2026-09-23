@@ -22,21 +22,17 @@ import numpy as np
 import polars as pl
 
 from haute.errors import HauteValidationError
-from haute.modelling._algorithm_base import BaseAlgorithm, FitResult, IterationCallback
+from haute.modelling._algorithm_base import (
+    BaseAlgorithm,
+    Contributions,
+    FitResult,
+    IterationCallback,
+)
 from haute.modelling._native_encoding import encode_frame, fit_categorical_levels
 
 _META_ATTRIBUTE = "haute"
 _DEFAULT_ROUNDS = 1000
 _DEFAULT_EARLY_STOPPING = 50
-
-
-@dataclass
-class Contributions:
-    """Additive explanation of raw margins: ``bias + values.sum(axis=1)``."""
-
-    bias: np.ndarray
-    values: np.ndarray
-    terms: list[tuple[str, ...]]
 
 
 @dataclass
@@ -282,7 +278,7 @@ class XGBoostAlgorithm(BaseAlgorithm):
                 int(monotone_constraints.get(name, 0)) for name in features
             )
         early_stopping = (
-            int(params.get("early_stopping_rounds", _DEFAULT_EARLY_STOPPING))
+            max(0, int(params.get("early_stopping_rounds", _DEFAULT_EARLY_STOPPING)))
             if eval_df is not None
             else None
         )
@@ -304,6 +300,10 @@ class XGBoostAlgorithm(BaseAlgorithm):
             booster = booster[: best_iteration + 1]
         model.booster = booster
         rounds_fitted = int(booster.num_boosted_rounds())
+        if eval_df is not None and best_iteration is None:
+            # A validation fit without early stopping selects every fitted
+            # round, so the refit still has a round count to reuse.
+            best_iteration = rounds_fitted - 1
         return FitResult(
             model=model,
             best_iteration=best_iteration,

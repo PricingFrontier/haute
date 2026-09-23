@@ -565,7 +565,7 @@ class TestDefaultMetricsDerivation:
             ("quasipoisson", ["gini", "poisson_deviance"]),
             ("negbinomial", ["gini", "poisson_deviance"]),
             ("tweedie", ["gini", "tweedie_deviance"]),
-            ("gamma", ["gini", "rmse"]),
+            ("gamma", ["gini", "gamma_deviance"]),
             ("gaussian", ["gini", "rmse"]),
             ("binomial", ["auc", "logloss"]),
         ],

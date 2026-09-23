@@ -796,6 +796,21 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   scores through its own flavor, serves through the shared MLflow pyfunc, and explains a traced
   prediction with native contributions whose bias carries the offset. `Gamma` losses report
   weighted Gamma deviance, which needs strictly positive targets and predictions.
+- **LightGBM.** The `lightgbm` family trains a native CPU GBDT booster from a `Dataset` with the
+  same contract-order categories, weights, and an `init_score` of the transformed regression
+  offset. LightGBM's own prediction ignores `init_score`, so the scoring adapter adds the offset
+  to the raw score before the inverse link, exactly once. Early stopping keeps LightGBM's
+  one-based `best_iteration` trees, and the refit reuses the weighted count through
+  `num_iterations`. With early stopping disabled (`0`), each XGBoost or LightGBM validation fit
+  selects every round it fitted, so the refit still has a count to reuse. A fit that stops short
+  of its ceiling without validation stopping (no split satisfies the constraints) records
+  `native_exhaustion`. LightGBM refuses monotone constraints under `MAE`, so that combination
+  fails in the Features pane and before training. Losses, parameter policy, monotone
+  constraints, feature weights, unseen and empty-string categories, serving and explanation
+  follow XGBoost; LightGBM silently accepts conflicting parameter aliases, so every alias of an
+  allowed or Haute-owned key fails in Haute. The `.lgbm` model is LightGBM's model text with one
+  added `haute:` record, so plain LightGBM can still load it. GPU backends, `linear_tree`,
+  native leaf refitting and model continuation are not offered.
 - **Model identity.** A version-2 feature contract carries an optional model identity:
   algorithm, Haute loss or GLM family, link, variance power, class labels, native feature names,
   and exact engine and Haute versions, all inside the hashed payload. Training always writes
@@ -803,24 +818,6 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   load with a retrain message. The shared MLflow pyfunc and Model Score check a loaded model
   against the identity (its model type, and CatBoost's recorded loss) and fail on a mismatch.
   Only the schema fields are compared against live data.
-
-## Approved change contract — LightGBM family
-
-- **Current limitation.** LightGBM cannot be selected for training.
-- **Unresolved target.** A `lightgbm` algorithm trains a native CPU booster from a `Dataset` with
-  contract-derived categories, weights and an `init_score` of the transformed offset. Early
-  stopping selects `best_iteration` (a one-based count) and the saved `.lgbm` model text holds
-  exactly that many trees. Because native prediction ignores `init_score`, the scoring adapter
-  adds the offset to the raw score before the inverse link, exactly once. Contributions come from
-  native `pred_contrib`, which excludes the offset. A fit that stops because no split satisfies
-  its constraints records `native_exhaustion`. The `lightgbm` dependency is added with this slice.
-- **Non-goals.** GPU backends, native leaf refitting, and model continuation are out of scope.
-- **Failure and compatibility semantics.** Conflicting parameter aliases, which LightGBM accepts
-  silently, fail in Haute; unseen categories, which LightGBM scores silently, fail in Haute.
-- **Acceptance evidence.** Real tiny fits for every supported loss; offset included exactly once
-  through a reloaded model; a constant-feature fixture recording `native_exhaustion`; an alias
-  conflict failure; scoring parity across every path.
-- **Roadmap package.** [MOD-F03](../roadmap/modelling.md#mod-f03--decide-on-and-deliver-the-complete-lightgbm-slice).
 
 ## Approved change contract — EBM family
 

@@ -1291,7 +1291,7 @@ class TestSaveModelEndpoint:
         )
         unknown = client.post(
             "/api/modelling/save/destination",
-            json={"output_path": "frequency", "algorithm": "lightgbm"},
+            json={"output_path": "frequency", "algorithm": "unregistered"},
         )
 
         assert escaped.status_code == 403
@@ -2742,9 +2742,9 @@ class TestValidateConfig:
 
     def test_unknown_algorithm_raises_400(self):
         with pytest.raises(HTTPException) as exc_info:
-            TrainService._validate_config({"target": "y", "algorithm": "lightgbm"})
+            TrainService._validate_config({"target": "y", "algorithm": "unregistered"})
         assert exc_info.value.status_code == 400
-        assert "lightgbm" in exc_info.value.detail
+        assert "unregistered" in exc_info.value.detail
         assert "Available algorithms" in exc_info.value.detail
 
     def test_glm_unknown_family_raises_with_suggestions(self):

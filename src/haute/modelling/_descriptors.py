@@ -68,6 +68,8 @@ class AlgorithmDescriptor:
     feature_controls: frozenset[FeatureControl]
     suffix: str
     engine_module: str
+    #: Losses whose native objective refuses monotone constraints.
+    monotone_unsupported_losses: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not self.suffix.startswith(".") or len(self.suffix) < 2:
@@ -111,6 +113,15 @@ class AlgorithmDescriptor:
             )
         return supported[loss]
 
+    def monotone_constraint_issue(self, loss: str | None, constraints: Any) -> str | None:
+        """Why *constraints* cannot train under *loss*, or ``None`` when they can."""
+        if not constraints or loss not in self.monotone_unsupported_losses:
+            return None
+        return (
+            f"{self.label} cannot apply monotonicity constraints with the {loss} loss; "
+            "remove them from the Features pane or choose another loss."
+        )
+
     def validate_params(self, params: Mapping[str, Any], *, context: str = "params") -> None:
         """Reject reserved, aliased, duplicate, or (when allowlisted) unknown params."""
         from haute.modelling._train_config import TrainingConfigError
@@ -122,6 +133,11 @@ class AlgorithmDescriptor:
                     f"{self.label} {context} cannot set '{key}': Haute owns it."
                 )
             canonical = self.param_aliases.get(key, key)
+            if canonical in self.reserved_params:
+                raise TrainingConfigError(
+                    f"{self.label} {context} cannot set '{key}' (an alias of "
+                    f"'{canonical}'): Haute owns it."
+                )
             if canonical != key:
                 raise TrainingConfigError(
                     f"{self.label} {context} key '{key}' is an alias; use '{canonical}'."
@@ -307,8 +323,148 @@ XGBOOST = AlgorithmDescriptor(
     engine_module="xgboost",
 )
 
+LIGHTGBM = AlgorithmDescriptor(
+    key="lightgbm",
+    label="LightGBM",
+    tasks=frozenset({"regression", "classification"}),
+    losses=_losses(
+        regression={
+            "RMSE": NativeLoss("regression", "identity"),
+            "MAE": NativeLoss("regression_l1", "identity"),
+            "Poisson": NativeLoss("poisson", "log"),
+            "Gamma": NativeLoss("gamma", "log"),
+            "Tweedie": NativeLoss("tweedie", "log"),
+        },
+        classification={"Logloss": NativeLoss("binary", "logit")},
+    ),
+    allowed_params=frozenset(
+        {
+            "num_iterations",
+            "early_stopping_round",
+            "learning_rate",
+            "num_leaves",
+            "max_depth",
+            "min_data_in_leaf",
+            "min_sum_hessian_in_leaf",
+            "feature_fraction",
+            "bagging_fraction",
+            "bagging_freq",
+            "lambda_l1",
+            "lambda_l2",
+            "min_gain_to_split",
+            "max_bin",
+            "max_cat_to_onehot",
+            "max_cat_threshold",
+            "cat_smooth",
+            "cat_l2",
+            "min_data_per_group",
+        }
+    ),
+    reserved_params=frozenset(
+        {
+            "objective",
+            "tweedie_variance_power",
+            "boosting",
+            "metric",
+            "num_threads",
+            "device_type",
+            "seed",
+            "bagging_seed",
+            "feature_fraction_seed",
+            "data_random_seed",
+            "categorical_feature",
+            "monotone_constraints",
+            "linear_tree",
+            "init_score",
+            "verbosity",
+        }
+    ),
+    tuning_reserved_params=frozenset({"num_iterations"}),
+    # LightGBM 4.7's alias table for every allowed and reserved key; a test
+    # fails when the installed release's table differs.
+    param_aliases=MappingProxyType(
+        {
+            "app": "objective",
+            "application": "objective",
+            "bagging": "bagging_fraction",
+            "bagging_fraction_seed": "bagging_seed",
+            "boost": "boosting",
+            "boosting_type": "boosting",
+            "cat_column": "categorical_feature",
+            "cat_feature": "categorical_feature",
+            "categorical_column": "categorical_feature",
+            "categorical_features": "categorical_feature",
+            "colsample_bytree": "feature_fraction",
+            "data_seed": "data_random_seed",
+            "device": "device_type",
+            "early_stopping": "early_stopping_round",
+            "early_stopping_rounds": "early_stopping_round",
+            "eta": "learning_rate",
+            "l1_regularization": "lambda_l1",
+            "l2_regularization": "lambda_l2",
+            "lambda": "lambda_l2",
+            "linear_trees": "linear_tree",
+            "loss": "objective",
+            "max_bins": "max_bin",
+            "max_iter": "num_iterations",
+            "max_leaf": "num_leaves",
+            "max_leaf_nodes": "num_leaves",
+            "max_leaves": "num_leaves",
+            "mc": "monotone_constraints",
+            "metric_types": "metric",
+            "metrics": "metric",
+            "min_child_samples": "min_data_in_leaf",
+            "min_child_weight": "min_sum_hessian_in_leaf",
+            "min_data": "min_data_in_leaf",
+            "min_data_per_leaf": "min_data_in_leaf",
+            "min_hessian": "min_sum_hessian_in_leaf",
+            "min_samples_leaf": "min_data_in_leaf",
+            "min_split_gain": "min_gain_to_split",
+            "min_sum_hessian": "min_sum_hessian_in_leaf",
+            "min_sum_hessian_per_leaf": "min_sum_hessian_in_leaf",
+            "monotone_constraint": "monotone_constraints",
+            "monotonic_cst": "monotone_constraints",
+            "n_estimators": "num_iterations",
+            "n_iter": "num_iterations",
+            "n_iter_no_change": "early_stopping_round",
+            "n_jobs": "num_threads",
+            "nrounds": "num_iterations",
+            "nthread": "num_threads",
+            "nthreads": "num_threads",
+            "num_boost_round": "num_iterations",
+            "num_iteration": "num_iterations",
+            "num_leaf": "num_leaves",
+            "num_round": "num_iterations",
+            "num_rounds": "num_iterations",
+            "num_thread": "num_threads",
+            "num_tree": "num_iterations",
+            "num_trees": "num_iterations",
+            "objective_type": "objective",
+            "random_seed": "seed",
+            "random_state": "seed",
+            "reg_alpha": "lambda_l1",
+            "reg_lambda": "lambda_l2",
+            "shrinkage_rate": "learning_rate",
+            "sub_feature": "feature_fraction",
+            "sub_row": "bagging_fraction",
+            "subsample": "bagging_fraction",
+            "subsample_freq": "bagging_freq",
+            "verbose": "verbosity",
+        }
+    ),
+    round_key="num_iterations",
+    round_key_aliases=("num_iterations",),
+    validation_only_params=("early_stopping_round",),
+    refit_policy="validation_weighted_rounds",
+    feature_controls=frozenset({"monotone_constraints"}),
+    suffix=".lgbm",
+    engine_module="lightgbm",
+    # LightGBM 4.7 refuses monotone_constraints with regression_l1.
+    monotone_unsupported_losses=frozenset({"MAE"}),
+)
+
 DESCRIPTORS: Mapping[str, AlgorithmDescriptor] = MappingProxyType(
-    {descriptor.key: descriptor for descriptor in (CATBOOST, GLM, XGBOOST)}
+    {descriptor.key: descriptor for descriptor in (CATBOOST, GLM, XGBOOST, LIGHTGBM)}
 )
 
 
@@ -374,18 +530,13 @@ def training_threads() -> int:
     ``HAUTE_TRAINING_THREADS`` overrides the default of every logical CPU,
     which matches CatBoost's own ``thread_count=-1`` default.
     """
-    raw = os.environ.get(TRAINING_THREADS_ENV)
-    if raw is None or raw.strip() == "":
-        return os.cpu_count() or 1
+    from haute._env import optional_int_env
+
     try:
-        threads = int(raw)
-    except ValueError:
-        threads = 0
-    if threads <= 0:
-        raise HauteValidationError(
-            f"{TRAINING_THREADS_ENV} must be a positive integer, got {raw!r}."
-        )
-    return threads
+        threads = optional_int_env(TRAINING_THREADS_ENV)
+    except RuntimeError as exc:
+        raise HauteValidationError(str(exc)) from exc
+    return threads if threads is not None else os.cpu_count() or 1
 
 
 def capability_fixture() -> dict[str, Any]:
@@ -409,6 +560,7 @@ def capability_fixture() -> dict[str, Any]:
             "validation_only_params": list(descriptor.validation_only_params),
             "suffix": descriptor.suffix,
             "supports_tuning": descriptor.supports_tuning,
+            "monotone_unsupported_losses": sorted(descriptor.monotone_unsupported_losses),
         }
         for key, descriptor in DESCRIPTORS.items()
     }

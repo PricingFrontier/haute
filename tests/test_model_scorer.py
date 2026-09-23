@@ -2007,7 +2007,9 @@ def test_supported_flavors_derived_from_modelflavor_literal():
     from haute._model_flavors import _SUPPORTED_FLAVORS, ModelFlavor
 
     assert _SUPPORTED_FLAVORS == frozenset(get_args(ModelFlavor))
-    assert _SUPPORTED_FLAVORS == frozenset({"catboost", "pyfunc", "rustystats", "xgboost"})
+    assert _SUPPORTED_FLAVORS == frozenset(
+        {"catboost", "pyfunc", "rustystats", "xgboost", "lightgbm"}
+    )
 
 
 @pytest.mark.parametrize(

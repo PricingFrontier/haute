@@ -32,7 +32,6 @@ families are implemented or their change contracts approved.
 | MOD-T06 | Planned | P1 | One offset meaning for GLM and CatBoost (a positive exposure multiplier under a log link), carried through training, saved models, and every scoring path. |
 | MOD-T07 | Planned | P1 | A strict, dtype-aware GLM term contract and order-independent interaction resolution that never builds a design different from the configuration. |
 | MOD-T08 | Planned | P2 | The GLM pane mirrors the backend contract, keeps every saved term and interaction visible and repairable, supports reference levels, and loses its duplicated code. |
-| MOD-F03 | Proposed | P2 | Owner decision (the XGBoost slice is in place), then the complete LightGBM slice. |
 | MOD-F04 | Proposed | P2 | Complete EBM slice with explicit round budgets on training rows, restricted persistence and native term explanations. |
 | MOD-F05 | Proposed | P2 | Verify and publish the CPU release and its feature matrix. |
 | MOD-F06 | Deferred | P3 | Add verified XGBoost and LightGBM GPU configurations after the CPU release. |
@@ -1298,10 +1297,9 @@ reviews:
    [Data and prediction contracts](#data-and-prediction-contracts) replace
    CatBoost's implicit class ordering. Haute has no users to migrate, so no
    compatibility path is kept.
-3. **LightGBM starts after the XGBoost slice is complete.** MOD-F03 is gated on
-   the XGBoost slice's acceptance. At that point the owner confirms whether LightGBM
-   remains in the first release or follows it; the shared seams must not
-   assume it.
+3. **LightGBM is in the first release.** With the XGBoost slice accepted, the
+   owner confirmed on 23 September 2026 that LightGBM ships in the first release;
+   its slice is in place.
 4. **Packages are vertical family slices.** Each family package delivers its
    own adapter, tuning and refit policy, artifacts, MLflow, codegen,
    deployment, UI, and explanations together. The shared seams (algorithm
@@ -1871,9 +1869,8 @@ lifecycle. Do not make unfinished choices selectable in a release.
 
 ### Delivery order and release gates
 
-Order: the XGBoost slice is in place; next the LightGBM
-decision and slice (MOD-F03), the EBM slice (MOD-F04), and the release check
-(MOD-F05). Each slice ships save/reload/score, MLflow, codegen, deployment, UI
+Order: the XGBoost and LightGBM slices are in place; next the EBM slice
+(MOD-F04), and the release check (MOD-F05). Each slice ships save/reload/score, MLflow, codegen, deployment, UI
 and explanations for its family; no serving work is postponed to the end.
 Shared evaluation, persistence and frontend owners have one writer at a time,
 so slices run sequentially.
@@ -1892,31 +1889,6 @@ outer bagging are subsequent features requiring their own contracts; they are
 not hidden prerequisites for the CPU release.
 
 ## Model-family expansion work packages
-
-### MOD-F03 — Decide on and deliver the complete LightGBM slice
-
-**Why:** LightGBM's category encodings, native initial scores and model
-persistence cannot be inferred from the XGBoost or CatBoost implementation, and
-it largely overlaps XGBoost's capability, so its first-release place is an
-owner decision (decision 3).
-
-**Plan:** With the XGBoost slice accepted, the owner confirms whether LightGBM is in
-the first release. If so, add its CPU GBDT adapter, canonical parameter and
-alias validation, Dataset ownership, contract-derived category codes,
-weight/init-score handling, native callbacks, selected-round save/predict,
-gain/split/contribution outputs, allowlist and round key for the shared
-tuning and refit, memory estimate,
-and the full serving and UI path the XGBoost slice established.
-
-**Acceptance:** Every acceptance-table row passes for LightGBM; initial scores
-are included exactly once through a reloaded model; unseen categories follow
-Haute's policy; conflicting parameter aliases fail visibly.
-
-**Dependencies:** The owner's decision; the XGBoost slice it builds on is on `main`.
-
-**Evidence:** `src/haute/modelling/_training_job.py`;
-`src/haute/modelling/_train_config.py`; `src/haute/_model_scorer.py`;
-`tests/test_training_contract_per_model.py`.
 
 ### MOD-F04 — Deliver the complete EBM slice and its term representation
 
@@ -1961,8 +1933,7 @@ CatBoost/RustyStats regressions; documented features match exposed controls;
 package/runtime requirements and EBM format limits are recorded; no incomplete
 family is presented as production-ready.
 
-**Dependencies:** MOD-F04, and MOD-F03 if the owner kept LightGBM in
-the release.
+**Dependencies:** MOD-F04.
 
 **Evidence:** `tests/workflow_coverage.toml`; `.github/workflows/ci.yml`;
 `frontend/e2e/core-flows.spec.ts`;
