@@ -708,6 +708,13 @@ endpoint.
   value`**, not truthiness alone — metadata proxies and mocked models in
   tests can return non-string truthy objects for an absent key, and only
   a real non-empty string counts as a declared offset.
+- **`_wrap_catboost` refuses a model whose metadata cannot be read.** It
+  reads `get_metadata()` once, and any failure raises `ConfigError` naming
+  the `source` it was given: the local file path, or the MLflow run and
+  artifact. Neither offset reader catches exceptions, so no caller can
+  turn a failed read into "trained without an offset". Being a
+  `ConfigError`, the refusal passes through `_load_with_bounded_retry`
+  immediately rather than triggering re-downloads.
 
 ## Error handling
 
@@ -717,6 +724,7 @@ endpoint.
 | Missing `run_id`/`registered_model`, invalid `source_type`, no versions found | `ValueError` | `resolve_mlflow_source` / `resolve_version`. |
 | No matching artifact in a run | `_ArtifactNotFoundError` (⊂ `FileNotFoundError`) | `_find_model_artifact` and its per-extension helpers; a genuine `MlflowException`/bare `FileNotFoundError` from `list_artifacts` is not caught here. |
 | Unsupported local file extension | `NotImplementedError` | `load_local_model`. |
+| CatBoost model metadata cannot be read | `ConfigError` naming the model source (chained from the read failure) | `_wrap_catboost`; re-raised immediately by `_load_with_bounded_retry`. |
 | Corrupt/unloadable artifact after bounded retry | `RuntimeError` (chained `from last_err`) | `_load_with_bounded_retry`. |
 | Bug in load dispatch (bad attribute/type/key) | `AttributeError` / `TypeError` / `KeyError` | Re-raised immediately from `_load_with_bounded_retry`, never retried. |
 | Invalid disk-cache run_id/artifact_path | `ValueError` | `_validate_disk_cache_run_id` / `_validate_artifact_path`, called from `_artifact_cache_path` before any I/O. |

@@ -11,6 +11,7 @@
 | `src/haute/deploy/_schema.py` | Input schema inference (read source file schema), output schema inference (dry-run scoring with the bundled artefacts) with a graph-and-artefact-fingerprint-keyed on-disk cache, and bundle-time, target-aware batch strategy planning (`infer_deploy_execution_policy`) over the shared one-row sample (`_read_sample_row`), with a hard-capped-worker dry-run fallback (`_capped_worker_output_schema`) for an unprovable group-by. |
 | `src/haute/deploy/_batch_scoring.py` | Multi-row `/quote` scoring in a hard-capped spawn worker: the picklable `BatchScoreRequest`/`BatchScoreOutcome` pair, the child entrypoint `score_batch_worker`, and the parent supervisor helpers `prepare_batch_scoring` / `accept_batch_outcome` / `deploy_batch_timeout_seconds`. |
 | `src/haute/deploy/_scorer.py` | Runtime scoring engine (`score_graph`, `score_graph_lazy`) shared by every deploy target; `NodeBuildHooks` interception for live-input injection and artefact-path remapping; stat-gated model/contract caches; execution admission. |
+| `src/haute/deploy/_project_modules.py` | Project-module resolution for the bundle (`resolve_project_modules`): the project-local `utility` package the preamble resolves, which deploy ships, and every other project-local static import, which validation refuses. |
 | `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + exactly one test-quote scoring pass, returning successful per-file results to its caller; golden test-quote parsing and expected-output tolerance comparison; `score_test_quotes`. |
 | `src/haute/deploy/_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema). |
 | `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature/conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check, and the MLflow destination check (`_resolve_mlflow_databricks`) that binds its logging and registry calls. |
@@ -41,7 +42,9 @@
   bundle-time batch strategy record from `_schema.py::infer_deploy_execution_policy`),
   `removed_node_ids`, `snapshot_provenance` (`dict[str, dict[str, Any]]`), `model_sources`
   (`dict[str, dict[str, Any]]`: each registered model-score node's `registered_model`,
-  `alias`, resolved `version` and `run_id`). It owns
+  `alias`, resolved `version` and `run_id`), `project_modules` (`ProjectModules`: the
+  `utility` package directory or `utility.py` file to bundle, or `None`, and one message
+  per project-local import the bundle does not carry). It owns
   an `_resources: ExitStack` released by idempotent `close()` (also implementing
   `__enter__`/`__exit__`), which `deploy()`/`deploy_resolved()` invoke in a
   `finally` to drop snapshot leases.
@@ -197,12 +200,28 @@
    attempted.
    Validate `output_fields` as a non-empty, duplicate-free list of non-empty strings
    present in that full schema, then retain the projected schema in configured order.
-9. Assemble and return `ResolvedDeploy`, carrying the policy on `execution_policy`.
+9. `resolve_project_modules(pruned_graph.preamble, pipeline_dir)`. The project directories
+   are the pipeline directory and the working directory, the two entries the executor
+   puts first on `sys.path` for the preamble
+   (`executor._prioritise_preamble_import_paths`), searched once when they are the same
+   directory. `utility` is looked up in those directories only
+   (`importlib.machinery.PathFinder.find_spec`). A match is the package directory or
+   `utility.py` file to bundle, and a namespace package spanning two distinct directories
+   is refused with `DeployError`. Bundled files are decoded as the import system decodes
+   them (`tokenize.open`: a byte-order mark or a coding declaration). Every static absolute import (`import a.b`,
+   `from a.b import c`; relative imports skipped) in the preamble and in each `.py` file of
+   a bundled package is then looked up the same way, skipping built-in and standard-library
+   names and `utility` itself. Each one found is recorded as a message naming the module,
+   the importing file (the preamble, or `utility/<path>`) and its line. A bundled file that
+   does not parse raises `DeployError` naming it.
+10. Assemble and return `ResolvedDeploy`, carrying the policy on `execution_policy` and
+    the modules on `project_modules`.
 
 **Validation (`_validators.py::validate_deploy`)** — called by `deploy()` after
 `resolve_config()`, before dispatch. Runs seven structural checks (output, inputs,
 source-ness, artefact existence, canonical Data Input direct readability or snapshot readiness, and non-empty input/output
-schemas), rechecks the projected output-field invariant, then — if
+schemas), adds every `project_modules` import message (a project-local import the bundle
+does not carry), rechecks the projected output-field invariant, then — if
 `config.test_quotes_dir` is configured — requires an existing directory containing at
 least one `*.json` file and pre-checks every quote's rows
 against the required input-schema columns (catching a missing column before scoring even
@@ -234,7 +253,9 @@ container-based targets. Creates `.haute_build/` under CWD; on any exception the
 directory is removed (`except BaseException: shutil.rmtree(...); raise`). Steps: build
 manifest via `_utils.build_manifest`, remap artefact paths to `artifacts/<name>`
 container-relative paths, write `deploy_manifest.json`, copy every artefact file into
-`artifacts/`, generate `app.py` from an f-string template, generate `Dockerfile` (base
+`artifacts/`, remove any `utility/` or `utility.py` an earlier build left in a reused build
+directory, then copy the bundled `utility` package to `utility/` (or the module to
+`utility.py`) without `__pycache__` directories, generate `app.py` from an f-string template, generate `Dockerfile` (base
 image + core deps + the model-runtime deps auto-detected from artefact file extensions,
 every one pinned through `importlib.metadata` to the version installed in the deploying
 environment — the container unpickles the model, so a runtime resolved fresh at
@@ -249,7 +270,9 @@ registry is configured.
 The manifest paths are resolved by the generated runtime against the image's
 `WORKDIR /app`. `_container.py`'s `artifacts/<name>` remapping and the Dockerfile's
 `WORKDIR /app` plus `COPY artifacts/ artifacts/` must change together; neither side is
-an independently relocatable contract.
+an independently relocatable contract. A bundled `utility` gets its own `COPY` into
+`/app`, which `uvicorn app:app` puts on `sys.path`, and the preamble compile puts the
+working directory on it too. Spawned batch workers inherit the parent's `sys.path`.
 
 **Generated container HTTP runtime (`_container.py::_generate_app_source`)**
 1. Startup loads `deploy_manifest.json`, reconstructs `PipelineGraph`, and resolves the
@@ -344,7 +367,9 @@ unrepresentable Polars types fail loudly), sets/creates the experiment
 new experiment's missing Databricks workspace folder is created first (see
 [modelling](../modelling/low-level.md)), and inside one
 `mlflow.start_run()` logs `HauteModel` as a `pyfunc` model-from-code with the manifest +
-every bundled artefact attached, a `conda_env` with Python 3.11.11 and Haute exactly
+every bundled artefact attached, the bundled `utility` package as its only MLflow
+`code_paths` entry (MLflow copies it under the model's `code/` directory and puts that on
+`sys.path` when the model loads), a `conda_env` with Python 3.11.11 and Haute exactly
 pinned but `polars>=1.44.2` (Haute's own Polars floor) and optional `catboost>=1.2.8` as lower bounds, and
 `registered_model_name` set to the UC
 three-level name. Fetches the newly registered version, then creates or updates the
@@ -613,6 +638,12 @@ what they cover:
   admission, cancellation, memory and bounded-streaming error mappings; body-limit env
   precedence and streamed-byte enforcement; JSON response truncation/envelope boundaries;
   NDJSON streaming; Dockerfile dependency pins and build-directory cleanup.
+- **`test_deploy_project_modules.py`** — scores a pipeline whose preamble imports
+  `utility` through the built container bundle and through a saved pyfunc model, each in a
+  separate process after the project's `utility` directory is deleted. It also checks that
+  a project module outside `utility`, imported from the preamble or from a `utility` file,
+  is refused at validation naming the module and file, and that a pipeline without
+  project modules bundles none.
 - **`test_container_smoke_script.py`** — covers the container deployment seam (`prepare_build_directory` writing artefacts and handling custom wheel requirements), `build_and_push_image` build-directory cleanup on Docker failure, and the end-to-end `--serve-check` uvicorn subprocess smoke.
 - **`test_deploy_batch_scoring.py`** — the multi-row path end to end: a one-row request
   launching no worker; a two-row request launching exactly one

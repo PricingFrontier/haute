@@ -165,7 +165,12 @@ compatibility facade and route own no duplicate state or worker implementation.
   outputs supply measured row counts and schema even when their original computation
   cannot be analysed statically. Estimating RAM alone never builds missing snapshots
   or runs upstream code; without usable cache evidence, the existing analytical
-  estimate (including its unavailable outcome) applies.
+  estimate (including its unavailable outcome) applies. The estimator returns the
+  unavailable outcome itself. When the target's cardinality cannot be proven, the
+  estimate has no row total. When the cardinality is known but the target's schema
+  cannot be resolved, it keeps the row total and has no memory figure. An exception
+  raised while estimating is not an unavailable estimate. It propagates as an error
+  response and is logged as a failure, never answered with an empty estimate.
   Once the relevant modelling and evaluation fields
   are valid, it also returns a bounded preview of the exact evaluation plan: effective
   development/final-test rows, validation-fit count and row bounds, plus group counts

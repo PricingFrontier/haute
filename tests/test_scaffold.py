@@ -797,6 +797,7 @@ class TestDockerfileStructure:
 
         from haute.deploy._config import DeployConfig, ResolvedDeploy
         from haute.deploy._container import _generate_dockerfile
+        from haute.deploy._project_modules import ProjectModules
         from haute.graph_utils import PipelineGraph
 
         resolved = ResolvedDeploy(
@@ -808,6 +809,7 @@ class TestDockerfileStructure:
             artifacts={},
             input_schema={},
             output_schema={},
+            project_modules=ProjectModules(utility=None, unbundled_imports=()),
         )
         df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
         lines = df.strip().splitlines()

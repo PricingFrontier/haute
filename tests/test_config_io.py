@@ -36,7 +36,7 @@ def _write_node_config_sidecar(
     rel_path = config_path_for_node(node_type, node_name)
     abs_path = base_dir / rel_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
-    filtered = _prepare_config_for_sidecar(node_type, config)
+    filtered = _prepare_config_for_sidecar(node_type, config, node_label=node_name)
     abs_path.write_text(
         json.dumps(filtered, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
@@ -552,7 +552,7 @@ class TestCollectNodeConfigs:
             },
             {
                 "id": "c",
-                "data": {"label": "c", "nodeType": "liveSwitch", "config": {"mode": "live"}},
+                "data": {"label": "c", "nodeType": "liveSwitch", "config": {"inputs": ["a", "b"]}},
             },
             {
                 "id": "d",

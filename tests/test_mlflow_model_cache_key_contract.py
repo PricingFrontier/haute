@@ -144,7 +144,7 @@ class TestFullPathArtifactPerturbation:
             ),
             patch(
                 "haute._mlflow_io._wrap_catboost",
-                side_effect=lambda raw: ScoringModel(
+                side_effect=lambda raw, *, source: ScoringModel(
                     model=raw, feature_names=["x"], flavor="catboost"
                 ),
             ),

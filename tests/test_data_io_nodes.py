@@ -2457,7 +2457,7 @@ class TestSidecarPersistence:
             "arguments": {"separator": ";"},
             "_editorOnly": {"open": True},
         }
-        prepared = _prepare_config_for_sidecar(NodeType.DATA_INPUT, config)
+        prepared = _prepare_config_for_sidecar(NodeType.DATA_INPUT, config, node_label="source")
         assert prepared == {
             "inputType": "file",
             "format": "csv",

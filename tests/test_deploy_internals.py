@@ -4282,6 +4282,7 @@ class TestResolveConfigEdgeCases:
         graph = MagicMock()
         graph.nodes = [source, output]
         graph.edges = []
+        graph.preamble = ""
         return graph
 
     def test_resolve_config_no_source_nodes_raises(self):
@@ -4346,6 +4347,7 @@ class TestResolveConfigEdgeCases:
         source.id = "single_src"
         source.data.nodeType = NodeType.DATA_INPUT
         mock_graph.nodes = [source]
+        mock_graph.preamble = ""
 
         with (
             patch("haute.parser.parse_pipeline_file", return_value=mock_graph),

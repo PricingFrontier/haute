@@ -1820,17 +1820,36 @@ class TestEstimateEndpoint:
         )
         assert resp.status_code == 404
 
-    def test_estimate_exception_returns_empty(self, client, training_data):
-        """If the RAM estimate fails entirely, return an empty estimate (not 500)."""
+    def test_estimate_failure_is_an_error_not_an_empty_estimate(self, client, training_data):
+        """An estimator exception is a failure the user sees, never the empty
+        estimate that stands for a size the estimator cannot prove."""
         graph = _make_modelling_graph(training_data)
         with patch(
             "haute._ram_estimate.estimate_safe_training_rows",
             side_effect=RuntimeError("probe failed"),
         ):
             resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+        assert resp.status_code == 500
+
+    def test_estimate_the_estimator_cannot_prove_is_returned_without_a_total(
+        self, client, training_data
+    ):
+        from haute._ram_estimate import RamEstimate
+
+        graph = _make_modelling_graph(training_data)
+        unavailable = RamEstimate(
+            safe_row_limit=None,
+            total_rows=None,
+            estimated_bytes=0,
+            available_bytes=8 * 1024**3,
+            bytes_per_row=0,
+            was_downsampled=False,
+            warning=None,
+        )
+        with patch("haute._ram_estimate.estimate_safe_training_rows", return_value=unavailable):
+            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
         assert resp.status_code == 200
-        data = resp.json()
-        assert data.get("total_rows") is None
+        assert resp.json()["total_rows"] is None
 
     def test_estimate_suppresses_ram_warning_when_user_limit_binds(self, client, training_data):
         """When user's row_limit is lower than the RAM-safe limit, suppress the RAM warning."""

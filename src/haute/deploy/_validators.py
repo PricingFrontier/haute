@@ -343,6 +343,10 @@ def validate_deploy(resolved: ResolvedDeploy) -> list[TestQuoteResult]:
     if not resolved.output_schema:
         errors.append("Output schema is empty - dry-run produced no output columns.")
 
+    # Project-local imports the bundle does not carry would fail on import in
+    # the served bundle, although they resolve from the project here.
+    errors.extend(resolved.project_modules.unbundled_imports)
+
     output_fields = resolved.config.output_fields
     if output_fields is not None and (
         not output_fields

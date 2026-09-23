@@ -59,7 +59,7 @@ def catboost_scoring_model() -> Any:
     pytest.importorskip("catboost", reason="catboost optional dependency not installed")
     from haute._mlflow_io import _wrap_catboost
 
-    return _wrap_catboost(_train_catboost_with_categorical_feature())
+    return _wrap_catboost(_train_catboost_with_categorical_feature(), source="test model")
 
 
 def test_catboost_shap_contributions_sum_to_prediction(catboost_scoring_model: Any) -> None:
@@ -183,7 +183,7 @@ def test_catboost_classifier_shap_labels_raw_formula_output_space() -> None:
             cat_features=[1],
         )
     )
-    scoring_model = _wrap_catboost(model)
+    scoring_model = _wrap_catboost(model, source="test model")
 
     explanation = explain_catboost_prediction(
         scoring_model,
@@ -269,7 +269,7 @@ def test_catboost_link_loss_shap_reconciles_in_raw_formula_space(loss_function: 
     from haute._model_explainability import explain_catboost_prediction
 
     model = _train_catboost_link_loss_model(loss_function)
-    scoring_model = _wrap_catboost(model)
+    scoring_model = _wrap_catboost(model, source="test model")
     row = {"age": 43.0, "region": "south"}
     response_prediction, raw_prediction = _catboost_one_row_predictions(model, row)
     # Sanity: the two spaces genuinely differ for link losses (exp(x) - x >= 1).
@@ -307,7 +307,7 @@ def test_catboost_poisson_without_traced_value_reports_response_prediction() -> 
     from haute._model_explainability import explain_catboost_prediction
 
     model = _train_catboost_link_loss_model("Poisson")
-    scoring_model = _wrap_catboost(model)
+    scoring_model = _wrap_catboost(model, source="test model")
     row = {"age": 61.0, "region": "west"}
     response_prediction, raw_prediction = _catboost_one_row_predictions(model, row)
 
@@ -334,7 +334,7 @@ def test_catboost_poisson_rejects_raw_space_traced_prediction() -> None:
     )
 
     model = _train_catboost_link_loss_model("Poisson")
-    scoring_model = _wrap_catboost(model)
+    scoring_model = _wrap_catboost(model, source="test model")
     row = {"age": 43.0, "region": "south"}
     _, raw_prediction = _catboost_one_row_predictions(model, row)
 

@@ -689,10 +689,10 @@ column_name_strategy = st.one_of(
 
 class TestConfigRoundtrip:
     @given(
-        # Bundle 2.α — keys must be in the per-node-type allowlist or in
-        # _UNIVERSAL_KEYS to survive `_prepare_config_for_sidecar`.
-        # Using universal keys ensures the property holds across any
-        # node_type. The keys below all appear in _UNIVERSAL_KEYS:
+        # Keys must be declared for the node type or in _UNIVERSAL_KEYS:
+        # `_prepare_config_for_sidecar` refuses any other key (see the
+        # undeclared-key property below). The keys below all appear in
+        # _UNIVERSAL_KEYS, so the property holds across any node_type.
         # User dictionary keys are opaque data, including names that look
         # like editor metadata. Generate those names explicitly.
         config=st.fixed_dictionaries(
@@ -721,12 +721,10 @@ class TestConfigRoundtrip:
     )
     @settings(max_examples=80)
     def test_config_roundtrip_preserves_data(self, config, tmp_path_factory):
-        """load(save(config)) == config for allowlisted config keys.
+        """load(save(config)) == config for every declared config key.
 
-        Bundle 2.α restricted the roundtrip contract: keys outside
-        `VALID_KEYS[node_type]` are dropped at write time. The
-        roundtrip property now applies only to allowlisted keys
-        (TypedDict-declared keys + `_UNIVERSAL_KEYS`).
+        A key outside `VALID_KEYS[node_type]` never reaches the round
+        trip: the write refuses it rather than dropping it.
         """
         from haute._config_io import (
             _prepare_config_for_sidecar,
@@ -743,7 +741,7 @@ class TestConfigRoundtrip:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(
-                _prepare_config_for_sidecar(NodeType.OUTPUT, config),
+                _prepare_config_for_sidecar(NodeType.OUTPUT, config, node_label="test_node"),
                 indent=2,
                 ensure_ascii=False,
             )
@@ -754,6 +752,25 @@ class TestConfigRoundtrip:
         for k, v in config.items():
             assert k in loaded, f"Key {k!r} missing after roundtrip"
             assert loaded[k] == v, f"Value mismatch for {k}: {v!r} vs {loaded[k]!r}"
+
+    @given(
+        key=st.text(alphabet=string.ascii_letters + string.digits, min_size=1, max_size=20),
+        value=st.one_of(st.integers(), st.text(max_size=10), st.booleans()),
+    )
+    @settings(max_examples=80)
+    def test_an_undeclared_key_is_refused_at_write(self, key, value):
+        """No write drops a key: an undeclared one fails the write, naming it."""
+        from haute._config_io import _prepare_config_for_sidecar
+        from haute._config_validation import CODE_CONFIG_KEYS, VALID_KEYS
+        from haute.errors import ConfigError
+        from haute.graph_utils import NodeType
+
+        assume(key not in VALID_KEYS[NodeType.OUTPUT] and key not in CODE_CONFIG_KEYS)
+        config = {**make_output_config(["premium"]), key: value}
+
+        with pytest.raises(ConfigError) as refused:
+            _prepare_config_for_sidecar(NodeType.OUTPUT, config, node_label="test_node")
+        assert refused.value.context["unrecognized_config_keys"] == [key]
 
 
 # ---------------------------------------------------------------------------

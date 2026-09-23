@@ -145,7 +145,7 @@ def test_frontier_lambda_rejects_conflicting_value() -> None:
     )
 
 
-def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_path: Path):
+def _estimate_graph(tmp_path: Path):
     from haute._sandbox import set_project_root
     from tests.conftest import make_edge, make_graph, make_ready_file_input_config
 
@@ -160,7 +160,7 @@ def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_p
             "volume": [1.0, 0.9, 1.2, 1.1],
         }
     ).write_parquet(data_path)
-    graph = make_graph(
+    return make_graph(
         {
             "nodes": [
                 {
@@ -191,12 +191,32 @@ def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_p
         }
     )
 
-    with (
-        patch(
-            "haute._ram_estimate._detailed_ancestor_source_metadata",
-            side_effect=RuntimeError("metadata unavailable"),
-        ),
-        patch("haute.routes.optimiser.logger.warning") as log_warning,
+
+def test_estimate_metadata_failure_is_an_error(client, tmp_path: Path):
+    """An unexpected metadata failure is reported, never an estimate whose
+    missing total looks like a source of unknown size."""
+    graph = _estimate_graph(tmp_path)
+
+    with patch(
+        "haute._ram_estimate._detailed_ancestor_source_metadata",
+        side_effect=RuntimeError("metadata resolver defect"),
+    ):
+        resp = client.post(
+            "/api/optimiser/estimate",
+            json={"graph": graph.model_dump(), "node_id": "opt"},
+        )
+
+    assert resp.status_code == 500
+
+
+def test_estimate_of_an_unknown_source_size_keeps_the_input_metrics(client, tmp_path: Path):
+    from haute._ram_estimate import _AncestorSourceMetadata
+
+    graph = _estimate_graph(tmp_path)
+
+    with patch(
+        "haute._ram_estimate._detailed_ancestor_source_metadata",
+        return_value=_AncestorSourceMetadata(row_count=None, column_count=0, sources=()),
     ):
         resp = client.post(
             "/api/optimiser/estimate",
@@ -212,10 +232,6 @@ def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_p
         "scenarios_per_quote_mean": 2.0,
         "expanded_row_count": 4,
     }
-    assert log_warning.call_count == 1
-    assert log_warning.call_args_list[0].args == ("optimiser_estimate_failed",)
-    assert log_warning.call_args_list[0].kwargs["error"] == "metadata unavailable"
-    assert log_warning.call_args_list[0].kwargs["node_id"] == "opt"
 
 
 def test_apply_rejects_non_mapping_artifact_handles(client, clean_job_store):

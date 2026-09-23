@@ -8,7 +8,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from haute._config_validation import VALID_KEYS, warn_unrecognized_config_keys
+from haute._config_validation import VALID_KEYS, unrecognized_config_keys
 from haute._edge_join import (
     build_edge_join_kwargs,
     edge_join_config_to_decorator_kwargs,
@@ -129,7 +129,7 @@ def test_edge_join_config_keys_are_registered() -> None:
     assert "baseInput" not in VALID_KEYS[NodeType.EDGE_JOIN]
     assert "joinInput" not in VALID_KEYS[NodeType.EDGE_JOIN]
     assert (
-        warn_unrecognized_config_keys(
+        unrecognized_config_keys(
             NodeType.EDGE_JOIN,
             {
                 "how": "left",

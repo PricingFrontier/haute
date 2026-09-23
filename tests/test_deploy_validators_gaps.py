@@ -22,6 +22,7 @@ from unittest.mock import patch
 import pytest
 
 from haute.deploy._config import DeployConfig, ResolvedDeploy
+from haute.deploy._project_modules import ProjectModules
 from haute.errors import DeployError
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 
@@ -71,6 +72,7 @@ def _make_resolved(
         artifacts=artifacts or {},
         input_schema=input_schema or {"col": "Int64"},
         output_schema=output_schema or {"result": "Float64"},
+        project_modules=ProjectModules(utility=None, unbundled_imports=()),
     )
 
 

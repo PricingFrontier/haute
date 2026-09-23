@@ -375,6 +375,87 @@ class TestValidateOptimiserInputSelectors:
         assert not (tmp_path / "pipeline.py").exists()
 
 
+class TestValidateDeclaredConfigKeys:
+    def test_validate_graph_rejects_an_undeclared_key_before_writing(self, tmp_path: Path) -> None:
+        """A key the node type does not declare would be lost on save, so the
+        save is refused and names the node and the key instead."""
+        graph = _make_graph(
+            _make_node(
+                "out",
+                "quote_response",
+                "output",
+                {**make_output_config(["premium"]), "legacyFlag": True},
+            ),
+        )
+        service = SavePipelineService(tmp_path)
+
+        with pytest.raises(HTTPException) as exc_info:
+            service.validate_graph(graph, source_file="pipeline.py")
+
+        assert exc_info.value.status_code == 400
+        assert "quote_response" in exc_info.value.detail
+        assert "legacyFlag" in exc_info.value.detail
+
+    def test_a_refused_save_leaves_every_existing_file_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "main.py").write_text(
+            'import haute\npipeline = haute.Pipeline("main")\n', encoding="utf-8"
+        )
+
+        def save(config: dict) -> None:
+            SavePipelineService(tmp_path).save(
+                SavePipelineRequest(
+                    name="main",
+                    description="",
+                    graph=_make_graph(_make_node("out", "quote_response", "output", config)),
+                    preamble="",
+                    source_file="main.py",
+                    base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
+                )
+            )
+
+        save(make_output_config(["premium"]))
+        before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+        from haute._config_io import config_path_for_node
+        from haute._types import NodeType
+
+        assert tmp_path / config_path_for_node(NodeType.OUTPUT, "quote_response") in before
+
+        with pytest.raises(HTTPException) as exc_info:
+            save({**make_output_config(["premium"]), "legacyFlag": True})
+
+        assert exc_info.value.status_code == 400
+        assert "legacyFlag" in exc_info.value.detail
+        after = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+        assert after == before
+
+    def test_an_undeclared_key_inside_a_submodel_is_rejected(self, tmp_path: Path) -> None:
+        graph = _make_submodel_graph(
+            _make_node("child", "child_transform", "polars", {"code": "df = df", "stale": 1}),
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService(tmp_path).validate_graph(graph, source_file="main.py")
+
+        assert exc_info.value.status_code == 400
+        assert "child_transform" in exc_info.value.detail
+        assert "stale" in exc_info.value.detail
+
+    def test_editor_state_keys_do_not_block_a_save(self, tmp_path: Path) -> None:
+        graph = _make_graph(
+            _make_node(
+                "out",
+                "quote_response",
+                "output",
+                {**make_output_config(["premium"]), "_columns": ["premium"]},
+            ),
+        )
+
+        SavePipelineService._validate_declared_config_keys(graph)
+
+
 class TestValidateUniqueSanitizedNamesRecursiveScope:
     """Global (root + submodel) scope for the save-side name guard.
 
@@ -874,7 +955,7 @@ class TestWriteConfigFiles:
         graph = _make_graph(
             _make_node("src", "source", "dataInput", {"path": "data.parquet"}),
         )
-        child = _make_node("banding", "child_banding", "banding", {"bands": []})
+        child = _make_node("banding", "child_banding", "banding", {"factors": []})
         graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
         svc._write_config_files(graph)
@@ -885,7 +966,7 @@ class TestWriteConfigFiles:
     def test_writes_config_files_from_submodel_graph(self, tmp_path: Path) -> None:
         """Config collection includes canonical definition graphs."""
         svc = SavePipelineService(tmp_path)
-        deep_child = _make_node("deep", "deep_banding", "banding", {"bands": []})
+        deep_child = _make_node("deep", "deep_banding", "banding", {"factors": []})
         graph = _make_graph()
         graph.submodels = {"inner": _submodel_definition("inner", deep_child)}
 
@@ -951,7 +1032,7 @@ class TestWriteConfigFiles:
         """Submodel child configs are owned and stale-cleaned like parent configs."""
         svc = SavePipelineService(tmp_path)
         graph_with_child = _make_graph()
-        child = _make_node("banding", "child_banding", "banding", {"bands": []})
+        child = _make_node("banding", "child_banding", "banding", {"factors": []})
         graph_with_child.submodels = {"pricing": _submodel_definition("pricing", child)}
         graph_without_child = _make_graph()
         graph_without_child.submodels = {"pricing": _submodel_definition("pricing")}
@@ -971,7 +1052,7 @@ class TestWriteConfigFiles:
         svc = SavePipelineService(tmp_path)
         py_path = tmp_path / "pipeline.py"
         py_path.write_text("# parsed by patched helper\n")
-        child = _make_node("banding", "child_banding", "banding", {"bands": []})
+        child = _make_node("banding", "child_banding", "banding", {"factors": []})
         disk_graph = _make_graph()
         disk_graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
@@ -1061,7 +1142,7 @@ class TestRemoveStaleConfigFiles:
         svc = SavePipelineService(tmp_path)
 
         graph = _make_graph(
-            _make_node("b1", "my_banding", "banding", {"bands": []}),
+            _make_node("b1", "my_banding", "banding", {"factors": []}),
         )
         svc._write_config_files(graph)  # Writes config/banding/my_banding.json
 
@@ -1114,7 +1195,7 @@ class TestRemoveStaleConfigFiles:
 
         # Active node → fresh config (written by _write_config_files).
         graph = _make_graph(
-            _make_node("b1", "current_banding", "banding", {"bands": []}),
+            _make_node("b1", "current_banding", "banding", {"factors": []}),
         )
         svc._write_config_files(graph)
 
@@ -1629,7 +1710,7 @@ class TestRemoveStaleConfigDiffPath:
 
         # First save: graph with banding node.
         graph1 = _make_graph(
-            _make_node("b1", "first_banding", "banding", {"bands": []}),
+            _make_node("b1", "first_banding", "banding", {"factors": []}),
         )
         svc._write_config_files(graph1)
         first_config = tmp_path / "config" / "banding" / "first_banding.json"
@@ -1638,7 +1719,7 @@ class TestRemoveStaleConfigDiffPath:
         # Second save: graph with different banding node.  Simulate the
         # disk snapshot: prev = what the first save wrote (first_banding).
         graph2 = _make_graph(
-            _make_node("b2", "second_banding", "banding", {"bands": []}),
+            _make_node("b2", "second_banding", "banding", {"factors": []}),
         )
         svc._prev_config_files = {"config/banding/first_banding.json": "{}"}
         svc._write_config_files(graph2)
@@ -1653,7 +1734,7 @@ class TestRemoveStaleConfigDiffPath:
         svc = SavePipelineService(tmp_path)
 
         graph = _make_graph(
-            _make_node("b1", "stable_banding", "banding", {"bands": []}),
+            _make_node("b1", "stable_banding", "banding", {"factors": []}),
         )
         svc._write_config_files(graph)
         svc._remove_stale_config_files(graph)

@@ -581,6 +581,7 @@ class SavePipelineService:
         self._validate_singletons(flattened)
         self._validate_edge_join_configs(flattened)
         self._validate_optimiser_input_selectors(flattened)
+        self._validate_declared_config_keys(graph)
         self._validate_strict_node_configs(graph)
         self._validate_unique_sanitized_names(graph)
         self._validate_no_load_errors(graph)
@@ -832,6 +833,23 @@ class SavePipelineService:
                             f"node {node.data.label!r}: {exc}"
                         ),
                     ) from exc
+
+    @staticmethod
+    def _validate_declared_config_keys(graph: PipelineGraph) -> None:
+        """Refuse a config key its node type does not declare, which a write would lose."""
+        from haute._config_validation import reject_unrecognized_config_keys
+
+        graphs = [graph, *SavePipelineService._iter_embedded_submodel_graphs(graph)]
+        for scoped_graph in graphs:
+            for node in scoped_graph.nodes:
+                try:
+                    reject_unrecognized_config_keys(
+                        node.data.nodeType, node.data.config, node_label=node.data.label
+                    )
+                except ConfigError as exc:
+                    raise HTTPException(
+                        status_code=400, detail=f"{exc.message} Nothing was saved."
+                    ) from None
 
     @staticmethod
     def _validate_unique_sanitized_names(graph: PipelineGraph) -> None:

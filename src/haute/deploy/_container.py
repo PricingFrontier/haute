@@ -15,6 +15,7 @@ from pathlib import Path
 from haute._logging import get_logger
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._mlflow import DeployResult
+from haute.deploy._project_modules import UTILITY_PACKAGE
 from haute.deploy._request_limits import (
     DEFAULT_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES,
 )
@@ -73,8 +74,9 @@ def prepare_build_directory(
         1. Create build directory and artifacts subdirectory
         2. Build deployment manifest JSON
         3. Copy artifacts into build directory
-        4. Generate FastAPI app source
-        5. Generate Dockerfile (and copy wheel if haute_requirement is a wheel path)
+        4. Copy the bundled utility package, if any, beside app.py
+        5. Generate FastAPI app source
+        6. Generate Dockerfile (and copy wheel if haute_requirement is a wheel path)
 
     Args:
         resolved: Fully resolved deployment config (from ``resolve_config()``).
@@ -128,6 +130,21 @@ def prepare_build_directory(
     for artifact_name, artifact_path in resolved.artifacts.items():
         dest = artifacts_dir / artifact_name
         shutil.copy2(artifact_path, dest)
+
+    # A reused build directory must not keep an earlier build's utility code:
+    # a stale package would shadow the module this build validated.
+    if (build_dir / UTILITY_PACKAGE).is_dir():
+        shutil.rmtree(build_dir / UTILITY_PACKAGE)
+    (build_dir / f"{UTILITY_PACKAGE}.py").unlink(missing_ok=True)
+    utility = resolved.project_modules.utility
+    if utility is not None and utility.is_dir():
+        shutil.copytree(
+            utility,
+            build_dir / UTILITY_PACKAGE,
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
+    elif utility is not None:
+        shutil.copy2(utility, build_dir / f"{UTILITY_PACKAGE}.py")
 
     app_source = _generate_app_source(config.model_name, ct.port)
     (build_dir / "app.py").write_text(app_source, encoding="utf-8")
@@ -858,6 +875,13 @@ def _generate_dockerfile(
     """Generate a Dockerfile for the scoring container."""
     deps_line = " ".join(_pinned_dockerfile_deps(resolved, haute_requirement=haute_pip_dep))
     copy_wheel = f"COPY {wheel_name} .\n" if wheel_name else ""
+    utility = resolved.project_modules.utility
+    if utility is None:
+        copy_utility = ""
+    elif utility.is_dir():
+        copy_utility = f"COPY {UTILITY_PACKAGE}/ {UTILITY_PACKAGE}/\n"
+    else:
+        copy_utility = f"COPY {UTILITY_PACKAGE}.py .\n"
 
     return f"""\
 FROM {base_image}
@@ -875,7 +899,7 @@ ENV HAUTE_EXECUTION_MEMORY_POLICY=strict_server
 COPY deploy_manifest.json .
 COPY app.py .
 COPY artifacts/ artifacts/
-
+{copy_utility}
 EXPOSE {port}
 
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "{port}"]

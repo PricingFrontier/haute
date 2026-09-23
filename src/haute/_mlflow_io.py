@@ -547,14 +547,12 @@ def _catboost_offset_column(model: Any) -> str | None:
     ``CatBoostAlgorithm.fit`` records the offset column name under
     ``CATBOOST_OFFSET_METADATA_KEY`` because the .cbm format has no native
     baseline memory — without this, a served model would silently score
-    from baseline 0.
+    from baseline 0. Only an absent key means "no offset", so a failed
+    metadata read propagates.
     """
     from haute.modelling._algorithms import CATBOOST_OFFSET_METADATA_KEY
 
-    try:
-        value = model.get_metadata().get(CATBOOST_OFFSET_METADATA_KEY)
-    except Exception:
-        return None
+    value = model.get_metadata().get(CATBOOST_OFFSET_METADATA_KEY)
     # Strict str gate: metadata proxies (and mocked models in tests) can
     # return non-string truthy objects for absent keys.
     return value if isinstance(value, str) and value else None
@@ -573,10 +571,7 @@ def _catboost_offset_link(model: Any) -> str | None:
     column = _catboost_offset_column(model)
     if column is None:
         return None
-    try:
-        value = model.get_metadata().get(CATBOOST_OFFSET_LINK_METADATA_KEY)
-    except Exception:
-        value = None
+    value = model.get_metadata().get(CATBOOST_OFFSET_LINK_METADATA_KEY)
     if not isinstance(value, str) or value not in OFFSET_LINKS:
         raise ConfigError(
             f"This CatBoost model records offset column {column!r} but not how the offset "
@@ -606,8 +601,26 @@ def rustystats_offset_link(model: Any) -> str | None:
     return None
 
 
-def _wrap_catboost(model: CatBoostRegressor | CatBoostClassifier) -> ScoringModel:
-    """Wrap a raw CatBoost model in a ``ScoringModel``."""
+def _wrap_catboost(model: CatBoostRegressor | CatBoostClassifier, *, source: str) -> ScoringModel:
+    """Wrap a raw CatBoost model in a ``ScoringModel``.
+
+    *source* names the model (its file, or its run artifact) in the refusal
+    raised when its metadata cannot be read.
+
+    Raises:
+        ConfigError: the model's metadata cannot be read, so whether it was
+            trained with an offset is unknown.
+    """
+    from haute.errors import ConfigError
+
+    try:
+        model.get_metadata()
+    except Exception as exc:
+        raise ConfigError(
+            f"The metadata of CatBoost model {source} cannot be read "
+            f"({type(exc).__name__}: {exc}), so Haute cannot tell whether it was "
+            "trained with an offset and will not score it."
+        ) from exc
     feature_names = list(model.feature_names_)
     cat_idx = (
         set(model.get_cat_feature_indices()) if hasattr(model, "get_cat_feature_indices") else set()
@@ -668,7 +681,7 @@ def load_local_model(path: str, task: str = "regression") -> ScoringModel:
     """
     if path.endswith(".cbm"):
         raw = _load_catboost_model(path, task)
-        return _wrap_catboost(raw)
+        return _wrap_catboost(raw, source=repr(path))
     if path.endswith(".rsglm"):
         return _load_rustystats_model(path)
     raise NotImplementedError(
@@ -1120,7 +1133,7 @@ def _load_with_bounded_retry(
             local_path = _resolve_artifact_local(mlflow_mod, backend, run_id, artifact)
             if flavor == "catboost":
                 raw = _load_catboost_model(local_path, task)
-                return _wrap_catboost(raw)
+                return _wrap_catboost(raw, source=f"run {run_id!r}, artifact {artifact!r}")
             return _load_rustystats_model(local_path)
         except (AttributeError, TypeError, KeyError, ConfigError):
             # Programmer error — a missing attribute, wrong type, or
