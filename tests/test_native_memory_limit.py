@@ -204,7 +204,7 @@ def test_windows_lease_programs_an_aggregate_job_memory_limit(
         return True
 
     kernel32 = SimpleNamespace(SetInformationJobObject=set_information)
-    monkeypatch.setattr(native, "_windows_apis", lambda: (kernel32, SimpleNamespace()))
+    monkeypatch.setattr(native, "_windows_apis", lambda: kernel32)
     lease = native.NativeMemoryLease(_job=123)
 
     lease._set_windows_limit(456)
@@ -540,7 +540,7 @@ def test_native_linux_path_and_measurement_failures(
     monkeypatch.setattr(native.Path, "read_text", lambda *_args, **_kwargs: "missing")
     with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="cannot locate"):
         native._current_cgroup_path()
-    monkeypatch.setattr(native.Path, "read_text", lambda *_args, **_kwargs: "not-a-number")
+    monkeypatch.setattr(native, "current_process_virtual_bytes", lambda: None)
     with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="cannot measure"):
         native._linux_virtual_bytes()
 
@@ -562,7 +562,7 @@ def test_native_lease_errors_restore_close_and_windows_helpers(
     closed: list[object] = []
     kernel = SimpleNamespace(CloseHandle=lambda handle: closed.append(handle) or True)
     lease = native.NativeMemoryLease(_job=99)
-    monkeypatch.setattr(native, "_windows_apis", lambda: (kernel, None))
+    monkeypatch.setattr(native, "_windows_apis", lambda: kernel)
     lease.close()
     assert closed == [99]
     create_windows_job = native._create_windows_job
@@ -579,7 +579,7 @@ def test_native_lease_errors_restore_close_and_windows_helpers(
     assert lease.backend == "windows_job" and limits == [13]
     monkeypatch.setattr(native, "_create_windows_job", create_windows_job)
     monkeypatch.setattr(
-        native, "_windows_apis", lambda: (SimpleNamespace(CreateJobObjectW=lambda *_: 0), None)
+        native, "_windows_apis", lambda: SimpleNamespace(CreateJobObjectW=lambda *_: 0)
     )
     with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="CreateJobObject"):
         native._create_windows_job()
@@ -627,7 +627,7 @@ def test_native_platform_adapter_error_paths(
         native._current_cgroup_path()
 
     kernel = SimpleNamespace(CloseHandle=lambda _handle: False)
-    monkeypatch.setattr(native, "_windows_apis", lambda: (kernel, None))
+    monkeypatch.setattr(native, "_windows_apis", lambda: kernel)
     monkeypatch.setattr(native, "_windows_error", lambda: OSError("close"))
     with pytest.raises(OSError, match="close"):
         native.NativeMemoryLease(_job=1).close()
@@ -664,16 +664,12 @@ def test_native_cgroup_creation_and_adapter_failure_paths(
         parent, parent / "not-private", pid=native.os.getpid()
     )
 
-    monkeypatch.setattr(native.os, "sysconf", None, raising=False)
-    monkeypatch.setattr(native.Path, "read_text", lambda *_args, **_kwargs: "1 0")
+    monkeypatch.setattr(native, "current_process_virtual_bytes", lambda: None)
     with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="cannot measure"):
         native._linux_virtual_bytes()
 
-    kernel = SimpleNamespace(GetCurrentProcess=lambda: 1)
-    psapi = SimpleNamespace(GetProcessMemoryInfo=lambda *_args: False)
-    monkeypatch.setattr(native, "_windows_apis", lambda: (kernel, psapi))
-    monkeypatch.setattr(native, "_windows_error", lambda: OSError("memory"))
-    with pytest.raises(OSError, match="memory"):
+    monkeypatch.setattr(native, "current_process_private_bytes", lambda: None)
+    with pytest.raises(native.NativeMemoryLimitUnsupportedError, match="cannot measure"):
         native._windows_private_usage()
 
 
@@ -692,15 +688,7 @@ def test_native_linux_measurement_and_cleanup_defensive_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original_read_text = Path.read_text
-
-    def read_statm(path: Path, **kwargs: object) -> str:
-        if path == Path("/proc/self/statm"):
-            return "2 0"
-        return original_read_text(path, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", read_statm)
-    monkeypatch.setattr(native.os, "sysconf", lambda _name: 4096, raising=False)
+    monkeypatch.setattr(native, "current_process_virtual_bytes", lambda: 8192)
     assert native._linux_virtual_bytes() == 8192
 
     group = tmp_path / "group"
@@ -816,23 +804,13 @@ def test_windows_limit_programming_and_usage_error_helpers(
     monkeypatch.setattr(
         native,
         "_windows_apis",
-        lambda: (SimpleNamespace(SetInformationJobObject=lambda *_args: False), None),
+        lambda: SimpleNamespace(SetInformationJobObject=lambda *_args: False),
     )
     monkeypatch.setattr(native, "_windows_error", lambda: OSError("set failed"))
     with pytest.raises(OSError, match="set failed"):
         lease._set_windows_limit(10)
 
-    def get_process_memory_info(_process: object, pointer: object, _size: int) -> bool:
-        counters = native.ctypes.cast(
-            pointer,
-            native.ctypes.POINTER(native._PROCESS_MEMORY_COUNTERS_EX),
-        ).contents
-        counters.PrivateUsage = 321
-        return True
-
-    kernel = SimpleNamespace(GetCurrentProcess=lambda: 1)
-    psapi = SimpleNamespace(GetProcessMemoryInfo=get_process_memory_info)
-    monkeypatch.setattr(native, "_windows_apis", lambda: (kernel, psapi))
+    monkeypatch.setattr(native, "current_process_private_bytes", lambda: 321)
     assert native._windows_private_usage() == 321
 
     monkeypatch.setattr(native, "_windows_error", windows_error)

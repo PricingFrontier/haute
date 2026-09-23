@@ -78,6 +78,9 @@ dependencies = [
     "anthropic>=0.40",
     "openai>=1.55",
     "tomlkit>=0.15.1",
+    # One reader for process and host memory on every platform: resident, private and
+    # virtual bytes for worker caps and supervision, and host available RAM.
+    "psutil>=7.0,<8",
 ]
 
 [project.urls]
@@ -110,6 +113,7 @@ dev = [
     "mkdocs-material==9.7.7",
     "haute[databricks]",
     "hypothesis==6.151.9",
+    "types-psutil==7.2.2.20260906",
 ]
 
 [project.scripts]

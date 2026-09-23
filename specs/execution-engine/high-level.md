@@ -52,9 +52,9 @@ running heavy work in a child process the parent can kill on timeout or memory l
   process with an optional address-space cap, timeout, and cooperative-stop support.
 - Metadata-based RAM pre-estimation for training (`_ram_estimate.py`) so a training run
   can downsample before it starts rather than OOM mid-fit.
-- Host memory observation (`_host_memory.py`): available-RAM discovery on
-  Linux (`/proc/meminfo`), macOS (Mach VM counters), and Windows
-  (`GlobalMemoryStatusEx`), plus GPU VRAM detection. On Linux the host's
+- Host memory observation (`_host_memory.py`): available RAM read through
+  psutil on every platform, plus GPU VRAM detection; process memory and
+  liveness are read through psutil by `_process_memory.py`. On Linux the host's
   reported availability is clamped to observable container headroom: cgroup
   v2 `memory.max - memory.current`, falling back to the v1 limit/usage pair
   when v2 is absent. An unlimited cgroup leaves the host value unchanged;

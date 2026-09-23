@@ -21,7 +21,6 @@ the static estimate admits only what no cap bounds.
 |---|---|---:|---|
 | EXEC-R03 | Planned | P3 | The chunked map-reduce planner and runner are removed with their only consumer. |
 | EXEC-R05 | Planned | P2 | One graph walker builds every execution; eager, preview, trace and scoring differ only in their collect policy. |
-| EXEC-R06 | Planned | P3 | Process and host memory are read by one module. |
 | EXEC-R07 | Planned | P3 | `ExecutionContext` is split into cancellation, admission, and evidence parts. |
 | EXEC-R08 | Planned | P3 | Graph traversal has one implementation. |
 
@@ -30,7 +29,7 @@ the static estimate admits only what no cap bounds.
 `EXEC-R03` follows the optimiser's `OPT-P15` if that package removes the
 runner's only consumer. The walker in `EXEC-R05` keeps projection planning, which
 the memory-safety decision retains for uncapped surfaces.
-`EXEC-R06`–`EXEC-R08` are independent and can be taken whenever their files
+`EXEC-R07` and `EXEC-R08` are independent and can be taken whenever their files
 are next open.
 
 ### EXEC-R03 — Retire the chunked map-reduce runner
@@ -101,30 +100,6 @@ policy over the walker.
 `src/haute/trace.py::_execute_trace_core`;
 `src/haute/deploy/_scorer.py::_score_graph_lazy`;
 `src/haute/pipeline.py::Pipeline`; `docs/COMMIT_STANDARDS.md`.
-
-### EXEC-R06 — One process-memory probe
-**Why:** Process RSS is read four times, each with its own Windows `ctypes`
-`PROCESS_MEMORY_COUNTERS` structure and its own `/proc` parsing:
-in the execution context, the process-memory module (a 22-line clone of the
-context's version), the native memory-limit module and the CatBoost
-algorithm wrapper. Host availability adds a further 743-line module.
-
-**Plan:** Keep one module that reads current-process RSS, another process's
-RSS and host availability, and import it everywhere. Evaluate `psutil` as
-that module's implementation; if it is adopted, it becomes a declared
-dependency and the `ctypes` bindings go.
-
-**Acceptance:** Exactly one definition of a Windows memory-counter structure
-remains, or none if `psutil` is adopted; every caller imports the shared
-probe; the existing RSS and admission tests pass.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_execution_context.py::_WindowsProcessMemoryCountersEx`;
-`src/haute/_process_memory.py::process_rss_bytes`;
-`src/haute/_native_memory_limit.py::_PROCESS_MEMORY_COUNTERS_EX`;
-`src/haute/modelling/_algorithms.py::_get_rss_mb`;
-`src/haute/_host_memory.py`.
 
 ### EXEC-R07 — Split `ExecutionContext`
 **Why:** `ExecutionContext` is a 1,011-line class that combines the

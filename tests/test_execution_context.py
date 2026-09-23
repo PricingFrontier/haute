@@ -1,5 +1,4 @@
 import asyncio
-import ctypes
 import json
 import threading
 import time
@@ -98,155 +97,21 @@ def test_remaining_memory_bytes_preserves_memory_sampler_failures() -> None:
         over_budget.remaining_memory_bytes()
 
 
-def test_windows_current_rss_bytes_returns_none_when_windll_is_unavailable(
+def test_current_rss_bytes_is_a_real_positive_int() -> None:
+    from haute._execution_context import current_rss_bytes
+
+    rss = current_rss_bytes()
+    assert isinstance(rss, int)
+    assert rss > 0
+
+
+def test_current_rss_bytes_is_none_when_the_probe_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from haute import _execution_context as context_mod
 
-    monkeypatch.setattr(context_mod.os, "name", "nt")
-    monkeypatch.delattr(context_mod.ctypes, "WinDLL", raising=False)
-
-    assert context_mod._windows_current_rss_bytes() is None
-
-
-class _FakeWindowsFunction:
-    def __init__(self, result: int | bool = True, callback=None) -> None:
-        self.result = result
-        self.callback = callback
-        self.calls = 0
-
-    def __call__(self, *args):
-        self.calls += 1
-        if self.callback is not None:
-            return self.callback(*args)
-        return self.result
-
-
-class _FakeWindowsApiFactory:
-    def __init__(
-        self,
-        counters_type: type[ctypes.Structure],
-        *,
-        working_set_size: int = 1234,
-        memory_info_result: bool = True,
-    ) -> None:
-        self.working_set_size = working_set_size
-        self.calls: list[tuple[str, bool]] = []
-        self.get_current_process = _FakeWindowsFunction(99)
-
-        def populate_counters(handle, counters, size):
-            assert handle == 99
-            assert size > 0
-            ctypes.cast(
-                counters, ctypes.POINTER(counters_type)
-            ).contents.WorkingSetSize = self.working_set_size
-            return memory_info_result
-
-        self.get_process_memory_info = _FakeWindowsFunction(
-            memory_info_result, callback=populate_counters
-        )
-
-    def __call__(self, name: str, *, use_last_error: bool):
-        self.calls.append((name, use_last_error))
-        if name == "kernel32.dll":
-            return type("Kernel32", (), {"GetCurrentProcess": self.get_current_process})()
-        if name == "psapi.dll":
-            return type("Psapi", (), {"GetProcessMemoryInfo": self.get_process_memory_info})()
-        raise AssertionError(f"unexpected DLL: {name}")
-
-
-def test_windows_current_rss_bytes_memoises_bindings_per_factory(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from haute import _execution_context as context_mod
-
-    factory = _FakeWindowsApiFactory(
-        context_mod._WindowsProcessMemoryCountersEx, working_set_size=4321
-    )
-    context_mod._reset_windows_rss_sampler_for_tests()
-    monkeypatch.setattr(context_mod.os, "name", "nt")
-    monkeypatch.setattr(context_mod.ctypes, "WinDLL", factory, raising=False)
-
-    assert context_mod._windows_current_rss_bytes() == 4321
-    assert context_mod._windows_current_rss_bytes() == 4321
-    assert factory.calls == [("kernel32.dll", True), ("psapi.dll", True)]
-    assert factory.get_current_process.calls == 2
-    assert factory.get_process_memory_info.calls == 2
-
-
-def test_windows_current_rss_bytes_preserves_unavailable_and_failed_call_semantics(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from haute import _execution_context as context_mod
-
-    context_mod._reset_windows_rss_sampler_for_tests()
-    monkeypatch.setattr(context_mod.os, "name", "nt")
-    monkeypatch.delattr(context_mod.ctypes, "WinDLL", raising=False)
-    assert context_mod._windows_current_rss_bytes() is None
-
-    factory = _FakeWindowsApiFactory(
-        context_mod._WindowsProcessMemoryCountersEx, memory_info_result=False
-    )
-    monkeypatch.setattr(context_mod.ctypes, "WinDLL", factory, raising=False)
-    assert context_mod._windows_current_rss_bytes() is None
-
-
-def test_windows_current_rss_bytes_separates_factory_identities_and_reset(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from haute import _execution_context as context_mod
-
-    first = _FakeWindowsApiFactory(
-        context_mod._WindowsProcessMemoryCountersEx, working_set_size=100
-    )
-    second = _FakeWindowsApiFactory(
-        context_mod._WindowsProcessMemoryCountersEx, working_set_size=200
-    )
-    context_mod._reset_windows_rss_sampler_for_tests()
-    monkeypatch.setattr(context_mod.os, "name", "nt")
-    monkeypatch.setattr(context_mod.ctypes, "WinDLL", first, raising=False)
-    assert context_mod._windows_current_rss_bytes() == 100
-    monkeypatch.setattr(context_mod.ctypes, "WinDLL", second, raising=False)
-    assert context_mod._windows_current_rss_bytes() == 200
-    assert first.calls == [("kernel32.dll", True), ("psapi.dll", True)]
-    assert second.calls == [("kernel32.dll", True), ("psapi.dll", True)]
-
-    context_mod._reset_windows_rss_sampler_for_tests()
-    assert context_mod._windows_current_rss_bytes() == 200
-    assert second.calls == [
-        ("kernel32.dll", True),
-        ("psapi.dll", True),
-        ("kernel32.dll", True),
-        ("psapi.dll", True),
-    ]
-
-
-def test_windows_current_rss_bytes_initialises_same_factory_once_concurrently(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from haute import _execution_context as context_mod
-
-    factory = _FakeWindowsApiFactory(
-        context_mod._WindowsProcessMemoryCountersEx, working_set_size=2468
-    )
-    context_mod._reset_windows_rss_sampler_for_tests()
-    monkeypatch.setattr(context_mod.os, "name", "nt")
-    monkeypatch.setattr(context_mod.ctypes, "WinDLL", factory, raising=False)
-    barrier = threading.Barrier(8)
-    results: list[int | None] = []
-
-    def sample() -> None:
-        barrier.wait()
-        results.append(context_mod._windows_current_rss_bytes())
-
-    threads = [threading.Thread(target=sample) for _ in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-
-    assert results == [2468] * 8
-    assert factory.calls == [("kernel32.dll", True), ("psapi.dll", True)]
+    monkeypatch.setattr(context_mod, "current_process_rss_bytes", lambda: None)
+    assert context_mod.current_rss_bytes() is None
 
 
 class _ImmediateThread:

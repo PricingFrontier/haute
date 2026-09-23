@@ -143,7 +143,6 @@ _EXPECTED_DEBT_IDS = {
     "c87e80ef52f08568",
     "50a51dcce3b28cae",
     "fea0501479ba2a0e",
-    "4328a90240a0dbba",
     "55b3c4a50777661d",
     "3c5baaf0a02d232d",
     "7644099cbe0b2599",
@@ -161,7 +160,6 @@ _EXPECTED_DEBT_IDS = {
     "8a0f7160d9044069",
     "a78fb6a12665d489",
     "3512c808a6273e35",
-    "153ecf02f6848509",
     "b47ee7c16fbf5755",
     "9b58538ec2c90223",
     "6881417aa251afb7",
@@ -293,18 +291,6 @@ _EXPECTED_DEBT_IDS = {
     # cap, so the real-spawn check needs a host that has one. The entrypoint's lease
     # wiring is covered on every platform. See tests/test_worker_protocol.py.
     "809667c1ff73f5be",
-    # macOS available-RAM probe — the Mach ``host_statistics64`` counters exist
-    # only on darwin, so the unmocked-kernel assertion is darwin-gated. This is
-    # the test that would have caught the original defect (darwin had no
-    # working branch at all: no ``/proc/meminfo``, and ``SC_AVPHYS_PAGES`` is
-    # absent from ``os.sysconf_names`` there), so it is deliberately a real
-    # syscall rather than a mock. The branch's logic — free+inactive accounting,
-    # purgeable exclusion, Mach port release, and every failure path — is
-    # covered unconditionally on all platforms by the mocked tests in the same
-    # class, which drive the real ctypes struct. See
-    # tests/test_host_memory.py::TestAvailableRamMacOS
-    # ::test_real_darwin_kernel_reports_available_memory.
-    "23fb0fa7068e4340",
     # Polars snapshot contract on a deliberately unpinned resolve — the
     # committed I/O schema records one polars version, so exact snapshot
     # equality is unsatisfiable in the two lanes that resolve polars away from

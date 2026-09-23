@@ -24,7 +24,12 @@ from haute._native_memory_limit import (
     native_memory_backend_scope,
     native_memory_caps_supported,
 )
-from haute._process_memory import process_rss_bytes
+from haute._process_memory import (
+    current_process_rss_bytes,
+    current_process_thread_count,
+    current_process_virtual_bytes,
+    process_rss_bytes,
+)
 
 logger = get_logger(component="worker_isolation")
 
@@ -539,14 +544,9 @@ def _resource_tracker_diagnostics() -> dict[str, Any]:
     except Exception:  # pragma: no cover - POSIX-only, best effort
         pass
 
-    try:
-        with open("/proc/self/status", encoding="utf-8") as handle:
-            for line in handle:
-                if line.startswith(("Threads:", "VmRSS:", "VmSize:")):
-                    key, _, value = line.partition(":")
-                    info[f"proc_{key.strip().lower()}"] = value.strip()
-    except OSError:  # pragma: no cover - Linux-only, best effort
-        pass
+    info["process_threads"] = current_process_thread_count()
+    info["process_rss_bytes"] = current_process_rss_bytes()
+    info["process_virtual_bytes"] = current_process_virtual_bytes()
     return info
 
 

@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import polars as pl
@@ -50,95 +50,20 @@ def _fast_training_params(**overrides: object) -> dict[str, object]:
 
 
 class TestGetRssMb:
-    """Cover all three platform branches and the fallback."""
+    """Verify _get_rss_mb reads through the psutil-backed process probe."""
 
-    def test_linux_reads_proc_status(self):
+    def test_returns_positive_float(self):
         from haute.modelling._algorithms import _get_rss_mb
 
-        fake_status = "Name:\tpython\nVmRSS:\t102400 kB\nVmSize:\t200000 kB\n"
-        with (
-            patch.object(sys, "platform", "linux"),
-            patch("builtins.open", mock_open(read_data=fake_status)),
-        ):
-            result = _get_rss_mb()
-        assert result == pytest.approx(102400 / 1024, rel=1e-6)
-
-    def test_linux_oserror_returns_zero(self):
-        from haute.modelling._algorithms import _get_rss_mb
-
-        with (
-            patch.object(sys, "platform", "linux"),
-            patch("builtins.open", side_effect=OSError("no /proc")),
-        ):
-            assert _get_rss_mb() == 0.0
-
-    def test_linux_no_vmrss_line_returns_zero(self):
-        """If /proc/self/status exists but has no VmRSS line."""
-        from haute.modelling._algorithms import _get_rss_mb
-
-        fake_status = "Name:\tpython\nVmSize:\t200000 kB\n"
-        with (
-            patch.object(sys, "platform", "linux"),
-            patch("builtins.open", mock_open(read_data=fake_status)),
-        ):
-            result = _get_rss_mb()
-        assert result == 0.0
-
-    def test_darwin_uses_resource(self):
-        from haute.modelling._algorithms import _get_rss_mb
-
-        mock_resource = MagicMock()
-        usage = SimpleNamespace(ru_maxrss=104857600)  # 100 MB in bytes
-        mock_resource.getrusage.return_value = usage
-        mock_resource.RUSAGE_SELF = 0
-
-        with (
-            patch.object(sys, "platform", "darwin"),
-            patch.dict(sys.modules, {"resource": mock_resource}),
-        ):
-            result = _get_rss_mb()
-        assert result == pytest.approx(100.0, rel=1e-6)
-
-    def test_darwin_import_error_returns_zero(self):
-        from haute.modelling._algorithms import _get_rss_mb
-
-        with patch.object(sys, "platform", "darwin"), patch.dict(sys.modules, {"resource": None}):
-            # When module is None, import will raise ImportError
-            result = _get_rss_mb()
-        # On darwin with import failure the function falls through
-        assert result == 0.0
-
-    def test_windows_uses_ctypes(self):
-        """On win32, mock the ctypes calls to cover the Windows branch."""
-        from haute.modelling._algorithms import _get_rss_mb
-
-        # We mock _get_rss_mb's internals indirectly by calling it on win32.
-        # The function may return 0.0 if psapi isn't available, so we test
-        # that it at least runs without error and returns a non-negative float.
-        with patch.object(sys, "platform", "win32"):
-            result = _get_rss_mb()
+        result = _get_rss_mb()
         assert isinstance(result, float)
-        assert result >= 0.0
+        assert result > 0.0
 
-    def test_windows_oserror_returns_zero(self):
-        """Windows ctypes branch returns 0.0 on OSError."""
+    def test_returns_zero_when_probe_is_unavailable(self, monkeypatch: pytest.MonkeyPatch):
         from haute.modelling._algorithms import _get_rss_mb
 
-        with (
-            patch.object(sys, "platform", "win32"),
-            patch("ctypes.windll", create=True) as mock_windll,
-        ):
-            mock_windll.psapi.GetProcessMemoryInfo.side_effect = OSError("fail")
-            # Also need to handle GetCurrentProcess
-            mock_windll.kernel32.GetCurrentProcess.return_value = 1234
-            result = _get_rss_mb()
-        assert result == 0.0
-
-    def test_unknown_platform_returns_zero(self):
-        from haute.modelling._algorithms import _get_rss_mb
-
-        with patch.object(sys, "platform", "freebsd"):
-            assert _get_rss_mb() == 0.0
+        monkeypatch.setattr("haute.modelling._algorithms.current_process_rss_bytes", lambda: None)
+        assert _get_rss_mb() == 0.0
 
 
 # ---------------------------------------------------------------------------
