@@ -6041,6 +6041,40 @@ class TestFrontierRoute:
         assert parent["result"] == base_result
         assert clean_job_store.require_job(frontier_job_id)["status"] == "cancelled"
 
+    @pytest.mark.parametrize("timeout", [600, None])
+    def test_running_frontier_within_its_timeout_reports_live_elapsed_time(
+        self,
+        client,
+        clean_job_store,
+        timeout,
+    ):
+        """A running recompute inside its timeout (or with none) stays running and
+        reports the wall-clock time since it started, not the stored snapshot."""
+        seed_job(
+            clean_job_store,
+            "running_frontier",
+            {
+                "status": "running",
+                "job_type": "frontier_recompute",
+                "start_time": time.monotonic() - 5,
+                "timeout": timeout,
+                "progress": 0.4,
+                "message": "Solving point 2 of 5",
+                "elapsed_seconds": 0.0,
+                "created_at": time.time(),
+            },
+        )
+
+        response = client.get("/api/optimiser/frontier/status/running_frontier")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "running"
+        assert body["progress"] == 0.4
+        assert body["result"] is None
+        assert body["elapsed_seconds"] >= 5
+        assert clean_job_store.require_job("running_frontier")["status"] == "running"
+
     def test_frontier_timeout_stops_late_parent_publication(
         self,
         client,

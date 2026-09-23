@@ -8,6 +8,7 @@ stays in tests/test_ram_estimate.py.
 from __future__ import annotations
 
 import ctypes
+import subprocess
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -21,6 +22,7 @@ from haute import _host_memory
 from haute._host_memory import (
     available_ram_bytes,
     available_vram_bytes,
+    nvidia_gpu_name,
     require_positive_available_ram,
 )
 
@@ -1146,6 +1148,33 @@ class TestAvailableVram:
     def test_returns_none_when_nvidia_smi_missing(self) -> None:
         with patch("subprocess.run", side_effect=FileNotFoundError):
             assert available_vram_bytes() is None
+
+
+class TestNvidiaGpuName:
+    def test_reports_the_first_listed_gpu(self) -> None:
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "NVIDIA GeForce RTX 4070\nNVIDIA A100\n"
+        with patch("subprocess.run", return_value=mock_result) as run:
+            assert nvidia_gpu_name() == "NVIDIA GeForce RTX 4070"
+        assert run.call_args.kwargs["encoding"] == "utf-8"
+
+    @pytest.mark.parametrize(("returncode", "stdout"), [(1, "NVIDIA GeForce RTX 4070\n"), (0, "")])
+    def test_none_when_nvidia_smi_fails_or_lists_nothing(
+        self, returncode: int, stdout: str
+    ) -> None:
+        mock_result = MagicMock()
+        mock_result.returncode = returncode
+        mock_result.stdout = stdout
+        with patch("subprocess.run", return_value=mock_result):
+            assert nvidia_gpu_name() is None
+
+    @pytest.mark.parametrize(
+        "error", [FileNotFoundError(), OSError(), subprocess.TimeoutExpired("nvidia-smi", 10)]
+    )
+    def test_none_when_nvidia_smi_cannot_run(self, error: Exception) -> None:
+        with patch("subprocess.run", side_effect=error):
+            assert nvidia_gpu_name() is None
 
 
 class TestAvailableVramParsing:
