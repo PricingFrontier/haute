@@ -352,7 +352,7 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
                         }}
                       >
                         {cell === null || cell === undefined
-                          ? "\u2014"
+                          ? "-"
                           : formatPivotNumber(
                               cell,
                               configuredValue ?? {},

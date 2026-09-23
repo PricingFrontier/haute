@@ -2,7 +2,6 @@ import { AlertCircle, AlertTriangle } from "lucide-react"
 import type { ExecutionMetrics } from "../api/types"
 import {
   buildMemoryPressureDiagnostic,
-  buildRefusedCaptureDiagnostic,
   executionProjectionWarning,
   executionStrategyLocation,
 } from "../utils/executionDiagnostics"
@@ -66,7 +65,6 @@ export default function ExecutionDiagnosticsIndicator({ metrics }: ExecutionDiag
   if (!metrics) return null
   const strategy = strategyIndicator(metrics)
   const pressure = buildMemoryPressureDiagnostic(metrics)
-  const refusal = buildRefusedCaptureDiagnostic(metrics)
 
   let baseContent: IndicatorContent | null = null
   if (strategy?.severity === "error") {
@@ -91,20 +89,7 @@ export default function ExecutionDiagnosticsIndicator({ metrics }: ExecutionDiag
     }
   }
 
-  const content: IndicatorContent | null = baseContent && refusal
-    ? {
-        ...baseContent,
-        explanation: `${baseContent.explanation} ${refusal.message}`,
-        remediation: [baseContent.remediation, refusal.remediation].filter(Boolean).join("; "),
-      }
-    : baseContent ?? (refusal
-      ? {
-          severity: "warning",
-          title: "Node capture was skipped",
-          explanation: refusal.message,
-          remediation: refusal.remediation,
-        }
-      : null)
+  const content = baseContent
   if (!content) return null
 
   const isError = content.severity === "error"

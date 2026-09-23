@@ -116,13 +116,13 @@ function AlgorithmGateway({ onUpdate }: { onUpdate: OnUpdateConfig }) {
       id: "catboost",
       name: "CatBoost",
       description:
-        "Gradient boosting — handles categoricals natively, fast GPU training",
+        "Gradient boosting - handles categoricals natively, fast GPU training",
     },
     {
       id: "glm",
       name: "GLM",
       description:
-        "Generalised linear model — interpretable coefficients, regulatory-friendly",
+        "Generalised linear model - interpretable coefficients, regulatory-friendly",
     },
   ] as const
 

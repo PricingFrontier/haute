@@ -3,21 +3,18 @@
 from __future__ import annotations
 
 import multiprocessing as mp
-import queue
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
 import polars as pl
-import pytest
 
 import haute._node_snapshots as node_snapshots
 from haute._execution_context import ExecutionProfile
 from haute._node_snapshots import (
     BOUNDED_SEMANTICS_CLASS,
     NodeSnapshotColumns,
-    NodeSnapshotQuotaRejectedError,
     NodeSnapshotSlot,
     NodeSnapshotStore,
 )
@@ -173,7 +170,7 @@ def test_two_worker_processes_publish_one_identity_once(tmp_path: Path) -> None:
     assert all(worker.exitcode == 0 for worker in workers)
 
 
-def test_a_paused_reader_keeps_its_generation_through_eviction_and_clear(
+def test_a_paused_reader_keeps_its_generation_through_clear(
     tmp_path: Path,
 ) -> None:
     ctx = mp.get_context("spawn")
@@ -181,7 +178,7 @@ def test_a_paused_reader_keeps_its_generation_through_eviction_and_clear(
     results = ctx.Queue()
     release = ctx.Event()
     root = str(tmp_path)
-    store = NodeSnapshotStore(tmp_path, node_output_max_generations=1)
+    store = NodeSnapshotStore(tmp_path)
     identity = _slot(root, "join").identity("s1")
     with _publish(store, identity, [1, 2, 3]):
         pass
@@ -191,9 +188,6 @@ def test_a_paused_reader_keeps_its_generation_through_eviction_and_clear(
         generation_id = leased.get(timeout=_TIMEOUT)
         generation_dir = store.identity_path(identity) / "generations" / generation_id
 
-        with pytest.raises(NodeSnapshotQuotaRejectedError) as rejected:
-            _publish(store, _slot(root, "other").identity("s1"), [9])
-        rejected.value.artifact.close()
         assert generation_dir.is_dir()
 
         store.clear_slot(_slot(root, "join"))
@@ -209,7 +203,7 @@ def test_a_paused_reader_keeps_its_generation_through_eviction_and_clear(
     assert not generation_dir.exists()
 
 
-def test_a_killed_readers_marker_is_dead_and_its_generation_becomes_evictable(
+def test_a_killed_readers_marker_is_reclaimed_by_clear(
     tmp_path: Path,
 ) -> None:
     ctx = mp.get_context("spawn")
@@ -217,7 +211,7 @@ def test_a_killed_readers_marker_is_dead_and_its_generation_becomes_evictable(
     results = ctx.Queue()
     release = ctx.Event()
     root = str(tmp_path)
-    store = NodeSnapshotStore(tmp_path, node_output_max_generations=1)
+    store = NodeSnapshotStore(tmp_path)
     identity = _slot(root, "join").identity("s1")
     with _publish(store, identity, [1]):
         pass
@@ -225,15 +219,9 @@ def test_a_killed_readers_marker_is_dead_and_its_generation_becomes_evictable(
     try:
         reader.start()
         generation_id = leased.get(timeout=_TIMEOUT)
-        with pytest.raises(NodeSnapshotQuotaRejectedError) as rejected:
-            _publish(store, _slot(root, "other").identity("s1"), [9])
-        rejected.value.artifact.close()
-
         reader.terminate()
         reader.join(timeout=_TIMEOUT)
-
-        with _publish(store, _slot(root, "other").identity("s1"), [9]) as publication:
-            assert publication.outcome == "published"
+        store.clear_slot(_slot(root, "join"))
     finally:
         _stop(reader, release)
 
@@ -241,7 +229,7 @@ def test_a_killed_readers_marker_is_dead_and_its_generation_becomes_evictable(
     assert store.slot_status(_slot(root, "join"), "s1").state == "missing"
 
 
-def test_a_lease_paused_before_its_marker_blocks_eviction_and_keeps_the_generation(
+def test_a_lease_paused_before_its_marker_blocks_clear_and_keeps_the_generation(
     tmp_path: Path,
 ) -> None:
     ctx = mp.get_context("spawn")
@@ -249,7 +237,7 @@ def test_a_lease_paused_before_its_marker_blocks_eviction_and_keeps_the_generati
     resume = ctx.Event()
     finish = ctx.Event()
     root = str(tmp_path)
-    store = NodeSnapshotStore(tmp_path, node_output_max_generations=1)
+    store = NodeSnapshotStore(tmp_path)
     identity = _slot(root, "join").identity("s1")
     with _publish(store, identity, [5]) as publication:
         generation_id = publication.generation.generation_id
@@ -257,29 +245,25 @@ def test_a_lease_paused_before_its_marker_blocks_eviction_and_keeps_the_generati
         target=_faulted_lease_worker,
         args=(root, generation_id, "lease_before_marker", events, resume, finish),
     )
-    eviction_result: list[object] = []
+    clear_result: list[object] = []
 
-    def evict() -> None:
-        try:
-            _publish(store, _slot(root, "other").identity("s1"), [9]).close()
-            eviction_result.append("published")
-        except NodeSnapshotQuotaRejectedError as exc:
-            exc.artifact.close()
-            eviction_result.append("rejected")
+    def clear() -> None:
+        store.clear_slot(_slot(root, "join"))
+        clear_result.append("cleared")
 
     try:
         worker.start()
         assert events.get(timeout=_TIMEOUT) == "leasing"
         assert events.get(timeout=_TIMEOUT) == "paused"
-        evictor = threading.Thread(target=evict)
-        evictor.start()
+        clearer = threading.Thread(target=clear)
+        clearer.start()
         time.sleep(0.5)
-        assert evictor.is_alive(), "eviction must wait for the lease lock"
+        assert clearer.is_alive(), "clear must wait for the lease lock"
 
         resume.set()
         assert events.get(timeout=_TIMEOUT) == "leased"
-        evictor.join(timeout=_TIMEOUT)
-        assert eviction_result == ["rejected"]
+        clearer.join(timeout=_TIMEOUT)
+        assert clear_result == ["cleared"]
 
         finish.set()
         assert events.get(timeout=_TIMEOUT) == ("rows", [5])
@@ -287,59 +271,6 @@ def test_a_lease_paused_before_its_marker_blocks_eviction_and_keeps_the_generati
         _stop(worker, resume, finish)
 
     assert worker.exitcode == 0
-
-
-def test_eviction_paused_before_its_marker_check_makes_a_waiting_lease_fail_cleanly(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    ctx = mp.get_context("spawn")
-    events = ctx.Queue()
-    resume = ctx.Event()
-    finish = ctx.Event()
-    root = str(tmp_path)
-    store = NodeSnapshotStore(tmp_path, node_output_max_generations=1)
-    identity = _slot(root, "join").identity("s1")
-    with _publish(store, identity, [5]) as publication:
-        generation_id = publication.generation.generation_id
-    paused = threading.Event()
-    resume_eviction = threading.Event()
-
-    def pause(name: str) -> None:
-        if name == "evict_before_marker_check":
-            paused.set()
-            assert resume_eviction.wait(_TIMEOUT)
-
-    monkeypatch.setattr(node_snapshots, "_fault_point", pause)
-    eviction_result: list[str] = []
-
-    def evict() -> None:
-        with _publish(store, _slot(root, "other").identity("s1"), [9]) as published:
-            eviction_result.append(published.outcome)
-
-    evictor = threading.Thread(target=evict)
-    worker = ctx.Process(
-        target=_faulted_lease_worker,
-        args=(root, generation_id, "", events, resume, finish),
-    )
-    try:
-        evictor.start()
-        assert paused.wait(_TIMEOUT)
-        worker.start()
-        assert events.get(timeout=_TIMEOUT) == "leasing"
-        with pytest.raises(queue.Empty):
-            events.get(timeout=1.0)
-
-        resume_eviction.set()
-        evictor.join(timeout=_TIMEOUT)
-        assert eviction_result == ["published"]
-        assert events.get(timeout=_TIMEOUT) == "missing"
-    finally:
-        resume_eviction.set()
-        evictor.join(timeout=_TIMEOUT)
-        _stop(worker, resume, finish)
-
-    assert not (store.identity_path(identity) / "generations" / generation_id).exists()
 
 
 def test_a_writer_missing_a_concurrently_widened_generations_columns_keeps_its_artifact(

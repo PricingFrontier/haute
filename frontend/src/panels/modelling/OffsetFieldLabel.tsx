@@ -21,7 +21,7 @@ import Tooltip from "../../components/Tooltip"
 export const OFFSET_HELP =
   "An offset is a known per-row term the model folds in through its link function. " +
   "Log link (a log-link GLM, or a CatBoost Poisson or Tweedie loss): it is a positive " +
-  "multiplier — e.g. an exposure column, so 2× exposure ⇒ 2× expected count — and " +
+  "multiplier - e.g. an exposure column, so 2× exposure ⇒ 2× expected count - and " +
   "zero, negative, or missing values are refused. Other links: it's added to the " +
   "prediction. A constant column of 1 is the unit basis under a log link. The " +
   "offset column must be present when scoring."

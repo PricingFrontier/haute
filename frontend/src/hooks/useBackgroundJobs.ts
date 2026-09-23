@@ -198,7 +198,7 @@ export default function useBackgroundJobs() {
     progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
     onComplete: pivotOnComplete,
     onFail: failExplorePivotJob,
-    labelFn: (job) => `${job.nodeLabel} — ${job.pivotName}`,
+    labelFn: (job) => `${job.nodeLabel} - ${job.pivotName}`,
     jobIdFn: (job) => job.jobId,
     isComplete: (s) => s.status === "completed",
     isError: (s) => FAILED_JOB_STATUSES.has(s.status),

@@ -54,7 +54,7 @@ export default function StorageBindModal({ onClose }: StorageBindModalProps) {
   // get out of the way. The other outcomes are rendered, not acted on.
   useEffect(() => {
     if (bind?.state === "succeeded" && bind.outcome === "adopted") {
-      addToast("success", "This project is now saved to storage — saves publish automatically.")
+      addToast("success", "This project is now saved to storage - saves publish automatically.")
       void acknowledgeBind()
       onClose()
     }
@@ -79,7 +79,7 @@ export default function StorageBindModal({ onClose }: StorageBindModalProps) {
       await bindStorage(remoteUrl.trim())
       // Accepted, not finished: let the user carry on. The dialog reopens by
       // itself if the background bind fails.
-      addToast("info", "Saving this project to storage — you can keep working.")
+      addToast("info", "Saving this project to storage - you can keep working.")
       onClose()
     } catch (err: unknown) {
       setLocalError(gitErrorMessage(err, "Could not bind storage"))
@@ -96,7 +96,7 @@ export default function StorageBindModal({ onClose }: StorageBindModalProps) {
       const forked = await forkStorage(failed.remote_url, forkUrl.trim())
       await acknowledgeBind()
       await bindStorage(forked.target_url)
-      addToast("info", "Forked, and saving the copy to storage — you can keep working.")
+      addToast("info", "Forked, and saving the copy to storage - you can keep working.")
       onClose()
     } catch (err: unknown) {
       setLocalError(gitErrorMessage(err, "Could not fork the storage location"))
@@ -130,7 +130,7 @@ export default function StorageBindModal({ onClose }: StorageBindModalProps) {
             data-testid="storage-bind-restart-message"
           >
             Binding saved. That location already holds a project, so restart the app to load
-            it — this session&apos;s project is not published.
+            it - this session&apos;s project is not published.
           </p>
           <div className="flex justify-end">
             <button

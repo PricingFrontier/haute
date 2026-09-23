@@ -152,7 +152,7 @@ describe("useJobPolling", () => {
         progress: 0,
         message: "Infeasible",
       })
-      expect(addToast).toHaveBeenCalledWith("error", "Job failed: Node 1 — Infeasible")
+      expect(addToast).toHaveBeenCalledWith("error", "Job failed: Node 1 - Infeasible")
     })
 
     it("stops polling after job completes (no more polls scheduled)", async () => {
@@ -414,7 +414,7 @@ describe("useJobPolling", () => {
       expect(onFail).toHaveBeenCalledWith("n1", "Job timed out after 24 hours")
       expect(addToast).toHaveBeenCalledWith(
         "error",
-        "Job failed: Node 1 — Job timed out after 24 hours",
+        "Job failed: Node 1 - Job timed out after 24 hours",
       )
     }, 120_000)
   })

@@ -8,7 +8,7 @@ import Tooltip from "../../components/Tooltip"
  * column header in the Explore overview.
  */
 const DISTINCT_INFO_LABEL =
-  "Distinct counts unique valid values only. Null and NaN are not values — they are reported separately as Null % and NaN %."
+  "Distinct counts unique valid values only. Null and NaN are not values - they are reported separately as Null % and NaN %."
 
 export default function DistinctInfoButton() {
   return (

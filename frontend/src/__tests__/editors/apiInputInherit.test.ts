@@ -52,7 +52,7 @@ describe("arrayDepth", () => {
   ])("%s → %i", (p, n) => expect(arrayDepth(p)).toBe(n))
 })
 
-describe("parseColumnPathFull — splits at the deepest array hop", () => {
+describe("parseColumnPathFull - splits at the deepest array hop", () => {
   it("root object leaf has empty locating", () => {
     expect(parseColumnPathFull("$[:].customer.id")).toEqual({ locating: [], leaf: "customer.id" })
   })
@@ -77,7 +77,7 @@ describe("parseColumnPathFull — splits at the deepest array hop", () => {
   })
 })
 
-describe("segmentPrefix — structural, step-by-step", () => {
+describe("segmentPrefix - structural, step-by-step", () => {
   const root = frameSegments("$[:]")
   const orders = frameSegments("$[:].orders[:]")
   const items = frameSegments("$[:].orders[:].items[:]")
@@ -178,7 +178,7 @@ describe("getCascadeDestinations", () => {
 
 // ─── naming + dedup ─────────────────────────────────────────────────
 
-describe("inheritedColumnName — salts the full leaf", () => {
+describe("inheritedColumnName - salts the full leaf", () => {
   it.each([
     ["$[:].customer.id", "customer_id"],
     ["$[:].a.b.c", "a_b_c"],
@@ -197,7 +197,7 @@ describe("dedupName", () => {
   })
 })
 
-describe("dedupNameByPath — walk-up collision naming (ruled 2026-07-14)", () => {
+describe("dedupNameByPath - walk-up collision naming (ruled 2026-07-14)", () => {
   const path = "$[:].customer.orders[:].id"
   it("leaves a free name untouched", () => {
     expect(dedupNameByPath("id", path, new Set())).toBe("id")
@@ -222,7 +222,7 @@ describe("dedupNameByPath — walk-up collision naming (ruled 2026-07-14)", () =
   })
 })
 
-describe("ambiguousNames — different paths sharing a name (ruled 2026-07-14)", () => {
+describe("ambiguousNames - different paths sharing a name (ruled 2026-07-14)", () => {
   const table = (path: string, cols: Array<[string, string]>): ApiInputTableV2 => ({
     path,
     label: path,

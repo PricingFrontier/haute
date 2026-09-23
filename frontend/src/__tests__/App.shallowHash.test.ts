@@ -94,7 +94,7 @@ function makeNode(id: string, data: Record<string, unknown> = {}): NodeLike {
 // 1. Input-identity invariants — equal input keys → equal hash
 // ===========================================================================
 
-describe("shallowNodeDataHash — input-identity invariants", () => {
+describe("shallowNodeDataHash - input-identity invariants", () => {
   it("two nodes with identical input keys produce identical hashes", () => {
     const a = { label: "A", nodeType: "polars", config: { code: "x + 1" } }
     const b = { label: "A", nodeType: "polars", config: { code: "x + 1" } }
@@ -158,7 +158,7 @@ describe("shallowNodeDataHash — input-identity invariants", () => {
 // 2. Sensitivity — any input-key change flips the hash
 // ===========================================================================
 
-describe("shallowNodeDataHash — input-key sensitivity", () => {
+describe("shallowNodeDataHash - input-key sensitivity", () => {
   const base = {
     label: "N",
     nodeType: "polars",
@@ -264,7 +264,7 @@ describe("shallowNodeDataHash — input-key sensitivity", () => {
 // 3. Graph-level fingerprint invariants
 // ===========================================================================
 
-describe("graphFingerprintShallow — graph-level invariants", () => {
+describe("graphFingerprintShallow - graph-level invariants", () => {
   it("position-only changes do not affect the fingerprint", () => {
     const nodes = [makeNode("n1"), makeNode("n2")]
     const edges = [{ id: "e1", source: "n1", target: "n2" }]
@@ -344,7 +344,7 @@ describe("graphFingerprintShallow — graph-level invariants", () => {
 // 4. Regression guard: result-only payloads stay out of the graph hash
 // ===========================================================================
 
-describe("shallowNodeDataHash — benchmark", () => {
+describe("shallowNodeDataHash - benchmark", () => {
   function makeRealisticNode(i: number): NodeLike {
     // Realistic node: modest config, populated _columns / _availableColumns
     // arrays (these are the chief cost of the pre-fix full-stringify path).

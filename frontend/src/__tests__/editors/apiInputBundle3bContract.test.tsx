@@ -115,7 +115,7 @@ afterEach(cleanup)
 // 1. Banner — close × button
 // ---------------------------------------------------------------------------
 
-describe("Bundle 3b — Stale columns banner is dismissible", () => {
+describe("Bundle 3b - Stale columns banner is dismissible", () => {
   it("renders a close (×) button on the banner when warnings present", () => {
     const node = makeNode({
       data: {
@@ -157,7 +157,7 @@ describe("Bundle 3b — Stale columns banner is dismissible", () => {
 // 2. Banner — "Refresh and check" button
 // ---------------------------------------------------------------------------
 
-describe("Bundle 3b — Stale columns banner has a Refresh-and-check button", () => {
+describe("Bundle 3b - Stale columns banner has a Refresh-and-check button", () => {
   it("renders a Refresh and check button at the top of the banner", () => {
     const node = makeNode({
       data: {
@@ -212,7 +212,7 @@ describe("Bundle 3b — Stale columns banner has a Refresh-and-check button", ()
 // 3. Clear-triggers — signature-based dismissal
 // ---------------------------------------------------------------------------
 
-describe("Bundle 3b — Banner re-appears when warning content changes", () => {
+describe("Bundle 3b - Banner re-appears when warning content changes", () => {
   it("re-renders banner if a new column appears in warnings after dismissal", () => {
     const node1 = makeNode({
       data: {

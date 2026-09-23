@@ -504,7 +504,7 @@ def _context_with_preparation_evidence() -> ExecutionContext:
             columns=NodeSnapshotColumns.all(),
         )
     )
-    context.record_execution_warning("snapshot_capture_skipped", node_id="side", reason="quota")
+    context.record_execution_warning("snapshot_capture_superseded", node_id="side")
     return context
 
 
@@ -531,7 +531,7 @@ def test_failed_fit_keeps_the_jobs_preparation_evidence(tmp_path: Path) -> None:
     assert metrics["operation"] == "training_job"
     assert [capture["node_id"] for capture in metrics["shared_snapshot_captures"]] == ["join"]
     assert [(warning["code"], warning["node_id"]) for warning in metrics["warnings"]] == [
-        ("snapshot_capture_skipped", "side")
+        ("snapshot_capture_superseded", "side")
     ]
 
 

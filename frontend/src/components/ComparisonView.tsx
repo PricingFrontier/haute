@@ -601,7 +601,7 @@ export default function ComparisonView({
             <span className="font-mono" style={{ color: "var(--text-muted)" }}>
               {shortSha}
             </span>{" "}
-            — read-only
+            - read-only
           </span>
           <button
             data-testid="comparison-chip-close"

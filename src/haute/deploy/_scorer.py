@@ -38,9 +38,6 @@ from haute._types import (
 )
 from haute.execution import (
     _stat_gated_runtime_path_fingerprint,
-    build_dataframe_execution_cache_request,
-    dataframe_frame_input_fingerprint,
-    dataframe_graph_input_fingerprint,
     execute_lazy_graph,
 )
 from haute.executor import _build_node_fn
@@ -177,13 +174,6 @@ def admit_deploy_execution(
         operation=operation,
         profile=profile if profile is not None else deploy_execution_profile(row_count),
     )
-
-
-def _deploy_model_score_source(execution_context: ExecutionContext) -> str:
-    """Return the modelScore source contract for the admitted deploy profile."""
-    if execution_context.profile == ExecutionProfile.DEPLOY_BATCH:
-        return ExecutionProfile.DEPLOY_BATCH.value
-    return "live"
 
 
 def _model_score_has_configured_source(config: dict[str, Any]) -> bool:
@@ -933,7 +923,7 @@ def _score_graph_lazy(
                 upstream_node_ids(nid, parents_of),
             )
             _code = str(config.get("code") or "").strip()
-            _score_source = _deploy_model_score_source(execution_context)
+            _score_source = "live"
             _required_output_columns = projection.model_score_required_output_columns(
                 config,
                 build_kwargs.get("required_output_columns"),
@@ -1051,8 +1041,9 @@ def _score_graph_lazy(
     )
 
     # Deployed graph routing stays on the live source so source-switch nodes
-    # select the API input branch. Individual modelScore nodes choose their
-    # eager/batch scoring mode from the admitted execution profile.
+    # select the API input branch. Deployed scoring always scores models in
+    # memory (source "live") and never uses the dataframe execution cache,
+    # for every profile, so no parquet is written between nodes.
     required_columns_by_node: dict[str, frozenset[str]] | None = None
     if output_fields:
         if isinstance(output_fields, str | bytes):
@@ -1063,46 +1054,10 @@ def _score_graph_lazy(
                 raise ValueError("output_fields must contain non-empty string names")
             output_seed.add(column)
         required_columns_by_node = {output_node_id: frozenset(output_seed)}
-    deploy_model_score_source = _deploy_model_score_source(execution_context)
-    source_by_node = {
-        node.id: deploy_model_score_source
-        for node in graph.nodes
-        if node.data.nodeType == NodeType.MODEL_SCORE
-        and _model_score_has_configured_source(node.data.config)
-    }
     from haute._model_scorer import model_score_temp_file_scope
 
     try:
         with model_score_temp_file_scope(model_score_temp_paths):
-            remapped_node_ids = {key.split("__", 1)[0] for key in remap}
-            dataframe_cache_request = (
-                build_dataframe_execution_cache_request(
-                    graph,
-                    node_ids=[output_node_id],
-                    namespace="deploy_score",
-                    source="live",
-                    profile=execution_context.profile,
-                    input_fingerprint=dataframe_graph_input_fingerprint(
-                        graph,
-                        target_node_id=output_node_id,
-                        source="live",
-                        ignore_node_ids=input_set | remapped_node_ids,
-                        extra_fingerprints={
-                            "input_df": dataframe_frame_input_fingerprint(input_df),
-                            "input_node_ids": sorted(input_set),
-                            "artifact_paths": _deploy_artifact_paths_input_fingerprint(remap),
-                        },
-                    ),
-                    target_node_id=output_node_id,
-                    source_by_node=source_by_node,
-                    required_columns_by_node=required_columns_by_node,
-                    enforce_contracts=True,
-                    preamble_ns_supplied=preamble_ns is not None,
-                )
-                if output_node_id in graph.node_map
-                and execution_context.profile != ExecutionProfile.DEPLOY_LIVE
-                else None
-            )
             lazy_outputs, order, _parents, _names = execute_lazy_graph(
                 graph,
                 builder,
@@ -1112,8 +1067,6 @@ def _score_graph_lazy(
                 enforce_contracts=True,
                 required_columns_by_node=required_columns_by_node,
                 execution_context=execution_context,
-                source_by_node=source_by_node,
-                dataframe_cache_request=dataframe_cache_request,
                 runtime_source_frames_by_node=runtime_source_frames_by_node,
                 # Deploy scoring reads its Data Inputs through the bundled
                 # artifact intercept above; the canonical configs it carries

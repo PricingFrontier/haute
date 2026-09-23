@@ -1356,34 +1356,6 @@ class NodeDataClearResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class CacheBudgetUsagePayload(BaseModel):
-    """One budget's usage against its limits, naming the variable behind each.
-
-    The variable names are reported rather than known by the client because
-    the server is what reads them: a user told to raise a limit is told the
-    name the store actually read.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    generations_used: int = Field(ge=0)
-    generations_limit: int = Field(gt=0)
-    generations_limit_variable: str
-    bytes_used: int = Field(ge=0)
-    bytes_limit: int = Field(gt=0)
-    bytes_limit_variable: str
-
-
-class CacheUsageResponse(BaseModel):
-    """Both budgets in one response, because both are walked in one request."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    schema_version: Literal[1] = 1
-    node_outputs: CacheBudgetUsagePayload
-    input_snapshots: CacheBudgetUsagePayload
-
-
 class CacheNodesRequest(BaseModel):
     """The graph whose nodes to report on, and the source they are read for."""
 
@@ -1399,7 +1371,7 @@ class CacheNodeEntry(BaseModel):
     ``state`` and ``row_count`` describe the generation the node would read
     for its own column demand; ``generations`` and ``size_bytes`` are what the
     store holds for that node and source across every signature, which is what
-    the node actually costs the budget.
+    the node actually holds on disk.
     """
 
     model_config = ConfigDict(extra="forbid")

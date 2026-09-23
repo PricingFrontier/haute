@@ -120,7 +120,7 @@ async function advanceTimers(ms: number) {
   })
 }
 
-describe("usePipelineAPI — settings captured at fetch start (#33, #34)", () => {
+describe("usePipelineAPI - settings captured at fetch start (#33, #34)", () => {
   beforeEach(() => {
     vi.useRealTimers()
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live", "staging"] })

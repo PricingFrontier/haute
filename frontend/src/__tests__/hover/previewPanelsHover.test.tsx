@@ -68,7 +68,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { cleanup, fireEvent, render } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { readFileSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -248,7 +248,7 @@ describe("preview panels no longer mutate e.currentTarget.style.*", () => {
           `Expected '.currentTarget.style.' substring to be absent from ` +
             `live code in ${file}, but it's still present. ` +
             `This usually means a handler like onMouseEnter={e => e.currentTarget.style.X = ...} ` +
-            `slipped back in — migrate it to a className or a .hover-chrome-style utility.`,
+            `slipped back in - migrate it to a className or a .hover-chrome-style utility.`,
         ).toBe(false)
       })
 
@@ -342,6 +342,7 @@ vi.mock("../../hooks/useDragResize", () => ({
 vi.mock("../../stores/useNodeResultsStore", () => {
   const state = {
     trainJobs: {},
+    previews: {},
     getOptimiserPreview: vi.fn(() => null),
     selectFrontierPoint: vi.fn(),
     updateFrontierAfterSelect: vi.fn(),
@@ -437,6 +438,7 @@ import type { PreviewData } from "../../panels/DataPreview"
 import type { OptimiserPreviewData } from "../../panels/OptimiserPreview"
 import type { OptimiserSolveResult } from "../../api/types"
 import type { ModellingPreviewData } from "../../panels/ModellingPreview"
+import PreviewPanelFrame from "../../panels/PreviewPanelFrame"
 import { makeTrainResult } from "../../test-utils/factories"
 
 function makePreviewData(): PreviewData {
@@ -547,6 +549,24 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+})
+
+describe("PreviewPanelFrame refresh hover is class-driven", () => {
+  it("dispatches mouseEnter/mouseLeave without inline opacity mutation", () => {
+    render(
+      <PreviewPanelFrame nodeLabel="Preview Node" onRefresh={vi.fn()}>
+        <div>Preview body</div>
+      </PreviewPanelFrame>,
+    )
+    const refreshBtn = screen.getByTitle("Refresh preview")
+    const before = refreshBtn.style.opacity
+    fireEvent.mouseEnter(refreshBtn)
+    const duringHover = refreshBtn.style.opacity
+    fireEvent.mouseLeave(refreshBtn)
+    const after = refreshBtn.style.opacity
+    expect(duringHover).toBe(before)
+    expect(after).toBe(before)
+  })
 })
 
 describe("DataPreview hover chrome is class-driven", () => {

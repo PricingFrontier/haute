@@ -775,7 +775,7 @@ describe("retry: preserves request headers and body", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("retry: caller-supplied AbortSignal", () => {
-  it("cancels during backoff — no further fetch attempts after abort", async () => {
+  it("cancels during backoff - no further fetch attempts after abort", async () => {
     // Pause backoff timers so we can trigger abort DURING the sleep between
     // retry attempts, before the next fetch is issued.
     const paused = pauseBackoffTimers()

@@ -73,6 +73,12 @@ describe("Toolbar add-source rejection feedback", () => {
     expect(useSettingsStore.getState().sources).toEqual(["live", "My_Src"])
   })
 
+  it("types the new name in the same font, size and padding as the Source button", () => {
+    const input = openAddSourceForm()
+    expect(input).toHaveClass("text-[12px]", "font-medium", "px-2.5")
+    expect(input).not.toHaveClass("font-mono")
+  })
+
   it("shows an empty-name message on a blank submit, distinct from the collision message", () => {
     const input = openAddSourceForm()
     fireEvent.change(input, { target: { value: "   " } })

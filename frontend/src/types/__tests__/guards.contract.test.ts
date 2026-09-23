@@ -682,7 +682,7 @@ describe("API response guards", () => {
             node_id: "banding",
             identity_digest: "d2",
             kind: "consumed",
-            outcome: "quota",
+            outcome: "superseded",
             generation_id: null,
             columns: ["premium", "region"],
             write_strategy: "chunked_join",
@@ -697,14 +697,14 @@ describe("API response guards", () => {
         shared_snapshot_capture_skips: [
           { node_id: "select_1", reason: "cheap_segment" },
         ],
-        warnings: [{ code: "snapshot_capture_skipped", node_id: "banding", reason: "quota" }],
+        warnings: [{ code: "snapshot_capture_superseded", node_id: "banding", reason: null }],
       },
     })
 
     expect(parsed.execution_metrics?.shared_snapshot_seeds).toEqual([
       { node_id: "join", identity_digest: "d1", generation_id: "g1", columns: "all" },
     ])
-    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.outcome).toBe("quota")
+    expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.outcome).toBe("superseded")
     expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.columns).toEqual(["premium", "region"])
     expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_strategy).toBe("chunked_join")
     expect(parsed.execution_metrics?.shared_snapshot_captures[0]?.write_parts).toBe(20)
@@ -717,7 +717,7 @@ describe("API response guards", () => {
       { node_id: "select_1", reason: "cheap_segment" },
     ])
     expect(parsed.execution_metrics?.warnings).toEqual([
-      { code: "snapshot_capture_skipped", node_id: "banding", reason: "quota" },
+      { code: "snapshot_capture_superseded", node_id: "banding", reason: null },
     ])
   })
 
@@ -731,7 +731,7 @@ describe("API response guards", () => {
             node_id: "banding",
             identity_digest: "d2",
             kind: "consumed",
-            outcome: "quota",
+            outcome: "superseded",
             generation_id: null,
             columns: ["premium", "region"],
             write_strategy: "sliced",
@@ -755,7 +755,7 @@ describe("API response guards", () => {
               node_id: "banding",
               identity_digest: "d2",
               kind: "consumed",
-              outcome: "quota",
+              outcome: "superseded",
               generation_id: null,
               columns: ["premium", "region"],
               write_strategy: "sliced",
@@ -778,7 +778,7 @@ describe("API response guards", () => {
               node_id: "banding",
               identity_digest: "d2",
               kind: "consumed",
-              outcome: "quota",
+              outcome: "superseded",
               generation_id: null,
               columns: ["premium", "region"],
               write_strategy: "sliced",
@@ -801,7 +801,7 @@ describe("API response guards", () => {
               node_id: "banding",
               identity_digest: "d2",
               kind: "consumed",
-              outcome: "quota",
+              outcome: "superseded",
               generation_id: null,
               columns: ["premium", "region"],
               write_strategy: "sliced",
@@ -824,7 +824,7 @@ describe("API response guards", () => {
               node_id: "banding",
               identity_digest: "d2",
               kind: "consumed",
-              outcome: "quota",
+              outcome: "superseded",
               generation_id: null,
               columns: ["premium", "region"],
               write_strategy: "sliced",
@@ -847,7 +847,7 @@ describe("API response guards", () => {
               node_id: "banding",
               identity_digest: "d2",
               kind: "consumed",
-              outcome: "quota",
+              outcome: "superseded",
               generation_id: null,
               columns: ["premium", "region"],
               write_strategy: "sliced",
@@ -869,7 +869,7 @@ describe("API response guards", () => {
             node_id: "banding",
             identity_digest: "d2",
             kind: "consumed",
-            outcome: "quota",
+            outcome: "superseded",
             generation_id: null,
             columns: ["premium", "region"],
             write_strategy: "sliced",
@@ -893,7 +893,7 @@ describe("API response guards", () => {
             node_id: "banding",
             identity_digest: "d2",
             kind: "consumed",
-            outcome: "quota",
+            outcome: "superseded",
             generation_id: null,
             columns: ["premium", "region"],
             write_strategy: "sliced",
@@ -916,7 +916,7 @@ describe("API response guards", () => {
               node_id: "banding",
               identity_digest: "d2",
               kind: "consumed",
-              outcome: "quota",
+              outcome: "superseded",
               generation_id: null,
               columns: ["premium", "region"],
               write_strategy: "unknown_strategy",
@@ -937,7 +937,7 @@ describe("API response guards", () => {
             node_id: "banding",
             identity_digest: "d2",
             kind: "consumed",
-            outcome: "quota",
+            outcome: "superseded",
             generation_id: null,
             columns: ["premium", "region"],
             write_strategy: "input_sliced",
@@ -960,7 +960,7 @@ describe("API response guards", () => {
             node_id: "banding",
             identity_digest: "d2",
             kind: "consumed",
-            outcome: "quota",
+            outcome: "superseded",
             generation_id: null,
             columns: ["premium", "region"],
             write_strategy: "native",
@@ -987,7 +987,7 @@ describe("API response guards", () => {
               node_id: "banding",
               identity_digest: "d2",
               kind: "consumed",
-              outcome: "quota",
+              outcome: "superseded",
               generation_id: null,
               columns: ["premium", "region"],
               write_strategy: "input_sliced",
@@ -1010,7 +1010,7 @@ describe("API response guards", () => {
               node_id: "banding",
               identity_digest: "d2",
               kind: "consumed",
-              outcome: "quota",
+              outcome: "superseded",
               generation_id: null,
               columns: ["premium", "region"],
               write_strategy: "input_sliced",
@@ -1033,7 +1033,7 @@ describe("API response guards", () => {
               node_id: "banding",
               identity_digest: "d2",
               kind: "consumed",
-              outcome: "quota",
+              outcome: "superseded",
               generation_id: null,
               columns: ["premium", "region"],
               write_strategy: "input_sliced",
@@ -1055,7 +1055,7 @@ describe("API response guards", () => {
             node_id: "banding",
             identity_digest: "d2",
             kind: "consumed",
-            outcome: "quota",
+            outcome: "superseded",
             generation_id: null,
             columns: ["premium", "region"],
             write_strategy: "input_sliced",
@@ -1165,7 +1165,7 @@ describe("API response guards", () => {
     expect(parsed.execution_metrics?.warnings).toEqual([])
   })
 
-  it("rejects a shared snapshot capture with an unknown outcome", () => {
+  it.each(["evicted", "quota"])("rejects a shared snapshot capture with outcome %s", (outcome) => {
     expect(() =>
       parsePreviewNodeResponse({
         ...loadUiContractFixture<Record<string, unknown>>("preview_node"),
@@ -1176,7 +1176,7 @@ describe("API response guards", () => {
               node_id: "banding",
               identity_digest: "d2",
               kind: "consumed",
-              outcome: "evicted",
+              outcome,
               generation_id: null,
               columns: "all",
             },
@@ -3041,12 +3041,12 @@ describe("API response guards", () => {
     const parsed = parseGitBindStorageResponse({
       outcome: "pending",
       remote_url: "https://github.com/org/repo.git",
-      message: "Saving this project to storage — you can keep working.",
+      message: "Saving this project to storage - you can keep working.",
     })
     expect(parsed).toEqual({
       outcome: "pending",
       remote_url: "https://github.com/org/repo.git",
-      message: "Saving this project to storage — you can keep working.",
+      message: "Saving this project to storage - you can keep working.",
     })
   })
 

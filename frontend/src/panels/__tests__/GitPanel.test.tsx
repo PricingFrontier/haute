@@ -262,7 +262,7 @@ describe("GitPanel", () => {
     expect(screen.getByTestId("git-panel-pending-save")).toHaveTextContent("pending save")
   })
 
-  it("selects (highlights) a save only on click — nothing is auto-selected on open", async () => {
+  it("selects (highlights) a save only on click - nothing is auto-selected on open", async () => {
     mockGetPendingSaves.mockResolvedValue({
       saves: [
         { sha: "a", short_sha: "aabc", message: "a", timestamp: now(), files: [] },

@@ -233,13 +233,13 @@ describe("MlflowDestinationSelector", () => {
     it("names the effective entry's label and destination", () => {
       renderSelector({ value: "databricks" })
       expect(screen.getByTestId("mlflow-destination-resolved")).toHaveTextContent(
-        "Databricks — databricks://team",
+        "Databricks - databricks://team",
       )
 
       cleanup()
       renderSelector({ value: "" })
       expect(screen.getByTestId("mlflow-destination-resolved")).toHaveTextContent(
-        "Local folder — C:/proj/mlruns",
+        "Local folder - C:/proj/mlruns",
       )
     })
 

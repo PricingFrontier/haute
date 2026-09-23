@@ -28,7 +28,7 @@ const FAMILIES = (Object.keys(GLM_FAMILY_LINKS) as GlmFamily[]).map((value) => (
 
 const TWEEDIE_HELP =
   "Tweedie interpolates between Poisson (power 1) and Gamma (power 2); the " +
-  "variance power sets where. There is no sensible default — leaving it unset " +
+  "variance power sets where. There is no sensible default - leaving it unset " +
   "would silently fit at power 1.5, so a choice is required. Estimate profiles " +
   "the likelihood over the power on the node's training data; the result is " +
   "filled in for you to accept or adjust. You can change it later; the value " +

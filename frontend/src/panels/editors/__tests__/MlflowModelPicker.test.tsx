@@ -94,7 +94,7 @@ describe("RegisteredModelPicker", () => {
       render(<RegisteredModelPicker config={{ registered_model: "freq" }} onUpdate={vi.fn()} mlflow={mlflow} />)
       const versionSelect = screen.getAllByRole("combobox")[1]
       const labels = Array.from(versionSelect.querySelectorAll("option")).map((o) => o.textContent)
-      expect(labels).toEqual(["latest", "@champion → v3", "v3 — READY", "v2 — READY"])
+      expect(labels).toEqual(["latest", "@champion → v3", "v3 - READY", "v2 - READY"])
     })
 
     it("stores an alias instead of a version, and a version instead of an alias", () => {

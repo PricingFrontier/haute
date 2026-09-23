@@ -549,7 +549,7 @@ export function apiInputLabelIssueMessage(issue: ApiInputLabelIssue | null): str
   if (issue === null) return null
   switch (issue.kind) {
     case "blank":
-      return "A label is required — it names this table's frame."
+      return "A label is required - it names this table's frame."
     case "identifier":
       return issue.reason === "keyword"
         ? "A frame label cannot be a Python hard keyword."
@@ -557,7 +557,7 @@ export function apiInputLabelIssueMessage(issue: ApiInputLabelIssue | null): str
     case "duplicate":
       return `Duplicate label: "${issue.other}" is already used by another table.`
     case "sanitised-collision":
-      return `Label collides with "${issue.other}": both become "${issue.sanitised}" on disk (case-insensitive — macOS/Windows treat case-variant filenames as one file).`
+      return `Label collides with "${issue.other}": both become "${issue.sanitised}" on disk (case-insensitive - macOS/Windows treat case-variant filenames as one file).`
   }
 }
 

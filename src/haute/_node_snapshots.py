@@ -4,9 +4,9 @@ A node's full output is stored once per *snapshot identity* — a slot
 ``(pipeline source file, node, source, semantics class)`` plus the node's
 checked data signature — as immutable generations beside the input snapshots
 of :class:`haute._source_cache.SourceCacheStore`. Both kinds share the store
-root, byte quota, generation cap, and environment variables.
+root.
 
-Node-output generations can be published, leased, evicted, and cleared by
+Node-output generations can be published, leased, replaced, and cleared by
 several processes at once (the server, spawned workers, and CLI runs), so this
 module adds two cross-process file locks on top of the store's process-local
 state:
@@ -49,14 +49,11 @@ from haute._cache import (
     graph_fingerprint,
 )
 from haute._chunked_writes import part_name, part_paths, scan_parts
-from haute._env import int_env
 from haute._execution_context import ExecutionProfile
 from haute._file_ops import atomic_write_text, ensure_disk_headroom, remove_tree
 from haute._logging import get_logger
 from haute._source_cache import (
     _LEASE_PREFIX,
-    INPUT_CACHE_MAX_BYTES_VARIABLE,
-    INPUT_CACHE_MAX_GENERATIONS_VARIABLE,
     NODE_OUTPUT_PROVIDER,
     CacheBucket,
     SourceCacheCorruptError,
@@ -66,7 +63,6 @@ from haute._source_cache import (
     SourceCacheIdentity,
     SourceCacheLegacyLayoutError,
     SourceCacheMetadata,
-    SourceCacheQuotaExceededError,
     SourceCacheStore,
     _ensure_identity_marker,
     _StoreFileLock,
@@ -85,12 +81,6 @@ logger = get_logger(component="node_snapshots")
 NODE_SNAPSHOT_METADATA_VERSION = 2
 NODE_SNAPSHOT_EXECUTION_SEMANTICS_VERSION = "node-snapshot:v1"
 BOUNDED_SEMANTICS_CLASS = "bounded"
-DEFAULT_NODE_SNAPSHOT_MAX_BYTES = 40 * 1024 * 1024 * 1024
-DEFAULT_NODE_SNAPSHOT_MAX_GENERATIONS = 512
-# As with the input budget's variables in ``haute._source_cache``: the usage
-# report names the variable it read the limit from, so the two cannot drift.
-NODE_SNAPSHOT_MAX_BYTES_VARIABLE = "HAUTE_NODE_SNAPSHOT_MAX_BYTES"
-NODE_SNAPSHOT_MAX_GENERATIONS_VARIABLE = "HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS"
 _SLOT_INDEX_SCHEMA_VERSION = 1
 _LAST_USED_UPDATE_INTERVAL_SECONDS = 60.0
 _RETIRED_PREFIX = ".retired-"
@@ -116,30 +106,6 @@ _BOUNDED_SNAPSHOT_PROFILES = frozenset(
         ExecutionProfile.NODE_SNAPSHOT,
     }
 )
-
-
-@dataclass(frozen=True, slots=True)
-class CacheBudgetUsage:
-    """One budget's usage against its limits, and the variables that set them."""
-
-    generations_used: int
-    generations_limit: int
-    generations_limit_variable: str
-    bytes_used: int
-    bytes_limit: int
-    bytes_limit_variable: str
-
-
-@dataclass(frozen=True, slots=True)
-class CacheUsageReport:
-    """Both of the store's budgets, which are independent of one another.
-
-    Node outputs and input snapshots neither consume nor evict one another, so
-    there is no combined total to report and none is offered.
-    """
-
-    node_outputs: CacheBudgetUsage
-    input_snapshots: CacheBudgetUsage
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,13 +141,10 @@ class CacheInventory:
     ``unattributed_*`` covers what could not be attributed — a generation whose
     ``meta.json`` is absent or unreadable, and staging under an identity that
     holds no readable generation. It is reported rather than dropped so the
-    owners' bytes plus the unattributed bytes account for what the budgets say.
+    owners' bytes plus the unattributed bytes account for the stored data.
 
     ``unmarked_identities`` counts identities that hold generations but whose
-    provider marker does not classify. Those are charged to *both* budgets at
-    admission, and therefore in :class:`CacheUsageReport`, while the inventory
-    attributes each to the one bucket its metadata names — so this is the
-    number that explains a difference between the two.
+    provider marker does not classify.
     """
 
     owners: tuple[CacheOwnerUsage, ...]
@@ -315,7 +278,7 @@ def _owner_for(
     """The owner a generation belongs to, keyed so its generations group.
 
     A node output groups by node and source, which is what that node costs the
-    budget across however many signatures it still has. An input snapshot groups
+    owner across however many signatures it still has. An input snapshot groups
     by **identity**, never by its descriptor's label: the same file read with
     different arguments is a different identity with the same path, and merging
     the two would report one set of bytes for both — and then lose the rest
@@ -368,8 +331,7 @@ def _staging_bytes(identity_dir: Path) -> int:
             directories[:] = [name for name in directories if not (root_path / name).is_symlink()]
             for name in files:
                 file_path = root_path / name
-                # The budget's own walk skips symlinked files; counting them
-                # here would make the report and the bar disagree.
+                # Inventory skips symlinked files, so its byte count does too.
                 if file_path.is_symlink():
                     continue
                 try:
@@ -388,18 +350,6 @@ class NodeSnapshotMultiFrameUnsupportedError(SourceCacheError):
     """A multi-frame output reached a node-output snapshot write."""
 
     error_code = "node_snapshot_multi_frame_unsupported"
-
-
-class NodeSnapshotQuotaRejectedError(SourceCacheQuotaExceededError):
-    """Quota still rejects a node-output publication after automatic eviction.
-
-    The completed staged artifact is not deleted: :attr:`artifact` now belongs
-    to the caller, which reads it for the rest of its request and closes it.
-    """
-
-    def __init__(self, message: str, artifact: NodeSnapshotArtifact) -> None:
-        super().__init__(message)
-        self.artifact = artifact
 
 
 def snapshot_write_class(
@@ -760,82 +710,15 @@ class NodeSnapshotStore(SourceCacheStore):
         self,
         root: str | Path,
         *,
-        max_bytes: int | None = None,
-        max_generations: int | None = None,
         retire_grace_seconds: float | None = None,
-        node_output_max_bytes: int | None = None,
-        node_output_max_generations: int | None = None,
     ) -> None:
-        super().__init__(
-            root,
-            max_bytes=max_bytes,
-            max_generations=max_generations,
-            retire_grace_seconds=retire_grace_seconds,
-        )
-        if node_output_max_bytes is None:
-            node_output_max_bytes = int_env(
-                NODE_SNAPSHOT_MAX_BYTES_VARIABLE,
-                DEFAULT_NODE_SNAPSHOT_MAX_BYTES,
-            )
-        if (
-            isinstance(node_output_max_bytes, bool)
-            or not isinstance(node_output_max_bytes, int)
-            or node_output_max_bytes <= 0
-        ):
-            raise ValueError("source-cache node_output_max_bytes must be a positive integer")
-        self.node_output_max_bytes = node_output_max_bytes
-
-        if node_output_max_generations is None:
-            node_output_max_generations = int_env(
-                NODE_SNAPSHOT_MAX_GENERATIONS_VARIABLE,
-                DEFAULT_NODE_SNAPSHOT_MAX_GENERATIONS,
-            )
-        if (
-            isinstance(node_output_max_generations, bool)
-            or not isinstance(node_output_max_generations, int)
-            or node_output_max_generations <= 0
-        ):
-            raise ValueError("source-cache node_output_max_generations must be a positive integer")
-        self.node_output_max_generations = node_output_max_generations
+        super().__init__(root, retire_grace_seconds=retire_grace_seconds)
         self._slots_dir = self.inputs_root / ".node-slots"
         with self._coordination.guard:
             already_cleaned = self._coordination.retired_cleaned
             self._coordination.retired_cleaned = True
         if not already_cleaned:
             self._cleanup_retired()
-
-    # ------------------------------------------------------------------ usage
-
-    def usage_report(self) -> CacheUsageReport:
-        """Report both budgets' usage against their limits.
-
-        One walk per budget over the identity directories — the same walk, and
-        the same cost, an admission pays. It is deliberately not cheap enough
-        to poll: a caller asks for it when a user asks to see it. An identity
-        whose marker does not classify counts against both budgets here exactly
-        as it does at admission, so what this reports is what would refuse the
-        next capture, not a second opinion about it.
-        """
-        node_generations, node_bytes = self._bucket_usage(NODE_OUTPUT_PROVIDER)
-        input_generations, input_bytes = self._bucket_usage("input")
-        return CacheUsageReport(
-            node_outputs=CacheBudgetUsage(
-                generations_used=node_generations,
-                generations_limit=self.node_output_max_generations,
-                generations_limit_variable=NODE_SNAPSHOT_MAX_GENERATIONS_VARIABLE,
-                bytes_used=node_bytes,
-                bytes_limit=self.node_output_max_bytes,
-                bytes_limit_variable=NODE_SNAPSHOT_MAX_BYTES_VARIABLE,
-            ),
-            input_snapshots=CacheBudgetUsage(
-                generations_used=input_generations,
-                generations_limit=self.max_generations,
-                generations_limit_variable=INPUT_CACHE_MAX_GENERATIONS_VARIABLE,
-                bytes_used=input_bytes,
-                bytes_limit=self.max_bytes,
-                bytes_limit_variable=INPUT_CACHE_MAX_BYTES_VARIABLE,
-            ),
-        )
 
     def clear_identity(self, identity_digest: str) -> int:
         """Clear one identity by its digest, returning the bytes it held.
@@ -884,7 +767,7 @@ class NodeSnapshotStore(SourceCacheStore):
         provider and descriptor — no graph is needed to say whose data this is,
         which is what lets the report name a node that no longer exists.
 
-        Like :meth:`usage_report` this takes no lock and mutates nothing, and
+        This takes no lock and mutates nothing, and
         it is one pass over the identity directories plus one small read per
         generation. It is for an explicit request, not a poll.
         """
@@ -919,7 +802,7 @@ class NodeSnapshotStore(SourceCacheStore):
                 facts = _read_generation_facts(generation_dir)
                 if facts is None:
                     # A generation with no readable metadata still occupies the
-                    # disk the budget counts, so it is reported, not skipped.
+                    # disk contents, so it is reported, not skipped.
                     if (size := generation_bytes(generation_dir)) or (
                         generation_dir / "meta.json"
                     ).exists():
@@ -943,7 +826,7 @@ class NodeSnapshotStore(SourceCacheStore):
 
             staging_bytes = _staging_bytes(identity_dir)
             if staging_bytes:
-                # Staging counts against the budget while it is being written.
+                # Staging is included while it is being written.
                 if identity_owner is not None:
                     identity_owner.size_bytes += staging_bytes
                 else:
@@ -1405,8 +1288,8 @@ class NodeSnapshotStore(SourceCacheStore):
         `_release_node_lease` retires a generation whose pointer has gone — so a
         scan in flight never has its files deleted underneath it. A scan that
         outlives its lease was always a contract violation; under this policy it
-        costs the scan its files at the next re-cache rather than at the next
-        eviction, so the `with` discipline at every call site matters more.
+        costs the scan its files at the next re-cache or clear, so the `with`
+        discipline at every call site matters.
 
         A signature whose generation survived stays *indexed and unpointed*.
         Dropping it from the index would strand that generation where nothing
@@ -1581,8 +1464,7 @@ class NodeSnapshotStore(SourceCacheStore):
         ``explicit`` marks an explicit cache build: it pins the slot and may
         replace a corrupt generation; an automatic capture does neither.
         The writer always continues from its own data: on ``superseded`` the
-        returned handle owns the artifact; a quota rejection after automatic
-        eviction raises :class:`NodeSnapshotQuotaRejectedError` carrying it.
+        returned handle owns the artifact.
         """
         if refresh and not explicit:
             raise ValueError("only an explicit build can refresh a node-output snapshot")
@@ -1621,16 +1503,7 @@ class NodeSnapshotStore(SourceCacheStore):
             retired: list[Path] = []
             try:
                 with self._coordination.lease_lock:
-                    _fault_point("publish_before_admission")
                     superseded_id = self._current_generation_id(identity.digest)
-                    retired.extend(
-                        self._admit_node_output_locked(
-                            identity,
-                            artifact,
-                            new_size_bytes=metadata.size_bytes,
-                            superseded_id=superseded_id,
-                        )
-                    )
                     final_dir = self._generation_dir(identity.digest, generation_id)
                     slot, _signature = NodeSnapshotSlot.from_identity(identity)
                     index = self._read_slot_index(slot)
@@ -1718,180 +1591,3 @@ class NodeSnapshotStore(SourceCacheStore):
         return NodeSnapshotPublication(
             "published", store=self, identity=identity, generation=described
         )
-
-    def _admit_node_output_locked(
-        self,
-        identity: SourceCacheIdentity,
-        artifact: NodeSnapshotArtifact,
-        *,
-        new_size_bytes: int,
-        superseded_id: str | None,
-    ) -> list[Path]:
-        """Admit a publication, retiring unleased automatic generations LRU-first.
-
-        Caller holds the lease lock. Returns the retired paths to delete after
-        the lock is released; raises :class:`NodeSnapshotQuotaRejectedError`
-        without evicting anything when even full eviction cannot make room.
-        """
-        count, size = self._bucket_usage("node_output", exclude=artifact.directory)
-        replacements: set[tuple[str, str]] = set()
-        slot, _signature = NodeSnapshotSlot.from_identity(identity)
-        digests = set(self._read_slot_index(slot)["identities"]) | {identity.digest}
-        for digest in digests:
-            identity_dir = self.inputs_root / digest
-            if classify_identity_marker(identity_dir) not in {"node_output", "unknown"}:
-                continue
-            try:
-                generations = tuple((identity_dir / "generations").iterdir())
-            except FileNotFoundError:
-                continue
-            for generation_dir in generations:
-                if digest == identity.digest and generation_dir.name != superseded_id:
-                    continue
-                if (
-                    generation_dir.is_symlink()
-                    or not generation_dir.is_dir()
-                    or self._has_live_holders_locked(generation_dir)
-                ):
-                    continue
-                # These generations retire only after the new pointer commits.
-                # Never evict them early or count their bytes twice.
-                replacements.add((digest, generation_dir.name))
-                size -= generation_bytes(generation_dir)
-                count -= 1
-        projected_size = size + new_size_bytes
-        projected_count = count + 1
-        if (
-            projected_size <= self.node_output_max_bytes
-            and projected_count <= self.node_output_max_generations
-        ):
-            return []
-
-        candidates = [
-            candidate
-            for candidate in self._eviction_candidates_locked(
-                exclude=(identity.digest, superseded_id)
-            )
-            if (candidate[0], candidate[1]) not in replacements
-        ]
-        reclaimable_size = sum(candidate[2] for candidate in candidates)
-        if (
-            projected_size - reclaimable_size > self.node_output_max_bytes
-            or projected_count - len(candidates) > self.node_output_max_generations
-        ):
-            raise NodeSnapshotQuotaRejectedError(
-                "source-cache quota exceeded: pinned and in-use snapshots are kept until "
-                "explicitly refreshed or cleared. Clear an unused snapshot or raise the "
-                "cache quota.",
-                artifact,
-            )
-        retired: list[Path] = []
-        for identity_digest, generation_id, generation_size, _order in candidates:
-            if (
-                projected_size <= self.node_output_max_bytes
-                and projected_count <= self.node_output_max_generations
-            ):
-                break
-            _fault_point("evict_before_marker_check")
-            generation_dir = self._generation_dir(identity_digest, generation_id)
-            if self._has_live_holders_locked(generation_dir):
-                continue
-            was_current = self._current_generation_id(identity_digest) == generation_id
-            path = self._retire_generation_locked(identity_digest, generation_id)
-            if path is None:
-                continue
-            if was_current:
-                (self.inputs_root / identity_digest / "current.json").unlink(missing_ok=True)
-                evicted_identity = self._identity_from_generation_path(path)
-                if evicted_identity is not None:
-                    self._prune_identity_locked(evicted_identity)
-            retired.append(path)
-            projected_size -= generation_size
-            projected_count -= 1
-            logger.info(
-                "node_snapshot_evicted",
-                identity_digest=identity_digest,
-                generation_id=generation_id,
-                size_bytes=generation_size,
-                was_current=was_current,
-            )
-        if (
-            projected_size > self.node_output_max_bytes
-            or projected_count > self.node_output_max_generations
-        ):
-            # A candidate gained a live holder between selection and retirement.
-            self._delete_retired(retired)
-            raise NodeSnapshotQuotaRejectedError(
-                "source-cache quota exceeded: pinned and in-use snapshots are kept until "
-                "explicitly refreshed or cleared. Clear an unused snapshot or raise the "
-                "cache quota.",
-                artifact,
-            )
-        return retired
-
-    @staticmethod
-    def _identity_from_generation_path(generation_dir: Path) -> SourceCacheIdentity | None:
-        try:
-            raw = json.loads((generation_dir / "meta.json").read_text(encoding="utf-8"))
-            payload = raw["identity"]
-            return SourceCacheIdentity(
-                provider=payload["provider"],
-                descriptor=payload["descriptor"],
-                schema_version=payload["schema_version"],
-            )
-        except (OSError, ValueError, KeyError, TypeError):
-            return None
-
-    def _eviction_candidates_locked(
-        self, *, exclude: tuple[str, str | None]
-    ) -> list[tuple[str, str, int, tuple[int, float]]]:
-        """Unleased automatic node-output generations, superseded first, then LRU."""
-        candidates: list[tuple[str, str, int, tuple[int, float]]] = []
-        pinned_by_slot: dict[str, str | None] = {}
-        for identity_dir in self.inputs_root.iterdir():
-            if not _is_identity_digest(identity_dir.name) or not identity_dir.is_dir():
-                continue
-            generations_dir = identity_dir / "generations"
-            try:
-                generation_dirs = tuple(generations_dir.iterdir())
-            except FileNotFoundError:
-                continue
-            current = self._current_generation_id(identity_dir.name)
-            for generation_dir in generation_dirs:
-                if (identity_dir.name, generation_dir.name) == exclude:
-                    continue
-                try:
-                    raw = json.loads((generation_dir / "meta.json").read_text(encoding="utf-8"))
-                    if raw["identity"]["provider"] != NODE_OUTPUT_PROVIDER:
-                        break
-                    size = generation_bytes(generation_dir)
-                    created_at = float(raw["created_at"])
-                    slot_digest = raw["node_output"]["slot_digest"]
-                except (OSError, ValueError, KeyError, TypeError):
-                    continue
-                is_current = generation_dir.name == current
-                if is_current:
-                    if slot_digest not in pinned_by_slot:
-                        pinned_by_slot[slot_digest] = self._pinned_identity_by_slot_digest(
-                            slot_digest
-                        )
-                    if pinned_by_slot[slot_digest] is not None:
-                        continue
-                if self._in_process_lease_count(identity_dir.name, generation_dir.name):
-                    continue
-                if self._has_live_holders_locked(generation_dir):
-                    continue
-                order = (1 if is_current else 0, self._last_used(generation_dir, created_at))
-                candidates.append((identity_dir.name, generation_dir.name, size, order))
-        candidates.sort(key=lambda candidate: candidate[3])
-        return candidates
-
-    def _pinned_identity_by_slot_digest(self, slot_digest: str) -> str | None:
-        try:
-            raw = json.loads((self._slots_dir / f"{slot_digest}.json").read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return None
-        except ValueError as exc:
-            raise SourceCacheCorruptError("node snapshot slot index is corrupt") from exc
-        pinned = raw.get("pinned_identity") if isinstance(raw, dict) else None
-        return pinned if isinstance(pinned, str) else None

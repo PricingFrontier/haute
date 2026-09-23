@@ -38,6 +38,7 @@ export type ModellingPreviewData = {
 interface ModellingPreviewProps {
   data: ModellingPreviewData
   nodeId: string
+  onRefresh?: () => void
 }
 
 const TAB_KEYS = [
@@ -105,7 +106,7 @@ const VIEW_INTRODUCTIONS: Record<
   },
 }
 
-export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
+export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewProps) {
   const { result } = data
   const [tab, setTab] = useState<TabKey>("summary")
   const [focused, setFocused] = useState(false)
@@ -225,6 +226,7 @@ export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
       <PreviewPanelFrame
         nodeLabel={data.nodeLabel}
         nodeType={NODE_TYPES.MODELLING}
+        onRefresh={onRefresh}
         collapsedMeta={result.status === "error" ? "Error" : metricsSummary}
         data-testid="modelling-preview-frame"
         initialHeight={initialHeight}

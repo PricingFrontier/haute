@@ -87,7 +87,7 @@ function makeTrace(overrides: Partial<TraceResult> = {}): TraceResult {
 // A. Expression Display Tests
 // ---------------------------------------------------------------------------
 
-describe("TracePanel — Expression Display", () => {
+describe("TracePanel - Expression Display", () => {
   afterEach(cleanup)
 
   it("renders an arithmetic expression formula when step has expression", () => {
@@ -305,7 +305,7 @@ describe("TracePanel — Expression Display", () => {
 // B. Calculation Display Tests
 // ---------------------------------------------------------------------------
 
-describe("TracePanel — Calculation Display", () => {
+describe("TracePanel - Calculation Display", () => {
   afterEach(cleanup)
 
   it("shows substituted calculation values when calculation is present", () => {
@@ -465,7 +465,7 @@ describe("TracePanel — Calculation Display", () => {
 // C. Node Detail Tests
 // ---------------------------------------------------------------------------
 
-describe("TracePanel — Node Detail", () => {
+describe("TracePanel - Node Detail", () => {
   afterEach(cleanup)
 
   it("renders banding detail with matched band info", () => {
@@ -1269,7 +1269,7 @@ describe("TracePanel — Node Detail", () => {
     expect(screen.getAllByText("default used").length).toBeGreaterThan(0)
     expect(screen.getByText(/default:.*1/)).toBeInTheDocument()
     expect(screen.getByText("status: no match")).toBeInTheDocument()
-    expect(screen.getByText(/selected.*\u2014/)).toBeInTheDocument()
+    expect(screen.getByText(/selected.*-/)).toBeInTheDocument()
   })
 
   it("renders banding detail with edge boundary value", () => {
@@ -1333,7 +1333,7 @@ describe("TracePanel — Node Detail", () => {
 // D. Row Lineage Type Tests
 // ---------------------------------------------------------------------------
 
-describe("TracePanel — Row Lineage Type", () => {
+describe("TracePanel - Row Lineage Type", () => {
   afterEach(cleanup)
 
   it("shows pass-through indicator for passthrough lineage", () => {
@@ -1432,7 +1432,7 @@ describe("TracePanel — Row Lineage Type", () => {
 // E. Waterfall View Concept Tests
 // ---------------------------------------------------------------------------
 
-describe("TracePanel — Waterfall View Concepts", () => {
+describe("TracePanel - Waterfall View Concepts", () => {
   afterEach(cleanup)
 
   it("renders steps in topological order", () => {

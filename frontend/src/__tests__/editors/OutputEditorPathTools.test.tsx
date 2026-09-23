@@ -123,7 +123,7 @@ describe("substitutePrefix", () => {
 
 // ─── INLINE PATH-EDIT (pencil/double-click → in-place input) ──────
 
-describe("OutputEditor — inline path edit", () => {
+describe("OutputEditor - inline path edit", () => {
   beforeEach(() => installClipboard())
 
   const singlePolicyConfig = {
@@ -190,7 +190,7 @@ describe("OutputEditor — inline path edit", () => {
     expect(byCol["policy_id"]).toBe("$[:].policies.policy_id")
   })
 
-  it("Escape cancels — no substitution, edit mode closes, paths unchanged", () => {
+  it("Escape cancels - no substitution, edit mode closes, paths unchanged", () => {
     const onUpdateSpy = vi.fn()
     render(<StatefulHarness initialConfig={singlePolicyConfig} onUpdateSpy={onUpdateSpy} />)
     fireEvent.click(screen.getByTestId("output-frame-0-path-edit-toggle"))
@@ -203,7 +203,7 @@ describe("OutputEditor — inline path edit", () => {
     expect(screen.getByTestId("output-frame-0-header-path").textContent).toBe("$[:]")
   })
 
-  it("the cross cancels — no substitution", () => {
+  it("the cross cancels - no substitution", () => {
     const onUpdateSpy = vi.fn()
     render(<StatefulHarness initialConfig={singlePolicyConfig} onUpdateSpy={onUpdateSpy} />)
     fireEvent.click(screen.getByTestId("output-frame-0-path-edit-toggle"))
@@ -230,7 +230,7 @@ describe("OutputEditor — inline path edit", () => {
 
 // ─── per-frame + top-level table actions ──────────────────────────
 
-describe("OutputEditor — wired FrameTableActions", () => {
+describe("OutputEditor - wired FrameTableActions", () => {
   beforeEach(() => installClipboard())
 
   it("the per-frame Copy emits the frame's rows as tab-separated text", async () => {

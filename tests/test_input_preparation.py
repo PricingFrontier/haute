@@ -603,13 +603,12 @@ def test_the_parent_retires_the_superseded_generation_after_a_spawned_build(
     assert store.open_generation(identity).generation_id == record.generation_id
 
 
-def test_a_spawned_refresh_cannot_exceed_the_quota_while_the_parent_leases(
+def test_a_spawned_refresh_preserves_the_parent_leased_generation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The child treats the parent's leased generations as retained, not reclaimable."""
-    monkeypatch.setenv("HAUTE_INPUT_CACHE_MAX_GENERATIONS", "1")
-    store = _project(tmp_path, monkeypatch)
+    """The child publishes fresh data while the parent retains its leased generation."""
+    store = _project(tmp_path, monkeypatch, retire_grace_seconds=0)
     path = tmp_path / "rows.csv"
     pl.DataFrame({"id": [1, 2]}).write_csv(path)
     config = _csv_config(path)
@@ -624,23 +623,25 @@ def test_a_spawned_refresh_cannot_exceed_the_quota_while_the_parent_leases(
         assert leased.generation_id == first.generation_id
         context = _context()
         try:
-            with pytest.raises(InputPreparationError) as excinfo:
-                _prepare(config, store=store, base_dir=tmp_path, context=context, spawn=spawn)
+            record = _prepare(config, store=store, base_dir=tmp_path, context=context, spawn=spawn)[
+                0
+            ]
         finally:
             context.release_admission()
-        assert excinfo.value.reason_code == "quota_exceeded"
-        # Nothing was published: the leased generation is still current and readable.
-        assert [child.name for child in generations.iterdir()] == [first.generation_id]
-        assert store.open_generation(identity).generation_id == first.generation_id
+        assert record.action == "refreshed"
+        assert record.generation_id != first.generation_id
+        assert store.open_generation(identity).metadata.row_count == 3
         assert leased.lazy_frame.collect().height == 2
+        assert first.generation_id in {child.name for child in generations.iterdir()}
+
+    assert not (generations / first.generation_id).exists()
 
 
-def test_a_spawned_refresh_publishes_at_the_quota_without_a_parent_lease(
+def test_a_spawned_refresh_retires_an_unleased_parent_generation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Without a parent lease the same refresh publishes and the parent retires."""
-    monkeypatch.setenv("HAUTE_INPUT_CACHE_MAX_GENERATIONS", "1")
+    """Without a parent lease, refresh retires the old generation promptly."""
     store = _project(tmp_path, monkeypatch, retire_grace_seconds=0)
     path = tmp_path / "rows.csv"
     pl.DataFrame({"id": [1, 2]}).write_csv(path)
@@ -1185,7 +1186,6 @@ def _remote_error(remote_type: str) -> IsolatedWorkerRemoteError:
 @pytest.mark.parametrize(
     ("remote_type", "expected"),
     [
-        ("SourceCacheQuotaExceededError", "quota_exceeded"),
         ("NativeMemoryLimitUnsupportedError", "cap_unavailable"),
         ("NativeMemoryLimitCleanupError", "cap_unavailable"),
         ("MemoryError", "memory_limited"),
@@ -1230,7 +1230,6 @@ def test_each_preparation_reason_code_has_its_own_remediation(
 
     remediations: dict[str, str] = {}
     for remote_type, reason in (
-        ("SourceCacheQuotaExceededError", "quota_exceeded"),
         ("NativeMemoryLimitUnsupportedError", "cap_unavailable"),
         ("MemoryError", "memory_limited"),
         ("ValueError", "build_failed"),
@@ -1251,7 +1250,6 @@ def test_each_preparation_reason_code_has_its_own_remediation(
         remediations[reason] = excinfo.value.remediation
 
     assert len(set(remediations.values())) == len(remediations)
-    assert "quota" in remediations["quota_exceeded"]
     assert "native memory cap" in remediations["cap_unavailable"]
     assert "memory" in remediations["memory_limited"]
 
@@ -1830,7 +1828,7 @@ def test_a_single_flight_waiter_inherits_the_owners_typed_failure(
         spawns.append(args)
         owner_building.set()
         assert waiter_waiting.wait(timeout=10)
-        raise _remote_error("SourceCacheQuotaExceededError")
+        raise _remote_error("ValueError")
 
     owner_failure: list[BaseException] = []
 
@@ -1856,8 +1854,8 @@ def test_a_single_flight_waiter_inherits_the_owners_typed_failure(
         context.release_admission()
 
     assert isinstance(owner_failure[0], InputPreparationError)
-    assert owner_failure[0].reason_code == "quota_exceeded"
-    assert excinfo.value.reason_code == "quota_exceeded"
+    assert owner_failure[0].reason_code == "build_failed"
+    assert excinfo.value.reason_code == "build_failed"
     assert "Another execution's snapshot build" in str(excinfo.value)
     assert len(spawns) == 1
 

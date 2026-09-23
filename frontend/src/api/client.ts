@@ -13,7 +13,6 @@ import type {
   ApplyOptimiserResponse,
   CacheClearResponse,
   CacheNodesResponse,
-  CacheUsageResponse,
   DatabricksCatalogsResponse,
   DatabricksSchemasResponse,
   DatabricksTablesResponse,
@@ -115,7 +114,6 @@ import {
   parseApplyOptimiserResponse,
   parseCacheClearResponse,
   parseCacheNodesResponse,
-  parseCacheUsageResponse,
   parseDatabricksCatalogsResponse,
   parseDatabricksSchemasResponse,
   parseDatabricksTablesResponse,
@@ -1183,21 +1181,8 @@ export function fetchIoCapabilities(
 }
 
 // ---------------------------------------------------------------------------
-// Cache usage (the cache settings pane)
+// Cache inventory (the cache settings pane)
 // ---------------------------------------------------------------------------
-
-/**
- * Read both cache budgets' usage against their limits.
- *
- * The server walks every identity, generation and staging entry to answer
- * this — what an admission pays — so a caller asks for it when a user asks to
- * see it, and never on a timer.
- */
-export function fetchCacheUsage(
-  options?: { signal?: AbortSignal },
-): Promise<CacheUsageResponse> {
-  return request<unknown>("/api/cache/usage", options).then(parseCacheUsageResponse)
-}
 
 /**
  * Report every node of `graph` and everything else the store holds.

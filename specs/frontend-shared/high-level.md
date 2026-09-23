@@ -219,10 +219,10 @@ the right-click node menu with roving-tabindex arrow-key navigation.
 column layout. The brand section displays the lowercase brand heading and
 package-derived browser version alongside live status dots, aligned to the node palette
 boundary (x = 181px). Adjacent columns house the source selector stacked above a
-Cache control that shares its width and opens the cache usage pane,
-preview/chunk row limits with synchronized width expansion, integer-ms timing and memory breakdowns, undo/redo with
+Pipeline control that shares its width and opens the pipeline settings pane
+(preview/chunk row limits and the cached-data inventory), integer-ms timing and memory breakdowns, undo/redo with
 text labels, zoom in/out, centre/layout, Submodel/Instance selection actions, utility/imports,
-assistant and an external Documentation link, and the working branch indicator stacked above
+assistant and a Help menu (Documentation, Hotkeys, Report a bug), and the working branch indicator stacked above
 equal-width Save and Commit buttons.
 `NodeSearch` is the Ctrl+K command palette, windowed to
 render only visible rows for large graphs; the application loads its module

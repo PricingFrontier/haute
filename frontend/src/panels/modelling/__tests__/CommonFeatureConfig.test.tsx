@@ -50,7 +50,7 @@ describe("CommonFeatureConfig", () => {
     expect(screen.queryByText("target")).toBeNull()
     expect(screen.queryByText("weight")).toBeNull()
     expect(screen.queryByText("date")).toBeNull()
-    expect(screen.getByText("missing_feature — not found")).toBeInTheDocument()
+    expect(screen.getByText("missing_feature - not found")).toBeInTheDocument()
     expect(within(featureRow("region")).getByText("String")).toHaveClass("text-amber-400")
     expect(within(featureRow("age")).getByText("Int64")).toHaveClass("text-blue-400")
     expect(within(featureRow("severity")).getByText("Float64")).toHaveClass("text-emerald-400")

@@ -43,12 +43,12 @@ describe("formatTraceValue", () => {
   })
 
   // --- NULL / NaN / Infinity ---
-  it("formats null as an em dash", () => {
-    expect(formatTraceValue(null)).toBe("\u2014")
+  it("formats null as a dash", () => {
+    expect(formatTraceValue(null)).toBe("-")
   })
 
-  it("formats undefined as an em dash", () => {
-    expect(formatTraceValue(undefined)).toBe("\u2014")
+  it("formats undefined as a dash", () => {
+    expect(formatTraceValue(undefined)).toBe("-")
   })
 
   it("formats NaN", () => {
@@ -265,9 +265,9 @@ describe("formatCalculation", () => {
       values: { premium: null },
       result: null,
     })
-    expect(result).toContain("\u2014")
+    expect(result).toContain("-")
     expect(result).toContain("0.7")
-    expect(result).toMatch(/= \u2014$/)
+    expect(result).toMatch(/= -$/)
   })
 
   it("shows column name when value is missing from values map", () => {

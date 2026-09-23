@@ -15,7 +15,6 @@ from haute._node_snapshots import NodeSnapshotStore
 from haute._source_cache import (
     SourceCacheBuildContext,
     SourceCacheIdentity,
-    SourceCacheQuotaExceededError,
     SourceCacheStore,
 )
 
@@ -105,25 +104,23 @@ def test_foreign_input_reader_survives_clear_until_release(
     assert not generation.directory.exists()
 
 
-def test_foreign_reader_blocks_input_replacement_admission_until_release(tmp_path: Path) -> None:
+def test_foreign_reader_keeps_old_input_generation_during_refresh(tmp_path: Path) -> None:
     ctx = mp.get_context("spawn")
     ready, release, results = ctx.Queue(), ctx.Event(), ctx.Queue()
-    store = SourceCacheStore(tmp_path, max_generations=1, retire_grace_seconds=0)
+    store = SourceCacheStore(tmp_path, retire_grace_seconds=0)
     identity = _identity()
     first = store.build(identity, _Builder(1), context=_context())
     reader = ctx.Process(target=_reader, args=(str(tmp_path), ready, release, results, True))
     try:
         reader.start()
         assert ready.get(timeout=_TIMEOUT) == first.generation_id
-        with pytest.raises(SourceCacheQuotaExceededError):
-            store.build(identity, _Builder(2), context=_context(), refresh=True)
+        second = store.build(identity, _Builder(2), context=_context(), refresh=True)
+        assert second.lazy_frame.collect()["value"].to_list() == [2]
         assert first.directory.exists()
         release.set()
         assert results.get(timeout=_TIMEOUT) == [1]
     finally:
         _stop(reader, release)
-    second = store.build(identity, _Builder(2), context=_context(), refresh=True)
-    assert second.lazy_frame.collect()["value"].to_list() == [2]
 
 
 def test_refresh_keeps_a_foreign_held_generation_until_its_last_release(tmp_path: Path) -> None:

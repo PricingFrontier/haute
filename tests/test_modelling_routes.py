@@ -3640,7 +3640,9 @@ class TestDispersionErrorPaths:
         metrics = job["execution_metrics"]
         assert metrics["operation"] == "dispersion_estimate"
         assert [capture["node_id"] for capture in metrics["shared_snapshot_captures"]] == ["join"]
-        assert [warning["code"] for warning in metrics["warnings"]] == ["snapshot_capture_skipped"]
+        assert [warning["code"] for warning in metrics["warnings"]] == [
+            "snapshot_capture_superseded"
+        ]
 
     def test_worker_fallback_stamps_curated_message(self, tmp_path: Path):
         """Entrypoint-level stamp pin: an unexpected in-worker exception must

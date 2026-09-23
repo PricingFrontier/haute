@@ -90,7 +90,7 @@ test.describe("core browser flows", () => {
     await trainButton.click()
 
     await expect(
-      page.getByText(/Model trained — results in preview panel below/i),
+      page.getByText(/Model trained - results in preview panel below/i),
     ).toBeVisible({ timeout: 120_000 })
     await expect(page.getByText("Model Info")).toBeVisible()
     await expect(
@@ -103,7 +103,7 @@ test.describe("core browser flows", () => {
     await modelNode.click()
 
     await expect(
-      page.getByText(/Model trained — results in preview panel below/i),
+      page.getByText(/Model trained - results in preview panel below/i),
     ).toBeVisible()
     await expect(page.getByText("Model Info")).toBeVisible()
     await expect(page.getByText("Experiment tracking")).toHaveCount(0)
@@ -154,7 +154,7 @@ test.describe("core browser flows", () => {
     await panes.getByRole("tab", { name: "Train", exact: true }).click()
     await page.getByRole("button", { name: /Train Model/i }).click()
     await expect(
-      page.getByText(/Model trained — results in preview panel below/i),
+      page.getByText(/Model trained - results in preview panel below/i),
     ).toBeVisible({ timeout: 120_000 })
     // GLM fit details are collapsed under the Summary's "Fit details" disclosure.
     await page.getByText("Fit details", { exact: true }).click()

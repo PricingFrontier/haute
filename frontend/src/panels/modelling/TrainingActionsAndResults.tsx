@@ -260,7 +260,7 @@ export function TrainingActionsAndResults({
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--train-complete-bg)", border: "1px solid var(--train-complete-border)" }}>
           <CheckCircle2 size={12} style={{ color: "var(--train-complete-text)" }} className="shrink-0" />
           <span style={{ color: "var(--train-complete-text)" }}>
-            Model trained — results in preview panel below
+            Model trained - results in preview panel below
           </span>
         </div>
       )}

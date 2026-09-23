@@ -351,17 +351,16 @@ def test_build_deadline_owns_timeout_status_and_error_code(
     assert terminal["error_code"] == "build_timed_out"
 
 
-def test_quota_failure_has_a_stable_safe_error_code(
+def test_write_failure_has_a_stable_safe_error_code(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from haute._source_cache import SourceCacheQuotaExceededError
     from haute.routes import input_cache
 
-    def quota_rejected(*args: Any, **kwargs: Any) -> Any:
-        raise SourceCacheQuotaExceededError("private cache path must not escape")
+    def write_failed(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("private cache path must not escape")
 
-    monkeypatch.setattr(input_cache, "build_input_snapshot", quota_rejected)
+    monkeypatch.setattr(input_cache, "build_input_snapshot", write_failed)
     started = client.post(
         "/api/input-cache/build",
         json={"schema_version": 1, "config": _file_config()},
@@ -370,7 +369,7 @@ def test_quota_failure_has_a_stable_safe_error_code(
 
     terminal = _wait_for_terminal(client, started.json()["job_id"])
     assert terminal["status"] == "error"
-    assert terminal["error_code"] == "cache_quota_exceeded"
+    assert terminal["error_code"] == "build_failed"
     assert "private cache path" not in terminal["message"]
 
 
@@ -603,7 +602,6 @@ def test_admitted_eager_memory_limit_reconciles_and_keeps_the_previous_generatio
     [
         ("cancelled", "cancelled", "build_cancelled"),
         ("timed_out", "timed_out", "build_timed_out"),
-        ("quota", "error", "cache_quota_exceeded"),
         ("failed", "error", "build_failed"),
     ],
 )
@@ -615,7 +613,6 @@ def test_admitted_eager_worker_failures_map_onto_the_job_lifecycle(
     expected_status: str,
     expected_error_code: str,
 ) -> None:
-    from haute._source_cache import SourceCacheQuotaExceededError
     from haute._worker_isolation import (
         IsolatedWorkerStoppedError,
         IsolatedWorkerTimeoutError,
@@ -628,8 +625,6 @@ def test_admitted_eager_worker_failures_map_onto_the_job_lifecycle(
             raise IsolatedWorkerStoppedError(terminal_reason="cancelled")
         if failure_factory == "timed_out":
             raise IsolatedWorkerTimeoutError(timeout_seconds=1.0)
-        if failure_factory == "quota":
-            raise SourceCacheQuotaExceededError("snapshot exceeds the cache quota")
         raise RuntimeError("forced worker build failure")
 
     _admitted_eager_harness(monkeypatch, child)

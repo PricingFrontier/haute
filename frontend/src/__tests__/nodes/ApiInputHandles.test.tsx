@@ -240,7 +240,7 @@ describe("apiInput handle identity across zoom levels", () => {
 describe("apiInput Handles never synthesize ids (W1.4)", () => {
   afterEach(cleanup)
 
-  it("a blank-label emit table renders NO handle — no port_<idx> fallback", () => {
+  it("a blank-label emit table renders NO handle - no port_<idx> fallback", () => {
     const { container } = renderNode({
       path: "data/quotes.json",
       tables: [
@@ -269,7 +269,7 @@ describe("apiInput Handles never synthesize ids (W1.4)", () => {
     },
   )
 
-  it("duplicate labels render ONE handle (first occurrence) — no __<idx> disambiguation", () => {
+  it("duplicate labels render ONE handle (first occurrence) - no __<idx> disambiguation", () => {
     const { container } = renderNode({
       path: "data/quotes.json",
       tables: [

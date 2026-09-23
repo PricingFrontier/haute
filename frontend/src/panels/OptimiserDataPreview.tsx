@@ -29,6 +29,7 @@ export const OPTIMISER_DATA_PREVIEW_ROW_LIMIT = 5_000
 interface OptimiserDataPreviewProps {
   data: PreviewData
   config: Record<string, unknown>
+  onRefresh?: () => void
 }
 
 type QuoteRow = {
@@ -401,6 +402,7 @@ function ScenarioStatsTable({
 export default function OptimiserDataPreview({
   data,
   config,
+  onRefresh,
 }: OptimiserDataPreviewProps) {
   const [tab, setTab] = useState<"chart" | "statistics">("chart")
 
@@ -542,6 +544,7 @@ export default function OptimiserDataPreview({
         nodeLabel={data.nodeLabel}
         nodeType={NODE_TYPES.OPTIMISER}
         collapsedMeta="Configure an objective column"
+        onRefresh={onRefresh}
         data-testid="optimiser-data-preview-frame"
       >
         <div className="flex-1 flex items-center px-4 text-xs" style={{ color: "var(--text-muted)" }}>
@@ -557,6 +560,7 @@ export default function OptimiserDataPreview({
         nodeLabel={data.nodeLabel}
         nodeType={NODE_TYPES.OPTIMISER}
         collapsedMeta="No scenario data"
+        onRefresh={onRefresh}
         data-testid="optimiser-data-preview-frame"
       >
         <div className="flex-1 flex items-center px-4 text-xs" style={{ color: "var(--text-muted)" }}>
@@ -643,6 +647,7 @@ export default function OptimiserDataPreview({
       nodeLabel={data.nodeLabel}
       nodeType={NODE_TYPES.OPTIMISER}
       subtitle={metadata}
+      onRefresh={onRefresh}
       actions={actions}
       collapsedMeta={metadata}
       data-testid="optimiser-data-preview-frame"

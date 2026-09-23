@@ -21,6 +21,7 @@ function makeParams() {
     setSelectedNode: vi.fn(),
     setPreviewData: vi.fn(),
     fitView: vi.fn(),
+    getInternalNode: vi.fn(),
     submodels: {} as Record<string, unknown>,
     resolveNodeIdentities: vi.fn(async (nodes: readonly Node[]) => [...nodes]),
   }
@@ -757,6 +758,19 @@ describe("useNodeHandlers", () => {
     act(() => { vi.advanceTimersByTime(100) })
     expect(params.fitView).toHaveBeenCalledWith({ padding: 0.15 })
     vi.useRealTimers()
+  })
+
+  it("forwards React Flow's internal-node lookup to the layout utility", async () => {
+    const params = makeParams()
+    const n1 = makeNode("n1")
+    params.graphRef.current = { nodes: [n1], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    await act(async () => {
+      await result.current.handleAutoLayout()
+    })
+
+    expect(getLayoutedElements).toHaveBeenCalledWith([n1], [], params.getInternalNode)
   })
 
   it("exposes pending auto-layout state while ELK is loading", async () => {

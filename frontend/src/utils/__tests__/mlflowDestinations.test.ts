@@ -276,7 +276,7 @@ describe("mlflowLogAvailability", () => {
     expect(result.reason).toBe("[mlflow] mode is no longer a supported key")
   })
 
-  it("stays available when the probe failed — the amber light carries the warning", () => {
+  it("stays available when the probe failed - the amber light carries the warning", () => {
     const result = mlflowLogAvailability(inventory(), "server")
     expect(result).toEqual({
       available: true,

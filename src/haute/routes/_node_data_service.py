@@ -50,7 +50,6 @@ from haute._logging import get_logger
 from haute._node_snapshots import (
     NodeSnapshotColumns,
     NodeSnapshotMultiFrameUnsupportedError,
-    NodeSnapshotQuotaRejectedError,
     NodeSnapshotSlot,
     NodeSnapshotStore,
 )
@@ -154,7 +153,7 @@ class _NodeSnapshotWorkerRequest:
 class _NodeSnapshotWorkerOutcome:
     generation_id: str | None = None
     outcome: Literal["published", "superseded"] | None = None
-    failure_kind: Literal["public_contract", "contract", "memory", "quota"] | None = None
+    failure_kind: Literal["public_contract", "contract", "memory"] | None = None
     detail: str | None = None
     payload: dict[str, Any] | None = None
     terminal_reason: str | None = None
@@ -167,7 +166,7 @@ class _WorkerReportedError(RuntimeError):
 
     def __init__(
         self,
-        kind: Literal["public_contract", "contract", "memory", "quota", "changed"],
+        kind: Literal["public_contract", "contract", "memory", "changed"],
         detail: str,
         payload: dict[str, Any] | None,
         terminal_reason: str | None,
@@ -248,10 +247,6 @@ def _run_node_snapshot_worker(
             detail=str(exc),
             payload=exc.to_payload(),
             worker_evidence=evidence(),
-        )
-    except NodeSnapshotQuotaRejectedError as exc:
-        return _NodeSnapshotWorkerOutcome(
-            failure_kind="quota", detail=str(exc), worker_evidence=evidence()
         )
     except (
         ContractMismatchError,
@@ -359,17 +354,6 @@ def _build_node_snapshot(
                 ),
                 refresh=request.refresh,
             )
-        except NodeSnapshotQuotaRejectedError as exc:
-            exc.artifact.close()
-            # An automatic capture refused by quota records this warning
-            # (``_execute_lazy._PlannedCaptures.capture``) and the preview pane
-            # names the node and both remedies from it. A build the user asked
-            # for said nothing at all, so its failure reached them as the
-            # store's own text with no node in it. Same warning, same display.
-            execution_context.record_execution_warning(
-                "snapshot_capture_skipped", node_id=request.node_id, reason="quota"
-            )
-            raise
         except BaseException:
             artifact.close()
             raise
@@ -1192,9 +1176,6 @@ class NodeDataService:
             elif exc.kind == "public_contract":
                 fields = cast(dict[str, Any], exc.payload)
                 terminal_reason = cast(TerminalReason, exc.terminal_reason or "contract_error")
-            elif exc.kind == "quota":
-                fields = {"error": exc.detail}
-                terminal_reason = "error"
             elif exc.kind == "changed":
                 fields = {"error": exc.detail, "error_code": PointDataChangedError.error_code}
                 terminal_reason = "contract_error"
@@ -1202,10 +1183,7 @@ class NodeDataService:
                 fields = {"error": exc.detail}
                 terminal_reason = "contract_error"
             if execution_context is not None:
-                # What the build did before it stopped. A capture the store
-                # refused is recorded here as the warning the preview pane
-                # already renders, naming the node and both remedies. Evidence
-                # is worth less than the transition, though: a payload that
+                # Preserve what the build did before it stopped. A payload that
                 # will not validate must not leave the job running for ever,
                 # so it is dropped with a log line and the job still ends.
                 try:
@@ -1454,7 +1432,7 @@ class NodeDataService:
                 execution_context.release_admission()
             # Last resort, for a path that failed while publishing its status: a
             # killed worker could not remove its own staging directory, which
-            # would otherwise hold quota for days.
+            # would otherwise occupy disk space for days.
             self._discard_staging(request)
             self._jobs.release(job_id)
             with self._lock:

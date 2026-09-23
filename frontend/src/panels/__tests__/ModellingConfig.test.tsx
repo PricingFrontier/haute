@@ -1177,7 +1177,7 @@ describe("ModellingConfig", () => {
         },
       })
       renderConfig()
-      expect(screen.getByText(/Model trained — results in preview panel below/)).toBeTruthy()
+      expect(screen.getByText(/Model trained - results in preview panel below/)).toBeTruthy()
     })
 
     it("does not show completion badge when training is active", () => {
@@ -1205,7 +1205,7 @@ describe("ModellingConfig", () => {
         },
       })
       renderConfig()
-      expect(screen.queryByText(/Model trained — results in preview panel below/)).toBeNull()
+      expect(screen.queryByText(/Model trained - results in preview panel below/)).toBeNull()
     })
 
     it("does not show completion badge for error results", () => {
@@ -1221,7 +1221,7 @@ describe("ModellingConfig", () => {
         },
       })
       renderConfig()
-      expect(screen.queryByText(/Model trained — results in preview panel below/)).toBeNull()
+      expect(screen.queryByText(/Model trained - results in preview panel below/)).toBeNull()
     })
   })
 
@@ -2026,7 +2026,7 @@ describe("ModellingConfig", () => {
 
     describe("Export pane", () => {
       const EXPORT_BLOCKED_NO_MODEL = "Train this model to export it."
-      const EXPORT_BLOCKED_TRAINING = "Training is running — export is available when it completes."
+      const EXPORT_BLOCKED_TRAINING = "Training is running - export is available when it completes."
       const EXPORT_STALE =
         "Training settings changed since this model was trained. Exports use the last trained model."
 

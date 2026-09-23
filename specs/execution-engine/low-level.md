@@ -415,12 +415,12 @@ the engine owns the call order, the `input_snapshot_auto_build` warning, and the
 regenerated into the frontend contracts. A planned execution adds, the same way,
 `shared_snapshot_seeds` (node, identity digest, generation id, the columns read),
 `shared_snapshot_captures` (node, identity digest, capture kind, outcome `published`,
-`superseded`, or `quota`, the published generation id or null, the columns written),
+or `superseded`, the published generation id or null, the columns written),
 `shared_snapshot_capture_skips` (node and reason, `cheap_segment` or
 `slice_transparent_feeder`, recorded from the plan's `skipped_captures` when the plan is
 entered and carried through worker evidence like the other lists), and
-`warnings` (`code`, `node_id`, `reason`), which carries `snapshot_capture_skipped` with
-reason `quota` and `snapshot_capture_superseded` for every capture that kept its own
+`warnings` (`code`, `node_id`, `reason`), which carries
+`snapshot_capture_superseded` for every capture that kept its own
 data. `_runtime_input_paths` signs a snapshot-backed
 input by its generation pointer and its current source signature.
 
@@ -464,8 +464,8 @@ collected. Each executed node records its dependency closure, and a capture poin
 written by the chunked writer through the same `_PlannedCaptures.capture` the lazy engine
 uses — an edge join with the recipe of the frames its builder received — right after its
 output is formed and before anything below it is collected: consumers and the
-node's own collection read the publication, or, on quota rejection or supersession, the
-request-owned artifact (`snapshot_capture_skipped`). The row limit still applies only at
+node's own collection read the publication, or, on supersession, the
+request-owned artifact (`snapshot_capture_superseded`). The row limit still applies only at
 collection, so every capture holds the node's full output — the only builder that
 consumes the limit is Model Score, whose row-local scan scores every row a consumer pulls.
 A capture's `SourceCacheError` or `OSError` is the store's failure and propagates even
@@ -776,7 +776,7 @@ is published as an automatic generation whose `dependencies` are the closure the
 recorded for the node: every seed and published capture read upstream along effective
 edges, each with its own recorded dependencies, and for a capture that kept its own data,
 only what it was built from. Execution continues from the publication's frame. A superseded
-publication, a changed input, or a `NodeSnapshotQuotaRejectedError` continues from the
+publication or a changed input continues from the
 run's own staged artifact, which the plan owns and removes when it closes; any other store
 error propagates after the staged artifact is removed. The consumed nodes are preserved
 outputs. A capture's storage never interpolates a node id: the store keys it by the
@@ -2249,7 +2249,7 @@ present a structural or schema result as execution evidence.
 - **`tests/test_preview_snapshot_seeding.py`** — the eager engine under a preview plan: a
   seeded node builds nothing at or above it; a capture under a row limit holds the full
   output and the limited rows are read from it; the limit-boundary filter and sum over a
-  seed; a quota-rejected capture continues from its own artifact and is reported — both
+  seed; a superseded capture continues from its own artifact and is reported — both
   with the sources removed once the capture returns, so nothing below can recompute it; a
   filter and a rename capture nothing; a join below a row-limited Model Score captures
   every scored row; a store failure while capturing propagates while a node's own failure
@@ -2265,7 +2265,7 @@ present a structural or schema result as execution evidence.
   preview capturing the join and returning an unadmitted preview's rows, a second preview
   below it seeding and building no source, a join target, a training run seeding the
   preview's capture, a refreshed join missing the cache, a stale join recaptured, a clear
-  or an eviction never serving the cached response, corruption and a permission error on
+  never serving the cached response, corruption and a permission error on
   a listed generation propagating from a cache hit without executing, an input changed
   after a capture storing nothing, an input changed after the re-check keying the entry
   by the inputs executed, a post-capture plan naming an unread generation storing
@@ -2282,13 +2282,13 @@ present a structural or schema result as execution evidence.
 - **`tests/test_snapshot_seeding.py`** — planned lazy executions: a re-run seeding the
   first run's capture builds nothing upstream and returns an equal frame; disjoint demand
   publishes one widened generation; a narrow upstream snapshot is not seeded and is
-  widened in the same run; with the quota full of pinned generations a shuffled join is
+  widened in the same run; when publication is superseded a shuffled join is
   computed once and read back from its staged artifact; both paused-run diamonds (a
   seeded `A` refreshed, and an uncaptured random `A`) keep run 1 on its own data; recorded
   dependency closures include a seed's own dependencies; an empty demand keeps its row
   count seeded and cold; a batch Model Score publishes its scored file without a second
   write, a re-run seeding it makes no scoring calls, one with post-processing code or a
-  rename is sunk after it, and a quota rejection keeps the scored file; a two-input
+  rename is sunk after it, and a superseded publication keeps the scored file; a two-input
   modelling node never builds its unselected branch; a
   pass-through returns the selected API-input port; best-effort and strict missing
   columns; a corrupt latest generation fails the run naming the node; inputs changed before

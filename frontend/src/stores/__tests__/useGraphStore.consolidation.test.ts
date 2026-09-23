@@ -210,7 +210,7 @@ function asGraphSnapshot(entry: HistoryEntryShape | undefined): GraphSnapshot {
 
 // ─────────────────────────────────────────────────────────────────
 
-describe("useGraphStore — consolidation", () => {
+describe("useGraphStore - consolidation", () => {
   beforeEach(() => {
     if (useGraphStore) reset()
   })
@@ -652,7 +652,7 @@ describe("useGraphStore — consolidation", () => {
   // D. Dirty derivation — pure selector, not an effect.
   // ───────────────────────────────────────────────────────────────
 
-  describe("isDirty() — pure selector", () => {
+  describe("isDirty() - pure selector", () => {
     it("returns false when no save has ever happened (lastSavedSnapshot null)", () => {
       // Fresh empty workspaces are clean. Once a user builds a graph without
       // saving, the non-empty graph is dirty even without a saved baseline.
@@ -762,7 +762,7 @@ describe("useGraphStore — consolidation", () => {
       expect(store.getState().dirty).toBe(false)
     })
 
-    it("is stable across renders — calling isDirty twice gives same answer", () => {
+    it("is stable across renders - calling isDirty twice gives same answer", () => {
       const store = requireStore()
       act(() => {
         store.getState().markSaved()

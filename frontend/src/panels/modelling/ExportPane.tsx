@@ -60,7 +60,7 @@ export function ExportPane({
 }: ExportPaneProps) {
   const exportableJobId = training ? null : trainedJobId
   const exportNotice = training
-    ? "Training is running — export is available when it completes."
+    ? "Training is running - export is available when it completes."
     : trainedJobId === null && trainedResultExpired
       ? "The last training result for this node is no longer available (the server restarted or it expired). Train this model again to export it."
       : null

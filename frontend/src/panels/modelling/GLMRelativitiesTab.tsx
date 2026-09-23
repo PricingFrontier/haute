@@ -141,7 +141,7 @@ export function GLMRelativitiesTab({ result }: GLMRelativitiesTabProps) {
         <span>Baseline = 1.0 (center line)</span>
         <span style={{ color: BAR_ABOVE }}>&#9632; Above baseline</span>
         <span style={{ color: BAR_BELOW }}>&#9632; Below baseline</span>
-        {hasCi && <span>— CI whiskers</span>}
+        {hasCi && <span>- CI whiskers</span>}
         <span>{rows.length} term{rows.length !== 1 ? "s" : ""}</span>
       </div>
     </div>

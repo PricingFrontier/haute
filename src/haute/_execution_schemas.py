@@ -451,7 +451,7 @@ class SharedSnapshotCapturePayload(BaseModel):
     node_id: str
     identity_digest: str
     kind: Literal["structural", "materialising", "model_score", "consumed"]
-    outcome: Literal["published", "superseded", "quota"]
+    outcome: Literal["published", "superseded"]
     generation_id: str | None = None
     columns: Literal["all"] | list[str]
     write_strategy: (

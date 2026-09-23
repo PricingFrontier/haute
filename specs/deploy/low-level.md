@@ -403,10 +403,11 @@ pair. Deploy never uses the general `DATABRICKS_HOST`/`DATABRICKS_TOKEN` pair.
    configured → raise `DeployError` immediately, never a silent passthrough).
 3. Compile the graph's preamble once so transform-node user code has access to the same
    namespace as at dev time.
-4. For non-`DEPLOY_LIVE` profiles, build a `dataframe_cache_request` — the deployed
-   scorer opts into the same dataframe execution cache the dev executor uses, fingerprinted
-   on the live input `DataFrame`, the input node ids, and the resolved artefact-path
-   identities so a cache hit requires byte-identical served artefacts.
+4. The deployed scorer never uses the dataframe execution cache and never disk-batches
+   Model Score, for every profile (`DEPLOY_LIVE` and `DEPLOY_BATCH` alike): Model Score
+   always scores in memory (`source="live"`), so no parquet is written between nodes for
+   any request size. A batch too large to score in memory is refused by the batch worker's
+   hard memory cap (`src/haute/deploy/_batch_scoring.py`) rather than streamed through disk.
 5. `execute_lazy_graph()` runs the pruned graph to `output_node_id` with
    `prepare_inputs=False`: a deployed scorer serves a request against artefacts that were
    resolved and validated at deploy time, so it never builds or refreshes a source snapshot

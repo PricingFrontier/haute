@@ -176,7 +176,7 @@ async function settlePreview(
   })
 }
 
-describe("usePipelineAPI — a preview never runs downstream nodes", () => {
+describe("usePipelineAPI - a preview never runs downstream nodes", () => {
   beforeEach(() => {
     vi.useRealTimers()
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live", "staging"] })

@@ -1159,7 +1159,7 @@ export default function ExploreChartsConfig({
                         className="mb-1 text-[10px]"
                         style={{ color: "var(--text-muted)" }}
                       >
-                        New Value from the source Pivot — defaults applied.
+                        New Value from the source Pivot - defaults applied.
                       </div>
                     )}
                     <StyleControls

@@ -45,7 +45,7 @@ function countSnapshots(
   return count
 }
 
-describe("useGraphCanvasState — Phase 2D-6 drag simplification", () => {
+describe("useGraphCanvasState - Phase 2D-6 drag simplification", () => {
   afterEach(() => {
     cleanup()
     vi.clearAllMocks()

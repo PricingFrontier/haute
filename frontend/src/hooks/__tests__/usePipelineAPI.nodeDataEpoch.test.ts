@@ -149,7 +149,7 @@ async function settle(result: { current: ReturnType<typeof usePipelineAPI> }) {
   })
 }
 
-describe("usePipelineAPI — previews and the node-data epoch", () => {
+describe("usePipelineAPI - previews and the node-data epoch", () => {
   beforeEach(() => {
     vi.useRealTimers()
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live"] })

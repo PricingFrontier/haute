@@ -29,7 +29,7 @@ function makeParams() {
   }
 }
 
-describe("useNodeHandlers — handleRenameNode", () => {
+describe("useNodeHandlers - handleRenameNode", () => {
   beforeEach(() => {
     useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     useUIStore.setState({ renameDialog: null, submodelDialog: null })

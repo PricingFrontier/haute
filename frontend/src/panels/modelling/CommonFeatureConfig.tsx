@@ -352,7 +352,7 @@ export function CommonFeatureConfig({ config, onUpdate, columns }: Props) {
               color: "var(--danger-text-soft)",
             }}
           >
-            <span className="min-w-0 flex-1 truncate">{name} — not found</span>
+            <span className="min-w-0 flex-1 truncate">{name} - not found</span>
             <button
               type="button"
               aria-label={`Remove ${name} exclusion`}

@@ -18,7 +18,7 @@ or maintenance issue; `P3` opportunistic work.
 | Component | Improvement surface | Start with |
 |---|---|---|
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | — |
-| [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache usage | `CACHE-S17` |
+| [Caching](caching.md) | Automatic API-input table snapshots, planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache usage | `CACHE-S08` |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E09` |
 | [Modelling](modelling.md) | RustyStats 0.9.0 upgrade, GLM terms and interactions; proposed XGBoost, LightGBM, and EBM lifecycle support | `MOD-T00` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |

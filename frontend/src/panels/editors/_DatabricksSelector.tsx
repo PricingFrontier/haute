@@ -221,7 +221,7 @@ export function CatalogTablePicker({
             <option value={catalog}>{catalog}</option>
           )}
           {catalogs.map((c) => (
-            <option key={c.name} value={c.name}>{c.name}{c.comment ? ` — ${c.comment}` : ""}</option>
+            <option key={c.name} value={c.name}>{c.name}{c.comment ? ` - ${c.comment}` : ""}</option>
           ))}
         </select>
 
@@ -246,7 +246,7 @@ export function CatalogTablePicker({
             <option value={dbSchema}>{dbSchema}</option>
           )}
           {schemas.map((s) => (
-            <option key={s.name} value={s.name}>{s.name}{s.comment ? ` — ${s.comment}` : ""}</option>
+            <option key={s.name} value={s.name}>{s.name}{s.comment ? ` - ${s.comment}` : ""}</option>
           ))}
         </select>
 
@@ -273,7 +273,7 @@ export function CatalogTablePicker({
           )}
           {tables.map((t) => (
             <option key={t.name} value={t.name}>
-              {t.name}{t.table_type ? ` (${t.table_type})` : ""}{t.comment ? ` — ${t.comment}` : ""}
+              {t.name}{t.table_type ? ` (${t.table_type})` : ""}{t.comment ? ` - ${t.comment}` : ""}
             </option>
           ))}
         </select>

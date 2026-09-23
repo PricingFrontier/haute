@@ -1,15 +1,15 @@
-import { Suspense, lazy, useState, useMemo, useRef, useCallback } from "react"
-import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, Bot, Loader2, Group, Link2, BookOpen } from "lucide-react"
+import { Suspense, lazy, useState, useMemo, useRef, useCallback, useEffect } from "react"
+import { Undo2, Redo2, ZoomIn, ZoomOut, Scan, Network, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, Bot, Loader2, Group, Link2, BookOpen, CircleHelp, Keyboard, Bug } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
 import BranchIndicator from "./BranchIndicator"
-import useSettingsStore, { MAX_STREAMING_CHUNK_SIZE, MIN_STREAMING_CHUNK_SIZE } from "../stores/useSettingsStore"
+import useSettingsStore from "../stores/useSettingsStore"
 import useUIStore from "../stores/useUIStore"
 import useClickOutside from "../hooks/useClickOutside"
 import MlflowSettingsModal from "./MlflowSettingsModal"
 
-const CacheSettingsModal = lazy(() => import("./CacheSettingsModal"))
+const PipelineSettingsModal = lazy(() => import("./PipelineSettingsModal"))
 
 declare const __APP_VERSION__: string
 
@@ -25,10 +25,16 @@ function formatMemory(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
+const DOCUMENTATION_URL = "https://pricingfrontier.github.io/haute/"
+const REPORT_BUG_URL = "https://github.com/PricingFrontier/haute/issues/new"
+
+const HELP_ITEM_CLASS =
+  "w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--chrome-hover)] focus-visible:bg-[var(--chrome-hover)] focus:outline-none"
+
 const WS_STATUS_CONFIG: Record<WsStatus, { color: string; title: string }> = {
   connected: { color: "var(--success)", title: "Live sync connected" },
   reconnecting: { color: "var(--warning-strong)", title: "Reconnecting to server\u2026" },
-  disconnected: { color: "var(--danger)", title: "Server unreachable \u2014 restart haute serve" },
+  disconnected: { color: "var(--danger)", title: "Server unreachable - restart haute serve" },
 }
 
 interface ToolbarProps {
@@ -78,25 +84,18 @@ export default function Toolbar({
   editingDisabled = false,
   sourceSelectionTrusted = true,
 }: ToolbarProps) {
-  const rowLimit = useSettingsStore((s) => s.rowLimit)
-  const setRowLimit = useSettingsStore((s) => s.setRowLimit)
-  const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
-  const setStreamingChunkSize = useSettingsStore((s) => s.setStreamingChunkSize)
   const sources = useSettingsStore((s) => s.sources)
   const activeSource = useSettingsStore((s) => s.activeSource)
   const setActiveSource = useSettingsStore((s) => s.setActiveSource)
   const addSource = useSettingsStore((s) => s.addSource)
   const removeSource = useSettingsStore((s) => s.removeSource)
+  const calculationMode = useUIStore((s) => s.calculationMode)
   const assistantOpen = useUIStore((s) => s.assistantOpen)
   const setAssistantOpen = useUIStore((s) => s.setAssistantOpen)
-  const numericInputWidthCh = useMemo(
-    () => Math.max(8, String(rowLimit).length, String(streamingChunkSize).length),
-    [rowLimit, streamingChunkSize],
-  )
   // Local, not in the UI store: the toolbar is the only thing that opens the
-  // cache pane, so no other surface needs to read or set this.
-  const [cacheSettingsOpen, setCacheSettingsOpen] = useState(false)
-  const closeCacheSettings = useCallback(() => setCacheSettingsOpen(false), [])
+  // pipeline settings pane, so no other surface needs to read or set this.
+  const [pipelineSettingsOpen, setPipelineSettingsOpen] = useState(false)
+  const closePipelineSettings = useCallback(() => setPipelineSettingsOpen(false), [])
   const [addingSource, setAddingSource] = useState(false)
   const [newSourceName, setNewSourceName] = useState("")
   const [sourceError, setSourceError] = useState<string | null>(null)
@@ -104,6 +103,18 @@ export default function Toolbar({
   const sourceRef = useRef<HTMLDivElement>(null)
   const closeSource = useCallback(() => setSourceOpen(false), [])
   useClickOutside(sourceRef, closeSource, sourceOpen)
+  const [helpOpen, setHelpOpen] = useState(false)
+  const helpRef = useRef<HTMLDivElement>(null)
+  const closeHelp = useCallback(() => setHelpOpen(false), [])
+  useClickOutside(helpRef, closeHelp, helpOpen)
+  const helpItems = () =>
+    Array.from(helpRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])
+  // Menu keyboard contract: focus lands on the first item when it opens, and
+  // the arrow keys move through the items.
+  useEffect(() => {
+    if (helpOpen) helpItems()[0]?.focus()
+  }, [helpOpen])
+  const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen)
   const wsConfig = WS_STATUS_CONFIG[wsStatus]
 
   const mlflowSettingsOpen = useUIStore((s) => s.mlflowSettingsOpen)
@@ -146,12 +157,12 @@ export default function Toolbar({
           />
         </div>
       </div>
-      {/* Source and Cache column — the Source selector sits on the top row, in
-          line with Preview Rows and Undo, and the Cache control underneath it.
+      {/* Source and Pipeline column — the Source selector sits on the top row, in
+          line with Timing and Undo, and the Pipeline control underneath it.
           The two rows are one grid so the control column takes the width of the
           wider control and both buttons come out identical, whatever the active
           source is named. */}
-      <div className="grid grid-cols-[auto_auto] items-center gap-x-1 gap-y-1 w-fit" data-testid="toolbar-source-cache">
+      <div className="grid grid-cols-[auto_auto] items-center gap-x-1 gap-y-1 w-fit" data-testid="toolbar-source-pipeline">
         <label className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Source:</label>
         <div ref={sourceRef} className="relative w-full">
           {addingSource ? (
@@ -183,7 +194,7 @@ export default function Toolbar({
                 placeholder="name"
                 aria-invalid={sourceError ? true : undefined}
                 aria-describedby={sourceError ? "source-add-error" : undefined}
-                className="w-20 px-1.5 py-1 text-[11px] font-mono rounded focus:outline-none"
+                className="w-full min-w-20 px-2.5 py-1 text-[12px] font-medium rounded-md focus:outline-none"
                 style={{ background: 'var(--chrome-hover)', border: `1px solid ${sourceError ? 'var(--danger)' : 'var(--accent)'}`, color: 'var(--text-primary)' }}
               />
               {sourceError && (
@@ -203,16 +214,12 @@ export default function Toolbar({
               data-testid="source-selector"
               onClick={() => setSourceOpen((v) => !v)}
               disabled={editingDisabled || !sourceSelectionTrusted}
-              className="w-full flex items-center justify-between gap-1.5 px-2 py-1 text-[12px] font-mono rounded-md transition-colors"
-              /* Shares the toolbar button surface so the two boxed controls in
-                 the bar don't sit at different lightnesses.  The chevron is
-                 pinned right rather than trailing the name, so the control still
-                 reads as a dropdown when the grid stretches it past its text. */
-              style={{
-                background: sourceOpen ? 'var(--accent-soft)' : 'var(--btn-surface)',
-                border: `1px solid ${sourceOpen ? 'var(--accent)' : 'var(--btn-border)'}`,
-                color: 'var(--text-primary)',
-              }}
+              className="toolbar-btn w-full flex items-center justify-between gap-1.5 px-2.5 py-1 text-[12px] font-medium rounded-md"
+              /* Uses the shared toolbar button surface and type so it matches
+                 every other button in the bar.  The chevron is pinned right
+                 rather than trailing the name, so the control still reads as a
+                 dropdown when the grid stretches it past its text. */
+              style={sourceOpen ? { background: 'var(--accent-soft)', borderColor: 'var(--accent)' } : undefined}
               title="Data source"
             >
               <span className="flex items-center gap-1.5 min-w-0">
@@ -238,7 +245,7 @@ export default function Toolbar({
                       onClick={() => { setActiveSource(s); setSourceOpen(false) }}
                       className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] font-mono text-left transition-colors ${isActive ? "" : "hover:bg-[var(--chrome-hover)]"}`}
                       style={{
-                        color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
+                        color: 'var(--text-primary)',
                         background: isActive ? 'var(--accent-soft)' : 'transparent',
                       }}
                     >
@@ -253,8 +260,8 @@ export default function Toolbar({
               <div className="py-1" style={{ borderTop: '1px solid var(--border)' }}>
                 <button
                   onClick={() => { setAddingSource(true); setSourceOpen(false) }}
-                  className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--chrome-hover)] hover:text-[var(--text-secondary)]"
-                  style={{ color: 'var(--text-muted)' }}
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors hover:bg-[var(--chrome-hover)]"
+                  style={{ color: 'var(--text-primary)' }}
                 >
                   <Plus size={12} />
                   Add source
@@ -273,82 +280,22 @@ export default function Toolbar({
             </div>
           )}
         </div>
-        <label className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Cache:</label>
+        <label className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>Pipeline:</label>
         <button
-          data-testid="toolbar-cache"
-          onClick={() => setCacheSettingsOpen(true)}
+          data-testid="toolbar-pipeline-settings"
+          onClick={() => setPipelineSettingsOpen(true)}
           aria-haspopup="dialog"
-          aria-expanded={cacheSettingsOpen}
-          className="toolbar-btn w-full px-2 py-1 text-[12px] font-medium rounded-md flex items-center justify-center"
-          title="Cache usage — what the cache holds against its limits"
+          aria-expanded={pipelineSettingsOpen}
+          className="toolbar-btn w-full px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center"
+          title="Pipeline settings - preview rows, chunk rows and cached data"
         >
-          Usage
+          {calculationMode === "manual" ? "Manual" : "Calculating"}
         </button>
       </div>
-      {/* Rows & Chunk configuration column — Preview Rows on top of Chunk Rows */}
-      <div className="flex flex-col gap-1 ml-2.5 w-fit" data-testid="toolbar-rows-chunk">
-        <div className="flex items-center gap-1.5" title="Row limit for preview (0 = no limit)">
-          <label htmlFor="toolbar-rows-input" className="text-[11px] font-medium whitespace-nowrap min-w-[80px]" style={{ color: 'var(--text-muted)' }}>
-            Preview Rows:
-          </label>
-          <input
-            id="toolbar-rows-input"
-            type="number"
-            min={0}
-            step={100}
-            value={rowLimit}
-            onChange={(e) => setRowLimit(Math.max(0, parseInt(e.target.value) || 0))}
-            className="toolbar-number-input px-1.5 h-[26px] text-[12px] font-mono rounded text-center focus:outline-none"
-            /* Both numeric fields share an equal width that expands if either value
-               exceeds the standard 8-character width (e.g. large chunk sizes or row limits). */
-            style={{ width: `calc(${numericInputWidthCh}ch + 16px)`, background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)', color: 'var(--text-primary)' }}
-          />
-        </div>
-        <div className="flex items-center gap-1.5" title="Streaming chunk size (rows per streaming chunk). Default 500000. Lower this if you OOM on wide schemas.">
-          <label htmlFor="toolbar-chunk-input" className="text-[11px] font-medium whitespace-nowrap min-w-[80px]" style={{ color: 'var(--text-muted)' }}>
-            Chunk Rows:
-          </label>
-          <input
-            id="toolbar-chunk-input"
-            type="number"
-            min={MIN_STREAMING_CHUNK_SIZE}
-            max={MAX_STREAMING_CHUNK_SIZE}
-            step={10000}
-            value={streamingChunkSize}
-            onChange={(e) => {
-              const raw = e.target.value.trim()
-              if (raw === "") return
-              const parsed = Number(raw)
-              if (!Number.isFinite(parsed)) return
-              setStreamingChunkSize(parsed)
-            }}
-            className="toolbar-number-input px-1.5 h-[26px] text-[12px] font-mono rounded text-center focus:outline-none"
-            /* Synchronized width matching preview rows input. */
-            style={{ width: `calc(${numericInputWidthCh}ch + 16px)`, background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)', color: 'var(--text-primary)' }}
-          />
-        </div>
-      </div>
-      {/* Timing + memory breakdowns column — Timing at the top, Memory at the bottom */}
-      <div className="ml-2.5 flex flex-col gap-1 w-fit" data-testid="toolbar-breakdowns">
-        <BreakdownDropdown
-          icon={Timer}
-          title="Pipeline Timing"
-          items={timingItems}
-          formatValue={formatTiming}
-        />
-        <BreakdownDropdown
-          icon={HardDrive}
-          title="Pipeline Memory"
-          items={memoryItems}
-          formatValue={formatMemory}
-          valueWidth="w-14"
-        />
-      </div>
-      {/* 10px is the toolbar's one spacing value: between adjacent buttons and
-          between sections alike.  Only a label and the field it names sit
-          closer (4px), so they still read as one control. */}
-      <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2.5">
-        {/* Undo / Redo column — Undo at the top, Redo underneath, leading the right-hand action bar */}
+      {/* Canvas actions (Undo/Redo through Utility/Imports) sit on the left,
+          between the Source/Pipeline column and the Timing/Memory readouts. */}
+      <div className="ml-2.5 flex flex-wrap items-center gap-2.5" data-testid="toolbar-canvas-actions">
+        {/* Undo / Redo column — Undo at the top, Redo underneath, leading the canvas action group */}
         <div className="flex flex-col gap-1 w-fit" data-testid="toolbar-undo-redo">
           <button
             data-testid="toolbar-undo"
@@ -402,9 +349,10 @@ export default function Toolbar({
             data-testid="toolbar-centre"
             onClick={onCentre}
             disabled={nodeCount === 0}
-            className="toolbar-btn px-2 py-1 text-[12px] font-medium rounded-md flex items-center justify-center w-full"
+            className="toolbar-btn px-2 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
             title="Fit all nodes in view"
           >
+            <Scan size={13} aria-hidden="true" />
             Centre
           </button>
           <button
@@ -421,10 +369,12 @@ export default function Toolbar({
             className="toolbar-btn relative px-2 py-1 text-[12px] font-medium rounded-md inline-flex items-center justify-center whitespace-nowrap w-full"
             title={isAutoLayouting ? "Auto-arranging nodes" : "Auto-arrange nodes"}
           >
-            {/* The spinner is overlaid on the hidden label rather than laid out
-                beside it, so the button is exactly as wide as "Layout" and the
-                toolbar never reflows when auto-layout starts. */}
-            <span className={isAutoLayouting ? "invisible" : undefined}>Layout</span>
+            {/* Keep the icon and label in flow while the spinner overlays them
+                so the toolbar never reflows when auto-layout starts. */}
+            <span className={`inline-flex items-center gap-1${isAutoLayouting ? " invisible" : ""}`}>
+              <Network size={13} aria-hidden="true" />
+              Layout
+            </span>
             {isAutoLayouting && (
               <Loader2
                 size={13}
@@ -436,7 +386,7 @@ export default function Toolbar({
         </div>
         {/* Selection actions.  These use ``aria-disabled`` rather than the
             ``disabled`` attribute: a disabled button is removed from the tab
-            order AND swallows pointer events, so its title never appears —
+            order AND swallows pointer events, so its title never appears -
             precisely when the user most needs to know why it's unavailable.
             The click is NOT guarded here: the handler owns the policy and
             answers an unavailable click with the same toast Ctrl+G gives, so
@@ -449,7 +399,7 @@ export default function Toolbar({
             onClick={onCreateSubmodel}
             aria-disabled={!canCreateSubmodel}
             className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
-            title="Group the selected nodes into a submodel — select 2 or more (Ctrl+G)"
+            title="Group the selected nodes into a submodel - select 2 or more (Ctrl+G)"
           >
             <Group size={13} aria-hidden="true" />
             Submodel
@@ -459,7 +409,7 @@ export default function Toolbar({
             onClick={onCreateInstance}
             aria-disabled={!canCreateInstance}
             className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
-            title="Create a linked instance of the selected node — select exactly one"
+            title="Create a linked instance of the selected node - select exactly one"
           >
             <Link2 size={13} aria-hidden="true" />
             Instance
@@ -472,7 +422,7 @@ export default function Toolbar({
             onClick={onOpenUtility}
             disabled={editingDisabled}
             className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
-            title="Utility scripts — reusable functions"
+            title="Utility scripts - reusable functions"
           >
             <FileCode2 size={13} />
             Utility
@@ -482,13 +432,34 @@ export default function Toolbar({
             onClick={onOpenImports}
             disabled={editingDisabled}
             className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
-            title="Pipeline imports — utility and library imports"
+            title="Pipeline imports - utility and library imports"
           >
             <Package size={13} />
             Imports
           </button>
         </div>
-        {/* Assistant and Documentation column — equal width, paired with branch name & save/commit */}
+      </div>
+      {/* Timing + memory breakdowns column — Timing at the top, Memory at the bottom */}
+      <div className="ml-2.5 flex flex-col gap-1 w-fit" data-testid="toolbar-breakdowns">
+        <BreakdownDropdown
+          icon={Timer}
+          title="Pipeline Timing"
+          items={timingItems}
+          formatValue={formatTiming}
+        />
+        <BreakdownDropdown
+          icon={HardDrive}
+          title="Pipeline Memory"
+          items={memoryItems}
+          formatValue={formatMemory}
+          valueWidth="w-14"
+        />
+      </div>
+      {/* 10px is the toolbar's one spacing value: between adjacent buttons and
+          between sections alike.  Only a label and the field it names sit
+          closer (4px), so they still read as one control. */}
+      <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2.5">
+        {/* Assistant and Help column — equal width, paired with branch name & save/commit */}
         <div className="flex flex-col gap-1 w-fit">
           <button
             data-testid="toolbar-assistant"
@@ -502,17 +473,83 @@ export default function Toolbar({
             <Bot size={13} />
             Assistant
           </button>
-          <a
-            data-testid="toolbar-documentation"
-            href="https://pricingfrontier.github.io/haute/"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full text-center"
-            title="Documentation — opens in a new tab"
+          <div
+            ref={helpRef}
+            className="relative w-full"
+            onKeyDown={(e) => {
+              if (!helpOpen) return
+              if (e.key === "Escape") {
+                e.stopPropagation()
+                setHelpOpen(false)
+                helpRef.current?.querySelector<HTMLElement>('[data-testid="toolbar-help"]')?.focus()
+                return
+              }
+              if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return
+              e.preventDefault()
+              const items = helpItems()
+              const index = items.indexOf(document.activeElement as HTMLElement)
+              const step = e.key === "ArrowDown" ? 1 : -1
+              items[(index + step + items.length) % items.length]?.focus()
+            }}
           >
-            <BookOpen size={13} />
-            Documentation
-          </a>
+            <button
+              data-testid="toolbar-help"
+              onClick={() => setHelpOpen((v) => !v)}
+              aria-haspopup="menu"
+              aria-expanded={helpOpen}
+              className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center justify-center gap-1 w-full"
+              title="Help"
+            >
+              <CircleHelp size={13} />
+              Help
+            </button>
+            {helpOpen && (
+              <div
+                role="menu"
+                aria-label="Help"
+                data-testid="toolbar-help-menu"
+                className="absolute top-full right-0 mt-1 rounded-lg shadow-2xl z-50 min-w-[160px] overflow-hidden py-1"
+                style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+              >
+                <a
+                  role="menuitem"
+                  data-testid="toolbar-documentation"
+                  href={DOCUMENTATION_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={closeHelp}
+                  className={HELP_ITEM_CLASS}
+                  title="Documentation - opens in a new tab"
+                >
+                  <BookOpen size={12} />
+                  Documentation
+                </a>
+                <button
+                  role="menuitem"
+                  data-testid="toolbar-hotkeys"
+                  onClick={() => { setShortcutsOpen(true); setHelpOpen(false) }}
+                  className={HELP_ITEM_CLASS}
+                  title="Keyboard shortcuts (?)"
+                >
+                  <Keyboard size={12} />
+                  Hotkeys
+                </button>
+                <a
+                  role="menuitem"
+                  data-testid="toolbar-report-bug"
+                  href={REPORT_BUG_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={closeHelp}
+                  className={HELP_ITEM_CLASS}
+                  title="Report a bug on GitHub - opens in a new tab"
+                >
+                  <Bug size={12} />
+                  Report a bug
+                </a>
+              </div>
+            )}
+          </div>
         </div>
         <BranchIndicator>
           {/* Save then Commit, in the order the work happens: a save is itself a
@@ -527,7 +564,7 @@ export default function Toolbar({
               disabled={editingDisabled}
               className="flex-1 px-2 py-1 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[var(--accent-hover)] text-center"
               style={{ background: 'var(--accent)' }}
-              title="Save — Ctrl+S"
+              title="Save - Ctrl+S"
             >
               Save
             </button>
@@ -537,7 +574,7 @@ export default function Toolbar({
               disabled={editingDisabled}
               className="flex-1 px-2 py-1 text-[12px] font-semibold text-white rounded-md transition-colors hover:bg-[var(--success-fill-hover)] text-center"
               style={{ background: 'var(--success-fill)' }}
-              title="Commit — record a milestone on your working branch"
+              title="Commit - record a milestone on your working branch"
             >
               Commit
             </button>
@@ -545,9 +582,9 @@ export default function Toolbar({
         </BranchIndicator>
       </div>
       {mlflowSettingsOpen && <MlflowSettingsModal onClose={closeMlflowSettings} />}
-      {cacheSettingsOpen && (
+      {pipelineSettingsOpen && (
         <Suspense fallback={null}>
-          <CacheSettingsModal onClose={closeCacheSettings} />
+          <PipelineSettingsModal onClose={closePipelineSettings} />
         </Suspense>
       )}
     </header>

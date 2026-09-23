@@ -695,7 +695,7 @@ describe("GLMRelativitiesTab", () => {
     const result = makeTrainResult({ glm_relativities: makeGlmRelativities() })
     render(<GLMRelativitiesTab result={result} />)
     expect(screen.getByText("Baseline = 1.0 (center line)")).toBeTruthy()
-    expect(screen.getByText("— CI whiskers")).toBeTruthy()
+    expect(screen.getByText("- CI whiskers")).toBeTruthy()
     expect(screen.getByText("4 terms")).toBeTruthy()
   })
 
@@ -703,7 +703,7 @@ describe("GLMRelativitiesTab", () => {
     const rows = makeGlmRelativities().map(r => ({ feature: r.feature, relativity: r.relativity, ci_lower: null, ci_upper: null }))
     const result = makeTrainResult({ glm_relativities: rows })
     render(<GLMRelativitiesTab result={result} />)
-    expect(screen.queryByText("— CI whiskers")).toBeNull()
+    expect(screen.queryByText("- CI whiskers")).toBeNull()
   })
 
   it("shows empty state when no relativities", () => {

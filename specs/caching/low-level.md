@@ -411,7 +411,7 @@ node's upstream subgraph including the node, the runtime-input fingerprint is
 `dataframe_graph_input_fingerprint` targeted at the node, and the execution semantics
 version is `node-snapshot:v1`. It never contains generations or column sets, and
 request shape (column demand) and row limits are excluded with rationales.
-Generation layout, integrity, publication, quota, lease, and concurrency rules are owned
+Generation layout, integrity, publication, lease, and concurrency rules are owned
 and tested by the [IO layer](../io-layer/low-level.md).
 
 ## Edge cases and invariants
@@ -487,7 +487,7 @@ response timeout, and log unexpected errors before a generic 500.
    404 only after schema succeeds; response timeout is 504 without being
    presented as cooperative cancellation.
 5. Input-snapshot identity is checked here before storage selection; pointer,
-   lease, integrity, staging, quota, refresh, and clear failure order remains
+   lease, integrity, staging, refresh, and clear failure order remains
    owned by [io-layer](../io-layer/low-level.md#boundary-failure-ordering).
 
 ### Depth-review questions

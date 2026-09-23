@@ -435,7 +435,7 @@ describe("ScenarioExpanderEditor", () => {
   it("step size shows dash when steps is 1", () => {
     render(<ScenarioExpanderEditor {...DEFAULT_PROPS} config={{ column_name: "sv", stepCount: 1 }} />)
     const stepSize = screen.getByTestId("step-size")
-    expect(stepSize.textContent).toBe("—")
+    expect(stepSize.textContent).toBe("-")
   })
 
   it("InputSourcesBar renders when inputSources provided", () => {

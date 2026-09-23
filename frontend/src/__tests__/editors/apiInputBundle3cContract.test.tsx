@@ -97,7 +97,7 @@ afterEach(() => {
 // 1. useUpdateNodeInternals — handle topology/placement re-anchor
 // ---------------------------------------------------------------------------
 
-describe("Bundle 3c — useUpdateNodeInternals tracks apiInput frame labels", () => {
+describe("Bundle 3c - useUpdateNodeInternals tracks apiInput frame labels", () => {
   it("calls updateNodeInternals with the node id on first render", () => {
     renderNode(
       {
@@ -411,7 +411,7 @@ describe("Bundle 3c — useUpdateNodeInternals tracks apiInput frame labels", ()
 // 2. Full-detail apiInput frame-row body
 // ---------------------------------------------------------------------------
 
-describe("Bundle 3c — full-detail node body shows eligible emitted frames", () => {
+describe("Bundle 3c - full-detail node body shows eligible emitted frames", () => {
   it("renders one named frame row per eligible emitted frame", () => {
     renderNode({
       label: "Quote Input",

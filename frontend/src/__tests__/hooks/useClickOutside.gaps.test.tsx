@@ -52,7 +52,7 @@ function NullRefComponent({ onClose, active }: { onClose: () => void; active: bo
   return <div data-testid="somewhere">Hello</div>
 }
 
-describe("useClickOutside — gap tests", () => {
+describe("useClickOutside - gap tests", () => {
   // ────────────────────────────────────────────────────────────────
   // 1. ref is null (no DOM element attached)
   // ────────────────────────────────────────────────────────────────

@@ -123,7 +123,7 @@ function MarkerEntry({ entry }: { entry: Extract<TranscriptEntry, { kind: "marke
     >
       <Circle size={7} fill="currentColor" aria-hidden="true" />
       <span>{MARKER_LABELS[entry.outcome]}</span>
-      {entry.detail && <span className="truncate" title={entry.detail}>— {entry.detail}</span>}
+      {entry.detail && <span className="truncate" title={entry.detail}>- {entry.detail}</span>}
     </div>
   )
 }

@@ -1233,7 +1233,7 @@ describe("NodePanel", () => {
     expect(screen.getByTestId("OptimiserApplyEditor")).toBeInTheDocument()
   })
 
-  it("hides generic config controls but shows the refresh action for explore nodes", () => {
+  it("leaves preview refresh out of the Explore editor header", () => {
     const onRefreshPreview = vi.fn()
     renderPanel({
       node: makeNode({
@@ -1244,13 +1244,8 @@ describe("NodePanel", () => {
 
     expect(screen.queryByRole("button", { name: /^config$/i })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /^columns$/i })).not.toBeInTheDocument()
-    const refreshButton = screen.getByTitle("Refresh Explore outputs")
-    const closeButton = screen.getByTitle("Close")
-    expect(refreshButton.compareDocumentPosition(closeButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-
-    fireEvent.click(refreshButton)
-
-    expect(onRefreshPreview).toHaveBeenCalledOnce()
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument()
+    expect(screen.getByTitle("Close")).toBeInTheDocument()
   })
 
   it("renders Explore code before analysis panes and switches between them", async () => {

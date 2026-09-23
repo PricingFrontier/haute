@@ -404,7 +404,7 @@ describe("useGitStore loadStatus refresh and stall recovery", () => {
     vi.mocked(bindGitStorage).mockResolvedValue({
       outcome: "pending" as const,
       remote_url: "uc://cat.sch.vol/projects/demo",
-      message: "Saving this project to storage — you can keep working.",
+      message: "Saving this project to storage - you can keep working.",
     })
 
     // A poller's status request is already in flight when the bind completes.
@@ -529,7 +529,7 @@ describe("useGitStore durable-storage actions", () => {
     const bindResult = {
       outcome: "pending" as const,
       remote_url: "uc://cat.sch.vol/projects/demo",
-      message: "Saving this project to storage — you can keep working.",
+      message: "Saving this project to storage - you can keep working.",
     }
     vi.mocked(bindGitStorage).mockResolvedValue(bindResult)
     vi.mocked(getWorkingBranch).mockResolvedValue(BOUND)
@@ -549,7 +549,7 @@ describe("useGitStore durable-storage actions", () => {
     expect(useGitStore.getState().status).toEqual(BOUND)
   })
 
-  it("forking does NOT refresh readiness — this session's binding is untouched", async () => {
+  it("forking does NOT refresh readiness - this session's binding is untouched", async () => {
     const fork = { remote_url: "uc://cat.sch.vol/projects/fork", forked_from: "uc://cat.sch.vol/projects/demo" }
     vi.mocked(forkGitStorage).mockResolvedValue(fork as never)
 

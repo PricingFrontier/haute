@@ -50,7 +50,7 @@ export default function MoveConfirmModal({ onConfirm, onClose }: MoveConfirmModa
         </h2>
         <p className="text-[12px] mt-0.5" style={{ color: "var(--text-muted)" }}>
           Your canvas will show this version. Saving afterwards starts a new line of work
-          from here — your current branch stays where it is.
+          from here - your current branch stays where it is.
         </p>
       </div>
 
@@ -62,7 +62,7 @@ export default function MoveConfirmModal({ onConfirm, onClose }: MoveConfirmModa
             data-testid="move-dirty-warning"
           >
             You have unsaved changes. Save them onto your current branch first, or discard
-            them — moving can't carry them across.
+            them - moving can't carry them across.
           </p>
         )}
 

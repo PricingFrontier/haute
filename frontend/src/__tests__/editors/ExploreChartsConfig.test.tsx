@@ -858,7 +858,7 @@ describe("ExploreChartsConfig", () => {
 
     expect(screen.queryByText(/Missing encoding/i)).not.toBeInTheDocument()
     expect(
-      screen.getByText("New Value from the source Pivot — defaults applied."),
+      screen.getByText("New Value from the source Pivot - defaults applied."),
     ).toBeVisible()
     const seededMark = screen.getByRole("combobox", {
       name: "Chart type for Rate",

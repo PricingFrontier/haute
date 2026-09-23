@@ -548,7 +548,7 @@ describe("OptimiserPreview", () => {
             factor_tables: {
               age_band: [
                 { __factor_group__: "18–19", optimal_scenario_value: 0.95, quote_count: 10 },
-                { __factor_group__: "20—29", optimal_scenario_value: 1.00, quote_count: 10 },
+                { __factor_group__: "20-29", optimal_scenario_value: 1.00, quote_count: 10 },
                 { __factor_group__: "30 − 39", optimal_scenario_value: 1.05, quote_count: 10 },
                 { __factor_group__: "40 - 49", optimal_scenario_value: 1.10, quote_count: 10 },
               ],
@@ -563,7 +563,7 @@ describe("OptimiserPreview", () => {
         "data-factor-value-position",
         "0.00",
       )
-      expect(screen.getByLabelText("age_band 20—29: 0.0%")).not.toHaveAttribute(
+      expect(screen.getByLabelText("age_band 20-29: 0.0%")).not.toHaveAttribute(
         "data-factor-value-position",
         "unknown",
       )
@@ -1148,7 +1148,7 @@ describe("OptimiserPreview", () => {
       renderPreview({ allNodes: [optimiserNode({ mlflow_destination: "local" })] })
       fireEvent.click(screen.getByText("Export"))
       expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
-        "Destination: Local folder — C:/proj/mlruns",
+        "Destination: Local folder - C:/proj/mlruns",
       )
     })
 

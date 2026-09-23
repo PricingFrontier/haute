@@ -441,39 +441,3 @@ export function buildExecutionFailureMessage(
     : diagnostic.message
   return prefix ? `${prefix}: ${message.charAt(0).toLowerCase()}${message.slice(1)}` : message
 }
-
-export type ExecutionRefusedCaptureDiagnostic = {
-  nodeIds: string[]
-  message: string
-  remediation: string
-}
-
-export function buildRefusedCaptureDiagnostic(
-  metrics: ExecutionMetrics | null | undefined,
-): ExecutionRefusedCaptureDiagnostic | null {
-  if (!metrics?.warnings.length) return null
-  const matching = metrics.warnings.filter(
-    (warning) => warning.code === "snapshot_capture_skipped" && warning.reason === "quota",
-  )
-  if (matching.length === 0) return null
-
-  const nodeIds = matching
-    .map((warning) => warning.node_id)
-    .filter((id): id is string => Boolean(id))
-
-  const nodeList =
-    nodeIds.length === 0
-      ? "a node"
-      : nodeIds.length === 1
-        ? `'${nodeIds[0]}'`
-        : nodeIds.length === 2
-          ? `'${nodeIds[0]}' and '${nodeIds[1]}'`
-          : `${nodeIds.slice(0, -1).map((id) => `'${id}'`).join(", ")}, and '${nodeIds[nodeIds.length - 1]}'`
-
-  return {
-    nodeIds,
-    message: `Node capture was skipped for ${nodeList} because the cache quota was reached.`,
-    remediation:
-      "Clear a cached node's data that is no longer needed, or raise the node-output cache quota with HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS and HAUTE_NODE_SNAPSHOT_MAX_BYTES.",
-  }
-}

@@ -6,7 +6,7 @@
  * orchestration and rendering.
  */
 import { useCallback, useRef, useState, type MutableRefObject } from "react"
-import type { Node, Edge, NodeChange } from "@xyflow/react"
+import type { Node, Edge, NodeChange, InternalNode } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useUIStore from "../stores/useUIStore"
@@ -38,6 +38,7 @@ type UseNodeHandlersParams = {
   setLastSelectedId?: (id: string | null) => void
   setPreviewData: (updater: React.SetStateAction<PreviewData | null>) => void
   fitView: (opts?: { padding?: number }) => void
+  getInternalNode?: (id: string) => InternalNode | undefined
   submodels: Record<string, unknown>
   resolveNodeIdentities: (nodes: readonly Node[]) => Promise<Node[]>
   commitSharedNodeDeletion?: (
@@ -74,6 +75,7 @@ export default function useNodeHandlers({
   setLastSelectedId,
   setPreviewData,
   fitView,
+  getInternalNode,
   submodels,
   resolveNodeIdentities,
   commitSharedNodeDeletion,
@@ -345,7 +347,7 @@ export default function useNodeHandlers({
     layoutInFlightRef.current = true
     setIsAutoLayouting(true)
     try {
-      const layouted = await getLayoutedElements(n, e)
+      const layouted = await getLayoutedElements(n, e, getInternalNode)
       setNodes(() => layouted)
       setTimeout(() => fitView({ padding: 0.15 }), 50)
       addToast("info", "Auto-layout applied")
@@ -353,7 +355,7 @@ export default function useNodeHandlers({
       layoutInFlightRef.current = false
       setIsAutoLayouting(false)
     }
-  }, [graphRef, setNodes, fitView, addToast])
+  }, [graphRef, setNodes, fitView, getInternalNode, addToast])
 
   return {
     handleDeleteNode,

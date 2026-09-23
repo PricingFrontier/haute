@@ -219,7 +219,7 @@ import useGraphStore from "../stores/useGraphStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import { GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT } from "../utils/graphPerformance"
 
-describe("App — lastSelectedId referencing deleted node resolves cleanly (#38)", () => {
+describe("App - lastSelectedId referencing deleted node resolves cleanly (#38)", () => {
   beforeEach(() => {
     mockNodes = []
     mockEdges = []
