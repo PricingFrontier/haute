@@ -70,17 +70,16 @@ _CONTAINER_DEPLOY = (
 )
 
 
-def _project(
-    tmp_path: Path,
+def _make_project(
+    project: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
     preamble: str = "from utility.helpers import FACTOR",
     factor: str = "FACTOR",
     helpers: str = "FACTOR = 3\n",
-) -> Path:
-    """A deployable project whose preamble imports the utility package."""
-    monkeypatch.chdir(tmp_path)
-    project = tmp_path / "project"
+) -> None:
+    """Build a deployable project at *project* whose preamble imports utility."""
+    monkeypatch.chdir(project.parent)
     shutil.copytree(_EXAMPLE, project)
     (project / "pipeline.py").write_text(
         _PIPELINE.format(preamble=preamble, factor=factor), encoding="utf-8"
@@ -100,7 +99,6 @@ def _project(
     toml_path.write_text(
         toml_path.read_text(encoding="utf-8") + _CONTAINER_DEPLOY, encoding="utf-8"
     )
-    return project
 
 
 def _resolve(project: Path) -> ResolvedDeploy:
@@ -160,7 +158,8 @@ def test_container_bundle_scores_with_its_own_utility_package(
 ) -> None:
     from haute.deploy._container import prepare_build_directory
 
-    project = _project(tmp_path, monkeypatch)
+    project = tmp_path / "project"
+    _make_project(project, monkeypatch)
     with _resolve(project) as resolved:
         validate_deploy(resolved)
         image = tmp_path / "image"
@@ -184,7 +183,8 @@ def test_pyfunc_model_scores_with_its_own_utility_package(
     from haute.deploy._mlflow import _pyfunc_model_arguments
     from haute.deploy._utils import build_manifest
 
-    project = _project(tmp_path, monkeypatch)
+    project = tmp_path / "project"
+    _make_project(project, monkeypatch)
     model_dir = tmp_path / "model"
     with _resolve(project) as resolved:
         validate_deploy(resolved)
@@ -208,7 +208,8 @@ def test_pyfunc_model_scores_with_its_own_utility_package(
 def test_a_project_module_outside_utility_is_refused_at_validation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = _project(tmp_path, monkeypatch, preamble="from local_rates import FACTOR")
+    project = tmp_path / "project"
+    _make_project(project, monkeypatch, preamble="from local_rates import FACTOR")
     (project / "local_rates.py").write_text("FACTOR = 3\n", encoding="utf-8")
 
     with _resolve(project) as resolved:
@@ -219,8 +220,9 @@ def test_a_project_module_outside_utility_is_refused_at_validation(
 def test_a_utility_module_importing_other_project_code_is_refused_at_validation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = _project(
-        tmp_path,
+    project = tmp_path / "project"
+    _make_project(
+        project,
         monkeypatch,
         helpers="from local_rates import FACTOR\n",
     )
@@ -238,7 +240,8 @@ def test_a_pipeline_without_project_modules_bundles_none(
 ) -> None:
     from haute.deploy._container import prepare_build_directory
 
-    project = _project(tmp_path, monkeypatch, preamble="import math", factor="math.floor(3.5)")
+    project = tmp_path / "project"
+    _make_project(project, monkeypatch, preamble="import math", factor="math.floor(3.5)")
     shutil.rmtree(project / "utility")
 
     with _resolve(project) as resolved:
@@ -258,7 +261,8 @@ def test_a_reused_build_directory_keeps_only_this_builds_utility(
     build validated, so every build replaces the bundled utility code."""
     from haute.deploy._container import prepare_build_directory
 
-    project = _project(tmp_path, monkeypatch, preamble="from utility.rates import FACTOR")
+    project = tmp_path / "project"
+    _make_project(project, monkeypatch, preamble="from utility.rates import FACTOR")
     (project / "utility" / "rates").mkdir()
     (project / "utility" / "rates" / "__init__.py").write_text("FACTOR = 2\n", encoding="utf-8")
     image = tmp_path / "image"
@@ -285,7 +289,8 @@ def test_a_reused_build_directory_keeps_only_this_builds_utility(
 def test_a_namespace_utility_deployed_from_its_pipeline_directory_is_bundled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = _project(tmp_path, monkeypatch)
+    project = tmp_path / "project"
+    _make_project(project, monkeypatch)
     (project / "utility" / "__init__.py").unlink()
     monkeypatch.chdir(project)
 
@@ -297,7 +302,8 @@ def test_a_namespace_utility_deployed_from_its_pipeline_directory_is_bundled(
 def test_a_utility_namespace_split_across_project_directories_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = _project(tmp_path, monkeypatch)
+    project = tmp_path / "project"
+    _make_project(project, monkeypatch)
     (project / "utility" / "__init__.py").unlink()
     (tmp_path / "utility").mkdir()
 
@@ -308,7 +314,8 @@ def test_a_utility_namespace_split_across_project_directories_is_refused(
 def test_a_bundled_utility_file_that_does_not_parse_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = _project(tmp_path, monkeypatch)
+    project = tmp_path / "project"
+    _make_project(project, monkeypatch)
     (project / "utility" / "draft.py").write_text("def unfinished(:\n", encoding="utf-8")
 
     with pytest.raises(DeployError, match=r"utility/draft\.py does not parse"):
@@ -318,7 +325,8 @@ def test_a_bundled_utility_file_that_does_not_parse_is_refused(
 def test_a_utility_file_with_a_byte_order_mark_is_checked_like_python_imports_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project = _project(tmp_path, monkeypatch, helpers="﻿FACTOR = 3\n")
+    project = tmp_path / "project"
+    _make_project(project, monkeypatch, helpers="\ufeffFACTOR = 3\n")
 
     with _resolve(project) as resolved:
         validate_deploy(resolved)
