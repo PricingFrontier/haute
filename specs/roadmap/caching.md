@@ -70,6 +70,11 @@ or where it will not hold at scale.
 | CACHE-S22 | Planned | P3 | The shapes that cannot carry a write recipe at all can. |
 | CACHE-S17 | Planned | P3 | Planning and store housekeeping cost stays flat as graphs and stores grow. |
 | CACHE-S18 | Planned | P3 | Full and cross joins are written with a bounded number of scans and a bounded part product. |
+| CACHE-S23 | Planned | P2 | The unused dataframe execution cache and its request path are removed. |
+| CACHE-S24 | Planned | P3 | One source-freshness proof and one bounded in-process cache primitive. |
+| CACHE-S25 | Planned | P3 | Cache identity hashes the whole canonical node config instead of classifying every field. |
+| CACHE-S26 | Decision | P3 | Stored snapshots and node outputs have a retention policy, or the absence of one is a stated product choice. |
+| CACHE-S27 | Planned | P2 | The server, not the browser, chooses how an input snapshot is built. |
 
 ## Planned improvements
 
@@ -78,7 +83,12 @@ measurement named in its own entry rather than started on the strength of its
 shape; `CACHE-S19` is deferred with the others, and
 `CACHE-S12` is now one display change at the node, so it is
 taken whenever that surface is next open rather than in this order. `CACHE-S13` moved down on 20-Sep-2026 because measurement showed
-no preview near its timeout. Every full-frame write is now bounded, so what
+no preview near its timeout. The packages from the
+[23 September 2026 codebase review](codebase-review-2026-09-23.md)
+(`CACHE-S23` to `CACHE-S27`) sit outside that order: `CACHE-S23` is a
+deletion that can be taken at any time and simplifies every later change to
+lazy execution; `CACHE-S24` follows `CACHE-S08`; `CACHE-S25` follows the
+pipeline-config package `PCFG-R08`. Every full-frame write is now bounded, so what
 is left is measured against cost rather than shape. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
 specified. Every package builds on the node-output snapshot store (signature,
@@ -659,3 +669,148 @@ and the cache inventory are delivered.
 `src/haute/routes/_save_pipeline.py`; `src/haute/routes/_node_data_service.py`;
 `frontend/src/panels/editors/ApiInputEditor.tsx`;
 `frontend/src/components/CacheFetchButton.tsx`.
+
+### CACHE-S23 — Remove the unused dataframe execution cache
+**Why:** `build_dataframe_execution_cache_request` has no production caller,
+so `default_dataframe_execution_cache` is unreachable in production and
+`_execute_lazy(dataframe_cache_request=...)` is exercised only by tests. The
+deploy tests assert that scoring passes no cache request, and the assistant
+invalidates a cache that nothing populates. Seed plans and node-output
+snapshots replaced it, but the module, about 150 lines of request handling
+and mutual-exclusion checks in lazy execution, the key and policy
+fingerprints, and about 3,000 lines of tests remain. The caching and
+execution-engine specifications still describe it as live ("only a caller's
+dataframe-cache request (deploy scoring) materialises").
+
+**Plan:** Delete `DataFrameExecutionCache`, its request and key types, the
+execution-facade helpers that build them, the `dataframe_cache_request`
+parameter and branches in `_execute_lazy`, and the assistant's invalidation
+calls. Move `_upstream_subgraph`, which the data-point resolver uses, next to
+its caller. Remove the dataframe-cache consumer from the cache-identity
+inventory and delete the two test modules that only test the removed code.
+
+**Acceptance:** No production or test module imports the removed names; the
+caching and execution-engine specifications no longer describe a dataframe
+execution cache; lazy execution, deploy scoring and data-point tests pass.
+
+**Dependencies:** None.
+
+**Owning specifications:** [caching](../caching/high-level.md);
+[execution engine](../execution-engine/high-level.md).
+
+**Evidence:** `src/haute/_dataframe_execution_cache.py::DataFrameExecutionCache`;
+`src/haute/_dataframe_execution_cache.py::_upstream_subgraph`;
+`src/haute/execution.py::build_dataframe_execution_cache_request`;
+`src/haute/execution.py::default_dataframe_execution_cache`;
+`src/haute/execution.py::invalidate_dataframe_execution_cache`;
+`src/haute/_execute_lazy.py::_execute_lazy`; `src/haute/assistant/_assets.py`;
+`src/haute/_data_points.py`; `tests/test_dataframe_execution_cache.py`;
+`tests/test_execute_lazy_dataframe_cache.py`; `tests/test_deploy_internals.py`.
+
+### CACHE-S24 — One freshness proof and one bounded-cache primitive
+**Why:** Three freshness policies coexist for the same question, whether a
+source file changed. JSON sources use operating-system change tokens (the
+Windows USN journal through `ctypes`) plus a full SHA-256; snapshot-backed
+inputs use a signature with an `(mtime, size, digest)` verification memo; and
+`StatGatedCache` accepts a bare `(mtime_ns, size)` gate with a documented
+same-size, same-mtime blind spot. Bounded in-process caching is hand-rolled
+three times with `OrderedDict` beside the shared `LRUCache`.
+
+**Plan:** When `CACHE-S08` moves API-input tables into the shared store, keep
+one freshness proof for every source kind and specify its guarantee once.
+Rebuild `StatGatedCache`, the runtime snapshot cache and the signature memo on
+`LRUCache`, or make `LRUCache` provide what they need.
+
+**Acceptance:** One module computes source freshness and every consumer calls
+it; the caching specification states one guarantee; no `OrderedDict`-based
+LRU remains outside the shared primitive.
+
+**Dependencies:** `CACHE-S08`.
+
+**Owning specifications:** [caching](../caching/high-level.md);
+[IO layer](../io-layer/high-level.md);
+[JSON shredding](../json-shredding/high-level.md).
+
+**Evidence:** `src/haute/_json_shred/_source_proof.py::_StrongFileRevision`;
+`src/haute/_json_shred/_source_proof.py::_DataFileSignatureMemo`;
+`src/haute/_json_shred/_runtime_storage.py::_VerifiedRuntimeSnapshotCache`;
+`src/haute/_stat_gated_cache.py::StatGatedCache`;
+`src/haute/_lru_cache.py::LRUCache`; `src/haute/_source_cache.py`.
+
+### CACHE-S25 — Hash the whole canonical node config
+**Why:** The cache-identity framework declares a versioned field set for nine
+consumers and classifies every node-config field as included or excluded,
+failing on any unclassified field. Most of that classification exists to keep
+editor-only state (column lists, schema warnings, step errors) out of cache
+keys, because that state is stored inside the node config.
+
+**Plan:** Once `PCFG-R08` moves editor state out of the config, key execution
+caches on the complete canonical config and delete the per-field
+classification. Keep the consumer contracts only where a consumer genuinely
+needs a narrower identity, and say why in the specification.
+
+**Acceptance:** Any change to a persisted config field changes the execution
+identity without a classification table; editor-state changes do not; the
+cache-identity tests are reduced to the remaining consumer contracts.
+
+**Dependencies:** `PCFG-R08` (pipeline config).
+
+**Owning specifications:** [caching](../caching/low-level.md).
+
+**Evidence:** `src/haute/_cache.py::CacheConsumerContract`;
+`src/haute/_cache.py::_classify_config_fields`;
+`src/haute/_cache.py::validate_cache_config_field_classifications`;
+`tests/test_cache_identity_contract.py`.
+
+### CACHE-S26 — A retention policy for stored datasets
+**Why:** Input snapshots and node outputs have no byte or count limit and no
+automatic eviction; the former budgets were removed. Every admitted preview
+captures its joins and materialising operations at full data, so disk use
+grows with each wide pipeline a user previews, and only a manual clear in the
+cache inventory reclaims it.
+
+**Plan:** Decide whether unbounded retention is the product choice. If it is,
+say so in the IO-layer specification and show the store's size where users
+work, not only in the inventory pane. If it is not, specify a retention rule
+(for example, least-recently-leased automatic generations beyond a
+configurable size, never pinned or leased ones) and implement it.
+
+**Acceptance:** The IO-layer specification states the retention rule or the
+explicit absence of one, and the user can see the store's disk use without
+opening the cache inventory.
+
+**Dependencies:** None.
+
+**Owning specifications:** [IO layer](../io-layer/high-level.md);
+[caching](../caching/high-level.md).
+
+**Evidence:** `src/haute/_source_cache.py`; `src/haute/_node_snapshots.py`;
+`src/haute/routes/cache.py`.
+
+### CACHE-S27 — The server chooses the snapshot build profile
+**Why:** Before a preview, the browser checks each snapshot-backed input,
+starts a build with the `lazy_sink` profile, and if the server answers 400
+with a detail string starting `snapshot_build_unsupported`, retries with
+`preview_eager`. The client chooses an execution profile by matching error
+text. Bounded executions already prepare their inputs automatically on the
+server, so the orchestration exists twice.
+
+**Plan:** Let the build endpoint choose the build profile itself, and return a
+typed outcome rather than an error to be string-matched. Decide whether the
+browser pre-build is still needed once the server prepares inputs for
+previews; if it is, keep it as a single call that starts or joins the server's
+choice of build.
+
+**Acceptance:** No frontend code inspects error-detail prefixes to choose a
+profile; the build endpoint's choice is covered by a backend test for each
+input format; preview preparation behaves as before.
+
+**Dependencies:** None.
+
+**Owning specifications:** [caching](../caching/high-level.md);
+[frontend shared](../frontend-shared/low-level.md).
+
+**Evidence:** `frontend/src/hooks/ensureInputSnapshots.ts::startBuild`;
+`frontend/src/hooks/ensureInputSnapshots.ts::ensureInputSnapshots`;
+`src/haute/_input_preparation.py::prepare_input_snapshots`;
+`src/haute/routes/input_cache.py`.
