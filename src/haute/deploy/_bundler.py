@@ -168,7 +168,17 @@ def collect_artifacts(
             # staged into the MLflow download cache (or placed manually);
             # training itself writes per-model ``{name}.feature_contract.json``
             # files since W4b.9 and never populates this directory.
-            if explicit_contract is None:
+            if explicit_contract is None and Path(artifact_path).suffix == ".ebm":
+                # An EBM loads only under its contract, which the run logged
+                # beside the model; bundle it so the deployed scorer has it.
+                import mlflow
+
+                from haute._mlflow_io import _resolve_run_contract
+
+                artifacts[f"{nid}__feature_contract.json"] = Path(
+                    _resolve_run_contract(mlflow, backend, run_id, artifact_path)
+                )
+            elif explicit_contract is None:
                 _bundle_feature_contract(nid, local_path, artifacts)
 
         elif node_type == NodeType.DATA_INPUT and nid not in input_set:

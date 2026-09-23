@@ -45,11 +45,18 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | File | Responsibility |
 |---|---|
 | `src/haute/modelling/__init__.py` | Public API surface: `FitResult`, `MLflowLogResult`, `TrainingJob`, `TrainResult`, `generate_training_script`, `log_experiment`. |
-| `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC, `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
+| `src/haute/modelling/_descriptors.py` | `AlgorithmDescriptor` and `NativeLoss` per family, `DESCRIPTORS`, the Haute loss vocabulary `HAUTE_LOSSES`, `algorithm_descriptor()`, parameter validation, refit projection (`project_refit_params`, `refit_descriptor`, `tuning_family`, `round_ceiling`), the `training_threads()` allotment, and `capability_fixture()`. Imports no engine. |
+| `src/haute/modelling/_algorithm_base.py` | `BaseAlgorithm`, `FitResult` and `IterationCallback`, shared by every adapter without importing the registry. |
+| `src/haute/modelling/_native_encoding.py` | Shared categorical encoding for the native-dataset families: `fit_categorical_levels` and `encode_frame`. |
+| `src/haute/modelling/_xgboost.py` | The XGBoost adapter: `XGBoostModel` (self-describing booster wrapper) and `XGBoostAlgorithm`. |
+| `src/haute/modelling/_gpu.py` | XGBoost GPU capability: `GpuStatus`, `xgboost_cuda_build`, `booster_device`, the once-per-process `xgboost_gpu_status` probe, `require_xgboost_gpu` and `verify_trained_on_gpu`. |
+| `src/haute/modelling/_lightgbm.py` | The LightGBM adapter: `LightGBMModel` (self-describing model-text wrapper) and `LightGBMAlgorithm`. |
+| `src/haute/modelling/_ebm.py` | The EBM adapter: `EBMModel` (the estimator plus its contract facts, and the term report) and `EBMAlgorithm`. |
+| `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC (re-exported from the base module), `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
 | `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; `prepare_glm_design()` (frame-dtype validation, reference-level translation, interaction resolution); `glm_fit_kwargs()` (fixed or cross-validated penalty, solver controls, robust standard errors); `GLMAlgorithm.glm_result()` over `glm_inference`, `glm_coefficient_rows`, `glm_relativity_rows`, `glm_fit_statistics`, `glm_smooth_term_rows`, and `glm_regularization_summary`; `estimate_glm_dispersion()` profile-likelihood estimation. |
 | `src/haute/modelling/_training_job.py` | `TrainingJob` orchestrator — prepare one eligible source, persist/reload its evaluation plan, run selection or tuning fits, perform one deployable final fit, compute diagnostics, stage artifacts, and optionally log once to MLflow; also defines `TrainResult` and intermediate stage types. |
 | `src/haute/modelling/_evaluation.py` | Strict version-1 evaluation config, exact development/final-test and validation-fit plan generation, plan/result/report codecs, digest linkage, strategy summaries, and validation-row-weighted aggregation. |
-| `src/haute/modelling/_tuning.py` | Strict bounded CatBoost tuning config/search-space validation, seeded trial resolution, winner/tree-count selection, and tuning plan/trials/report codecs. |
+| `src/haute/modelling/_tuning.py` | Strict bounded tuning config/search-space validation for families whose descriptor supports tuning (every family but the GLM), with orchestration-owned keys taken from the descriptor, seeded trial resolution, winner/tree-count selection, and tuning plan/trials/report codecs. |
 | `src/haute/modelling/_train_config.py` | Single source of truth for modelling-node config → training-job kwargs (`build_training_job_kwargs`, `build_train_params`, `parse_evaluation_config`, `parse_tuning_config`, `training_objective_issue`, `default_metrics`, `effective_metrics`), plus the GLM value contract (`GLM_FAMILY_LINKS`, `GLM_CONFIG_KEYS`, `CATBOOST_ONLY_LEVERS`, `is_glm_config`, `glm_params_issue`, `validate_glm_params`). |
 | `src/haute/modelling/_glm_terms.py` | Pure GLM term contract shared by the config builder, routes, job, and adapter: `SUPPORTED_TERM_TYPES` and `TERM_KEYS`, dtype classes (`glm_dtype_class`, `MAIN_FITS_BY_CLASS`, `SLOT_FITS_BY_CLASS`), the parameter contract (`validate_term_spec`, `validate_interaction_entry`), the expression grammar (`expression_identifiers`), the schema-free `glm_model_columns()` used for projection demand, `validate_glm_model_columns()` against a real schema and role columns, `resolve_categorical_levels()`, the order-independent `resolve_glm_design()`, and `penalised_smooth_terms()` / `monotone_constraint_terms()`. Imports no RustyStats, so the schema-free half runs during projection planning before any data exists. |
 | `src/haute/modelling/_target_check.py` | `training_target_task_issue()` — data-dependent target-column vs task/metric gate returning an actionable message (or nothing when the pairing is valid), keyed on the effective reported-metric set (explicit config metrics or the objective-implied defaults), shared by the train route's pre-dispatch validation and `TrainingJob._prepare_data`. |
@@ -58,7 +65,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_feature_contract.py` | `FeatureContract` build/save/load/cache, contract comparison, and categorical-level normalisation/validation. |
 | `src/haute/modelling/_signature.py` | `build_signature()` — MLflow `ModelSignature` construction with loud dtype/metadata validation, structural Date/parameterised-Datetime mapping, and the explicit no-lossy-Decimal policy. |
 | `src/haute/modelling/_candidate_run.py` | The candidate-run contract builder shared by canvas and scripted logging (`CANDIDATE_RUN_CONTRACT_VERSION`, `training_identity_sha256`, `CandidateProvenance` capture including git state, `CandidateArtifacts.require_files`, `build_candidate_run`); see [mlflow-model-registry](../mlflow-model-registry/low-level.md#candidate-run-contract). |
-| `src/haute/modelling/_glm_pyfunc.py` | MLflow pyfunc loader module for logged RustyStats GLMs: `_load_pyfunc(data_path)` returns `GLMPyfuncModel`, which scores through haute's own `load_local_model` + `score_frame` path so a GLM loaded with `mlflow.pyfunc.load_model` predicts exactly what haute scoring does. |
+| `src/haute/modelling/_native_pyfunc.py` | The MLflow pyfunc for every Haute-trained native model: `package_native_model` copies the model file and its feature contract into one package, and `_load_pyfunc` returns `NativePyfuncModel`, which checks the model against the contract identity and scores through haute's own `load_local_model` + `score_frame` path, returning the label and positive-class probability for classification. |
 | `src/haute/modelling/_charts.py` | Pure-SVG renderers used by model cards. |
 | `src/haute/modelling/_model_card.py` | `generate_model_card()` — self-contained HTML assembled for MLflow artifact logging; ordinary training does not persist it beside the model. |
 | `src/haute/modelling/_mlflow_log.py` | Destination-aware tracking-backend resolution wrappers over `_mlflow_settings.py` (every wrapper takes `destination`, `""` = the local folder), `log_experiment()`, flavor-aware model/signature logging, diagnostics artifacts, and best-effort model-card logging. |
@@ -994,14 +1001,12 @@ evaluation-set-namespaced metrics, all as pure data.
 requires every candidate artifact file to exist, then configures tracking, sets the experiment,
 and starts the run with the candidate's name and tags. It logs params (truncated to MLflow's 500
 characters, batched by 100) and metrics, the model with its signature, the feature contract at
-the run root, the diagnostics JSON, and the evaluation/tuning evidence. A `.cbm` model must load
-as the contract's CatBoost task — a load failure raises before `mlflow.catboost.log_model` — and is
-logged through the native CatBoost flavor as the LoggedModel named `model` (MLflow 3's `name=`,
-never the deprecated `artifact_path=`; `runs:/<run>/model` still resolves it). A `.rsglm` model is
-logged as a pyfunc with `loader_module="haute.modelling._glm_pyfunc"` and the model file as
-`data_path`; its `_load_pyfunc` returns a model whose `predict` scores through haute's own
-`score_frame` RustyStats path, so `mlflow.pyfunc.load_model` and a Model Score node predict the
-same values. Any other suffix raises. **Every** flavor also logs the native file at the run root:
+the run root, the diagnostics JSON, and the evaluation/tuning evidence. Every native model (`.cbm` or `.rsglm`) is
+packaged with its feature contract and logged through the shared pyfunc
+(`loader_module="haute.modelling._native_pyfunc"`) as the LoggedModel named `model` (MLflow
+3's `name=`, never the deprecated `artifact_path=`; `runs:/<run>/model` still resolves it),
+after the package has loaded once, so `mlflow.pyfunc.load_model` and a Model Score node
+predict the same values. Any other suffix raises. **Every** flavor also logs the native file at the run root:
 mlflow 3.x stores logged models as LoggedModel entities outside the run's artifact listing, so
 Haute's run-artifact discovery (`_find_cbm_artifact` / `_find_rsglm_artifact`) would otherwise
 never see a freshly logged model. Model-card generation failure does not fail the log: it logs
@@ -1144,7 +1149,8 @@ potentially large copy on its threadpool.
 - `EvaluationConfig.from_plain_data` rejects unknown versions/fields, Boolean numeric
   values, non-finite/out-of-range fractions, invalid strategy-specific keys, temporal
   relative fractions, and cross-validation counts outside 2–10 before data is touched.
-- Tuning is CatBoost-only, requires validation, includes its baseline in 5–50 trials,
+- Tuning is available to every family but the GLM, requires validation, includes its
+  baseline in 5–50 trials,
   and must satisfy `trial_count * validation_fit_count <= 200`. Invalid search shapes,
   empty/duplicate/oversized or non-finite candidate lists, reserved orchestration keys,
   impossible/cyclic conditions, or a selection metric outside the configured metrics
@@ -1732,3 +1738,187 @@ Both direct scans and owned adapter-file scoring choose batch rows from decoded
 input width and the current execution allowance, retaining the scoring row
 ceiling. Dictionary compression must not bypass this rule on the Arrow reader
 used for staged input.
+
+## Model family descriptors
+
+- `AlgorithmDescriptor` (frozen) holds `key`, `label`, `tasks`, `losses` (task → Haute loss →
+  `NativeLoss(objective, link)`), `allowed_params` (`None` keeps the family's own contract),
+  `reserved_params`, `tuning_reserved_params`, `param_aliases`, `round_key`,
+  `round_key_aliases`, `validation_only_params`, `refit_policy`, `feature_controls`, `suffix`,
+  and `engine_module`. `DESCRIPTORS` holds CatBoost and the GLM under the same keys as
+  `ALGORITHM_REGISTRY`; `MODEL_FILE_SUFFIXES` derives from them, and saving a model whose
+  algorithm has no suffix raises. `capability_fixture()` serialises the frontend's
+  `algorithmCapabilities.json` (including each family's round-key aliases and validation-only
+  parameters, which the frontend's tuning-report check uses to mirror the refit projection),
+  and
+  `tests/test_algorithm_descriptors.py::test_frontend_capability_fixture_matches_the_descriptors`
+  fails when they differ.
+- `validate_params` raises `TrainingConfigError` naming the key for a reserved key, an alias
+  (with its canonical name), a second spelling of one canonical parameter, or, when the family
+  has an allowlist, an unknown key. `build_training_job_kwargs` and `TrainingJob.__init__` both
+  apply it, and `TuningConfig` applies it to search-space names.
+- `project_refit_params`, `refit_descriptor` and `round_ceiling` are the single refit
+  projection used by the tuned refit, the untuned refit, and MLflow candidate parameters.
+  `tuning_final_projection` in `src/haute/modelling/_tuning.py` is the one derivation of a
+  study's final parameters and tree count that the job, `build_tuning_report`, the report
+  artifact and `TuningReportPayload` all use: a round-refitting family refits with the
+  validation-weighted count under its round key; a `fixed_budget` family (EBM) refits with the
+  winner's parameters unchanged and no tree count (`final_tree_count` is `None`). The report
+  identifies its family with `tuning_family` from the one round key its final parameters carry.
+- `AlgorithmDescriptor.config_issue` combines the per-loss monotonicity rule with the family's
+  `value_check` (EBM: `ebm_value_issue`); `build_training_job_kwargs` and `TrainingJob.__init__`
+  both raise it.
+- `FitResult` carries `rounds_configured`, `rounds_fitted` and `stopping_reason`, plus EBM's
+  `term_update_steps` and the `threads` an engine actually used when it does not take the
+  job's allotment, and `device` (the `cuda:N` an XGBoost GPU fit trained on, else `None`);
+  `TrainResult.fit_evidence` records those threads, else the job's, and the device when set; the response validates it as
+  `FitEvidencePayload`, and `build_candidate_run` logs it as `fit_*` parameters.
+- `FeatureContract` has `contract_version` 2 and `model: ModelIdentity | None`. `ModelIdentity`
+  holds `algorithm`, `link`, `engine_name`, `engine_version`, `haute_version`, `loss`,
+  `glm_family`, `variance_power`, `class_labels` (`(negative, positive)`), and
+  `native_feature_names`; `load_contract` validates every field.
+- `TrainingJob._resolve_class_labels` applies the binary class rule in `_split_data`, which
+  writes the target encoded as positive = 1.0. CatBoost stamps the labels under
+  `CATBOOST_CLASS_LABELS_METADATA_KEY`; `catboost_class_labels`, `binary_labels` and
+  `native_predictions` in `src/haute/_mlflow_io.py` give every scoring path the same label rule.
+- `src/haute/modelling/_native_pyfunc.py` packages a model file and its contract
+  (`package_native_model`) and serves it (`NativePyfuncModel`); `_log_model_with_signature`
+  loads the package once before logging, so an unreadable model or a mismatched contract fails
+  before MLflow receives anything. `verify_contract_identity` is the shared identity check.
+- `prediction_tolerance` in `src/haute/_model_explainability.py` is the shared parity tolerance;
+  `FLOAT32_CONTRIBUTION_TOLERANCE` is the named bound for float32 contribution sums.
+
+## Native model-family adapters
+
+- A new-family adapter pairs a `BaseAlgorithm` subclass (`fit`, `predict`, `feature_importance`,
+  `shap_summary`, `save`) with a self-describing model wrapper. `BaseAlgorithm`, `FitResult` and
+  `IterationCallback` live in `src/haute/modelling/_algorithm_base.py`, so an adapter module can
+  subclass them without importing `_algorithms` (which registers every adapter).
+- `src/haute/modelling/_native_encoding.py` is the shared categorical encoding:
+  `fit_categorical_levels` takes declared levels, else the training frame's sorted distinct
+  non-null values with `None` appended when nulls occur; `encode_frame` builds pandas categoricals
+  whose categories are the non-null levels in stored order, so a null is the native missing code
+  and a literal `"__missing__"` is an ordinary level, and it raises `HauteValidationError`
+  naming the feature and values for anything outside the levels. `FitResult.categorical_levels`
+  carries the fitted levels into the feature contract.
+- `XGBoostModel` in `src/haute/modelling/_xgboost.py` wraps the booster with its feature order,
+  categorical levels, task, link, offset column and link, and class labels, persisted as the
+  `haute` booster attribute of the `.ubj`. It exposes `matrix`, `predict_margin`,
+  `predict_response`, `predict` (original labels for classifiers, by the `> 0.5` rule),
+  `predict_proba`, `contributions` (native `pred_contribs`, bias carrying the offset), `save`,
+  `load` (which refuses a booster without the `haute` record) and `objective`.
+- `XGBoostAlgorithm.fit` resolves the loss through the `xgboost` descriptor, rejects feature
+  weights and classification offsets, supplies `hist`, the job seed, the thread allotment and
+  `tweedie_variance_power`, trains with the validation partition as the early-stopping set, and
+  slices the booster to `best_iteration + 1`. With `device="gpu"` it calls
+  `require_xgboost_gpu()` before building the booster, trains with `device="cuda"`, and
+  `verify_trained_on_gpu` checks the booster's `save_config()` `generic_param.device` afterwards;
+  every booster is then set to `device="cpu"` before it is saved, and `XGBoostModel.load` sets
+  the same. `TrainingJob(device=...)` validates the value against the descriptor's `gpu_device`,
+  passes it to every adapter fit, carries it into each evaluation and final sub-job
+  (`_new_evaluation_job`, which also builds every tuning trial fit), and hashes it into `training_identity_sha256` (`_TRAINING_IDENTITY_KEYS`
+  in `_candidate_run.py`); `generate_training_script` writes `device='gpu'` only when set.
+  `_check_gpu_vram(..., algorithm="xgboost")` and the pre-launch check use
+  `estimate_xgboost_gpu_vram_bytes(rows, features)`: five bytes per value (float32 input and
+  compressed bins) plus twenty per row, times the VRAM safety multiplier, plus 256 MiB of CUDA
+  context and workspace (88–132 MiB measured for 200,000 training plus 50,000 validation rows × 21
+  features). The `xgboost` scoring flavor passes Polars frames
+  (with the offset column) to the wrapper; `explain_native_prediction` checks that bias plus
+  contributions equals the margin (within `FLOAT32_CONTRIBUTION_TOLERANCE` for XGBoost's float32
+  sums, `prediction_tolerance` otherwise) and that the inverse link reproduces the response.
+  `NATIVE_WRAPPER_SUFFIXES` / `NATIVE_WRAPPER_FLAVORS` in `src/haute/_model_flavors.py` map
+  `.ubj` → `xgboost` and `.lgbm` → `lightgbm`; artifact discovery, local loading
+  (`_load_wrapper_model`), offset passthrough, class-label dtypes and the identity objective
+  check (the descriptor's native objective against the wrapper's `objective()`) all dispatch on
+  that set.
+- The `xgboost` descriptor's allowlist is `num_boost_round`, `early_stopping_rounds`, `eta`,
+  `max_depth`, `max_leaves`, `grow_policy`, `min_child_weight`, `gamma`, `max_delta_step`,
+  `subsample`, `colsample_bytree`, `colsample_bylevel`, `colsample_bynode`, `lambda`, `alpha`,
+  `max_bin`, `max_cat_to_onehot`, `max_cat_threshold`; Haute owns `objective`,
+  `tweedie_variance_power`, `eval_metric`, `base_score`, `tree_method`, `booster`, `device`,
+  `nthread`, `n_jobs`, `seed`, `random_state`, `enable_categorical`, `feature_names`,
+  `feature_types`, `monotone_constraints`, `interaction_constraints`, `callbacks` and
+  `base_margin`; `learning_rate`, `min_split_loss`, `reg_lambda`, `reg_alpha` and
+  `n_estimators` are rejected aliases.
+- `LightGBMModel` in `src/haute/modelling/_lightgbm.py` wraps the booster with the same record,
+  persisted as one `haute:` JSON line inserted before LightGBM's `pandas_categorical:` line of
+  the `.lgbm` model text (LightGBM's loader ignores it). It exposes `encoded`, `baseline`,
+  `predict_margin` (`raw_score=True` output plus the transformed offset), `predict_response`,
+  `predict`, `predict_proba`, `contributions` (native `pred_contrib`, the adapter adding the
+  offset to the bias column), `save`, `load` (which refuses text without exactly one `haute:`
+  record) and `objective` (the model text's `objective=` line).
+- `LightGBMAlgorithm.fit` resolves the loss through the `lightgbm` descriptor, rejects feature
+  weights and classification offsets, supplies `gbdt`, the job seed, the thread allotment
+  (`num_threads`), `tweedie_variance_power` and positional `monotone_constraints`, builds train
+  and validation `Dataset`s with `init_score`, and stops early through `lgb.early_stopping`
+  (`early_stopping_round`, default 50). An early-stopped booster is rebuilt from
+  `model_to_string(num_iteration=best_iteration)`, and `FitResult.best_iteration` is that
+  one-based count minus one. `rounds_fitted` is the booster's `current_iteration()`;
+  `stopping_reason` is `none` at the ceiling, `validation` after early stopping, and
+  `native_exhaustion` otherwise. Importances are total gain. With a validation set but
+  early stopping disabled (a non-positive round count), both native adapters report
+  `best_iteration = rounds_fitted - 1`, so `validation_weighted_tree_count` has every fold's count.
+- The `lightgbm` descriptor's losses are `RMSE` → `regression`, `MAE` → `regression_l1`,
+  `Poisson` → `poisson`, `Gamma` → `gamma`, `Tweedie` → `tweedie`, `Logloss` → `binary`. Its
+  allowlist is `num_iterations`, `early_stopping_round`, `learning_rate`, `num_leaves`,
+  `max_depth`, `min_data_in_leaf`, `min_sum_hessian_in_leaf`, `feature_fraction`,
+  `bagging_fraction`, `bagging_freq`, `lambda_l1`, `lambda_l2`, `min_gain_to_split`, `max_bin`,
+  `max_cat_to_onehot`, `max_cat_threshold`, `cat_smooth`, `cat_l2`, `min_data_per_group`; Haute
+  owns `objective`, `tweedie_variance_power`, `boosting`, `metric`, `num_threads`,
+  `device_type`, `seed`, `bagging_seed`, `feature_fraction_seed`, `data_random_seed`,
+  `categorical_feature`, `monotone_constraints`, `linear_tree`, `init_score` and `verbosity`.
+  `param_aliases` snapshots LightGBM 4.7's complete alias table for those keys, and a test fails
+  when the installed release's table differs. `validate_params` reports an alias of a
+  Haute-owned key as Haute-owned, and any other alias with its canonical key.
+- `EBMAlgorithm.fit` in `src/haute/modelling/_ebm.py` resolves the loss through the `ebm`
+  descriptor (`RMSE` → `rmse`, `Poisson` → `poisson_deviance`, `Gamma` → `gamma_deviance`,
+  `Tweedie` → `tweedie_deviance:variance_power=<p>`, `Logloss` → `log_loss`), raises the
+  descriptor's `config_issue`, rejects feature weights, classification offsets and interaction
+  pairs naming a feature the model does not use, and fits one estimator on the frame it is given
+  (`eval_df` is never used) with `outer_bags=1`, `inner_bags=0`, `validation_size=0`,
+  `early_stopping_rounds=0`, `n_jobs=1`, the job seed, `feature_types` (`nominal` for contract
+  categoricals), positional `monotone_constraints`, and interaction pairs as index pairs.
+  Categoricals go through the shared `encode_frame`, so an unseen or empty-string value fails
+  (EBM itself would score an unseen value as zero). EBM's own `callback` starts a multiprocessing
+  `SharedMemoryManager`, so progress is reported in rounds before and after the fit. The result
+  carries `rounds_configured = max_rounds`, `rounds_fitted = None`, `stopping_reason = "none"`,
+  `threads = 1` and `term_update_steps` from `best_iteration_`.
+- `EBMModel` holds the estimator with the contract's features, levels, task, link, offset and
+  class labels. Its margin is `eval_terms` plus `intercept_` plus the transformed offset; the
+  served response is the native `predict(init_score=…)` or `predict_proba[:, 1]`. `contributions`
+  returns one value per term (`term_features_`, an interaction one term); `term_report` returns
+  each term's name, features, kind, importance (`term_importances`), axes (missing bin first,
+  then categories or continuous bin ranges with their cuts, the unknown bin dropped) and scores,
+  and feeds `TrainResult.ebm_terms` and the importances. `save` is `joblib.dump` of the
+  estimator. `load(path, contract)` requires an `ebm` model identity whose `engine_version` is
+  the installed `interpret-core` version (else `ArtifactVersionMismatchError`, before
+  unpickling), unpickles with `restricted_joblib_load`, and `validate` checks the exact class
+  for the task, `feature_names_in_`, `n_features_in_`, `feature_types_in_`, finite scores and
+  intercept, and 0/1 classes; `validate_identity` then refuses a contract whose loss, link or
+  Tweedie variance power is not the estimator's objective, because the contract decides how the
+  offset enters and how labels are read.
+- `load_local_model(path, task, *, contract_path=None)` loads an `.ebm` under `contract_path`
+  or the contract beside it (`model_contract_candidates`: `{stem}.feature_contract.json`, then a
+  package's `feature_contract.json`); an MLflow run load fetches the contract logged beside the
+  artifact with `_resolve_run_contract`, because the artifact cache keeps each artifact in its
+  own directory. Both in-process caches key an EBM by its contract's identity as well as its
+  model bytes (`_ebm_identity_fingerprint` for MLflow loads, including the disk-cache fast
+  path; the bundled contract's stat-gated fingerprint in the deployed scorer), so replacing only
+  the contract reloads the model.
+- The `ebm` descriptor allows `max_rounds` (required, positive), `learning_rate`, `max_bins`,
+  `max_interaction_bins`, `interactions`, `min_samples_leaf`, `min_hessian`, `max_leaves`,
+  `smoothing_rounds`, `interaction_smoothing_rounds`, `greedy_ratio`, `cyclic_progress`,
+  `reg_alpha`, `reg_lambda`, `max_delta_step`, `gain_scale`, `min_cat_samples`, `cat_smooth` and
+  `missing`; Haute owns `objective`, `outer_bags`, `inner_bags`, `validation_size`,
+  `early_stopping_rounds`, `early_stopping_tolerance`, `n_jobs`, `random_state`,
+  `feature_names`, `feature_types`, `monotone_constraints`, `exclude` and `callback`. Its
+  `round_key` is `max_rounds`, searchable by tuning, and its `refit_policy` is `fixed_budget`.
+  `ebm_value_issue` requires `max_rounds`, and an `interactions` value that is a non-negative
+  count or a list of distinct two-feature pairs none of which involves a monotone-constrained
+  feature.
+- `AlgorithmDescriptor.monotone_unsupported_losses` (LightGBM: `MAE`, whose `regression_l1`
+  objective refuses them) drives `monotone_constraint_issue`, raised by
+  `build_training_job_kwargs` for the effective (non-excluded) constraints and by the adapter
+  before fitting; the capability fixture carries it to the frontend's `monotone-loss` readiness
+  issue on the Features pane.
+

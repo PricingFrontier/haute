@@ -21,6 +21,7 @@ from types import MappingProxyType
 from typing import Any
 
 from haute.errors import HauteValidationError
+from haute.modelling._descriptors import algorithm_descriptor
 from haute.modelling._evaluation import EvaluationConfig
 from haute.modelling._glm_terms import (
     glm_model_columns,
@@ -393,6 +394,8 @@ def default_metrics(
         return ["gini", "poisson_deviance"]
     if objective == "tweedie":
         return ["gini", "tweedie_deviance"]
+    if objective == "gamma":
+        return ["gini", "gamma_deviance"]
     return ["gini", "rmse"]
 
 
@@ -508,6 +511,24 @@ def build_train_params(config: Mapping[str, Any]) -> dict[str, Any]:
     return {**(config.get("params") or {})}
 
 
+def validate_training_device(config: Mapping[str, Any]) -> str:
+    """The node's training device, ``"cpu"`` or ``"gpu"``, checked against its family.
+
+    Every family (the GLM included) goes through this check, so an unknown value or
+    a GPU request on a CPU-only family fails instead of silently training on the CPU.
+    """
+    algorithm = str(config.get("algorithm", "catboost")).lower()
+    descriptor = algorithm_descriptor(algorithm)
+    device = config.get("device")
+    if device not in (None, "cpu", "gpu"):
+        raise TrainingConfigError(f'device must be "cpu" or "gpu", got {device!r}.')
+    if device == "gpu" and not descriptor.gpu_device:
+        raise TrainingConfigError(
+            f"{descriptor.label} trains on CPU only in Haute; remove the GPU device setting."
+        )
+    return "gpu" if device == "gpu" else "cpu"
+
+
 def build_training_job_kwargs(
     config: Mapping[str, Any],
     *,
@@ -546,14 +567,44 @@ def build_training_job_kwargs(
 
     params = build_train_params(config)
     algorithm = str(config.get("algorithm", "catboost")).lower()
+    descriptor = algorithm_descriptor(algorithm)
     glm = is_glm_config(config)
+    task = str(config.get("task", "regression"))
+    if task not in descriptor.tasks:
+        raise TrainingConfigError(
+            f"{descriptor.label} does not support the {task} task. "
+            f"Supported: {', '.join(sorted(descriptor.tasks))}."
+        )
+    device = validate_training_device(config)
     # A wrong value beats an incomplete one, matching the train route.
     if glm:
         validate_glm_params(params)
+    else:
+        descriptor.validate_params(params)
+        for control in ("monotone_constraints", "feature_weights"):
+            if config.get(control) and control not in descriptor.feature_controls:
+                raise TrainingConfigError(
+                    f"{descriptor.label} does not support {control.replace('_', ' ')}; "
+                    "remove them from the Features pane."
+                )
+        loss_function = config.get("loss_function")
+        if loss_function:
+            try:
+                descriptor.native_loss(task, str(loss_function))
+            except TrainingConfigError:
+                raise
+            except HauteValidationError as exc:
+                raise TrainingConfigError(str(exc)) from exc
+        config_issue = descriptor.config_issue(
+            params,
+            str(loss_function) if loss_function else None,
+            _effective_monotone_constraints(config),
+        )
+        if config_issue is not None:
+            raise TrainingConfigError(config_issue)
     objective_issue = training_objective_issue(config)
     if objective_issue is not None:
         raise TrainingConfigError(objective_issue)
-    task = str(config.get("task", "regression"))
     variance_power = config.get("var_power") if glm else config.get("variance_power")
     legacy_fields = [key for key in ("split", "cross_validation") if key in config]
     if legacy_fields:
@@ -578,6 +629,11 @@ def build_training_job_kwargs(
     if not refit_on_development and tuning is not None:
         raise TrainingConfigError("Parameter tuning requires a final refit")
 
+    positive_class = config.get("positive_class")
+    if positive_class is not None and (
+        isinstance(positive_class, float) or not isinstance(positive_class, (bool, int, str))
+    ):
+        raise TrainingConfigError("positive_class must be a Boolean, an integer or a string label.")
     destination = config.get("mlflow_destination") or ""
     if destination not in ("", "databricks", "server"):
         raise TrainingConfigError(
@@ -611,4 +667,6 @@ def build_training_job_kwargs(
         "feature_weights": None if glm else config.get("feature_weights") or None,
         "categorical_levels": config.get("categorical_levels") or None,
         "mlflow_destination": destination,
+        "positive_class": positive_class,
+        "device": device,
     }

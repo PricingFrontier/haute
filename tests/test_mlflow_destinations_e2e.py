@@ -158,6 +158,9 @@ def _training_frame(n: int = 80, seed: int = 7, scale: float = 2.0) -> pl.DataFr
 
 
 def _write_contract(model_path: Path) -> None:
+    from haute.modelling._feature_contract import ModelIdentity
+
+    glm = model_path.suffix == ".rsglm"
     contract = build_contract(
         features=FEATURES,
         feature_types={"x": "Float64", "c": "String"},
@@ -165,6 +168,14 @@ def _write_contract(model_path: Path) -> None:
         target_name=TARGET,
         target_type="Float64",
         task="regression",
+        model=ModelIdentity(
+            algorithm="glm" if glm else "catboost",
+            link="identity",
+            engine_name="rustystats" if glm else "catboost",
+            engine_version="0",
+            haute_version="0",
+            glm_family="gaussian" if glm else None,
+        ),
     )
     save_contract(contract, model_path.parent / model_contract_filename(model_path.stem))
 

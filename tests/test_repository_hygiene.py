@@ -75,6 +75,7 @@ _SUBPROCESS_IMPORT_ALLOWLIST = {
     "src/haute/_host_memory.py",  # nvidia-smi chokepoint (caller; function-local import)
     "src/haute/cli/_serve.py",  # npm chokepoint (caller, via _helpers._npm)
     "src/haute/deploy/_container.py",  # docker chokepoint (caller)
+    "src/haute/cli/_gpu_setup.py",  # uv/pip installer + fresh-interpreter chokepoint (caller)
     # import-only: deliberate F401-suppressed patch-target — tests patch the
     # module attribute and assert this module never shells out.
     "src/haute/cli/_helpers.py",
@@ -90,6 +91,7 @@ _CALLER_CHOKEPOINTS = (
     "src/haute/_host_memory.py",
     "src/haute/cli/_serve.py",
     "src/haute/deploy/_container.py",
+    "src/haute/cli/_gpu_setup.py",
 )
 
 

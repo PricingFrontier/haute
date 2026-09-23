@@ -320,6 +320,8 @@ class TestLoadRejectsMalformed:
             "task": c.task,
             "contract_hash": c.contract_hash,
             "offset_column": c.offset_column,
+            "contract_version": 2,
+            "model": None,
         }
 
     def test_load_rejects_missing_required_field(self, tmp_path: Path) -> None:
@@ -558,6 +560,8 @@ def _raw_from_contract(contract: FeatureContract) -> dict:
         "task": contract.task,
         "contract_hash": contract.contract_hash,
         "offset_column": contract.offset_column,
+        "contract_version": 2,
+        "model": None,
     }
 
 

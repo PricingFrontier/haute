@@ -29,7 +29,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from weakref import WeakValueDictionary
 
 import numpy as np
@@ -43,7 +43,12 @@ from haute._mlflow_utils import (
     resolve_mlflow_source,
     set_tracking_uri_preserving_env,
 )
-from haute._model_flavors import _SUPPORTED_FLAVORS, ModelFlavor
+from haute._model_flavors import (
+    _SUPPORTED_FLAVORS,
+    NATIVE_WRAPPER_FLAVORS,
+    NATIVE_WRAPPER_SUFFIXES,
+    ModelFlavor,
+)
 
 if TYPE_CHECKING:
     from catboost import CatBoostClassifier, CatBoostRegressor
@@ -96,6 +101,9 @@ def _flavor_from_artifact(artifact_path: str) -> ModelFlavor:
         return "catboost"
     if artifact_path.endswith(".rsglm"):
         return "rustystats"
+    for suffix, wrapper_flavor in NATIVE_WRAPPER_SUFFIXES.items():
+        if artifact_path.endswith(suffix):
+            return wrapper_flavor
     return "pyfunc"
 
 
@@ -480,9 +488,8 @@ class ScoringModel:
         return self._model
 
     def predict(self, x_data: Any) -> np.ndarray:
-        """Return 1-D array of predictions."""
-        raw = self._model.predict(x_data)
-        return np.asarray(raw).flatten()
+        """Return 1-D array of predictions (binary labels from the positive probability)."""
+        return native_predictions(self._model, x_data, self.flavor)
 
     def predict_proba(self, x_data: Any) -> np.ndarray | None:
         """Return class probabilities, or ``None`` if unsupported."""
@@ -538,6 +545,105 @@ def _load_catboost_model(path: str, task: str) -> CatBoostRegressor | CatBoostCl
                 task=task,
             )
     return model
+
+
+def catboost_class_labels(model: Any) -> tuple[Any, Any] | None:
+    """``(negative, positive)`` for a binary CatBoost classifier, else ``None``.
+
+    A model Haute trained records the labels it encoded as 0/1; any other
+    binary CatBoost classifier uses its own ``classes_`` order.
+    """
+    import json
+
+    from haute.modelling._algorithms import CATBOOST_CLASS_LABELS_METADATA_KEY
+
+    try:
+        recorded = model.get_metadata().get(CATBOOST_CLASS_LABELS_METADATA_KEY)
+    except Exception:
+        recorded = None
+    if isinstance(recorded, str) and recorded:
+        labels = json.loads(recorded)
+        if not isinstance(labels, list) or len(labels) != 2:
+            from haute.errors import ConfigError
+
+            raise ConfigError(
+                "This CatBoost model's recorded class labels are malformed; retrain it.",
+            )
+        return labels[0], labels[1]
+    classes = getattr(model, "classes_", None)
+    if classes is None or len(classes) != 2:
+        return None
+    return _python_scalar(classes[0]), _python_scalar(classes[1])
+
+
+def _python_scalar(value: Any) -> Any:
+    return value.item() if isinstance(value, np.generic) else value
+
+
+def binary_labels(positive_proba: np.ndarray, labels: tuple[Any, Any]) -> np.ndarray:
+    """The label rule every binary classifier shares: positive iff proba > 0.5."""
+    negative, positive = labels
+    return np.where(np.asarray(positive_proba) > 0.5, positive, negative)
+
+
+def native_predictions(model: Any, x_data: Any, flavor: str) -> np.ndarray:
+    """1-D predictions; a binary CatBoost classifier's labels follow its probability."""
+    if flavor == "catboost":
+        labels = catboost_class_labels(model)
+        if labels is not None and callable(getattr(model, "predict_proba", None)):
+            positive = _positive_class_proba_vector(model.predict_proba(x_data), "prediction")
+            return binary_labels(positive, labels)
+    return np.asarray(model.predict(x_data)).flatten()
+
+
+#: The ScoringModel flavor each Haute-trained algorithm loads as.
+_ALGORITHM_FLAVORS = {
+    "catboost": "catboost",
+    "glm": "rustystats",
+    "xgboost": "xgboost",
+    "lightgbm": "lightgbm",
+    "ebm": "ebm",
+}
+
+
+def verify_contract_identity(identity: Any, scoring_model: ScoringModel) -> None:
+    """Fail when a loaded model is not the model its contract's identity describes."""
+    from haute.errors import ConfigError
+
+    expected_flavor = _ALGORITHM_FLAVORS.get(identity.algorithm)
+    if expected_flavor != scoring_model.flavor:
+        raise ConfigError(
+            f"The feature contract describes a {identity.algorithm} model, but the model file "
+            f"loads as {scoring_model.flavor}. Use the contract saved with this model.",
+            algorithm=identity.algorithm,
+            flavor=scoring_model.flavor,
+        )
+    if scoring_model.flavor in NATIVE_WRAPPER_FLAVORS and identity.loss:
+        from haute.modelling._descriptors import algorithm_descriptor
+
+        descriptor = algorithm_descriptor(identity.algorithm)
+        objective = scoring_model.raw_model.objective()
+        task = "classification" if identity.link == "logit" else "regression"
+        expected = descriptor.native_loss(task, identity.loss).objective
+        if objective != expected:
+            raise ConfigError(
+                f"The feature contract describes a {identity.loss} model, but this "
+                f"{descriptor.label} model was trained with {objective}. Use the contract "
+                "saved with this model.",
+                contract_loss=identity.loss,
+                model_objective=objective,
+            )
+    if scoring_model.flavor == "catboost" and identity.loss:
+        params = scoring_model.raw_model.get_all_params()
+        recorded = params.get("loss_function") if isinstance(params, dict) else None
+        loss = recorded.partition(":")[0] if isinstance(recorded, str) else ""
+        if loss and loss != identity.loss:
+            raise ConfigError(
+                f"The feature contract describes a {identity.loss} model, but this CatBoost "
+                f"model was trained with {loss}. Use the contract saved with this model.",
+                contract_loss=identity.loss,
+                model_loss=loss,
+            )
 
 
 def _catboost_offset_column(model: Any) -> str | None:
@@ -670,12 +776,16 @@ def _load_rustystats_model(path: str) -> ScoringModel:
     )
 
 
-def load_local_model(path: str, task: str = "regression") -> ScoringModel:
+def load_local_model(
+    path: str, task: str = "regression", *, contract_path: str | None = None
+) -> ScoringModel:
     """Load a model from a local file path (e.g. bundled deploy artifact).
 
     Auto-detects flavor from file extension:
     - ``.cbm`` → CatBoost native loader
     - ``.rsglm`` → RustyStats GLM loader
+    - ``.ubj`` / ``.lgbm`` / ``.ebm`` → Haute's native wrappers; an EBM loads
+      under *contract_path* when given, else the contract saved beside it
     - Otherwise → not yet supported (pyfunc local loading planned)
     """
     if path.endswith(".cbm"):
@@ -683,9 +793,144 @@ def load_local_model(path: str, task: str = "regression") -> ScoringModel:
         return _wrap_catboost(raw, source=repr(path))
     if path.endswith(".rsglm"):
         return _load_rustystats_model(path)
+    for suffix, wrapper_flavor in NATIVE_WRAPPER_SUFFIXES.items():
+        if path.endswith(suffix):
+            return _load_wrapper_model(path, task, wrapper_flavor, contract_path=contract_path)
     raise NotImplementedError(
-        f"Local model loading not yet supported for: {path!r}. "
-        "Supported formats: .cbm (CatBoost), .rsglm (RustyStats GLM)."
+        f"Local model loading not yet supported for: {path!r}. Supported formats: .cbm "
+        "(CatBoost), .rsglm (RustyStats GLM), .ubj (XGBoost), .lgbm (LightGBM), .ebm (EBM)."
+    )
+
+
+def model_contract_candidates(path: str | Path) -> list[Path]:
+    """Where a model file's feature contract sits: beside it, by name or in a package."""
+    from haute.modelling._feature_contract import CONTRACT_FILENAME
+    from haute.modelling._training_job import model_contract_filename
+
+    model_file = Path(path)
+    return [
+        model_file.with_name(model_contract_filename(model_file.stem)),
+        model_file.parent / CONTRACT_FILENAME,
+    ]
+
+
+def _sibling_contract(path: str) -> Any:
+    """The feature contract saved with *path*; an EBM cannot load without one."""
+    from haute.errors import ConfigError
+    from haute.modelling._feature_contract import load_contract
+
+    for candidate in model_contract_candidates(path):
+        if candidate.is_file():
+            return load_contract(candidate)
+    raise ConfigError(
+        f"No feature contract was found beside {Path(path).name}. An EBM model loads only "
+        "with the contract it was trained with (saved next to it as "
+        f"{model_contract_candidates(path)[0].name}).",
+        model_path=str(path),
+    )
+
+
+def _run_contract_artifact(artifact: str) -> str:
+    """The run-relative path of the contract logged beside *artifact*."""
+    from pathlib import PurePosixPath
+
+    return str(PurePosixPath(artifact).with_name(model_contract_candidates(artifact)[0].name))
+
+
+def _ebm_identity_fingerprint(
+    artifact: str, local_path: str, contract_artifact: str, contract_path: str
+) -> str:
+    """An EBM's cache identity: its model bytes and the contract it loads under."""
+    from haute.deploy._scorer import artifact_identity_fingerprint
+
+    return artifact_identity_fingerprint({artifact: local_path, contract_artifact: contract_path})
+
+
+def _loaded_artifact_fingerprint(
+    flavor: str,
+    mlflow_mod: Any,
+    backend: ResolvedBackend,
+    run_id: str,
+    artifact: str,
+    local_path: str,
+) -> str:
+    """The cache identity of a run artifact: its bytes, plus an EBM's contract.
+
+    Lookup and insertion both use this, so an entry is always found under the
+    key it was stored with.
+    """
+    if flavor != "ebm":
+        return _local_artifact_fingerprint(artifact, local_path)
+    return _ebm_identity_fingerprint(
+        artifact,
+        local_path,
+        _run_contract_artifact(artifact),
+        _resolve_run_contract(mlflow_mod, backend, run_id, artifact),
+    )
+
+
+def _resolve_run_contract(
+    mlflow_mod: Any, backend: ResolvedBackend, run_id: str, artifact: str
+) -> str:
+    """Fetch the feature contract a run logged beside *artifact* (an EBM needs it to load)."""
+
+    from haute.errors import ConfigError
+
+    contract_artifact = _run_contract_artifact(artifact)
+    try:
+        return _resolve_artifact_local(mlflow_mod, backend, run_id, contract_artifact)
+    except Exception as exc:
+        raise ConfigError(
+            f"Run {run_id} has no feature contract {contract_artifact} beside {artifact}; an "
+            f"EBM model loads only with the contract it was trained with ({exc}).",
+            run_id=run_id,
+            artifact_path=artifact,
+        ) from exc
+
+
+def _load_wrapper_model(
+    path: str, task: str, flavor: ModelFlavor, *, contract_path: str | None = None
+) -> ScoringModel:
+    """Load a Haute-trained native model as the *task* it will score.
+
+    XGBoost and LightGBM files describe themselves; an EBM file is the bare
+    estimator and loads under its feature contract: *contract_path* when the
+    caller fetched it (the MLflow cache keeps artifacts apart), else the one
+    saved beside the model.
+    """
+    from haute.errors import ConfigError
+
+    if flavor == "ebm":
+        from haute.modelling._ebm import EBMModel
+        from haute.modelling._feature_contract import load_contract
+
+        contract = load_contract(contract_path) if contract_path else _sibling_contract(path)
+        model: Any = EBMModel.load(path, contract)
+        label = "EBM"
+    elif flavor == "lightgbm":
+        from haute.modelling._lightgbm import LightGBMModel
+
+        model = LightGBMModel.load(path)
+        label = "LightGBM"
+    else:
+        from haute.modelling._xgboost import XGBoostModel
+
+        model = XGBoostModel.load(path)
+        label = "XGBoost"
+    if model.task != task:
+        raise ConfigError(
+            f"This {label} model was trained for {model.task} but the node scores it as "
+            f"{task}. Set the node's task to {model.task}.",
+            trained_task=model.task,
+            task=task,
+        )
+    return ScoringModel(
+        model=model,
+        feature_names=list(model.features),
+        cat_feature_names=model.cat_feature_names,
+        flavor=flavor,
+        offset_column=model.offset_column,
+        offset_link=model.offset_link,
     )
 
 
@@ -818,6 +1063,15 @@ def _find_model_artifact(client: MlflowClient, run_id: str) -> tuple[str, str]:
         return _find_rsglm_artifact(client, run_id), "rustystats"
     except _ArtifactNotFoundError:
         pass
+
+    for suffix, wrapper_flavor in NATIVE_WRAPPER_SUFFIXES.items():
+        try:
+            return (
+                _find_artifact_by_extension(client, run_id, suffix, wrapper_flavor),
+                wrapper_flavor,
+            )
+        except _ArtifactNotFoundError:
+            pass
 
     # Look for a pyfunc model directory (contains MLmodel file).
     # ``list_artifacts`` failures (MlflowException etc.) propagate so
@@ -1123,6 +1377,7 @@ def _load_with_bounded_retry(
     import random
     import time
 
+    from haute._sandbox import ArtifactVersionMismatchError
     from haute.errors import ConfigError
 
     last_err: BaseException | None = None
@@ -1130,17 +1385,26 @@ def _load_with_bounded_retry(
         local_path: str | None = None
         try:
             local_path = _resolve_artifact_local(mlflow_mod, backend, run_id, artifact)
+            contract_path: str | None = None
+            if flavor == "ebm":
+                contract_path = _resolve_run_contract(mlflow_mod, backend, run_id, artifact)
             if flavor == "catboost":
                 raw = _load_catboost_model(local_path, task)
                 return _wrap_catboost(raw, source=f"run {run_id!r}, artifact {artifact!r}")
+            if flavor in NATIVE_WRAPPER_FLAVORS:
+                return _load_wrapper_model(
+                    local_path, task, cast(ModelFlavor, flavor), contract_path=contract_path
+                )
             return _load_rustystats_model(local_path)
-        except (AttributeError, TypeError, KeyError, ConfigError):
+        except (AttributeError, TypeError, KeyError, ConfigError, ArtifactVersionMismatchError):
             # Programmer error — a missing attribute, wrong type, or
             # unknown dict key is a bug in our dispatch code (or a
             # breaking change in catboost / rustystats), not a corrupt
             # artifact; a ConfigError (the node scores the model as the
-            # wrong task) is a readable model that re-downloading cannot
-            # fix.  Wrapping these as "persistently corrupt" would send
+            # wrong task, or an EBM under a contract that does not describe
+            # it) and an ArtifactVersionMismatchError (a model written by
+            # another engine version) are readable models that
+            # re-downloading cannot fix.  Wrapping these as "persistently corrupt" would send
             # on-call down the wrong path.  Re-raise so the real error
             # surfaces.
             raise
@@ -1280,15 +1544,30 @@ def load_mlflow_model(
                     run_id,
                     artifact_path,
                 )
-                if local_path.is_file():
+                # An EBM is only as current as the contract it loads under, so
+                # its fast path needs the cached contract too.
+                contract_local: Path | None = None
+                if flavor == "ebm":
+                    contract_artifact = _run_contract_artifact(artifact_path)
+                    contract_local = _artifact_cache_path(
+                        _disk_cache_root(), backend.digest, run_id, contract_artifact
+                    )
+                if local_path.is_file() and (contract_local is None or contract_local.is_file()):
                     fast_key = _model_cache_key(
                         source_type=source_type,
                         run_id=run_id,
                         version=version,
                         artifact_path=artifact_path,
                         task=task,
-                        artifact_fingerprint=_local_artifact_fingerprint(
-                            artifact_path, str(local_path)
+                        artifact_fingerprint=(
+                            _local_artifact_fingerprint(artifact_path, str(local_path))
+                            if contract_local is None
+                            else _ebm_identity_fingerprint(
+                                artifact_path,
+                                str(local_path),
+                                contract_artifact,
+                                str(contract_local),
+                            )
                         ),
                         backend_identity=backend.identity,
                     )
@@ -1317,7 +1596,13 @@ def load_mlflow_model(
                                 artifact_path=artifact_path,
                                 flavor=flavor,
                             )
-                            scoring_model = load_local_model(str(local_path), task=task)
+                            scoring_model = (
+                                load_local_model(str(local_path), task=task)
+                                if contract_local is None
+                                else load_local_model(
+                                    str(local_path), task=task, contract_path=str(contract_local)
+                                )
+                            )
                             _model_cache.put(fast_key, scoring_model)
                             logger.info(
                                 "mlflow_model_loaded_from_disk_cache",
@@ -1363,7 +1648,7 @@ def load_mlflow_model(
     # keyed without byte identity (documented residual in _model_cache_key).
     local_artifact_path: str | None = None
     artifact_fp = ""
-    if flavor in ("catboost", "rustystats"):
+    if flavor in ("catboost", "rustystats") or flavor in NATIVE_WRAPPER_FLAVORS:
         with _disk_cache_run_in_use(resolved_run_id):
             local_artifact_path = _resolve_artifact_local(
                 mlflow_mod,
@@ -1371,7 +1656,9 @@ def load_mlflow_model(
                 resolved_run_id,
                 resolved_artifact,
             )
-            artifact_fp = _local_artifact_fingerprint(resolved_artifact, local_artifact_path)
+            artifact_fp = _loaded_artifact_fingerprint(
+                flavor, mlflow_mod, backend, resolved_run_id, resolved_artifact, local_artifact_path
+            )
 
     cache_key = _model_cache_key(
         source_type=source_type,
@@ -1422,7 +1709,7 @@ def load_mlflow_model(
         # small exponential backoff with jitter so transient upstream hiccups
         # (tracking-server flaps) get a moment to recover — but the total
         # retry budget is bounded so persistent corruption surfaces loudly.
-        if flavor in ("catboost", "rustystats"):
+        if flavor in ("catboost", "rustystats") or flavor in NATIVE_WRAPPER_FLAVORS:
             with _disk_cache_run_in_use(resolved_run_id):
                 scoring_model = _load_with_bounded_retry(
                     mlflow_mod=mlflow_mod,
@@ -1443,8 +1730,13 @@ def load_mlflow_model(
                     version=resolved_version,
                     artifact_path=resolved_artifact,
                     task=task,
-                    artifact_fingerprint=_local_artifact_fingerprint(
-                        resolved_artifact, local_artifact_path
+                    artifact_fingerprint=_loaded_artifact_fingerprint(
+                        flavor,
+                        mlflow_mod,
+                        backend,
+                        resolved_run_id,
+                        resolved_artifact,
+                        local_artifact_path,
                     ),
                     backend_identity=backend.identity,
                 )
@@ -1508,8 +1800,9 @@ def _prepare_predict_frame(
     Unknown flavors raise ``ValueError`` — silently routing them through
     the catboost-shaped branch would score with the wrong input contract.
     """
-    # RustyStats handles its own preprocessing — pass Polars directly
-    if flavor == "rustystats":
+    # RustyStats and the XGBoost wrapper encode their own inputs (the
+    # wrapper from its stored category levels) — pass Polars directly.
+    if flavor == "rustystats" or flavor in NATIVE_WRAPPER_FLAVORS:
         return df_eager.select(features) if features else df_eager
 
     # ``catboost`` and ``pyfunc`` share the tabular (pandas/numpy) prep below;

@@ -659,7 +659,7 @@ def test_tuning_trial_rejects_nonfinite_or_nonjson_parameters(params: object, me
         (lambda tuning: tuning.update(baseline_objective=0.2), "baseline_objective"),
         (
             lambda tuning: tuning["trials"][1]["fits"][0].update(best_iteration=None),
-            "positive iteration ceiling",
+            "positive CatBoost iterations",
         ),
         (lambda tuning: tuning.update(improvement=0.2), "improvement must equal"),
         (lambda tuning: tuning.update(trial_fit_count=9), "trial_fit_count"),

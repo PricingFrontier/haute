@@ -43,6 +43,23 @@ Depending on your deploy target, you may need additional packages:
 uv add "haute[databricks]"         # Adds SQL support and pins Databricks clients
 ```
 
+### XGBoost GPU training
+
+Haute installs XGBoost's CPU-only build (`xgboost-cpu`). To train XGBoost models on an
+NVIDIA GPU on Windows or Linux, swap in the full CUDA build once, then restart
+`haute serve`:
+
+```powershell
+haute gpu-setup            # installs xgboost (CUDA) at the same version
+haute gpu-setup --check    # reports the build, the GPU and whether GPU training works
+haute gpu-setup --cpu      # switches back to xgboost-cpu
+```
+
+The command needs the NVIDIA driver (`nvidia-smi` must list the GPU) and checks the
+result in a fresh Python process. The CUDA build is a larger download (about 140 MB on
+Windows). Re-syncing the project (`uv sync`) restores `xgboost-cpu`; run
+`haute gpu-setup` again afterwards. macOS has no CUDA build.
+
 ---
 
 ## Troubleshooting
@@ -60,6 +77,16 @@ uv sync --no-managed-python --no-python-downloads
 ```
 
 Calling the environment's Python explicitly means activation is optional. Once it is activated, the shorter `python -m haute serve` is equivalent. Both module forms and `haute serve` invoke the same command implementation and accept the same options. You can use the module form for every command, such as `python -m haute init` or `python -m haute lint`. If the approved Python interpreter itself is blocked, IT must permit or provision that runtime; Haute does not bypass operating-system policy.
+
+### macOS: XGBoost or LightGBM will not load
+
+The macOS wheels of XGBoost and LightGBM use the system's OpenMP runtime, which macOS does not ship. If training or scoring an XGBoost or LightGBM model fails with an error mentioning `libomp.dylib`, install it with [Homebrew](https://brew.sh) and restart `haute serve`:
+
+```bash
+brew install libomp
+```
+
+Windows and Linux installs need no extra step.
 
 **`haute serve` doesn't open anything in my browser**
 

@@ -8,6 +8,7 @@ stays in tests/test_ram_estimate.py.
 from __future__ import annotations
 
 import ctypes
+import subprocess
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -21,6 +22,7 @@ from haute import _host_memory
 from haute._host_memory import (
     available_ram_bytes,
     available_vram_bytes,
+    nvidia_gpu_name,
     require_positive_available_ram,
 )
 
@@ -1148,6 +1150,33 @@ class TestAvailableVram:
             assert available_vram_bytes() is None
 
 
+class TestNvidiaGpuName:
+    def test_reports_the_first_listed_gpu(self) -> None:
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "NVIDIA GeForce RTX 4070\nNVIDIA A100\n"
+        with patch("subprocess.run", return_value=mock_result) as run:
+            assert nvidia_gpu_name() == "NVIDIA GeForce RTX 4070"
+        assert run.call_args.kwargs["encoding"] == "utf-8"
+
+    @pytest.mark.parametrize(("returncode", "stdout"), [(1, "NVIDIA GeForce RTX 4070\n"), (0, "")])
+    def test_none_when_nvidia_smi_fails_or_lists_nothing(
+        self, returncode: int, stdout: str
+    ) -> None:
+        mock_result = MagicMock()
+        mock_result.returncode = returncode
+        mock_result.stdout = stdout
+        with patch("subprocess.run", return_value=mock_result):
+            assert nvidia_gpu_name() is None
+
+    @pytest.mark.parametrize(
+        "error", [FileNotFoundError(), OSError(), subprocess.TimeoutExpired("nvidia-smi", 10)]
+    )
+    def test_none_when_nvidia_smi_cannot_run(self, error: Exception) -> None:
+        with patch("subprocess.run", side_effect=error):
+            assert nvidia_gpu_name() is None
+
+
 class TestAvailableVramParsing:
     def test_successful_nvidia_smi_single_gpu(self) -> None:
         """Parse nvidia-smi output for a single GPU."""
@@ -1167,6 +1196,24 @@ class TestAvailableVramParsing:
             result = available_vram_bytes()
         # First GPU's VRAM
         assert result == 16384 * 1024 * 1024
+
+    def test_queries_free_memory_on_the_visible_training_gpu(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Admission compares with free VRAM on the GPU CUDA will train on."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "2048\n"
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        with patch("subprocess.run", return_value=mock_result) as run:
+            assert available_vram_bytes() == 2048 * 1024 * 1024
+        command = run.call_args.args[0]
+        assert "--query-gpu=memory.free" in command
+        assert not any(arg.startswith("--id=") for arg in command)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,0")
+        with patch("subprocess.run", return_value=mock_result) as run:
+            available_vram_bytes()
+        assert "--id=1" in run.call_args.args[0]
 
     def test_nvidia_smi_nonzero_returncode(self) -> None:
         """Non-zero returncode means no GPU detected."""

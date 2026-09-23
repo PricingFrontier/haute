@@ -544,13 +544,14 @@ def test_real_selection_fits_report_iterations_without_mixing_final_loss_history
     tmp_path: Path, validation: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HAUTE_MEM_LOG", str(tmp_path / "training_mem.log"))
+    monkeypatch.setenv("HAUTE_TRAINING_THREADS", "1")
     job = TrainingJob(
         name="progress",
         data=pl.DataFrame({"y": range(30), "feature": range(30)}),
         target="y",
         output_dir=str(tmp_path),
         metrics=["rmse"],
-        params={"iterations": 6, "depth": 2, "thread_count": 1, "random_seed": 9},
+        params={"iterations": 6, "depth": 2, "random_seed": 9},
         evaluation=evaluation(validation=validation),
     )
     events: list[tuple[str, float]] = []
@@ -587,9 +588,11 @@ def test_real_selection_fits_report_iterations_without_mixing_final_loss_history
 
 @pytest.mark.parametrize("test_fraction", [None, {"size": 0.2}])
 def test_real_holdout_fit_can_be_saved_without_refit(
-    tmp_path: Path, test_fraction: dict[str, float] | None
+    tmp_path: Path, test_fraction: dict[str, float] | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from catboost import CatBoostRegressor
+
+    monkeypatch.setenv("HAUTE_TRAINING_THREADS", "1")
 
     from haute.routes._training_artifacts import _validate_evaluation_artifact_contents
     from haute.routes._training_worker import _training_response_payload
@@ -600,7 +603,7 @@ def test_real_holdout_fit_can_be_saved_without_refit(
         target="y",
         output_dir=str(tmp_path),
         metrics=["rmse"],
-        params={"iterations": 12, "depth": 2, "thread_count": 1, "random_seed": 9},
+        params={"iterations": 12, "depth": 2, "random_seed": 9},
         evaluation=evaluation(validation={"method": "single", "size": 0.2}, test=test_fraction),
         refit_on_development=False,
     )

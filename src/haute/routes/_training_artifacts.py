@@ -85,6 +85,21 @@ def _max_training_artifact_bytes() -> int:
 _TRAINING_DOWNSAMPLE_SEED = 42
 
 
+def _without_nulls(value: Any) -> Any:
+    """*value* with every null member dropped, recursively.
+
+    Worker responses are serialised with ``exclude_none``, while artifact records
+    keep explicit nulls (an EBM fit has no ``best_iteration``; a fixed-budget study
+    no ``final_tree_count``). Both sides of a response-versus-artifact comparison
+    pass through this, so the comparison sees the same shape.
+    """
+    if isinstance(value, dict):
+        return {key: _without_nulls(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [_without_nulls(item) for item in value]
+    return value
+
+
 def _validate_evaluation_artifact_contents(
     artifact_paths: Mapping[str, Path],
     *,
@@ -280,7 +295,7 @@ def _validate_training_artifacts(
         response_fit_count=expected_evaluation_response["fit_count"],
         response_refit_on_development=expected_evaluation_response["refit_on_development"],
     )
-    if expected_evaluation_response != artifact_evaluation_response:
+    if _without_nulls(expected_evaluation_response) != _without_nulls(artifact_evaluation_response):
         raise WorkerProtocolError(
             "Training evaluation response does not match the staged artifact contents"
         )
@@ -311,7 +326,7 @@ def _validate_training_artifacts(
             artifact_paths,
             evaluation_plan_sha256=artifact_evaluation_response["plan_sha256"],
         )
-        if expected_tuning_response != artifact_tuning_response:
+        if _without_nulls(expected_tuning_response) != _without_nulls(artifact_tuning_response):
             raise WorkerProtocolError(
                 "Training tuning response does not match the staged artifact contents"
             )

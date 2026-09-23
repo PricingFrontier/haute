@@ -584,7 +584,7 @@ class ModellingConfig(TypedDict, total=False):
     weight: str
     feature_columns: list[str]
     exclude: list[str]
-    algorithm: str  # "catboost" | "glm"
+    algorithm: str  # a registered model family: "catboost" | "glm" | "xgboost" | "lightgbm" | "ebm"
     task: str  # "regression" | "classification"
     params: dict[str, Any]
     evaluation: dict[str, Any]
@@ -622,6 +622,9 @@ class ModellingConfig(TypedDict, total=False):
     id_columns: list[str]
     categorical_levels: dict[str, list[str | None]]
     mlflow_destination: str  # "" | "databricks" | "server" | "local"; absent = auto
+    # Binary classification: the label trained as positive (absent = True / 1)
+    positive_class: str | int | float | bool
+    device: str  # "cpu" | "gpu" (GPU-capable families only: XGBoost); absent = "cpu"
 
 
 class OptimiserConfig(TypedDict, total=False):

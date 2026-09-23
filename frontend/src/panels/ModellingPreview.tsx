@@ -19,6 +19,7 @@ import { AveTab } from "./modelling/AveTab"
 import { FeaturesTab } from "./modelling/FeaturesTab"
 import { GLMCoefficientsTab } from "./modelling/GLMCoefficientsTab"
 import { GLMRelativitiesTab } from "./modelling/GLMRelativitiesTab"
+import { EBMTermsTab } from "./modelling/EBMTermsTab"
 import { LiftTab } from "./modelling/LiftTab"
 import { LossTab } from "./modelling/LossTab"
 import { PdpTab } from "./modelling/PdpTab"
@@ -45,6 +46,7 @@ const TAB_KEYS = [
   "summary",
   "coefficients",
   "relativities",
+  "terms",
   "loss",
   "lift",
   "residuals",
@@ -58,6 +60,7 @@ const TAB_LABELS: Record<TabKey, string> = {
   summary: "Summary",
   coefficients: "Coefficients",
   relativities: "Relativities",
+  terms: "Terms",
   loss: "Loss",
   lift: "Lift",
   residuals: "Residuals",
@@ -77,6 +80,11 @@ const VIEW_INTRODUCTIONS: Record<
   relativities: {
     title: "GLM relativities",
     description: "Compare each term's effect relative to the baseline of 1.",
+  },
+  terms: {
+    title: "EBM terms",
+    description:
+      "Read each main effect's shape and each pairwise interaction's surface: the model is their sum.",
   },
   loss: {
     title: "Training loss",
@@ -155,6 +163,8 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
         return result.glm_coefficients && result.glm_coefficients.length > 0
       case "relativities":
         return result.glm_relativities && result.glm_relativities.length > 0
+      case "terms":
+        return (result.ebm_terms ?? []).length > 0
       case "loss":
         return result.loss_history && result.loss_history.length > 1
       case "lift":
@@ -320,6 +330,7 @@ export function ModellingPreview({ data, nodeId, onRefresh }: ModellingPreviewPr
           )}
           {activeTab === "coefficients" && <GLMCoefficientsTab result={result} />}
           {activeTab === "relativities" && <GLMRelativitiesTab result={result} />}
+          {activeTab === "terms" && <EBMTermsTab result={result} />}
           {activeTab === "loss" && <LossTab result={result} />}
           {activeTab === "lift" && <LiftTab result={result} />}
           {activeTab === "residuals" && <ResidualsTab result={result} />}

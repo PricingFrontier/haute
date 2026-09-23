@@ -415,7 +415,7 @@ def _training_required_columns_by_node(
 
     if term_columns is None:
         algorithm = str(config.get("algorithm", "catboost")).lower()
-        if algorithm != "catboost":
+        if algorithm == "glm":
             return None
         keep_columns = _training_required_metadata_columns(config)
         feature_columns = _string_list_config(config, "feature_columns")
@@ -502,20 +502,25 @@ def _check_gpu_vram(
     effective_rows: int,
     probe_columns: int,
     params: dict[str, Any],
+    *,
+    algorithm: str = "catboost",
 ) -> _VramCheck:
     """Estimate GPU VRAM requirements and return a check result."""
     if effective_rows <= 0 or probe_columns <= 0:
         return _VramCheck()
 
     from haute._host_memory import available_vram_bytes
-    from haute._ram_estimate import estimate_gpu_vram_bytes
+    from haute._ram_estimate import estimate_gpu_vram_bytes, estimate_xgboost_gpu_vram_bytes
 
-    vram_needed = estimate_gpu_vram_bytes(
-        effective_rows,
-        probe_columns,
-        border_count=params.get("border_count", _DEFAULT_BORDER_COUNT),
-        depth=params.get("depth", _DEFAULT_DEPTH),
-    )
+    if algorithm == "xgboost":
+        vram_needed = estimate_xgboost_gpu_vram_bytes(effective_rows, probe_columns)
+    else:
+        vram_needed = estimate_gpu_vram_bytes(
+            effective_rows,
+            probe_columns,
+            border_count=params.get("border_count", _DEFAULT_BORDER_COUNT),
+            depth=params.get("depth", _DEFAULT_DEPTH),
+        )
     estimated_mb = round(vram_needed / 1024**2, 1)
 
     vram = available_vram_bytes()
@@ -532,7 +537,7 @@ def _check_gpu_vram(
     elif vram_needed > vram:
         warning = (
             f"GPU training needs ~{vram_needed / 1024**3:.1f} GB VRAM "
-            f"but GPU has {vram / 1024**3:.1f} GB."
+            f"but GPU has {vram / 1024**3:.1f} GB free."
         )
         insufficient = True
 

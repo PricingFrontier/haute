@@ -24,7 +24,17 @@ from typing import Literal, TypeAlias, get_args
 # and ``_mlflow_io``'s predict-frame preparation must be taught to handle it —
 # ``tests/test_mlflow_io.py::TestFlavorSsot`` fails loudly if only one side is
 # updated.
-ModelFlavor: TypeAlias = Literal["catboost", "pyfunc", "rustystats"]
+ModelFlavor: TypeAlias = Literal["catboost", "pyfunc", "rustystats", "xgboost", "lightgbm", "ebm"]
+
+# Flavors whose loaded model is a Haute self-describing wrapper (it encodes its
+# own inputs, applies its own offset, and labels binary predictions), keyed by
+# the native artifact suffix that loads as each.
+NATIVE_WRAPPER_SUFFIXES: dict[str, ModelFlavor] = {
+    ".ubj": "xgboost",
+    ".lgbm": "lightgbm",
+    ".ebm": "ebm",
+}
+NATIVE_WRAPPER_FLAVORS: frozenset[ModelFlavor] = frozenset(NATIVE_WRAPPER_SUFFIXES.values())
 
 # Derived — never hand-duplicated.  ``get_args`` reads the literal members off
 # ``ModelFlavor`` so the frozenset cannot fall out of sync with the type.

@@ -232,7 +232,10 @@ strip; it never falls through to CatBoost. Pane ownership:
   estimate preview shows development/final-test counts, validation fit count and row
   bounds, plus group counts or date ranges. The pane uses only **development data**,
   **validation**, and **final test** terminology.
-- **Train** — the GPU toggle (CatBoost only, still stored as the GPU task-type parameter), row
+- **Train** — the GPU toggle (CatBoost: stored as the GPU task-type parameter; XGBoost:
+  stored as the node's `device: "gpu"`, enabled only when `GET /api/modelling/gpu` reports
+  the server can train on a CUDA GPU, otherwise disabled beside the server's reason, and
+  always switchable back to CPU), row
   limit beside the RAM/VRAM estimate it modulates,
   staleness banner, Train/Cancel actions, click-time validation banner, live progress, completion
   badge and error card. Its checkbox and text/number controls use the same visible themed borders,
@@ -345,3 +348,31 @@ new-job samples. `frontend/src/panels/__tests__/NodePanel.test.tsx`,
 `frontend/src/panels/__tests__/PreviewPanelTabs.test.tsx` prove strip gating, per-node memory,
 active-indicator accessibility, and unchanged roving-keyboard behaviour. Runtime/store suites prove
 strict live-history parsing, latest-status retention, and per-job estimator reset.
+
+## Model family capabilities
+
+- Algorithm names, tasks, losses, feature controls, refit policy, suffixes and tuning support
+  come from `frontend/src/panels/modelling/algorithmCapabilities.json`, which the backend
+  generates from its descriptors and checks for drift. The gateway lists exactly the families
+  in it, the target pane offers only the selected family's losses, and tuning is offered only
+  for families that support it.
+- The model type is chosen once, when the node is created, and cannot be changed afterwards;
+  a different family is a new node.
+- A classification objective on a target that is neither Boolean nor 0/1 shows a positive-class
+  field. It is required for a text target and optional for an integer target, whose value is
+  saved as a number. Predictions above 0.5 are labelled with the positive class.
+- Every family but the GLM shares the Target, Features and Parameters panes and the JSON
+  parameter editor (`usesSharedPanes`). An EBM's Features pane adds a pairwise-interaction
+  control: "Let EBM choose" writes a count to `params.interactions`, "Choose pairs" a list of
+  feature pairs picked from the included features, with monotone-constrained features
+  disabled and a saved pair naming a missing column kept visible. The readiness issues mirror
+  the backend's EBM rules (`ebm-max-rounds` on Parameters, `ebm-interactions` on Features).
+- An EBM result adds a Terms tab: terms ranked by importance, a main effect drawn as its shape
+  (bars per category, a step line over value bins, the missing-value score stated), and an
+  interaction as a score table over its two axes, all labelled as additive link-scale term
+  scores, never SHAP. A traced EBM prediction lists one contribution per term, an interaction
+  as one row.
+- The response guard treats fit-evidence fields and a tuning report's `final_tree_count` as
+  optional, because the backend drops nulls: a GLM's evidence is its threads alone, and a
+  fixed-budget (EBM) study refits with the winner's parameters and has no tree count.
+

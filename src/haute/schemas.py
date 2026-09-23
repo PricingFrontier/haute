@@ -2364,7 +2364,8 @@ class TuningReportPayload(_StrictPublicTrainingPayload):
     improvement: float = Field(ge=0)
     best_sampled_params: dict[str, Any]
     final_params: dict[str, Any]
-    final_tree_count: int = Field(strict=True, ge=1)
+    #: Absent for a fixed-budget family (EBM), whose refit reuses the winning budget.
+    final_tree_count: int | None = Field(default=None, strict=True, ge=1)
     trial_count: int = Field(strict=True, ge=5, le=50)
     trial_fit_count: int = Field(strict=True, ge=5, le=200)
     total_fit_count: int = Field(strict=True, ge=6, le=201)
@@ -2467,42 +2468,15 @@ class TuningReportPayload(_StrictPublicTrainingPayload):
             raise ValueError(
                 "best sampled parameters must equal the winning trial sampled parameters"
             )
-        iteration_ceiling = winner.resolved_params.get("iterations", 1000)
-        if (
-            isinstance(iteration_ceiling, bool)
-            or not isinstance(iteration_ceiling, int)
-            or iteration_ceiling <= 0
-            or any(fit.best_iteration is None for fit in winner.fits)
-        ):
-            raise ValueError(
-                "winning trial must retain a positive iteration ceiling and "
-                "best_iteration for every fit"
-            )
-        weighted_tree_counts = sorted(
-            (
-                fit.best_iteration + 1,
-                fit.validation_rows,
-            )
-            for fit in winner.fits
-            if fit.best_iteration is not None
+        from haute.modelling._descriptors import tuning_family
+        from haute.modelling._tuning import tuning_final_projection
+
+        # A HauteValidationError is a ValueError, so pydantic reports it as such.
+        expected_final_params, expected_tree_count = tuning_final_projection(
+            tuning_family(self.final_params),
+            winner.resolved_params,
+            [(fit.best_iteration, fit.validation_rows) for fit in winner.fits],
         )
-        threshold = sum(rows for _, rows in weighted_tree_counts) / 2
-        selected_tree_count = next(
-            tree_count
-            for index, (tree_count, _) in enumerate(weighted_tree_counts)
-            if sum(rows for _, rows in weighted_tree_counts[: index + 1]) >= threshold
-        )
-        expected_tree_count = min(selected_tree_count, iteration_ceiling)
-        expected_final_params = dict(winner.resolved_params)
-        for key in (
-            "early_stopping_rounds",
-            "od_pval",
-            "od_type",
-            "od_wait",
-            "use_best_model",
-        ):
-            expected_final_params.pop(key, None)
-        expected_final_params["iterations"] = expected_tree_count
         if (
             self.final_tree_count != expected_tree_count
             or self.final_params != expected_final_params
@@ -2524,6 +2498,39 @@ class TuningReportPayload(_StrictPublicTrainingPayload):
         return self
 
 
+class GpuFamilyStatus(BaseModel):
+    """Whether one family can train on a GPU in this server process."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    available: bool
+    detail: str
+    device: str | None = None
+
+
+class ModellingGpuStatusResponse(BaseModel):
+    """GPU training capability per GPU-capable family (XGBoost CUDA)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    xgboost: GpuFamilyStatus
+
+
+class FitEvidencePayload(BaseModel):
+    """The final fit's thread allotment, round ceiling, fitted rounds, and stop reason."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    threads: int = Field(strict=True, ge=1)
+    rounds_configured: int | None = Field(default=None, strict=True, ge=1)
+    rounds_fitted: int | None = Field(default=None, strict=True, ge=0)
+    stopping_reason: Literal["none", "validation", "native_exhaustion"] | None = None
+    #: EBM's native best_iteration_: term updates per boosting stage, never rounds.
+    term_update_steps: list[int] | None = None
+    #: The device a GPU fit actually trained on (``cuda:0``).
+    device: str | None = None
+
+
 class TrainResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2541,6 +2548,7 @@ class TrainResponse(BaseModel):
     error: str | None = None
     best_iteration: int | None = None
     final_tree_count: int | None = Field(default=None, strict=True, ge=1)
+    fit_evidence: FitEvidencePayload | None = None
     loss_history: list[dict[str, float]] = Field(default_factory=list)
     loss_history_truncated: bool = False
     double_lift: list[dict[str, Any]] = Field(default_factory=list)
@@ -2559,6 +2567,7 @@ class TrainResponse(BaseModel):
     glm_inference: dict[str, Any] | None = None
     glm_smooth_terms: list[dict[str, Any]] = Field(default_factory=list)
     glm_regularization: dict[str, Any] | None = None
+    ebm_terms: list[dict[str, Any]] = Field(default_factory=list)
     diagnostics_errors: list[dict[str, str]] = Field(default_factory=list)
     warning: str | None = None
     total_source_rows: int | None = None
@@ -2959,7 +2968,7 @@ class LogExperimentRequest(BaseModel):
 
 class ModelSaveDestinationRequest(BaseModel):
     output_path: str = Field(min_length=1)
-    algorithm: Literal["catboost", "glm"]
+    algorithm: Literal["catboost", "glm", "xgboost", "lightgbm", "ebm"]
 
 
 class ModelSaveDestinationResponse(BaseModel):

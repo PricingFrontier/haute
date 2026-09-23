@@ -360,6 +360,11 @@ _EXPECTED_DEBT_IDS = {
     # Windows may lack symlink privilege; lexical and hardlink checks run before
     # the skip, Linux runs the real-symlink assertion.
     "676d266f149e829d",
+    # Real-device XGBoost GPU tests in tests/test_xgboost_gpu.py (MOD-F06): they
+    # need the full xgboost CUDA build and an NVIDIA GPU, which CI runners and
+    # Haute's default xgboost-cpu install lack; the device-free GPU contract
+    # (config, refusal, fallback detection, VRAM, route, gpu-setup) runs everywhere.
+    "3f2e4ca1be0a6123",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

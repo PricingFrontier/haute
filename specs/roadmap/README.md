@@ -33,7 +33,7 @@ or maintenance issue; `P3` opportunistic work.
 | [IO layer](io-layer.md) | One dtype vocabulary, one atomic write and file lock | `IO-R01` |
 | [JSON shredding](json-shredding.md) | One non-finite float encoding, explicit output nesting | `JSON-R01` |
 | [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients | `MLF-R02` |
-| [Modelling](modelling.md) | RustyStats 0.9.0 upgrade, GLM terms and interactions; proposed XGBoost, LightGBM, and EBM lifecycle support; invariant checks | `MOD-T00` |
+| [Modelling](modelling.md) | RustyStats 0.9.0 upgrade, GLM terms and interactions; invariant checks | `MOD-T00` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers, auto-range, input isolation | `OPT-P11` |
 | [Pipeline config](pipeline-config.md) | Repair, save validation, the error a rejected config reports, project context, typed configs, node specification | `PCFG-R01` |
 | [Sandbox security](sandbox-security.md) | One path-containment check, the node-code guard | `SBX-R01` |
@@ -77,6 +77,28 @@ The supporting inventories record [cache lifecycle evidence](pr-227-cache-eviden
 [CI implementation evidence](pr-227-ci-implementation-evidence.md). The
 [Fable review request](pr-227-fable-review-request.md) preserves the scope and
 instructions supplied for that independent review.
+
+## MOD-F00 engine probes — 23 September 2026
+
+The [engine probe record](mod-f00-engine-probes.md) holds the dependency,
+packaging and native-behaviour evidence that settled the pre-implementation
+gates of the model-family expansion in the [modelling roadmap](modelling.md).
+It is a dated evidence artifact; component specifications remain the behavior
+authority.
+
+## MOD-F05 CPU release check — 23 September 2026
+
+The [release check](mod-f05-release-check.md) maps every acceptance row of the
+model-family expansion to its test evidence and records the release benchmarks,
+EBM format limits and platform requirements. It is a dated evidence artifact;
+component specifications remain the behavior authority.
+
+## MOD-F06 GPU probes — 23 September 2026
+
+The [GPU probes](mod-f06-gpu-probes.md) record the XGBoost CUDA and LightGBM
+GPU backend evidence behind XGBoost GPU training, `haute gpu-setup`, and the
+decision to keep LightGBM and EBM on the CPU. It is a dated evidence artifact;
+component specifications remain the behavior authority.
 
 ## Working protocol
 

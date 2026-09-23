@@ -334,6 +334,29 @@ def _poisson_deviance(
     return float(np.mean(dev))
 
 
+def _gamma_deviance(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    weight: np.ndarray | None,
+) -> float:
+    """Weighted Gamma deviance; defined only for strictly positive targets and predictions."""
+    y_true = np.asarray(y_true, dtype=np.float64)
+    y_pred = np.asarray(y_pred, dtype=np.float64)
+    if not np.all(y_true > 0):
+        raise HauteValidationError(
+            "Gamma deviance needs strictly positive targets; the target has zero or negative "
+            "values. Filter them upstream or choose another metric."
+        )
+    if not np.all(y_pred > 0):
+        raise HauteValidationError(
+            "Gamma deviance needs strictly positive predictions; choose a log-link loss."
+        )
+    dev = 2.0 * (-np.log(y_true / y_pred) + (y_true - y_pred) / y_pred)
+    if weight is not None:
+        return float(np.average(dev, weights=weight))
+    return float(np.mean(dev))
+
+
 def _tweedie_deviance(
     y_true: np.ndarray,
     y_pred: np.ndarray,
@@ -990,4 +1013,5 @@ _METRIC_REGISTRY: dict[str, Any] = {
     "logloss": _logloss,
     "poisson_deviance": _poisson_deviance,
     "tweedie_deviance": _tweedie_deviance,
+    "gamma_deviance": _gamma_deviance,
 }

@@ -114,6 +114,35 @@ def _design_columns(frame: pl.DataFrame, params: dict[str, Any]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def _native_pyfunc_predict(model_path, feature_types, family, frame, tmp_path):
+    """Score through the shared MLflow pyfunc over a model-plus-contract package."""
+    from haute.modelling._feature_contract import ModelIdentity, build_contract, save_contract
+    from haute.modelling._native_pyfunc import NativePyfuncModel, package_native_model
+
+    contract_path = tmp_path / "pyfunc_contract.json"
+    save_contract(
+        build_contract(
+            features=list(feature_types),
+            feature_types=feature_types,
+            categorical_features=[name for name, kind in feature_types.items() if kind == "String"],
+            target_name="y",
+            target_type="Float64",
+            task="regression",
+            model=ModelIdentity(
+                algorithm="glm",
+                link="identity" if family == "gaussian" else "log",
+                engine_name="rustystats",
+                engine_version="0",
+                haute_version="0",
+                glm_family=family,
+            ),
+        ),
+        contract_path,
+    )
+    package = package_native_model(model_path, contract_path, tmp_path / "pyfunc_package")
+    return NativePyfuncModel(str(package)).predict(frame)
+
+
 class TestResolvedDesign:
     def test_a_glm_without_terms_is_refused(self, algo, interaction_df):
         with pytest.raises(HauteValidationError, match="GLM config has no terms"):
@@ -218,7 +247,6 @@ class TestResolvedDesign:
         self, algo, tmp_path, primary, additional
     ):
         from haute._mlflow_io import load_local_model
-        from haute.modelling._glm_pyfunc import GLMPyfuncModel
 
         rng = np.random.default_rng(72)
         region = rng.choice(["a", "b", "c", "d", "e"], size=500, p=[0.4, 0.25, 0.2, 0.1, 0.05])
@@ -240,7 +268,10 @@ class TestResolvedDesign:
         assert loaded.feature_names == ["region"]
         np.testing.assert_allclose(loaded.predict(holdout), expected)
         # This uses the same projection/scoring path as Model Score and deployment.
-        np.testing.assert_allclose(GLMPyfuncModel(str(path)).predict(holdout), expected)
+        np.testing.assert_allclose(
+            _native_pyfunc_predict(path, {"region": "String"}, "gaussian", holdout, tmp_path),
+            expected,
+        )
 
 
 class TestProductTargetEncoding:
@@ -289,7 +320,6 @@ class TestProductTargetEncoding:
 
     def test_fit_predict_and_save_load_raw_columns(self, algo, interaction_df, tmp_path):
         from haute._mlflow_io import load_local_model
-        from haute.modelling._glm_pyfunc import GLMPyfuncModel
 
         frame = interaction_df.select("c", "x", "y")
         params = {
@@ -315,7 +345,12 @@ class TestProductTargetEncoding:
         loaded = load_local_model(str(path))
         assert set(loaded.feature_names) == {"c", "x"}
         np.testing.assert_allclose(loaded.predict(holdout), predictions)
-        np.testing.assert_allclose(GLMPyfuncModel(str(path)).predict(holdout), predictions)
+        np.testing.assert_allclose(
+            _native_pyfunc_predict(
+                path, {"c": "String", "x": "Float64"}, "poisson", holdout, tmp_path
+            ),
+            predictions,
+        )
 
 
 class TestEncodedInteractions:

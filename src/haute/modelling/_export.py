@@ -98,12 +98,16 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
         parts.append(f"    variance_power={kwargs['variance_power']!r},")
     if kwargs["offset"]:
         parts.append(f"    offset={kwargs['offset']!r},")
+    if kwargs["device"] == "gpu":
+        parts.append(f"    device={kwargs['device']!r},")
     if kwargs["monotone_constraints"]:
         parts.append(f"    monotone_constraints={kwargs['monotone_constraints']!r},")
     if kwargs["feature_weights"]:
         parts.append(f"    feature_weights={kwargs['feature_weights']!r},")
     if kwargs["categorical_levels"]:
         parts.append(f"    categorical_levels={kwargs['categorical_levels']!r},")
+    if kwargs["positive_class"] is not None:
+        parts.append(f"    positive_class={kwargs['positive_class']!r},")
 
     if kwargs["mlflow_experiment"]:
         parts.append(f"    mlflow_experiment={kwargs['mlflow_experiment']!r},")

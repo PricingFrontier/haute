@@ -45,6 +45,7 @@ mlflow = pytest.importorskip(
 
 from haute._mlflow_utils import mlflow_fluent_operation  # noqa: E402
 from haute.modelling._feature_contract import (  # noqa: E402 — after importorskip by design
+    ModelIdentity,
     build_contract,
     save_contract,
 )
@@ -118,6 +119,18 @@ def _training_frame(n: int = 80) -> pl.DataFrame:
     return pl.DataFrame({"x": x, "c": c, "y": y})
 
 
+def _identity(algorithm: str) -> ModelIdentity:
+    """The model identity a real training run records in its contract."""
+    return ModelIdentity(
+        algorithm=algorithm,
+        link="identity",
+        engine_name="rustystats" if algorithm == "glm" else "catboost",
+        engine_version="0",
+        haute_version="0",
+        glm_family="gaussian" if algorithm == "glm" else None,
+    )
+
+
 def _write_contract(model_path: Path) -> None:
     """Persist the train-vs-score contract next to the model under the
     per-model name, exactly as ``TrainingJob._save_artifacts`` does on
@@ -129,6 +142,7 @@ def _write_contract(model_path: Path) -> None:
         target_name=TARGET,
         target_type="Float64",
         task="regression",
+        model=_identity("glm" if model_path.suffix == ".rsglm" else "catboost"),
     )
     save_contract(contract, model_path.parent / model_contract_filename(model_path.stem))
 
@@ -332,6 +346,14 @@ class TestCatboostButtonRoundTrip:
                 target_name=TARGET,
                 target_type="Int64",
                 task="classification",
+                model=ModelIdentity(
+                    algorithm="catboost",
+                    link="logit",
+                    engine_name="catboost",
+                    engine_version="0",
+                    haute_version="0",
+                    class_labels=(0, 1),
+                ),
             ),
             model_path.parent / model_contract_filename(model_path.stem),
         )
@@ -357,8 +379,10 @@ class TestCatboostButtonRoundTrip:
 
         with mlflow_fluent_operation():
             mlflow.set_tracking_uri(tracking_uri)
-            reloaded = mlflow.catboost.load_model(f"runs:/{run_id}/model")
-        np.testing.assert_allclose(reloaded.predict_proba(score_frame), native, rtol=1e-9)
+            reloaded = mlflow.pyfunc.load_model(f"runs:/{run_id}/model")
+        served = reloaded.predict(score_frame)
+        np.testing.assert_allclose(served["pred_proba"].to_numpy(), native[:, 1], rtol=1e-9)
+        assert served["pred_label"].tolist() == np.where(native[:, 1] > 0.5, 1, 0).tolist()
 
         with pytest.raises(ConfigError, match="trained for classification"):
             load_mlflow_model(source_type="run", run_id=run_id, task="regression")

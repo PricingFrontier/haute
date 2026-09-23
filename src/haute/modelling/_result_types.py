@@ -42,6 +42,8 @@ class ModelDiagnostics:
     glm_inference: dict[str, Any] | None = None
     glm_smooth_terms: list[dict[str, Any]] = field(default_factory=list)
     glm_regularization: dict[str, Any] | None = None
+    # EBM-specific
+    ebm_terms: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

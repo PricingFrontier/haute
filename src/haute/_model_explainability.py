@@ -127,8 +127,14 @@ def _assert_finite_shap_row(shap_row: np.ndarray) -> None:
         raise ModelExplanationError("CatBoost SHAP explanation returned non-finite values.")
 
 
-def _prediction_tolerance(value: float) -> float:
-    return max(1e-6, abs(value) * 1e-6)
+#: Relative bound for raw margins rebuilt from XGBoost contributions, which the
+#: engine accumulates in float32.
+FLOAT32_CONTRIBUTION_TOLERANCE = 1e-5
+
+
+def prediction_tolerance(value: float, *, relative: float = 1e-6) -> float:
+    """The absolute tolerance every prediction-parity check allows around *value*."""
+    return max(relative, abs(value) * relative)
 
 
 def _catboost_single_prediction_value(prediction: Any) -> float:
@@ -247,14 +253,14 @@ def explain_catboost_prediction(
     output_difference = None if output_value is None else float(output_value - response_prediction)
 
     model_difference = float(model_prediction - prediction_from_shap)
-    tolerance = _prediction_tolerance(prediction_from_shap)
+    tolerance = prediction_tolerance(prediction_from_shap)
     if abs(model_difference) > tolerance:
         raise ModelExplanationError(
             "CatBoost SHAP explanation does not match the model prediction: "
             f"SHAP reconstructs {prediction_from_shap}, model predicts {model_prediction}."
         )
     if task == "regression" and output_difference is not None:
-        response_tolerance = _prediction_tolerance(response_prediction)
+        response_tolerance = prediction_tolerance(response_prediction)
         if abs(output_difference) > response_tolerance:
             raise ModelExplanationError(
                 "CatBoost SHAP explanation does not match the traced prediction: "
@@ -424,7 +430,7 @@ def explain_rustystats_glm_prediction(
     )
     effective_prediction = model_prediction if traced_prediction is None else traced_prediction
 
-    tolerance = _prediction_tolerance(contribution_prediction)
+    tolerance = prediction_tolerance(contribution_prediction)
     model_difference = float(model_prediction - contribution_prediction)
     if abs(model_difference) > tolerance:
         raise ModelExplanationError(
@@ -492,7 +498,7 @@ def explain_rustystats_glm_prediction(
     assert sum_contributions is not None
     assert prediction_from_contributions is not None
     reconstructed_output = float(base_value + sum_contributions)
-    output_tolerance = _prediction_tolerance(prediction_from_contributions)
+    output_tolerance = prediction_tolerance(prediction_from_contributions)
     if abs(reconstructed_output - prediction_from_contributions) > output_tolerance:
         raise ModelExplanationError(
             "RustyStats GLM explanation does not reconstruct the model output: "
@@ -525,12 +531,160 @@ def explain_rustystats_glm_prediction(
     }
 
 
+def _inverse_link(link: str, margin: float) -> float:
+    if link == "log":
+        return float(np.exp(margin))
+    if link == "logit":
+        return float(1.0 / (1.0 + np.exp(-margin)))
+    return margin
+
+
+def explain_native_prediction(
+    scoring_model: Any,
+    input_row: dict[str, Any],
+    *,
+    task: str = "regression",
+    prediction_value: Any = None,
+    max_contributions: int | None = None,
+) -> dict[str, Any]:
+    """Native contributions for one traced prediction of an XGBoost, LightGBM or EBM model.
+
+    The bias carries the row's offset (and an EBM's intercept), so bias plus
+    contributions is the raw margin; its inverse link must reproduce the served
+    response, or the positive-class probability for a classifier. XGBoost
+    accumulates its contributions in float32, so its margin check uses the named
+    float32 bound. An EBM contributes one additive score per term, and a
+    pairwise interaction stays a single two-feature term.
+    """
+    import polars as pl
+
+    from haute._model_flavors import NATIVE_WRAPPER_FLAVORS
+
+    flavor = str(getattr(scoring_model, "flavor", ""))
+    if flavor not in NATIVE_WRAPPER_FLAVORS:
+        raise ModelExplanationError(
+            "Native contribution explanation requires an XGBoost, LightGBM or EBM model."
+        )
+    label = {"xgboost": "XGBoost", "lightgbm": "LightGBM", "ebm": "EBM"}[flavor]
+    model = scoring_model.raw_model
+    features = list(model.features)
+    columns = [*features, *([model.offset_column] if model.offset_column else [])]
+    missing = [column for column in columns if column not in input_row]
+    if missing:
+        raise ModelExplanationError(
+            f"{label} explanation input is missing columns: {', '.join(missing)}"
+        )
+    row = pl.DataFrame(
+        {column: [input_row[column]] for column in columns},
+        strict=False,
+    )
+    contributions = model.contributions(row)
+    values = np.asarray(contributions.values[0], dtype=np.float64)
+    bias = float(contributions.bias[0])
+    if not np.isfinite(values).all() or not np.isfinite(bias):
+        raise ModelExplanationError(f"{label} contributions are not finite.")
+    margin = float(model.predict_margin(row)[0])
+    reconstructed = float(bias + values.sum())
+    tolerance = (
+        prediction_tolerance(margin, relative=FLOAT32_CONTRIBUTION_TOLERANCE)
+        if flavor == "xgboost"
+        else prediction_tolerance(margin)
+    )
+    if abs(reconstructed - margin) > tolerance:
+        raise ModelExplanationError(
+            f"{label} explanation does not match the model margin: "
+            f"contributions reconstruct {reconstructed}, model margin is {margin}."
+        )
+    response = float(model.predict_response(row)[0])
+    linked = _inverse_link(model.link, margin)
+    if abs(linked - response) > prediction_tolerance(response):
+        raise ModelExplanationError(
+            f"{label} explanation's inverse link does not reproduce the model response: "
+            f"{linked} versus {response}."
+        )
+    traced = _as_float(
+        prediction_value if task == "regression" else None,
+        field_name="prediction_value",
+        strict=task == "regression" and prediction_value is not None,
+    )
+    output_difference = None if traced is None else float(traced - response)
+    if output_difference is not None and abs(output_difference) > prediction_tolerance(response):
+        raise ModelExplanationError(
+            f"{label} explanation does not match the traced prediction: "
+            f"model predicts {response}, traced output is {traced}."
+        )
+
+    categorical = frozenset(model.categorical_levels)
+    terms: list[tuple[str, ...]] = list(contributions.terms)
+    ranked = []
+    for index, (term, value) in enumerate(zip(terms, values, strict=True)):
+        name = " & ".join(term)
+        entry: dict[str, Any] = {
+            "feature": name,
+            "feature_index": index,
+            "feature_value": (
+                input_row.get(term[0])
+                if len(term) == 1
+                else {feature: input_row.get(feature) for feature in term}
+            ),
+            # ``contribution`` is the method-neutral value; ``shap_value`` is
+            # the field every trace consumer reads, whatever the method.
+            "contribution": float(value),
+            "abs_contribution": float(abs(value)),
+            "shap_value": float(value),
+            "abs_shap_value": float(abs(value)),
+            "is_categorical": any(feature in categorical for feature in term),
+            "_feature_index": index,
+        }
+        if flavor == "ebm":
+            entry["term"] = name
+            entry["term_type"] = "main" if len(term) == 1 else "interaction"
+            entry["term_features"] = list(term)
+        ranked.append(entry)
+    ranked.sort(key=lambda item: (-float(item["abs_contribution"]), int(item["_feature_index"])))
+    truncated = max_contributions is not None and len(ranked) > max_contributions
+    omitted_count = len(ranked) - max_contributions if truncated and max_contributions else 0
+    if truncated and max_contributions is not None:
+        ranked = ranked[:max_contributions]
+    shown = []
+    for rank, item in enumerate(ranked, start=1):
+        item = dict(item)
+        item.pop("_feature_index", None)
+        item["rank"] = rank
+        shown.append(item)
+
+    output_space = {"identity": "response", "log": "log", "logit": "log_odds"}[model.link]
+    method = "ebm_terms" if flavor == "ebm" else f"{flavor}_contributions"
+    return {
+        "type": method,
+        "method": method,
+        "status": "ok",
+        "link": model.link,
+        "output_space": output_space,
+        "prediction_space": "probability" if task == "classification" else "response",
+        "base_value": bias,
+        "sum_contributions": float(values.sum()),
+        "contribution_sum": float(values.sum()),
+        "prediction_from_contributions": reconstructed,
+        "model_output_value": margin,
+        "model_prediction_value": response,
+        "prediction_value": prediction_value if prediction_value is not None else response,
+        "output_difference": output_difference,
+        "feature_count": len(features),
+        "term_count": len(terms),
+        "feature_values": {feature: input_row.get(feature) for feature in features},
+        "contributions": shown,
+        "truncated": truncated,
+        "omitted_count": omitted_count,
+    }
+
+
 def _config_requests_supported_explanation(config: dict[str, Any]) -> bool:
     source_type = config.get("sourceType")
     if source_type not in {"run", "registered"}:
         return False
     artifact_path = str(config.get("artifact_path", ""))
-    return artifact_path.endswith((".cbm", ".rsglm"))
+    return artifact_path.endswith((".cbm", ".rsglm", ".ubj", ".lgbm", ".ebm"))
 
 
 def explanation_error_metadata_for_config(config: dict[str, Any]) -> dict[str, str]:
@@ -555,6 +709,12 @@ def explanation_error_metadata_for_config(config: dict[str, Any]) -> dict[str, s
         method = "rustystats_glm_contributions"
     elif artifact_path.endswith(".cbm"):
         method = "catboost_shap"
+    elif artifact_path.endswith(".ubj"):
+        method = "xgboost_contributions"
+    elif artifact_path.endswith(".lgbm"):
+        method = "lightgbm_contributions"
+    elif artifact_path.endswith(".ebm"):
+        method = "ebm_terms"
     else:
         logger.warning(
             "explanation_error_metadata_unsupported_artifact",
@@ -593,6 +753,13 @@ def explain_model_score_from_config(
     )
     if getattr(scoring_model, "flavor", "") == "catboost":
         return explain_catboost_prediction(
+            scoring_model,
+            input_row,
+            task=config.get("task", "regression"),
+            prediction_value=effective_prediction,
+        )
+    if getattr(scoring_model, "flavor", "") in ("xgboost", "lightgbm", "ebm"):
+        return explain_native_prediction(
             scoring_model,
             input_row,
             task=config.get("task", "regression"),

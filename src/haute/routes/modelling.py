@@ -58,11 +58,13 @@ from haute.schemas import (
     EvaluationPreviewPayload,
     ExportScriptRequest,
     ExportScriptResponse,
+    GpuFamilyStatus,
     LogExperimentRequest,
     LogExperimentResponse,
     MlflowExportReceipt,
     ModelCacheClearResponse,
     ModelFileExportReceipt,
+    ModellingGpuStatusResponse,
     ModelSaveDestinationRequest,
     ModelSaveDestinationResponse,
     SaveModelRequest,
@@ -95,6 +97,15 @@ def train_model(body: TrainRequest) -> TrainResponse:
     """
     graph = _prepare_runtime_graph(body.graph)
     return _train_service.start(body.model_copy(update={"graph": graph}))
+
+
+@router.get("/gpu", response_model=ModellingGpuStatusResponse)
+async def gpu_status() -> ModellingGpuStatusResponse:
+    """Whether XGBoost can train on a GPU here (probed once per process)."""
+    from haute.modelling._gpu import xgboost_gpu_status
+
+    status = await run_in_threadpool(xgboost_gpu_status)
+    return ModellingGpuStatusResponse(xgboost=GpuFamilyStatus(**status.to_plain_data()))
 
 
 @router.get("/train/status/{job_id}", response_model=TrainStatusResponse)
@@ -281,11 +292,13 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
         warning = None
         was_downsampled = False
 
-    # GPU VRAM estimation — use feature count (not total columns),
-    # since CatBoost only loads features to GPU.
+    # GPU VRAM estimation — use feature count (not total columns), since
+    # CatBoost and XGBoost only load features to the GPU.
     vram_check = _VramCheck()
     node_params = node.data.config.get("params", {})
-    if str(node_params.get("task_type", "")).upper() == "GPU":
+    algorithm = str(node.data.config.get("algorithm", "catboost")).lower()
+    xgboost_gpu = algorithm == "xgboost" and node.data.config.get("device") == "gpu"
+    if xgboost_gpu or str(node_params.get("task_type", "")).upper() == "GPU":
         effective_rows = ram_est.total_rows or 0
         # Feature count = total cols - excluded - target - weight
         n_excluded = len(node.data.config.get("exclude", []))
@@ -293,10 +306,15 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
         if node.data.config.get("weight"):
             n_non_feature += 1
         n_features = max(ram_est.probe_columns - n_non_feature, 1)
-        vram_check = _check_gpu_vram(effective_rows, n_features, node_params)
+        vram_check = _check_gpu_vram(
+            effective_rows,
+            n_features,
+            node_params,
+            algorithm="xgboost" if xgboost_gpu else "catboost",
+        )
         if vram_check.insufficient and vram_check.warning:
             vram_check.warning += (
-                " Switch task_type to CPU or reduce rows/features before starting GPU training."
+                " Train on CPU or reduce rows/features before starting GPU training."
             )
 
     evaluation_preview = _train_service.evaluation_preview(
@@ -334,16 +352,13 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
         CandidateProvenance,
         build_candidate_run,
     )
+    from haute.modelling._descriptors import algorithm_descriptor, project_refit_params
     from haute.modelling._mlflow_log import (
         log_experiment,
         resolve_experiment_name,
         resolve_tracking_backend,
     )
     from haute.modelling._result_types import ModelDiagnostics
-    from haute.modelling._tuning import (
-        CATBOOST_ITERATION_PARAM_KEYS,
-        VALIDATION_ONLY_CATBOOST_PARAMS,
-    )
 
     require_mlflow_installed()
     recorded = mlflow_receipt_for_operation(
@@ -411,20 +426,21 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
                 glm_inference=result.glm_inference,
                 glm_smooth_terms=result.glm_smooth_terms,
                 glm_regularization=result.glm_regularization,
+                ebm_terms=result.ebm_terms,
             )
             if result.tuning is not None:
                 final_params = result.tuning.final_params
             elif (
                 result.final_tree_count is not None
                 and result.evaluation.refit_on_development
-                and str(config.get("algorithm", "catboost")).lower() == "catboost"
+                and algorithm_descriptor(str(config.get("algorithm", "catboost"))).refit_policy
+                == "validation_weighted_rounds"
             ):
-                final_params = dict(config.get("params") or {})
-                for key in CATBOOST_ITERATION_PARAM_KEYS:
-                    final_params.pop(key, None)
-                for key in VALIDATION_ONLY_CATBOOST_PARAMS:
-                    final_params.pop(key, None)
-                final_params["iterations"] = result.final_tree_count
+                final_params = project_refit_params(
+                    algorithm_descriptor(str(config.get("algorithm", "catboost"))),
+                    dict(config.get("params") or {}),
+                    result.final_tree_count,
+                )
             else:
                 final_params = config.get("params", {})
             candidate = build_candidate_run(
@@ -444,6 +460,9 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
                 development_rows=result.development_rows,
                 final_test_rows=result.final_test_rows,
                 best_iteration=result.best_iteration,
+                fit_evidence=(
+                    result.fit_evidence.model_dump() if result.fit_evidence is not None else None
+                ),
                 artifacts=CandidateArtifacts(
                     model=artifacts.model,
                     feature_contract=artifacts.feature_contract,

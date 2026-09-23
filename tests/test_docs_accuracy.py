@@ -164,6 +164,9 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "tracing",
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
+    "mod-f00-engine-probes.md",
+    "mod-f05-release-check.md",
+    "mod-f06-gpu-probes.md",
     "codebase-review-2026-09-23.md",
     "pipeline-cache-memory-design.md",
     "pr-227-cache-evidence.md",

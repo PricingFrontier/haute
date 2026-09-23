@@ -583,8 +583,7 @@ class TestOffsetInSignatureAndContract:
             assert_contracts_match(with_offset, without_offset)
 
     def test_offsetless_contract_hash_is_stable(self) -> None:
-        """Adding the offset field must not change the hash of contracts
-        that have no offset — existing deployed artifacts stay valid."""
+        """An offset-free contract hashes exactly its version-2 canonical payload."""
         contract = build_contract(
             features=["age", "region"],
             feature_types={"age": "Int64", "region": "String"},
@@ -604,6 +603,8 @@ class TestOffsetInSignatureAndContract:
             "target_type": "Int64",
             "task": "regression",
             "offset_column": None,
+            "contract_version": 2,
+            "model": None,
         }
         import hashlib
         import json

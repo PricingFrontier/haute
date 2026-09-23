@@ -18,6 +18,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 from haute.errors import HauteValidationError
+from haute.modelling._descriptors import (
+    AlgorithmDescriptor,
+    algorithm_descriptor,
+    project_refit_params,
+    round_ceiling,
+    tuning_family,
+)
 from haute.modelling._evaluation import (
     EvaluationConfig,
     EvaluationFitResult,
@@ -37,45 +44,7 @@ MetricDirection = Literal["maximize", "minimize"]
 
 # These values are owned by orchestration or by the evaluation contract. A
 # trial must never be able to replace them behind Haute's back.
-_ORCHESTRATION_OWNED_KEYS = frozenset(
-    {
-        "allow_writing_files",
-        "callbacks",
-        "data_partition",
-        "device",
-        "devices",
-        "dev_score_calc_obj_block_size",
-        "eval_metric",
-        "gpu_cat_features_storage",
-        "gpu_ram_part",
-        "iterations",
-        "loss_function",
-        "objective",
-        "od_pval",
-        "od_type",
-        "od_wait",
-        "pinned_memory_size",
-        "random_seed",
-        "random_state",
-        "save_snapshot",
-        "snapshot_file",
-        "task_type",
-        "thread_count",
-        "train_dir",
-        "used_ram_limit",
-        "use_best_model",
-    }
-)
-
 _MAXIMIZE_METRICS = frozenset({"gini", "auc", "r2"})
-CATBOOST_ITERATION_PARAM_KEYS = ("iterations", "n_estimators", "num_boost_round", "num_trees")
-VALIDATION_ONLY_CATBOOST_PARAMS = (
-    "early_stopping_rounds",
-    "od_pval",
-    "od_type",
-    "od_wait",
-    "use_best_model",
-)
 _MINIMIZE_METRICS = frozenset(
     {
         "rmse",
@@ -84,6 +53,7 @@ _MINIMIZE_METRICS = frozenset(
         "logloss",
         "poisson_deviance",
         "tweedie_deviance",
+        "gamma_deviance",
     }
 )
 
@@ -298,8 +268,9 @@ class TuningConfig:
         schema_version = _exact_int(raw.get("schema_version"), "tuning.schema_version")
         if schema_version != TUNING_SCHEMA_VERSION:
             raise HauteValidationError(f"tuning.schema_version must be {TUNING_SCHEMA_VERSION}")
-        if str(algorithm).lower() != "catboost":
-            raise HauteValidationError("tuning version 1 supports CatBoost only")
+        descriptor = algorithm_descriptor(algorithm)
+        if not descriptor.supports_tuning:
+            raise HauteValidationError(f"{descriptor.label} does not support parameter tuning")
         if evaluation.validation_fit_count == 0:
             raise HauteValidationError("tuning requires single or cross-validation")
 
@@ -336,11 +307,12 @@ class TuningConfig:
         for name, entry in raw_space.items():
             if not isinstance(name, str) or not name:
                 raise HauteValidationError("tuning.search_space names must be non-empty strings")
-            if name in _ORCHESTRATION_OWNED_KEYS:
+            if name in descriptor.tuning_reserved_params:
                 raise HauteValidationError(
                     f"tuning.search_space cannot search orchestration-owned key {name!r}"
                 )
             parsed_space[name] = _parse_search_entry(name, entry)
+        descriptor.validate_params(parsed_space, context="tuning.search_space")
         suggestion_order = _validate_conditions(parsed_space, base_params)
 
         validation_fit_count = evaluation.validation_fit_count
@@ -533,6 +505,42 @@ def choose_winner(
     if direction == "maximize":
         return max(ordered, key=lambda item: (item.objective, -item.trial_index))
     return min(ordered, key=lambda item: (item.objective, item.trial_index))
+
+
+def tuning_final_projection(
+    descriptor: AlgorithmDescriptor,
+    resolved_params: Mapping[str, Any],
+    fits: Sequence[tuple[int | None, int]],
+) -> tuple[dict[str, Any], int | None]:
+    """The final refit's parameters and tree count for a study's winning trial.
+
+    *fits* holds each winning validation fit's ``(best_iteration, validation_rows)``.
+    A round-refitting family refits with the validation-weighted round count
+    under its round key; a fixed-budget family (EBM) refits with the winning
+    parameters unchanged, its explicit budget included, and has no tree count.
+    """
+    if descriptor.refit_policy == "fixed_budget":
+        return copy.deepcopy(dict(resolved_params)), None
+    iteration_ceiling = round_ceiling(descriptor, resolved_params, 1000)
+    if (
+        isinstance(iteration_ceiling, bool)
+        or not isinstance(iteration_ceiling, int)
+        or iteration_ceiling <= 0
+        or any(best_iteration is None for best_iteration, _ in fits)
+    ):
+        raise HauteValidationError(
+            f"winning tuning trial must retain a positive {descriptor.label} "
+            f"{descriptor.round_key} and best_iteration for every validation fit"
+        )
+    tree_count = validation_weighted_tree_count(
+        best_iterations=[best for best, _ in fits if best is not None],
+        validation_rows=[rows for _, rows in fits],
+        iteration_ceiling=iteration_ceiling,
+    )
+    return (
+        project_refit_params(descriptor, copy.deepcopy(dict(resolved_params)), tree_count),
+        tree_count,
+    )
 
 
 def validation_weighted_tree_count(
@@ -845,7 +853,8 @@ class TuningReportArtifact:
     improvement: float
     best_sampled_params: Mapping[str, Any]
     final_params: Mapping[str, Any]
-    final_tree_count: int
+    #: ``None`` for a fixed-budget family, whose refit reuses the winning budget.
+    final_tree_count: int | None
     trial_count: int
     trial_fit_count: int
     total_fit_count: int
@@ -882,10 +891,6 @@ class TuningReportArtifact:
             raise HauteValidationError("tuning report winner_trial_index must be non-negative")
         _assert_finite_json(self.best_sampled_params, "best_sampled_params")
         _assert_finite_json(self.final_params, "final_params")
-        final_tree_count = _exact_int(
-            self.final_tree_count,
-            "tuning report final_tree_count",
-        )
         trial_count = _exact_int(
             self.trial_count,
             "tuning report trial_count",
@@ -899,18 +904,32 @@ class TuningReportArtifact:
             "tuning report total_fit_count",
         )
         if (
-            final_tree_count <= 0
-            or not MIN_TRIAL_COUNT <= trial_count <= MAX_TRIAL_COUNT
+            not MIN_TRIAL_COUNT <= trial_count <= MAX_TRIAL_COUNT
             or not 0 <= winner_index < trial_count
             or trial_fit_count <= 0
             or trial_fit_count > MAX_TRIAL_FITS
             or total_fit_count != trial_fit_count + 1
         ):
             raise HauteValidationError("tuning report counts are inconsistent")
-        if self.final_params.get("iterations") != final_tree_count or any(
-            key in self.final_params for key in VALIDATION_ONLY_CATBOOST_PARAMS
-        ):
-            raise HauteValidationError("tuning report final parameter projection is inconsistent")
+        family = tuning_family(self.final_params)
+        if family.refit_policy == "fixed_budget":
+            if self.final_tree_count is not None:
+                raise HauteValidationError(
+                    f"a {family.label} tuning report has no final tree count"
+                )
+        else:
+            final_tree_count = _exact_int(
+                self.final_tree_count,
+                "tuning report final_tree_count",
+            )
+            if (
+                final_tree_count <= 0
+                or self.final_params.get(family.refit_round_key) != final_tree_count
+                or any(key in self.final_params for key in family.validation_only_params)
+            ):
+                raise HauteValidationError(
+                    "tuning report final parameter projection is inconsistent"
+                )
         if bool(winner_index) != bool(self.best_sampled_params):
             raise HauteValidationError(
                 "tuning report best sampled parameters disagree with the winner"
@@ -1028,7 +1047,7 @@ def build_tuning_report(
     *,
     trials_sha256: str,
     final_params: Mapping[str, Any],
-    final_tree_count: int,
+    final_tree_count: int | None,
 ) -> TuningReportArtifact:
     plan_sha256 = hashlib.sha256(canonical_json_bytes(plan.to_plain_data())).hexdigest()
     if (
@@ -1060,33 +1079,14 @@ def build_tuning_report(
         ):
             raise HauteValidationError("tuning trial does not match plan fit/metric contract")
     winner = choose_winner(trials.trials, direction=plan.direction)
-    iteration_ceiling = winner.resolved_params.get("iterations", 1000)
-    if (
-        isinstance(iteration_ceiling, bool)
-        or not isinstance(iteration_ceiling, int)
-        or iteration_ceiling <= 0
-        or any(fit.best_iteration is None for fit in winner.fits)
-    ):
-        raise HauteValidationError(
-            "winning tuning trial must retain a positive iteration ceiling "
-            "and best_iteration for every validation fit"
-        )
-    expected_tree_count = validation_weighted_tree_count(
-        best_iterations=[
-            fit.best_iteration for fit in winner.fits if fit.best_iteration is not None
-        ],
-        validation_rows=[fit.validation_rows for fit in winner.fits],
-        iteration_ceiling=iteration_ceiling,
+    expected_final_params, expected_tree_count = tuning_final_projection(
+        tuning_family(final_params),
+        winner.resolved_params,
+        [(fit.best_iteration, fit.validation_rows) for fit in winner.fits],
     )
-    expected_final_params = copy.deepcopy(dict(winner.resolved_params))
-    for key in VALIDATION_ONLY_CATBOOST_PARAMS:
-        expected_final_params.pop(key, None)
-    expected_final_params["iterations"] = expected_tree_count
-    if _exact_int(
-        final_tree_count, "final_tree_count"
-    ) != expected_tree_count or canonical_json_bytes(final_params) != canonical_json_bytes(
-        expected_final_params
-    ):
+    if final_tree_count != expected_tree_count or canonical_json_bytes(
+        final_params
+    ) != canonical_json_bytes(expected_final_params):
         raise HauteValidationError(
             "tuning report final parameter projection must be derived from "
             "the winning validation fits"

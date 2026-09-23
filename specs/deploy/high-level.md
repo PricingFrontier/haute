@@ -360,3 +360,15 @@ most: a silent wrong answer here mis-prices real policies.
   total-percent-change calculation would divide by a zero production baseline against a
   non-zero staging value (`src/haute/deploy/_impact.py::_raise_for_non_finite_predictions`,
   `_zero_baseline_change_count`, `_total_percent_change`).
+
+## Model families in deployment
+
+A deployment installs `haute` at the deploying version, whose core dependencies bring each
+model family's engine with the platform marker: `xgboost-cpu` (capped below 3.3) on Linux and
+Windows and `xgboost` on macOS, plus `lightgbm` (below 5) and `interpret-core` (0.7.x), so
+container and Databricks Model Serving images (Linux, Python 3.11.11) score XGBoost, LightGBM
+and EBM on CPU with no extra requirement. Bundling discovers `.ubj`, `.lgbm` and `.ebm`
+artifacts with the other native suffixes and carries each model's feature contract; for an
+`.ebm` it fetches the contract the run logged beside the model, and the deployed scorer loads
+the EBM under that bundled contract. A macOS image must provide `libomp`.
+

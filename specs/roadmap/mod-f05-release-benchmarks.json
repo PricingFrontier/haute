@@ -1,0 +1,131 @@
+{
+  "environment": {
+    "python": "3.11.13",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "threads": 22
+  },
+  "wide": {
+    "xgboost": {
+      "fit_seconds": 8.42,
+      "score_seconds": 0.16,
+      "peak_rss_delta_mb": 366.2,
+      "model_size_mb": 0.9,
+      "rows": 50000,
+      "features": 200,
+      "params": {
+        "num_boost_round": 200
+      }
+    },
+    "lightgbm": {
+      "fit_seconds": 3.83,
+      "score_seconds": 0.16,
+      "peak_rss_delta_mb": 225.6,
+      "model_size_mb": 0.57,
+      "rows": 50000,
+      "features": 200,
+      "params": {
+        "num_iterations": 200
+      }
+    },
+    "ebm": {
+      "fit_seconds": 22.93,
+      "score_seconds": 0.11,
+      "peak_rss_delta_mb": 168.4,
+      "model_size_mb": 7.98,
+      "rows": 50000,
+      "features": 200,
+      "params": {
+        "max_rounds": 300,
+        "interactions": 0
+      }
+    }
+  },
+  "categorical": {
+    "xgboost": {
+      "fit_seconds": 3.13,
+      "score_seconds": 0.81,
+      "peak_rss_delta_mb": 63.8,
+      "model_size_mb": 5.35,
+      "rows": 100000,
+      "features": 30,
+      "params": {
+        "num_boost_round": 200
+      }
+    },
+    "lightgbm": {
+      "fit_seconds": 4.64,
+      "score_seconds": 0.86,
+      "peak_rss_delta_mb": 77.2,
+      "model_size_mb": 1.15,
+      "rows": 100000,
+      "features": 30,
+      "params": {
+        "num_iterations": 200
+      }
+    },
+    "ebm": {
+      "fit_seconds": 2.53,
+      "score_seconds": 0.35,
+      "peak_rss_delta_mb": 21.6,
+      "model_size_mb": 0.5,
+      "rows": 100000,
+      "features": 30,
+      "params": {
+        "max_rounds": 300,
+        "interactions": 0
+      }
+    }
+  },
+  "ebm_interactions": {
+    "0": {
+      "fit_seconds": 1.3,
+      "score_seconds": 0.15,
+      "peak_rss_delta_mb": 13.7,
+      "model_size_mb": 0.48,
+      "rows": 50000,
+      "features": 25,
+      "params": {
+        "max_rounds": 300,
+        "interactions": 0
+      }
+    },
+    "10": {
+      "fit_seconds": 10.22,
+      "score_seconds": 0.14,
+      "peak_rss_delta_mb": 7.7,
+      "model_size_mb": 3.33,
+      "rows": 50000,
+      "features": 25,
+      "params": {
+        "max_rounds": 300,
+        "interactions": 10
+      }
+    },
+    "40": {
+      "fit_seconds": 30.77,
+      "score_seconds": 0.21,
+      "peak_rss_delta_mb": 30.7,
+      "model_size_mb": 14.11,
+      "rows": 50000,
+      "features": 25,
+      "params": {
+        "max_rounds": 300,
+        "interactions": 40
+      }
+    }
+  },
+  "repeated_loads": {
+    "xgboost": {
+      "loads": 30,
+      "rss_growth_mb": 0.4
+    },
+    "lightgbm": {
+      "loads": 30,
+      "rss_growth_mb": 0.2
+    },
+    "ebm": {
+      "loads": 30,
+      "rss_growth_mb": 0.1
+    }
+  }
+}
