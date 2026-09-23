@@ -239,6 +239,7 @@ def log_experiment(
         _log_model_with_signature(
             mlflow,
             model_path=candidate.artifacts.model,
+            contract_path=candidate.artifacts.feature_contract,
             metadata=candidate.metadata,
         )
         mlflow.log_artifact(str(candidate.artifacts.feature_contract))
@@ -303,15 +304,17 @@ def _log_model_with_signature(
     mlflow: Any,
     *,
     model_path: Path,
+    contract_path: Path,
     metadata: ModelCardMetadata,
 ) -> None:
     """Log a trained model to MLflow with a ``ModelSignature`` attached.
 
     The signature's input schema preserves the exact training feature order and
-    dtypes from the feature contract. A ``.cbm`` model is logged through the
-    native CatBoost flavor; a ``.rsglm`` model through a pyfunc whose loader
-    scores with haute's own GLM path. The native file is also logged at the run
-    root, where haute's run-artifact discovery finds it.
+    dtypes from the feature contract. Every native model is logged through
+    haute's shared pyfunc (``haute.modelling._native_pyfunc``) over a package of
+    the model file and its feature contract, so served classifiers return the
+    original label and the positive-class probability. The native file is also
+    logged at the run root, where haute's run-artifact discovery finds it.
     """
     from haute.modelling._signature import build_signature
 
@@ -329,42 +332,35 @@ def _log_model_with_signature(
         offset_type=metadata.offset_type or "Float64",
     )
 
-    if model_path.suffix == ".cbm":
-        from catboost import CatBoostClassifier, CatBoostRegressor
+    from haute.modelling._model_export import MODEL_FILE_SUFFIXES
+    from haute.modelling._native_pyfunc import NativePyfuncModel, package_native_model
 
-        cat_model: CatBoostClassifier | CatBoostRegressor = (
-            CatBoostClassifier() if task == "classification" else CatBoostRegressor()
+    if model_path.suffix not in set(MODEL_FILE_SUFFIXES.values()):
+        raise HauteValidationError(
+            f"Cannot log a {model_path.suffix or 'suffix-less'} model file to MLflow; "
+            f"expected one of {', '.join(sorted(MODEL_FILE_SUFFIXES.values()))}."
         )
+    with tempfile.TemporaryDirectory(prefix="haute_mlflow_model_") as package_root:
+        package = package_native_model(model_path, contract_path, Path(package_root) / "model")
+        # Load the package exactly as a consumer will, so an unreadable model or
+        # one its contract does not describe fails before anything is logged.
         try:
-            cat_model.load_model(str(model_path))
+            NativePyfuncModel(str(package))
         except Exception as exc:
             raise HauteValidationError(
-                "The trained CatBoost model file could not be loaded "
-                f"({type(exc).__name__}); retrain the model."
+                f"The trained model could not be loaded for logging ({type(exc).__name__}: "
+                f"{exc}); retrain the model."
             ) from exc
-        # ``name`` is MLflow 3's spelling (``artifact_path`` is deprecated);
-        # ``runs:/<run>/model`` still resolves the logged model. The
+        # ``name`` is MLflow 3's spelling (``artifact_path`` is deprecated); the
         # environment scope makes the recorded requirements describe this
         # interpreter, not a uv.lock in the working directory.
         with runtime_environment_inference():
-            mlflow.catboost.log_model(
-                cb_model=cat_model,
-                name="model",
-                signature=signature,
-            )
-    elif model_path.suffix == ".rsglm":
-        with runtime_environment_inference():
             mlflow.pyfunc.log_model(
                 name="model",
-                loader_module="haute.modelling._glm_pyfunc",
-                data_path=str(model_path),
+                loader_module="haute.modelling._native_pyfunc",
+                data_path=str(package),
                 signature=signature,
             )
-    else:
-        raise HauteValidationError(
-            f"Cannot log a {model_path.suffix or 'suffix-less'} model file to MLflow; "
-            "expected a CatBoost .cbm or RustyStats .rsglm model."
-        )
     # mlflow 3.x stores logged models as LoggedModel entities outside the run's
     # artifact listing, so haute's run-artifact discovery needs the native file
     # at the run root too.

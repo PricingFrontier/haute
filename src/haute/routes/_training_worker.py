@@ -418,6 +418,7 @@ def _training_response_payload(
         cat_features=train_result.cat_features,
         best_iteration=train_result.best_iteration,
         final_tree_count=train_result.final_tree_count,
+        fit_evidence=train_result.fit_evidence,
         loss_history=loss_history,
         loss_history_truncated=loss_history_truncated,
         double_lift=train_result.double_lift,

@@ -144,6 +144,8 @@ IterationCallback = Callable[[int, int, dict[str, float]], None]
 # same way a RustyStats model carries its exposure or offset spec.
 CATBOOST_OFFSET_METADATA_KEY = "haute_offset_column"
 CATBOOST_OFFSET_LINK_METADATA_KEY = "haute_offset_link"
+#: JSON ``[negative, positive]`` for a binary classifier Haute trained.
+CATBOOST_CLASS_LABELS_METADATA_KEY = "haute_class_labels"
 OFFSET_LINKS: frozenset[str] = frozenset({"log", "identity"})
 # CatBoost losses whose raw score is on the log scale, so an offset column is an
 # exposure multiplier that enters the baseline as log(offset).
@@ -207,6 +209,12 @@ class FitResult:
     model: Any
     best_iteration: int | None = None
     loss_history: list[dict[str, float]] = field(default_factory=list)
+    #: The round ceiling the fit was configured with (``None`` for the GLM).
+    rounds_configured: int | None = None
+    #: Rounds the saved model holds, read from the native model.
+    rounds_fitted: int | None = None
+    #: ``none``, ``validation`` (early stopping), or ``native_exhaustion``.
+    stopping_reason: str | None = None
 
 
 class BaseAlgorithm(ABC):
@@ -306,10 +314,6 @@ class _CatBoostProgressCallback:
 
 # User-friendly loss name → CatBoost loss_function string.
 # For Tweedie, the caller appends `:variance_power=X` via resolve_loss_function().
-REGRESSION_LOSSES = {"RMSE", "MAE", "Poisson", "Tweedie"}
-CLASSIFICATION_LOSSES = {"Logloss", "CrossEntropy"}
-
-
 def resolve_loss_function(
     loss_name: str | None,
     task: str,
@@ -322,11 +326,9 @@ def resolve_loss_function(
     if not loss_name:
         return None
 
-    valid = REGRESSION_LOSSES if task == "regression" else CLASSIFICATION_LOSSES
-    if loss_name not in valid:
-        raise HauteValidationError(
-            f"Loss '{loss_name}' is not valid for task '{task}'. Choose from: {sorted(valid)}"
-        )
+    from haute.modelling._descriptors import CATBOOST
+
+    CATBOOST.native_loss(task, loss_name)
 
     if loss_name == "Tweedie":
         vp = variance_power if variance_power is not None else 1.5
@@ -626,6 +628,9 @@ class CatBoostAlgorithm(BaseAlgorithm):
             )
 
         model_params = {**params}
+        threads = kwargs.get("threads")
+        if threads is not None:
+            model_params["thread_count"] = threads
         is_gpu = str(model_params.get("task_type", "")).upper() == "GPU"
         # Suppress verbose output and training log files by default
         # GPU needs verbose > 0 to record eval metrics (no callback support)
@@ -660,7 +665,9 @@ class CatBoostAlgorithm(BaseAlgorithm):
             fw_list = [feature_weights.get(f, 1.0) for f in features]
             model_params["feature_weights"] = fw_list
 
-        total_iterations = model_params.get("iterations", 1000)
+        from haute.modelling._descriptors import CATBOOST, round_ceiling
+
+        total_iterations = round_ceiling(CATBOOST, model_params, 1000)
 
         if task == "classification":
             model = CatBoostClassifier(**model_params)
@@ -701,6 +708,22 @@ class CatBoostAlgorithm(BaseAlgorithm):
             metadata = model.get_metadata()
             metadata[CATBOOST_OFFSET_METADATA_KEY] = offset
             metadata[CATBOOST_OFFSET_LINK_METADATA_KEY] = offset_link
+        # The job trains on the target encoded as positive = 1; record which
+        # original labels those codes stand for so served labels are original.
+        class_labels = kwargs.get("class_labels")
+        if task == "classification" and class_labels is not None:
+            import json
+
+            fitted = [float(value) for value in getattr(model, "classes_", [])]
+            if fitted != [0.0, 1.0]:
+                raise HauteValidationError(
+                    "CatBoost did not fit the encoded classes in order (negative 0, positive 1); "
+                    f"it reported {fitted}. Remove any class-order parameters and retrain."
+                )
+
+            model.get_metadata()[CATBOOST_CLASS_LABELS_METADATA_KEY] = json.dumps(
+                list(class_labels)
+            )
 
         # Capture best iteration if early stopping was active
         best_iteration: int | None = None
@@ -723,10 +746,24 @@ class CatBoostAlgorithm(BaseAlgorithm):
                             loss_history.append({"iteration": i})
                         loss_history[i][f"train_{metric_name}"] = v
 
+        rounds_fitted = getattr(model, "tree_count_", None)
+        rounds_fitted = rounds_fitted if isinstance(rounds_fitted, int) else None
+        rounds_configured = total_iterations if isinstance(total_iterations, int) else None
+        stopping_reason = (
+            "validation"
+            if eval_pool is not None
+            and rounds_fitted is not None
+            and rounds_configured is not None
+            and rounds_fitted < rounds_configured
+            else "none"
+        )
         return FitResult(
             model=model,
             best_iteration=best_iteration,
             loss_history=loss_history,
+            rounds_configured=rounds_configured,
+            rounds_fitted=rounds_fitted,
+            stopping_reason=stopping_reason,
         )
 
     def predict(

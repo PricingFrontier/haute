@@ -346,26 +346,18 @@ new-job samples. `frontend/src/panels/__tests__/NodePanel.test.tsx`,
 active-indicator accessibility, and unchanged roving-keyboard behaviour. Runtime/store suites prove
 strict live-history parsing, latest-status retention, and per-job estimator reset.
 
-## Approved change contract — model-family selection and binary classes
+## Model family capabilities
 
-- **Current limitation.** The modelling gateway, pane lists, loss gates, suffix maps and
-  parameter panes assume exactly two algorithms, CatBoost and the GLM, and there is no
-  positive-class control.
-- **Unresolved target.** Frontend algorithm unions and capabilities come from a checked-in fixture
-  generated from the backend descriptors, and a backend test fails when they differ. The shared
-  loss control offers only the losses the selected family supports. Switching family keeps
-  applicable column roles, evaluation settings and a still-supported loss, isolates parameter
-  drafts per family, and marks the last successful result as stale with its original model
-  identity so exports cannot pair new configuration with an older model. Classification targets
-  whose labels are not Boolean or 0/1 show a positive-class selector for every family. A family's
-  gateway card appears only once its slice is complete.
-- **Non-goals.** The GLM terms pane and CatBoost feature cards are unchanged.
-- **Failure and compatibility semantics.** A saved configuration whose loss or parameters the
-  selected family does not support stays visible and repairable, and training is refused until it
-  is repaired; nothing is silently dropped.
-- **Acceptance evidence.** Capability-fixture agreement test; family-switch state tests; stale
-  result and export-guard tests; positive-class selector tests.
-- **Roadmap package.** [MOD-F01](../roadmap/modelling.md#mod-f01--extend-common-algorithm-prediction-and-artifact-seams).
+- Algorithm names, tasks, losses, feature controls, refit policy, suffixes and tuning support
+  come from `frontend/src/panels/modelling/algorithmCapabilities.json`, which the backend
+  generates from its descriptors and checks for drift. The gateway lists exactly the families
+  in it, the target pane offers only the selected family's losses, and tuning is offered only
+  for families that support it.
+- The model type is chosen once, when the node is created, and cannot be changed afterwards;
+  a different family is a new node.
+- A classification objective on a target that is neither Boolean nor 0/1 shows a positive-class
+  field. It is required for a text target and optional for an integer target, whose value is
+  saved as a number. Predictions above 0.5 are labelled with the positive class.
 
 ## Approved change contract — EBM term and interaction views
 

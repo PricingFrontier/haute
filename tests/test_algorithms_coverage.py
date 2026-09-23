@@ -1222,7 +1222,7 @@ class TestSaveArtifactsCoverage:
 
         assert path == tmp_path / "myglm.rsglm"
 
-    def test_save_unknown_algorithm_default_extension(self, tmp_path):
+    def test_save_algorithm_without_a_suffix_raises(self, tmp_path):
         from haute.modelling._training_job import TrainingJob, _TrainModelResult
 
         mock_algo = MagicMock()
@@ -1240,9 +1240,11 @@ class TestSaveArtifactsCoverage:
         train_result = _TrainModelResult(
             model=mock_model, algo=mock_algo, fit_result=mock_fit_result, fit_params={}
         )
-        path = job._save_artifacts(train_result)
+        from haute.errors import HauteValidationError
 
-        assert path == tmp_path / "mymodel.model"
+        with pytest.raises(HauteValidationError, match="has no model file suffix"):
+            job._save_artifacts(train_result)
+        assert not (tmp_path / "mymodel.model").exists()
 
     def test_save_feature_contract_includes_declared_categorical_levels(self, tmp_path):
         from haute.modelling._feature_contract import load_contract

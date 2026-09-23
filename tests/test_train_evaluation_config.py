@@ -94,7 +94,7 @@ def test_builder_rejects_tuning_without_validation_before_job_creation() -> None
 
 
 def test_builder_rejects_tuning_for_glm() -> None:
-    with pytest.raises(TrainingConfigError, match="CatBoost"):
+    with pytest.raises(TrainingConfigError, match="GLM does not support parameter tuning"):
         build_training_job_kwargs(
             {
                 "target": "y",

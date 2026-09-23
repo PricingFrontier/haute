@@ -1081,15 +1081,14 @@ class TestTrainingJob:
         assert result.diagnostics_set == "validation"
 
     def test_unknown_algorithm_raises(self, synth_data, tmp_path):
-        job = TrainingJob(
-            name="bad_algo",
-            data=synth_data,
-            target="ClaimCount",
-            algorithm="xgboost",
-            output_dir=str(tmp_path),
-        )
         with pytest.raises(ValueError, match="Unknown algorithm"):
-            job.run()
+            TrainingJob(
+                name="bad_algo",
+                data=synth_data,
+                target="ClaimCount",
+                algorithm="xgboost",
+                output_dir=str(tmp_path),
+            )
 
     def test_data_from_lazyframe(self, synth_data, tmp_path):
         lf = synth_data.lazy()

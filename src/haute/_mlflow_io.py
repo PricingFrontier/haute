@@ -481,9 +481,8 @@ class ScoringModel:
         return self._model
 
     def predict(self, x_data: Any) -> np.ndarray:
-        """Return 1-D array of predictions."""
-        raw = self._model.predict(x_data)
-        return np.asarray(raw).flatten()
+        """Return 1-D array of predictions (binary labels from the positive probability)."""
+        return native_predictions(self._model, x_data, self.flavor)
 
     def predict_proba(self, x_data: Any) -> np.ndarray | None:
         """Return class probabilities, or ``None`` if unsupported."""
@@ -539,6 +538,84 @@ def _load_catboost_model(path: str, task: str) -> CatBoostRegressor | CatBoostCl
                 task=task,
             )
     return model
+
+
+def catboost_class_labels(model: Any) -> tuple[Any, Any] | None:
+    """``(negative, positive)`` for a binary CatBoost classifier, else ``None``.
+
+    A model Haute trained records the labels it encoded as 0/1; any other
+    binary CatBoost classifier uses its own ``classes_`` order.
+    """
+    import json
+
+    from haute.modelling._algorithms import CATBOOST_CLASS_LABELS_METADATA_KEY
+
+    try:
+        recorded = model.get_metadata().get(CATBOOST_CLASS_LABELS_METADATA_KEY)
+    except Exception:
+        recorded = None
+    if isinstance(recorded, str) and recorded:
+        labels = json.loads(recorded)
+        if not isinstance(labels, list) or len(labels) != 2:
+            from haute.errors import ConfigError
+
+            raise ConfigError(
+                "This CatBoost model's recorded class labels are malformed; retrain it.",
+            )
+        return labels[0], labels[1]
+    classes = getattr(model, "classes_", None)
+    if classes is None or len(classes) != 2:
+        return None
+    return _python_scalar(classes[0]), _python_scalar(classes[1])
+
+
+def _python_scalar(value: Any) -> Any:
+    return value.item() if isinstance(value, np.generic) else value
+
+
+def binary_labels(positive_proba: np.ndarray, labels: tuple[Any, Any]) -> np.ndarray:
+    """The label rule every binary classifier shares: positive iff proba > 0.5."""
+    negative, positive = labels
+    return np.where(np.asarray(positive_proba) > 0.5, positive, negative)
+
+
+def native_predictions(model: Any, x_data: Any, flavor: str) -> np.ndarray:
+    """1-D predictions; a binary CatBoost classifier's labels follow its probability."""
+    if flavor == "catboost":
+        labels = catboost_class_labels(model)
+        if labels is not None and callable(getattr(model, "predict_proba", None)):
+            positive = _positive_class_proba_vector(model.predict_proba(x_data), "prediction")
+            return binary_labels(positive, labels)
+    return np.asarray(model.predict(x_data)).flatten()
+
+
+#: The ScoringModel flavor each Haute-trained algorithm loads as.
+_ALGORITHM_FLAVORS = {"catboost": "catboost", "glm": "rustystats"}
+
+
+def verify_contract_identity(identity: Any, scoring_model: ScoringModel) -> None:
+    """Fail when a loaded model is not the model its contract's identity describes."""
+    from haute.errors import ConfigError
+
+    expected_flavor = _ALGORITHM_FLAVORS.get(identity.algorithm)
+    if expected_flavor != scoring_model.flavor:
+        raise ConfigError(
+            f"The feature contract describes a {identity.algorithm} model, but the model file "
+            f"loads as {scoring_model.flavor}. Use the contract saved with this model.",
+            algorithm=identity.algorithm,
+            flavor=scoring_model.flavor,
+        )
+    if scoring_model.flavor == "catboost" and identity.loss:
+        params = scoring_model.raw_model.get_all_params()
+        recorded = params.get("loss_function") if isinstance(params, dict) else None
+        loss = recorded.partition(":")[0] if isinstance(recorded, str) else ""
+        if loss and loss != identity.loss:
+            raise ConfigError(
+                f"The feature contract describes a {identity.loss} model, but this CatBoost "
+                f"model was trained with {loss}. Use the contract saved with this model.",
+                contract_loss=identity.loss,
+                model_loss=loss,
+            )
 
 
 def _catboost_offset_column(model: Any) -> str | None:

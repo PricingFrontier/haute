@@ -1,3 +1,4 @@
+import { algorithmCapability } from "../panels/modelling/algorithmCapabilities"
 import {
   interactionEntryIssue,
   monotoneConstraintTerms,
@@ -234,7 +235,7 @@ export function trainingConfigurationIssues(
         ? 1
         : 0
     const validTuning = (
-      String(config.algorithm ?? "").toLowerCase() === "catboost"
+      algorithmCapability(String(config.algorithm ?? ""))?.supports_tuning === true
       && tuning.schema_version === 1
       && Number.isInteger(tuning.trial_count)
       && trialCount >= 5

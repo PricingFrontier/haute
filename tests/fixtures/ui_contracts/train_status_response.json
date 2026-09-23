@@ -36,6 +36,7 @@
     "error": null,
     "best_iteration": 7,
     "final_tree_count": 8,
+    "fit_evidence": null,
     "loss_history": [
       {
         "iteration": 1,

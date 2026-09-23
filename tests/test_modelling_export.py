@@ -109,7 +109,8 @@ class TestParameterRepr:
 class TestLossFunction:
     @pytest.mark.parametrize("loss", ["RMSE", "MAE", "Poisson", "Logloss", "CrossEntropy"])
     def test_loss_function_included(self, loss):
-        config = {**MINIMAL_CONFIG, "loss_function": loss}
+        task = "classification" if loss in {"Logloss", "CrossEntropy"} else "regression"
+        config = {**MINIMAL_CONFIG, "loss_function": loss, "task": task}
         script = generate_training_script(config, "d.parquet")
         assert f"loss_function='{loss}'" in script
         compile(script, "<test>", "exec")
@@ -643,9 +644,9 @@ class TestFullConfig:
             "target": "ClaimAmount",
             "weight": "Exposure",
             "exclude": ["IDpol", "PolicyID"],
-            "algorithm": "lightgbm",
+            "algorithm": "catboost",
             "task": "regression",
-            "params": {"num_leaves": 31, "learning_rate": 0.05},
+            "params": {"depth": 6, "learning_rate": 0.05},
             "evaluation": STRICT_RANDOM_EVALUATION,
             "metrics": ["gini", "rmse", "mae"],
             "loss_function": "Tweedie",
@@ -663,9 +664,9 @@ class TestFullConfig:
         assert "target='ClaimAmount'" in script
         assert "weight='Exposure'" in script
         assert "exclude=['IDpol', 'PolicyID']" in script
-        assert "algorithm='lightgbm'" in script
+        assert "algorithm='catboost'" in script
         assert "task='regression'" in script
-        assert "'num_leaves': 31" in script
+        assert "'depth': 6" in script
         assert "loss_function='Tweedie'" in script
         assert "variance_power=1.5" in script
         assert "offset='log_exposure'" in script

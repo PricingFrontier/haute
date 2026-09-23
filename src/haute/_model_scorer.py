@@ -900,7 +900,9 @@ def _score_collected_frame(
             offset_column,
             offset_link=offset_link,
         )
-    preds = np.asarray(model.predict(x_data)).flatten()
+    from haute._mlflow_io import native_predictions
+
+    preds = native_predictions(model, x_data, flavor)
     prediction = pl.Series(output_col, preds)
     if task != "classification":
         prediction = prediction.cast(pl.Float64)
@@ -1575,9 +1577,9 @@ class ModelScorer:
 
     def _load_scoring_model_uncached(self) -> Any:
         """Load the configured model via the shared MLflow loader."""
-        from haute._mlflow_io import load_mlflow_model
+        from haute._mlflow_io import load_mlflow_model, verify_contract_identity
 
-        return load_mlflow_model(
+        scoring_model = load_mlflow_model(
             source_type=self.source_type,
             run_id=self.run_id,
             artifact_path=self.artifact_path,
@@ -1587,6 +1589,13 @@ class ModelScorer:
             destination=self.mlflow_destination,
             alias=self.alias,
         )
+        if self.feature_contract_path is not None:
+            from haute.modelling._feature_contract import load_contract
+
+            identity = load_contract(self.feature_contract_path).model
+            if identity is not None:
+                verify_contract_identity(identity, scoring_model)
+        return scoring_model
 
     def _load_scoring_model(self) -> Any:
         """Load the configured model, optionally pinning it for this scorer."""
@@ -1822,11 +1831,16 @@ def _declared_score_dtypes(
         return pl.Float64, proba_dtype
     if flavor != "catboost":
         return None
+    from haute._mlflow_io import catboost_class_labels
+
     raw_model = getattr(scoring_model, "raw_model", scoring_model)
-    classes = getattr(raw_model, "classes_", None)
-    if classes is None or len(classes) == 0:
-        raise ValueError("CatBoost classification model has no classes_ for its score schema")
-    return pl.Series("prediction", classes).dtype, proba_dtype
+    labels = catboost_class_labels(raw_model)
+    if labels is None:
+        raise ValueError(
+            "CatBoost classification model has no classes_ or recorded binary class labels "
+            "for its score schema"
+        )
+    return pl.Series("prediction", list(labels)).dtype, proba_dtype
 
 
 def _resolve_score_dtypes(

@@ -7,6 +7,7 @@ import { FailoverHelp } from "./FailoverHelp"
 import { OffsetFieldLabel } from "./OffsetFieldLabel"
 import { ColumnSelector } from "./ColumnSelector"
 import { NumberField } from "./NumberField"
+import { algorithmCapability, supportedLosses } from "./algorithmCapabilities"
 
 const TWEEDIE_HELP =
   "Tweedie interpolates between Poisson (power 1) and Gamma (power 2); new selections start at the 1.5 midpoint."
@@ -63,6 +64,8 @@ const METRIC_LABELS: Record<string, string> = {
 }
 
 export type TargetAndTaskConfigProps = {
+  /** The modelling family; its capabilities decide which losses are offered. */
+  algorithm?: string
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   columns: Column[]
@@ -71,7 +74,15 @@ export type TargetAndTaskConfigProps = {
   metrics: string[]
 }
 
+function positiveClassValue(raw: string, targetDtype: string): string | number | null {
+  const trimmed = raw.trim()
+  if (trimmed === "") return null
+  if (isNumericDtype(targetDtype) && /^-?\d+$/.test(trimmed)) return Number(trimmed)
+  return trimmed
+}
+
 export function TargetAndTaskConfig({
+  algorithm = "catboost",
   config,
   onUpdate,
   columns,
@@ -87,7 +98,19 @@ export function TargetAndTaskConfig({
       : undefined
   const validVariancePower =
     variancePower !== undefined && variancePower > 1 && variancePower < 2
+  const capability = algorithmCapability(algorithm)
+  const familyLosses = supportedLosses(algorithm)
+  const offeredLosses = LOSSES.filter((loss) => familyLosses.has(loss.value))
   const compatibleTask = LOSSES.find((loss) => loss.value === currentLoss)?.task
+  const targetDtype = columns.find((column) => column.name === target)?.dtype ?? ""
+  const positiveClass = config.positive_class
+  const positiveClassText =
+    positiveClass === null || positiveClass === undefined ? "" : String(positiveClass)
+  // Boolean targets and 0/1 integers have a fixed positive class; any other
+  // pair of labels needs one chosen explicitly.
+  const needsPositiveClass =
+    compatibleTask === "classification" && targetDtype !== "" && targetDtype !== "Boolean"
+  const positiveClassRequired = needsPositiveClass && !isNumericDtype(targetDtype)
   const compatibleMetrics = new Set(
     compatibleTask === "regression"
       ? REGRESSION_METRICS
@@ -113,7 +136,7 @@ export function TargetAndTaskConfig({
   return (
     <div>
       <p className="mb-1 text-[10px]" aria-label="Selected algorithm">
-        Algorithm: <strong>CatBoost</strong>
+        Algorithm: <strong>{capability?.label ?? algorithm}</strong>
       </p>
       <div className="space-y-3">
         <ConfigSection title="Target and objective">
@@ -145,7 +168,7 @@ export function TargetAndTaskConfig({
                 aria-label="Loss functions"
                 className="mt-1.5 flex flex-wrap gap-1.5"
               >
-                {LOSSES.map((loss) => {
+                {offeredLosses.map((loss) => {
                   const selected = currentLoss === loss.value
                   return (
                     <button
@@ -236,6 +259,40 @@ export function TargetAndTaskConfig({
                 </div>
               )}
             </div>
+            {needsPositiveClass && (
+              <div>
+                <label
+                  htmlFor="positive-class"
+                  className="text-[13px]"
+                  style={{ color: "var(--text-secondary)" }}
+                >
+                  Positive class
+                  {positiveClassRequired ? "" : " (only if the labels are not 0/1)"}
+                </label>
+                <input
+                  id="positive-class"
+                  aria-label="Positive class"
+                  className="mt-0.5 w-full rounded-md px-2 py-1 text-xs font-mono"
+                  value={positiveClassText}
+                  placeholder={positiveClassRequired ? "e.g. claim" : "e.g. 2"}
+                  onChange={(event) =>
+                    onUpdate(
+                      "positive_class",
+                      positiveClassValue(event.target.value, targetDtype),
+                    )
+                  }
+                />
+                <p className="mt-0.5 text-[12px]" style={{ color: "var(--text-muted)" }}>
+                  The label the model predicts the probability of. Predictions
+                  above 0.5 are labelled with it.
+                </p>
+                {positiveClassRequired && positiveClassText === "" && (
+                  <p role="alert" className="text-[12px]" style={{ color: "var(--danger)" }}>
+                    Choose which label is the positive class.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         </ConfigSection>
         <ConfigSection title="Weight and offset">

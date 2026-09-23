@@ -18,6 +18,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from haute.errors import HauteValidationError
+from haute.modelling._descriptors import (
+    algorithm_descriptor,
+    project_refit_params,
+    refit_descriptor,
+    round_ceiling,
+)
 from haute.modelling._evaluation import (
     EvaluationConfig,
     EvaluationFitResult,
@@ -37,45 +43,7 @@ MetricDirection = Literal["maximize", "minimize"]
 
 # These values are owned by orchestration or by the evaluation contract. A
 # trial must never be able to replace them behind Haute's back.
-_ORCHESTRATION_OWNED_KEYS = frozenset(
-    {
-        "allow_writing_files",
-        "callbacks",
-        "data_partition",
-        "device",
-        "devices",
-        "dev_score_calc_obj_block_size",
-        "eval_metric",
-        "gpu_cat_features_storage",
-        "gpu_ram_part",
-        "iterations",
-        "loss_function",
-        "objective",
-        "od_pval",
-        "od_type",
-        "od_wait",
-        "pinned_memory_size",
-        "random_seed",
-        "random_state",
-        "save_snapshot",
-        "snapshot_file",
-        "task_type",
-        "thread_count",
-        "train_dir",
-        "used_ram_limit",
-        "use_best_model",
-    }
-)
-
 _MAXIMIZE_METRICS = frozenset({"gini", "auc", "r2"})
-CATBOOST_ITERATION_PARAM_KEYS = ("iterations", "n_estimators", "num_boost_round", "num_trees")
-VALIDATION_ONLY_CATBOOST_PARAMS = (
-    "early_stopping_rounds",
-    "od_pval",
-    "od_type",
-    "od_wait",
-    "use_best_model",
-)
 _MINIMIZE_METRICS = frozenset(
     {
         "rmse",
@@ -298,8 +266,9 @@ class TuningConfig:
         schema_version = _exact_int(raw.get("schema_version"), "tuning.schema_version")
         if schema_version != TUNING_SCHEMA_VERSION:
             raise HauteValidationError(f"tuning.schema_version must be {TUNING_SCHEMA_VERSION}")
-        if str(algorithm).lower() != "catboost":
-            raise HauteValidationError("tuning version 1 supports CatBoost only")
+        descriptor = algorithm_descriptor(algorithm)
+        if not descriptor.supports_tuning:
+            raise HauteValidationError(f"{descriptor.label} does not support parameter tuning")
         if evaluation.validation_fit_count == 0:
             raise HauteValidationError("tuning requires single or cross-validation")
 
@@ -336,11 +305,12 @@ class TuningConfig:
         for name, entry in raw_space.items():
             if not isinstance(name, str) or not name:
                 raise HauteValidationError("tuning.search_space names must be non-empty strings")
-            if name in _ORCHESTRATION_OWNED_KEYS:
+            if name in descriptor.tuning_reserved_params:
                 raise HauteValidationError(
                     f"tuning.search_space cannot search orchestration-owned key {name!r}"
                 )
             parsed_space[name] = _parse_search_entry(name, entry)
+        descriptor.validate_params(parsed_space, context="tuning.search_space")
         suggestion_order = _validate_conditions(parsed_space, base_params)
 
         validation_fit_count = evaluation.validation_fit_count
@@ -907,8 +877,9 @@ class TuningReportArtifact:
             or total_fit_count != trial_fit_count + 1
         ):
             raise HauteValidationError("tuning report counts are inconsistent")
-        if self.final_params.get("iterations") != final_tree_count or any(
-            key in self.final_params for key in VALIDATION_ONLY_CATBOOST_PARAMS
+        refit = refit_descriptor(self.final_params)
+        if self.final_params.get(refit.refit_round_key) != final_tree_count or any(
+            key in self.final_params for key in refit.validation_only_params
         ):
             raise HauteValidationError("tuning report final parameter projection is inconsistent")
         if bool(winner_index) != bool(self.best_sampled_params):
@@ -1060,7 +1031,8 @@ def build_tuning_report(
         ):
             raise HauteValidationError("tuning trial does not match plan fit/metric contract")
     winner = choose_winner(trials.trials, direction=plan.direction)
-    iteration_ceiling = winner.resolved_params.get("iterations", 1000)
+    refit = refit_descriptor(final_params)
+    iteration_ceiling = round_ceiling(refit, winner.resolved_params, 1000)
     if (
         isinstance(iteration_ceiling, bool)
         or not isinstance(iteration_ceiling, int)
@@ -1078,10 +1050,9 @@ def build_tuning_report(
         validation_rows=[fit.validation_rows for fit in winner.fits],
         iteration_ceiling=iteration_ceiling,
     )
-    expected_final_params = copy.deepcopy(dict(winner.resolved_params))
-    for key in VALIDATION_ONLY_CATBOOST_PARAMS:
-        expected_final_params.pop(key, None)
-    expected_final_params["iterations"] = expected_tree_count
+    expected_final_params = project_refit_params(
+        refit, copy.deepcopy(dict(winner.resolved_params)), expected_tree_count
+    )
     if _exact_int(
         final_tree_count, "final_tree_count"
     ) != expected_tree_count or canonical_json_bytes(final_params) != canonical_json_bytes(

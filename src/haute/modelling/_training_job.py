@@ -26,6 +26,12 @@ from haute.modelling._algorithms import (
     _malloc_trim,
     resolve_loss_function,
 )
+from haute.modelling._descriptors import (
+    algorithm_descriptor,
+    project_refit_params,
+    round_ceiling,
+    training_threads,
+)
 from haute.modelling._evaluation import (
     EvaluationConfig,
     EvaluationFitResult,
@@ -41,6 +47,7 @@ from haute.modelling._evaluation import (
     save_evaluation_results,
 )
 from haute.modelling._evaluation import file_sha256 as evaluation_file_sha256
+from haute.modelling._feature_contract import ModelIdentity
 from haute.modelling._metrics import compute_metrics
 from haute.modelling._model_export import MODEL_FILE_SUFFIXES
 from haute.modelling._split import (
@@ -57,9 +64,7 @@ from haute.modelling._train_config import (
     validate_glm_params,
 )
 from haute.modelling._tuning import (
-    CATBOOST_ITERATION_PARAM_KEYS,
     TUNING_SCHEMA_VERSION,
-    VALIDATION_ONLY_CATBOOST_PARAMS,
     TuningConfig,
     TuningPlanArtifact,
     TuningTrialResult,
@@ -310,6 +315,8 @@ class TrainResult:
     evaluation: dict[str, Any] | None = None
     tuning: dict[str, Any] | None = None
     final_tree_count: int | None = None
+    #: The final fit's threads, round ceiling, fitted rounds, and stopping reason.
+    fit_evidence: dict[str, Any] | None = None
 
 
 @dataclass
@@ -457,6 +464,7 @@ class TrainingJob:
         evaluation_plan: EvaluationPlan | None = None,
         fit_index: int | None = None,
         plan_source_sha256: str | None = None,
+        positive_class: bool | int | str | None = None,
     ) -> None:
         self.name = name
         self._data: str | pl.DataFrame | pl.LazyFrame | None = data
@@ -479,6 +487,15 @@ class TrainingJob:
         self.output_dir = output_dir
         self.loss_function = loss_function
         self.variance_power = variance_power
+        if positive_class is not None and (
+            isinstance(positive_class, float) or not isinstance(positive_class, (bool, int, str))
+        ):
+            raise HauteValidationError(
+                "positive_class must be a Boolean, an integer or a string label."
+            )
+        self.positive_class = positive_class
+        #: ``(negative, positive)`` once a classification split resolves them.
+        self._class_labels: tuple[bool | int | str, bool | int | str] | None = None
         self.offset = offset
         self.monotone_constraints = monotone_constraints
         self.feature_weights = feature_weights
@@ -503,6 +520,10 @@ class TrainingJob:
             if glm_issue is not None:
                 raise HauteValidationError(glm_issue)
             validate_glm_params(self.params)
+        else:
+            algorithm_descriptor(self.algorithm).validate_params(self.params)
+        #: One thread allotment per job, passed to every engine that takes one.
+        self.threads = training_threads()
         if split is not None and evaluation is not None:
             raise HauteValidationError("split and evaluation are competing contracts")
         self.evaluation: EvaluationConfig | None
@@ -740,10 +761,19 @@ class TrainingJob:
                 glm_regularization=metrics_result.glm_regularization,
                 diagnostics_errors=metrics_result.diagnostics_errors,
             )
-            if self.algorithm == "catboost":
-                tree_count = getattr(train_result.model, "tree_count_", None)
-                if isinstance(tree_count, int) and tree_count > 0:
-                    result.final_tree_count = tree_count
+            fit_result = train_result.fit_result
+            result.fit_evidence = {
+                "threads": self.threads,
+                "rounds_configured": fit_result.rounds_configured,
+                "rounds_fitted": fit_result.rounds_fitted,
+                "stopping_reason": fit_result.stopping_reason,
+            }
+            if (
+                algorithm_descriptor(self.algorithm).refit_policy == "validation_weighted_rounds"
+                and isinstance(fit_result.rounds_fitted, int)
+                and fit_result.rounds_fitted > 0
+            ):
+                result.final_tree_count = fit_result.rounds_fitted
 
             # An internal final evaluation fit must attach the persisted
             # evaluation/tuning report before the one MLflow handoff.
@@ -862,6 +892,7 @@ class TrainingJob:
             evaluation_plan=plan,
             fit_index=fit_index,
             plan_source_sha256=source_sha256,
+            positive_class=self.positive_class,
         )
 
     def _prepare_fit_features(
@@ -941,6 +972,109 @@ class TrainingJob:
             return resolved
         in_params = self.params.get("loss_function")
         return str(in_params) if in_params else None
+
+    def _resolve_class_labels(
+        self,
+        split_lf: pl.LazyFrame,
+        *,
+        execution_context: ExecutionContext | None,
+    ) -> tuple[bool | int | str, bool | int | str]:
+        """``(negative, positive)`` for a binary target, by the shared class rule.
+
+        Boolean and 0/1 targets make ``True``/``1`` positive; any other pair of
+        labels needs an explicit ``positive_class``.
+        """
+        dtype = split_lf.collect_schema()[self.target]
+        values = (
+            _training_streaming_collect(
+                split_lf.select(pl.col(self.target).unique()).head(3),
+                stage_name="training_class_labels_collect",
+                execution_context=execution_context,
+            )
+            .get_column(self.target)
+            .to_list()
+        )
+        if len(values) != 2:
+            shown = ", ".join(repr(v) for v in sorted(values, key=repr))
+            raise HauteValidationError(
+                f"Binary classification needs exactly two classes in '{self.target}', "
+                f"found {'more than two' if len(values) > 2 else len(values)}"
+                f"{f' ({shown})' if values and len(values) <= 2 else ''}. Multiclass targets "
+                "are not supported."
+            )
+        labels: list[bool | int | str] = []
+        for value in values:
+            if isinstance(value, float):
+                if not value.is_integer():
+                    raise HauteValidationError(
+                        f"Classification target '{self.target}' has non-integer labels; "
+                        "cast it to integer or string labels upstream."
+                    )
+                value = int(value)
+            if not isinstance(value, (bool, int, str)):
+                raise HauteValidationError(
+                    f"Classification target '{self.target}' must hold Boolean, integer or "
+                    "string labels."
+                )
+            labels.append(value)
+        if dtype == pl.Boolean or sorted(labels) in ([0, 1], [False, True]):
+            positive: bool | int | str = True if dtype == pl.Boolean else 1
+            if self.positive_class is not None and self.positive_class != positive:
+                raise HauteValidationError(
+                    f"'{self.target}' is a Boolean/0-1 target, whose positive class is "
+                    f"{positive!r}; remove positive_class or recode the target upstream."
+                )
+        else:
+            if self.positive_class is None:
+                raise HauteValidationError(
+                    f"'{self.target}' has the labels {labels[0]!r} and {labels[1]!r}; choose "
+                    "which one is the positive class."
+                )
+            if self.positive_class not in labels:
+                raise HauteValidationError(
+                    f"positive_class {self.positive_class!r} is not one of the labels in "
+                    f"'{self.target}': {labels[0]!r}, {labels[1]!r}."
+                )
+            positive = next(label for label in labels if label == self.positive_class)
+        negative = next(label for label in labels if label != positive)
+        return negative, positive
+
+    def _model_identity(self) -> ModelIdentity:
+        """The feature contract's record of which model this job trains."""
+        from importlib.metadata import version
+
+        from haute import __version__ as haute_version
+
+        descriptor = algorithm_descriptor(self.algorithm)
+        task = "classification" if self.task == "classification" else "regression"
+        loss: str | None = None
+        glm_family: str | None = None
+        variance_power: float | None = None
+        if descriptor.key == "glm":
+            glm_family = str(self.params["family"])
+            link = glm_effective_link(self.params)
+            if glm_family == "tweedie" and self.params.get("var_power") is not None:
+                variance_power = float(self.params["var_power"])
+        else:
+            resolved = self._catboost_loss_function()
+            loss = resolved.partition(":")[0] if resolved else None
+            if loss is not None:
+                link = descriptor.native_loss(task, loss).link
+            else:
+                link = "logit" if task == "classification" else "identity"
+            if loss == "Tweedie" and self.variance_power is not None:
+                variance_power = float(self.variance_power)
+        return ModelIdentity(
+            algorithm=descriptor.key,
+            link=link,
+            engine_name=descriptor.engine_distribution,
+            engine_version=version(descriptor.engine_distribution),
+            haute_version=haute_version,
+            loss=loss,
+            glm_family=glm_family,
+            variance_power=variance_power,
+            class_labels=self._class_labels if task == "classification" else None,
+        )
 
     def _offset_link(self) -> str:
         """How the offset enters the model: ``log`` multiplies, ``identity`` adds."""
@@ -1269,14 +1403,16 @@ class TrainingJob:
         created.append(trials_path)
         trials_digest = evaluation_file_sha256(trials_path)
         winner = choose_winner(trials, direction=config.direction)
-        iteration_ceiling = self.params.get("iterations", 1000)
+        descriptor = algorithm_descriptor(self.algorithm)
+        iteration_ceiling = round_ceiling(descriptor, self.params, 1000)
         if (
             isinstance(iteration_ceiling, bool)
             or not isinstance(iteration_ceiling, int)
             or iteration_ceiling <= 0
         ):
             raise HauteValidationError(
-                "Fixed CatBoost iterations must be a positive exact integer when tuning is enabled"
+                f"Fixed {descriptor.label} {descriptor.round_key} must be a positive exact "
+                "integer when tuning is enabled"
             )
         if any(fit.best_iteration is None for fit in winner.fits):
             raise HauteValidationError(
@@ -1289,10 +1425,9 @@ class TrainingJob:
             validation_rows=[fit.validation_rows for fit in winner.fits],
             iteration_ceiling=iteration_ceiling,
         )
-        final_params = copy.deepcopy(dict(winner.resolved_params))
-        for key in VALIDATION_ONLY_CATBOOST_PARAMS:
-            final_params.pop(key, None)
-        final_params["iterations"] = final_tree_count
+        final_params = project_refit_params(
+            descriptor, copy.deepcopy(dict(winner.resolved_params)), final_tree_count
+        )
         tuning_report = build_tuning_report(
             tuning_plan,
             trials_artifact,
@@ -1416,6 +1551,7 @@ class TrainingJob:
                 total = self.tuning.total_fit_count
                 completed_before_final = self.tuning.trial_fit_count
             else:
+                descriptor = algorithm_descriptor(self.algorithm)
                 ordinary_fits: list[EvaluationFitResult] = []
                 selected_result: TrainResult | None = None
                 total = selection_fit_count + int(self.refit_on_development)
@@ -1465,11 +1601,12 @@ class TrainingJob:
                                 execution_context=execution_context,
                             )
                             if (
-                                self.algorithm == "catboost"
+                                descriptor.refit_policy == "validation_weighted_rounds"
                                 and selected_result.final_tree_count is None
                             ):
                                 raise HauteValidationError(
-                                    "CatBoost validation fit did not report its trained tree count"
+                                    f"{descriptor.label} validation fit did not report its "
+                                    "trained round count"
                                 )
                             ordinary_fits.append(
                                 EvaluationFitResult(
@@ -1483,31 +1620,23 @@ class TrainingJob:
                             )
                 fits = tuple(ordinary_fits)
                 final_params = copy.deepcopy(self.params)
-                if self.algorithm == "catboost" and fits and self.refit_on_development:
+                if (
+                    descriptor.refit_policy == "validation_weighted_rounds"
+                    and fits
+                    and self.refit_on_development
+                ):
                     if any(fit.best_iteration is None for fit in fits):
                         raise HauteValidationError(
-                            "CatBoost validation fits did not report best_iteration"
+                            f"{descriptor.label} validation fits did not report best_iteration"
                         )
-                    iteration_ceiling = next(
-                        (
-                            self.params[key]
-                            for key in CATBOOST_ITERATION_PARAM_KEYS
-                            if key in self.params
-                        ),
-                        1000,
-                    )
                     final_tree_count = validation_weighted_tree_count(
                         best_iterations=[
                             fit.best_iteration for fit in fits if fit.best_iteration is not None
                         ],
                         validation_rows=[fit.validation_rows for fit in fits],
-                        iteration_ceiling=iteration_ceiling,
+                        iteration_ceiling=round_ceiling(descriptor, self.params, 1000),
                     )
-                    for key in CATBOOST_ITERATION_PARAM_KEYS:
-                        final_params.pop(key, None)
-                    final_params["iterations"] = final_tree_count
-                    for key in VALIDATION_ONLY_CATBOOST_PARAMS:
-                        final_params.pop(key, None)
+                    final_params = project_refit_params(descriptor, final_params, final_tree_count)
             artifact = EvaluationResultsArtifact(1, plan_digest, tuple(fits))
             save_evaluation_results(artifact, results_path)
             created.append(results_path)
@@ -1600,8 +1729,13 @@ class TrainingJob:
                 "summary": dict(plan.summary),
             }
             result.tuning = tuning_response
-            if self.algorithm == "catboost" and selection_fit_count and self.refit_on_development:
-                result.final_tree_count = final_params["iterations"]
+            refit = algorithm_descriptor(self.algorithm)
+            if (
+                refit.refit_policy == "validation_weighted_rounds"
+                and selection_fit_count
+                and self.refit_on_development
+            ):
+                result.final_tree_count = final_params[refit.refit_round_key]
             if self.tuning is not None and on_tuning_progress is not None:
                 on_tuning_progress(
                     {
@@ -1863,6 +1997,15 @@ class TrainingJob:
         split_lf = pl.scan_parquet(data_path)
         if target_null_count > 0:
             split_lf = split_lf.filter(pl.col(self.target).is_not_null())
+        if self.task == "classification":
+            self._class_labels = self._resolve_class_labels(
+                split_lf, execution_context=execution_context
+            )
+            # Every consumer of the split file (fit, metrics, diagnostics)
+            # sees one encoding: the positive class is 1.0, the other 0.0.
+            split_lf = split_lf.with_columns(
+                (pl.col(self.target) == self._class_labels[1]).cast(pl.Float64).alias(self.target)
+            )
 
         if self.evaluation_plan is not None:
             # The orchestrator hashes the prepared source once per run (and
@@ -2123,6 +2266,8 @@ class TrainingJob:
                     feature_weights=self.feature_weights,
                     pool=train_pool,
                     eval_pool=eval_pool,
+                    threads=self.threads,
+                    class_labels=self._class_labels,
                 )
             _mem_checkpoint("algo.fit() returned")
             del train_pool, eval_pool
@@ -2521,7 +2666,12 @@ class TrainingJob:
         """
         from haute.modelling._feature_contract import build_contract, save_contract
 
-        ext = MODEL_FILE_SUFFIXES.get(self.algorithm, ".model")
+        ext = MODEL_FILE_SUFFIXES.get(self.algorithm)
+        if ext is None:
+            raise HauteValidationError(
+                f"Algorithm {self.algorithm!r} has no model file suffix; "
+                "register its descriptor before saving."
+            )
         output_dir = Path(self.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         model_path = output_dir / f"{self.name}{ext}"
@@ -2544,6 +2694,7 @@ class TrainingJob:
                 target_type=self._target_dtype_for_contract(),
                 task="classification" if self.task == "classification" else "regression",
                 offset_column=self.offset,
+                model=self._model_identity(),
             )
             contract_path = output_dir / model_contract_filename(self.name)
             save_contract(contract, contract_path)
@@ -2756,9 +2907,12 @@ class TrainingJob:
                 "target": self.target,
                 "weight": self.weight,
                 "exclude": list(self.exclude),
-                "feature_columns": list(self.feature_columns),
+                # Empty optional lists hash as ``None``, exactly as the
+                # config builder passes them, so a canvas run and a scripted
+                # run of one configuration share one identity.
+                "feature_columns": list(self.feature_columns) or None,
                 "fold_column": self.fold_column,
-                "id_columns": list(self.id_columns),
+                "id_columns": list(self.id_columns) or None,
                 "algorithm": self.algorithm,
                 "task": self.task,
                 "params": self.params,
@@ -2770,7 +2924,8 @@ class TrainingJob:
                 "offset": self.offset,
                 "monotone_constraints": self.monotone_constraints,
                 "feature_weights": self.feature_weights,
-                "categorical_levels": self._declared_categorical_levels,
+                "categorical_levels": self._declared_categorical_levels or None,
+                "positive_class": self.positive_class,
             }
         )
 
@@ -2864,6 +3019,7 @@ class TrainingJob:
             development_rows=result.development_rows,
             final_test_rows=result.final_test_rows,
             best_iteration=result.best_iteration,
+            fit_evidence=result.fit_evidence,
             artifacts=CandidateArtifacts(
                 model=model_path,
                 feature_contract=model_path.parent / model_contract_filename(model_path.stem),

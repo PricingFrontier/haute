@@ -42,6 +42,7 @@ _TRAINING_IDENTITY_KEYS = (
     "monotone_constraints",
     "feature_weights",
     "categorical_levels",
+    "positive_class",
 )
 _SELECTION_STATISTICS = ("mean", "stddev", "min", "max")
 _TUNING_METRICS = (
@@ -259,6 +260,7 @@ def build_candidate_run(
     final_test_rows: int,
     best_iteration: int | None,
     artifacts: CandidateArtifacts,
+    fit_evidence: Mapping[str, Any] | None = None,
 ) -> CandidateRun:
     """Build the contracted run for a trained model.
 
@@ -311,6 +313,9 @@ def build_candidate_run(
     }
     if best_iteration is not None:
         params["best_iteration"] = best_iteration
+    for name, value in (fit_evidence or {}).items():
+        if value is not None:
+            params[f"fit_{name}"] = value
     if diagnostics.tuning is not None:
         for field in _TUNING_PARAMS:
             if field not in diagnostics.tuning:

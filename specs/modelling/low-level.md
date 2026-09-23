@@ -45,11 +45,12 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | File | Responsibility |
 |---|---|
 | `src/haute/modelling/__init__.py` | Public API surface: `FitResult`, `MLflowLogResult`, `TrainingJob`, `TrainResult`, `generate_training_script`, `log_experiment`. |
+| `src/haute/modelling/_descriptors.py` | `AlgorithmDescriptor` and `NativeLoss` per family, `DESCRIPTORS`, the Haute loss vocabulary `HAUTE_LOSSES`, `algorithm_descriptor()`, parameter validation, refit projection (`project_refit_params`, `refit_descriptor`, `round_ceiling`), the `training_threads()` allotment, and `capability_fixture()`. Imports no engine. |
 | `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC, `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
 | `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; `prepare_glm_design()` (frame-dtype validation, reference-level translation, interaction resolution); `glm_fit_kwargs()` (fixed or cross-validated penalty, solver controls, robust standard errors); `GLMAlgorithm.glm_result()` over `glm_inference`, `glm_coefficient_rows`, `glm_relativity_rows`, `glm_fit_statistics`, `glm_smooth_term_rows`, and `glm_regularization_summary`; `estimate_glm_dispersion()` profile-likelihood estimation. |
 | `src/haute/modelling/_training_job.py` | `TrainingJob` orchestrator — prepare one eligible source, persist/reload its evaluation plan, run selection or tuning fits, perform one deployable final fit, compute diagnostics, stage artifacts, and optionally log once to MLflow; also defines `TrainResult` and intermediate stage types. |
 | `src/haute/modelling/_evaluation.py` | Strict version-1 evaluation config, exact development/final-test and validation-fit plan generation, plan/result/report codecs, digest linkage, strategy summaries, and validation-row-weighted aggregation. |
-| `src/haute/modelling/_tuning.py` | Strict bounded CatBoost tuning config/search-space validation, seeded trial resolution, winner/tree-count selection, and tuning plan/trials/report codecs. |
+| `src/haute/modelling/_tuning.py` | Strict bounded tuning config/search-space validation for families whose descriptor supports tuning (CatBoost today), with orchestration-owned keys taken from the descriptor, seeded trial resolution, winner/tree-count selection, and tuning plan/trials/report codecs. |
 | `src/haute/modelling/_train_config.py` | Single source of truth for modelling-node config → training-job kwargs (`build_training_job_kwargs`, `build_train_params`, `parse_evaluation_config`, `parse_tuning_config`, `training_objective_issue`, `default_metrics`, `effective_metrics`), plus the GLM value contract (`GLM_FAMILY_LINKS`, `GLM_CONFIG_KEYS`, `CATBOOST_ONLY_LEVERS`, `is_glm_config`, `glm_params_issue`, `validate_glm_params`). |
 | `src/haute/modelling/_glm_terms.py` | Pure GLM term contract shared by the config builder, routes, job, and adapter: `SUPPORTED_TERM_TYPES` and `TERM_KEYS`, dtype classes (`glm_dtype_class`, `MAIN_FITS_BY_CLASS`, `SLOT_FITS_BY_CLASS`), the parameter contract (`validate_term_spec`, `validate_interaction_entry`), the expression grammar (`expression_identifiers`), the schema-free `glm_model_columns()` used for projection demand, `validate_glm_model_columns()` against a real schema and role columns, `resolve_categorical_levels()`, the order-independent `resolve_glm_design()`, and `penalised_smooth_terms()` / `monotone_constraint_terms()`. Imports no RustyStats, so the schema-free half runs during projection planning before any data exists. |
 | `src/haute/modelling/_target_check.py` | `training_target_task_issue()` — data-dependent target-column vs task/metric gate returning an actionable message (or nothing when the pairing is valid), keyed on the effective reported-metric set (explicit config metrics or the objective-implied defaults), shared by the train route's pre-dispatch validation and `TrainingJob._prepare_data`. |
@@ -58,7 +59,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | `src/haute/modelling/_feature_contract.py` | `FeatureContract` build/save/load/cache, contract comparison, and categorical-level normalisation/validation. |
 | `src/haute/modelling/_signature.py` | `build_signature()` — MLflow `ModelSignature` construction with loud dtype/metadata validation, structural Date/parameterised-Datetime mapping, and the explicit no-lossy-Decimal policy. |
 | `src/haute/modelling/_candidate_run.py` | The candidate-run contract builder shared by canvas and scripted logging (`CANDIDATE_RUN_CONTRACT_VERSION`, `training_identity_sha256`, `CandidateProvenance` capture including git state, `CandidateArtifacts.require_files`, `build_candidate_run`); see [mlflow-model-registry](../mlflow-model-registry/low-level.md#candidate-run-contract). |
-| `src/haute/modelling/_glm_pyfunc.py` | MLflow pyfunc loader module for logged RustyStats GLMs: `_load_pyfunc(data_path)` returns `GLMPyfuncModel`, which scores through haute's own `load_local_model` + `score_frame` path so a GLM loaded with `mlflow.pyfunc.load_model` predicts exactly what haute scoring does. |
+| `src/haute/modelling/_native_pyfunc.py` | The MLflow pyfunc for every Haute-trained native model: `package_native_model` copies the model file and its feature contract into one package, and `_load_pyfunc` returns `NativePyfuncModel`, which checks the model against the contract identity and scores through haute's own `load_local_model` + `score_frame` path, returning the label and positive-class probability for classification. |
 | `src/haute/modelling/_charts.py` | Pure-SVG renderers used by model cards. |
 | `src/haute/modelling/_model_card.py` | `generate_model_card()` — self-contained HTML assembled for MLflow artifact logging; ordinary training does not persist it beside the model. |
 | `src/haute/modelling/_mlflow_log.py` | Destination-aware tracking-backend resolution wrappers over `_mlflow_settings.py` (every wrapper takes `destination`, `""` = the local folder), `log_experiment()`, flavor-aware model/signature logging, diagnostics artifacts, and best-effort model-card logging. |
@@ -995,14 +996,12 @@ evaluation-set-namespaced metrics, all as pure data.
 requires every candidate artifact file to exist, then configures tracking, sets the experiment,
 and starts the run with the candidate's name and tags. It logs params (truncated to MLflow's 500
 characters, batched by 100) and metrics, the model with its signature, the feature contract at
-the run root, the diagnostics JSON, and the evaluation/tuning evidence. A `.cbm` model must load
-as the contract's CatBoost task — a load failure raises before `mlflow.catboost.log_model` — and is
-logged through the native CatBoost flavor as the LoggedModel named `model` (MLflow 3's `name=`,
-never the deprecated `artifact_path=`; `runs:/<run>/model` still resolves it). A `.rsglm` model is
-logged as a pyfunc with `loader_module="haute.modelling._glm_pyfunc"` and the model file as
-`data_path`; its `_load_pyfunc` returns a model whose `predict` scores through haute's own
-`score_frame` RustyStats path, so `mlflow.pyfunc.load_model` and a Model Score node predict the
-same values. Any other suffix raises. **Every** flavor also logs the native file at the run root:
+the run root, the diagnostics JSON, and the evaluation/tuning evidence. Every native model (`.cbm` or `.rsglm`) is
+packaged with its feature contract and logged through the shared pyfunc
+(`loader_module="haute.modelling._native_pyfunc"`) as the LoggedModel named `model` (MLflow
+3's `name=`, never the deprecated `artifact_path=`; `runs:/<run>/model` still resolves it),
+after the package has loaded once, so `mlflow.pyfunc.load_model` and a Model Score node
+predict the same values. Any other suffix raises. **Every** flavor also logs the native file at the run root:
 mlflow 3.x stores logged models as LoggedModel entities outside the run's artifact listing, so
 Haute's run-artifact discovery (`_find_cbm_artifact` / `_find_rsglm_artifact`) would otherwise
 never see a freshly logged model. Model-card generation failure does not fail the log: it logs
@@ -1734,85 +1733,75 @@ input width and the current execution allowance, retaining the scoring row
 ceiling. Dictionary compression must not bypass this rule on the Arrow reader
 used for staged input.
 
-## Approved change contract — algorithm descriptors, adapters, and contract fields
+## Model family descriptors
 
-- **Current limitation.** `BaseAlgorithm` in `src/haute/modelling/_algorithms.py` exposes `fit`,
-  `predict`, `feature_importance` and `save` with CatBoost-shaped keyword arguments;
-  `ALGORITHM_REGISTRY` maps names to classes with no capability data; `FeatureContract` in
-  `src/haute/modelling/_feature_contract.py` has no algorithm, loss, link, class or engine fields;
-  `MODEL_FILE_SUFFIXES` in `src/haute/modelling/_model_export.py` is a two-entry literal; the
-  GLM MLflow wrapper lives in `src/haute/modelling/_glm_pyfunc.py`.
+- `AlgorithmDescriptor` (frozen) holds `key`, `label`, `tasks`, `losses` (task → Haute loss →
+  `NativeLoss(objective, link)`), `allowed_params` (`None` keeps the family's own contract),
+  `reserved_params`, `tuning_reserved_params`, `param_aliases`, `round_key`,
+  `round_key_aliases`, `validation_only_params`, `refit_policy`, `feature_controls`, `suffix`,
+  and `engine_distribution`. `DESCRIPTORS` holds CatBoost and the GLM under the same keys as
+  `ALGORITHM_REGISTRY`; `MODEL_FILE_SUFFIXES` derives from them, and saving a model whose
+  algorithm has no suffix raises. `capability_fixture()` serialises the frontend's
+  `algorithmCapabilities.json` (including each family's round-key aliases and validation-only
+  parameters, which the frontend's tuning-report check uses to mirror the refit projection),
+  and
+  `tests/test_algorithm_descriptors.py::test_frontend_capability_fixture_matches_the_descriptors`
+  fails when they differ.
+- `validate_params` raises `TrainingConfigError` naming the key for a reserved key, an alias
+  (with its canonical name), a second spelling of one canonical parameter, or, when the family
+  has an allowlist, an unknown key. `build_training_job_kwargs` and `TrainingJob.__init__` both
+  apply it, and `TuningConfig` applies it to search-space names.
+- `project_refit_params`, `refit_descriptor` and `round_ceiling` are the single refit
+  projection used by the tuned refit, the untuned refit, and MLflow candidate parameters; the
+  tuning report identifies its family from the one round key its final parameters carry.
+- `FitResult` carries `rounds_configured`, `rounds_fitted` and `stopping_reason`;
+  `TrainResult.fit_evidence` adds the job's `threads`; the response validates it as
+  `FitEvidencePayload`, and `build_candidate_run` logs it as `fit_*` parameters.
+- `FeatureContract` has `contract_version` 2 and `model: ModelIdentity | None`. `ModelIdentity`
+  holds `algorithm`, `link`, `engine_name`, `engine_version`, `haute_version`, `loss`,
+  `glm_family`, `variance_power`, `class_labels` (`(negative, positive)`), and
+  `native_feature_names`; `load_contract` validates every field.
+- `TrainingJob._resolve_class_labels` applies the binary class rule in `_split_data`, which
+  writes the target encoded as positive = 1.0. CatBoost stamps the labels under
+  `CATBOOST_CLASS_LABELS_METADATA_KEY`; `catboost_class_labels`, `binary_labels` and
+  `native_predictions` in `src/haute/_mlflow_io.py` give every scoring path the same label rule.
+- `src/haute/modelling/_native_pyfunc.py` packages a model file and its contract
+  (`package_native_model`) and serves it (`NativePyfuncModel`); `_log_model_with_signature`
+  loads the package once before logging, so an unreadable model or a mismatched contract fails
+  before MLflow receives anything. `verify_contract_identity` is the shared identity check.
+- `prediction_tolerance` in `src/haute/_model_explainability.py` is the shared parity tolerance;
+  `FLOAT32_CONTRIBUTION_TOLERANCE` is the named bound for float32 contribution sums.
+
+## Approved change contract — native adapter interface and categorical encoding
+
+- **Current limitation.** `BaseAlgorithm` exposes `fit`, `predict`, `feature_importance` and
+  `save` with CatBoost-shaped keyword arguments; no adapter builds native datasets, returns raw
+  margins or contributions, or loads its own artifact, and `ALGORITHM_REGISTRY` holds classes,
+  not lazily imported adapters.
 - **Unresolved target.**
-  - *Descriptor.* A frozen `AlgorithmDescriptor` per registry key (`catboost`, `glm`, `xgboost`,
-    `lightgbm`, `ebm`) with: `key`; `tasks: frozenset[Task]`; `losses: Mapping[Task,
-    Mapping[str, NativeLoss]]`, where `NativeLoss` holds the native objective string and the link
-    (`"identity"`, `"log"` or `"logit"`); `allowed_params: frozenset[str] | None`;
-    `reserved_params: frozenset[str]`; `param_aliases: Mapping[str, str]` (every native alias of
-    an allowed or reserved key, mapped to its canonical name); `round_key: str | None`;
-    `refit_policy: Literal["validation_weighted_rounds", "fixed_budget", "none"]`;
-    `feature_controls: frozenset[Literal["monotone_constraints", "feature_weights",
-    "interactions"]]`; `suffix: str`; `engine_distribution: str`. Registry entries hold
-    descriptors plus a lazily imported adapter class, so importing the registry never imports an
-    engine. `MODEL_FILE_SUFFIXES` is derived from the descriptors.
-  - *Adapter interface.* Each adapter implements, in addition to today's `BaseAlgorithm`
+  - *Adapter interface.* Each new-family adapter implements, beside the `BaseAlgorithm`
     methods: `prepare(train, valid, contract, params) -> Prepared` (owns native dataset
     construction and releases the raw frame when the engine allows); `fit(prepared, params,
-    threads, on_iteration) -> FitResult`, where `FitResult` gains `rounds_configured: int | None`,
-    `rounds_fitted: int | None` and `stopping_reason: Literal["none", "validation",
-    "native_exhaustion"] | None`; `predict_margin(model, frame, contract) -> np.ndarray` (raw
-    score including any offset); `predict(model, frame, contract) -> np.ndarray` (inverse link of
-    the margin); `contributions(model, frame, contract) -> Contributions` with `bias:
-    np.ndarray`, `values: np.ndarray` and `terms: list[tuple[str, ...]]` (a pairwise EBM term is
-    one tuple of two names); and `load(path, contract) -> model`.
-  - *Parameter validation.* For XGBoost, LightGBM and EBM a raw `params` key is accepted only
-    when it is in `allowed_params`; a key in `reserved_params`, a key that `param_aliases` maps to
-    another canonical name, or two keys naming the same canonical parameter fail with
-    `TrainingConfigError`, naming the key and its canonical form, and tuning search-space names
-    follow the same rule. CatBoost and the GLM keep their existing parameter contracts:
-    `allowed_params` is `None` for both. CatBoost raw `params` are still forwarded unchanged, its
-    tuning search spaces still exclude `_ORCHESTRATION_OWNED_KEYS`, and its `reserved_params` is
-    exactly `thread_count`, which the thread allotment now owns. The GLM keeps its
-    `GLM_CONFIG_KEYS`, `glm_params_issue` and `validate_glm_params` validation with empty
-    `reserved_params` and `param_aliases`.
-  - *Feature contract.* `FeatureContract` gains `contract_version: Literal[2]`,
-    `algorithm: str`, `loss: str | None` (the Haute loss; `None` for the GLM, which records its
-    family instead), `glm_family: str | None`, `link: Literal["identity", "log", "logit"]`,
-    `variance_power: float | None`, `class_labels: tuple[bool | int | str, bool | int | str] |
-    None` ordered `[negative, positive]`, `native_feature_names: dict[str, str] | None`,
-    `engine: dict[str, str]` holding `name` and exact `version`, and `haute_version: str`. Every
-    field enters the canonical payload that `contract_hash` covers, and `load_contract` rejects a
-    payload without `contract_version` 2.
+    threads, on_iteration) -> FitResult`; `predict_margin(model, frame, contract) -> np.ndarray`
+    (raw score including any offset); `predict(model, frame, contract) -> np.ndarray` (inverse
+    link of the margin); `contributions(model, frame, contract) -> Contributions` with `bias`,
+    `values` and `terms` (a pairwise EBM term is one tuple of two names); and
+    `load(path, contract) -> model`. Registry entries import adapters lazily. CatBoost and the
+    GLM keep their current `BaseAlgorithm` implementations.
   - *Categorical encoding.* Adapters build categorical columns from the contract's stored
-    levels with `None` removed: the non-null levels, in stored order, are the pandas categories,
-    and a null value becomes the engine's native missing value (a missing category code), never
-    a category. A literal string such as `"__missing__"` is an ordinary level and never collides
-    with null. EBM receives the same nulls as missing values.
-  - *Threads.* `TrainingJob` resolves one `threads: int` per job from the
-    `HAUTE_TRAINING_THREADS` environment variable, defaulting to the physical core count, and
-    passes it to every adapter (`thread_count`, `nthread`, `num_threads`; EBM uses `n_jobs=1`).
-    Candidate evidence records it.
-  - *Shared pyfunc.* The GLM wrapper module is replaced by a native-model pyfunc module that
-    loads a model file and its contract and dispatches on `contract.algorithm`; its loader is the
-    MLflow `loader_module` for every family.
-  - *Module ownership.* New modules under src/haute/modelling: _descriptors.py (descriptor type,
-    registry metadata, capability-fixture serialisation), _xgboost.py, _lightgbm.py, _ebm.py (one
-    adapter each) and _native_pyfunc.py (the shared wrapper, replacing _glm_pyfunc.py). The
-    generated frontend capability fixture is frontend/src/panels/modelling/algorithmCapabilities.json.
-    Each is added to the Module map and ownership ledger when it lands.
-- **Non-goals.** CatBoost's pool construction, GPU fit thread, and allocation order are unchanged;
-  the GLM keeps its terms contract.
-- **Failure and compatibility semantics.** A contract without `contract_version` 2 fails to load
-  with a message to retrain; no version-1 reader is kept. An adapter whose descriptor has no
-  suffix fails at registration.
-- **Acceptance evidence.** New tests: a descriptor-completeness test over every registry key; an
-  allowlist test per new family covering an allowed key, a reserved key, an alias of an allowed
-  key and two keys for one canonical parameter; a CatBoost test that arbitrary raw params are
-  still forwarded, `thread_count` is rejected, and tuning still excludes the orchestration-owned
-  keys; a GLM test that its existing parameter validation is unchanged; a contract round-trip and hash-coverage test that
-  changes each new field in turn; a version-1 contract rejection test; a threads test asserting
-  each engine receives the allotment; a capability-fixture drift test; a suffix-registration
-  test.
-- **Roadmap package.** [MOD-F01](../roadmap/modelling.md#mod-f01--extend-common-algorithm-prediction-and-artifact-seams).
+    levels with `None` removed: the non-null levels, in stored order, are the pandas
+    categories, and a null value becomes the engine's native missing value (a missing category
+    code), never a category. A literal string such as `"__missing__"` is an ordinary level and
+    never collides with null. EBM receives the same nulls as missing values.
+- **Non-goals.** CatBoost's pool construction, GPU fit thread and allocation order are
+  unchanged.
+- **Failure and compatibility semantics.** An adapter that cannot build its native dataset from
+  the contract fails before fitting, naming the column.
+- **Acceptance evidence.** New tests: an adapter-interface conformance test run against every
+  new-family adapter; a categorical feature holding both nulls and the literal `"__missing__"`
+  that fits, reloads and scores with nulls as missing values and `"__missing__"` as its own
+  level.
+- **Roadmap package.** [MOD-F02](../roadmap/modelling.md#mod-f02--deliver-the-complete-xgboost-slice).
 
 ## Approved change contract — XGBoost adapter parameters and behaviour
 

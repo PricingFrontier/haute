@@ -206,4 +206,98 @@ describe("TargetAndTaskConfig", () => {
     expect(screen.queryByRole("option", { name: /region/ })).toBeNull()
   })
 
+
+  describe("model-family capabilities and binary classes (MOD-F01)", () => {
+    const CLASSIFICATION_COLUMNS = [
+      { name: "outcome", dtype: "String" },
+      { name: "flag", dtype: "Boolean" },
+      { name: "grade", dtype: "Int64" },
+      { name: "x", dtype: "Float64" },
+    ]
+
+    it("offers exactly the losses the family's capabilities list", () => {
+      render(<TargetAndTaskConfig {...makeProps({ algorithm: "catboost" })} />)
+      const group = screen.getByRole("group", { name: "Loss functions" })
+      const offered = within(group).getAllByRole("button").map((button) => button.textContent)
+      expect(offered).toEqual(["RMSE", "MAE", "Poisson", "Tweedie", "Logloss", "CrossEntropy"])
+      expect(screen.getByLabelText("Selected algorithm")).toHaveTextContent("CatBoost")
+    })
+
+    it("requires a positive class for a text classification target", () => {
+      const onUpdate = vi.fn()
+      render(
+        <TargetAndTaskConfig
+          {...makeProps({
+            onUpdate,
+            columns: CLASSIFICATION_COLUMNS,
+            target: "outcome",
+            config: { loss_function: "Logloss", task: "classification" },
+          })}
+        />,
+      )
+      expect(screen.getByRole("alert")).toHaveTextContent("Choose which label is the positive class.")
+      fireEvent.change(screen.getByLabelText("Positive class"), { target: { value: "claim" } })
+      expect(onUpdate).toHaveBeenCalledWith("positive_class", "claim")
+    })
+
+    it("hides the positive class for a Boolean target", () => {
+      render(
+        <TargetAndTaskConfig
+          {...makeProps({
+            columns: CLASSIFICATION_COLUMNS,
+            target: "flag",
+            config: { loss_function: "Logloss", task: "classification" },
+          })}
+        />,
+      )
+      expect(screen.queryByLabelText("Positive class")).toBeNull()
+    })
+
+    it("keeps an integer target's positive class numeric and optional", () => {
+      const onUpdate = vi.fn()
+      render(
+        <TargetAndTaskConfig
+          {...makeProps({
+            onUpdate,
+            columns: CLASSIFICATION_COLUMNS,
+            target: "grade",
+            config: { loss_function: "Logloss", task: "classification" },
+          })}
+        />,
+      )
+      expect(screen.queryByRole("alert")).toBeNull()
+      fireEvent.change(screen.getByLabelText("Positive class"), { target: { value: "2" } })
+      expect(onUpdate).toHaveBeenCalledWith("positive_class", 2)
+    })
+
+    it("clears a saved positive class to null", () => {
+      const onUpdate = vi.fn()
+      render(
+        <TargetAndTaskConfig
+          {...makeProps({
+            onUpdate,
+            columns: CLASSIFICATION_COLUMNS,
+            target: "grade",
+            config: { loss_function: "Logloss", task: "classification", positive_class: 2 },
+          })}
+        />,
+      )
+      expect(screen.getByLabelText("Positive class")).toHaveValue("2")
+      fireEvent.change(screen.getByLabelText("Positive class"), { target: { value: "" } })
+      expect(onUpdate).toHaveBeenCalledWith("positive_class", null)
+    })
+
+    it("shows no positive class for a regression objective", () => {
+      render(
+        <TargetAndTaskConfig
+          {...makeProps({
+            columns: CLASSIFICATION_COLUMNS,
+            target: "outcome",
+            config: { loss_function: "RMSE", task: "regression" },
+          })}
+        />,
+      )
+      expect(screen.queryByLabelText("Positive class")).toBeNull()
+    })
+  })
 })

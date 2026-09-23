@@ -747,95 +747,49 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   (with `total_fit_count = trial_fit_count + 1`). A candidate-fit error aborts with the trial index,
   sampled parameters and original actionable exception; it is never skipped.
 
-## Approved change contract — algorithm descriptors and the shared loss vocabulary
+## Model families
 
-- **Current limitation.** `ALGORITHM_REGISTRY` in `src/haute/modelling/_algorithms.py` holds
-  CatBoost and the GLM only, and training treats every non-GLM as CatBoost: it injects a CatBoost
-  `loss_function` and builds CatBoost pools. `resolve_loss_function` validates the Haute loss names
-  (`RMSE`, `MAE`, `Poisson`, `Tweedie`, `Logloss`, `CrossEntropy`) and translates them for
-  CatBoost only. A model type with no known suffix is saved as `.model`. Tuning refuses every
-  algorithm except CatBoost, and its refit writes the round budget into CatBoost's `iterations`
-  key. No setting bounds native thread use.
-- **Unresolved target.** Each registry entry carries a typed descriptor: supported tasks and
-  Haute losses, allowed feature controls, a raw-`params` allowlist with reserved keys, the native
-  round key, the refit policy, diagnostics, and the artifact suffix. Training dispatches native
-  data preparation through the descriptor's adapter, not a CatBoost default. The Haute loss
-  vocabulary gains `Gamma`, and each adapter translates a Haute loss to its native objective
-  privately; the loss setting stays `loss_function` plus `variance_power` for every tree and EBM
-  family. For XGBoost, LightGBM and EBM, raw `params` outside the family's allowlist, reserved
-  keys and conflicting aliases fail before any native call; CatBoost and GLM parameters keep
-  their existing validation, apart from CatBoost's `thread_count`, which the thread allotment
-  owns. Tuning keeps its user-authored search spaces and validates every
-  searched name against the family's allowlist. Tree refits keep `validation_weighted_tree_count`,
-  fed zero-based best iterations, and write the count to the descriptor's round key. One worker
-  thread allotment, resolved per job and recorded in the evidence, reaches every engine,
-  CatBoost included. Candidate evidence records the configured round ceiling, the fitted rounds
-  read from the native model, and a stopping reason of `none`, `validation`, or
-  `native_exhaustion`. Prediction parity uses the existing prediction tolerance, with one named
-  bound of `1e-5` relative for XGBoost contribution sums.
-- **Non-goals.** GLM `family`/`link` configuration and CatBoost's current losses are unchanged,
-  except that CatBoost's descriptor rejects `Gamma` (CatBoost 1.2.10 has no Gamma loss).
-  Multiclass, ranking, custom objectives, GPU training, and automatic cross-family model
-  selection are out of scope.
-- **Failure and compatibility semantics.** An unknown algorithm, an unsupported loss for the
-  family, a searched or raw parameter outside the allowlist, or a descriptor without a suffix
-  fails with the family and key named, before data is materialised. Saved configurations holding
-  CatBoost-only keys under another family fail validation; nothing is migrated.
-- **Acceptance evidence.** Descriptor and loss-translation contract tests for every family and
-  loss, including `Gamma` rejected for CatBoost; allowlist and alias rejection tests; tuning
-  validation of searched names; a refit fixture per tree family in which validation selects
-  exactly three rounds and the refit uses exactly three; a thread-allotment test per engine; a
-  test that a descriptor without a suffix raises instead of saving `.model`.
-- **Roadmap package.** [MOD-F01](../roadmap/modelling.md#mod-f01--extend-common-algorithm-prediction-and-artifact-seams).
-
-## Approved change contract — one binary-classification contract for every family
-
-- **Current limitation.** Haute has no positive-class setting. CatBoost classification returns
-  its native class prediction, and the probability column comes from the native probability
-  matrix, so the label and probability rules depend on the engine.
-- **Unresolved target.** Every family, CatBoost included, trains a binary task only on exactly two
-  classes and persists a typed class mapping and positive class. Boolean and 0/1 targets use
-  `true`/`1` as positive; any other two-label target requires an explicit `positive_class`. Model
-  Score emits the original-label prediction and the positive-class probability, and the label is
-  derived from the probability: positive exactly when the probability is greater than `0.5`, so a
-  probability of exactly `0.5` yields the negative class.
-- **Non-goals.** Multiclass and multi-output classification stay rejected; log-odds offsets for
-  classification are not added, so a classification offset fails for the new families.
-- **Failure and compatibility semantics.** A missing `positive_class` on a two-label non-Boolean
-  target, a single-class or multi-class training target, or an unknown label at scoring fails
-  before fitting or scoring, naming the target and labels. Saved CatBoost classifiers without a
-  class mapping are not supported; they must be retrained.
-- **Acceptance evidence.** For every family: Boolean, 0/1 and two-string targets; a missing
-  `positive_class` failure; single-class and three-class failures before fitting; a fixture whose
-  probability is exactly `0.5` scores the negative class; labels always equal the thresholded
-  probability.
-- **Roadmap package.** [MOD-F01](../roadmap/modelling.md#mod-f01--extend-common-algorithm-prediction-and-artifact-seams).
-
-## Approved change contract — prediction metadata in the feature contract
-
-- **Current limitation.** The per-model feature contract in
-  `src/haute/modelling/_feature_contract.py` records features, feature types, categorical levels,
-  target, task and offset column, but not the algorithm, loss, class mapping, native feature-name
-  mapping, or engine versions. The scorer reads the offset link from the loaded CatBoost or
-  RustyStats model.
-- **Unresolved target.** The feature contract gains the algorithm (which fixes the artifact
-  format), the Haute loss and its link, the typed class mapping and positive class, the
-  original-to-native feature-name mapping where a library restricts names, and producer and
-  engine versions, all inside the hashed payload, for every family including CatBoost and the
-  GLM. The model file and its contract remain the whole model set through publication, Save
-  Model, MLflow logging, download and deployment. Offset link and scoring budget are read from
-  the native model, and loading fails when the model's objective disagrees with the contract's
-  loss. Categorical codes derive from the contract's stored level order.
-- **Non-goals.** No separate metadata artifact kind is added, and parent-side publication in
-  `src/haute/routes/_training_artifacts.py` keeps its current artifact set.
-- **Failure and compatibility semantics.** A missing contract, one naming a different algorithm or
-  loss than its model, or a contract in the previous shape fails to load with an actionable
-  error; there is no historical-shape reader. Any changed field changes the contract hash and
-  invalidates every cache keyed on it.
-- **Acceptance evidence.** Contract round-trip and hash-coverage tests for every new field;
-  mismatched algorithm and loss load failures; the extended contract surviving publication, Save
-  Model, MLflow and a restored run.
-- **Roadmap package.** [MOD-F01](../roadmap/modelling.md#mod-f01--extend-common-algorithm-prediction-and-artifact-seams).
+- **Descriptors.** Each algorithm (`catboost`, `glm`) has a capability descriptor in
+  `src/haute/modelling/_descriptors.py`: its tasks and Haute losses with the native objective
+  and link each translates to, its raw-`params` policy, its refit round key, its feature
+  controls, and its artifact suffix. Configuration building, `TrainingJob`, tuning, the refit,
+  model-file suffixes, and the modelling UI read the descriptors. An unknown algorithm, a task
+  the family does not support, or a loss outside its list fails before data is materialised.
+- **Losses.** `loss_function` with `variance_power` is the loss setting for every tree family;
+  the Haute vocabulary is `RMSE`, `MAE`, `Poisson`, `Gamma`, `Tweedie`, `Logloss`, and
+  `CrossEntropy`. CatBoost supports all of them except `Gamma` (CatBoost 1.2.10 has no Gamma
+  loss). The GLM configures `family`/`link` instead and trains regression only: a binomial GLM
+  predicts a probability, not a class label.
+- **Parameters.** CatBoost raw `params` are forwarded unchanged apart from `thread_count`,
+  which the thread allotment owns, and `class_names`, which would reorder the probability
+  columns away from the positive = 1 encoding; tuning search spaces still exclude CatBoost's
+  orchestration-owned keys, and a CatBoost fit whose classes are not the encoded `[0, 1]`
+  fails. The GLM keeps its own configuration-key validation. A family with
+  an allowlist rejects reserved keys, aliases, duplicate spellings, and unknown keys.
+- **Refits.** A round-refitting family feeds zero-based best iterations to
+  `validation_weighted_tree_count`, writes the count to its descriptor's round key, and drops
+  every other spelling of the round count and every validation-only early-stopping key.
+- **Threads.** Each job resolves one thread allotment from `HAUTE_TRAINING_THREADS` (default:
+  the logical CPU count, matching CatBoost's own default) and passes it to CatBoost as
+  `thread_count`. RustyStats exposes no thread setting.
+- **Fit evidence.** The training response and the MLflow candidate record the final fit's
+  thread allotment, round ceiling, fitted rounds read from the model, and stopping reason
+  (`none`, `validation`, or `native_exhaustion`).
+- **Binary classification.** A classification job trains only on exactly two target classes.
+  Boolean and 0/1 targets make `True`/`1` positive; any other pair of labels needs an explicit
+  `positive_class`. The job trains on the target encoded as positive = 1, records the
+  `(negative, positive)` labels in the feature contract and in the CatBoost model metadata, and
+  every scoring path derives the label from the positive-class probability: positive exactly
+  when it is greater than 0.5, so 0.5 is the negative class. A CatBoost classifier trained
+  outside Haute uses its own class order. Single-class, multiclass, and non-integer numeric
+  targets fail before fitting.
+- **Model identity.** A version-2 feature contract carries an optional model identity:
+  algorithm, Haute loss or GLM family, link, variance power, class labels, native feature names,
+  and exact engine and Haute versions, all inside the hashed payload. Training always writes
+  it; a contract supplied for a generic MLflow model may omit it. A version-1 contract fails to
+  load with a retrain message. The shared MLflow pyfunc and Model Score check a loaded model
+  against the identity (its model type, and CatBoost's recorded loss) and fail on a mismatch.
+  Only the schema fields are compared against live data.
 
 ## Approved change contract — XGBoost family
 

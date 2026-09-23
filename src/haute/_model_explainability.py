@@ -127,8 +127,14 @@ def _assert_finite_shap_row(shap_row: np.ndarray) -> None:
         raise ModelExplanationError("CatBoost SHAP explanation returned non-finite values.")
 
 
-def _prediction_tolerance(value: float) -> float:
-    return max(1e-6, abs(value) * 1e-6)
+#: Relative bound for raw margins rebuilt from XGBoost contributions, which the
+#: engine accumulates in float32.
+FLOAT32_CONTRIBUTION_TOLERANCE = 1e-5
+
+
+def prediction_tolerance(value: float, *, relative: float = 1e-6) -> float:
+    """The absolute tolerance every prediction-parity check allows around *value*."""
+    return max(relative, abs(value) * relative)
 
 
 def _catboost_single_prediction_value(prediction: Any) -> float:
@@ -247,14 +253,14 @@ def explain_catboost_prediction(
     output_difference = None if output_value is None else float(output_value - response_prediction)
 
     model_difference = float(model_prediction - prediction_from_shap)
-    tolerance = _prediction_tolerance(prediction_from_shap)
+    tolerance = prediction_tolerance(prediction_from_shap)
     if abs(model_difference) > tolerance:
         raise ModelExplanationError(
             "CatBoost SHAP explanation does not match the model prediction: "
             f"SHAP reconstructs {prediction_from_shap}, model predicts {model_prediction}."
         )
     if task == "regression" and output_difference is not None:
-        response_tolerance = _prediction_tolerance(response_prediction)
+        response_tolerance = prediction_tolerance(response_prediction)
         if abs(output_difference) > response_tolerance:
             raise ModelExplanationError(
                 "CatBoost SHAP explanation does not match the traced prediction: "
@@ -424,7 +430,7 @@ def explain_rustystats_glm_prediction(
     )
     effective_prediction = model_prediction if traced_prediction is None else traced_prediction
 
-    tolerance = _prediction_tolerance(contribution_prediction)
+    tolerance = prediction_tolerance(contribution_prediction)
     model_difference = float(model_prediction - contribution_prediction)
     if abs(model_difference) > tolerance:
         raise ModelExplanationError(
@@ -492,7 +498,7 @@ def explain_rustystats_glm_prediction(
     assert sum_contributions is not None
     assert prediction_from_contributions is not None
     reconstructed_output = float(base_value + sum_contributions)
-    output_tolerance = _prediction_tolerance(prediction_from_contributions)
+    output_tolerance = prediction_tolerance(prediction_from_contributions)
     if abs(reconstructed_output - prediction_from_contributions) > output_tolerance:
         raise ModelExplanationError(
             "RustyStats GLM explanation does not reconstruct the model output: "

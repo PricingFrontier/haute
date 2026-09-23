@@ -336,16 +336,13 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
         CandidateProvenance,
         build_candidate_run,
     )
+    from haute.modelling._descriptors import algorithm_descriptor, project_refit_params
     from haute.modelling._mlflow_log import (
         log_experiment,
         resolve_experiment_name,
         resolve_tracking_backend,
     )
     from haute.modelling._result_types import ModelDiagnostics
-    from haute.modelling._tuning import (
-        CATBOOST_ITERATION_PARAM_KEYS,
-        VALIDATION_ONLY_CATBOOST_PARAMS,
-    )
 
     require_mlflow_installed()
     recorded = mlflow_receipt_for_operation(
@@ -419,14 +416,14 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
             elif (
                 result.final_tree_count is not None
                 and result.evaluation.refit_on_development
-                and str(config.get("algorithm", "catboost")).lower() == "catboost"
+                and algorithm_descriptor(str(config.get("algorithm", "catboost"))).refit_policy
+                == "validation_weighted_rounds"
             ):
-                final_params = dict(config.get("params") or {})
-                for key in CATBOOST_ITERATION_PARAM_KEYS:
-                    final_params.pop(key, None)
-                for key in VALIDATION_ONLY_CATBOOST_PARAMS:
-                    final_params.pop(key, None)
-                final_params["iterations"] = result.final_tree_count
+                final_params = project_refit_params(
+                    algorithm_descriptor(str(config.get("algorithm", "catboost"))),
+                    dict(config.get("params") or {}),
+                    result.final_tree_count,
+                )
             else:
                 final_params = config.get("params", {})
             candidate = build_candidate_run(
@@ -446,6 +443,9 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
                 development_rows=result.development_rows,
                 final_test_rows=result.final_test_rows,
                 best_iteration=result.best_iteration,
+                fit_evidence=(
+                    result.fit_evidence.model_dump() if result.fit_evidence is not None else None
+                ),
                 artifacts=CandidateArtifacts(
                     model=artifacts.model,
                     feature_contract=artifacts.feature_contract,

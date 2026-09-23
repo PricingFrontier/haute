@@ -2519,6 +2519,17 @@ class TuningReportPayload(_StrictPublicTrainingPayload):
         return self
 
 
+class FitEvidencePayload(BaseModel):
+    """The final fit's thread allotment, round ceiling, fitted rounds, and stop reason."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    threads: int = Field(strict=True, ge=1)
+    rounds_configured: int | None = Field(default=None, strict=True, ge=1)
+    rounds_fitted: int | None = Field(default=None, strict=True, ge=0)
+    stopping_reason: Literal["none", "validation", "native_exhaustion"] | None = None
+
+
 class TrainResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2536,6 +2547,7 @@ class TrainResponse(BaseModel):
     error: str | None = None
     best_iteration: int | None = None
     final_tree_count: int | None = Field(default=None, strict=True, ge=1)
+    fit_evidence: FitEvidencePayload | None = None
     loss_history: list[dict[str, float]] = Field(default_factory=list)
     loss_history_truncated: bool = False
     double_lift: list[dict[str, Any]] = Field(default_factory=list)

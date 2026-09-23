@@ -35,6 +35,7 @@ import {
 } from "../utils/trainingObjective"
 import type { OnUpdateConfig } from "./editors"
 import { useGraph } from "./useGraph"
+import { ALGORITHM_CAPABILITIES } from "./modelling/algorithmCapabilities"
 import { CommonFeatureConfig } from "./modelling/CommonFeatureConfig"
 import { ExportPane } from "./modelling/ExportPane"
 import { GLMInteractionsConfig } from "./modelling/GLMInteractionsConfig"
@@ -110,21 +111,19 @@ function failureStatus(error: unknown, message: string): TrainProgress | undefin
   }
 }
 
+const ALGORITHM_DESCRIPTIONS: Record<string, string> = {
+  catboost: "Gradient boosting - handles categoricals natively, fast GPU training",
+  glm: "Generalised linear model - interpretable coefficients, regulatory-friendly",
+}
+
 function AlgorithmGateway({ onUpdate }: { onUpdate: OnUpdateConfig }) {
-  const algorithms = [
-    {
-      id: "catboost",
-      name: "CatBoost",
-      description:
-        "Gradient boosting - handles categoricals natively, fast GPU training",
-    },
-    {
-      id: "glm",
-      name: "GLM",
-      description:
-        "Generalised linear model - interpretable coefficients, regulatory-friendly",
-    },
-  ] as const
+  // A family appears here once its descriptor ships, so the gateway can never
+  // offer a model type the backend cannot train.
+  const algorithms = Object.entries(ALGORITHM_CAPABILITIES).map(([id, capability]) => ({
+    id,
+    name: capability.label,
+    description: ALGORITHM_DESCRIPTIONS[id] ?? "",
+  }))
 
   return (
     <div className="px-4 py-3 space-y-3">
@@ -558,7 +557,7 @@ export default function ModellingConfig({
     paneBody = exportPane
   } else if (algorithm === "catboost") {
     if (pane === "target") {
-      paneBody = <TargetAndTaskConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} target={target} weight={weight} metrics={metrics} />
+      paneBody = <TargetAndTaskConfig algorithm={algorithm} config={config} onUpdate={onUpdate} columns={upstreamColumns} target={target} weight={weight} metrics={metrics} />
     } else if (pane === "features") {
       paneBody = <CommonFeatureConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
     } else if (pane === "params") {

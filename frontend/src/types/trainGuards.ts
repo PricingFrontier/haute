@@ -1,5 +1,6 @@
 /** Runtime parsers for on-demand modelling train endpoints. */
 
+import { refitCapability } from "../panels/modelling/algorithmCapabilities"
 import type {
   EvaluationPreview,
   TrainEstimate,
@@ -1029,12 +1030,23 @@ function parseTuningReport(value: unknown): NonNullable<TrainResponse["tuning"]>
       "parseTrainResponse: best sampled parameters must equal the winning trial",
     )
   }
+  const refit = refitCapability(
+    expectFiniteJsonObject(obj.final_params, "tuning.final_params"),
+  )
+  if (refit === null || refit.round_key === null) {
+    throw new Error(
+      "parseTrainResponse: tuning final parameters must carry exactly one family's round key",
+    )
+  }
+  const ceilingKey = refit.round_key_aliases.find(
+    (key) => winner.resolved_params[key] !== undefined,
+  )
   const iterationCeiling = (
-    winner.resolved_params.iterations === undefined
+    ceilingKey === undefined
       ? 1000
       : expectTrainInteger(
-          winner.resolved_params.iterations,
-          "tuning winner iterations",
+          winner.resolved_params[ceilingKey],
+          "tuning winner round ceiling",
           1,
         )
   )
@@ -1073,16 +1085,10 @@ function parseTuningReport(value: unknown): NonNullable<TrainResponse["tuning"]>
     "tuning.final_params",
   )
   const expectedFinalParams = { ...winner.resolved_params }
-  for (const key of [
-    "early_stopping_rounds",
-    "od_pval",
-    "od_type",
-    "od_wait",
-    "use_best_model",
-  ]) {
+  for (const key of [...refit.round_key_aliases, ...refit.validation_only_params]) {
     delete expectedFinalParams[key]
   }
-  expectedFinalParams.iterations = expectedTreeCount
+  expectedFinalParams[refit.round_key] = expectedTreeCount
   if (
     finalTreeCount !== expectedTreeCount
     || !finiteJsonEquals(finalParams, expectedFinalParams)
@@ -1139,6 +1145,32 @@ function parseTuningReport(value: unknown): NonNullable<TrainResponse["tuning"]>
     plan_path: expectNonEmptyTrainString(obj.plan_path, "tuning.plan_path"),
     trials_path: expectNonEmptyTrainString(obj.trials_path, "tuning.trials_path"),
     report_path: expectNonEmptyTrainString(obj.report_path, "tuning.report_path"),
+  }
+}
+
+function parseFitEvidence(value: unknown): NonNullable<TrainResponse["fit_evidence"]> {
+  const obj = expectPlainObject("parseTrainResponse", value, "fit_evidence")
+  expectTrainKeys(
+    obj,
+    "fit_evidence",
+    ["threads", "rounds_configured", "rounds_fitted", "stopping_reason"],
+  )
+  return {
+    threads: expectTrainInteger(obj.threads, "fit_evidence.threads", 1),
+    rounds_configured: obj.rounds_configured === null
+      ? null
+      : expectTrainInteger(obj.rounds_configured, "fit_evidence.rounds_configured", 1),
+    rounds_fitted: obj.rounds_fitted === null
+      ? null
+      : expectNonNegativeInteger(obj.rounds_fitted, "fit_evidence.rounds_fitted"),
+    stopping_reason: obj.stopping_reason === null
+      ? null
+      : expectStringLiteral(
+          "parseTrainResponse",
+          obj.stopping_reason,
+          "fit_evidence.stopping_reason",
+          ["none", "validation", "native_exhaustion"] as const,
+        ),
   }
 }
 
@@ -1245,6 +1277,7 @@ export function parseTrainResponse(value: unknown): TrainResponse {
     final_tree_count: obj.final_tree_count == null
       ? null
       : expectTrainInteger(obj.final_tree_count, "final_tree_count", 1),
+    fit_evidence: obj.fit_evidence == null ? null : parseFitEvidence(obj.fit_evidence),
     loss_history: parseArray("parseTrainResponse", obj.loss_history, "loss_history", parseLossHistoryEntry),
     loss_history_truncated: expectBoolean("parseTrainResponse", obj.loss_history_truncated, "loss_history_truncated"),
     double_lift: parseArray("parseTrainResponse", obj.double_lift, "double_lift", parseDoubleLiftRow),

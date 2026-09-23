@@ -1019,6 +1019,12 @@ export interface TrainResponse {
   error: string | null
   best_iteration: number | null
   final_tree_count?: number | null
+  fit_evidence?: {
+    threads: number
+    rounds_configured: number | null
+    rounds_fitted: number | null
+    stopping_reason: "none" | "validation" | "native_exhaustion" | null
+  } | null
   loss_history: Array<{ iteration: number; [key: string]: number }>
   loss_history_truncated: boolean
   double_lift: TrainDoubleLiftRow[]

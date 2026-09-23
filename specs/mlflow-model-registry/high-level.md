@@ -386,23 +386,15 @@ cache under `.cache/models/`; only CatBoost and RustyStats artifacts do. On each
 Haute cache miss, a pyfunc model is re-resolved through MLflow's
 `pyfunc.load_model` path and its separate local caching behaviour.
 
-## Approved change contract — one Haute pyfunc for native models
+## Shared native-model pyfunc
 
-- **Current limitation.** CatBoost candidates are logged with MLflow's CatBoost flavor, whose
-  pyfunc calls the native `predict` only, so served CatBoost models apply no Haute class mapping
-  and return no positive-class probability. The GLM has its own pyfunc wrapper in
-  `src/haute/modelling/_glm_pyfunc.py`. Native artifact resolution knows only `.cbm` and `.rsglm`.
-- **Unresolved target.** One Haute pyfunc wraps a native model file and its feature contract and
-  dispatches on the contract's algorithm to the same prediction adapter the local scorer uses. It
-  serves CatBoost (wrapping its `.cbm`), RustyStats, XGBoost (`.ubj`), LightGBM (`.lgbm`) and EBM
-  (`.ebm`). Artifact resolution recognises the new suffixes and resolves several candidate
-  artifacts from the contract or fails as ambiguous.
-- **Non-goals.** Registration and promotion stay outside training, and generic user pyfunc models
-  are unchanged.
-- **Failure and compatibility semantics.** A wrapped model without a contract, or with a mismatched
-  algorithm or loss, fails at load. CatBoost runs logged with the native flavor are not
-  supported by the new scorer path and must be logged again.
-- **Acceptance evidence.** A CatBoost classifier trained on string labels with a non-default
-  `positive_class`, logged and loaded through `mlflow.pyfunc.load_model`, returns the original
-  label and positive-class probability; RustyStats models serve identically through the wrapper.
-- **Roadmap package.** [MOD-F01](../roadmap/modelling.md#mod-f01--extend-common-algorithm-prediction-and-artifact-seams).
+Every native model Haute trains is logged through one pyfunc
+(`src/haute/modelling/_native_pyfunc.py`) over a package of the model file and its feature
+contract. The loader reads the contract's model identity, loads the file with the matching
+flavor, checks it is the model the identity describes, and scores through Haute's own
+scorer: classification returns the original-label `pred_label` and the positive-class
+`pred_proba`, regression the prediction vector. CatBoost is logged this way too, wrapping its
+`.cbm`, because MLflow's CatBoost flavor serves only the native `predict`. A package without a
+model identity, or whose file is not the model it describes, fails at load, and logging loads
+the package once first so a broken artifact never reaches MLflow.
+

@@ -21,6 +21,7 @@ from types import MappingProxyType
 from typing import Any
 
 from haute.errors import HauteValidationError
+from haute.modelling._descriptors import algorithm_descriptor
 from haute.modelling._evaluation import EvaluationConfig
 from haute.modelling._glm_terms import (
     glm_model_columns,
@@ -546,14 +547,30 @@ def build_training_job_kwargs(
 
     params = build_train_params(config)
     algorithm = str(config.get("algorithm", "catboost")).lower()
+    descriptor = algorithm_descriptor(algorithm)
     glm = is_glm_config(config)
+    task = str(config.get("task", "regression"))
+    if task not in descriptor.tasks:
+        raise TrainingConfigError(
+            f"{descriptor.label} does not support the {task} task. "
+            f"Supported: {', '.join(sorted(descriptor.tasks))}."
+        )
     # A wrong value beats an incomplete one, matching the train route.
     if glm:
         validate_glm_params(params)
+    else:
+        descriptor.validate_params(params)
+        loss_function = config.get("loss_function")
+        if loss_function:
+            try:
+                descriptor.native_loss(task, str(loss_function))
+            except TrainingConfigError:
+                raise
+            except HauteValidationError as exc:
+                raise TrainingConfigError(str(exc)) from exc
     objective_issue = training_objective_issue(config)
     if objective_issue is not None:
         raise TrainingConfigError(objective_issue)
-    task = str(config.get("task", "regression"))
     variance_power = config.get("var_power") if glm else config.get("variance_power")
     legacy_fields = [key for key in ("split", "cross_validation") if key in config]
     if legacy_fields:
@@ -578,6 +595,11 @@ def build_training_job_kwargs(
     if not refit_on_development and tuning is not None:
         raise TrainingConfigError("Parameter tuning requires a final refit")
 
+    positive_class = config.get("positive_class")
+    if positive_class is not None and (
+        isinstance(positive_class, float) or not isinstance(positive_class, (bool, int, str))
+    ):
+        raise TrainingConfigError("positive_class must be a Boolean, an integer or a string label.")
     destination = config.get("mlflow_destination") or ""
     if destination not in ("", "databricks", "server"):
         raise TrainingConfigError(
@@ -611,4 +633,5 @@ def build_training_job_kwargs(
         "feature_weights": None if glm else config.get("feature_weights") or None,
         "categorical_levels": config.get("categorical_levels") or None,
         "mlflow_destination": destination,
+        "positive_class": positive_class,
     }

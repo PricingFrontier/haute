@@ -1,0 +1,56 @@
+{
+  "catboost": {
+    "feature_controls": [
+      "feature_weights",
+      "monotone_constraints"
+    ],
+    "label": "CatBoost",
+    "losses": {
+      "classification": [
+        "Logloss",
+        "CrossEntropy"
+      ],
+      "regression": [
+        "RMSE",
+        "MAE",
+        "Poisson",
+        "Tweedie"
+      ]
+    },
+    "refit_policy": "validation_weighted_rounds",
+    "round_key": "iterations",
+    "round_key_aliases": [
+      "iterations",
+      "n_estimators",
+      "num_boost_round",
+      "num_trees"
+    ],
+    "suffix": ".cbm",
+    "supports_tuning": true,
+    "tasks": [
+      "classification",
+      "regression"
+    ],
+    "validation_only_params": [
+      "early_stopping_rounds",
+      "od_pval",
+      "od_type",
+      "od_wait",
+      "use_best_model"
+    ]
+  },
+  "glm": {
+    "feature_controls": [],
+    "label": "GLM",
+    "losses": {},
+    "refit_policy": "none",
+    "round_key": null,
+    "round_key_aliases": [],
+    "suffix": ".rsglm",
+    "supports_tuning": false,
+    "tasks": [
+      "regression"
+    ],
+    "validation_only_params": []
+  }
+}

@@ -523,13 +523,14 @@ def test_pdp_ranking_preserves_native_prediction_order(
     )
     monkeypatch.setattr(CatBoostAlgorithm, "shap_summary", lambda *args, **kwargs: [])
     monkeypatch.setattr(CatBoostAlgorithm, "feature_importance_typed", lambda *args, **kwargs: [])
+    monkeypatch.setenv("HAUTE_TRAINING_THREADS", "1")
     result = TrainingJob(
         name="pdp_order",
         data=df,
         target="target",
         feature_columns=features,
         offset="offset" if with_offset else None,
-        params={"iterations": 8, "depth": 2, "verbose": 0, "thread_count": 1},
+        params={"iterations": 8, "depth": 2, "verbose": 0},
         split={"validation_size": 0, "holdout_size": 0},
         output_dir=str(tmp_path),
     ).run()

@@ -1674,6 +1674,41 @@ describe("API response guards", () => {
     expect(parsed.tuning?.total_fit_count).toBe(6)
   })
 
+  it("accepts a tuned refit whose winner used a round-count alias (MOD-F01)", () => {
+    const fixture = tunedTrainResponseFixture()
+    for (const trial of fixture.tuning.trials) {
+      Object.assign(trial.resolved_params, { n_estimators: 50, early_stopping_rounds: 5 })
+    }
+    // The backend projection drops every round-count spelling and the
+    // validation-only keys, writing only CatBoost's ``iterations``.
+    const parsed = parseTrainResponse(fixture)
+    expect(parsed.tuning?.final_params).toEqual({ depth: 4, iterations: 7 })
+  })
+
+  it("keeps the final fit's evidence (MOD-F01)", () => {
+    const fixture = {
+      ...tunedTrainResponseFixture(),
+      fit_evidence: {
+        threads: 4,
+        rounds_configured: 500,
+        rounds_fitted: 120,
+        stopping_reason: "validation",
+      },
+    }
+    expect(parseTrainResponse(fixture).fit_evidence).toEqual({
+      threads: 4,
+      rounds_configured: 500,
+      rounds_fitted: 120,
+      stopping_reason: "validation",
+    })
+    expect(() =>
+      parseTrainResponse({
+        ...fixture,
+        fit_evidence: { ...fixture.fit_evidence, stopping_reason: "bored" },
+      }),
+    ).toThrow(/stopping_reason/)
+  })
+
   it("rejects evaluation summaries that disagree with persisted selection fits", () => {
     const fixture = tunedTrainResponseFixture()
     fixture.evaluation.selection_metrics.rmse.mean = 0.6
