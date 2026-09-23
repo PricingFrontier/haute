@@ -55,7 +55,7 @@ or where it will not hold at scale.
 |---|---|---|
 | One store, every consumer | Node outputs, input snapshots, and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | API-input tables still live in a separate JSON cache that only the Cache as Parquet button builds (`CACHE-S08`). |
 | No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. A preview served from the response cache reports its generations as seeded, and the canvas raises the node-data epoch only for a capture generation it has not seen, so a repeat preview costs no refetch. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). |
-| Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. A preview says when a node was not cached and how to fix it. | A job's refused capture is invisible (`CACHE-S12`); what the store holds is not — the Pipeline settings pane lists it. A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
+| Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. A preview says when a node was not cached and how to fix it. | A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
 | Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A node with one input whose code is provably row-local is written a slice of its input at a time where a capture or an explicit build writes it, so its memory does not grow with the input. A pass-through node carries its parent's recipe forward, and training preparation writes its prepared parquet through the same bounded writer, slicing the frame or the recipe's input and recording which. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). |
 | Failures are recoverable | A corrupt generation is reported, never silently repaired, and names the node whose cache to clear or rebuild; a plan whose inputs moved stops, before collection and again if they move before a capture publishes. | — |
 
@@ -64,11 +64,10 @@ or where it will not hold at scale.
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | CACHE-S08 | Planned | P2 | API-input tables are prepared automatically in the shared store, one generation per table; the Cache as Parquet button and the JSON cache go. |
-| CACHE-S12 | Planned | P2 | A refused build says which node it refused, where the user pressed Build. |
 | CACHE-S13 | Planned | P3 | A capturing preview finishes as a job instead of dying at the interactive timeout. Unproven: no measured preview approaches the timeout. |
 | CACHE-S19 | Deferred | P3 | Two consumers that need the same cold capture compute it once. |
 | CACHE-S22 | Planned | P3 | The shapes that cannot carry a write recipe at all can. |
-| CACHE-S17 | Planned | P3 | Planning and store housekeeping cost stays flat as graphs and stores grow. |
+| CACHE-S17 | Planned | P3 | Planning cost stays flat as graphs grow, a lease validates each part once per process, and the store's bookkeeping files are swept. |
 | CACHE-S18 | Planned | P3 | Full and cross joins are written with a bounded number of scans and a bounded part product. |
 | CACHE-S23 | Planned | P2 | The unused dataframe execution cache and its request path are removed. |
 | CACHE-S24 | Planned | P3 | One source-freshness proof and one bounded in-process cache primitive. |
@@ -80,9 +79,10 @@ or where it will not hold at scale.
 
 `CACHE-S08` goes first, activated on 22-Sep-2026 at the user's request. After it, delivery order is `CACHE-S17` → `CACHE-S22` → `CACHE-S18`, each gated on a
 measurement named in its own entry rather than started on the strength of its
-shape; `CACHE-S19` is deferred with the others, and
-`CACHE-S12` is now one display change at the node, so it is
-taken whenever that surface is next open rather than in this order. `CACHE-S13` moved down on 20-Sep-2026 because measurement showed
+shape; `CACHE-S19` is deferred with the others. `CACHE-S12` (a refused
+capture shown at the node) was retired on 23-Sep-2026: the cache budgets
+whose refusals it would have shown are removed, and a failed build already
+reports its error through the shared job poller. `CACHE-S13` moved down on 20-Sep-2026 because measurement showed
 no preview near its timeout. The packages from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md)
 (`CACHE-S23` to `CACHE-S27`) sit outside that order: `CACHE-S23` is a
@@ -110,54 +110,6 @@ the specification sections its **Owning specifications** line names before
 its behaviour changes; the roadmap records the direction and the acceptance
 evidence, not the contract text. Each package's **Evidence** line is also its
 affected-file list.
-
-### CACHE-S12 — A refused capture is visible
-
-**Status:** Superseded by user-managed cache storage. Cache byte/count budgets and
-quota-refusal diagnostics are removed; the historical plan below no longer applies.
-The toolbar's cached-data inventory lists stored datasets with explicit clear controls.
-
-**Why:** A refused capture is shown in the preview pane's
-execution-diagnostics indicator, naming the node and both remedies. The
-node-data job status still says nothing when a build's capture was refused,
-so a user who pressed Build and watched it fail is told nothing anywhere.
-
-**Plan:** Display only — nothing new has to be computed or fetched. A build
-whose capture is refused already records the same execution warning an
-automatic capture does (`snapshot_capture_skipped`, the node id,
-`reason="quota"`), and a failing build's `worker_evidence` already survives
-into its job's `execution_metrics` for every failure kind, not only quota.
-What is left is purely where it appears:
-
-- `NodeDataStatusResponse` already carries `execution_metrics`, and
-  `ExecutionDiagnosticsIndicator` already renders a refused capture naming the
-  node and both remedies — it is simply mounted in one place only
-  (`frontend/src/panels/DataPreview.tsx:499`), from the preview's metrics.
-- `nodeDataOnFail` in `frontend/src/hooks/useBackgroundJobs.ts` currently
-  discards the failure message (`void _message`) and finishes the job, so a
-  failed build says nothing anywhere. That is the wiring point.
-- Place it beside the node's own cache button, where the user pressed Build
-  and where the `corrupt` state already offers Re-cache; a toast is louder but
-  detaches the message from the node it names. A build failure is about one
-  node, so the node's own surface reads better than a global one — which is
-  why it did not go in the toolbar's cache pane when that pane was built.
-- Reuse `ExecutionDiagnosticsIndicator` rather than write a second copy of the
-  same warning, so the two paths cannot drift in wording or in which remedies
-  they name.
-
-**Acceptance:** The route half holds — `tests/test_node_data_routes.py`
-proves a refused build's job carries the refusal warning naming the node — and
-what remains is a frontend test that it is shown at the node.
-
-**Owning specifications:** [server API](../server-api/low-level.md)
-(execution warnings); [frontend shared](../frontend-shared/low-level.md).
-
-**Dependencies:** None. The toolbar work this waited on is done, so it is
-unstarted rather than blocked.
-
-**Evidence:** `src/haute/routes/node_data.py`;
-`frontend/src/hooks/useBackgroundJobs.ts` (`nodeDataOnFail`);
-`frontend/src/components/ExecutionDiagnosticsIndicator.tsx`.
 
 ### CACHE-S13 — Capturing previews as jobs
 
@@ -397,13 +349,11 @@ it.
 
 **Why:** One preview prepares the graph in admission, in every resolution
 round, in the post-capture key, and in execution, and every resolution signs
-each node-output node in the lineage with a fresh upstream fingerprint, so
-planning cost grows with the square of graph size. Every `NodeSnapshotStore`
-construction globs the store for retired directories, every publication walks
-every generation for bytes and eviction candidates, and every lease reads each
-part's footer, Arrow schema, and Polars schema. Each process that leases
-creates a token file under `.processes` and each identity ever published a
-lock file under `.locks`; nothing sweeps either.
+each node-output node in the lineage with a fresh upstream fingerprint. Every
+lease reads each part's Parquet footer, Arrow schema, and Polars schema: the
+verified-generation memo skips only the digest check, not these reads. Each
+process that leases creates a token file under `.processes`, and each
+identity ever published a lock file under `.locks`; nothing sweeps either.
 
 **Measured 20-Sep-2026, and the quadratic claim did not hold.** Seed-plan
 resolution over a chain of row-local nodes, three runs each, best of three:
@@ -413,63 +363,41 @@ growth is linear, not quadratic. What the measurement does support is the
 absolute cost: 15ms per node, paid again in admission, in each resolution
 round, in the post-capture key and in execution, is over a second of planning
 for an eighty-node graph before anything is read. The memoisation half of this
-package is justified by that; the store-walk half still needs its own
-measurement against generation count, which this did not take.
+package is justified by that.
 
 The once-per-process retired-directory sweep is delivered: it globbed the whole
-store on every store construction, and a preview builds several.
+store on every store construction, and a preview builds several. The store-walk
+half this package once planned is obsolete. It kept byte and generation totals
+in a store-level summary, with intent records for crash recovery, so that
+publication could admit against the cache budgets without walking every
+generation. The budgets are removed, publication no longer admits against
+totals or looks for eviction candidates, and only the on-demand cache
+inventory walks the store.
 
-**Plan:** Keep one prepared graph and
-its structural facts (order, effective edges, pass-through edges,
-materialising operators, projection inputs) across lease attempts and
-preparation rounds, while every node signature and identity is recomputed
-after any preparation, because a signature signs the input generations
-preparation may have moved; derive per-node lineage fingerprints from one
-canonical-graph pass memoised by node id within a single resolution; run
-retired-directory cleanup once per process per root; keep the node-output
-byte and generation totals that `CACHE-S12` admits against in a store-level
-summary, and keep walking the input-snapshot totals, because input-snapshot
-publication, retirement, clear, and reconciliation are serialised by
-`SourceCacheStore`'s process-local locks and not by the cross-process lease
-lock. Every node-output mutation already runs under the lease lock
-(publication, retirement, eviction, clear), so the protocol is: under that
-lock, write an intent record naming the identity, the generation, and the
-process token before the mutation; perform it; rewrite the summary
-atomically with the next revision; remove the intent. Admission, under the
-same lock, first reconciles any intent record left behind, whose process
-token is dead or whose generation the summary disagrees with, by walking
-that one identity's directory and rewriting the summary, so a worker killed
-between a generation's rename and the summary commit never lets the next
-admission trust stale totals; a summary that is absent or unparsable is
-rebuilt by a full walk of node-output generations. Staging bytes are still
-walked at admission, because staging is written outside the lock. A
-directory's modification time is not used as a gate, because a write beneath
-an existing identity does not change the inputs root. Have the
-verified-generation memo cover the footer checks so a lease validates each
-part once per process; sweep dead token files and unused publication locks
-at that once-per-process cleanup, and have that cleanup reconcile every
-leftover intent under the lease lock, exactly as admission does, before it
-removes the record: an intent is never swept unreconciled, because it names
-a mutation whose totals the summary may not yet hold, and store construction
-runs cleanup before any admission.
+**Plan:** Keep one prepared graph and its structural facts (order, effective
+edges, pass-through edges, materialising operators, projection inputs) across
+lease attempts and preparation rounds, while every node signature and
+identity is recomputed after any preparation, because a signature signs the
+input generations preparation may have moved; derive per-node lineage
+fingerprints from one canonical-graph pass memoised by node id within a
+single resolution. Have the verified-generation memo cover the footer and
+schema checks, so a lease validates each part once per process. At the
+once-per-process cleanup, sweep token files whose process is dead and
+publication lock files whose identity no longer exists. Remove a lock file
+only under a protocol that cannot leave two processes holding different files
+for one identity, and state that protocol in the IO-layer specification.
 
 **Acceptance:** The artifact records the before and after measurements and
 the store's operation count per preview; `tests/performance/` gains the
-planning benchmark; `tests/test_node_snapshot_retention.py` proves the
-summary tracks a node-output publication under an existing identity, a
-retirement, an eviction, a clear, and staging growth, and that an input
-snapshot published from another process leaves the node-output totals
-correct; `tests/test_node_snapshot_cross_process.py` proves two processes
-publishing under one identity admit against the same totals, and that a
-process killed between a generation's rename and the summary commit leaves
-an intent that the next admission reconciles before it admits, and that a
-fresh store constructed after that kill reconciles the intent in its cleanup
-so its first admission sees correct totals and no intent survives
-unreconciled; a corrupt summary is rebuilt; the existing regression that a
-preview's capture moves to the
-prepared signature after an input build passes unchanged, as do the
-seed-plan, retention, and cross-process tests, because none of this changes
-what is read or written.
+planning benchmark; a test proves a second lease of a verified generation
+reads no part footer or schema, and that a generation whose files changed is
+validated again; `tests/test_node_snapshot_cross_process.py` proves the
+cleanup removes a dead process's token and an orphaned publication lock,
+keeps a live process's token and a held lock, and that a publisher racing the
+sweep still excludes a second publisher; the existing regression that a
+preview's capture moves to the prepared signature after an input build passes
+unchanged, as do the seed-plan, retention, and cross-process tests, because
+none of this changes what is read or written.
 
 **Owning specifications:** [caching](../caching/low-level.md#seed-plans);
 [IO layer](../io-layer/low-level.md#node-output-snapshots).
@@ -479,8 +407,8 @@ what is read or written.
 **Evidence:** `src/haute/_seed_plans.py` (`_Resolver`,
 `open_resolved_seed_plan`, `_open_preview_seed_plan`);
 `src/haute/_node_snapshots.py` (`__init__`, `_cleanup_retired`,
-`_own_token`, `_admit_node_output_locked`); `src/haute/_source_cache.py`
-(`_metadata_from_path`); `tests/test_seed_plans.py` (prepared-signature
+`_publication_lock`); `src/haute/_source_cache.py` (`_own_token`,
+`_metadata_from_path`); `tests/test_seed_plans.py` (prepared-signature
 regression).
 
 ### CACHE-S18 — Bounded scans in full and cross joins
