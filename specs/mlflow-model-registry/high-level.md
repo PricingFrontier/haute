@@ -182,7 +182,11 @@ Out of scope (owned elsewhere):
   `predict_proba`; a model whose `predict_proba` returns more than two
   classes' worth of probabilities is rejected rather than silently
   reporting one arbitrary class's probability as "the" positive-class
-  value.
+  value. When a classification Model Score node's feature contract records
+  Haute class labels (every Haute-trained binary classifier scores a
+  probability), its column contract declares that column as produced, so
+  deployed projection and output mappings can use it; a prediction-only
+  classifier declares none.
 - A per-prediction explanation reconstructs the traced prediction from
   its own decomposition (SHAP values for CatBoost, contribution terms for
   RustyStats) and verifies the reconstruction matches the model's actual
@@ -389,3 +393,16 @@ Out of scope (owned elsewhere):
 cache under `.cache/models/`; only CatBoost and RustyStats artifacts do. On each
 Haute cache miss, a pyfunc model is re-resolved through MLflow's
 `pyfunc.load_model` path and its separate local caching behaviour.
+
+## Shared native-model pyfunc
+
+Every native model Haute trains is logged through one pyfunc
+(`src/haute/modelling/_native_pyfunc.py`) over a package of the model file and its feature
+contract. The loader reads the contract's model identity, loads the file with the matching
+flavor, checks it is the model the identity describes, and scores through Haute's own
+scorer: classification returns the original-label `pred_label` and the positive-class
+`pred_proba`, regression the prediction vector. CatBoost is logged this way too, wrapping its
+`.cbm`, because MLflow's CatBoost flavor serves only the native `predict`. A package without a
+model identity, or whose file is not the model it describes, fails at load, and logging loads
+the package once first so a broken artifact never reaches MLflow.
+

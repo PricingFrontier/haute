@@ -143,7 +143,7 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
    pinned `polars==X` whose `polars-runtime-32==X` got yanked). Running this
    locally catches that before the push. **This is the single highest-value
    addition.** Arch caveat: locally this resolves **macOS-arm64** wheels; CI
-   resolves **linux-x86-64**. catboost / rustystats / polars / price-contour
+   resolves **linux-x86-64**. catboost / xgboost-cpu / lightgbm / rustystats / polars / price-contour
    ship per-arch wheels, so this lane catches a version yank that hits *both*
    arches but NOT a missing/yanked *linux-only* wheel for a pinned version.
    Docker (linux container) is the only local way to close that — see
@@ -220,7 +220,7 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
    (path handling, subprocess/resource limits, native wheels).
 3. **Linux wheel availability (the arch-specific slice of `package-smoke`).**
    Distinct from #2: `package-smoke`'s fresh-resolve installs per-arch binary
-   wheels (catboost, rustystats, polars, price-contour). Locally it resolves
+   wheels (catboost, xgboost-cpu, lightgbm, rustystats, polars, price-contour). Locally it resolves
    **macOS-arm64** wheels, so it proves *macOS* installability of the pins, not
    *linux-x86-64* installability. A pinned version whose linux wheel is missing
    or yanked but whose macOS wheel is present passes local package-smoke and

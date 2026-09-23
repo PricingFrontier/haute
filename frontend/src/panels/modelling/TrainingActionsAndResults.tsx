@@ -190,7 +190,7 @@ export function TrainingActionsAndResults({
             <div className="flex items-center gap-2 mt-1" style={{ color: "var(--warning-strong)" }}>
               <AlertTriangle size={12} className="shrink-0" />
               <span>
-                GPU training needs ~{formatMb(adjusted.gpuVramMb)} but GPU has {formatMb(ramEstimate.gpu_vram_available_mb)}. Select CPU and retry, or reduce rows/features.
+                GPU training needs ~{formatMb(adjusted.gpuVramMb)} but GPU has {formatMb(ramEstimate.gpu_vram_available_mb)} free. Select CPU and retry, or reduce rows/features.
               </span>
             </div>
           )}

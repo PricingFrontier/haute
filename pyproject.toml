@@ -45,6 +45,18 @@ dependencies = [
     "libcst>=1.8.6,<2",
     "watchfiles>=1.1.1,<2",
     "catboost>=1.2.10,<2",
+    # XGBoost 3.3+ requires Python 3.12; the cap keeps it on every supported
+    # Python (and on Databricks Model Serving's 3.11). The CPU-only
+    # distribution avoids the full wheel's NVIDIA NCCL dependency; macOS has
+    # no xgboost-cpu wheel, so it takes xgboost (which then needs libomp).
+    # Both install the same ``xgboost`` import package: never hold both.
+    "xgboost-cpu>=3.2,<3.3; sys_platform != 'darwin'",
+    "xgboost>=3.2,<3.3; sys_platform == 'darwin'",
+    # LightGBM's macOS wheel also loads libomp from the system (Homebrew).
+    "lightgbm>=4.7,<5",
+    # A .ebm model loads only under the exact interpret-core version its
+    # contract records, so a minor bump is a deliberate retrain boundary.
+    "interpret-core>=0.7.8,<0.8",
     # Tuning owns a reproducibility-sensitive seeded TPE contract. Keep the
     # supported Optuna sampler implementation within one pinned 4.x minor.
     "optuna>=4.9.0,<4.10",
@@ -617,5 +629,6 @@ module = [
     "scipy.*",
     "sklearn.*",
     "price_contour.*",
+    "interpret.*",
 ]
 ignore_missing_imports = true

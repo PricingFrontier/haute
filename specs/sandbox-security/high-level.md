@@ -165,7 +165,18 @@ Out of scope (owned elsewhere, linked where relevant):
   non-class callable is rejected, not silently accepted. Every file passed to
   `safe_unpickle`/`safe_joblib_load` must first resolve inside the project root
   (`validate_project_path`) — a case-insensitive-filesystem-safe containment check,
-  not a raw string-prefix check.
+  not a raw string-prefix check. `restricted_joblib_load` is the same allowlisted
+  loader without that containment, for model files Haute's own loaders locate (training
+  outputs, the MLflow artifact cache, an MLflow pyfunc package).
+- **Exactly two InterpretML classes are trusted:**
+  `interpret.glassbox._ebm._ebm.ExplainableBoostingRegressor` and
+  `...ExplainableBoostingClassifier`; no `interpret.*` prefix or other symbol is. A pinned
+  0.7.8 `.ebm` references only those classes plus allowlisted joblib/NumPy scaffolding.
+  scikit-learn's state hook checks versions only for `sklearn` classes, so an `.ebm` loads
+  only when its feature contract records exactly the installed `interpret-core` version; any
+  other or missing version fails with `ArtifactVersionMismatchError` before unpickling, and the
+  loaded estimator's class, features, feature types and finite scores are validated against
+  the contract before inference.
 - **Local API/WebSocket access is gated by configured loopback Host, exact Origin,
   and an HttpOnly session cookie.** Host middleware rejects authorities outside its
   validated allowlist and
@@ -337,3 +348,4 @@ Out of scope (owned elsewhere, linked where relevant):
   `safe_joblib_load` instantiates a private `NumpyUnpickler` subclass whose
   `find_class` applies the shared allowlist, so unrelated `joblib.load()` calls
   cannot observe a temporary class mutation.
+

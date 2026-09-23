@@ -53,6 +53,7 @@ import type {
   GitWorkingBranchResponse,
   GraphPayload,
   IoCapabilitiesResponse,
+  ModellingGpuStatusResponse,
   InputCacheBuildRequest,
   InputCacheBuildResponse,
   InputCacheCancelResponse,
@@ -159,6 +160,7 @@ import {
   parseGitSetWorkingBranchResponse,
   parseGitWorkingBranchResponse,
   parseIoCapabilitiesResponse,
+  parseModellingGpuStatusResponse,
   parseInputCacheBuildResponse,
   parseInputCacheCancelResponse,
   parseInputCacheJobStatusResponse,
@@ -1435,6 +1437,13 @@ export function fetchExplorePivotMembers(
 // ---------------------------------------------------------------------------
 // Modelling endpoints
 // ---------------------------------------------------------------------------
+
+/** Whether XGBoost can train on a GPU in the running server. */
+export function fetchModellingGpuStatus(
+  options?: { signal?: AbortSignal },
+): Promise<ModellingGpuStatusResponse> {
+  return request<unknown>("/api/modelling/gpu", options).then(parseModellingGpuStatusResponse)
+}
 
 
 export function getTrainStatus<T extends TrainStatusResponse = TrainStatusResponse>(

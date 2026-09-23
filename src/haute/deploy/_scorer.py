@@ -75,13 +75,18 @@ logger = get_logger(component="deploy_scorer")
 # requests/threads — treated as immutable.  (See
 # :class:`haute._stat_gated_cache.StatGatedCache` for the full contract.)
 
-_local_model_cache: StatGatedCache[tuple[str, str], ScoringModel] = StatGatedCache(
+_local_model_cache: StatGatedCache[tuple[str, str, str | None], ScoringModel] = StatGatedCache(
     artifact_kind="deploy model artifact"
 )
 
 
-def _load_local_model_cached(path: str, task: str) -> ScoringModel:
-    """Stat-gated process cache over :func:`haute._mlflow_io.load_local_model`."""
+def _load_local_model_cached(
+    path: str, task: str, contract_path: str | None = None
+) -> ScoringModel:
+    """Stat-gated process cache over :func:`haute._mlflow_io.load_local_model`.
+
+    *contract_path* is the bundled feature contract, which an EBM needs to load.
+    """
     # The SLOT key is case-folded (normcase; a no-op on POSIX, so a macOS
     # case-variant spelling still gets its own slot — accepted, as in
     # haute._json_flatten._path_hash). The stat/open path keeps the on-disk
@@ -92,9 +97,16 @@ def _load_local_model_cached(path: str, task: str) -> ScoringModel:
     def _load() -> ScoringModel:
         from haute._mlflow_io import load_local_model
 
-        return load_local_model(io_path, task)
+        if contract_path is None:
+            return load_local_model(io_path, task)
+        return load_local_model(io_path, task, contract_path=contract_path)
 
-    return _local_model_cache.get_or_load((key, task), io_path, _load)
+    # The contract decides an EBM's offset, labels and loss: replacing only the
+    # sidecar must reload, so its identity (not just its path) is in the key.
+    contract_identity = (
+        artifact_identity_fingerprint({"contract": contract_path}) if contract_path else None
+    )
+    return _local_model_cache.get_or_load((key, task, contract_identity), io_path, _load)
 
 
 def _load_feature_contract_cached(path: str) -> FeatureContract:
@@ -961,7 +973,7 @@ def _score_graph_lazy(
                         # source at serve time (the only one a pyfunc model
                         # has); native models also self-describe.
                         offset_column = _load_feature_contract_cached(_contract_path).offset_column
-                    scoring_model = _load_local_model_cached(_p, _t)
+                    scoring_model = _load_local_model_cached(_p, _t, _contract_path)
                     return _run_score_pipeline(
                         scoring_model,
                         lf,

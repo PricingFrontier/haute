@@ -79,6 +79,7 @@ from haute.modelling._train_config import (
     parse_evaluation_config,
     parse_tuning_config,
     training_objective_issue,
+    validate_training_device,
 )
 from haute.routes._background_jobs import (
     CancellableJobRegistry,
@@ -556,7 +557,14 @@ class TrainService:
                 self._store.update_job(job_id, warning=None)
             train_params = build_train_params(config)
             ram_warning = self._check_gpu_vram_before_launch(
-                train_params, row_limit, total_source_rows, probe_columns, ram_warning, job_id
+                train_params,
+                row_limit,
+                total_source_rows,
+                probe_columns,
+                ram_warning,
+                job_id,
+                algorithm=str(config.get("algorithm", "catboost")).lower(),
+                device=str(config.get("device") or "cpu"),
             )
             cancellation_token.throw_if_cancelled("training_preparation", job_id=job_id)
             execution_context = create_admitted_execution_context(
@@ -1202,6 +1210,7 @@ class TrainService:
                     "fields were replaced by the canonical versioned evaluation object."
                 )
             evaluation = parse_evaluation_config(config.get("evaluation"))
+            validate_training_device(config)
             metrics = config.get("metrics") or []
             if not metrics:
                 # The builder derives objective-aware defaults. Reuse it rather
@@ -1380,9 +1389,14 @@ class TrainService:
         probe_columns: int,
         ram_warning: str | None,
         job_id: str,
+        *,
+        algorithm: str = "catboost",
+        device: str = "cpu",
     ) -> str | None:
         """Check GPU VRAM and refuse a job that cannot fit on the selected GPU."""
-        if str(train_params.get("task_type", "")).upper() != "GPU":
+        catboost_gpu = str(train_params.get("task_type", "")).upper() == "GPU"
+        xgboost_gpu = algorithm == "xgboost" and device == "gpu"
+        if not (catboost_gpu or xgboost_gpu):
             return ram_warning
 
         try:
@@ -1391,6 +1405,7 @@ class TrainService:
                 effective_rows,
                 probe_columns,
                 train_params,
+                algorithm="xgboost" if xgboost_gpu else "catboost",
             )
             if vram_check.insufficient:
                 gpu_warning = (

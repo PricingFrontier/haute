@@ -890,6 +890,8 @@ _EXPORT_DEFAULTED_KWARGS: dict[str, object] = {
     "monotone_constraints": None,
     "feature_weights": None,
     "categorical_levels": None,
+    "positive_class": None,
+    "device": "cpu",
     "mlflow_experiment": None,
     "mlflow_destination": "",
 }

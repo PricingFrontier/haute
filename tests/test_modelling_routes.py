@@ -303,6 +303,14 @@ class TestTrainingCategoricalLevelDeclarations:
         assert levels == {"region": ["north", "south"]}
 
 
+def _xgboost_gpu_graph(data_path: str) -> dict:
+    """An XGBoost node set to train on the GPU (MOD-F06)."""
+    graph = _make_modelling_graph(data_path, algorithm="xgboost", params={"num_boost_round": 5})
+    node = next(node for node in graph["nodes"] if node["id"] == "train")
+    node["data"]["config"].update({"loss_function": "RMSE", "device": "gpu"})
+    return graph
+
+
 def _make_modelling_graph(
     data_path: str,
     target: str = "y",
@@ -565,6 +573,19 @@ class TestTrainEndpoint:
             detail = status["error_detail"]
             assert detail["reason"] == "gpu_vram_limit_exceeded"
             assert "Select CPU and retry" in detail["message"]
+            run.assert_not_called()
+
+    def test_train_xgboost_gpu_refuses_on_vram_limit(self, client, training_data):
+        graph = _xgboost_gpu_graph(training_data)
+        with (
+            patch("haute._host_memory.available_vram_bytes", return_value=1),
+            patch("haute.modelling.TrainingJob.run", return_value=_completed_train_result()) as run,
+        ):
+            resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+            assert resp.status_code == 200
+            status = _poll_until_done(client, resp.json()["job_id"])
+            assert status["status"] == "memory_limited"
+            assert status["error_code"] == "gpu_vram_limit"
             run.assert_not_called()
 
 
@@ -1291,7 +1312,7 @@ class TestSaveModelEndpoint:
         )
         unknown = client.post(
             "/api/modelling/save/destination",
-            json={"output_path": "frequency", "algorithm": "xgboost"},
+            json={"output_path": "frequency", "algorithm": "unregistered"},
         )
 
         assert escaped.status_code == 403
@@ -1812,6 +1833,45 @@ class TestEstimateEndpoint:
         data = resp.json()
         assert data.get("gpu_vram_estimated_mb") is not None
         assert data.get("gpu_warning") is not None
+
+    def test_estimate_xgboost_gpu_vram_path(self, client, training_data):
+        graph = _xgboost_gpu_graph(training_data)
+        with patch("haute._host_memory.available_vram_bytes", return_value=1):
+            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("gpu_vram_estimated_mb") is not None
+        assert "Train on CPU" in data["gpu_warning"]
+
+    @pytest.mark.parametrize(
+        ("algorithm", "device", "message"),
+        [
+            ("lightgbm", "gpu", "LightGBM trains on CPU only"),
+            ("xgboost", "cuda", 'device must be "cpu" or "gpu"'),
+        ],
+    )
+    def test_train_refuses_a_bad_device_before_preparation_with_explicit_metrics(
+        self, client, training_data, algorithm, device, message
+    ):
+        graph = _xgboost_gpu_graph(training_data)
+        node = next(node for node in graph["nodes"] if node["id"] == "train")
+        node["data"]["config"].update(
+            {
+                "algorithm": algorithm,
+                "device": device,
+                "metrics": ["rmse"],
+                "params": {"num_iterations": 5}
+                if algorithm == "lightgbm"
+                else {"num_boost_round": 5},
+            }
+        )
+        with patch(
+            "haute.routes._training_lifecycle.TrainService._launch_training_protocol"
+        ) as launch:
+            resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+        assert resp.status_code == 400, resp.text
+        assert message in resp.json()["detail"]
+        launch.assert_not_called()
 
     def test_estimate_missing_node(self, client, training_data):
         graph = _make_modelling_graph(training_data)
@@ -2761,9 +2821,9 @@ class TestValidateConfig:
 
     def test_unknown_algorithm_raises_400(self):
         with pytest.raises(HTTPException) as exc_info:
-            TrainService._validate_config({"target": "y", "algorithm": "xgboost"})
+            TrainService._validate_config({"target": "y", "algorithm": "unregistered"})
         assert exc_info.value.status_code == 400
-        assert "xgboost" in exc_info.value.detail
+        assert "unregistered" in exc_info.value.detail
         assert "Available algorithms" in exc_info.value.detail
 
     def test_glm_unknown_family_raises_with_suggestions(self):

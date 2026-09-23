@@ -508,6 +508,17 @@ export interface IoCapabilitiesResponse {
   groups: IoCapabilityGroup[]
 }
 
+/** Whether one family can train on a GPU in the running server. */
+export interface GpuFamilyStatus {
+  available: boolean
+  detail: string
+  device: string | null
+}
+
+export interface ModellingGpuStatusResponse {
+  xgboost: GpuFamilyStatus
+}
+
 // ---------------------------------------------------------------------------
 // Cache-inventory contracts (/api/cache)
 // ---------------------------------------------------------------------------
@@ -998,7 +1009,8 @@ export interface TuningReport {
   improvement: number
   best_sampled_params: Record<string, unknown>
   final_params: Record<string, unknown>
-  final_tree_count: number
+  /** Absent for a fixed-budget family (EBM), whose refit reuses the winning budget. */
+  final_tree_count?: number
   trial_count: number
   trial_fit_count: number
   total_fit_count: number
@@ -1006,6 +1018,24 @@ export interface TuningReport {
   plan_path: string
   trials_path: string
   report_path: string
+}
+
+/** One axis of an EBM term: the missing bin first, then categories or value bins. */
+export interface EbmTermAxis {
+  feature: string
+  type: "nominal" | "continuous"
+  labels: string[]
+  cuts?: number[]
+}
+
+/** An EBM main effect (scores per bin) or pairwise interaction (a score grid). */
+export interface EbmTerm {
+  term: string
+  features: string[]
+  kind: "main" | "interaction"
+  importance: number
+  axes: EbmTermAxis[]
+  scores: number[] | number[][]
 }
 
 export interface TrainResponse {
@@ -1023,6 +1053,16 @@ export interface TrainResponse {
   error: string | null
   best_iteration: number | null
   final_tree_count?: number | null
+  fit_evidence?: {
+    threads: number
+    rounds_configured: number | null
+    rounds_fitted: number | null
+    /** EBM's native best_iteration_: term updates per stage, never rounds. */
+    term_update_steps: number[] | null
+    stopping_reason: "none" | "validation" | "native_exhaustion" | null
+    /** The device XGBoost actually trained on (``cuda:0``) for a GPU fit. */
+    device?: string | null
+  } | null
   loss_history: Array<{ iteration: number; [key: string]: number }>
   loss_history_truncated: boolean
   double_lift: TrainDoubleLiftRow[]
@@ -1043,6 +1083,7 @@ export interface TrainResponse {
   glm_inference: GlmInference | null
   glm_smooth_terms: GlmSmoothTerm[]
   glm_regularization: GlmRegularization | null
+  ebm_terms: EbmTerm[]
   diagnostics_errors: TrainDiagnosticsError[]
   feature_selection: TrainFeatureSelection | null
   evaluation?: EvaluationReport
@@ -1433,7 +1474,7 @@ export interface MlflowLogResponse {
 export interface ModelSaveDestinationRequest {
   /** A bare filename saves under models/; paths are project-root-relative. */
   output_path: string
-  algorithm: "catboost" | "glm"
+  algorithm: "catboost" | "glm" | "xgboost" | "lightgbm" | "ebm"
 }
 
 export interface ModelSaveDestinationResponse {

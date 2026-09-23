@@ -159,7 +159,10 @@ compatibility facade and route own no duplicate state or worker implementation.
   response. Polling also enforces the configured/default training timeout: an overdue
   running job requests preparation/child termination and atomically transitions to
   `timed_out`.
-- `POST /api/modelling/estimate` returns a RAM/row-limit and (for GPU CatBoost) VRAM
+- `GET /api/modelling/gpu` reports whether XGBoost can train on a GPU in this server
+  process (`available`, an actionable `detail`, the `device`), probed once per process.
+- `POST /api/modelling/estimate` returns a RAM/row-limit and (for GPU CatBoost or GPU
+  XGBoost) VRAM
   estimate without starting a job. Both this estimate and the pre-training RAM check
   use fresh shared node snapshots that cover the training column demand: cached
   outputs supply measured row counts and schema even when their original computation
@@ -635,7 +638,7 @@ browser without a server or JS bundle.
   pollable job to `memory_limited` and preserves the equivalent structured 507 detail
   on its status response. A GPU job that would not fit is refused outright: the message
   asks the user to select CPU (or reduce the workload) and retry, and the server never
-  silently changes `task_type` or retries on CPU.
+  silently changes `task_type` or `device`, or retries on CPU.
 - Pipeline-execution failures while materialising training data preserve the equivalent
   HTTP classification (`http_status_code` 422 for missing required columns or
   bounded-streaming unsupported; 500 for a generic failure) on the terminal status,
@@ -751,3 +754,111 @@ Cancellation, crash, malformed result, or validation failure removes the directo
 - Preflight enforces hard bounds on tuning fit counts: `trial_fit_count = trial_count * validation_fit_count <= 200`
   (with `total_fit_count = trial_fit_count + 1`). A candidate-fit error aborts with the trial index,
   sampled parameters and original actionable exception; it is never skipped.
+
+## Model families
+
+- **Descriptors.** Each algorithm (`catboost`, `glm`) has a capability descriptor in
+  `src/haute/modelling/_descriptors.py`: its tasks and Haute losses with the native objective
+  and link each translates to, its raw-`params` policy, its refit round key, its feature
+  controls, and its artifact suffix. Configuration building, `TrainingJob`, tuning, the refit,
+  model-file suffixes, and the modelling UI read the descriptors. An unknown algorithm, a task
+  the family does not support, or a loss outside its list fails before data is materialised.
+- **Losses.** `loss_function` with `variance_power` is the loss setting for every tree family;
+  the Haute vocabulary is `RMSE`, `MAE`, `Poisson`, `Gamma`, `Tweedie`, `Logloss`, and
+  `CrossEntropy`. CatBoost supports all of them except `Gamma` (CatBoost 1.2.10 has no Gamma
+  loss). The GLM configures `family`/`link` instead and trains regression only: a binomial GLM
+  predicts a probability, not a class label.
+- **Parameters.** CatBoost raw `params` are forwarded unchanged apart from `thread_count`,
+  which the thread allotment owns, and `class_names`, which would reorder the probability
+  columns away from the positive = 1 encoding; tuning search spaces still exclude CatBoost's
+  orchestration-owned keys, and a CatBoost fit whose classes are not the encoded `[0, 1]`
+  fails. The GLM keeps its own configuration-key validation. A family with
+  an allowlist rejects reserved keys, aliases, duplicate spellings, and unknown keys.
+- **Refits.** A round-refitting family feeds zero-based best iterations to
+  `validation_weighted_tree_count`, writes the count to its descriptor's round key, and drops
+  every other spelling of the round count and every validation-only early-stopping key.
+- **Threads.** Each job resolves one thread allotment from `HAUTE_TRAINING_THREADS` (default:
+  the logical CPU count, matching CatBoost's own default) and passes it to CatBoost as
+  `thread_count`. RustyStats exposes no thread setting.
+- **Fit evidence.** The training response and the MLflow candidate record the final fit's
+  thread allotment, round ceiling, fitted rounds read from the model, and stopping reason
+  (`none`, `validation`, or `native_exhaustion`), plus the device an XGBoost GPU fit trained
+  on (`cuda:0`).
+- **Binary classification.** A classification job trains only on exactly two target classes.
+  Boolean and 0/1 targets make `True`/`1` positive; any other pair of labels needs an explicit
+  `positive_class`. The job trains on the target encoded as positive = 1, records the
+  `(negative, positive)` labels in the feature contract and in the CatBoost model metadata, and
+  every scoring path derives the label from the positive-class probability: positive exactly
+  when it is greater than 0.5, so 0.5 is the negative class. A CatBoost classifier trained
+  outside Haute uses its own class order. Single-class, multiclass, and non-integer numeric
+  targets fail before fitting.
+- **XGBoost.** The `xgboost` family trains a native CPU `hist` booster. Categorical codes come
+  from the level list the model was fitted against (declared levels, else the training
+  partition's distinct values), stored in the model and the contract, because XGBoost 3.2 reads
+  a booster sliced to its best round positionally; an unseen category fails instead of scoring
+  as missing. A regression offset enters as `base_margin` at fit and predict, because a model
+  trained with a margin ignores its fitted `base_score`. Early stopping on Haute's validation
+  partition keeps `best_iteration + 1` rounds, and the refit reuses the weighted count through
+  `num_boost_round`. Losses are `RMSE`, `MAE`, `Poisson`, `Gamma`, `Tweedie` and `Logloss`;
+  raw parameters follow an allowlist with Haute-owned keys and aliases rejected; monotone
+  constraints are supported except under `MAE` (`reg:absoluteerror` re-fits each leaf after the
+  tree is built and breaks the constraint on CPU and GPU alike), and feature weights are not. The `.ubj` model is self-describing,
+  scores through its own flavor, serves through the shared MLflow pyfunc, and explains a traced
+  prediction with native contributions whose bias carries the offset. `Gamma` losses report
+  weighted Gamma deviance, which needs strictly positive targets and predictions.
+- **LightGBM.** The `lightgbm` family trains a native CPU GBDT booster from a `Dataset` with the
+  same contract-order categories, weights, and an `init_score` of the transformed regression
+  offset. LightGBM's own prediction ignores `init_score`, so the scoring adapter adds the offset
+  to the raw score before the inverse link, exactly once. Early stopping keeps LightGBM's
+  one-based `best_iteration` trees, and the refit reuses the weighted count through
+  `num_iterations`. With early stopping disabled (`0`), each XGBoost or LightGBM validation fit
+  selects every round it fitted, so the refit still has a count to reuse. A fit that stops short
+  of its ceiling without validation stopping (no split satisfies the constraints) records
+  `native_exhaustion`. LightGBM refuses monotone constraints under `MAE`, so that combination
+  fails in the Features pane and before training. Losses, parameter policy, monotone
+  constraints, feature weights, unseen and empty-string categories, serving and explanation
+  follow XGBoost; LightGBM silently accepts conflicting parameter aliases, so every alias of an
+  allowed or Haute-owned key fails in Haute. The `.lgbm` model is LightGBM's model text with one
+  added `haute:` record, so plain LightGBM can still load it. GPU backends, `linear_tree`,
+  native leaf refitting and model continuation are not offered.
+- **EBM.** The `ebm` family trains an InterpretML Explainable Boosting Machine (regressor, or
+  classifier for `Logloss`) with nominal features for contract categoricals and continuous
+  features otherwise, sample weights, and a regression offset as `init_score` at fit and
+  predict. It never stops early: the MOD-F00 probes showed that routing validation rows through
+  `bags` leaks their targets into the intercept, so every fit sees only the rows it is given
+  (selection fits the training partition, the final refit the development rows, never
+  final-test rows) with `outer_bags=1`, one thread, and an explicit `max_rounds` that tuning may
+  search and the refit reuses unchanged. Native `best_iteration_` is recorded as term-update
+  steps and never turned into a budget. Losses are `RMSE`, `Poisson`, `Gamma`, `Tweedie` and
+  `Logloss`; `MAE` is not offered. Every included feature is a main effect; pairwise
+  interactions are a count EBM chooses from or an explicit list of pairs, and a
+  monotone-constrained feature cannot take part in one. The model is its terms: results show
+  each main effect's shape (missing-value bin included) and each interaction's surface as
+  additive link-scale term scores, and a traced prediction is explained by the intercept, the
+  offset and one contribution per term, an interaction staying one term. The `.ebm` file is
+  the joblib-dumped estimator, loaded only through the restricted unpickler and only under its
+  feature contract, which must record the installed `interpret-core` version exactly.
+- **GPU training.** CatBoost keeps its own `task_type: "GPU"` parameter. A family whose
+  descriptor sets `gpu_device` (XGBoost only) takes the node's top-level `device`, `"cpu"`
+  (default) or `"gpu"`; any other value, or `"gpu"` on another family, fails before data is
+  materialised. Haute depends on `xgboost-cpu`; GPU training needs XGBoost's full CUDA build,
+  which `haute gpu-setup` installs. XGBoost itself never refuses a CUDA request: with no visible
+  GPU it trains on the CPU with only a warning (MOD-F06 probes). So a GPU fit first requires
+  `xgboost_gpu_status()` (the CUDA build, then a one-round device fit whose trained device is
+  `cuda:*`), trains with `device="cuda"`, and then verifies the booster's own recorded device;
+  either failure raises `HauteValidationError` and saves nothing, and Haute never retries on the
+  CPU. Every evaluation, tuning and final fit of the job uses the same device. The saved booster
+  is set to `device="cpu"`, so it scores identically on the CPU build in every deployment. The
+  device is part of the training identity: a GPU fit differs materially from a CPU fit of the
+  same settings (12–44% maximum relative prediction difference in the probes). Before launch,
+  an XGBoost GPU job is refused when `estimate_xgboost_gpu_vram_bytes` exceeds free VRAM.
+  LightGBM's wheels have no GPU or CUDA learner on Windows and only OpenCL on Linux (no OpenCL
+  device under WSL), so LightGBM, like EBM, trains on the CPU only.
+- **Model identity.** A version-2 feature contract carries an optional model identity:
+  algorithm, Haute loss or GLM family, link, variance power, class labels, native feature names,
+  and exact engine and Haute versions, all inside the hashed payload. Training always writes
+  it; a contract supplied for a generic MLflow model may omit it. A version-1 contract fails to
+  load with a retrain message. The shared MLflow pyfunc and Model Score check a loaded model
+  against the identity (its model type, and CatBoost's recorded loss) and fail on a mismatch.
+  Only the schema fields are compared against live data.
+

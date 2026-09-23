@@ -409,3 +409,13 @@ execution time on a mis-wired pipeline). Concretely:
   `RuntimeError` from `_gen_submodel_placeholder_unreachable`; this
   indicates `graph_to_code_multi`'s root/child-node filtering has a bug,
   since the occurrence should never be dispatched on.
+
+## Model families in generated code
+
+Generated training scripts build every family's job through the shared training configuration
+(`build_training_job_kwargs`), so a script and a canvas run share configuration, training
+identity and effective parameters, `positive_class` included. Generated Model Score code is
+suffix-agnostic: it selects the configured artifact, and the loader dispatches `.cbm`, `.rsglm`,
+`.ubj`, `.lgbm` and `.ebm` to their flavors, so an XGBoost, LightGBM or EBM model scores
+through the same adapter as the GUI; an EBM also needs the feature contract saved beside it.
+

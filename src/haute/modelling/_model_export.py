@@ -18,11 +18,14 @@ from haute._path_resolution import (
     _normalise_path_text,
     _reject_reserved_device_components,
 )
+from haute.modelling._descriptors import DESCRIPTORS
 
 MODEL_EXPORT_FOLDER = "models"
 
-#: The native model file extension each algorithm trains to.
-MODEL_FILE_SUFFIXES: Mapping[str, str] = MappingProxyType({"catboost": ".cbm", "glm": ".rsglm"})
+#: The native model file extension each algorithm trains to, from its descriptor.
+MODEL_FILE_SUFFIXES: Mapping[str, str] = MappingProxyType(
+    {key: descriptor.suffix for key, descriptor in DESCRIPTORS.items()}
+)
 
 
 @dataclass(frozen=True, slots=True)

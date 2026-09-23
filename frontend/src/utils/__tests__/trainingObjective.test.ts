@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { effectiveMetrics, trainingConfigurationIssues } from "../trainingObjective"
+import { effectiveMetrics, trainingConfigurationIssues, trainingIssuePane } from "../trainingObjective"
 
 describe("trainingConfigurationIssues", () => {
   const evaluation = {
@@ -32,6 +32,52 @@ describe("trainingConfigurationIssues", () => {
       evaluation: { ...evaluation, validation: { method: "single", size }, test: { size: 0.5 } },
     })
     expect(issues).toEqual([expect.objectContaining({ code: "evaluation-config", message: expect.stringMatching(/below 100%/) })])
+  })
+
+  it("refuses LightGBM monotonicity under MAE on the Features pane (MOD-F03)", () => {
+    const base = { algorithm: "lightgbm", target: "y", loss_function: "MAE", evaluation }
+    const issues = trainingConfigurationIssues({ ...base, monotone_constraints: { age: 1 } })
+    expect(issues).toEqual([expect.objectContaining({
+      code: "monotone-loss",
+      message: expect.stringMatching(/LightGBM cannot apply monotonicity constraints with the MAE loss/),
+    })])
+    expect(trainingIssuePane(issues[0])).toBe("features")
+    // Dormant (excluded) constraints, other losses and other families are fine.
+    expect(trainingConfigurationIssues({ ...base, monotone_constraints: { age: 1 }, exclude: ["age"] })).toEqual([])
+    // Explicit feature_columns override a stale exclusion, as in the backend.
+    expect(trainingConfigurationIssues({
+      ...base, monotone_constraints: { age: 1 }, exclude: ["age"], feature_columns: ["age"],
+    }).map((issue) => issue.code)).toEqual(["monotone-loss"])
+    expect(trainingConfigurationIssues({ ...base, loss_function: "RMSE", monotone_constraints: { age: 1 } })).toEqual([])
+    expect(trainingConfigurationIssues({ ...base, algorithm: "catboost", monotone_constraints: { age: 1 } })).toEqual([])
+    // XGBoost's absolute-error objective re-fits leaves and breaks the constraint (MOD-F06).
+    expect(trainingConfigurationIssues({ ...base, algorithm: "xgboost", monotone_constraints: { age: 1 } })).toEqual([
+      expect.objectContaining({
+        code: "monotone-loss",
+        message: expect.stringMatching(/XGBoost cannot apply monotonicity constraints with the MAE loss/),
+      }),
+    ])
+  })
+
+  it("mirrors the backend's EBM budget and interaction rules (MOD-F04)", () => {
+    const base = { algorithm: "ebm", target: "y", loss_function: "RMSE", evaluation }
+    const codes = (config: Record<string, unknown>) =>
+      trainingConfigurationIssues({ ...base, ...config }).map((issue) => [issue.code, trainingIssuePane(issue)])
+    expect(codes({ params: { max_rounds: 500, interactions: 5 } })).toEqual([])
+    expect(codes({ params: { interactions: 5 } })).toEqual([["ebm-max-rounds", "params"]])
+    expect(codes({ params: { max_rounds: 0 } })).toEqual([["ebm-max-rounds", "params"]])
+    expect(codes({ params: { max_rounds: 5, interactions: -1 } })).toEqual([["ebm-interactions", "features"]])
+    expect(codes({ params: { max_rounds: 5, interactions: [["a", ""]] } })).toEqual([["ebm-interactions", "features"]])
+    expect(codes({ params: { max_rounds: 5, interactions: [["a", "b"], ["b", "a"]] } })).toEqual([["ebm-interactions", "features"]])
+    const monotone = trainingConfigurationIssues({
+      ...base,
+      params: { max_rounds: 5, interactions: [["age", "region"]] },
+      monotone_constraints: { age: 1 },
+    })
+    expect(monotone).toEqual([expect.objectContaining({
+      code: "ebm-interactions",
+      message: expect.stringMatching(/involves monotone-constrained age/),
+    })])
   })
 
   it("reports conditional CatBoost Tweedie configuration", () => {

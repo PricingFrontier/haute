@@ -157,7 +157,11 @@ class _LoadSpy:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def __call__(self, path: str, task: str = "regression") -> ScoringModel:
+    def __call__(
+        self, path: str, task: str = "regression", *, contract_path: str | None = None
+    ) -> ScoringModel:
+        # The bundled contract reaches the loader (an EBM needs it to load).
+        del contract_path
         self.calls.append((path, task))
         return _doubling_scoring_model()
 
@@ -583,7 +587,7 @@ class TestArtifactCacheKeyCanonicalisation:
             _scorer._load_local_model_cached(str(cbm_path), "regression")
 
         expected_key = str(cbm_path.resolve()).lower()
-        assert list(_scorer._local_model_cache._entries) == [(expected_key, "regression")]
+        assert list(_scorer._local_model_cache._entries) == [(expected_key, "regression", None)]
 
     def test_contract_cache_key_folds_case_via_normcase(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

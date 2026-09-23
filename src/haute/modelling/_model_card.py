@@ -160,7 +160,12 @@ def generate_model_card(
             ["Winning trial index", str(tuning["winner_trial_index"])],
             ["Trials", str(tuning["trial_count"])],
             ["Total fits", str(tuning["total_fit_count"])],
-            ["Final tree count", str(tuning["final_tree_count"])],
+            [
+                "Final tree count",
+                "not applicable (fixed round budget)"
+                if tuning.get("final_tree_count") is None
+                else str(tuning["final_tree_count"]),
+            ],
             [
                 "Best sampled parameters",
                 json.dumps(

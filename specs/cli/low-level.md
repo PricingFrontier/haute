@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/__main__.py` | Package-module entry point; imports and invokes the canonical `haute.cli:cli` group for `python -m haute`. |
-| `src/haute/cli/__init__.py` | Builds the Click command group (`cli`), registers all nine subcommands, exposes `--version`. |
+| `src/haute/cli/__init__.py` | Builds the Click command group (`cli`), registers all ten subcommands, exposes `--version`. |
 | `src/haute/cli/_helpers.py` | Cross-command utilities: `resolve_model_name`, `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, and the shared `ENDPOINT_SUFFIX_HELP` string. |
 | `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding: `InitConfig`, `handle_init`, TOML-aware `pyproject.toml` dependency injection, CI-provider file generation/pruning. |
 | `src/haute/cli/_run.py` | `haute run` — `RunConfig`, `handle_run`, parses + executes a pipeline and prints per-node results. |
@@ -16,6 +16,7 @@
 | `src/haute/cli/_smoke.py` | `haute smoke` — `SmokeConfig`, `handle_smoke`, sends test quotes to a live endpoint (Databricks or HTTP). |
 | `src/haute/cli/_status.py` | `haute status` — `StatusConfig`, `handle_status`, MLflow Model Registry lookup. |
 | `src/haute/cli/_impact.py` | `haute impact` — `ImpactConfig`, `handle_impact`, staging-vs-production comparison report; `_impact_databricks`/`_impact_http` transport backends. |
+| `src/haute/cli/_gpu_setup.py` | `haute gpu-setup` — `GpuSetupConfig`, `handle_gpu_setup`, swaps `xgboost-cpu` for XGBoost's CUDA build (or back) in the running interpreter and verifies it in a fresh process. |
 
 ## Key types and data structures
 
@@ -37,6 +38,7 @@ Every command uses a plain mutable `@dataclass` as a configuration value bag con
 - `SmokeConfig(endpoint_suffix: str | None)` — `_smoke.py`.
 - `StatusConfig(model_name, version_only)` — `_status.py`.
 - `ImpactConfig(endpoint_suffix, sample, batch_size)` — `src/haute/cli/_impact.py`.
+- `GpuSetupConfig(check_only, to_cpu, assume_yes)` — `_gpu_setup.py`.
 
 Other notable types:
 - `TransportInfo` (`src/haute/cli/_helpers.py`) — `__slots__`-based result of `resolve_transport(config)`. Fields:
@@ -69,6 +71,7 @@ without validating required positional arguments.
 | `haute smoke` | `--endpoint-suffix TEXT`. | Missing config/quotes/endpoint, missing Databricks SDK, an installed SDK too old to expose the required `NotFound` error type, unsupported target, readiness timeout, health-request failure, or any scoring request failure exits 1. Missing and outdated SDKs produce distinct install/upgrade guidance. A successful request can currently pass with an empty prediction payload. |
 | `haute status [MODEL_NAME]` | Optional model name; `--version-only`. | Missing resolvable name or MLflow dependency exits 1. Normal mode prints “not found” and exits 0; `--version-only` prints only a version on success and raises `ClickException` (exit 1, stderr only) when no version exists. |
 | `haute impact` | `--sample INTEGER` (default `10000`; every value `<=0` currently means all, although help documents `0`); `--batch-size INTEGER` (default `500`, minimum `1`); `--endpoint-suffix TEXT`. | Invalid batch size exits 2. Missing config/suffix/dataset or missing Databricks SDK exits 1. Endpoint/scoring/arithmetic/write failures propagate. Unsupported transport returns successfully without a report only after TOML, suffix, and dataset/parquet loading have succeeded; otherwise success writes `impact_report.md` and exits 0. |
+| `haute gpu-setup` | `--check` (report only); `--cpu` (switch back to `xgboost-cpu`); `--yes`/`-y` (skip confirmation). | `--check` exits 0. Exactly one of `xgboost-cpu`/`xgboost` must be installed, else exit 1. The target build already installed exits 0 without changes. Any switch on macOS (which installs the standard `xgboost` package and has no CUDA build), or a CUDA request without an `nvidia-smi` GPU, exits 1 before installing. A declined confirmation, a failed uninstall/install step (the message names the command that restores the previous build), an XGBoost that no longer imports, or a fresh-process CUDA check that disagrees with the request exits 1. |
 
 ## Control flow
 
@@ -173,6 +176,8 @@ override, requires a non-empty `tests/quotes/*.json` set, then dispatches on
 `haute.deploy._mlflow.get_deploy_status`. `--version-only` mode prints only the version number (for
 scripting) and raises `click.ClickException` — rather than printing a misleading `0` — when no
 version is registered.
+
+**`gpu-setup`**: `installed_xgboost` reads the installed distribution (exactly one of `xgboost-cpu` and `xgboost`, which own the same files); `haute._host_memory.nvidia_gpu_name` asks `nvidia-smi`; this module is the subprocess chokepoint for the installer and the fresh-interpreter check. `--check` prints both plus `xgboost_gpu_status()`. Otherwise the target is `xgboost` (or `xgboost-cpu` with `--cpu`) pinned to the installed version; `installer_commands` uninstalls the current distribution then installs the target into `sys.executable`, through `uv pip --python` when `uv` is on the PATH, else `python -m pip`. `fresh_cuda_build` then imports XGBoost in a new interpreter and checks `build_info()['USE_CUDA']` matches the request. The running server keeps its imported build until restarted, and `uv sync` restores the locked `xgboost-cpu`.
 
 **`impact`**: requires `haute.toml` and `[safety].impact_dataset`; resolves the staging suffix (CLI
 flag wins, else `deploy_config.ci.staging_endpoint_suffix`, else loud error on Databricks transport;
@@ -312,6 +317,6 @@ Key files and what they cover:
 
 Known gaps: no test boots a real Vite subprocess or uvicorn server. Readiness/open ordering and
 `finally` cleanup after a mocked uvicorn interruption are covered, but no test invokes the
-registered SIGINT/SIGTERM callbacks themselves. No test snapshots the root plus all nine generated
+registered SIGINT/SIGTERM callbacks themselves. No test snapshots the root plus all ten generated
 Click help surfaces, so defaults/types can drift; notably `serve` help currently omits its effective
 port-8000 default.

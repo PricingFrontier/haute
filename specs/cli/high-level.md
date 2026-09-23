@@ -17,8 +17,9 @@ Python code without going through Click.
 
 ## Scope
 
-In scope: the equivalent `haute ...` and `python -m haute ...` invocation forms; the nine
-subcommands (`init`, `run`, `lint`, `train`, `serve`, `deploy`, `smoke`, `status`, `impact`); their
+In scope: the equivalent `haute ...` and `python -m haute ...` invocation forms; the ten
+subcommands (`init`, `run`, `lint`, `train`, `serve`, `deploy`, `smoke`, `status`, `impact`,
+`gpu-setup`); their
 argument parsing, user-facing output/error formatting; and the small amount of orchestration logic
 that glues each command to the rest of the codebase.
 

@@ -1,3 +1,4 @@
+import { algorithmCapability } from "../panels/modelling/algorithmCapabilities"
 import {
   interactionEntryIssue,
   monotoneConstraintTerms,
@@ -28,6 +29,9 @@ export type TrainingConfigurationIssueCode =
   | "catboost-params"
   | "catboost-loss-function"
   | "catboost-tweedie-variance-power"
+  | "monotone-loss"
+  | "ebm-max-rounds"
+  | "ebm-interactions"
   | "evaluation-config"
   | "final-refit"
   | "tuning-config"
@@ -55,6 +59,7 @@ export function effectiveMetrics(config: Record<string, unknown>): string[] {
   }
   if (["poisson", "quasipoisson", "negbinomial"].includes(objective)) return ["gini", "poisson_deviance"]
   if (objective === "tweedie") return ["gini", "tweedie_deviance"]
+  if (objective === "gamma") return ["gini", "gamma_deviance"]
   return ["gini", "rmse"]
 }
 
@@ -234,7 +239,7 @@ export function trainingConfigurationIssues(
         ? 1
         : 0
     const validTuning = (
-      String(config.algorithm ?? "").toLowerCase() === "catboost"
+      algorithmCapability(String(config.algorithm ?? ""))?.supports_tuning === true
       && tuning.schema_version === 1
       && Number.isInteger(tuning.trial_count)
       && trialCount >= 5
@@ -390,7 +395,113 @@ export function trainingConfigurationIssues(
         "Set the Tweedie variance power greater than 1 and less than 2.",
     })
   }
+  if (algorithm === "ebm") issues.push(...ebmParameterIssues(config))
+  const capability = algorithmCapability(algorithm)
+  if (
+    lossFunction
+    && capability?.monotone_unsupported_losses.includes(String(lossFunction))
+    && hasMonotoneConstraints(config)
+  ) {
+    issues.push({
+      code: "monotone-loss",
+      message:
+        `${capability.label} cannot apply monotonicity constraints with the ${String(lossFunction)} ` +
+        "loss; remove them from the Features pane or choose another loss.",
+    })
+  }
   return issues
+}
+
+/** Mirrors the backend's ``ebm_value_issue``; feature membership is checked at fit time. */
+function ebmParameterIssues(config: Record<string, unknown>): TrainingConfigurationIssue[] {
+  const params = (
+    config.params !== null && typeof config.params === "object" && !Array.isArray(config.params)
+  )
+    ? config.params as Record<string, unknown>
+    : {}
+  const issues: TrainingConfigurationIssue[] = []
+  const maxRounds = params.max_rounds
+  if (typeof maxRounds !== "number" || !Number.isInteger(maxRounds) || maxRounds <= 0) {
+    issues.push({
+      code: "ebm-max-rounds",
+      message:
+        "Set max_rounds to a positive whole number: an EBM trains every round it is given, "
+        + "with no early stopping.",
+    })
+  }
+  const interactions = params.interactions ?? 0
+  if (typeof interactions === "number") {
+    if (!Number.isInteger(interactions) || interactions < 0) {
+      issues.push({ code: "ebm-interactions", message: "Set the interaction count to 0 or more." })
+    }
+    return issues
+  }
+  if (!Array.isArray(interactions)) {
+    issues.push({
+      code: "ebm-interactions",
+      message: "Interactions must be a count or a list of feature pairs.",
+    })
+    return issues
+  }
+  const monotone = (
+    config.monotone_constraints !== null
+    && typeof config.monotone_constraints === "object"
+    && !Array.isArray(config.monotone_constraints)
+  )
+    ? config.monotone_constraints as Record<string, unknown>
+    : {}
+  const seen = new Set<string>()
+  for (const [index, pair] of interactions.entries()) {
+    const names = Array.isArray(pair) ? pair : []
+    const [first, second] = names
+    if (
+      names.length !== 2
+      || typeof first !== "string" || first === ""
+      || typeof second !== "string" || second === ""
+      || first === second
+    ) {
+      issues.push({
+        code: "ebm-interactions",
+        message: `Interaction ${index + 1} needs two different features.`,
+      })
+      continue
+    }
+    const key = [first, second].sort().join("|")
+    if (seen.has(key)) {
+      issues.push({
+        code: "ebm-interactions",
+        message: `Interaction ${index + 1} (${first} & ${second}) is listed twice.`,
+      })
+    }
+    seen.add(key)
+    const constrained = [first, second].filter((name) => Boolean(monotone[name]))
+    if (constrained.length > 0) {
+      issues.push({
+        code: "ebm-interactions",
+        message:
+          `Interaction ${index + 1} involves monotone-constrained ${constrained.join(" and ")}; `
+          + "remove the constraint or the interaction.",
+      })
+    }
+  }
+  return issues
+}
+
+function hasMonotoneConstraints(config: Record<string, unknown>): boolean {
+  const constraints = config.monotone_constraints
+  if (constraints === null || typeof constraints !== "object" || Array.isArray(constraints)) {
+    return false
+  }
+  // Mirrors the backend's _excluded_feature_names: explicit feature_columns win
+  // over a stale exclusion, so a constraint on such a feature stays active.
+  const explicit = new Set(
+    Array.isArray(config.feature_columns) ? config.feature_columns.map(String) : [],
+  )
+  const excluded = new Set(
+    (Array.isArray(config.exclude) ? config.exclude.map(String) : [])
+      .filter((name) => !explicit.has(name)),
+  )
+  return Object.keys(constraints).some((name) => !excluded.has(name))
 }
 
 /** Destination of a readiness issue, shared by tabs and the Train summary. */
@@ -404,7 +515,10 @@ export function trainingIssuePane(issue: TrainingConfigurationIssue): "target" |
     case "glm-cross-validation":
     case "glm-smooth-regularization":
     case "glm-robust-standard-errors": return "params"
-    case "glm-terms": return "features"
+    case "glm-terms":
+    case "ebm-interactions":
+    case "monotone-loss": return "features"
+    case "ebm-max-rounds": return "params"
     default: return "target"
   }
 }

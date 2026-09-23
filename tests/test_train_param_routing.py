@@ -296,6 +296,8 @@ class TestCatBoostParamRouting:
             "monotone_constraints": None,
             "feature_weights": None,
             "categorical_levels": None,
+            "positive_class": None,
+            "device": "cpu",
             "tuning": None,
             "refit_on_development": True,
         }

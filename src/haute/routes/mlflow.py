@@ -113,7 +113,9 @@ def _run_summaries(
     measurement: _RunDiscoveryMeasurement,
 ) -> list[MlflowRunSummary]:
     """Build filtered summaries while updating only aggregate work counters."""
-    model_extensions = (".cbm", ".rsglm")
+    from haute.modelling._model_export import MODEL_FILE_SUFFIXES
+
+    model_extensions = tuple(sorted(set(MODEL_FILE_SUFFIXES.values())))
 
     def _match(path: str) -> bool:
         if artifact_filter == "optimiser":
@@ -535,7 +537,7 @@ def list_runs(
         "model",
         description=(
             "Filter runs by artifact type: "
-            "'model' for any model artifact (.cbm, .rsglm), "
+            "'model' for any native model artifact (.cbm, .rsglm, .ubj, .lgbm, .ebm), "
             "'optimiser' for optimiser results (optimiser_result.json)"
         ),
     ),

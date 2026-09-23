@@ -39,6 +39,66 @@ async function connectHandles(page: Page, source: Locator, target: Locator): Pro
   }
 }
 
+// Adds a modelling node over raw_rows to the project for one scenario only;
+// resetE2eProject restores main.py and removes the sidecar before the next.
+function addModellingNode(name: string, algorithm: string, params: Record<string, unknown>): void {
+  writeFileSync(
+    resolve(ratingDir, "config", "model_training", name + ".json"),
+    JSON.stringify({
+      name,
+      target: "value",
+      algorithm,
+      task: "regression",
+      loss_function: "RMSE",
+      params,
+      evaluation: { schema_version: 1, strategy: "random", seed: 42, validation: { method: "single", size: 0.2 } },
+      metrics: ["rmse"],
+      row_limit: 30,
+      output_dir: ".haute_cache/browser_training",
+    }, null, 2),
+    "utf8",
+  )
+  const block = [
+    "",
+    "",
+    "@pipeline.modelling(config='config/model_training/" + name + ".json')",
+    "def " + name + "(raw_rows: pl.LazyFrame) -> pl.LazyFrame:",
+    "    return raw_rows",
+    "",
+  ].join("\n")
+  writeFileSync(gitMainPath, readFileSync(gitMainPath, "utf8").trimEnd() + "\n" + block, "utf8")
+}
+
+async function trainFamilyAndSaveModel(
+  page: Page,
+  algorithm: string,
+  params: Record<string, unknown>,
+  suffix: string,
+): Promise<void> {
+  const name = "browser_" + algorithm
+  addModellingNode(name, algorithm, params)
+  await page.goto("/")
+  const node = page.getByRole("button", { name: new RegExp(name, "i") })
+  await expect(node).toBeVisible()
+  await node.click()
+  const panes = page.getByRole("tablist", { name: "Modelling panes" })
+  await panes.getByRole("tab", { name: "Train", exact: true }).click()
+  await expect(page.getByLabel("Training run summary")).toContainText(" · RMSE")
+  await expect(page.getByText("Dataset fits in memory")).toBeVisible({ timeout: 60_000 })
+  await page.getByRole("button", { name: /Train Model/i }).click()
+  await expect(
+    page.getByText(/Model trained - results in preview panel below/i),
+  ).toBeVisible({ timeout: 120_000 })
+  await panes.getByRole("tab", { name: "Export", exact: true }).click()
+  const modelFilePath = page.getByLabel("Filename or path *")
+  await modelFilePath.fill(name)
+  await modelFilePath.press("Enter")
+  await expect(page.getByText("Destination: models/" + name + suffix)).toBeVisible()
+  await page.getByRole("button", { name: "Save model to file" }).click()
+  await expect(page.getByText("Saved model to models/" + name + suffix)).toBeVisible()
+  await expect(page.getByText("Feature contract: models/" + name + ".feature_contract.json")).toBeVisible()
+}
+
 test.describe.configure({ mode: "serial" })
 
 test.describe("core browser flows", () => {
@@ -166,6 +226,55 @@ test.describe("core browser flows", () => {
     ).toBeVisible()
     await expect(page.getByText("I(mileage ** 2)")).toBeVisible()
     await expect(page.getByText("channel[T.direct]:bs(mileage, 1/9, k)")).toBeVisible()
+  })
+
+  test("trains an XGBoost node and saves its model file", async ({ page }) => {
+    test.slow()
+    await trainFamilyAndSaveModel(page, "xgboost", { num_boost_round: 20, eta: 0.3, max_depth: 3 }, ".ubj")
+  })
+
+  test("trains a LightGBM node and saves its model file", async ({ page }) => {
+    test.slow()
+    await trainFamilyAndSaveModel(
+      page,
+      "lightgbm",
+      { num_iterations: 20, learning_rate: 0.3, num_leaves: 7, min_data_in_leaf: 3 },
+      ".lgbm",
+    )
+  })
+
+  test("chooses an EBM interaction, trains it, and reads the interaction surface", async ({ page }) => {
+    test.slow()
+    addModellingNode("browser_ebm", "ebm", { max_rounds: 40, interactions: [] })
+    await page.goto("/")
+
+    const ebmNode = page.getByRole("button", { name: /browser_ebm/i })
+    await expect(ebmNode).toBeVisible()
+    await ebmNode.click()
+    const panes = page.getByRole("tablist", { name: "Modelling panes" })
+    await panes.getByRole("tab", { name: "Features", exact: true }).click()
+    await expect(page.getByRole("heading", { name: "Pairwise interactions" })).toBeVisible()
+    await expect(page.getByRole("radio", { name: "Choose pairs" })).toBeChecked()
+    // The node was added to the file just now: wait for its upstream schema.
+    await expect(page.getByRole("group", { name: "mileage feature" })).toBeVisible({ timeout: 60_000 })
+    await page.getByRole("button", { name: "Add interaction" }).click()
+    const pair = page.getByRole("group", { name: "Interaction 1" })
+    await pair.getByRole("combobox", { name: "Interaction 1 feature 1" }).selectOption("channel")
+    await pair.getByRole("combobox", { name: "Interaction 1 feature 2" }).selectOption("mileage")
+
+    await panes.getByRole("tab", { name: "Train", exact: true }).click()
+    await page.getByRole("button", { name: /Train Model/i }).click()
+    await expect(
+      page.getByText(/Model trained - results in preview panel below/i),
+    ).toBeVisible({ timeout: 120_000 })
+    const resultTabs = page.getByRole("tablist", { name: "Model result panes" })
+    await resultTabs.getByRole("tab", { name: "Terms", exact: true }).click()
+    await page.getByRole("button", { name: /channel & mileage/ }).click()
+    await expect(page.getByText(/Pairwise interaction/)).toBeVisible()
+    await expect(
+      page.getByRole("table", { name: "Interaction surface for channel & mileage" }),
+    ).toBeVisible()
+    await expect(page.getByText("Additive term scores on the model", { exact: false })).toBeVisible()
   })
 
   test("persists node edits through save and reload", async ({ page }) => {

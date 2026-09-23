@@ -85,6 +85,11 @@ jobs:
         with:
           node-version: 22.14.0
 
+      # The macOS XGBoost and LightGBM wheels load libomp from the system.
+      - name: Install libomp (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libomp
+
       - name: Fresh-install smoke
         run: uv run --no-project python scripts/init_smoke.py
 
@@ -426,7 +431,20 @@ jobs:
           version: "0.8.22"
           python-version: "3.12"
 
+      # The macOS XGBoost and LightGBM wheels load libomp from the system.
+      - name: Install libomp (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libomp
+
       - run: uv sync --group dev --locked
+
+      - name: Model-family native engines (fit, save, reload, score)
+        run: >
+          uv run pytest
+          tests/test_xgboost_family.py
+          tests/test_lightgbm_family.py
+          tests/test_ebm_family.py
+          -q
 
       - name: Cross-platform path, process isolation, spill, cache, and debt smoke
         run: >

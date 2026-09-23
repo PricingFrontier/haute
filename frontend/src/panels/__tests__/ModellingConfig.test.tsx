@@ -31,6 +31,7 @@ const mockLogToMlflow = vi.fn()
 const mockSaveTrainedModel = vi.fn()
 const mockResolveModelSaveDestination = vi.fn()
 const mockGetTrainStatus = vi.fn()
+const mockFetchModellingGpuStatus = vi.fn()
 let defaultPane: ModellingPane = "target"
 
 vi.mock("../../api/client", () => ({
@@ -47,6 +48,8 @@ vi.mock("../../api/client", () => ({
   // The Export pane reads the job's export receipts, and a reload restores a
   // remembered result through the same status endpoint.
   getTrainStatus: (...args: unknown[]) => mockGetTrainStatus(...args),
+  // The XGBoost Train pane asks the server whether a CUDA fit works there.
+  fetchModellingGpuStatus: (...args: unknown[]) => mockFetchModellingGpuStatus(...args),
   // The Export pane's path picker browses project files when no path is set.
   listFiles: vi.fn(() => Promise.resolve({ items: [] })),
   // GLMTargetConfig narrows errors with `instanceof ApiError`, so the mock
@@ -223,6 +226,7 @@ beforeEach(() => {
     trainResults: {},
   })
   mockGetTrainStatus.mockReset().mockReturnValue(new Promise(() => {}))
+  mockFetchModellingGpuStatus.mockReset().mockReturnValue(new Promise(() => {}))
   vi.mocked(buildGraph).mockImplementation(() => ({ nodes: [], edges: [], preamble: "" }) as unknown as ReturnType<typeof buildGraph>)
   useGraphStore.setState(useGraphStore.getInitialState())
   useDocumentStatusStore.setState(useDocumentStatusStore.getInitialState())
@@ -315,6 +319,55 @@ describe("Training configuration readiness", () => {
     expect(screen.queryByText(/Parameters JSON/)).toBeNull()
     expect(onPaneIssuesChange).toHaveBeenLastCalledWith("node_1", [])
   })
+  it("starts an XGBoost study from XGBoost's own parameter keys (MOD-F02)", () => {
+    const { props } = renderConfig({
+      activePane: "params",
+      config: { _nodeId: "xgb", algorithm: "xgboost", target: "loss_ratio", loss_function: "RMSE", params: {} },
+    })
+    fireEvent.click(screen.getByRole("radio", { name: "Tune parameters" }))
+    const tuned = (props.onUpdate as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as {
+      tuning: { search_space: Record<string, unknown> }
+    }
+    expect(Object.keys(tuned.tuning.search_space).sort()).toEqual(["eta", "lambda", "max_depth"])
+  })
+  it("starts a LightGBM study from LightGBM's own parameter keys (MOD-F03)", () => {
+    const { props } = renderConfig({
+      activePane: "params",
+      config: { _nodeId: "lgbm", algorithm: "lightgbm", target: "loss_ratio", loss_function: "RMSE", params: {} },
+    })
+    fireEvent.click(screen.getByRole("radio", { name: "Tune parameters" }))
+    const tuned = (props.onUpdate as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as {
+      tuning: { search_space: Record<string, unknown> }
+    }
+    expect(Object.keys(tuned.tuning.search_space).sort()).toEqual([
+      "learning_rate",
+      "min_data_in_leaf",
+      "num_leaves",
+    ])
+  })
+  it("starts an EBM study from EBM's own keys, round budget included (MOD-F04)", () => {
+    const { props } = renderConfig({
+      activePane: "params",
+      config: { _nodeId: "ebm", algorithm: "ebm", target: "loss_ratio", loss_function: "RMSE", params: { max_rounds: 500 } },
+    })
+    fireEvent.click(screen.getByRole("radio", { name: "Tune parameters" }))
+    const tuned = (props.onUpdate as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as {
+      tuning: { search_space: Record<string, unknown> }
+    }
+    expect(Object.keys(tuned.tuning.search_space).sort()).toEqual([
+      "interactions",
+      "learning_rate",
+      "max_rounds",
+    ])
+  })
+  it("shows the EBM interaction control on the Features pane (MOD-F04)", () => {
+    renderConfig({
+      activePane: "features",
+      config: { _nodeId: "ebm", algorithm: "ebm", target: "loss_ratio", loss_function: "RMSE", params: { max_rounds: 500, interactions: 4 } },
+    })
+    expect(screen.getByRole("heading", { name: "Pairwise interactions" })).toBeInTheDocument()
+    expect(screen.getByLabelText("Maximum interaction count")).toHaveValue(4)
+  })
   it("shows issues before Train and links to the affected pane", () => {
     renderConfig({ activePane: "train", config: { _nodeId: "readiness", algorithm: "catboost", target: "loss_ratio" } })
     expect(screen.getByRole("alert")).toHaveTextContent("Choose a training loss")
@@ -342,6 +395,19 @@ describe("Training configuration readiness", () => {
       evaluation: { schema_version: 1, strategy: "random", seed: 42, validation: { method: "none" }, test: null },
     } })
     expect(screen.getByLabelText("Training run summary")).toHaveTextContent("1 final fit")
+  })
+  it.each([
+    ["xgboost", "XGBoost · RMSE"],
+    ["lightgbm", "LightGBM · RMSE"],
+    ["ebm", "EBM · RMSE"],
+  ])("names the %s family in the run summary (MOD-F04)", (algorithm, label) => {
+    renderConfig({ activePane: "train", config: {
+      _nodeId: `summary_${algorithm}`, target: "loss_ratio", algorithm, loss_function: "RMSE",
+      params: { max_rounds: 10 },
+    } })
+    const summary = screen.getByLabelText("Training run summary")
+    expect(summary).toHaveTextContent(label)
+    expect(summary).not.toHaveTextContent("CatBoost")
   })
   it("labels parameter-search runs as tuning fits", () => {
     renderConfig({ activePane: "train", config: {
@@ -458,6 +524,56 @@ describe("ModellingConfig", () => {
       })
     })
 
+    it("clicking XGBoost in the picker seeds XGBoost's own parameters (MOD-F02)", () => {
+      const { props } = renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
+      fireEvent.click(screen.getByText("XGBoost"))
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        algorithm: "xgboost",
+        params: { num_boost_round: 1000, eta: 0.1, max_depth: 6, early_stopping_rounds: 50 },
+        evaluation: expect.objectContaining({ schema_version: 1 }),
+      })
+    })
+
+    it("clicking LightGBM in the picker seeds LightGBM's own parameters (MOD-F03)", () => {
+      const { props } = renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
+      fireEvent.click(screen.getByText("LightGBM"))
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        algorithm: "lightgbm",
+        params: { num_iterations: 1000, learning_rate: 0.05, num_leaves: 31, early_stopping_round: 50 },
+        evaluation: expect.objectContaining({ schema_version: 1 }),
+      })
+    })
+
+    it("clicking EBM in the picker seeds an explicit round budget (MOD-F04)", () => {
+      const { props } = renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
+      fireEvent.click(screen.getByText("EBM"))
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        algorithm: "ebm",
+        params: { max_rounds: 2000, learning_rate: 0.02, interactions: 10 },
+        evaluation: expect.objectContaining({ schema_version: 1 }),
+      })
+    })
+
+    it("offers EBM Gamma but neither MAE nor CrossEntropy (MOD-F04)", () => {
+      renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "ebm", params: {} },
+      })
+      const losses = within(screen.getByRole("group", { name: "Loss functions" }))
+      expect(losses.getByRole("button", { name: "Gamma" })).toBeTruthy()
+      expect(losses.queryByRole("button", { name: "MAE" })).toBeNull()
+      expect(losses.queryByRole("button", { name: "CrossEntropy" })).toBeNull()
+    })
+
+    it("offers XGBoost the Gamma loss but not CrossEntropy (MOD-F02)", () => {
+      renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "xgboost", params: {} },
+      })
+      const losses = within(screen.getByRole("group", { name: "Loss functions" }))
+      expect(losses.getByRole("button", { name: "Gamma" })).toBeTruthy()
+      expect(losses.queryByRole("button", { name: "CrossEntropy" })).toBeNull()
+      expect(screen.getByLabelText("Selected algorithm")).toHaveTextContent("XGBoost")
+    })
+
     it("shows every supported loss in one picker", () => {
       renderConfig()
       const losses = within(screen.getByRole("group", { name: "Loss functions" }))
@@ -520,6 +636,24 @@ describe("ModellingConfig", () => {
       const textarea = screen.getByLabelText("CatBoost hyperparameters JSON") as HTMLTextAreaElement
       const parsed = JSON.parse(textarea.value)
       expect(parsed).toEqual({ iterations: 500, depth: 8 })
+    })
+
+    it("XGBoost's editor refuses a Haute-owned key (MOD-F02)", () => {
+      renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "xgboost", params: {} },
+      })
+      const textarea = screen.getByLabelText("XGBoost hyperparameters JSON")
+      fireEvent.change(textarea, { target: { value: '{"objective":"reg:squarederror"}' } })
+      expect(screen.getAllByText(/objective is managed elsewhere/).length).toBeGreaterThan(0)
+    })
+
+    it("LightGBM's editor refuses a Haute-owned key (MOD-F03)", () => {
+      renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "lightgbm", params: {} },
+      })
+      const textarea = screen.getByLabelText("LightGBM hyperparameters JSON")
+      fireEvent.change(textarea, { target: { value: '{"seed":1}' } })
+      expect(screen.getAllByText(/seed is managed elsewhere/).length).toBeGreaterThan(0)
     })
 
     it("autosaves arbitrary algorithm parameters", () => {
@@ -1412,6 +1546,59 @@ describe("ModellingConfig", () => {
       // Should commit params without task_type
       expect(props.onUpdate).toHaveBeenCalledWith("params", { iterations: 500 })
     })
+
+    const xgboostConfig = (extra: Record<string, unknown> = {}) => ({
+      _nodeId: "node_1",
+      target: "loss_ratio",
+      task: "regression",
+      algorithm: "xgboost",
+      params: { num_boost_round: 100 },
+      ...extra,
+    })
+
+    it("XGBoost GPU toggle writes the node device when the server has a CUDA GPU", async () => {
+      mockFetchModellingGpuStatus.mockResolvedValue({
+        xgboost: { available: true, detail: "XGBoost trains on cuda:0.", device: "cuda:0" },
+      })
+      const { props } = renderConfig({ activePane: "train", config: xgboostConfig() })
+      const gpuCheckbox = screen.getByRole("checkbox", { name: /GPU training/ }) as HTMLInputElement
+      await waitFor(() => expect(gpuCheckbox.disabled).toBe(false))
+      expect(screen.getByText("(CUDA, cuda:0)")).toBeTruthy()
+      fireEvent.click(gpuCheckbox)
+      expect(props.onUpdate).toHaveBeenCalledWith("device", "gpu")
+    })
+
+    it("XGBoost GPU toggle is disabled with the server's reason when no GPU build is installed", async () => {
+      mockFetchModellingGpuStatus.mockResolvedValue({
+        xgboost: { available: false, detail: "Run `haute gpu-setup` to install XGBoost's CUDA build.", device: null },
+      })
+      renderConfig({ activePane: "train", config: xgboostConfig() })
+      expect(await screen.findByText(/haute gpu-setup/)).toBeTruthy()
+      const gpuCheckbox = screen.getByRole("checkbox", { name: /GPU training/ }) as HTMLInputElement
+      expect(gpuCheckbox.disabled).toBe(true)
+    })
+
+    it("an XGBoost node already on GPU can switch back to CPU when the GPU is gone", async () => {
+      mockFetchModellingGpuStatus.mockResolvedValue({
+        xgboost: { available: false, detail: "No CUDA GPU is visible to XGBoost.", device: null },
+      })
+      const { props } = renderConfig({ activePane: "train", config: xgboostConfig({ device: "gpu" }) })
+      expect(await screen.findByText(/No CUDA GPU is visible/)).toBeTruthy()
+      expect(screen.getAllByText("GPU (CUDA)").length).toBeGreaterThan(0)
+      const gpuCheckbox = screen.getByRole("checkbox", { name: /GPU training/ }) as HTMLInputElement
+      expect(gpuCheckbox.disabled).toBe(false)
+      fireEvent.click(gpuCheckbox)
+      expect(props.onUpdate).toHaveBeenCalledWith("device", undefined)
+    })
+
+    it("families without a GPU build show no GPU toggle", () => {
+      renderConfig({
+        activePane: "train",
+        config: { ...xgboostConfig(), algorithm: "lightgbm", params: { num_iterations: 100 } },
+      })
+      expect(screen.queryByRole("checkbox", { name: /GPU training/ })).toBeNull()
+      expect(mockFetchModellingGpuStatus).not.toHaveBeenCalled()
+    })
   })
 
   // ═════════════════════════════════════════════════════════════════
@@ -1648,8 +1835,8 @@ describe("ModellingConfig", () => {
       expect(screen.queryByRole("tabpanel")).toBeNull()
       cleanup()
 
-      renderConfig({ config: { _nodeId: "node_1", algorithm: "xgboost" } })
-      expect(screen.getByRole("alert")).toHaveTextContent("Unsupported modelling algorithm: xgboost.")
+      renderConfig({ config: { _nodeId: "node_1", algorithm: "unregistered" } })
+      expect(screen.getByRole("alert")).toHaveTextContent("Unsupported modelling algorithm: unregistered.")
     })
 
     it("keeps the selected algorithm immutable and renders exactly one owning pane for both algorithms", () => {

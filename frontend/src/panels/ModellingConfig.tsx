@@ -35,8 +35,16 @@ import {
 } from "../utils/trainingObjective"
 import type { OnUpdateConfig } from "./editors"
 import { useGraph } from "./useGraph"
+import {
+  ALGORITHM_CAPABILITIES,
+  algorithmCapability,
+  isKnownAlgorithm,
+  usesSharedPanes,
+} from "./modelling/algorithmCapabilities"
 import { CommonFeatureConfig } from "./modelling/CommonFeatureConfig"
+import { EBMInteractionsConfig } from "./modelling/EBMInteractionsConfig"
 import { ExportPane } from "./modelling/ExportPane"
+import { XGBoostGpuToggle } from "./modelling/GpuTrainingToggle"
 import { GLMInteractionsConfig } from "./modelling/GLMInteractionsConfig"
 import { GLMRegularizationConfig } from "./modelling/GLMRegularizationConfig"
 import { GLMTargetConfig } from "./modelling/GLMTargetConfig"
@@ -78,9 +86,68 @@ const CATBOOST_DEFAULT_PARAMS: Record<string, unknown> = {
   early_stopping_rounds: 50,
 }
 
+const XGBOOST_DEFAULT_PARAMS: Record<string, unknown> = {
+  num_boost_round: 1000,
+  eta: 0.1,
+  max_depth: 6,
+  early_stopping_rounds: 50,
+}
+
+const LIGHTGBM_DEFAULT_PARAMS: Record<string, unknown> = {
+  num_iterations: 1000,
+  learning_rate: 0.05,
+  num_leaves: 31,
+  early_stopping_round: 50,
+}
+
+// EBM has no early stopping: max_rounds is the whole budget of every fit.
+const EBM_DEFAULT_PARAMS: Record<string, unknown> = {
+  max_rounds: 2000,
+  learning_rate: 0.02,
+  interactions: 10,
+}
+
+const STARTER_SEARCH_SPACES: Record<string, Record<string, unknown>> = {
+  xgboost: {
+    max_depth: [4, 6, 8],
+    eta: [0.03, 0.1, 0.3],
+    lambda: [1, 3, 10],
+  },
+  lightgbm: {
+    num_leaves: [15, 31, 63],
+    learning_rate: [0.03, 0.05, 0.1],
+    min_data_in_leaf: [20, 50, 100],
+  },
+  ebm: {
+    max_rounds: [1000, 2000, 4000],
+    learning_rate: [0.01, 0.02, 0.04],
+    interactions: [0, 5, 10],
+  },
+}
+
+const DEFAULT_PARAMS: Record<string, Record<string, unknown>> = {
+  catboost: CATBOOST_DEFAULT_PARAMS,
+  xgboost: XGBOOST_DEFAULT_PARAMS,
+  lightgbm: LIGHTGBM_DEFAULT_PARAMS,
+  ebm: EBM_DEFAULT_PARAMS,
+}
+
 const CATBOOST_RESERVED_PARAM_KEYS = ["task_type"] as const
 const CATBOOST_RESERVED_PARAM_HELP =
   "GPU training is configured in the Train pane."
+
+/** Keys the params editor refuses for a tree family, with the reason shown. */
+function reservedParamsFor(algorithm: string): { keys: readonly string[]; help: string } {
+  if (algorithm === "catboost") {
+    return { keys: CATBOOST_RESERVED_PARAM_KEYS, help: CATBOOST_RESERVED_PARAM_HELP }
+  }
+  return {
+    keys: algorithmCapability(algorithm)?.reserved_params ?? [],
+    help:
+      "Haute sets the objective, threads, seed, offset and categorical handling; "
+      + "choose the loss in the Target pane and monotonicity in the Features pane.",
+  }
+}
 const DEFAULT_EVALUATION: Record<string, unknown> = {
   schema_version: 1,
   strategy: "random",
@@ -110,21 +177,25 @@ function failureStatus(error: unknown, message: string): TrainProgress | undefin
   }
 }
 
+const ALGORITHM_DESCRIPTIONS: Record<string, string> = {
+  catboost: "Gradient boosting - handles categoricals natively, fast GPU training",
+  glm: "Generalised linear model - interpretable coefficients, regulatory-friendly",
+  xgboost:
+    "Gradient boosting - histogram trees with native categoricals and early stopping on CPU",
+  lightgbm:
+    "Gradient boosting - fast leaf-wise trees with native categoricals and early stopping on CPU",
+  ebm:
+    "Explainable boosting - additive shape functions and pairwise interactions you can read directly",
+}
+
 function AlgorithmGateway({ onUpdate }: { onUpdate: OnUpdateConfig }) {
-  const algorithms = [
-    {
-      id: "catboost",
-      name: "CatBoost",
-      description:
-        "Gradient boosting - handles categoricals natively, fast GPU training",
-    },
-    {
-      id: "glm",
-      name: "GLM",
-      description:
-        "Generalised linear model - interpretable coefficients, regulatory-friendly",
-    },
-  ] as const
+  // A family appears here once its descriptor ships, so the gateway can never
+  // offer a model type the backend cannot train.
+  const algorithms = Object.entries(ALGORITHM_CAPABILITIES).map(([id, capability]) => ({
+    id,
+    name: capability.label,
+    description: ALGORITHM_DESCRIPTIONS[id] ?? "",
+  }))
 
   return (
     <div className="px-4 py-3 space-y-3">
@@ -135,7 +206,7 @@ function AlgorithmGateway({ onUpdate }: { onUpdate: OnUpdateConfig }) {
           type="button"
           onClick={() => onUpdate({
             algorithm: option.id,
-            ...(option.id === "catboost" ? { params: { ...CATBOOST_DEFAULT_PARAMS } } : {}),
+            ...(DEFAULT_PARAMS[option.id] ? { params: { ...DEFAULT_PARAMS[option.id] } } : {}),
             evaluation: DEFAULT_EVALUATION,
           })}
           className="w-full rounded-lg px-3 py-3 text-left algorithm-gateway-btn"
@@ -154,7 +225,7 @@ function AlgorithmGateway({ onUpdate }: { onUpdate: OnUpdateConfig }) {
 }
 
 type TrainPaneProps = {
-  algorithm: "catboost" | "glm"
+  algorithm: string
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   params: Record<string, unknown>
@@ -218,6 +289,12 @@ function TrainPane({
             (CUDA)
           </span>
         </label>
+      )}
+      {algorithmCapability(algorithm)?.gpu_device === true && (
+        <XGBoostGpuToggle
+          checked={config.device === "gpu"}
+          onToggle={(enabled) => onUpdate("device", enabled ? "gpu" : undefined)}
+        />
       )}
       <TrainingActionsAndResults
         validationMessages={validationMessages}
@@ -292,9 +369,10 @@ export default function ModellingConfig({
     ? config.tuning as Record<string, unknown>
     : null
   const metrics = effectiveMetrics(config)
+  const reservedParams = reservedParamsFor(algorithm)
   const paramsProjection = formatHyperparameters(
     params,
-    CATBOOST_RESERVED_PARAM_KEYS,
+    reservedParams.keys,
   )
   const paramDraft = paramDrafts[nodeId] ?? paramsProjection
   const tuningSearchSpace = (
@@ -308,12 +386,12 @@ export default function ModellingConfig({
     ?? formatTuningSearchSpace(tuningSearchSpace as Record<string, unknown>)
   // Tuning hides the fixed-parameter editor, so only a visible draft can block training.
   let paramDraftIssue: TrainingConfigurationIssue | null = null
-  if (algorithm === "catboost" && !tuning) {
+  if (usesSharedPanes(algorithm) && !tuning) {
     try {
       parseHyperparameters(
         paramDraft,
-        CATBOOST_RESERVED_PARAM_KEYS,
-        CATBOOST_RESERVED_PARAM_HELP,
+        reservedParams.keys,
+        reservedParams.help,
       )
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : "Invalid JSON"
@@ -464,6 +542,7 @@ export default function ModellingConfig({
           glm_inference: null,
           glm_smooth_terms: [],
           glm_regularization: null,
+          ebm_terms: [],
           diagnostics_errors: [],
           feature_selection: null,
         },
@@ -491,7 +570,7 @@ export default function ModellingConfig({
   }, [addToast, cancelling, completeTrainJob, failTrainJob, nodeId, updateTrainProgress])
 
   if (!algorithm) return <AlgorithmGateway onUpdate={onUpdate} />
-  if (algorithm !== "catboost" && algorithm !== "glm") {
+  if (!isKnownAlgorithm(algorithm)) {
     return <div className="px-4 py-3" role="alert">Unsupported modelling algorithm: {algorithm}.</div>
   }
 
@@ -555,19 +634,27 @@ export default function ModellingConfig({
     paneBody = trainPane
   } else if (pane === "export") {
     paneBody = exportPane
-  } else if (algorithm === "catboost") {
+  } else if (usesSharedPanes(algorithm)) {
     if (pane === "target") {
-      paneBody = <TargetAndTaskConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} target={target} weight={weight} metrics={metrics} />
+      paneBody = <TargetAndTaskConfig algorithm={algorithm} config={config} onUpdate={onUpdate} columns={upstreamColumns} target={target} weight={weight} metrics={metrics} />
     } else if (pane === "features") {
-      paneBody = <CommonFeatureConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
+      paneBody = (
+        <>
+          <CommonFeatureConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
+          {algorithm === "ebm" && (
+            <EBMInteractionsConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
+          )}
+        </>
+      )
     } else if (pane === "params") {
       paneBody = (
         <HyperparametersConfig
           onReviewSplit={() => reviewPane("split")}
-          algorithmLabel="CatBoost"
+          algorithmLabel={algorithmCapability(algorithm)?.label ?? algorithm}
+          starterSearchSpace={STARTER_SEARCH_SPACES[algorithm]}
           params={params}
-          reservedKeys={CATBOOST_RESERVED_PARAM_KEYS}
-          reservedKeysHelp={CATBOOST_RESERVED_PARAM_HELP}
+          reservedKeys={reservedParams.keys}
+          reservedKeysHelp={reservedParams.help}
           onUpdate={onUpdate}
           draft={paramDraft}
           setDraft={(value) => setParamDrafts((current) => ({ ...current, [nodeId]: value }))}

@@ -136,8 +136,8 @@ def test_tuning_config_is_strict_bounded_and_rejects_owned_keys(
         parse(raw)
 
 
-def test_tuning_requires_catboost_validation_and_fit_bound() -> None:
-    with pytest.raises(ValueError, match="CatBoost"):
+def test_tuning_requires_a_tunable_family_validation_and_fit_bound() -> None:
+    with pytest.raises(ValueError, match="GLM does not support parameter tuning"):
         TuningConfig.from_plain_data(
             tuning_raw(),
             algorithm="glm",

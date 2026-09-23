@@ -68,7 +68,7 @@ def _candidate(
         CandidateProvenance,
         CandidateRun,
     )
-    from haute.modelling._feature_contract import build_contract, save_contract
+    from haute.modelling._feature_contract import ModelIdentity, build_contract, save_contract
     from haute.modelling._training_job import model_contract_filename
 
     directory.mkdir(parents=True, exist_ok=True)
@@ -85,6 +85,14 @@ def _candidate(
             target_name="y",
             target_type="Float64",
             task="regression",
+            model=ModelIdentity(
+                algorithm=algorithm,
+                link="identity",
+                engine_name="catboost" if algorithm == "catboost" else "rustystats",
+                engine_version="0",
+                haute_version="0",
+                glm_family="gaussian" if algorithm == "glm" else None,
+            ),
         ),
         contract_file,
     )
@@ -275,6 +283,7 @@ def test_decimal_signature_error_happens_before_pyfunc_model_logging(tmp_path: P
             _log_model_with_signature(
                 mlflow,
                 model_path=model_path,
+                contract_path=tmp_path / "unused_contract.json",
                 metadata=ModelCardMetadata(
                     algorithm="glm",
                     task="regression",
@@ -732,19 +741,22 @@ class TestLogExperiment:
         from haute.modelling._mlflow_log import log_experiment
 
         candidate = _candidate(tmp_path, suffix=".rsglm", algorithm="glm")
-        with _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m:
+        with (
+            _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m,
+            patch("haute.modelling._native_pyfunc.NativePyfuncModel"),
+        ):
             log_experiment(experiment_name="/test/glm", candidate=candidate)
 
         m.pyfunc_log_model.assert_called_once()
         kwargs = m.pyfunc_log_model.call_args.kwargs
         assert kwargs["name"] == "model"
-        assert kwargs["loader_module"] == "haute.modelling._glm_pyfunc"
-        assert kwargs["data_path"] == str(candidate.artifacts.model)
+        assert kwargs["loader_module"] == "haute.modelling._native_pyfunc"
+        assert Path(kwargs["data_path"]).name == "model"
         assert kwargs["signature"] is not None
         native = [c for c in m.artifact.call_args_list if Path(c.args[0]).name == "model.rsglm"]
         assert [c.args for c in native] == [(str(candidate.artifacts.model),)]
 
-    def test_catboost_model_is_the_named_native_flavor_plus_root_artifact(
+    def test_catboost_model_is_the_shared_haute_pyfunc_plus_root_artifact(
         self, tmp_path: Path
     ) -> None:
         from haute.modelling._mlflow_log import log_experiment
@@ -753,12 +765,14 @@ class TestLogExperiment:
         with _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m:
             log_experiment(experiment_name="/test/cbm", candidate=candidate)
 
-        m.catboost_log_model.assert_called_once()
+        m.catboost_log_model.assert_not_called()
+        m.pyfunc_log_model.assert_called_once()
+        kwargs = m.pyfunc_log_model.call_args.kwargs
         # MLflow 3 spelling: the LoggedModel is named, never ``artifact_path``.
-        assert m.catboost_log_model.call_args.kwargs["name"] == "model"
-        assert "artifact_path" not in m.catboost_log_model.call_args.kwargs
-        assert m.catboost_log_model.call_args.kwargs["cb_model"] is not None
-        signature = m.catboost_log_model.call_args.kwargs["signature"]
+        assert kwargs["name"] == "model"
+        assert "artifact_path" not in kwargs
+        assert kwargs["loader_module"] == "haute.modelling._native_pyfunc"
+        signature = kwargs["signature"]
         assert signature.inputs.input_names() == ["age"]
         native = [c for c in m.artifact.call_args_list if Path(c.args[0]).name == "model.cbm"]
         assert len(native) == 1
@@ -773,7 +787,7 @@ class TestLogExperiment:
             pytest.raises(HauteValidationError, match="could not be loaded"),
         ):
             log_experiment(experiment_name="/test/cbm", candidate=candidate)
-        m.catboost_log_model.assert_not_called()
+        m.pyfunc_log_model.assert_not_called()
 
     def test_unknown_model_suffix_is_rejected(self, tmp_path: Path) -> None:
         from haute.errors import HauteValidationError
@@ -782,7 +796,9 @@ class TestLogExperiment:
         candidate = _candidate(tmp_path, suffix=".pkl")
         with (
             _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m,
-            pytest.raises(HauteValidationError, match="expected a CatBoost .cbm or RustyStats"),
+            pytest.raises(
+                HauteValidationError, match=r"expected one of \.cbm, \.ebm, \.lgbm, \.rsglm, \.ubj"
+            ),
         ):
             log_experiment(experiment_name="exp", candidate=candidate)
         m.catboost_log_model.assert_not_called()
@@ -863,7 +879,9 @@ class TestLogExperiment:
             features=("difference_to_market",),
         )
         try:
-            result = log_experiment(experiment_name="rustystats_e2e", candidate=candidate)
+            # The fake .rsglm is not loadable; this test is about artifact discovery.
+            with patch("haute.modelling._native_pyfunc.NativePyfuncModel"):
+                result = log_experiment(experiment_name="rustystats_e2e", candidate=candidate)
 
             from mlflow.tracking import MlflowClient
 
@@ -1074,7 +1092,10 @@ class TestLoggedModelEnvironment:
 
         from haute.modelling._mlflow_log import log_experiment
 
-        with _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m:
+        with (
+            _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m,
+            patch("haute.modelling._native_pyfunc.NativePyfuncModel"),
+        ):
             m.pyfunc_log_model.side_effect = _capture
             log_experiment(
                 experiment_name="/test/rsglm",
