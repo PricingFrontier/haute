@@ -26,6 +26,7 @@ import {
   fetchExplorePivotMembers,
   buildInputCache,
   fetchSchema,
+  getBandingStats,
   getNodeDataPoint,
   getRatingLevels,
   getNodeDataProfile,
@@ -353,6 +354,18 @@ describe("client runtime contracts", () => {
     expect(result).toEqual({ input_node_ids: ["policies"] })
   })
 
+  it("previewInputs defaults the source and omits unset columns and port", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ input_node_ids: [] }))
+
+    await previewInputs({ graph: dummyGraph, nodeId: "n1" })
+
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
+      graph: dummyGraph,
+      node_id: "n1",
+      source: "live",
+    })
+  })
+
   it("previewNode sends requested preview columns when provided", async () => {
     mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("preview_node")))
 
@@ -550,6 +563,42 @@ describe("client runtime contracts", () => {
     expect(result.state).toBe("partial")
     expect(result.generation?.columns).toEqual(["premium", "region"])
     expect(result.job?.job_id).toBe("node-data-7f2c")
+  })
+
+  it("getBandingStats sends only the limits asked for, under the names the server reads", async () => {
+    const stats = {
+      status: "ok",
+      point: loadUiContractFixture("node_data_point_response"),
+      total_rows: 10,
+      null_count: 1,
+      bins: [{ lower: 0, upper: 5, count: 9 }],
+      values: [],
+    }
+    mockFetch.mockReturnValue(jsonResponse(stats))
+    const factor = { column: "age" }
+
+    const result = await getBandingStats({ graph: dummyGraph, node_id: "banding", factor })
+
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/banding/stats")
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
+      graph: dummyGraph, node_id: "banding", source: "live", factor,
+    })
+    expect(result.total_rows).toBe(10)
+    expect(result.bins).toEqual([{ lower: 0, upper: 5, count: 9 }])
+
+    mockFetch.mockReturnValue(jsonResponse(stats))
+    await getBandingStats({
+      graph: dummyGraph, node_id: "banding", source: "batch", factor, histogramBins: 20, valueLimit: 50,
+    })
+
+    expect(JSON.parse(String(mockFetch.mock.calls[1][1]?.body))).toEqual({
+      graph: dummyGraph,
+      node_id: "banding",
+      source: "batch",
+      factor,
+      histogram_bins: 20,
+      value_limit: 50,
+    })
   })
 
   it("getRatingLevels posts the columns and parses the levels of each one", async () => {

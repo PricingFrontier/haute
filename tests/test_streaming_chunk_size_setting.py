@@ -27,9 +27,8 @@ pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
 
 @pytest.fixture(autouse=True)
-def _restore_process_chunk_size(monkeypatch: pytest.MonkeyPatch) -> None:
-    # ``pl.Config.set_streaming_chunk_size`` writes this variable; monkeypatch
-    # puts back whatever the process had once the test ends.
+def _start_from_default_chunk_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Start from the default; the conftest fixture restores the process value.
     monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
 
 
