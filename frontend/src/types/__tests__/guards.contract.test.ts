@@ -1699,6 +1699,7 @@ describe("API response guards", () => {
       threads: 4,
       rounds_configured: 500,
       rounds_fitted: 120,
+      term_update_steps: null,
       stopping_reason: "validation",
     })
     expect(() =>
@@ -1707,6 +1708,105 @@ describe("API response guards", () => {
         fit_evidence: { ...fixture.fit_evidence, stopping_reason: "bored" },
       }),
     ).toThrow(/stopping_reason/)
+  })
+
+  it("accepts fit evidence whose null fields the backend dropped (MOD-F04)", () => {
+    // A GLM's evidence arrives as its thread allotment alone.
+    const glm = parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: { threads: 4 } })
+    expect(glm.fit_evidence).toEqual({
+      threads: 4,
+      rounds_configured: null,
+      rounds_fitted: null,
+      term_update_steps: null,
+      stopping_reason: null,
+    })
+    const ebm = parseTrainResponse({
+      ...tunedTrainResponseFixture(),
+      fit_evidence: {
+        threads: 1,
+        rounds_configured: 200,
+        stopping_reason: "none",
+        term_update_steps: [400, 200],
+      },
+    })
+    expect(ebm.fit_evidence?.term_update_steps).toEqual([400, 200])
+    expect(() =>
+      parseTrainResponse({
+        ...tunedTrainResponseFixture(),
+        fit_evidence: { threads: 1, trees: 3 },
+      }),
+    ).toThrow(/fit_evidence has unexpected or missing fields/)
+  })
+
+  it("accepts an EBM study that refits with the winning budget and no tree count (MOD-F04)", () => {
+    const fixture = tunedTrainResponseFixture()
+    type LooseTrial = {
+      resolved_params: Record<string, unknown>
+      sampled_params: Record<string, unknown>
+      fits: Record<string, unknown>[]
+    }
+    for (const [index, trial] of (fixture.tuning.trials as LooseTrial[]).entries()) {
+      trial.resolved_params = { max_rounds: 100 * (index + 1), interactions: 0 }
+      trial.sampled_params = index === 0 ? {} : { max_rounds: 100 * (index + 1) }
+      for (const fit of trial.fits) Object.assign(fit, { best_iteration: null })
+    }
+    const { final_tree_count: _dropped, ...tuning } = fixture.tuning
+    void _dropped
+    const ebm = {
+      ...fixture,
+      tuning: {
+        ...tuning,
+        best_sampled_params: { max_rounds: 200 },
+        final_params: { max_rounds: 200, interactions: 0 },
+      },
+    }
+    const parsed = parseTrainResponse(ebm)
+    expect(parsed.tuning?.final_params).toEqual({ max_rounds: 200, interactions: 0 })
+    expect(parsed.tuning?.final_tree_count).toBeUndefined()
+    // A fixed-budget refit reuses the winner's parameters exactly, with no tree count.
+    expect(() =>
+      parseTrainResponse({ ...ebm, tuning: { ...ebm.tuning, final_tree_count: 7 } }),
+    ).toThrow(/final parameter projection/)
+    expect(() =>
+      parseTrainResponse({
+        ...ebm,
+        tuning: { ...ebm.tuning, final_params: { max_rounds: 300, interactions: 0 } },
+      }),
+    ).toThrow(/final parameter projection/)
+  })
+
+  it("parses EBM term shapes and surfaces and rejects scores that miss their axes (MOD-F04)", () => {
+    const terms = [
+      {
+        term: "region",
+        features: ["region"],
+        kind: "main",
+        importance: 0.3,
+        axes: [{ feature: "region", type: "nominal", labels: ["Missing", "east", "north"] }],
+        scores: [0.1, -0.2, 0.4],
+      },
+      {
+        term: "region & age",
+        features: ["region", "age"],
+        kind: "interaction",
+        importance: 0.1,
+        axes: [
+          { feature: "region", type: "nominal", labels: ["Missing", "east"] },
+          { feature: "age", type: "continuous", labels: ["Missing", "< 30", ">= 30"], cuts: [30] },
+        ],
+        scores: [[0, 0.1, 0.2], [0.3, 0.4, 0.5]],
+      },
+    ]
+    const parsed = parseTrainResponse({ ...tunedTrainResponseFixture(), ebm_terms: terms })
+    expect(parsed.ebm_terms.map((term) => term.term)).toEqual(["region", "region & age"])
+    expect(parsed.ebm_terms[1].axes[1].cuts).toEqual([30])
+    expect(parseTrainResponse(tunedTrainResponseFixture()).ebm_terms).toEqual([])
+    expect(() =>
+      parseTrainResponse({
+        ...tunedTrainResponseFixture(),
+        ebm_terms: [{ ...terms[1], scores: [[0, 0.1], [0.3, 0.4]] }],
+      }),
+    ).toThrow(/scores must match its axes/)
   })
 
   it("rejects evaluation summaries that disagree with persisted selection fits", () => {

@@ -32,7 +32,6 @@ families are implemented or their change contracts approved.
 | MOD-T06 | Planned | P1 | One offset meaning for GLM and CatBoost (a positive exposure multiplier under a log link), carried through training, saved models, and every scoring path. |
 | MOD-T07 | Planned | P1 | A strict, dtype-aware GLM term contract and order-independent interaction resolution that never builds a design different from the configuration. |
 | MOD-T08 | Planned | P2 | The GLM pane mirrors the backend contract, keeps every saved term and interaction visible and repairable, supports reference levels, and loses its duplicated code. |
-| MOD-F04 | Proposed | P2 | Complete EBM slice with explicit round budgets on training rows, restricted persistence and native term explanations. |
 | MOD-F05 | Proposed | P2 | Verify and publish the CPU release and its feature matrix. |
 | MOD-F06 | Deferred | P3 | Add verified XGBoost and LightGBM GPU configurations after the CPU release. |
 
@@ -1869,8 +1868,8 @@ lifecycle. Do not make unfinished choices selectable in a release.
 
 ### Delivery order and release gates
 
-Order: the XGBoost and LightGBM slices are in place; next the EBM slice
-(MOD-F04), and the release check (MOD-F05). Each slice ships save/reload/score, MLflow, codegen, deployment, UI
+Order: the XGBoost, LightGBM and EBM slices are in place; next the release
+check (MOD-F05). Each slice ships save/reload/score, MLflow, codegen, deployment, UI
 and explanations for its family; no serving work is postponed to the end.
 Shared evaluation, persistence and frontend owners have one writer at a time,
 so slices run sequentially.
@@ -1890,33 +1889,6 @@ not hidden prerequisites for the CPU release.
 
 ## Model-family expansion work packages
 
-### MOD-F04 — Deliver the complete EBM slice and its term representation
-
-**Why:** EBM uses additive terms, with different persistence, stopping,
-explanation and validation requirements from a tree ensemble.
-
-**Plan:** Add an InterpretML adapter using explicit nominal/continuous feature
-types, sample weights, regression initial scores, training rows only,
-`outer_bags=1`, no early stopping, an explicit `max_rounds` for every fit, and
-bounded main/pairwise terms. Add the `interpret-core` dependency. Persist as a
-`.ebm` joblib file through the restricted loader with the two EBM classes
-allowlisted, report
-native `best_iteration_` without inventing a tree count, and add its allowlist
-(with `max_rounds` searchable) and fixed-budget refit policy. Add the serving path, gateway card, main-effect/interaction
-controls, shape-function and pairwise-surface views, and native term
-explanations in trace.
-
-**Acceptance:** Every acceptance-table row passes for EBM; numeric/mixed and
-binary fits round-trip through the restricted loader; intercept/terms/offset
-reconstruct served predictions; interaction membership and constrained-feature
-exclusions are validated; selection fits see only training-partition rows and
-the final development refit sees development rows, never final-test rows.
-
-**Dependencies:** None; the serving and UI seams are proven by the XGBoost slice.
-
-**Evidence:** `src/haute/_sandbox.py`; `src/haute/modelling/_result_types.py`;
-`src/haute/modelling/_training_job.py`; `src/haute/_model_explainability.py`.
-
 ### MOD-F05 — Verify and publish the CPU release
 
 **Why:** Passing slice tests does not establish supported-platform
@@ -1933,7 +1905,7 @@ CatBoost/RustyStats regressions; documented features match exposed controls;
 package/runtime requirements and EBM format limits are recorded; no incomplete
 family is presented as production-ready.
 
-**Dependencies:** MOD-F04.
+**Dependencies:** None; every family slice is in place.
 
 **Evidence:** `tests/workflow_coverage.toml`; `.github/workflows/ci.yml`;
 `frontend/e2e/core-flows.spec.ts`;

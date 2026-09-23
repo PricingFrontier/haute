@@ -77,6 +77,7 @@ from haute.modelling._tuning import (
     save_tuning_report,
     save_tuning_trials,
     suggest_parameters,
+    tuning_final_projection,
     validation_weighted_tree_count,
 )
 
@@ -305,6 +306,8 @@ class TrainResult:
     glm_inference: dict[str, Any] | None = None
     glm_smooth_terms: list[dict[str, Any]] = field(default_factory=list)
     glm_regularization: dict[str, Any] | None = None
+    #: EBM shape functions and pairwise surfaces (empty for other families).
+    ebm_terms: list[dict[str, Any]] = field(default_factory=list)
     # Optional-diagnostic failures surfaced to callers so a degraded
     # run (SHAP/PDP/GLM diagnostics missing) is visible in the UI and
     # in test suites, instead of being silently swallowed.
@@ -383,6 +386,7 @@ class _MetricsResult:
     glm_inference: dict[str, Any] | None = None
     glm_smooth_terms: list[dict[str, Any]] = field(default_factory=list)
     glm_regularization: dict[str, Any] | None = None
+    ebm_terms: list[dict[str, Any]] = field(default_factory=list)
     # Optional-diagnostic failures (SHAP, PDP, GLM diagnostics) —
     # surfaced rather than silently swallowed.
     diagnostics_errors: list[dict[str, str]] = field(default_factory=list)
@@ -521,7 +525,13 @@ class TrainingJob:
                 raise HauteValidationError(glm_issue)
             validate_glm_params(self.params)
         else:
-            algorithm_descriptor(self.algorithm).validate_params(self.params)
+            descriptor = algorithm_descriptor(self.algorithm)
+            descriptor.validate_params(self.params)
+            config_issue = descriptor.config_issue(
+                self.params, self.loss_function, monotone_constraints
+            )
+            if config_issue is not None:
+                raise HauteValidationError(config_issue)
         #: One thread allotment per job, passed to every engine that takes one.
         self.threads = training_threads()
         if split is not None and evaluation is not None:
@@ -763,15 +773,19 @@ class TrainingJob:
                 glm_inference=metrics_result.glm_inference,
                 glm_smooth_terms=metrics_result.glm_smooth_terms,
                 glm_regularization=metrics_result.glm_regularization,
+                ebm_terms=metrics_result.ebm_terms,
                 diagnostics_errors=metrics_result.diagnostics_errors,
             )
             fit_result = train_result.fit_result
             result.fit_evidence = {
-                "threads": self.threads,
+                "threads": getattr(fit_result, "threads", None) or self.threads,
                 "rounds_configured": fit_result.rounds_configured,
                 "rounds_fitted": fit_result.rounds_fitted,
                 "stopping_reason": fit_result.stopping_reason,
             }
+            term_update_steps = getattr(fit_result, "term_update_steps", None)
+            if term_update_steps is not None:
+                result.fit_evidence["term_update_steps"] = list(term_update_steps)
             if (
                 algorithm_descriptor(self.algorithm).refit_policy == "validation_weighted_rounds"
                 and isinstance(fit_result.rounds_fitted, int)
@@ -1431,19 +1445,10 @@ class TrainingJob:
                 f"Fixed {descriptor.label} {descriptor.round_key} must be a positive exact "
                 "integer when tuning is enabled"
             )
-        if any(fit.best_iteration is None for fit in winner.fits):
-            raise HauteValidationError(
-                "Winning tuning validation fits did not report best_iteration"
-            )
-        final_tree_count = validation_weighted_tree_count(
-            best_iterations=[
-                fit.best_iteration for fit in winner.fits if fit.best_iteration is not None
-            ],
-            validation_rows=[fit.validation_rows for fit in winner.fits],
-            iteration_ceiling=iteration_ceiling,
-        )
-        final_params = project_refit_params(
-            descriptor, copy.deepcopy(dict(winner.resolved_params)), final_tree_count
+        final_params, final_tree_count = tuning_final_projection(
+            descriptor,
+            winner.resolved_params,
+            [(fit.best_iteration, fit.validation_rows) for fit in winner.fits],
         )
         tuning_report = build_tuning_report(
             tuning_plan,
@@ -2639,6 +2644,14 @@ class TrainingJob:
             for diagnostic, glm_error in glm_report.errors:
                 _record_diag_error(diagnostics_errors, diagnostic, glm_error)
 
+        # ── EBM term report (OPTIONAL) ──
+        ebm_terms: list[dict[str, Any]] = []
+        if hasattr(algo, "ebm_terms"):
+            try:
+                ebm_terms = algo.ebm_terms(model)
+            except Exception as exc:
+                _record_diag_error(diagnostics_errors, "ebm_terms", exc)
+
         del diag_df
         gc.collect()
 
@@ -2667,6 +2680,7 @@ class TrainingJob:
             glm_inference=glm_report.inference if glm_report else None,
             glm_smooth_terms=glm_report.smooth_terms if glm_report else [],
             glm_regularization=glm_report.regularization if glm_report else None,
+            ebm_terms=ebm_terms,
             diagnostics_errors=diagnostics_errors,
         )
 
@@ -3000,6 +3014,7 @@ class TrainingJob:
             glm_inference=result.glm_inference,
             glm_smooth_terms=result.glm_smooth_terms,
             glm_regularization=result.glm_regularization,
+            ebm_terms=result.ebm_terms,
             lorenz_curve_perfect=result.lorenz_curve_perfect,
             pdp_data=result.pdp_data,
             final_test_metrics=result.final_test_metrics,

@@ -165,7 +165,18 @@ Out of scope (owned elsewhere, linked where relevant):
   non-class callable is rejected, not silently accepted. Every file passed to
   `safe_unpickle`/`safe_joblib_load` must first resolve inside the project root
   (`validate_project_path`) — a case-insensitive-filesystem-safe containment check,
-  not a raw string-prefix check.
+  not a raw string-prefix check. `restricted_joblib_load` is the same allowlisted
+  loader without that containment, for model files Haute's own loaders locate (training
+  outputs, the MLflow artifact cache, an MLflow pyfunc package).
+- **Exactly two InterpretML classes are trusted:**
+  `interpret.glassbox._ebm._ebm.ExplainableBoostingRegressor` and
+  `...ExplainableBoostingClassifier`; no `interpret.*` prefix or other symbol is. A pinned
+  0.7.8 `.ebm` references only those classes plus allowlisted joblib/NumPy scaffolding.
+  scikit-learn's state hook checks versions only for `sklearn` classes, so an `.ebm` loads
+  only when its feature contract records exactly the installed `interpret-core` version; any
+  other or missing version fails with `ArtifactVersionMismatchError` before unpickling, and the
+  loaded estimator's class, features, feature types and finite scores are validated against
+  the contract before inference.
 - **Local API/WebSocket access is gated by configured loopback Host, exact Origin,
   and an HttpOnly session cookie.** Host middleware rejects authorities outside its
   validated allowlist and
@@ -338,26 +349,3 @@ Out of scope (owned elsewhere, linked where relevant):
   `find_class` applies the shared allowlist, so unrelated `joblib.load()` calls
   cannot observe a temporary class mutation.
 
-## Approved change contract — EBM classes in the restricted loader
-
-- **Current limitation.** `src/haute/_sandbox.py` blocks InterpretML classes, so a `.ebm` joblib
-  file cannot be loaded.
-- **Unresolved target.** Exactly two classes are added to the restricted loader's class allowlist:
-  `interpret.glassbox._ebm._ebm.ExplainableBoostingRegressor` and
-  `interpret.glassbox._ebm._ebm.ExplainableBoostingClassifier`. The [MOD-F00 engine probes](../roadmap/mod-f00-engine-probes.md) show a pinned 0.7.8
-  model references only these classes plus joblib and NumPy scaffolding already allowed, restores
-  state through scikit-learn's `BaseEstimator` hooks, and holds only builtins, NumPy scalars and
-  arrays. The loaded object's type, task, term indices and finite scores are validated before
-  inference. scikit-learn's `BaseEstimator.__setstate__` checks versions only for classes whose
-  module starts with `sklearn.`, so it gives InterpretML classes no protection; instead, loading
-  a `.ebm` file requires the model's feature contract to record exactly the installed
-  `interpret-core` version, and otherwise fails with `ArtifactVersionMismatchError`.
-- **Non-goals.** No `interpret.*` prefix or other InterpretML symbol is trusted, and unrestricted
-  `pickle.load` or `joblib.load` is never used.
-- **Failure and compatibility semantics.** Any other global in a `.ebm` file, including a crafted
-  callable, is blocked with the existing allowlist error; a `.ebm` file whose contract records a
-  different `interpret-core` version, or none, fails before unpickling.
-- **Acceptance evidence.** Regressor and classifier load bit-identically through the restricted
-  loader; a crafted payload in a `.ebm` file is blocked; a matching recorded version loads and a
-  mismatched or missing one fails before unpickling.
-- **Roadmap package.** [MOD-F04](../roadmap/modelling.md#mod-f04--deliver-the-complete-ebm-slice-and-its-term-representation).

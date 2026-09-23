@@ -358,17 +358,18 @@ strict live-history parsing, latest-status retention, and per-job estimator rese
 - A classification objective on a target that is neither Boolean nor 0/1 shows a positive-class
   field. It is required for a text target and optional for an integer target, whose value is
   saved as a number. Predictions above 0.5 are labelled with the positive class.
+- Every family but the GLM shares the Target, Features and Parameters panes and the JSON
+  parameter editor (`usesSharedPanes`). An EBM's Features pane adds a pairwise-interaction
+  control: "Let EBM choose" writes a count to `params.interactions`, "Choose pairs" a list of
+  feature pairs picked from the included features, with monotone-constrained features
+  disabled and a saved pair naming a missing column kept visible. The readiness issues mirror
+  the backend's EBM rules (`ebm-max-rounds` on Parameters, `ebm-interactions` on Features).
+- An EBM result adds a Terms tab: terms ranked by importance, a main effect drawn as its shape
+  (bars per category, a step line over value bins, the missing-value score stated), and an
+  interaction as a score table over its two axes, all labelled as additive link-scale term
+  scores, never SHAP. A traced EBM prediction lists one contribution per term, an interaction
+  as one row.
+- The response guard treats fit-evidence fields and a tuning report's `final_tree_count` as
+  optional, because the backend drops nulls: a GLM's evidence is its threads alone, and a
+  fixed-budget (EBM) study refits with the winner's parameters and has no tree count.
 
-## Approved change contract — EBM term and interaction views
-
-- **Current limitation.** Results panes show tree importances and GLM coefficients only.
-- **Unresolved target.** EBM results show main-effect shape functions with category labels and
-  missing-value bins, term importances, and pairwise interaction surfaces, labelled as additive
-  term scores rather than SHAP values. Trace explanations for EBM show intercept plus term
-  contributions reconciling to the served prediction.
-- **Non-goals.** GLM inference statistics are never shown for EBM, and there is no GPU control.
-- **Failure and compatibility semantics.** A missing optional diagnostic is shown as an explicit
-  error or as unsupported, never as an empty success.
-- **Acceptance evidence.** Component tests for shape, importance and interaction views and for
-  trace reconciliation; one browser lifecycle scenario for EBM interactions.
-- **Roadmap package.** [MOD-F04](../roadmap/modelling.md#mod-f04--deliver-the-complete-ebm-slice-and-its-term-representation).

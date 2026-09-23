@@ -11,7 +11,7 @@ an engine.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal
@@ -70,6 +70,9 @@ class AlgorithmDescriptor:
     engine_module: str
     #: Losses whose native objective refuses monotone constraints.
     monotone_unsupported_losses: frozenset[str] = frozenset()
+    #: Family-specific value rules over (params, effective monotone constraints),
+    #: returning an actionable message; key-level policy stays in validate_params.
+    value_check: Callable[[Mapping[str, Any], Mapping[str, int] | None], str | None] | None = None
 
     def __post_init__(self) -> None:
         if not self.suffix.startswith(".") or len(self.suffix) < 2:
@@ -121,6 +124,18 @@ class AlgorithmDescriptor:
             f"{self.label} cannot apply monotonicity constraints with the {loss} loss; "
             "remove them from the Features pane or choose another loss."
         )
+
+    def config_issue(
+        self,
+        params: Mapping[str, Any],
+        loss: str | None,
+        monotone_constraints: Mapping[str, int] | None,
+    ) -> str | None:
+        """The first reason this family cannot train *params* as configured."""
+        issue = self.monotone_constraint_issue(loss, monotone_constraints)
+        if issue is None and self.value_check is not None:
+            issue = self.value_check(params, monotone_constraints)
+        return issue
 
     def validate_params(self, params: Mapping[str, Any], *, context: str = "params") -> None:
         """Reject reserved, aliased, duplicate, or (when allowlisted) unknown params."""
@@ -463,8 +478,128 @@ LIGHTGBM = AlgorithmDescriptor(
     monotone_unsupported_losses=frozenset({"MAE"}),
 )
 
+
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def ebm_value_issue(
+    params: Mapping[str, Any], monotone_constraints: Mapping[str, int] | None
+) -> str | None:
+    """EBM rules the key allowlist cannot express.
+
+    ``max_rounds`` is the whole round budget (there is no early stopping), so it
+    must be explicit; ``interactions`` is a non-negative count or a list of
+    distinct feature-name pairs, and no pair may involve a monotone-constrained
+    feature, because InterpretML cannot constrain an interaction term.
+    """
+    if "max_rounds" not in params:
+        return (
+            "EBM needs an explicit max_rounds: it trains every round it is given, with no "
+            "early stopping. Set max_rounds in Parameters."
+        )
+    if not _positive_int(params["max_rounds"]):
+        return f"EBM max_rounds must be a positive integer, got {params['max_rounds']!r}."
+    interactions = params.get("interactions", 0)
+    if isinstance(interactions, bool):
+        return "EBM interactions must be a count or a list of feature-name pairs."
+    if isinstance(interactions, int):
+        if interactions < 0:
+            return "EBM interactions must be a non-negative count or a list of pairs."
+        return None
+    if not isinstance(interactions, list):
+        return "EBM interactions must be a count or a list of feature-name pairs."
+    constrained = {name for name, direction in (monotone_constraints or {}).items() if direction}
+    seen: set[frozenset[str]] = set()
+    for pair in interactions:
+        if (
+            not isinstance(pair, list | tuple)
+            or len(pair) != 2
+            or not all(isinstance(name, str) and name for name in pair)
+            or pair[0] == pair[1]
+        ):
+            return f"EBM interaction {pair!r} must be a pair of two different feature names."
+        if frozenset(pair) in seen:
+            return f"EBM interaction {list(pair)!r} is listed twice."
+        seen.add(frozenset(pair))
+        blocked = sorted(set(pair) & constrained)
+        if blocked:
+            return (
+                f"EBM interaction {list(pair)!r} involves monotone-constrained "
+                f"{', '.join(repr(name) for name in blocked)}; InterpretML cannot constrain an "
+                "interaction term. Remove the constraint or the interaction."
+            )
+    return None
+
+
+EBM = AlgorithmDescriptor(
+    key="ebm",
+    label="EBM",
+    tasks=frozenset({"regression", "classification"}),
+    losses=_losses(
+        regression={
+            "RMSE": NativeLoss("rmse", "identity"),
+            "Poisson": NativeLoss("poisson_deviance", "log"),
+            "Gamma": NativeLoss("gamma_deviance", "log"),
+            "Tweedie": NativeLoss("tweedie_deviance", "log"),
+        },
+        classification={"Logloss": NativeLoss("log_loss", "logit")},
+    ),
+    allowed_params=frozenset(
+        {
+            "max_rounds",
+            "learning_rate",
+            "max_bins",
+            "max_interaction_bins",
+            "interactions",
+            "min_samples_leaf",
+            "min_hessian",
+            "max_leaves",
+            "smoothing_rounds",
+            "interaction_smoothing_rounds",
+            "greedy_ratio",
+            "cyclic_progress",
+            "reg_alpha",
+            "reg_lambda",
+            "max_delta_step",
+            "gain_scale",
+            "min_cat_samples",
+            "cat_smooth",
+            "missing",
+        }
+    ),
+    reserved_params=frozenset(
+        {
+            "objective",
+            "outer_bags",
+            "inner_bags",
+            "validation_size",
+            "early_stopping_rounds",
+            "early_stopping_tolerance",
+            "n_jobs",
+            "random_state",
+            "feature_names",
+            "feature_types",
+            "monotone_constraints",
+            "exclude",
+            "callback",
+        }
+    ),
+    # A study may search the round budget like any other parameter.
+    tuning_reserved_params=frozenset(),
+    param_aliases=MappingProxyType({}),
+    round_key="max_rounds",
+    round_key_aliases=("max_rounds",),
+    validation_only_params=(),
+    refit_policy="fixed_budget",
+    feature_controls=frozenset({"monotone_constraints", "interactions"}),
+    suffix=".ebm",
+    engine_module="interpret",
+    value_check=ebm_value_issue,
+)
+
 DESCRIPTORS: Mapping[str, AlgorithmDescriptor] = MappingProxyType(
-    {descriptor.key: descriptor for descriptor in (CATBOOST, GLM, XGBOOST, LIGHTGBM)}
+    {descriptor.key: descriptor for descriptor in (CATBOOST, GLM, XGBOOST, LIGHTGBM, EBM)}
 )
 
 
@@ -512,6 +647,25 @@ def refit_descriptor(final_params: Mapping[str, Any]) -> AlgorithmDescriptor:
     if len(matches) != 1:
         raise HauteValidationError(
             "final-fit parameters must carry exactly one family's refit round key"
+        )
+    return matches[0]
+
+
+def tuning_family(final_params: Mapping[str, Any]) -> AlgorithmDescriptor:
+    """The tunable family a study's final parameters belong to.
+
+    A round-refitting family's projection carries exactly its round key; a
+    fixed-budget family (EBM) keeps its own explicit budget key.
+    """
+    matches = [
+        descriptor
+        for descriptor in DESCRIPTORS.values()
+        if descriptor.refit_policy in ("validation_weighted_rounds", "fixed_budget")
+        and descriptor.round_key in final_params
+    ]
+    if len(matches) != 1:
+        raise HauteValidationError(
+            "final-fit parameters must carry exactly one tunable family's round key"
         )
     return matches[0]
 

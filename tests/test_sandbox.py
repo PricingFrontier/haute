@@ -2487,6 +2487,7 @@ class TestCaseInsensitiveContainment:
 _PICKLE_ALLOWLIST_DISTRIBUTIONS = {
     "catboost": "catboost",
     "joblib": "joblib",
+    "interpret": "interpret-core",
     "lightgbm": "lightgbm",
     "numpy": "numpy",
     "pandas": "pandas",

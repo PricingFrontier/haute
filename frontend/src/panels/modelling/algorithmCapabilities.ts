@@ -51,10 +51,27 @@ export function refitCapability(finalParams: Record<string, unknown>): Algorithm
   return matches.length === 1 ? matches[0] : null
 }
 
-/** Tree families share the Target / Features / Parameters panes and the JSON params editor. */
-export function isTreeFamily(algorithm: string): boolean {
-  const capability = algorithmCapability(algorithm)
-  return capability !== null && capability.refit_policy === "validation_weighted_rounds"
+/**
+ * The fixed-budget family (EBM) whose round key a final-parameter set carries:
+ * its study refits with the winning parameters unchanged, mirroring the
+ * backend's ``tuning_family``.
+ */
+export function fixedBudgetCapability(finalParams: Record<string, unknown>): AlgorithmCapability | null {
+  const matches = Object.values(ALGORITHM_CAPABILITIES).filter(
+    (capability) =>
+      capability.refit_policy === "fixed_budget"
+      && capability.round_key !== null
+      && capability.round_key in finalParams,
+  )
+  return matches.length === 1 ? matches[0] : null
+}
+
+/**
+ * Every family except the GLM shares the Target / Features / Parameters panes
+ * and the JSON params editor; the GLM configures terms and a family instead.
+ */
+export function usesSharedPanes(algorithm: string): boolean {
+  return algorithmCapability(algorithm) !== null && algorithm.toLowerCase() !== "glm"
 }
 
 /** Every Haute loss the family supports, across its tasks. */

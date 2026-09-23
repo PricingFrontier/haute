@@ -823,6 +823,10 @@ from haute.modelling._lightgbm import LightGBMAlgorithm  # noqa: E402
 
 ALGORITHM_REGISTRY["lightgbm"] = LightGBMAlgorithm
 
+from haute.modelling._ebm import EBMAlgorithm  # noqa: E402
+
+ALGORITHM_REGISTRY["ebm"] = EBMAlgorithm
+
 # Register GLM if RustyStats is installed (lazy import keeps it optional)
 try:
     from haute.modelling._rustystats import GLMAlgorithm

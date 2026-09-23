@@ -547,12 +547,14 @@ def explain_native_prediction(
     prediction_value: Any = None,
     max_contributions: int | None = None,
 ) -> dict[str, Any]:
-    """Native contributions for one traced prediction of an XGBoost or LightGBM model.
+    """Native contributions for one traced prediction of an XGBoost, LightGBM or EBM model.
 
-    The bias carries the row's offset, so bias plus contributions is the raw
-    margin; its inverse link must reproduce the served response, or the
-    positive-class probability for a classifier. XGBoost accumulates its
-    contributions in float32, so its margin check uses the named float32 bound.
+    The bias carries the row's offset (and an EBM's intercept), so bias plus
+    contributions is the raw margin; its inverse link must reproduce the served
+    response, or the positive-class probability for a classifier. XGBoost
+    accumulates its contributions in float32, so its margin check uses the named
+    float32 bound. An EBM contributes one additive score per term, and a
+    pairwise interaction stays a single two-feature term.
     """
     import polars as pl
 
@@ -561,9 +563,9 @@ def explain_native_prediction(
     flavor = str(getattr(scoring_model, "flavor", ""))
     if flavor not in NATIVE_WRAPPER_FLAVORS:
         raise ModelExplanationError(
-            "Native contribution explanation requires an XGBoost or LightGBM model."
+            "Native contribution explanation requires an XGBoost, LightGBM or EBM model."
         )
-    label = "XGBoost" if flavor == "xgboost" else "LightGBM"
+    label = {"xgboost": "XGBoost", "lightgbm": "LightGBM", "ebm": "EBM"}[flavor]
     model = scoring_model.raw_model
     features = list(model.features)
     columns = [*features, *([model.offset_column] if model.offset_column else [])]
@@ -613,19 +615,33 @@ def explain_native_prediction(
         )
 
     categorical = frozenset(model.categorical_levels)
-    ranked = [
-        {
-            "feature": feature,
+    terms: list[tuple[str, ...]] = list(contributions.terms)
+    ranked = []
+    for index, (term, value) in enumerate(zip(terms, values, strict=True)):
+        name = " & ".join(term)
+        entry: dict[str, Any] = {
+            "feature": name,
             "feature_index": index,
-            "feature_value": input_row.get(feature),
+            "feature_value": (
+                input_row.get(term[0])
+                if len(term) == 1
+                else {feature: input_row.get(feature) for feature in term}
+            ),
+            # ``contribution`` is the method-neutral value; ``shap_value`` is
+            # the field every trace consumer reads, whatever the method.
+            "contribution": float(value),
+            "abs_contribution": float(abs(value)),
             "shap_value": float(value),
             "abs_shap_value": float(abs(value)),
-            "is_categorical": feature in categorical,
+            "is_categorical": any(feature in categorical for feature in term),
             "_feature_index": index,
         }
-        for index, (feature, value) in enumerate(zip(features, values, strict=True))
-    ]
-    ranked.sort(key=lambda item: (-float(item["abs_shap_value"]), int(item["_feature_index"])))
+        if flavor == "ebm":
+            entry["term"] = name
+            entry["term_type"] = "main" if len(term) == 1 else "interaction"
+            entry["term_features"] = list(term)
+        ranked.append(entry)
+    ranked.sort(key=lambda item: (-float(item["abs_contribution"]), int(item["_feature_index"])))
     truncated = max_contributions is not None and len(ranked) > max_contributions
     omitted_count = len(ranked) - max_contributions if truncated and max_contributions else 0
     if truncated and max_contributions is not None:
@@ -638,9 +654,10 @@ def explain_native_prediction(
         shown.append(item)
 
     output_space = {"identity": "response", "log": "log", "logit": "log_odds"}[model.link]
+    method = "ebm_terms" if flavor == "ebm" else f"{flavor}_contributions"
     return {
-        "type": f"{flavor}_contributions",
-        "method": f"{flavor}_contributions",
+        "type": method,
+        "method": method,
         "status": "ok",
         "link": model.link,
         "output_space": output_space,
@@ -654,6 +671,7 @@ def explain_native_prediction(
         "prediction_value": prediction_value if prediction_value is not None else response,
         "output_difference": output_difference,
         "feature_count": len(features),
+        "term_count": len(terms),
         "feature_values": {feature: input_row.get(feature) for feature in features},
         "contributions": shown,
         "truncated": truncated,
@@ -666,7 +684,7 @@ def _config_requests_supported_explanation(config: dict[str, Any]) -> bool:
     if source_type not in {"run", "registered"}:
         return False
     artifact_path = str(config.get("artifact_path", ""))
-    return artifact_path.endswith((".cbm", ".rsglm", ".ubj", ".lgbm"))
+    return artifact_path.endswith((".cbm", ".rsglm", ".ubj", ".lgbm", ".ebm"))
 
 
 def explanation_error_metadata_for_config(config: dict[str, Any]) -> dict[str, str]:
@@ -695,6 +713,8 @@ def explanation_error_metadata_for_config(config: dict[str, Any]) -> dict[str, s
         method = "xgboost_contributions"
     elif artifact_path.endswith(".lgbm"):
         method = "lightgbm_contributions"
+    elif artifact_path.endswith(".ebm"):
+        method = "ebm_terms"
     else:
         logger.warning(
             "explanation_error_metadata_unsupported_artifact",
@@ -738,7 +758,7 @@ def explain_model_score_from_config(
             task=config.get("task", "regression"),
             prediction_value=effective_prediction,
         )
-    if getattr(scoring_model, "flavor", "") in ("xgboost", "lightgbm"):
+    if getattr(scoring_model, "flavor", "") in ("xgboost", "lightgbm", "ebm"):
         return explain_native_prediction(
             scoring_model,
             input_row,

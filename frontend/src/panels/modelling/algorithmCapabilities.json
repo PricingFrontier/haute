@@ -45,6 +45,73 @@
       "use_best_model"
     ]
   },
+  "ebm": {
+    "allowed_params": [
+      "cat_smooth",
+      "cyclic_progress",
+      "gain_scale",
+      "greedy_ratio",
+      "interaction_smoothing_rounds",
+      "interactions",
+      "learning_rate",
+      "max_bins",
+      "max_delta_step",
+      "max_interaction_bins",
+      "max_leaves",
+      "max_rounds",
+      "min_cat_samples",
+      "min_hessian",
+      "min_samples_leaf",
+      "missing",
+      "reg_alpha",
+      "reg_lambda",
+      "smoothing_rounds"
+    ],
+    "feature_controls": [
+      "interactions",
+      "monotone_constraints"
+    ],
+    "label": "EBM",
+    "losses": {
+      "classification": [
+        "Logloss"
+      ],
+      "regression": [
+        "RMSE",
+        "Poisson",
+        "Gamma",
+        "Tweedie"
+      ]
+    },
+    "monotone_unsupported_losses": [],
+    "refit_policy": "fixed_budget",
+    "reserved_params": [
+      "callback",
+      "early_stopping_rounds",
+      "early_stopping_tolerance",
+      "exclude",
+      "feature_names",
+      "feature_types",
+      "inner_bags",
+      "monotone_constraints",
+      "n_jobs",
+      "objective",
+      "outer_bags",
+      "random_state",
+      "validation_size"
+    ],
+    "round_key": "max_rounds",
+    "round_key_aliases": [
+      "max_rounds"
+    ],
+    "suffix": ".ebm",
+    "supports_tuning": true,
+    "tasks": [
+      "classification",
+      "regression"
+    ],
+    "validation_only_params": []
+  },
   "glm": {
     "allowed_params": null,
     "feature_controls": [],

@@ -2008,7 +2008,7 @@ def test_supported_flavors_derived_from_modelflavor_literal():
 
     assert _SUPPORTED_FLAVORS == frozenset(get_args(ModelFlavor))
     assert _SUPPORTED_FLAVORS == frozenset(
-        {"catboost", "pyfunc", "rustystats", "xgboost", "lightgbm"}
+        {"catboost", "pyfunc", "rustystats", "xgboost", "lightgbm", "ebm"}
     )
 
 

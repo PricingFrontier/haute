@@ -320,7 +320,8 @@ def build_candidate_run(
         for field in _TUNING_PARAMS:
             if field not in diagnostics.tuning:
                 raise HauteValidationError(f"tuning summary is missing {field}")
-            params[f"tuning_{field}"] = diagnostics.tuning[field]
+            if diagnostics.tuning[field] is not None:
+                params[f"tuning_{field}"] = diagnostics.tuning[field]
 
     trained_at = provenance.trained_at.astimezone(UTC)
     tags = {

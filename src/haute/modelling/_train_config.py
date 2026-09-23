@@ -576,11 +576,13 @@ def build_training_job_kwargs(
                 raise
             except HauteValidationError as exc:
                 raise TrainingConfigError(str(exc)) from exc
-            monotone_issue = descriptor.monotone_constraint_issue(
-                str(loss_function), _effective_monotone_constraints(config)
-            )
-            if monotone_issue is not None:
-                raise TrainingConfigError(monotone_issue)
+        config_issue = descriptor.config_issue(
+            params,
+            str(loss_function) if loss_function else None,
+            _effective_monotone_constraints(config),
+        )
+        if config_issue is not None:
+            raise TrainingConfigError(config_issue)
     objective_issue = training_objective_issue(config)
     if objective_issue is not None:
         raise TrainingConfigError(objective_issue)

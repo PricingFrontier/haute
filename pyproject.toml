@@ -54,6 +54,9 @@ dependencies = [
     "xgboost>=3.2,<3.3; sys_platform == 'darwin'",
     # LightGBM's macOS wheel also loads libomp from the system (Homebrew).
     "lightgbm>=4.7,<5",
+    # A .ebm model loads only under the exact interpret-core version its
+    # contract records, so a minor bump is a deliberate retrain boundary.
+    "interpret-core>=0.7.8,<0.8",
     # Tuning owns a reproducibility-sensitive seeded TPE contract. Keep the
     # supported Optuna sampler implementation within one pinned 4.x minor.
     "optuna>=4.9.0,<4.10",
@@ -622,5 +625,6 @@ module = [
     "scipy.*",
     "sklearn.*",
     "price_contour.*",
+    "interpret.*",
 ]
 ignore_missing_imports = true

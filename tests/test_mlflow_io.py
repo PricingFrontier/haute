@@ -1367,6 +1367,7 @@ class TestFindModelArtifact:
         # _find_artifact_by_extension(.rsglm): same 2 calls → raises
         # _find_artifact_by_extension(.ubj): same 2 calls → raises
         # _find_artifact_by_extension(.lgbm): same 2 calls → raises
+        # _find_artifact_by_extension(.ebm): same 2 calls → raises
         # _find_model_artifact pyfunc check: list_artifacts(run_id) → [subdir] (not "model")
         #   then iterate dirs: list_artifacts(run_id, "custom_model") → sub_contents (has MLmodel)
         client.list_artifacts.side_effect = [
@@ -1378,6 +1379,8 @@ class TestFindModelArtifact:
             sub_contents,  # ubj: subdir (no .ubj)
             [subdir],  # lgbm: top level
             sub_contents,  # lgbm: subdir (no .lgbm)
+            [subdir],  # ebm: top level
+            sub_contents,  # ebm: subdir (no .ebm)
             [subdir],  # pyfunc: top level "model" dir check
             sub_contents,  # pyfunc: subdir listing with MLmodel
         ]

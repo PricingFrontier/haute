@@ -168,6 +168,66 @@ test.describe("core browser flows", () => {
     await expect(page.getByText("channel[T.direct]:bs(mileage, 1/9, k)")).toBeVisible()
   })
 
+  test("chooses an EBM interaction, trains it, and reads the interaction surface", async ({ page }) => {
+    test.slow()
+    // The EBM node lives only in this scenario; resetE2eProject restores main.py.
+    const original = readFileSync(gitMainPath, "utf8")
+    writeFileSync(
+      resolve(ratingDir, "config", "model_training", "browser_ebm.json"),
+      JSON.stringify({
+        name: "browser_ebm",
+        target: "value",
+        algorithm: "ebm",
+        task: "regression",
+        loss_function: "RMSE",
+        params: { max_rounds: 40, interactions: [] },
+        evaluation: { schema_version: 1, strategy: "random", seed: 42, validation: { method: "single", size: 0.2 } },
+        metrics: ["rmse"],
+        row_limit: 30,
+        output_dir: ".haute_cache/browser_training",
+      }, null, 2),
+      "utf8",
+    )
+    const ebmBlock = [
+      "",
+      "",
+      "@pipeline.modelling(config='config/model_training/browser_ebm.json')",
+      "def browser_ebm(raw_rows: pl.LazyFrame) -> pl.LazyFrame:",
+      "    return raw_rows",
+      "",
+    ].join("\n")
+    writeFileSync(gitMainPath, original.trimEnd() + "\n" + ebmBlock, "utf8")
+    await page.goto("/")
+
+    const ebmNode = page.getByRole("button", { name: /browser_ebm/i })
+    await expect(ebmNode).toBeVisible()
+    await ebmNode.click()
+    const panes = page.getByRole("tablist", { name: "Modelling panes" })
+    await panes.getByRole("tab", { name: "Features", exact: true }).click()
+    await expect(page.getByRole("heading", { name: "Pairwise interactions" })).toBeVisible()
+    await expect(page.getByRole("radio", { name: "Choose pairs" })).toBeChecked()
+    // The node was added to the file just now: wait for its upstream schema.
+    await expect(page.getByRole("group", { name: "mileage feature" })).toBeVisible({ timeout: 60_000 })
+    await page.getByRole("button", { name: "Add interaction" }).click()
+    const pair = page.getByRole("group", { name: "Interaction 1" })
+    await pair.getByRole("combobox", { name: "Interaction 1 feature 1" }).selectOption("channel")
+    await pair.getByRole("combobox", { name: "Interaction 1 feature 2" }).selectOption("mileage")
+
+    await panes.getByRole("tab", { name: "Train", exact: true }).click()
+    await page.getByRole("button", { name: /Train Model/i }).click()
+    await expect(
+      page.getByText(/Model trained - results in preview panel below/i),
+    ).toBeVisible({ timeout: 120_000 })
+    const resultTabs = page.getByRole("tablist", { name: "Model result panes" })
+    await resultTabs.getByRole("tab", { name: "Terms", exact: true }).click()
+    await page.getByRole("button", { name: /channel & mileage/ }).click()
+    await expect(page.getByText(/Pairwise interaction/)).toBeVisible()
+    await expect(
+      page.getByRole("table", { name: "Interaction surface for channel & mileage" }),
+    ).toBeVisible()
+    await expect(page.getByText("Additive term scores on the model", { exact: false })).toBeVisible()
+  })
+
   test("persists node edits through save and reload", async ({ page }) => {
     await page.goto("/")
 

@@ -1,5 +1,6 @@
 import type { EvaluationPreview } from "../../api/types"
 import { configField } from "../../utils/configField"
+import { algorithmCapability } from "./algorithmCapabilities"
 import { roleColumnReasons, type ModellingColumn } from "./featureSelection"
 import {
   columnContext,
@@ -109,7 +110,7 @@ export function TrainingRunSummary({
       <dl className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-[13px]">
         <dt style={{ color: "var(--text-muted)" }}>Model</dt>
         <dd>
-          {glm ? "GLM" : "CatBoost"} ·{" "}
+          {algorithmCapability(String(config.algorithm ?? ""))?.label ?? String(config.algorithm ?? "")} ·{" "}
           {String(
             glm
               ? (config.family ?? "Choose family")
@@ -150,7 +151,7 @@ export function TrainingRunSummary({
           )}
         </dd>
         <dt style={{ color: "var(--text-muted)" }}>Compute</dt>
-        <dd>{!glm && params.task_type === "GPU" ? "GPU (CUDA)" : "CPU"}</dd>
+        <dd>{config.algorithm === "catboost" && params.task_type === "GPU" ? "GPU (CUDA)" : "CPU"}</dd>
       </dl>
     </section>
   )

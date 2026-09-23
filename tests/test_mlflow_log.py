@@ -797,7 +797,7 @@ class TestLogExperiment:
         with (
             _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m,
             pytest.raises(
-                HauteValidationError, match=r"expected one of \.cbm, \.lgbm, \.rsglm, \.ubj"
+                HauteValidationError, match=r"expected one of \.cbm, \.ebm, \.lgbm, \.rsglm, \.ubj"
             ),
         ):
             log_experiment(experiment_name="exp", candidate=candidate)

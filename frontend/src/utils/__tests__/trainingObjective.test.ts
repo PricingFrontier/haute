@@ -52,6 +52,27 @@ describe("trainingConfigurationIssues", () => {
     expect(trainingConfigurationIssues({ ...base, algorithm: "xgboost", monotone_constraints: { age: 1 } })).toEqual([])
   })
 
+  it("mirrors the backend's EBM budget and interaction rules (MOD-F04)", () => {
+    const base = { algorithm: "ebm", target: "y", loss_function: "RMSE", evaluation }
+    const codes = (config: Record<string, unknown>) =>
+      trainingConfigurationIssues({ ...base, ...config }).map((issue) => [issue.code, trainingIssuePane(issue)])
+    expect(codes({ params: { max_rounds: 500, interactions: 5 } })).toEqual([])
+    expect(codes({ params: { interactions: 5 } })).toEqual([["ebm-max-rounds", "params"]])
+    expect(codes({ params: { max_rounds: 0 } })).toEqual([["ebm-max-rounds", "params"]])
+    expect(codes({ params: { max_rounds: 5, interactions: -1 } })).toEqual([["ebm-interactions", "features"]])
+    expect(codes({ params: { max_rounds: 5, interactions: [["a", ""]] } })).toEqual([["ebm-interactions", "features"]])
+    expect(codes({ params: { max_rounds: 5, interactions: [["a", "b"], ["b", "a"]] } })).toEqual([["ebm-interactions", "features"]])
+    const monotone = trainingConfigurationIssues({
+      ...base,
+      params: { max_rounds: 5, interactions: [["age", "region"]] },
+      monotone_constraints: { age: 1 },
+    })
+    expect(monotone).toEqual([expect.objectContaining({
+      code: "ebm-interactions",
+      message: expect.stringMatching(/involves monotone-constrained age/),
+    })])
+  })
+
   it("reports conditional CatBoost Tweedie configuration", () => {
     expect(
       trainingConfigurationIssues({

@@ -45,16 +45,17 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
 | File | Responsibility |
 |---|---|
 | `src/haute/modelling/__init__.py` | Public API surface: `FitResult`, `MLflowLogResult`, `TrainingJob`, `TrainResult`, `generate_training_script`, `log_experiment`. |
-| `src/haute/modelling/_descriptors.py` | `AlgorithmDescriptor` and `NativeLoss` per family, `DESCRIPTORS`, the Haute loss vocabulary `HAUTE_LOSSES`, `algorithm_descriptor()`, parameter validation, refit projection (`project_refit_params`, `refit_descriptor`, `round_ceiling`), the `training_threads()` allotment, and `capability_fixture()`. Imports no engine. |
+| `src/haute/modelling/_descriptors.py` | `AlgorithmDescriptor` and `NativeLoss` per family, `DESCRIPTORS`, the Haute loss vocabulary `HAUTE_LOSSES`, `algorithm_descriptor()`, parameter validation, refit projection (`project_refit_params`, `refit_descriptor`, `tuning_family`, `round_ceiling`), the `training_threads()` allotment, and `capability_fixture()`. Imports no engine. |
 | `src/haute/modelling/_algorithm_base.py` | `BaseAlgorithm`, `FitResult` and `IterationCallback`, shared by every adapter without importing the registry. |
 | `src/haute/modelling/_native_encoding.py` | Shared categorical encoding for the native-dataset families: `fit_categorical_levels` and `encode_frame`. |
 | `src/haute/modelling/_xgboost.py` | The XGBoost adapter: `XGBoostModel` (self-describing booster wrapper) and `XGBoostAlgorithm`. |
 | `src/haute/modelling/_lightgbm.py` | The LightGBM adapter: `LightGBMModel` (self-describing model-text wrapper) and `LightGBMAlgorithm`. |
+| `src/haute/modelling/_ebm.py` | The EBM adapter: `EBMModel` (the estimator plus its contract facts, and the term report) and `EBMAlgorithm`. |
 | `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC (re-exported from the base module), `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
 | `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; `prepare_glm_design()` (frame-dtype validation, reference-level translation, interaction resolution); `glm_fit_kwargs()` (fixed or cross-validated penalty, solver controls, robust standard errors); `GLMAlgorithm.glm_result()` over `glm_inference`, `glm_coefficient_rows`, `glm_relativity_rows`, `glm_fit_statistics`, `glm_smooth_term_rows`, and `glm_regularization_summary`; `estimate_glm_dispersion()` profile-likelihood estimation. |
 | `src/haute/modelling/_training_job.py` | `TrainingJob` orchestrator — prepare one eligible source, persist/reload its evaluation plan, run selection or tuning fits, perform one deployable final fit, compute diagnostics, stage artifacts, and optionally log once to MLflow; also defines `TrainResult` and intermediate stage types. |
 | `src/haute/modelling/_evaluation.py` | Strict version-1 evaluation config, exact development/final-test and validation-fit plan generation, plan/result/report codecs, digest linkage, strategy summaries, and validation-row-weighted aggregation. |
-| `src/haute/modelling/_tuning.py` | Strict bounded tuning config/search-space validation for families whose descriptor supports tuning (CatBoost today), with orchestration-owned keys taken from the descriptor, seeded trial resolution, winner/tree-count selection, and tuning plan/trials/report codecs. |
+| `src/haute/modelling/_tuning.py` | Strict bounded tuning config/search-space validation for families whose descriptor supports tuning (every family but the GLM), with orchestration-owned keys taken from the descriptor, seeded trial resolution, winner/tree-count selection, and tuning plan/trials/report codecs. |
 | `src/haute/modelling/_train_config.py` | Single source of truth for modelling-node config → training-job kwargs (`build_training_job_kwargs`, `build_train_params`, `parse_evaluation_config`, `parse_tuning_config`, `training_objective_issue`, `default_metrics`, `effective_metrics`), plus the GLM value contract (`GLM_FAMILY_LINKS`, `GLM_CONFIG_KEYS`, `CATBOOST_ONLY_LEVERS`, `is_glm_config`, `glm_params_issue`, `validate_glm_params`). |
 | `src/haute/modelling/_glm_terms.py` | Pure GLM term contract shared by the config builder, routes, job, and adapter: `SUPPORTED_TERM_TYPES` and `TERM_KEYS`, dtype classes (`glm_dtype_class`, `MAIN_FITS_BY_CLASS`, `SLOT_FITS_BY_CLASS`), the parameter contract (`validate_term_spec`, `validate_interaction_entry`), the expression grammar (`expression_identifiers`), the schema-free `glm_model_columns()` used for projection demand, `validate_glm_model_columns()` against a real schema and role columns, `resolve_categorical_levels()`, the order-independent `resolve_glm_design()`, and `penalised_smooth_terms()` / `monotone_constraint_terms()`. Imports no RustyStats, so the schema-free half runs during projection planning before any data exists. |
 | `src/haute/modelling/_target_check.py` | `training_target_task_issue()` — data-dependent target-column vs task/metric gate returning an actionable message (or nothing when the pairing is valid), keyed on the effective reported-metric set (explicit config metrics or the objective-implied defaults), shared by the train route's pre-dispatch validation and `TrainingJob._prepare_data`. |
@@ -1148,7 +1149,8 @@ potentially large copy on its threadpool.
 - `EvaluationConfig.from_plain_data` rejects unknown versions/fields, Boolean numeric
   values, non-finite/out-of-range fractions, invalid strategy-specific keys, temporal
   relative fractions, and cross-validation counts outside 2–10 before data is touched.
-- Tuning is CatBoost-only, requires validation, includes its baseline in 5–50 trials,
+- Tuning is available to every family but the GLM, requires validation, includes its
+  baseline in 5–50 trials,
   and must satisfy `trial_count * validation_fit_count <= 200`. Invalid search shapes,
   empty/duplicate/oversized or non-finite candidate lists, reserved orchestration keys,
   impossible/cyclic conditions, or a selection metric outside the configured metrics
@@ -1756,10 +1758,19 @@ used for staged input.
   has an allowlist, an unknown key. `build_training_job_kwargs` and `TrainingJob.__init__` both
   apply it, and `TuningConfig` applies it to search-space names.
 - `project_refit_params`, `refit_descriptor` and `round_ceiling` are the single refit
-  projection used by the tuned refit, the untuned refit, and MLflow candidate parameters; the
-  tuning report identifies its family from the one round key its final parameters carry.
-- `FitResult` carries `rounds_configured`, `rounds_fitted` and `stopping_reason`;
-  `TrainResult.fit_evidence` adds the job's `threads`; the response validates it as
+  projection used by the tuned refit, the untuned refit, and MLflow candidate parameters.
+  `tuning_final_projection` in `src/haute/modelling/_tuning.py` is the one derivation of a
+  study's final parameters and tree count that the job, `build_tuning_report`, the report
+  artifact and `TuningReportPayload` all use: a round-refitting family refits with the
+  validation-weighted count under its round key; a `fixed_budget` family (EBM) refits with the
+  winner's parameters unchanged and no tree count (`final_tree_count` is `None`). The report
+  identifies its family with `tuning_family` from the one round key its final parameters carry.
+- `AlgorithmDescriptor.config_issue` combines the per-loss monotonicity rule with the family's
+  `value_check` (EBM: `ebm_value_issue`); `build_training_job_kwargs` and `TrainingJob.__init__`
+  both raise it.
+- `FitResult` carries `rounds_configured`, `rounds_fitted` and `stopping_reason`, plus EBM's
+  `term_update_steps` and the `threads` an engine actually used when it does not take the
+  job's allotment; `TrainResult.fit_evidence` records those threads, else the job's; the response validates it as
   `FitEvidencePayload`, and `build_candidate_run` logs it as `fit_*` parameters.
 - `FeatureContract` has `contract_version` 2 and `model: ModelIdentity | None`. `ModelIdentity`
   holds `algorithm`, `link`, `engine_name`, `engine_version`, `haute_version`, `loss`,
@@ -1846,47 +1857,55 @@ used for staged input.
   `param_aliases` snapshots LightGBM 4.7's complete alias table for those keys, and a test fails
   when the installed release's table differs. `validate_params` reports an alias of a
   Haute-owned key as Haute-owned, and any other alias with its canonical key.
+- `EBMAlgorithm.fit` in `src/haute/modelling/_ebm.py` resolves the loss through the `ebm`
+  descriptor (`RMSE` → `rmse`, `Poisson` → `poisson_deviance`, `Gamma` → `gamma_deviance`,
+  `Tweedie` → `tweedie_deviance:variance_power=<p>`, `Logloss` → `log_loss`), raises the
+  descriptor's `config_issue`, rejects feature weights, classification offsets and interaction
+  pairs naming a feature the model does not use, and fits one estimator on the frame it is given
+  (`eval_df` is never used) with `outer_bags=1`, `inner_bags=0`, `validation_size=0`,
+  `early_stopping_rounds=0`, `n_jobs=1`, the job seed, `feature_types` (`nominal` for contract
+  categoricals), positional `monotone_constraints`, and interaction pairs as index pairs.
+  Categoricals go through the shared `encode_frame`, so an unseen or empty-string value fails
+  (EBM itself would score an unseen value as zero). EBM's own `callback` starts a multiprocessing
+  `SharedMemoryManager`, so progress is reported in rounds before and after the fit. The result
+  carries `rounds_configured = max_rounds`, `rounds_fitted = None`, `stopping_reason = "none"`,
+  `threads = 1` and `term_update_steps` from `best_iteration_`.
+- `EBMModel` holds the estimator with the contract's features, levels, task, link, offset and
+  class labels. Its margin is `eval_terms` plus `intercept_` plus the transformed offset; the
+  served response is the native `predict(init_score=…)` or `predict_proba[:, 1]`. `contributions`
+  returns one value per term (`term_features_`, an interaction one term); `term_report` returns
+  each term's name, features, kind, importance (`term_importances`), axes (missing bin first,
+  then categories or continuous bin ranges with their cuts, the unknown bin dropped) and scores,
+  and feeds `TrainResult.ebm_terms` and the importances. `save` is `joblib.dump` of the
+  estimator. `load(path, contract)` requires an `ebm` model identity whose `engine_version` is
+  the installed `interpret-core` version (else `ArtifactVersionMismatchError`, before
+  unpickling), unpickles with `restricted_joblib_load`, and `validate` checks the exact class
+  for the task, `feature_names_in_`, `n_features_in_`, `feature_types_in_`, finite scores and
+  intercept, and 0/1 classes; `validate_identity` then refuses a contract whose loss, link or
+  Tweedie variance power is not the estimator's objective, because the contract decides how the
+  offset enters and how labels are read.
+- `load_local_model(path, task, *, contract_path=None)` loads an `.ebm` under `contract_path`
+  or the contract beside it (`model_contract_candidates`: `{stem}.feature_contract.json`, then a
+  package's `feature_contract.json`); an MLflow run load fetches the contract logged beside the
+  artifact with `_resolve_run_contract`, because the artifact cache keeps each artifact in its
+  own directory. Both in-process caches key an EBM by its contract's identity as well as its
+  model bytes (`_ebm_identity_fingerprint` for MLflow loads, including the disk-cache fast
+  path; the bundled contract's stat-gated fingerprint in the deployed scorer), so replacing only
+  the contract reloads the model.
+- The `ebm` descriptor allows `max_rounds` (required, positive), `learning_rate`, `max_bins`,
+  `max_interaction_bins`, `interactions`, `min_samples_leaf`, `min_hessian`, `max_leaves`,
+  `smoothing_rounds`, `interaction_smoothing_rounds`, `greedy_ratio`, `cyclic_progress`,
+  `reg_alpha`, `reg_lambda`, `max_delta_step`, `gain_scale`, `min_cat_samples`, `cat_smooth` and
+  `missing`; Haute owns `objective`, `outer_bags`, `inner_bags`, `validation_size`,
+  `early_stopping_rounds`, `early_stopping_tolerance`, `n_jobs`, `random_state`,
+  `feature_names`, `feature_types`, `monotone_constraints`, `exclude` and `callback`. Its
+  `round_key` is `max_rounds`, searchable by tuning, and its `refit_policy` is `fixed_budget`.
+  `ebm_value_issue` requires `max_rounds`, and an `interactions` value that is a non-negative
+  count or a list of distinct two-feature pairs none of which involves a monotone-constrained
+  feature.
 - `AlgorithmDescriptor.monotone_unsupported_losses` (LightGBM: `MAE`, whose `regression_l1`
   objective refuses them) drives `monotone_constraint_issue`, raised by
   `build_training_job_kwargs` for the effective (non-excluded) constraints and by the adapter
   before fitting; the capability fixture carries it to the frontend's `monotone-loss` readiness
   issue on the Features pane.
 
-## Approved change contract — EBM adapter parameters and behaviour
-
-- **Current limitation.** No EBM adapter exists.
-- **Unresolved target.** Descriptor: losses `RMSE` → `rmse` (identity), `Poisson` →
-  `poisson_deviance` (log), `Gamma` → `gamma_deviance` (log), `Tweedie` →
-  `tweedie_deviance:variance_power=<p>` (log), `Logloss` → `log_loss` (logit); `MAE` is not
-  supported; `round_key` `max_rounds`; `refit_policy` `fixed_budget`; feature controls
-  `monotone_constraints` and `interactions`; suffix `.ebm`; distribution `interpret-core`.
-  `allowed_params`: `max_rounds` (required, positive), `learning_rate`, `max_bins`,
-  `max_interaction_bins`, `interactions` (a non-negative count or a list of feature-name
-  pairs), `min_samples_leaf`, `min_hessian`, `max_leaves`, `smoothing_rounds`,
-  `interaction_smoothing_rounds`, `greedy_ratio`, `cyclic_progress`, `reg_alpha`,
-  `reg_lambda`, `max_delta_step`, `gain_scale`, `min_cat_samples`, `cat_smooth`, `missing`.
-  `reserved_params`: `objective`, `outer_bags` (fixed 1), `inner_bags` (fixed 0),
-  `validation_size`, `early_stopping_rounds` (fixed 0), `early_stopping_tolerance`, `n_jobs`
-  (fixed 1), `random_state`, `feature_names`, `feature_types`, `monotone_constraints`,
-  `exclude`, `callback`. Data: every passed row is a training-partition row with bag `1`;
-  `feature_types` is `nominal` for contract categoricals and `continuous` otherwise;
-  interaction pairs resolve to indices after feature order is fixed; offsets go to `init_score`
-  at fit and predict. Evidence records native `best_iteration_` as term-update steps and
-  `rounds_configured` as `max_rounds`; `rounds_fitted` is `None`. Contributions: `eval_terms`
-  values per term plus `intercept_` and the transformed offset as bias. Persistence: `joblib`
-  to `.ebm`, loaded only through `safe_joblib_load`, then validated: exact class, `objective`
-  matching the contract's loss, `n_features_in_`, `feature_names_in_` and `feature_types_in_`
-  matching the contract,
-  finite `term_scores_` and `intercept_`. Version: the contract's `engine.version` must equal the
-  installed `interpret-core` version exactly, or loading fails with `ArtifactVersionMismatchError`,
-  because scikit-learn's state hook checks versions only for its own classes.
-- **Non-goals.** Early stopping, outer or inner bagging, `exclude`, and EBM editing.
-- **Failure and compatibility semantics.** A missing `max_rounds`, a reserved key, an unknown
-  interaction feature name, or an interaction involving a monotone-constrained feature fails in
-  configuration validation; an interpret-core version mismatch fails at load.
-- **Acceptance evidence.** New tests: one fit per supported loss; restricted-loader round trip for
-  regressor and classifier; an exact-version match loads and a mismatched `engine.version`
-  fails; a crafted payload in an `.ebm` file is blocked; term contributions plus bias equal the
-  log/logit margin; selection fits receive only training-partition rows and the final
-  development refit receives development rows but never final-test rows.
-- **Roadmap package.** [MOD-F04](../roadmap/modelling.md#mod-f04--deliver-the-complete-ebm-slice-and-its-term-representation).

@@ -437,6 +437,7 @@ def _training_response_payload(
         glm_inference=train_result.glm_inference,
         glm_smooth_terms=train_result.glm_smooth_terms,
         glm_regularization=train_result.glm_regularization,
+        ebm_terms=train_result.ebm_terms,
         diagnostics_errors=train_result.diagnostics_errors,
         evaluation=evaluation_payload,
         tuning=tuning_payload,

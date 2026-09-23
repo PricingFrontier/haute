@@ -811,6 +811,23 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   allowed or Haute-owned key fails in Haute. The `.lgbm` model is LightGBM's model text with one
   added `haute:` record, so plain LightGBM can still load it. GPU backends, `linear_tree`,
   native leaf refitting and model continuation are not offered.
+- **EBM.** The `ebm` family trains an InterpretML Explainable Boosting Machine (regressor, or
+  classifier for `Logloss`) with nominal features for contract categoricals and continuous
+  features otherwise, sample weights, and a regression offset as `init_score` at fit and
+  predict. It never stops early: the MOD-F00 probes showed that routing validation rows through
+  `bags` leaks their targets into the intercept, so every fit sees only the rows it is given
+  (selection fits the training partition, the final refit the development rows, never
+  final-test rows) with `outer_bags=1`, one thread, and an explicit `max_rounds` that tuning may
+  search and the refit reuses unchanged. Native `best_iteration_` is recorded as term-update
+  steps and never turned into a budget. Losses are `RMSE`, `Poisson`, `Gamma`, `Tweedie` and
+  `Logloss`; `MAE` is not offered. Every included feature is a main effect; pairwise
+  interactions are a count EBM chooses from or an explicit list of pairs, and a
+  monotone-constrained feature cannot take part in one. The model is its terms: results show
+  each main effect's shape (missing-value bin included) and each interaction's surface as
+  additive link-scale term scores, and a traced prediction is explained by the intercept, the
+  offset and one contribution per term, an interaction staying one term. The `.ebm` file is
+  the joblib-dumped estimator, loaded only through the restricted unpickler and only under its
+  feature contract, which must record the installed `interpret-core` version exactly.
 - **Model identity.** A version-2 feature contract carries an optional model identity:
   algorithm, Haute loss or GLM family, link, variance power, class labels, native feature names,
   and exact engine and Haute versions, all inside the hashed payload. Training always writes
@@ -819,29 +836,3 @@ Cancellation, crash, malformed result, or validation failure removes the directo
   against the identity (its model type, and CatBoost's recorded loss) and fail on a mismatch.
   Only the schema fields are compared against live data.
 
-## Approved change contract — EBM family
-
-- **Current limitation.** InterpretML Explainable Boosting Machines cannot be selected for
-  training, and the restricted loader blocks their classes.
-- **Unresolved target.** An `ebm` algorithm trains an InterpretML regressor or classifier, with
-  selection fits on Haute's training partition only and the final development refit on the
-  development rows (never final-test rows), with explicit nominal/continuous feature types, sample weights,
-  a regression `init_score` of the transformed offset at fit and predict, `outer_bags=1`,
-  `n_jobs=1`, early stopping disabled, and an explicit `max_rounds` that tuning may search and the
-  refit reuses. Native `best_iteration_` is recorded as term-update steps and never converted into
-  a budget. Explanations are the native term scores plus intercept, with pairwise interactions
-  kept as one term. The model is saved as a `.ebm` joblib file. The `interpret-core` dependency is
-  added with this slice.
-- **Non-goals.** EBM early stopping is not offered: the [MOD-F00 engine probes](../roadmap/mod-f00-engine-probes.md) show that passing validation rows
-  through `bags` changes the intercept and every prediction for all five objectives even with
-  stopping disabled, so validation targets would leak into the model. EBM editing, differential
-  privacy, and bag-to-bag variation displays are out of scope.
-- **Failure and compatibility semantics.** A configuration without an explicit `max_rounds`, or
-  requesting EBM early stopping, internal validation or more than one outer bag, fails before
-  fitting.
-- **Acceptance evidence.** Numeric/mixed regression and binary fits round-tripping through the
-  restricted loader; an `interpret-core` version mismatch failing at load; intercept, terms and
-  offset reconstructing served predictions; selection fits receiving only training-partition
-  rows; the final development refit receiving development rows, reusing the winning
-  `max_rounds`, and never receiving final-test rows.
-- **Roadmap package.** [MOD-F04](../roadmap/modelling.md#mod-f04--deliver-the-complete-ebm-slice-and-its-term-representation).

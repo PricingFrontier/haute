@@ -32,9 +32,15 @@ class FitResult:
     rounds_fitted: int | None = None
     #: ``none``, ``validation`` (early stopping), or ``native_exhaustion``.
     stopping_reason: str | None = None
+    #: Threads the engine actually used, when it does not take the job's
+    #: allotment (EBM always fits with ``n_jobs=1``).
+    threads: int | None = None
     #: The level list each categorical feature was encoded against, for the
     #: contract (new-family adapters; ``None`` keeps the declared levels).
     categorical_levels: dict[str, list[str | None]] | None = None
+    #: EBM's native ``best_iteration_``: executed term updates per boosting
+    #: stage. Neither a tree count nor a round budget, and never converted.
+    term_update_steps: list[int] | None = None
 
 
 class BaseAlgorithm(ABC):

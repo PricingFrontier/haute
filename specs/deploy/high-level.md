@@ -353,8 +353,10 @@ most: a silent wrong answer here mis-prices real policies.
 
 A deployment installs `haute` at the deploying version, whose core dependencies bring each
 model family's engine with the platform marker: `xgboost-cpu` (capped below 3.3) on Linux and
-Windows and `xgboost` on macOS, plus `lightgbm` (below 5), so container and Databricks Model
-Serving images (Linux, Python 3.11.11) score XGBoost and LightGBM on CPU with no extra
-requirement. Bundling discovers `.ubj` and `.lgbm` artifacts with the other native suffixes and
-carries each model's feature contract. A macOS image must provide `libomp`.
+Windows and `xgboost` on macOS, plus `lightgbm` (below 5) and `interpret-core` (0.7.x), so
+container and Databricks Model Serving images (Linux, Python 3.11.11) score XGBoost, LightGBM
+and EBM on CPU with no extra requirement. Bundling discovers `.ubj`, `.lgbm` and `.ebm`
+artifacts with the other native suffixes and carries each model's feature contract; for an
+`.ebm` it fetches the contract the run logged beside the model, and the deployed scorer loads
+the EBM under that bundled contract. A macOS image must provide `libomp`.
 

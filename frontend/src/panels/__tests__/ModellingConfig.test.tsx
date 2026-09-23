@@ -341,6 +341,29 @@ describe("Training configuration readiness", () => {
       "num_leaves",
     ])
   })
+  it("starts an EBM study from EBM's own keys, round budget included (MOD-F04)", () => {
+    const { props } = renderConfig({
+      activePane: "params",
+      config: { _nodeId: "ebm", algorithm: "ebm", target: "loss_ratio", loss_function: "RMSE", params: { max_rounds: 500 } },
+    })
+    fireEvent.click(screen.getByRole("radio", { name: "Tune parameters" }))
+    const tuned = (props.onUpdate as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as {
+      tuning: { search_space: Record<string, unknown> }
+    }
+    expect(Object.keys(tuned.tuning.search_space).sort()).toEqual([
+      "interactions",
+      "learning_rate",
+      "max_rounds",
+    ])
+  })
+  it("shows the EBM interaction control on the Features pane (MOD-F04)", () => {
+    renderConfig({
+      activePane: "features",
+      config: { _nodeId: "ebm", algorithm: "ebm", target: "loss_ratio", loss_function: "RMSE", params: { max_rounds: 500, interactions: 4 } },
+    })
+    expect(screen.getByRole("heading", { name: "Pairwise interactions" })).toBeInTheDocument()
+    expect(screen.getByLabelText("Maximum interaction count")).toHaveValue(4)
+  })
   it("shows issues before Train and links to the affected pane", () => {
     renderConfig({ activePane: "train", config: { _nodeId: "readiness", algorithm: "catboost", target: "loss_ratio" } })
     expect(screen.getByRole("alert")).toHaveTextContent("Choose a training loss")
@@ -368,6 +391,19 @@ describe("Training configuration readiness", () => {
       evaluation: { schema_version: 1, strategy: "random", seed: 42, validation: { method: "none" }, test: null },
     } })
     expect(screen.getByLabelText("Training run summary")).toHaveTextContent("1 final fit")
+  })
+  it.each([
+    ["xgboost", "XGBoost · RMSE"],
+    ["lightgbm", "LightGBM · RMSE"],
+    ["ebm", "EBM · RMSE"],
+  ])("names the %s family in the run summary (MOD-F04)", (algorithm, label) => {
+    renderConfig({ activePane: "train", config: {
+      _nodeId: `summary_${algorithm}`, target: "loss_ratio", algorithm, loss_function: "RMSE",
+      params: { max_rounds: 10 },
+    } })
+    const summary = screen.getByLabelText("Training run summary")
+    expect(summary).toHaveTextContent(label)
+    expect(summary).not.toHaveTextContent("CatBoost")
   })
   it("labels parameter-search runs as tuning fits", () => {
     renderConfig({ activePane: "train", config: {
@@ -502,6 +538,26 @@ describe("ModellingConfig", () => {
         params: { num_iterations: 1000, learning_rate: 0.05, num_leaves: 31, early_stopping_round: 50 },
         evaluation: expect.objectContaining({ schema_version: 1 }),
       })
+    })
+
+    it("clicking EBM in the picker seeds an explicit round budget (MOD-F04)", () => {
+      const { props } = renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
+      fireEvent.click(screen.getByText("EBM"))
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        algorithm: "ebm",
+        params: { max_rounds: 2000, learning_rate: 0.02, interactions: 10 },
+        evaluation: expect.objectContaining({ schema_version: 1 }),
+      })
+    })
+
+    it("offers EBM Gamma but neither MAE nor CrossEntropy (MOD-F04)", () => {
+      renderConfig({
+        config: { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "ebm", params: {} },
+      })
+      const losses = within(screen.getByRole("group", { name: "Loss functions" }))
+      expect(losses.getByRole("button", { name: "Gamma" })).toBeTruthy()
+      expect(losses.queryByRole("button", { name: "MAE" })).toBeNull()
+      expect(losses.queryByRole("button", { name: "CrossEntropy" })).toBeNull()
     })
 
     it("offers XGBoost the Gamma loss but not CrossEntropy (MOD-F02)", () => {

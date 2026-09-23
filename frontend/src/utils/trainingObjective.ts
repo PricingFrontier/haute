@@ -30,6 +30,8 @@ export type TrainingConfigurationIssueCode =
   | "catboost-loss-function"
   | "catboost-tweedie-variance-power"
   | "monotone-loss"
+  | "ebm-max-rounds"
+  | "ebm-interactions"
   | "evaluation-config"
   | "final-refit"
   | "tuning-config"
@@ -393,6 +395,7 @@ export function trainingConfigurationIssues(
         "Set the Tweedie variance power greater than 1 and less than 2.",
     })
   }
+  if (algorithm === "ebm") issues.push(...ebmParameterIssues(config))
   const capability = algorithmCapability(algorithm)
   if (
     lossFunction
@@ -405,6 +408,81 @@ export function trainingConfigurationIssues(
         `${capability.label} cannot apply monotonicity constraints with the ${String(lossFunction)} ` +
         "loss; remove them from the Features pane or choose another loss.",
     })
+  }
+  return issues
+}
+
+/** Mirrors the backend's ``ebm_value_issue``; feature membership is checked at fit time. */
+function ebmParameterIssues(config: Record<string, unknown>): TrainingConfigurationIssue[] {
+  const params = (
+    config.params !== null && typeof config.params === "object" && !Array.isArray(config.params)
+  )
+    ? config.params as Record<string, unknown>
+    : {}
+  const issues: TrainingConfigurationIssue[] = []
+  const maxRounds = params.max_rounds
+  if (typeof maxRounds !== "number" || !Number.isInteger(maxRounds) || maxRounds <= 0) {
+    issues.push({
+      code: "ebm-max-rounds",
+      message:
+        "Set max_rounds to a positive whole number: an EBM trains every round it is given, "
+        + "with no early stopping.",
+    })
+  }
+  const interactions = params.interactions ?? 0
+  if (typeof interactions === "number") {
+    if (!Number.isInteger(interactions) || interactions < 0) {
+      issues.push({ code: "ebm-interactions", message: "Set the interaction count to 0 or more." })
+    }
+    return issues
+  }
+  if (!Array.isArray(interactions)) {
+    issues.push({
+      code: "ebm-interactions",
+      message: "Interactions must be a count or a list of feature pairs.",
+    })
+    return issues
+  }
+  const monotone = (
+    config.monotone_constraints !== null
+    && typeof config.monotone_constraints === "object"
+    && !Array.isArray(config.monotone_constraints)
+  )
+    ? config.monotone_constraints as Record<string, unknown>
+    : {}
+  const seen = new Set<string>()
+  for (const [index, pair] of interactions.entries()) {
+    const names = Array.isArray(pair) ? pair : []
+    const [first, second] = names
+    if (
+      names.length !== 2
+      || typeof first !== "string" || first === ""
+      || typeof second !== "string" || second === ""
+      || first === second
+    ) {
+      issues.push({
+        code: "ebm-interactions",
+        message: `Interaction ${index + 1} needs two different features.`,
+      })
+      continue
+    }
+    const key = [first, second].sort().join("|")
+    if (seen.has(key)) {
+      issues.push({
+        code: "ebm-interactions",
+        message: `Interaction ${index + 1} (${first} & ${second}) is listed twice.`,
+      })
+    }
+    seen.add(key)
+    const constrained = [first, second].filter((name) => Boolean(monotone[name]))
+    if (constrained.length > 0) {
+      issues.push({
+        code: "ebm-interactions",
+        message:
+          `Interaction ${index + 1} involves monotone-constrained ${constrained.join(" and ")}; `
+          + "remove the constraint or the interaction.",
+      })
+    }
   }
   return issues
 }
@@ -438,7 +516,9 @@ export function trainingIssuePane(issue: TrainingConfigurationIssue): "target" |
     case "glm-smooth-regularization":
     case "glm-robust-standard-errors": return "params"
     case "glm-terms":
+    case "ebm-interactions":
     case "monotone-loss": return "features"
+    case "ebm-max-rounds": return "params"
     default: return "target"
   }
 }

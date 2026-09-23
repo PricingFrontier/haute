@@ -603,6 +603,7 @@ _ALGORITHM_FLAVORS = {
     "glm": "rustystats",
     "xgboost": "xgboost",
     "lightgbm": "lightgbm",
+    "ebm": "ebm",
 }
 
 
@@ -763,12 +764,16 @@ def _load_rustystats_model(path: str) -> ScoringModel:
     )
 
 
-def load_local_model(path: str, task: str = "regression") -> ScoringModel:
+def load_local_model(
+    path: str, task: str = "regression", *, contract_path: str | None = None
+) -> ScoringModel:
     """Load a model from a local file path (e.g. bundled deploy artifact).
 
     Auto-detects flavor from file extension:
     - ``.cbm`` → CatBoost native loader
     - ``.rsglm`` → RustyStats GLM loader
+    - ``.ubj`` / ``.lgbm`` / ``.ebm`` → Haute's native wrappers; an EBM loads
+      under *contract_path* when given, else the contract saved beside it
     - Otherwise → not yet supported (pyfunc local loading planned)
     """
     if path.endswith(".cbm"):
@@ -778,21 +783,122 @@ def load_local_model(path: str, task: str = "regression") -> ScoringModel:
         return _load_rustystats_model(path)
     for suffix, wrapper_flavor in NATIVE_WRAPPER_SUFFIXES.items():
         if path.endswith(suffix):
-            return _load_wrapper_model(path, task, wrapper_flavor)
+            return _load_wrapper_model(path, task, wrapper_flavor, contract_path=contract_path)
     raise NotImplementedError(
         f"Local model loading not yet supported for: {path!r}. Supported formats: .cbm "
-        "(CatBoost), .rsglm (RustyStats GLM), .ubj (XGBoost), .lgbm (LightGBM)."
+        "(CatBoost), .rsglm (RustyStats GLM), .ubj (XGBoost), .lgbm (LightGBM), .ebm (EBM)."
     )
 
 
-def _load_wrapper_model(path: str, task: str, flavor: ModelFlavor) -> ScoringModel:
-    """Load a Haute-trained self-describing native model as the *task* it will score."""
+def model_contract_candidates(path: str | Path) -> list[Path]:
+    """Where a model file's feature contract sits: beside it, by name or in a package."""
+    from haute.modelling._feature_contract import CONTRACT_FILENAME
+    from haute.modelling._training_job import model_contract_filename
+
+    model_file = Path(path)
+    return [
+        model_file.with_name(model_contract_filename(model_file.stem)),
+        model_file.parent / CONTRACT_FILENAME,
+    ]
+
+
+def _sibling_contract(path: str) -> Any:
+    """The feature contract saved with *path*; an EBM cannot load without one."""
+    from haute.errors import ConfigError
+    from haute.modelling._feature_contract import load_contract
+
+    for candidate in model_contract_candidates(path):
+        if candidate.is_file():
+            return load_contract(candidate)
+    raise ConfigError(
+        f"No feature contract was found beside {Path(path).name}. An EBM model loads only "
+        "with the contract it was trained with (saved next to it as "
+        f"{model_contract_candidates(path)[0].name}).",
+        model_path=str(path),
+    )
+
+
+def _run_contract_artifact(artifact: str) -> str:
+    """The run-relative path of the contract logged beside *artifact*."""
+    from pathlib import PurePosixPath
+
+    return str(PurePosixPath(artifact).with_name(model_contract_candidates(artifact)[0].name))
+
+
+def _ebm_identity_fingerprint(
+    artifact: str, local_path: str, contract_artifact: str, contract_path: str
+) -> str:
+    """An EBM's cache identity: its model bytes and the contract it loads under."""
+    from haute.deploy._scorer import artifact_identity_fingerprint
+
+    return artifact_identity_fingerprint({artifact: local_path, contract_artifact: contract_path})
+
+
+def _loaded_artifact_fingerprint(
+    flavor: str,
+    mlflow_mod: Any,
+    backend: ResolvedBackend,
+    run_id: str,
+    artifact: str,
+    local_path: str,
+) -> str:
+    """The cache identity of a run artifact: its bytes, plus an EBM's contract.
+
+    Lookup and insertion both use this, so an entry is always found under the
+    key it was stored with.
+    """
+    if flavor != "ebm":
+        return _local_artifact_fingerprint(artifact, local_path)
+    return _ebm_identity_fingerprint(
+        artifact,
+        local_path,
+        _run_contract_artifact(artifact),
+        _resolve_run_contract(mlflow_mod, backend, run_id, artifact),
+    )
+
+
+def _resolve_run_contract(
+    mlflow_mod: Any, backend: ResolvedBackend, run_id: str, artifact: str
+) -> str:
+    """Fetch the feature contract a run logged beside *artifact* (an EBM needs it to load)."""
+
     from haute.errors import ConfigError
 
-    if flavor == "lightgbm":
+    contract_artifact = _run_contract_artifact(artifact)
+    try:
+        return _resolve_artifact_local(mlflow_mod, backend, run_id, contract_artifact)
+    except Exception as exc:
+        raise ConfigError(
+            f"Run {run_id} has no feature contract {contract_artifact} beside {artifact}; an "
+            f"EBM model loads only with the contract it was trained with ({exc}).",
+            run_id=run_id,
+            artifact_path=artifact,
+        ) from exc
+
+
+def _load_wrapper_model(
+    path: str, task: str, flavor: ModelFlavor, *, contract_path: str | None = None
+) -> ScoringModel:
+    """Load a Haute-trained native model as the *task* it will score.
+
+    XGBoost and LightGBM files describe themselves; an EBM file is the bare
+    estimator and loads under its feature contract: *contract_path* when the
+    caller fetched it (the MLflow cache keeps artifacts apart), else the one
+    saved beside the model.
+    """
+    from haute.errors import ConfigError
+
+    if flavor == "ebm":
+        from haute.modelling._ebm import EBMModel
+        from haute.modelling._feature_contract import load_contract
+
+        contract = load_contract(contract_path) if contract_path else _sibling_contract(path)
+        model: Any = EBMModel.load(path, contract)
+        label = "EBM"
+    elif flavor == "lightgbm":
         from haute.modelling._lightgbm import LightGBMModel
 
-        model: Any = LightGBMModel.load(path)
+        model = LightGBMModel.load(path)
         label = "LightGBM"
     else:
         from haute.modelling._xgboost import XGBoostModel
@@ -1259,6 +1365,7 @@ def _load_with_bounded_retry(
     import random
     import time
 
+    from haute._sandbox import ArtifactVersionMismatchError
     from haute.errors import ConfigError
 
     last_err: BaseException | None = None
@@ -1266,19 +1373,26 @@ def _load_with_bounded_retry(
         local_path: str | None = None
         try:
             local_path = _resolve_artifact_local(mlflow_mod, backend, run_id, artifact)
+            contract_path: str | None = None
+            if flavor == "ebm":
+                contract_path = _resolve_run_contract(mlflow_mod, backend, run_id, artifact)
             if flavor == "catboost":
                 raw = _load_catboost_model(local_path, task)
                 return _wrap_catboost(raw)
             if flavor in NATIVE_WRAPPER_FLAVORS:
-                return _load_wrapper_model(local_path, task, cast(ModelFlavor, flavor))
+                return _load_wrapper_model(
+                    local_path, task, cast(ModelFlavor, flavor), contract_path=contract_path
+                )
             return _load_rustystats_model(local_path)
-        except (AttributeError, TypeError, KeyError, ConfigError):
+        except (AttributeError, TypeError, KeyError, ConfigError, ArtifactVersionMismatchError):
             # Programmer error — a missing attribute, wrong type, or
             # unknown dict key is a bug in our dispatch code (or a
             # breaking change in catboost / rustystats), not a corrupt
             # artifact; a ConfigError (the node scores the model as the
-            # wrong task) is a readable model that re-downloading cannot
-            # fix.  Wrapping these as "persistently corrupt" would send
+            # wrong task, or an EBM under a contract that does not describe
+            # it) and an ArtifactVersionMismatchError (a model written by
+            # another engine version) are readable models that
+            # re-downloading cannot fix.  Wrapping these as "persistently corrupt" would send
             # on-call down the wrong path.  Re-raise so the real error
             # surfaces.
             raise
@@ -1418,15 +1532,30 @@ def load_mlflow_model(
                     run_id,
                     artifact_path,
                 )
-                if local_path.is_file():
+                # An EBM is only as current as the contract it loads under, so
+                # its fast path needs the cached contract too.
+                contract_local: Path | None = None
+                if flavor == "ebm":
+                    contract_artifact = _run_contract_artifact(artifact_path)
+                    contract_local = _artifact_cache_path(
+                        _disk_cache_root(), backend.digest, run_id, contract_artifact
+                    )
+                if local_path.is_file() and (contract_local is None or contract_local.is_file()):
                     fast_key = _model_cache_key(
                         source_type=source_type,
                         run_id=run_id,
                         version=version,
                         artifact_path=artifact_path,
                         task=task,
-                        artifact_fingerprint=_local_artifact_fingerprint(
-                            artifact_path, str(local_path)
+                        artifact_fingerprint=(
+                            _local_artifact_fingerprint(artifact_path, str(local_path))
+                            if contract_local is None
+                            else _ebm_identity_fingerprint(
+                                artifact_path,
+                                str(local_path),
+                                contract_artifact,
+                                str(contract_local),
+                            )
                         ),
                         backend_identity=backend.identity,
                     )
@@ -1455,7 +1584,13 @@ def load_mlflow_model(
                                 artifact_path=artifact_path,
                                 flavor=flavor,
                             )
-                            scoring_model = load_local_model(str(local_path), task=task)
+                            scoring_model = (
+                                load_local_model(str(local_path), task=task)
+                                if contract_local is None
+                                else load_local_model(
+                                    str(local_path), task=task, contract_path=str(contract_local)
+                                )
+                            )
                             _model_cache.put(fast_key, scoring_model)
                             logger.info(
                                 "mlflow_model_loaded_from_disk_cache",
@@ -1509,7 +1644,9 @@ def load_mlflow_model(
                 resolved_run_id,
                 resolved_artifact,
             )
-            artifact_fp = _local_artifact_fingerprint(resolved_artifact, local_artifact_path)
+            artifact_fp = _loaded_artifact_fingerprint(
+                flavor, mlflow_mod, backend, resolved_run_id, resolved_artifact, local_artifact_path
+            )
 
     cache_key = _model_cache_key(
         source_type=source_type,
@@ -1581,8 +1718,13 @@ def load_mlflow_model(
                     version=resolved_version,
                     artifact_path=resolved_artifact,
                     task=task,
-                    artifact_fingerprint=_local_artifact_fingerprint(
-                        resolved_artifact, local_artifact_path
+                    artifact_fingerprint=_loaded_artifact_fingerprint(
+                        flavor,
+                        mlflow_mod,
+                        backend,
+                        resolved_run_id,
+                        resolved_artifact,
+                        local_artifact_path,
                     ),
                     backend_identity=backend.identity,
                 )

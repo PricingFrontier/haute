@@ -631,6 +631,9 @@ _ALLOWED_PICKLE_CLASSES: frozenset[tuple[str, str]] = frozenset(
         ("xgboost.sklearn", "XGBClassifier"),
         ("xgboost.sklearn", "XGBModel"),
         ("xgboost.sklearn", "XGBRegressor"),
+        # Exactly the two EBM estimators; no other InterpretML symbol is trusted.
+        ("interpret.glassbox._ebm._ebm", "ExplainableBoostingClassifier"),
+        ("interpret.glassbox._ebm._ebm", "ExplainableBoostingRegressor"),
     }
 )
 
@@ -776,7 +779,17 @@ def safe_joblib_load(path: str | Path) -> Any:
     joblib payloads should still be treated as trusted inputs.  Also validates
     the path is within the project root.
     """
-    validated = validate_project_path(path)
+    return restricted_joblib_load(validate_project_path(path))
+
+
+def restricted_joblib_load(path: str | Path) -> Any:
+    """Deserialize a joblib file through the class allowlist, wherever it lives.
+
+    :func:`safe_joblib_load` without the project-root check, for model files
+    Haute's own loaders locate (training outputs, the MLflow artifact cache, an
+    MLflow pyfunc package), which need not sit under the working directory.
+    """
+    validated = Path(path).resolve()
 
     try:
         import joblib

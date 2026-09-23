@@ -39,9 +39,10 @@ import {
   ALGORITHM_CAPABILITIES,
   algorithmCapability,
   isKnownAlgorithm,
-  isTreeFamily,
+  usesSharedPanes,
 } from "./modelling/algorithmCapabilities"
 import { CommonFeatureConfig } from "./modelling/CommonFeatureConfig"
+import { EBMInteractionsConfig } from "./modelling/EBMInteractionsConfig"
 import { ExportPane } from "./modelling/ExportPane"
 import { GLMInteractionsConfig } from "./modelling/GLMInteractionsConfig"
 import { GLMRegularizationConfig } from "./modelling/GLMRegularizationConfig"
@@ -98,6 +99,13 @@ const LIGHTGBM_DEFAULT_PARAMS: Record<string, unknown> = {
   early_stopping_round: 50,
 }
 
+// EBM has no early stopping: max_rounds is the whole budget of every fit.
+const EBM_DEFAULT_PARAMS: Record<string, unknown> = {
+  max_rounds: 2000,
+  learning_rate: 0.02,
+  interactions: 10,
+}
+
 const STARTER_SEARCH_SPACES: Record<string, Record<string, unknown>> = {
   xgboost: {
     max_depth: [4, 6, 8],
@@ -109,12 +117,18 @@ const STARTER_SEARCH_SPACES: Record<string, Record<string, unknown>> = {
     learning_rate: [0.03, 0.05, 0.1],
     min_data_in_leaf: [20, 50, 100],
   },
+  ebm: {
+    max_rounds: [1000, 2000, 4000],
+    learning_rate: [0.01, 0.02, 0.04],
+    interactions: [0, 5, 10],
+  },
 }
 
 const DEFAULT_PARAMS: Record<string, Record<string, unknown>> = {
   catboost: CATBOOST_DEFAULT_PARAMS,
   xgboost: XGBOOST_DEFAULT_PARAMS,
   lightgbm: LIGHTGBM_DEFAULT_PARAMS,
+  ebm: EBM_DEFAULT_PARAMS,
 }
 
 const CATBOOST_RESERVED_PARAM_KEYS = ["task_type"] as const
@@ -169,6 +183,8 @@ const ALGORITHM_DESCRIPTIONS: Record<string, string> = {
     "Gradient boosting - histogram trees with native categoricals and early stopping on CPU",
   lightgbm:
     "Gradient boosting - fast leaf-wise trees with native categoricals and early stopping on CPU",
+  ebm:
+    "Explainable boosting - additive shape functions and pairwise interactions you can read directly",
 }
 
 function AlgorithmGateway({ onUpdate }: { onUpdate: OnUpdateConfig }) {
@@ -363,7 +379,7 @@ export default function ModellingConfig({
     ?? formatTuningSearchSpace(tuningSearchSpace as Record<string, unknown>)
   // Tuning hides the fixed-parameter editor, so only a visible draft can block training.
   let paramDraftIssue: TrainingConfigurationIssue | null = null
-  if (isTreeFamily(algorithm) && !tuning) {
+  if (usesSharedPanes(algorithm) && !tuning) {
     try {
       parseHyperparameters(
         paramDraft,
@@ -520,6 +536,7 @@ export default function ModellingConfig({
           glm_inference: null,
           glm_smooth_terms: [],
           glm_regularization: null,
+          ebm_terms: [],
           diagnostics_errors: [],
           feature_selection: null,
         },
@@ -611,11 +628,18 @@ export default function ModellingConfig({
     paneBody = trainPane
   } else if (pane === "export") {
     paneBody = exportPane
-  } else if (isTreeFamily(algorithm)) {
+  } else if (usesSharedPanes(algorithm)) {
     if (pane === "target") {
       paneBody = <TargetAndTaskConfig algorithm={algorithm} config={config} onUpdate={onUpdate} columns={upstreamColumns} target={target} weight={weight} metrics={metrics} />
     } else if (pane === "features") {
-      paneBody = <CommonFeatureConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
+      paneBody = (
+        <>
+          <CommonFeatureConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
+          {algorithm === "ebm" && (
+            <EBMInteractionsConfig config={config} onUpdate={onUpdate} columns={upstreamColumns} />
+          )}
+        </>
+      )
     } else if (pane === "params") {
       paneBody = (
         <HyperparametersConfig

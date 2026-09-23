@@ -157,5 +157,7 @@ XGBoost is a core dependency: `xgboost-cpu>=3.2,<3.3` on non-macOS platforms and
 and later require Python 3.12. The full `xgboost` wheel and its NVIDIA dependency are not used
 on Linux or Windows. Both distributions install the same `xgboost` import package, so
 `scripts/package_smoke_check.py` fails unless exactly one of them is installed. macOS needs
-Homebrew `libomp`. Further engines join as core dependencies under the same rules.
+Homebrew `libomp`. `lightgbm>=4.7,<5` (also needing `libomp` on macOS) and
+`interpret-core>=0.7.8,<0.8` are core dependencies too; an `.ebm` model loads only under the
+exact `interpret-core` version its contract records, so a minor bump is a retrain boundary.
 
