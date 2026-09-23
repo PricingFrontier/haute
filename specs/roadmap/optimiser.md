@@ -15,7 +15,7 @@ Current behaviour is specified in [the optimiser specification](../optimiser/low
 | OPT-P06 | Planned | P2 | Benchmark bounded frontier parallelism after input isolation. |
 | OPT-P12 | Planned | P2 | Extract the frontier domain service after the scaling decision. |
 | OPT-P14 | Planned | P2 | Complete solver/result publication extraction. |
-| OPT-P15 | Planned | P2 | Frontier ranges are estimated by one streaming group-by; the streaming auto-range path and its disk-bucket reducer go. |
+| OPT-P15 | Planned | P2 | One auto-range job remains; the chunked path and its disk-bucket reducer go only if one streaming group-by keeps within the specified memory bound. |
 | OPT-P16 | Planned | P2 | Optimiser inputs are materialised in a hard-capped worker, not on a server thread. |
 | OPT-P17 | Planned | P2 | A failed estimate reports the failure instead of an estimate with missing fields. |
 | OPT-P18 | Planned | P2 | Selecting a frontier point is computed once, by the server. |
@@ -27,8 +27,9 @@ decision → `OPT-P12` → `OPT-P14`; later packages must not bypass those
 isolation boundaries. The packages from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md) are
 independent of that order and each shrinks what the extractions must move:
-`OPT-P15` deletes about 600 lines of the service, and `OPT-P16` is a step
-towards `ROAD-WORKER-04` that needs no solver persistence.
+`OPT-P15` removes a duplicated auto-range job and possibly the chunked path
+(about 600 lines of the service), and `OPT-P16` is a step towards
+`ROAD-WORKER-04` that needs no solver persistence.
 
 ### OPT-P06 — Frontier compute scaling
 **Why:** Frontier calculation misses safe bounded parallelism.
@@ -124,34 +125,48 @@ rather than a mixed domain/utilities module.
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_routes.py`;
 `tests/test_optimiser_golden.py`; `tests/test_optimiser_ratebook_apply_agreement.py`.
 
-### OPT-P15 — Frontier ranges from one streaming group-by
+### OPT-P15 — One auto-range job, bounded by measurement
 **Why:** Auto-range needs, for each constraint, the sum over quotes of each
 quote's minimum and maximum across its scenarios. Two jobs compute it:
 `_run_frontier_auto_range_job` and `_run_streaming_frontier_auto_range_job`,
 which is largely a clone of the first (72- and 34-line copied blocks) plus a
 chunked-execution plan and fallback. Both feed
 `_ScenarioFrontierRangeAccumulator`, a hand-written out-of-core,
-hash-partitioned group-by that writes per-bucket Parquet parts. The streaming
-path is the only production consumer of the 2,251-line chunked runner. The
-same quantity is one streaming query,
-`group_by(quote).agg(min, max).select(sum)`, and the service's estimate
-endpoint already runs exactly that shape on the same frame. The solve that
-follows holds the full quote grid in memory anyway, so a frugal range
-estimate protects little.
+hash-partitioned group-by that writes per-bucket Parquet parts so that no
+global per-quote aggregate table is held in memory. The streaming path is the
+only production consumer of the 2,251-line chunked runner. The same quantity
+can be written as one streaming query,
+`group_by(quote).agg(min, max).select(sum)`.
 
-**Plan:** Replace both jobs with one that runs the streaming group-by under
-the job's execution context and cancellation. Delete the streaming plan,
-`_ChunkFallback`, the accumulator and the duplicate job. Measure peak memory
-on the largest representative scenario grid before and after, and record the
-result.
+That query is not yet known to be as frugal. The optimiser specification
+promises that, when the upstream chain is provably row-local, auto-range runs
+chunk by chunk and never materialises the fully expanded scenario frame, and
+`test_frontier_auto_range_streams_before_scenario_expansion_and_recombines_quotes`
+pins the bounded chunks. One streaming group-by keeps that bound only if
+every node between the base and the optimiser, including scenario expansion
+and model scoring, streams in Polars, and only if the per-quote group-by state
+fits in memory at high quote cardinality. The estimate endpoint's group-by
+does not settle this: it selects only the quote-id column, so projection can
+skip the scoring nodes that auto-range needs.
+
+**Plan:** Build a representative fixture with high quote cardinality, scenario
+expansion and model scoring, and measure peak memory for the current
+streaming path and for one streaming group-by run under the job's execution
+context and cancellation. If the group-by stays within the bound, state the
+bound in the optimiser specification in place of the chunk-by-chunk
+paragraph, replace both jobs with one that runs it, and delete the streaming
+plan, `_ChunkFallback`, the accumulator and the duplicate job. If it does not,
+keep the chunk-before-expansion path and merge only the duplicated job code.
 
 **Acceptance:** One auto-range job remains; its ranges equal the current
 jobs' ranges on the existing fixtures, including null quote-id and
-non-finite rejections; its peak memory on the representative grid is
-recorded; the chunked runner has no production consumer.
+non-finite rejections; a test on the representative fixture asserts that
+peak memory stays within the bound the optimiser specification states,
+replacing the chunk-size assertion only if the chunked path is removed; the
+specification describes whichever path remains.
 
 **Dependencies:** None. `EXEC-R03` (execution engine) removes the runner
-afterwards.
+afterwards, if this package removes its consumer.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py::_run_frontier_auto_range_job`;
 `src/haute/routes/_optimiser_service.py::_run_streaming_frontier_auto_range_job`;

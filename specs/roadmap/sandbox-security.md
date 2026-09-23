@@ -12,28 +12,35 @@ These packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| SBX-R01 | Planned | P2 | One path-containment check serves every caller. |
+| SBX-R01 | Planned | P3 | One path-containment check serves every caller. |
 | SBX-R02 | Decision | P3 | The node-code guard matches the trusted-code decision. |
 
 ## Planned improvements
 
 ### SBX-R01 — One path-containment check
-**Why:** Containment is implemented five times with different strength. The
-route helper `validate_safe_path` uses `Path.is_relative_to` after `resolve`,
-the case-sensitive prefix test that `validate_project_path` explicitly
-rejects in favour of `normcase` and `commonpath`; it also raises an
-`HTTPException` from a helper. `safe_path` and the JSON-cache publication
-code check symlinks and Windows junctions themselves, and the save service
-splits path parts to reject traversal on its own.
+**Why:** Containment is implemented five times. The two general checks are
+equivalent in practice: the route helper `validate_safe_path` resolves both
+paths and uses `Path.is_relative_to`, and `validate_project_path` resolves and
+compares `normcase`-folded paths with `commonpath`. Both resolve first, so
+`..` segments and symlinks are collapsed before the comparison and neither
+lets an escape through, and `normcase` folds case only on Windows, where
+`Path` comparison is already case-insensitive. `validate_project_path`'s
+docstring nevertheless justifies its comparison with a case-variant bypass
+that cannot happen for resolved paths. `validate_safe_path` raises an
+`HTTPException` from a helper. `safe_path` and the JSON-cache publication code
+check symlinks and Windows junctions themselves, and the save service splits
+path parts to reject traversal on its own. No escape is known; the cost is
+five places to keep a security check right.
 
-**Plan:** Keep one containment function with the strongest semantics
-(case-folded common path, symlink and reparse-point policy stated), raising a
-domain error that the route layer maps to 400 or 403. Route every caller
-through it.
+**Plan:** Keep one containment function that resolves and then compares
+common paths, with its case and symlink or reparse-point policy stated. It
+raises a domain error that the route layer maps to 400 or 403. Route every
+caller through it and correct the docstring's rationale.
 
-**Acceptance:** One containment implementation remains; a case-variant path
-and a symlink escape are rejected on every former caller's route under test;
-the path-traversal suites pass.
+**Acceptance:** One containment implementation remains; under test, on every
+former caller's route, a `..` escape and a symlink escape are rejected and an
+in-project path is accepted; the sandbox-security specification states the
+case and link policy; the path-traversal suites pass.
 
 **Dependencies:** `API-R01` (server API) maps the domain error.
 

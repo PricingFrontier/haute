@@ -26,18 +26,17 @@ knows enough to prevent it and none of them acts.
 | PCFG-R08 | Planned | P3 | Editor-only state travels beside the node config, not inside it. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
 
-Delivery order is `PCFG-R01` → `PCFG-R02` → `PCFG-R03`. `R01` stops new
-unrunnable configs being written; `R02` makes the ones already on disk
-legible; `R03` closes the remaining write path. `R02` is independently
-useful and may be taken first if the error contract is the more pressing
-need.
+`PCFG-R05` goes first: it is P1 because a save can lose user settings, and it
+is small. Then the delivery order is `PCFG-R01` → `PCFG-R02` → `PCFG-R03`.
+`R01` stops new unrunnable configs being written; `R02` makes the ones
+already on disk legible; `R03` closes the remaining write path. `R02` is
+independently useful and may be taken first if the error contract is the
+more pressing need.
 
 `PCFG-R04` to `PCFG-R09` come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md).
-`PCFG-R05` is P1 because it loses persisted user settings, and is small
-enough to take before `PCFG-R01`. `PCFG-R07` builds on `PCFG-R03` and
-`PCFG-R05`; `PCFG-R08` should precede it so the models do not have to carry
-editor state.
+`PCFG-R07` builds on `PCFG-R03` and `PCFG-R05`; `PCFG-R08` should precede it
+so the models do not have to carry editor state.
 
 ## Worked example
 
@@ -207,14 +206,23 @@ unrecognised keys. A field the editor sends but the backend does not yet
 declare disappears on save with no feedback to the user. This is a silent
 fallback that loses persisted work.
 
-**Plan:** Reject an unknown key at save with a `400` naming the node and the
-key, and at parse with a `ConfigError`, in line with the canonical-only
-policy. Keep the allowlist only as the definition of what is valid.
+**Plan:** First find the keys that are dropped today, so that switching to
+rejection does not turn working saves into failures: run the frontend save
+flows and the browser suite with `config_keys_dropped_at_write` and
+`unrecognized_config_keys` treated as failures, and scan the sidecars in the
+repository's example projects and test fixtures. Declare each key the editor
+legitimately persists, and stop the editor sending the rest. Then reject an
+unknown key at save with a `400` naming the node and the key, and at parse
+with a `ConfigError`, in line with the canonical-only policy. Keep the
+allowlist only as the definition of what is valid.
 
-**Acceptance:** Saving a node whose config carries an undeclared key fails
-with a message naming it and writes nothing; parsing a sidecar with an
-undeclared key fails the same way; no code path removes a user key and
-continues.
+**Acceptance:** The inventory of keys dropped today is recorded in the change
+and each one is either declared or no longer sent; saving a node whose config
+carries an undeclared key fails with a message naming it and writes nothing;
+parsing a sidecar with an undeclared key fails the same way; the config
+round-trip property in `tests/test_property.py` no longer assumes keys are
+dropped at write and covers the rejection; no code path removes a user key
+and continues.
 
 **Dependencies:** None. `PCFG-R06` states the general rule this applies.
 
@@ -229,7 +237,8 @@ retired keys in config recovery (`baseInput`, `joinInput`, `scored_input`,
 `factors_input`), retired Edge Join decorator arguments, removed config keys
 in validation, and legacy modelling `split`/`cross_validation` objects in two
 places. Projection synthesises identity "for legacy callers". The assistant
-keeps a legacy catalogue and examples. Explore display validators preserve
+keeps a legacy catalogue and examples (removed by `ASSIST-R01`, which applies
+this rule). Explore display validators preserve
 unknown keys so "a newer UI can round-trip through an older parser". Sidecar
 writes drop unknown keys (`PCFG-R05`). The parse-time contract check falls
 back to an opaque contract on `ConfigError`, `OSError`, `ImportError`,
@@ -242,12 +251,12 @@ migration, no silent drop, no forward-compatibility passthrough; fallbacks
 only for named infrastructure failures. Then make each listed site follow it,
 and give the modelling legacy check one home.
 
-**Acceptance:** The README states the rule; each listed site either follows it
-or is removed; one test per site pins the behaviour; the legacy modelling
-check exists once.
+**Acceptance:** The README states the rule; each listed site other than the
+assistant's either follows it or is removed; one test per site pins the
+behaviour; the legacy modelling check exists once.
 
-**Dependencies:** `PCFG-R05`; `ASSIST-R01` (assistant) for the assistant's
-legacy catalogue.
+**Dependencies:** `PCFG-R05`. `ASSIST-R01` (assistant) and `SUB-R01`
+(submodels) depend on the rule this package decides.
 
 **Evidence:** `src/haute/_node_config_recovery.py::reconcile_config`;
 `src/haute/_edge_join.py::_LEGACY_ROLE_DECORATOR_ARGS`;

@@ -96,9 +96,10 @@ code; `guards.ts`, `trainGuards.ts` and `api/types.ts` contain no structural
 mirror of a Pydantic model; a stale generated file fails CI; a schema change
 edits one Python model plus a regeneration.
 
-**Dependencies:** `PCFG-R07` (pipeline config) supplies node-config models to
-generate from; `MOD-T10` (modelling) moves semantic checks out of the
-response models.
+**Dependencies:** None. It covers the response models that exist today, and
+later packages build on it: `PCFG-R07` (pipeline config) adds the node-config
+models to the generated set, and `MOD-T10` (modelling) then reduces the
+tuning and evaluation response models to structure.
 
 **Evidence:** `scripts/generate_api_contracts.py`;
 `frontend/src/generated/api-contracts.schema.json`;

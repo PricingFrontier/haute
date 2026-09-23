@@ -17,8 +17,7 @@ that serialises unrelated optimiser work.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| EXEC-R01 | Planned | P2 | Setting the Polars streaming chunk size never holds a lock across user work. |
-| EXEC-R02 | Planned | P3 | The streaming chunk size is process configuration, not a field on every request. |
+| EXEC-R01 | Planned | P2 | The streaming chunk size is set once per process, so no request holds a lock across user work. |
 | EXEC-R03 | Planned | P3 | The chunked map-reduce planner and runner are removed with their only consumer. |
 | EXEC-R04 | Decision | P2 | One memory-safety mechanism: hard-capped workers, or static proofs where no cap exists. |
 | EXEC-R05 | Planned | P2 | One graph walker builds every execution; eager, preview, trace and scoring differ only in their collect policy. |
@@ -28,73 +27,68 @@ that serialises unrelated optimiser work.
 
 ## Planned improvements
 
-`EXEC-R01` goes first because it is a small fix to a user-visible stall.
-`EXEC-R03` follows the optimiser's `OPT-P15`, which removes the runner's only
-consumer. `EXEC-R04` is a decision that `EXEC-R05` should wait for, because
-the walker's shape depends on whether projection proofs survive.
-`EXEC-R02` and `EXEC-R06`–`EXEC-R08` are independent and can be taken
-whenever their files are next open.
+`EXEC-R01` goes first because it removes a user-visible stall.
+`EXEC-R03` follows the optimiser's `OPT-P15` if that package removes the
+runner's only consumer. `EXEC-R04` is a decision that `EXEC-R05` should wait
+for, because the walker's shape depends on whether projection proofs survive;
+`EXEC-R05` needs only the recorded decision, not its implementation.
+`EXEC-R06`–`EXEC-R08` are independent and can be taken whenever their files
+are next open.
 
-### EXEC-R01 — The chunk-size scope never holds a lock across user work
+### EXEC-R01 — The streaming chunk size is process configuration
 **Why:** `temporary_streaming_chunk_size` takes the module-level
 `_STREAMING_CHUNK_SIZE_LOCK` and holds it for the whole `with` body, then
 restores every Polars setting with `pl.Config.load`. The optimiser runs
 setup, auto-range and the solve on daemon threads in the server process, and
 wraps the whole pipeline execution, the auto-range reduction and the solve
-itself in that scope. Any other server thread that enters the scope waits
-for the solve to finish: the synchronous estimate endpoint, a second
-optimiser setup, and the auto-range jobs that the optimiser specification
-says do not reserve the solve slot. The lock is a hidden global serialisation
-point, not a configuration guard.
+itself in that scope; preview and trace take the same scope in the server
+process when interactive execution runs on threads. Any other server thread
+that enters the scope waits for the solve to finish: the synchronous estimate
+endpoint, a second optimiser setup, and the auto-range jobs that the
+optimiser specification says do not reserve the solve slot. The lock is a
+hidden global serialisation point.
 
-**Plan:** Stop mutating process-global Polars configuration per request. Set
-the chunk size once when a worker process starts (see `EXEC-R02`), or pass
-it per call where the Polars API accepts it. If a scoped override remains
-anywhere, hold the lock only while reading or writing the setting, never
-across the work, and restore only the chunk-size key rather than the whole
-configuration.
-
-**Acceptance:** A test runs an optimiser solve stub that blocks inside the
-scope and proves a concurrent estimate request on another thread completes
-without waiting for it. No production code path holds
-`_STREAMING_CHUNK_SIZE_LOCK` while calling user code, a collect, a sink, or a
-solver. The optimiser specification's statement that estimates and
-auto-range jobs are non-blocking is true under test.
-
-**Dependencies:** None. `EXEC-R02` removes the per-request value entirely and
-may land together with this package.
-
-**Evidence:** `src/haute/_polars_utils.py::temporary_streaming_chunk_size`;
-`src/haute/_polars_utils.py::_STREAMING_CHUNK_SIZE_LOCK`;
-`src/haute/routes/_optimiser_service.py::_execute_pipeline`;
-`src/haute/routes/_optimiser_service.py::_launch_background`;
-`src/haute/routes/_optimiser_service.py::_estimate_scenario_frontier_ranges`;
-`src/haute/routes/optimiser.py::_optimiser_input_metrics`;
-`src/haute/routes/optimiser.py::estimate_solve`.
-
-### EXEC-R02 — The streaming chunk size is process configuration
-**Why:** `streaming_chunk_size` is a Polars engine tuning knob, yet it is a
-user setting in the pipeline settings modal, a field on thirteen request
-models, and threaded through every route and service into the lock-guarded
-configuration swap of `EXEC-R01`. A 1,617-line test module exists only to
-prove the value reaches every call site. An analyst has no basis for choosing
-it per request, and per-request variation is what makes a process-global
-setting unsafe to change.
+The lock cannot simply be narrowed. Polars exposes the chunk size only as
+process-global configuration (`set_streaming_chunk_size` writes the
+`POLARS_STREAMING_CHUNK_SIZE` environment variable), and Haute's chunked
+writer sizes its slices from the ambient value. If two scopes with different
+values overlapped, each would run with the other's setting and restore the
+wrong one on exit. The lock exists only because the value varies per request:
+`streaming_chunk_size` is a user setting in the pipeline settings modal and a
+field on thirteen request models, threaded through every route and service,
+with a 1,617-line test module proving it reaches every call site. An analyst
+has no basis for choosing a Polars engine knob per request.
 
 **Plan:** Read the chunk size once from `haute.toml` or the environment when
 the server and each worker process start, and apply it there. Remove the
 field from the request models, the frontend settings store and modal, and
-the client helpers. Replace the threading tests with one test that the
-configured value is applied at worker start.
+the client helpers. Delete `temporary_streaming_chunk_size` and its lock
+rather than narrowing them. Replace the threading tests with one test that
+the configured value is applied at start-up. Update the execution-engine and
+frontend-shared specifications in the same change.
 
-**Acceptance:** No request schema carries `streaming_chunk_size`; the
-frontend sends none; a configured value is observed inside a spawned worker
-and in the server process; the threading test module is replaced by a test
-of start-up configuration.
+**Acceptance:** No request schema carries `streaming_chunk_size` and the
+frontend sends none; no production code changes Polars configuration after
+process start-up, and the scoped override and its lock are gone; a configured
+value is observed inside a spawned worker and in the server process; a test
+runs an optimiser solve stub that blocks during its execution and proves a
+concurrent estimate request on another thread completes without waiting for
+it; the optimiser specification's statement that estimates and auto-range
+jobs do not reserve the solve slot is true under test.
 
-**Dependencies:** `EXEC-R01`.
+**Dependencies:** None.
 
-**Evidence:** `src/haute/schemas.py`; `frontend/src/components/PipelineSettingsModal.tsx`;
+**Evidence:** `src/haute/_polars_utils.py::temporary_streaming_chunk_size`;
+`src/haute/_polars_utils.py::_STREAMING_CHUNK_SIZE_LOCK`;
+`src/haute/_chunked_writes.py::_chunk_rows`;
+`src/haute/routes/_optimiser_service.py::_execute_pipeline`;
+`src/haute/routes/_optimiser_service.py::_launch_background`;
+`src/haute/routes/_optimiser_service.py::_estimate_scenario_frontier_ranges`;
+`src/haute/routes/optimiser.py::_optimiser_input_metrics`;
+`src/haute/routes/optimiser.py::estimate_solve`;
+`src/haute/routes/pipeline.py::preview_node`;
+`src/haute/routes/pipeline.py::trace_row`; `src/haute/schemas.py`;
+`frontend/src/components/PipelineSettingsModal.tsx`;
 `frontend/src/api/client.ts`; `frontend/src/stores/useSettingsStore.ts`;
 `tests/test_streaming_chunk_size_threading.py`.
 
@@ -102,14 +96,15 @@ of start-up configuration.
 **Why:** `chunking.py` is a 2,251-line planner and runner, with per-node-type
 capability declarations, an AST row-locality whitelist, chunk sizing and a
 hypothesis-based proof suite. It has exactly one production consumer: the
-streaming frontier auto-range job. `OPT-P15` replaces that job with one
-streaming group-by, after which the planner and runner are dead.
-`classify_chunk_local_polars_code` is also used for row-locality checks in
-lazy execution and trace correlation, and can stay while those checks exist.
+streaming frontier auto-range job. If `OPT-P15` shows that one streaming
+group-by keeps auto-range within its memory bound and replaces that job, the
+planner and runner are dead. `classify_chunk_local_polars_code` is also used
+for row-locality checks in lazy execution and trace correlation, and
+`EXPR-R01` may use it too, so it can stay while those checks exist.
 
-**Plan:** After `OPT-P15`, delete `chunk_plan`, `iter_chunked_frames`,
-`run_chunked_reduce`, `collect_chunked`, the capability declarations and
-their tests. Move `classify_chunk_local_polars_code` and its helpers to a
+**Plan:** After `OPT-P15` removes the consumer, delete `chunk_plan`,
+`iter_chunked_frames`, `run_chunked_reduce`, `collect_chunked`, the
+capability declarations and their tests. Move `classify_chunk_local_polars_code` and its helpers to a
 small module next to its remaining callers, or delete it too if `EXEC-R04`
 removes those callers. Remove the chunked map-reduce text from the
 execution-engine specification in the same change.
@@ -119,7 +114,8 @@ execution-engine specification no longer describes a chunked map-reduce
 mode; the chunk tests that only exercised the runner are gone and the
 row-locality classifier keeps its own tests.
 
-**Dependencies:** `OPT-P15` (optimiser). `EXEC-R04` decides whether the
+**Dependencies:** `OPT-P15` (optimiser); this package does not proceed if
+`OPT-P15` keeps the chunked auto-range path. `EXEC-R04` decides whether the
 classifier survives.
 
 **Evidence:** `src/haute/chunking.py::chunk_plan`;
@@ -161,9 +157,11 @@ the surfaces that genuinely need it and why a hard cap cannot serve them.
 If it is removed, every heavy surface runs under a hard cap and a
 memory-limited failure is typed and tested on each.
 
-**Dependencies:** `OPT-P16` (optimiser), `ROAD-WORKER-04` (background jobs),
-and `CACHE-S18` (caching), whose bounded-join work depends on the same
-decision.
+**Dependencies:** The decision has none. Carrying out a removal depends on
+`OPT-P16` (optimiser) and `ROAD-WORKER-04` (background jobs, deferred), which
+move the last uncapped surfaces into workers. Take the decision before
+investing in `CACHE-S18` (caching), whose bounded-join work extends the
+chunked writer this decision may retire.
 
 **Evidence:** `src/haute/_column_lineage.py`; `src/haute/projection.py`;
 `src/haute/_ram_estimate.py`; `src/haute/_polars_operations.py`;
@@ -199,8 +197,10 @@ deploy scoring pass their existing suites unchanged through the new walker;
 the two old cores are deleted; no function in the walker exceeds a
 cyclomatic complexity the team agrees in the specification.
 
-**Dependencies:** `CACHE-S23` (removes the dead cache-request branches first),
-`EXEC-R03`, and the `EXEC-R04` decision.
+**Dependencies:** `CACHE-S23` (removes the dead cache-request branches first);
+`EXEC-R03`, or, if the chunked runner stays, re-expressing it as one more
+policy over the walker; and the recorded `EXEC-R04` decision, not its
+implementation.
 
 **Evidence:** `src/haute/_execute_lazy.py::_execute_lazy`;
 `src/haute/_execute_lazy.py::_execute_eager_core`;

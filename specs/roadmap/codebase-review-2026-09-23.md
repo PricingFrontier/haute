@@ -23,7 +23,7 @@ The code is careful and defensive, and its failure semantics are explicit. The m
 2. **Deploy does not ship `utility/` modules.** `haute init` scaffolds them for the preamble to import, but the container and MLflow bundles omit them. Local validation passes, and the served model fails on import. (§1.2)
 3. **The user docs describe node types that no longer exist** (Data Source/Data Sink, `sourceType: "flat_file"`), and there is no Data Input/Output page. Meanwhile about 5K lines of tests (plus a 1.4K-line coverage ledger) police the *internal* spec corpus. (§1.3, §6)
 4. **`DataFrameExecutionCache` is dead in production.** About 900 source lines and about 3K test lines remain, and two specs still describe it as live. (§2.1)
-5. **The 2,251-line chunked map-reduce engine serves one feature**, the frontier auto-range estimate. That feature is itself a 300-line duplicate of the non-streaming job, and it computes what one streaming `group_by` computes. The same service's estimate endpoint already uses that `group_by`. (§2.2)
+5. **The 2,251-line chunked map-reduce engine serves one feature**, the frontier auto-range estimate. That feature is itself a 300-line duplicate of the non-streaming job, and it computes what one streaming `group_by` could compute, if that query can be shown to keep the specified memory bound. (§2.2)
 6. **The hand-maintained API contract is the top churn source.** `schemas.py`, `api/types.ts`, `types/guards.ts` and `api/client.ts` are the four most-changed files over the last three months. A Pydantic-to-TS generator already exists but covers only two pilots. (§5.1)
 7. **Two independent memory-safety systems.** A static analyser of user Polars code (lineage, projection, cardinality, RAM estimation, operator registry; about 16K lines plus about 30K lines of tests) sits alongside the hard-capped killable workers that already bound almost every heavy path. (§4.1)
 8. **Two ~1,000-line execution cores** (eager and lazy) duplicate their prologue. Preview is now "lazy plus collect the target", so they could be one walker with a collect policy. (§4.2)
@@ -39,8 +39,8 @@ Several strategic simplifications need a product decision rather than a refactor
 ### 1.1 Process-global Polars-config lock held across long work — HIGH
 - `src/haute/_polars_utils.py:688` `temporary_streaming_chunk_size` takes `_STREAMING_CHUNK_SIZE_LOCK` (a module RLock, `:31`) for the entire `with` body, then restores *all* Polars config via `pl.Config.load`.
 - The optimiser runs on daemon threads **in the server process**: setup at `routes/_optimiser_service.py:3210`, auto-range at `:4602`, the solve at `:5646`, and the frontier sweep at `routes/optimiser.py:1810`. It wraps whole pipeline execution (`:4729`), auto-range (`:2137`, `:4372`) and the solve itself (`:5488`, which encloses `_solve_ratebook`/`_solve_online`) in that scope.
-- **Effect.** `POST /api/optimiser/estimate` (a sync route, `routes/optimiser.py:1318`, which enters the scope through `_execute_pipeline` and again at `:360`), the "non-blocking" auto-range jobs, and other optimiser setups in the same process wait until a running solve releases the lock. This is a hidden global serialisation point, and it contradicts the optimiser spec's "estimates … do not reserve that global slot".
-- **Fix.** Never hold a lock across user work. Set the chunk size once per worker process at start-up, or pass it per call where Polars allows. Also see §2.4: the knob probably should not be per-request at all.
+- **Effect.** `POST /api/optimiser/estimate` (a sync route, `routes/optimiser.py:1318`, which enters the scope through `_execute_pipeline` and again at `:360`), the "non-blocking" auto-range jobs, and other optimiser setups in the same process wait until a running solve releases the lock. Preview and trace take the same scope in the server process when interactive execution runs on threads (`routes/pipeline.py:1281`, `:1463`). This is a hidden global serialisation point, and it contradicts the optimiser spec's "estimates … do not reserve that global slot".
+- **Fix.** Set the chunk size once per process at start-up and drop the per-request value (§2.4). The lock cannot simply be narrowed: Polars exposes the setting only as process-global configuration (the `POLARS_STREAMING_CHUNK_SIZE` environment variable), and the chunked writer sizes its slices from the ambient value, so overlapping scopes with different values would run with each other's setting and restore the wrong one.
 
 ### 1.2 Deployed pipelines cannot import project `utility/` modules — HIGH
 - `haute init` writes `utility/__init__.py` and `utility/features.py` ("These are imported into main.py"; `cli/_init_cmd.py:536-537`, `_scaffold.py:958-968`), and the editor has utility CRUD routes.
@@ -76,7 +76,7 @@ They have different semantics, and several depend on process cwd:
 - **Fix.** Make selection server-authoritative and delete the client derivation.
 
 ### 1.7 Swallowed exceptions that contradict "fail loud" — MED
-Gemini classified all 467 broad handlers (`except Exception`/`BaseException`/bare `except`/`suppress`); I spot-checked the classification. It found 118 re-raise, 182 convert to a typed error, 63 cleanup, 66 log-and-continue, 33 return a default and 2 silent. Most of the log-and-continue and default cases are deliberate and specified: per-step trace enrichment, CLI smoke/impact reporting, cleanup paths, and watcher resilience. Three are not:
+A grep finds 467 broad handlers (`except Exception`/`BaseException`/bare `except`/`suppress`). Gemini classified them and I spot-checked the classification; its category counts cover 464 of the 467, so three were left unclassified. It found 118 re-raise, 182 convert to a typed error, 63 cleanup, 66 log-and-continue, 33 return a default and 2 silent. Most of the log-and-continue and default cases are deliberate and specified: per-step trace enrichment, CLI smoke/impact reporting, cleanup paths, and watcher resilience. Three are not:
 - `_mlflow_io.py:554-557` `_catboost_offset_column` returns `None` on **any** exception from `model.get_metadata()`. The model is then treated as having no offset and scores from baseline 0, which is exactly the "silently score from baseline 0" outcome its own docstring warns about. Only an absent key should mean "no offset"; any error should propagate.
 - `routes/modelling.py:253-259` `estimate_training` catches any exception from the RAM estimator and returns an empty `TrainEstimateResponse()` with HTTP 200. An estimator bug becomes "unknown" in the UI, indistinguishable from the specified "estimate unavailable".
 - `routes/optimiser.py:1333-1340` `estimate_solve` does the same for the source row count.
@@ -89,7 +89,7 @@ Gemini classified all 467 broad handlers (`except Exception`/`BaseException`/bar
   - `_optimiser_apply_explainability._json_safe` (`:724`) produces `null`.
 - `_io._normalise_dtype` (`:103`) falls back to `getattr(pl, dtype_name)`, so any Polars attribute name is accepted as a dtype. Use `_polars_dtypes.parse_dtype`.
 - `_polars_utils.atomic_write` (`:826`) stages to a fixed `dest.with_suffix(".parquet.tmp")`, which collides between concurrent writers and is the wrong suffix for CSV, and it does no fsync. `_file_ops.atomic_write_bytes` already does this correctly.
-- `routes/_helpers.validate_safe_path` (`:59`) uses `Path.is_relative_to` after `resolve`, the case-sensitive containment that `_sandbox.validate_project_path` explicitly rejects in favour of `normcase` plus `commonpath`. It also raises `HTTPException` from a helper.
+- Path containment is implemented five times (§3.1). `routes/_helpers.validate_safe_path` (`:59`) uses `Path.is_relative_to` after `resolve`, and `_sandbox.validate_project_path` uses `normcase` plus `commonpath` after `resolve`. They are equivalent in practice: both resolve `..` and symlinks before comparing, and `normcase` folds case only on Windows, where `Path` comparison is already case-insensitive. The case-variant bypass that `validate_project_path`'s docstring cites cannot happen for resolved paths. No escape is known; the cost is duplication, and `validate_safe_path` raises `HTTPException` from a helper.
 - The client picks the snapshot build profile by string-matching server error text: `hooks/ensureInputSnapshots.ts:245-262` retries with `preview_eager` when `detail.startsWith("snapshot_build_unsupported")`. The server already has automatic input preparation and should choose the profile itself.
 
 ---
@@ -104,8 +104,9 @@ Gemini classified all 467 broad handlers (`except Exception`/`BaseException`/bar
 ### 2.2 The chunked map-reduce engine and the streaming auto-range path — HIGH
 - `chunking.py` (2,251 lines, plus about 3.8K lines of chunk tests including hypothesis "whitelist proofs") has exactly one production consumer: `_run_streaming_frontier_auto_range_job` (`routes/_optimiser_service.py:4240`, 308 lines). That function is largely a clone of `_run_frontier_auto_range_job` (`:3989`, 250 lines); jscpd finds 72- and 34-line clones at `4426-4530` vs `4117-4221`.
 - Both feed `_ScenarioFrontierRangeAccumulator` (`:1921`), a hand-rolled out-of-core hash-partitioned `group_by` that writes per-bucket Parquet parts.
-- The quantity computed is the sum over quotes of each quote's min/max per constraint: `group_by(quote).agg(min, max).select(sum)`, one streaming query. **The same service's estimate endpoint already runs exactly that shape** on the same frame (`routes/optimiser.py:350-372`), and the subsequent solve materialises the full `QuoteGrid` in memory anyway.
-- **Keep** `classify_chunk_local_polars_code` if the row-locality check is still wanted (`_execute_lazy.py:67`, `_trace_correlation.py:1738`). Delete the planner, runner, capability declarations, streaming plan (`_StreamingAutoRangePlan`, `_ChunkFallback`, `_build_streaming_auto_range_plan`) and the duplicate job.
+- The quantity computed is the sum over quotes of each quote's min/max per constraint: `group_by(quote).agg(min, max).select(sum)`, one streaming query. The estimate endpoint runs a similar per-quote `group_by` on the same frame (`routes/optimiser.py:350-372`), but it selects only the quote-id column, so projection can skip the scoring nodes; it says nothing about the memory needed to score and reduce the constraint columns.
+- **The catch.** The optimiser spec promises that, when the upstream chain is provably row-local, auto-range runs chunk by chunk and never materialises the fully expanded scenario frame; the chunk plan exists to chunk *before* scenario expansion. One streaming `group_by` keeps that bound only if scenario expansion and model scoring stream in Polars and the per-quote state fits in memory.
+- **Measure first.** On a fixture with high quote cardinality, scenario expansion and model scoring, compare peak memory of the chunked path and of one streaming `group_by`. If the `group_by` stays within the bound, delete the planner, runner, capability declarations, streaming plan (`_StreamingAutoRangePlan`, `_ChunkFallback`, `_build_streaming_auto_range_plan`) and the duplicate job, keeping `classify_chunk_local_polars_code` if the row-locality check is still wanted (`_execute_lazy.py:67`, `_trace_correlation.py:1738`). If not, merge only the duplicated job code.
 
 ### 2.3 Unreferenced and test-only production code — LOW-MED
 - **Zero references:**
@@ -217,10 +218,10 @@ A smaller step is available now. Run the **pipeline materialisation** in the exi
 ### 4.4 A hand-written Polars interpreter for trace formulas — HIGH
 `_expression_parser.py` (2,527 lines) contains `_ExprEvaluator` (656 lines; `_call` has CC 95) and `_BranchTrackingEvaluator`. They re-implement Polars null propagation, Kleene logic, division rules, i64 overflow and half-to-even rounding, backed by about 8K lines of tests including parity property suites. The spec admits that many methods return `None` (unsupported). The stated reason is "don't execute user code for a display question", but project code is now declared trusted (sandbox F1) and has already executed in the same run.
 
-**Evaluate the extracted sub-expressions, and each `when`/`then` condition for branch highlighting, with Polars itself on the one-row input frame.** The result is exact by construction. Keep the AST only for pretty-printing the formula.
+**Evaluate the extracted sub-expressions, and each `when`/`then` condition for branch highlighting, with Polars itself.** A row-local sub-expression can be evaluated on a one-row slice of the node's input frame, which is exact. A sub-expression that depends on other rows (aggregations, `over`, `shift`, `diff`, ranks, cumulative operations) cannot: `pl.col("x").sum().over("y")` over `x = [10, 20]` in one group is `30` for both rows but `10` and `20` row by row, as `test_window_semantics_diverge_from_single_row_approximation` records. Those need the full input frame the trace execution used, or an explicit "not computable from one row". Keep the AST only for pretty-printing the formula.
 
 ### 4.5 Trace row correlation by value matching — MED (design alternative)
-`_trace_correlation.py` (2,355 lines) exists because trace rejects row-id injection. It contains `RowScopeResolver`, carried-value proofs, ambiguity diagnostics and edge-join suffix provenance. Trace already re-executes cold under its own plan. An internal row-id column injected at the sources during trace runs, and dropped at the output, would make filter, join and `with_columns` paths exact. Value matching would then be needed only for aggregates.
+`_trace_correlation.py` (2,355 lines) exists because trace rejects row-id injection. It contains `RowScopeResolver`, carried-value proofs, ambiguity diagnostics and edge-join suffix provenance. Trace already re-executes cold under its own plan. An internal row identity carried during trace runs would make filter, join and `with_columns` paths exact, with value matching needed only for aggregates. It cannot simply be a column injected at the sources, though: user code receives the frames themselves, so an extra column changes all-column selectors (`pl.sum_horizontal(pl.all())`), `unique()` without a subset and schema-inspecting code, and dropping it at the output cannot undo that. That would break trace's pure-observation contract. The identity has to be carried only where user code cannot see it.
 
 ### 4.6 Editor recovery and repair subsystem — MED
 The subsystem is about 6.1K backend lines:
@@ -317,7 +318,7 @@ The core dependencies include `anthropic`, `openai`, `optuna`, `mlflow`, `scipy`
 
 - **Size and shape.** Backend tests total 421K lines (2.3× the source); `test_optimiser_routes.py` alone is 16,581 lines. According to the saved project notes, a full serial run takes about 40 minutes.
 - **About 20K lines sit in files named after coverage campaigns or fix waves** rather than behaviour: `test_expression_parser_coverage` (3,166), `test_train_service_coverage` (2,556), `test_algorithms_coverage` (2,349), `test_json_cache_coverage_uplift`, `test_coverage_gaps`, `test_dry_fixes`, `test_*_w3_fixes`, `test_trace_w4_fixes` and `*_coverage` ×8. The frontend has `apiInputBundle3b`/`3c` tests. This is the typical result of a 100%-changed-line coverage gate. It makes tests hard to find by feature and rewards line-shaped assertions.
-- **Deletions in §2 and §4 would remove large test blocks** with no loss of product coverage: about 3K lines for the dead cache, about 3.8K for chunking, and up to about 30K for the static-analysis stack if §4.1 is adopted.
+- **Deletions in §2 and §4 would remove large test blocks** with no loss of product coverage: about 3K lines for the dead cache, about 3.8K for chunking if §2.2's measurement allows it, and up to about 30K for the static-analysis stack if §4.1 is adopted.
 - **Suggestion.** Reorganise the tests by component and behaviour. Keep the mutation and critical-file ratchets for the genuinely safety-critical code (rating, deploy scoring, feature contracts), and relax the changed-line gate to risk-based coverage elsewhere.
 
 ---
@@ -344,12 +345,12 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §1.8 Three non-finite float encodings | `JSON-R01` ([JSON shredding](json-shredding.md)) |
 | §1.8 Permissive dtype names; dtype mapping ×7 | `IO-R01` ([IO layer](io-layer.md)) |
 | §1.8 Fixed-name atomic write; lock wrappers | `IO-R02` ([IO layer](io-layer.md)) |
-| §1.8 Weak path containment; five implementations | `SBX-R01` ([sandbox security](sandbox-security.md)) |
+| §1.8 Path containment ×5 | `SBX-R01` ([sandbox security](sandbox-security.md)) |
 | §1.8 Client picks the build profile from error text | `CACHE-S27` ([caching](caching.md)) |
 | §2.1 Dead dataframe execution cache | `CACHE-S23` ([caching](caching.md)) |
-| §2.2 Chunked runner and streaming auto-range | `OPT-P15` ([optimiser](optimiser.md)), then `EXEC-R03` ([execution engine](execution-engine.md)) |
+| §2.2 Chunked runner and streaming auto-range | `OPT-P15` ([optimiser](optimiser.md)), then `EXEC-R03` ([execution engine](execution-engine.md)) if the measurement removes the runner's consumer |
 | §2.3 Unreferenced and test-only code | `ENGQ-R01` ([engineering quality](engineering-quality.md)); the preview-reader protocol is `TRACE-R02` ([tracing](tracing.md)) |
-| §2.4 Per-request chunk-size knob | `EXEC-R02` ([execution engine](execution-engine.md)) |
+| §2.4 Per-request chunk-size knob | `EXEC-R01` ([execution engine](execution-engine.md)), with §1.1 |
 | §2.5 Assistant legacy catalogue and harnesses | `ASSIST-R01` ([assistant](assistant.md)) |
 | §2.6 Tracked artifacts and the `rating/` reference | `ENGQ-R02` ([engineering quality](engineering-quality.md)); the external assembler document is `JSON-R02` ([JSON shredding](json-shredding.md)) |
 | §3.1 Error translation | `API-R01` ([server API](server-api.md)) |
@@ -403,7 +404,7 @@ to keep in view.
 ## Suggested order
 
 1. **Quick, contained fixes:** §1.1, §1.2 (reject at validation first, bundle next), §1.3, §1.5 (reject instead of drop), §1.6, §1.7 and §1.8.
-2. **Deletions:** §2.1, §2.2, §2.3 and §2.4. These carry low risk, remove about 4K source lines and about 8K test lines, and shrink the surface for everything after them.
+2. **Deletions:** §2.1, §2.3 and §2.4, and §2.2 once its memory measurement allows it. These carry low risk, remove about 4K source lines and about 8K test lines, and shrink the surface for everything after them.
 3. **Consolidations with clear targets:** §5.1 (contract generation), §5.2 and §3.1 (errors), §1.4 (project context), §3.1 (worker primitive, RSS, locks), the §3.2 frontend helpers, and §5.4 (typed configs).
 4. **Decisions, each with a short spec change first:** §4.1, §4.2, §4.3, §4.4, then §4.5–§4.9 as product priorities allow.
 

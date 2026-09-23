@@ -35,17 +35,17 @@ computing part digests during the write, heavy-row index windows and their
 cardinality check, one chunk size per explicit build with its reported
 rows-per-part bound, reporting a preview served from the response cache
 as seeded while raising the node-data epoch only for an unseen capture
-generation, and the cache-usage surface — both budgets' generations and bytes
-against their limits, each naming the environment variable behind it, read on
-demand from one argument-free endpoint and shown in a pane opened from the
-toolbar — were delivered on the same branch and are specified in
+generation, and a cache-usage surface opened from the toolbar were delivered
+on the same branch and are specified in
 [caching](../caching/low-level.md#seed-plans), the
 [IO layer](../io-layer/low-level.md#node-output-snapshots), the
 [execution engine](../execution-engine/low-level.md), the
 [server API](../server-api/low-level.md#node-data-builds) and its
 [cache usage](../server-api/low-level.md#cache-usage) section, and
-[frontend shared](../frontend-shared/low-level.md#the-shared-data-cache),
-whose "Cache usage pane" paragraph specifies the pane itself. The
+[frontend shared](../frontend-shared/low-level.md#the-shared-data-cache).
+The byte and generation budgets that surface first reported have since been
+removed: stored data has no cache-specific limit, and the Pipeline settings
+pane lists it as a cached-data inventory with per-entry clearing. The
 review found no data-corruption defect and confirmed the chunked join against
 the native join on a lookup side whose hot key matched ten times the chunk
 size. What remains is where the delivered behaviour is narrower than the aim
@@ -55,8 +55,8 @@ or where it will not hold at scale.
 |---|---|---|
 | One store, every consumer | Node outputs, input snapshots, and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | API-input tables still live in a separate JSON cache that only the Cache as Parquet button builds (`CACHE-S08`). |
 | No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. A preview served from the response cache reports its generations as seeded, and the canvas raises the node-data epoch only for a capture generation it has not seen, so a repeat preview costs no refetch. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). |
-| Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. Node outputs have their own budget which input snapshots neither consume nor are evicted by. A preview says when a node was not cached and how to fix it. | A job's refused capture is invisible (`CACHE-S12`); the store's usage is not — the toolbar's cache pane reports both budgets. A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
-| Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A node with one input whose code is provably row-local is written a slice of its input at a time where a capture or an explicit build writes it, so its memory does not grow with the input. A pass-through node carries its parent's recipe forward, and training preparation writes its prepared parquet through the same bounded writer, slicing the frame or the recipe's input and recording which. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). |
+| Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. A preview says when a node was not cached and how to fix it. | A job's refused capture is invisible (`CACHE-S12`); what the store holds is not — the Pipeline settings pane lists it. A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
+| Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A node with one input whose code is provably row-local is written a slice of its input at a time where a capture or an explicit build writes it, so its memory does not grow with the input. A pass-through node carries its parent's recipe forward, and training preparation writes its prepared parquet through the same bounded writer, slicing the frame or the recipe's input and recording which. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). |
 | Failures are recoverable | A corrupt generation is reported, never silently repaired, and names the node whose cache to clear or rebuild; a plan whose inputs moved stops, before collection and again if they move before a capture publishes. | — |
 
 ## Priorities
@@ -237,9 +237,8 @@ route, job lifecycle, response schema); [caching](../caching/low-level.md#seed-p
 (capture-work estimate); [frontend preview](../frontend-preview-explore/low-level.md);
 [frontend shared](../frontend-shared/low-level.md#the-shared-data-cache).
 
-**Dependencies:** None. The capacity `CACHE-S12` was needed for is
-delivered: node outputs have their own budget, which input snapshots neither
-consume nor evict.
+**Dependencies:** None. Capture capacity no longer limits it: stored data has
+no cache-specific budget.
 
 **Evidence:** `src/haute/routes/pipeline.py` (`_preview_canonical_graph`,
 `_preview_timeout`); `src/haute/routes/_background_jobs.py`;

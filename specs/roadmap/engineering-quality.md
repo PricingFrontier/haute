@@ -30,9 +30,10 @@ These packages come from the
 `_assert_not_protected` (the guard is enforced through `_is_protected`
 instead). Others are called only by tests: `load_per_port_cache`,
 `resolve_point`, `_compute_schema_hash`, `validate_submodel_instances`,
-`remove_config_file`, `find_config_by_func_name`, three `_ram_estimate`
-helpers, `wrap_path_case_audit`, and the registry's `get_exec` and
-`get_codegen`. Twenty-five `*_for_tests`, `_reset_*` and `_clear_*` hooks live
+`remove_config_file`, `find_config_by_func_name`, the `_ram_estimate` helpers
+`_parquet_metadata`, `_resolve_edge_join_column_names` and
+`_resolve_target_column_names`, `wrap_path_case_audit`, and the registry's
+`get_exec` and `get_codegen`. Twenty-five `*_for_tests`, `_reset_*` and `_clear_*` hooks live
 in production modules, and `routes/_train_service.py` is a compatibility
 facade that re-exports private names mainly for tests. In the frontend, knip
 reports 8 unused files (including the banding and rating editor barrels), the
@@ -66,6 +67,9 @@ remove the larger dead blocks.
 `src/haute/_submodel_instances.py::validate_submodel_instances`;
 `src/haute/_config_io.py::remove_config_file`;
 `src/haute/_config_io.py::find_config_by_func_name`;
+`src/haute/_ram_estimate.py::_parquet_metadata`;
+`src/haute/_ram_estimate.py::_resolve_edge_join_column_names`;
+`src/haute/_ram_estimate.py::_resolve_target_column_names`;
 `src/haute/_path_case_audit.py::wrap_path_case_audit`;
 `src/haute/_registry.py::get_exec`; `src/haute/routes/_train_service.py`;
 `frontend/src/panels/editors/index.ts`;
@@ -89,8 +93,10 @@ files and one smoke test, or remove it and point `haute.toml` at a runnable
 example.
 
 **Acceptance:** No build cache or local database is tracked; `specs/roadmap/`
-holds only Markdown; the repository's default pipeline loads and previews
-from a fresh clone, or the reference project is gone.
+holds no executable probe or benchmark output (the Markdown reports and the
+provenance record the roadmap index links may stay); the repository's
+default pipeline loads and previews from a fresh clone, or the reference
+project is gone.
 
 **Dependencies:** The reference-pipeline specification changes with any
 decision about `rating/`.
@@ -106,9 +112,7 @@ generation uses `tokenize`-aware rewrites and not LibCST, while
 `_python_syntax.py` is built on LibCST. The deploy specification says the
 source-cache lease registry is process-local and uncoordinated across
 processes, while the source cache keeps cross-process lease markers. The
-caching roadmap's own summary still describes node-output budgets that the
-IO-layer specification says were removed, and repeats one gap sentence
-twice. The dataframe execution cache (`CACHE-S23`), the codegen splice
+dataframe execution cache (`CACHE-S23`), the codegen splice
 (`CODEGEN-R01`) and the route-helper fallback (`PCFG-R04`) are corrected by
 their own packages.
 
@@ -123,7 +127,7 @@ tests pass.
 
 **Evidence:** `specs/expression-parsing/high-level.md`;
 `src/haute/_python_syntax.py`; `specs/deploy/high-level.md`;
-`src/haute/_source_cache.py::_LEASE_PREFIX`; `specs/roadmap/caching.md`.
+`src/haute/_source_cache.py::_LEASE_PREFIX`.
 
 ### ENGQ-R04 — Point the gates at risk and at users
 **Why:** About 5,000 lines of tests, plus a 1,360-line coverage ledger, keep
