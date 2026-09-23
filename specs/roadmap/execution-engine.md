@@ -18,7 +18,7 @@ investigation on pull request #231.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| EXEC-R01 | Planned | P2 | The streaming chunk size is set once per process, so no request holds a lock across user work. |
+| EXEC-R01 | Planned | P2 | The streaming chunk size is one editor setting applied when it changes, so no request holds a lock across user work. |
 | EXEC-R03 | Planned | P3 | The chunked map-reduce planner and runner are removed with their only consumer. |
 | EXEC-R04 | Decision | P2 | One memory-safety mechanism: hard-capped workers, or static proofs where no cap exists. |
 | EXEC-R05 | Planned | P2 | One graph walker builds every execution; eager, preview, trace and scoring differ only in their collect policy. |
@@ -38,7 +38,7 @@ for, because the walker's shape depends on whether projection proofs survive;
 are next open. `EXEC-R09` is independent of the others and does not wait for
 the `EXEC-R04` decision.
 
-### EXEC-R01 — The streaming chunk size is process configuration
+### EXEC-R01 — The streaming chunk size is one editor setting
 **Why:** `temporary_streaming_chunk_size` takes the module-level
 `_STREAMING_CHUNK_SIZE_LOCK` and holds it for the whole `with` body, then
 restores every Polars setting with `pl.Config.load`. The optimiser runs
@@ -56,28 +56,42 @@ process-global configuration (`set_streaming_chunk_size` writes the
 `POLARS_STREAMING_CHUNK_SIZE` environment variable), and Haute's chunked
 writer sizes its slices from the ambient value. If two scopes with different
 values overlapped, each would run with the other's setting and restore the
-wrong one on exit. The lock exists only because the value varies per request:
-`streaming_chunk_size` is a user setting in the pipeline settings modal and a
-field on thirteen request models, threaded through every route and service,
-with a 1,617-line test module proving it reaches every call site. An analyst
-has no basis for choosing a Polars engine knob per request.
+wrong one on exit. The lock exists only because every request applies its
+own value through a save, set, run and restore scope: `streaming_chunk_size`
+is a field on thirteen request models, threaded through every route and
+service, with a 1,617-line test module proving it reaches every call site.
+Yet the value never changes results, only memory use and speed, and the
+editor sends the same session setting with every request. The setting
+itself is wanted: "Chunk rows" in the pipeline settings modal is how a user
+lowers the chunk size when a wide dataset runs out of memory while
+developing. A deployed pipeline scores small requests and takes no chunk
+size, so deployment is unaffected.
 
-**Plan:** Read the chunk size once from `haute.toml` or the environment when
-the server and each worker process start, and apply it there. Remove the
-field from the request models, the frontend settings store and modal, and
-the client helpers. Delete `temporary_streaming_chunk_size` and its lock
-rather than narrowing them. Replace the threading tests with one test that
-the configured value is applied at start-up. Update the execution-engine and
-frontend-shared specifications in the same change.
+**Plan:** Keep "Chunk rows" in the pipeline settings modal, backed by one
+server-owned editor setting that a settings endpoint reads and changes. A
+change sets Polars' process value in the server at once, so server-thread
+executions started afterwards use it. Spawned workers inherit it at spawn,
+and each task handed to a warm interactive worker carries the server's
+current value, which the worker applies before running the task (a worker
+runs one task at a time, so no lock is needed). The value stays session state,
+as today: it resets to the default when the server restarts. Remove the field
+from the thirteen request models and the client helpers, delete
+`temporary_streaming_chunk_size` and `_STREAMING_CHUNK_SIZE_LOCK`, and let the
+chunked writer's native sinks run with the process value; their row count is
+never budgeted, only the sliced paths are. Replace the threading tests with
+tests of the setting's reach and of the concurrency. Update the
+execution-engine, server-api, frontend-shared and optimiser specifications in
+the same change.
 
 **Acceptance:** No request schema carries `streaming_chunk_size` and the
-frontend sends none; no production code changes Polars configuration after
-process start-up, and the scoped override and its lock are gone; a configured
-value is observed inside a spawned worker and in the server process; a test
-runs an optimiser solve stub that blocks during its execution and proves a
-concurrent estimate request on another thread completes without waiting for
-it; the optimiser specification's statement that estimates and auto-range
-jobs do not reserve the solve slot is true under test.
+frontend sends none; changing "Chunk rows" is observed by the next
+server-thread execution, by a newly spawned worker, and by the next task on
+an already warm interactive worker; no production code holds a lock across
+user work to apply the chunk size, and the scoped override and its lock are
+gone; a test runs an optimiser solve stub that blocks during its execution and
+proves a concurrent estimate request on another thread completes without
+waiting for it; the optimiser specification's statement that estimates and
+auto-range jobs do not reserve the solve slot is true under test.
 
 **Dependencies:** None.
 
