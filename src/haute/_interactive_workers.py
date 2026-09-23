@@ -27,6 +27,7 @@ from haute._native_memory_limit import (
     native_memory_backend_scope,
     native_memory_caps_supported,
 )
+from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
 from haute._process_memory import process_rss_bytes
 from haute._worker_isolation import (
     IsolatedWorkerError,
@@ -218,9 +219,21 @@ def _interactive_worker_entrypoint(
             request = pickle.loads(raw_request)
             if request == ("shutdown",):
                 return
-            if not isinstance(request, tuple) or len(request) != 7 or request[0] != "run":
+            if not isinstance(request, tuple) or len(request) != 8 or request[0] != "run":
                 raise RuntimeError("interactive worker received a malformed request")
-            _kind, job_id, function, args, kwargs, native_growth, native_required = request
+            (
+                _kind,
+                job_id,
+                function,
+                args,
+                kwargs,
+                native_growth,
+                native_required,
+                streaming_chunk_size,
+            ) = request
+            # A warm worker outlives the server's setting: each task carries the
+            # value the server runs with when it hands the task over.
+            set_streaming_chunk_size(streaming_chunk_size)
             applied = False
             try:
                 if native_growth is not None:
@@ -464,6 +477,7 @@ class InteractiveWorkerPool:
                 kwargs,
                 memory_growth_limit_bytes,
                 require_memory_limit,
+                current_streaming_chunk_size(),
             )
             try:
                 serialised = pickle.dumps(request, protocol=pickle.HIGHEST_PROTOCOL)

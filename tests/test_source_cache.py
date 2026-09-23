@@ -25,7 +25,7 @@ from polars.testing import assert_frame_equal
 import haute._source_cache as source_cache_module
 from haute._execution_context import ExecutionProfile
 from haute._hashing import content_hash
-from haute._polars_utils import temporary_streaming_chunk_size
+from haute._polars_utils import set_streaming_chunk_size
 from haute._source_cache import (
     SourceCacheBuildContext,
     SourceCacheCorruptError,
@@ -1202,7 +1202,10 @@ def test_lease_generation_rejects_an_unknown_generation(tmp_path: Path) -> None:
             pass
 
 
-def test_multi_part_generation_publishes_verifies_and_scans_parts_in_order(tmp_path: Path) -> None:
+def test_multi_part_generation_publishes_verifies_and_scans_parts_in_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
     store = SourceCacheStore(tmp_path)
     source_parquet = tmp_path / "source.parquet"
     expected = pl.DataFrame({"id": list(range(10)), "val": [f"v{i}" for i in range(10)]})
@@ -1211,12 +1214,12 @@ def test_multi_part_generation_publishes_verifies_and_scans_parts_in_order(tmp_p
     identity = _identity(path="source.parquet", format="parquet")
     builder = _LazyBuilder(pl.scan_parquet(source_parquet))
 
-    with temporary_streaming_chunk_size(3):
-        generation = store.build(
-            identity,
-            builder,
-            context=_context(),
-        )
+    set_streaming_chunk_size(3)
+    generation = store.build(
+        identity,
+        builder,
+        context=_context(),
+    )
 
     assert len(generation.data_paths) == 4
     expected_part_names = [f"part-{i:05d}.parquet" for i in range(4)]
@@ -1229,7 +1232,10 @@ def test_multi_part_generation_publishes_verifies_and_scans_parts_in_order(tmp_p
 
 
 @pytest.mark.parametrize("corrupt_mode", ["truncate", "flip_byte"])
-def test_corrupting_a_later_part_is_corruption(tmp_path: Path, corrupt_mode: str) -> None:
+def test_corrupting_a_later_part_is_corruption(
+    tmp_path: Path, corrupt_mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
     store = SourceCacheStore(tmp_path)
     source_parquet = tmp_path / "source.parquet"
     expected = pl.DataFrame({"id": list(range(10)), "val": [f"v{i}" for i in range(10)]})
@@ -1238,12 +1244,12 @@ def test_corrupting_a_later_part_is_corruption(tmp_path: Path, corrupt_mode: str
     identity = _identity(path="source.parquet", format="parquet")
     builder = _LazyBuilder(pl.scan_parquet(source_parquet))
 
-    with temporary_streaming_chunk_size(3):
-        generation = store.build(
-            identity,
-            builder,
-            context=_context(),
-        )
+    set_streaming_chunk_size(3)
+    generation = store.build(
+        identity,
+        builder,
+        context=_context(),
+    )
 
     assert len(generation.data_paths) == 4
     rel_dir = generation.directory.relative_to(tmp_path)

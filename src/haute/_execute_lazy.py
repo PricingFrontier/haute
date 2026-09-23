@@ -2155,7 +2155,6 @@ def _execute_lazy(
                                     if execution_context is not None
                                     else ExecutionProfile.LAZY_SINK
                                 ),
-                                streaming_chunk_size=cache_request.streaming_chunk_size,
                                 fast_checkpoint=cache_request.fast_checkpoint,
                             )
                     except execution_facade.CacheArtifactTooLargeError as exc:

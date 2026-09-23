@@ -8,9 +8,14 @@ const mockFetchCacheNodes = vi.fn()
 
 const mockClearCacheIdentities = vi.fn()
 
+const mockGetExecutionSettings = vi.fn()
+const mockPutExecutionSettings = vi.fn()
+
 vi.mock("../../api/client", () => ({
   fetchCacheNodes: (...args: unknown[]) => mockFetchCacheNodes(...args),
   clearCacheIdentities: (...args: unknown[]) => mockClearCacheIdentities(...args),
+  getExecutionSettings: (...args: unknown[]) => mockGetExecutionSettings(...args),
+  putExecutionSettings: (...args: unknown[]) => mockPutExecutionSettings(...args),
 }))
 
 import PipelineSettingsModal from "../PipelineSettingsModal"
@@ -70,6 +75,10 @@ describe("PipelineSettingsModal", () => {
     mockFetchCacheNodes.mockResolvedValue(nodes())
     mockClearCacheIdentities.mockReset()
     mockClearCacheIdentities.mockResolvedValue({ schema_version: 1, cleared: [], freed_bytes: 0 })
+    mockGetExecutionSettings.mockReset()
+    mockGetExecutionSettings.mockResolvedValue({ streaming_chunk_size: 500_000 })
+    mockPutExecutionSettings.mockReset()
+    mockPutExecutionSettings.mockImplementation(async (size: number) => ({ streaming_chunk_size: size }))
     useGraphStore.setState({ nodes: [], edges: [], preamble: "", submodels: {} })
   })
 
@@ -486,8 +495,17 @@ describe("PipelineSettingsModal preview settings", () => {
   beforeEach(() => {
     mockFetchCacheNodes.mockReset()
     mockFetchCacheNodes.mockResolvedValue(nodes())
+    mockGetExecutionSettings.mockReset()
+    mockGetExecutionSettings.mockResolvedValue({ streaming_chunk_size: 500_000 })
+    mockPutExecutionSettings.mockReset()
+    mockPutExecutionSettings.mockImplementation(async (size: number) => ({ streaming_chunk_size: size }))
     useGraphStore.setState({ nodes: [], edges: [], preamble: "", submodels: {} })
-    useSettingsStore.setState({ rowLimit: 1000, streamingChunkSize: 500_000 })
+    useSettingsStore.setState({
+      rowLimit: 1000,
+      streamingChunkSize: 500_000,
+      _confirmedStreamingChunkSize: 500_000,
+      _pendingStreamingChunkSize: null,
+    })
   })
 
   afterEach(cleanup)
@@ -539,35 +557,77 @@ describe("PipelineSettingsModal preview settings", () => {
     expect(getChunkInput().value).toBe("250000")
   })
 
-  it("chunk input updates the streaming chunk size in the store", () => {
+  it("loads the server's chunk size when the pane opens", async () => {
+    mockGetExecutionSettings.mockResolvedValue({ streaming_chunk_size: 777_000 })
+    render(<PipelineSettingsModal onClose={vi.fn()} />)
+    await waitFor(() => expect(mockGetExecutionSettings).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(getChunkInput().value).toBe("777000"))
+  })
+
+  it("does not commit on every keystroke", () => {
     render(<PipelineSettingsModal onClose={vi.fn()} />)
     fireEvent.change(getChunkInput(), { target: { value: "100000" } })
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(100_000)
-  })
-
-  it("chunk input clamps sub-1000 values up to 1000", () => {
-    render(<PipelineSettingsModal onClose={vi.fn()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "5" } })
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(1000)
-  })
-
-  it("chunk input ignores non-numeric input (no setter call, value preserved)", () => {
-    useSettingsStore.setState({ streamingChunkSize: 250_000 })
-    render(<PipelineSettingsModal onClose={vi.fn()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "abc" } })
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(250_000)
-  })
-
-  it("chunk input accepts scientific notation (5e5 -> 500000)", () => {
-    render(<PipelineSettingsModal onClose={vi.fn()} />)
-    fireEvent.change(getChunkInput(), { target: { value: "5e5" } })
+    expect(mockPutExecutionSettings).not.toHaveBeenCalled()
     expect(useSettingsStore.getState().streamingChunkSize).toBe(500_000)
   })
 
-  it("chunk input clamps over-max values to the backend bound (10_000_000)", () => {
+  it("commits the draft on blur", async () => {
+    render(<PipelineSettingsModal onClose={vi.fn()} />)
+    fireEvent.change(getChunkInput(), { target: { value: "100000" } })
+    fireEvent.blur(getChunkInput())
+    await waitFor(() => expect(mockPutExecutionSettings).toHaveBeenCalledWith(100_000))
+    expect(useSettingsStore.getState().streamingChunkSize).toBe(100_000)
+  })
+
+  it("commits the draft on Enter", async () => {
+    render(<PipelineSettingsModal onClose={vi.fn()} />)
+    fireEvent.change(getChunkInput(), { target: { value: "100000" } })
+    fireEvent.keyDown(getChunkInput(), { key: "Enter" })
+    await waitFor(() => expect(mockPutExecutionSettings).toHaveBeenCalledWith(100_000))
+    expect(useSettingsStore.getState().streamingChunkSize).toBe(100_000)
+  })
+
+  it("clamps sub-1000 drafts up to 1000 on commit", async () => {
+    render(<PipelineSettingsModal onClose={vi.fn()} />)
+    fireEvent.change(getChunkInput(), { target: { value: "5" } })
+    fireEvent.blur(getChunkInput())
+    await waitFor(() => expect(mockPutExecutionSettings).toHaveBeenCalledWith(1000))
+  })
+
+  it("clamps over-max drafts down to the backend bound (10_000_000) on commit", async () => {
     render(<PipelineSettingsModal onClose={vi.fn()} />)
     fireEvent.change(getChunkInput(), { target: { value: "15000000" } })
-    expect(useSettingsStore.getState().streamingChunkSize).toBe(10_000_000)
+    fireEvent.blur(getChunkInput())
+    await waitFor(() => expect(mockPutExecutionSettings).toHaveBeenCalledWith(10_000_000))
+  })
+
+  it("ignores a non-numeric draft, falling back to the store value", () => {
+    useSettingsStore.setState({ streamingChunkSize: 250_000 })
+    render(<PipelineSettingsModal onClose={vi.fn()} />)
+    fireEvent.change(getChunkInput(), { target: { value: "abc" } })
+    fireEvent.blur(getChunkInput())
+    expect(mockPutExecutionSettings).not.toHaveBeenCalled()
+    expect(getChunkInput().value).toBe("250000")
+    expect(useSettingsStore.getState().streamingChunkSize).toBe(250_000)
+  })
+
+  it("ignores an empty draft, falling back to the store value", () => {
+    useSettingsStore.setState({ streamingChunkSize: 250_000 })
+    render(<PipelineSettingsModal onClose={vi.fn()} />)
+    fireEvent.change(getChunkInput(), { target: { value: "" } })
+    fireEvent.blur(getChunkInput())
+    expect(mockPutExecutionSettings).not.toHaveBeenCalled()
+    expect(getChunkInput().value).toBe("250000")
+  })
+
+  it("restores the previous value and toasts an error when the commit fails", async () => {
+    useSettingsStore.setState({ streamingChunkSize: 500_000 })
+    mockPutExecutionSettings.mockRejectedValue(new Error("boom"))
+    render(<PipelineSettingsModal onClose={vi.fn()} />)
+    fireEvent.change(getChunkInput(), { target: { value: "100000" } })
+    fireEvent.blur(getChunkInput())
+    await waitFor(() => expect(mockPutExecutionSettings).toHaveBeenCalled())
+    await waitFor(() => expect(useSettingsStore.getState().streamingChunkSize).toBe(500_000))
   })
 
   it("chunk input has max attribute matching the backend bound", () => {

@@ -66,6 +66,8 @@ import {
   deleteJsonCache,
   dryRunRemoveUnavailableNode,
   applyRemoveUnavailableNode,
+  getExecutionSettings,
+  putExecutionSettings,
   getMlflowSettings,
   putMlflowSettings,
   testMlflowConnection,
@@ -550,6 +552,34 @@ describe("request() core via loadPipeline", () => {
     await expect(loadPipeline()).rejects.toThrow(ApiError)
   })
 
+  it("getExecutionSettings issues a GET and parses the response", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ streaming_chunk_size: 500_000 }))
+
+    const result = await getExecutionSettings()
+
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/execution-settings")
+    expect(init?.method ?? "GET").toBe("GET")
+    expect(result.streaming_chunk_size).toBe(500_000)
+  })
+
+  it("getExecutionSettings rejects a malformed response", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ streaming_chunk_size: "not-a-number" }))
+    await expect(getExecutionSettings()).rejects.toThrow()
+  })
+
+  it("putExecutionSettings issues a PUT with the JSON payload and parses the response", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ streaming_chunk_size: 250_000 }))
+
+    const result = await putExecutionSettings(250_000)
+
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/execution-settings")
+    expect(init.method).toBe("PUT")
+    expect(JSON.parse(init.body as string)).toEqual({ streaming_chunk_size: 250_000 })
+    expect(result.streaming_chunk_size).toBe(250_000)
+  })
+
   it("putMlflowSettings issues a PUT with the JSON payload and parses the response", async () => {
     const settingsBody = {
       section_present: true,
@@ -715,7 +745,6 @@ describe("endpoint contracts", () => {
       source: "staging",
       requestedPreviewColumns: ["premium"],
       portLabel: "rated",
-      streamingChunkSize: 25,
       timeout: 2_000,
     })
     await previewRecoveryNode({
@@ -736,7 +765,6 @@ describe("endpoint contracts", () => {
       source: "staging",
       requested_preview_columns: ["premium"],
       port_label: "rated",
-      streaming_chunk_size: 25,
     })
     expect(JSON.parse(mockFetch.mock.calls[1][1].body)).toEqual({
       source_file: "rating/main.py",
@@ -1657,14 +1685,13 @@ describe("request() edge cases", () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
-// streaming_chunk_size plumbed through pipeline / modelling / optimiser
-// endpoints. Each function takes the chunk size and must emit it on the
-// request body so the backend can size its streaming buffers. Asserting
-// per-endpoint catches future regressions where the param is added to the
-// signature but dropped from the body (or vice versa).
+// No request carries streaming_chunk_size: it is a single server-owned
+// setting (GET/PUT /api/execution-settings), never part of a per-request
+// payload. Regression coverage for pipeline / modelling / optimiser
+// endpoints that used to accept it.
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("streaming_chunk_size in request bodies", () => {
+describe("no request carries streaming_chunk_size", () => {
   beforeEach(() => {
     mockFetch.mockImplementation((url: string) => {
       if (url === "/api/pipeline/preview") return jsonResponse(makePreviewResponse())
@@ -1677,46 +1704,48 @@ describe("streaming_chunk_size in request bodies", () => {
     })
   })
 
-  it("previewNode body includes streaming_chunk_size when supplied", async () => {
-    await previewNode({ graph: dummyGraph, nodeId: "node1", rowLimit: 50, source: "live", streamingChunkSize: 42 })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
-  })
-
-  it("previewNode body omits streaming_chunk_size when not supplied", async () => {
+  it("previewNode body omits streaming_chunk_size", async () => {
     await previewNode({ graph: dummyGraph, nodeId: "node1", rowLimit: 50, source: "live" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
 
-  it("traceCell body includes streaming_chunk_size when supplied", async () => {
-    await traceCell({
-      graph: dummyGraph,
-      row_index: 0,
-      target_node_id: "n1",
-      seed_plan: [],
-      streamingChunkSize: 42,
-    })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
-  })
-
-  it("traceCell body omits streaming_chunk_size when not supplied", async () => {
+  it("traceCell body omits streaming_chunk_size", async () => {
     await traceCell({ graph: dummyGraph, row_index: 0, target_node_id: "n1", seed_plan: [] })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
 
-  it("writeOutput body includes streaming_chunk_size when supplied", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ status: "ok" }))
-    await writeOutput({ graph: dummyGraph, nodeId: "sink1", source: "live", streamingChunkSize: 42 })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
-  })
-
-  it("writeOutput body omits streaming_chunk_size when not supplied", async () => {
+  it("writeOutput body omits streaming_chunk_size", async () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "ok" }))
     await writeOutput({ graph: dummyGraph, nodeId: "sink1", source: "live" })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  })
+
+  it("trainModel body omits streaming_chunk_size", async () => {
+    await trainModel({ graph: dummyGraph, node_id: "model1" })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  })
+
+  it("solveOptimiser body omits streaming_chunk_size", async () => {
+    await solveOptimiser({ graph: dummyGraph, node_id: "opt1" })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  })
+
+  it("estimateOptimiserSolve body omits streaming_chunk_size", async () => {
+    const { estimateOptimiserSolve } = await import("../client")
+    await estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt1" })
+    const [, opts] = mockFetch.mock.calls[0]
+    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
+  })
+
+  it("startOptimiserFrontierAutoRange body omits streaming_chunk_size", async () => {
+    const { startOptimiserFrontierAutoRange } = await import("../client")
+    mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "range-job-1", error: null }))
+    await startOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
@@ -1746,61 +1775,6 @@ describe("streaming_chunk_size in request bodies", () => {
     await clearInputCache(source)
     expect(mockFetch.mock.calls[4][0]).toBe("/api/input-cache/clear")
     expect(JSON.parse(mockFetch.mock.calls[4][1].body)).toEqual(source)
-  })
-
-  it("trainModel body includes streaming_chunk_size when supplied", async () => {
-    await trainModel({ graph: dummyGraph, node_id: "model1", streamingChunkSize: 42 })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
-  })
-
-  it("trainModel body omits streaming_chunk_size when not supplied", async () => {
-    await trainModel({ graph: dummyGraph, node_id: "model1" })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
-  })
-
-  it("solveOptimiser body includes streaming_chunk_size when supplied", async () => {
-    await solveOptimiser({ graph: dummyGraph, node_id: "opt1", streamingChunkSize: 42 })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
-  })
-
-  it("solveOptimiser body omits streaming_chunk_size when not supplied", async () => {
-    await solveOptimiser({ graph: dummyGraph, node_id: "opt1" })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
-  })
-
-  it("estimateOptimiserSolve body includes streaming_chunk_size when supplied", async () => {
-    const { estimateOptimiserSolve } = await import("../client")
-    await estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt1", streamingChunkSize: 42 })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
-  })
-
-  it("estimateOptimiserSolve body omits streaming_chunk_size when not supplied", async () => {
-    const { estimateOptimiserSolve } = await import("../client")
-    await estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt1" })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
-  })
-
-  it("startOptimiserFrontierAutoRange body includes streaming_chunk_size when supplied", async () => {
-    const { startOptimiserFrontierAutoRange } = await import("../client")
-    mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "range-job-1", error: null }))
-    await startOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1", streamingChunkSize: 42 })
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/optimiser/frontier/auto-range/start")
-    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
-  })
-
-  it("startOptimiserFrontierAutoRange body omits streaming_chunk_size when not supplied", async () => {
-    const { startOptimiserFrontierAutoRange } = await import("../client")
-    mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "range-job-1", error: null }))
-    await startOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
 
   it("sends the exact scoped node-save body and parses the authoritative document", async () => {

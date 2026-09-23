@@ -404,9 +404,9 @@ def test_exception_payload_and_entrypoint_protocols(monkeypatch: pytest.MonkeyPa
     assert worker_mod._public_exception_payload(BadPayloadError()) is None
     request = _Queue(
         [
-            pickle.dumps(("run", "one", _returns, (3,), {}, None, False)),
+            pickle.dumps(("run", "one", _returns, (3,), {}, None, False, 500_000)),
             pickle.dumps(("ack", "one")),
-            pickle.dumps(("run", "two", _raises, (), {}, None, False)),
+            pickle.dumps(("run", "two", _raises, (), {}, None, False, 500_000)),
             pickle.dumps(("ack", "two")),
             pickle.dumps(("shutdown",)),
         ]
@@ -620,7 +620,7 @@ def test_entrypoint_preload_unpicklable_and_malformed_requests(
     monkeypatch.setattr(worker_mod.importlib, "import_module", imported.append)
     requests = _Queue(
         [
-            pickle.dumps(("run", "x", _unpicklable_result, (), {}, None, False)),
+            pickle.dumps(("run", "x", _unpicklable_result, (), {}, None, False, 500_000)),
             pickle.dumps(("ack", "x")),
             pickle.dumps(("shutdown",)),
         ]
@@ -662,7 +662,9 @@ def test_entrypoint_holds_native_lease_until_matching_ack_then_releases(
     )
     requests = _Queue(
         [
-            pickle.dumps(("run", "x", native.current_native_memory_backend, (), {}, 128, True)),
+            pickle.dumps(
+                ("run", "x", native.current_native_memory_backend, (), {}, 128, True, 500_000)
+            ),
             pickle.dumps(("ack", "x")),
             pickle.dumps(("shutdown",)),
         ]
@@ -699,7 +701,7 @@ def test_entrypoint_rejects_stale_ack_without_restoring_native_lease(
         worker_mod._interactive_worker_entrypoint(
             _Queue(
                 [
-                    pickle.dumps(("run", "x", _returns, (3,), {}, 128, True)),
+                    pickle.dumps(("run", "x", _returns, (3,), {}, 128, True, 500_000)),
                     pickle.dumps(("ack", "other")),
                 ]
             ),
@@ -1441,7 +1443,7 @@ def test_entrypoint_reports_native_apply_and_restore_failures(
         def put(self, value: bytes) -> None:
             self.puts.append(value)
 
-    request = pickle.dumps(("run", "job", _returns, (), {}, 10, True))
+    request = pickle.dumps(("run", "job", _returns, (), {}, 10, True, 500_000))
     requests = Queue([request, pickle.dumps(("ack", "job")), pickle.dumps(("shutdown",))])
     results = Queue([])
     monkeypatch.setattr(

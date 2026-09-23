@@ -564,7 +564,6 @@ class TrainingPreparationRequest:
     parquet_path: str
     config: dict[str, Any]
     project_root: str
-    streaming_chunk_size: int | None = None
     row_limit: int | None = None
     exclude: list[str] | None = None
     keep_columns: list[str] | None = None
@@ -774,10 +773,7 @@ def _execute_and_sink_training_frame(
         WriteRecipe,
         write_file,
     )
-    from haute._polars_utils import (
-        DEFAULT_STREAMING_CHUNK_SIZE,
-        _malloc_trim,
-    )
+    from haute._polars_utils import _malloc_trim
     from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir, _preview_cache
     from haute.modelling._algorithms import _mem_checkpoint, _mem_log_path
     from haute.trace import _cache as _trace_cache
@@ -817,7 +813,6 @@ def _execute_and_sink_training_frame(
         )
     ) as plan:
         _mem_checkpoint("before _execute_lazy")
-        chunk_size = request.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
         write_recipes: dict[str, WriteRecipe] = {}
         lazy_outputs, _order, _parents, _id_to_name = execute_lazy_graph(
             graph,
@@ -906,7 +901,6 @@ def _execute_and_sink_training_frame(
                     tmp_parquet,
                     target_lf,
                     recipe=recipe,
-                    chunk_rows=chunk_size,
                     execution_context=execution_context,
                     node_id=node_id,
                 )
@@ -931,7 +925,6 @@ def _execute_and_sink_training_frame(
                 written = write_file(
                     tmp_parquet,
                     target_lf,
-                    chunk_rows=chunk_size,
                     execution_context=execution_context,
                     node_id=node_id,
                 )

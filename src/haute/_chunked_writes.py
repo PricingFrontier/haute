@@ -416,7 +416,7 @@ class _Parts:
 
 
 def _chunk_rows(chunk_rows: int | None) -> int:
-    # Unset, a write follows the chunk size its request runs under.
+    # Unset, a write slices at the process streaming chunk size.
     rows = current_streaming_chunk_size() if chunk_rows is None else chunk_rows
     if isinstance(rows, bool) or not isinstance(rows, int) or rows <= 0:
         raise ValueError("chunk_rows must be a positive integer")
@@ -853,7 +853,7 @@ def write_file(
     if recipe is not None and recipe.fn is not None:
         check_recipe_equivalence(recipe, frame)
         if not sliceable(recipe.input):
-            bounded_sink(frame, dest, streaming_chunk_size=rows, atomic=atomic)
+            bounded_sink(frame, dest, atomic=atomic)
             return _report(
                 "native",
                 chunk_rows=None,
@@ -879,7 +879,7 @@ def write_file(
         )
 
     if recipe is not None:
-        bounded_sink(frame, dest, streaming_chunk_size=rows, atomic=atomic)
+        bounded_sink(frame, dest, atomic=atomic)
         return _report(
             "native",
             chunk_rows=None,
@@ -888,7 +888,7 @@ def write_file(
             node_id=node_id,
         )
 
-    bounded_sink(frame, dest, streaming_chunk_size=rows, atomic=atomic)
+    bounded_sink(frame, dest, atomic=atomic)
     return _report(
         "native",
         chunk_rows=None,

@@ -11,86 +11,30 @@ These packages come from the
 found several generations of machinery for the same concern side by side:
 two thousand-line execution cores, a chunked runner with one consumer, a
 static memory prover beside the hard worker caps, and one process-wide lock
-that serialises unrelated optimiser work.
+that serialises unrelated optimiser work. `EXEC-R09` comes from the CI
+investigation on pull request #231.
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| EXEC-R01 | Planned | P2 | The streaming chunk size is set once per process, so no request holds a lock across user work. |
 | EXEC-R03 | Planned | P3 | The chunked map-reduce planner and runner are removed with their only consumer. |
 | EXEC-R04 | Decision | P2 | One memory-safety mechanism: hard-capped workers, or static proofs where no cap exists. |
 | EXEC-R05 | Planned | P2 | One graph walker builds every execution; eager, preview, trace and scoring differ only in their collect policy. |
 | EXEC-R06 | Planned | P3 | Process and host memory are read by one module. |
 | EXEC-R07 | Planned | P3 | `ExecutionContext` is split into cancellation, admission, and evidence parts. |
 | EXEC-R08 | Planned | P3 | Graph traversal has one implementation. |
+| EXEC-R09 | Planned | P2 | A capped Linux worker without a delegated cgroup has room for the threads it needs, and a real overrun is a typed memory-limit failure. |
 
 ## Planned improvements
 
-`EXEC-R01` goes first because it removes a user-visible stall.
 `EXEC-R03` follows the optimiser's `OPT-P15` if that package removes the
 runner's only consumer. `EXEC-R04` is a decision that `EXEC-R05` should wait
 for, because the walker's shape depends on whether projection proofs survive;
 `EXEC-R05` needs only the recorded decision, not its implementation.
 `EXEC-R06`–`EXEC-R08` are independent and can be taken whenever their files
-are next open.
-
-### EXEC-R01 — The streaming chunk size is process configuration
-**Why:** `temporary_streaming_chunk_size` takes the module-level
-`_STREAMING_CHUNK_SIZE_LOCK` and holds it for the whole `with` body, then
-restores every Polars setting with `pl.Config.load`. The optimiser runs
-setup, auto-range and the solve on daemon threads in the server process, and
-wraps the whole pipeline execution, the auto-range reduction and the solve
-itself in that scope; preview and trace take the same scope in the server
-process when interactive execution runs on threads. Any other server thread
-that enters the scope waits for the solve to finish: the synchronous estimate
-endpoint, a second optimiser setup, and the auto-range jobs that the
-optimiser specification says do not reserve the solve slot. The lock is a
-hidden global serialisation point.
-
-The lock cannot simply be narrowed. Polars exposes the chunk size only as
-process-global configuration (`set_streaming_chunk_size` writes the
-`POLARS_STREAMING_CHUNK_SIZE` environment variable), and Haute's chunked
-writer sizes its slices from the ambient value. If two scopes with different
-values overlapped, each would run with the other's setting and restore the
-wrong one on exit. The lock exists only because the value varies per request:
-`streaming_chunk_size` is a user setting in the pipeline settings modal and a
-field on thirteen request models, threaded through every route and service,
-with a 1,617-line test module proving it reaches every call site. An analyst
-has no basis for choosing a Polars engine knob per request.
-
-**Plan:** Read the chunk size once from `haute.toml` or the environment when
-the server and each worker process start, and apply it there. Remove the
-field from the request models, the frontend settings store and modal, and
-the client helpers. Delete `temporary_streaming_chunk_size` and its lock
-rather than narrowing them. Replace the threading tests with one test that
-the configured value is applied at start-up. Update the execution-engine and
-frontend-shared specifications in the same change.
-
-**Acceptance:** No request schema carries `streaming_chunk_size` and the
-frontend sends none; no production code changes Polars configuration after
-process start-up, and the scoped override and its lock are gone; a configured
-value is observed inside a spawned worker and in the server process; a test
-runs an optimiser solve stub that blocks during its execution and proves a
-concurrent estimate request on another thread completes without waiting for
-it; the optimiser specification's statement that estimates and auto-range
-jobs do not reserve the solve slot is true under test.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_polars_utils.py::temporary_streaming_chunk_size`;
-`src/haute/_polars_utils.py::_STREAMING_CHUNK_SIZE_LOCK`;
-`src/haute/_chunked_writes.py::_chunk_rows`;
-`src/haute/routes/_optimiser_service.py::_execute_pipeline`;
-`src/haute/routes/_optimiser_service.py::_launch_background`;
-`src/haute/routes/_optimiser_service.py::_estimate_scenario_frontier_ranges`;
-`src/haute/routes/optimiser.py::_optimiser_input_metrics`;
-`src/haute/routes/optimiser.py::estimate_solve`;
-`src/haute/routes/pipeline.py::preview_node`;
-`src/haute/routes/pipeline.py::trace_row`; `src/haute/schemas.py`;
-`frontend/src/components/PipelineSettingsModal.tsx`;
-`frontend/src/api/client.ts`; `frontend/src/stores/useSettingsStore.ts`;
-`tests/test_streaming_chunk_size_threading.py`.
+are next open. `EXEC-R09` is independent of the others and does not wait for
+the `EXEC-R04` decision.
 
 ### EXEC-R03 — Retire the chunked map-reduce runner
 **Why:** `chunking.py` is a 2,251-line planner and runner, with per-node-type
@@ -283,3 +227,44 @@ topology, projection, trace and recovery suites pass.
 `src/haute/projection.py::_canonical_topological_ranks`;
 `src/haute/executor.py::_preview_preparation_order`;
 `src/haute/trace.py::_trace_preparation_order`.
+
+### EXEC-R09 — An address-space cap leaves room for a worker's threads
+**Why:** On Linux a capped worker gets a cgroup v2 `memory.max` where one is
+delegated, and otherwise `RLIMIT_AS`, which caps virtual address space rather
+than memory in use. A Polars worker reserves far more address space than it
+touches. Measured on Python 3.11, the node-data worker in
+`test_a_real_isolated_worker_builds_and_publishes` grows by about 2 GB of virtual
+address space with 4 Polars threads (51 OS threads), and by about 7.8 GB with
+32, for a 1,000-row job whose resident memory stays small. Under the test's
+1 GiB growth budget the worker cannot start its result-queue thread
+(`RuntimeError: can't start new thread`; Polars reports `could not spawn
+threads` with `EAGAIN`), so the job ends in error. CI passes only on runners
+that delegate a cgroup: the test failed twice on pull request #231, passed on
+rerun, and fails on every revision under WSL. Any capped surface on a Linux
+host without cgroup delegation, such as a Docker container, can fail the same
+way, and the failure reads as an internal error rather than a memory limit.
+
+**Plan:** Measure address-space growth against resident growth for each capped
+surface (preview, trace, Explore, node data, JSON-cache builds, output writes,
+training preparation, deploy batch scoring) on a host without cgroup
+delegation. Decide how the `RLIMIT_AS` fallback sizes its ceiling (for example
+the baseline plus the budget plus an allowance for the Polars thread pool, or a
+smaller Polars pool inside capped workers), or whether an address-space cap can
+serve as a hard cap at all, and specify the decision in the execution-engine
+specification. A worker that cannot create a thread under its cap reports the
+typed memory-limit failure.
+
+**Acceptance:** On a Linux host without cgroup delegation, every capped surface
+completes a small job within its specified budget; a job that genuinely
+exceeds its budget is still refused with the typed memory-limit failure, never
+a `RuntimeError`; `test_a_real_isolated_worker_builds_and_publishes` passes under
+WSL and on every CI runner.
+
+**Dependencies:** None. `EXEC-R04` decides whether hard caps become the only
+memory-safety mechanism; this package makes the Linux fallback cap fit for
+that role either way.
+
+**Evidence:** `src/haute/_native_memory_limit.py::NativeMemoryLease`;
+`src/haute/_native_memory_limit.py::_linux_virtual_bytes`;
+`src/haute/_worker_isolation.py::_isolated_worker_entrypoint`;
+`tests/test_node_data_routes.py::test_a_real_isolated_worker_builds_and_publishes`.

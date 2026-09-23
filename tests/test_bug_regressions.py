@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import polars as pl
 import pytest
@@ -81,79 +81,6 @@ class TestBugB12ZeroRowBatchScoring:
         result = pl.read_parquet(out_path)
         assert len(result) == 0
         os.unlink(out_path)
-
-
-# ---------------------------------------------------------------------------
-# B13/B14: Streaming chunk size not restored
-# ---------------------------------------------------------------------------
-
-
-class TestBugB13StreamingChunkSizeRestore:
-    def test_execute_sink_never_restores_auto_chunk_size_to_zero(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Auto chunk-size mode must not be restored via ``set_streaming_chunk_size(0)``."""
-        from haute.executor import write_data_output
-        from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
-
-        out_path = tmp_path / "out.parquet"
-        graph = PipelineGraph(
-            nodes=[
-                GraphNode(
-                    id="src",
-                    data=NodeData(
-                        label="src",
-                        nodeType="dataInput",
-                        config={
-                            "inputType": "file",
-                            "format": "parquet",
-                            "mode": "scan",
-                            "path": "unused.parquet",
-                            "arguments": {},
-                        },
-                    ),
-                ),
-                GraphNode(
-                    id="sink",
-                    data=NodeData(
-                        label="sink",
-                        nodeType="dataOutput",
-                        config={
-                            "outputType": "file",
-                            "format": "parquet",
-                            "mode": "sink",
-                            "path": str(out_path),
-                            "arguments": {},
-                        },
-                    ),
-                ),
-            ],
-            edges=[GraphEdge(id="e1", source="src", target="sink")],
-        )
-        lazy_outputs = {"sink": pl.DataFrame({"x": [1, 2, 3]}).lazy()}
-
-        calls: list[int] = []
-        original_set_chunk_size = pl.Config.set_streaming_chunk_size
-
-        def record_chunk_size(value: int) -> None:
-            calls.append(int(value))
-            original_set_chunk_size(value)
-
-        monkeypatch.setattr(pl.Config, "set_streaming_chunk_size", record_chunk_size)
-        with (
-            patch("haute.executor.pl.Config.state", return_value={}),
-            patch(
-                "haute.executor._execute_lazy",
-                return_value=(lazy_outputs, ["src", "sink"], {}, {}),
-            ),
-        ):
-            result = write_data_output(graph, "sink", project_root=tmp_path)
-
-        assert result.status == "ok"
-        assert result.row_count == 3
-        assert 0 not in calls
 
 
 # ---------------------------------------------------------------------------
@@ -531,64 +458,6 @@ class TestBugB11InstanceSelectedColumns:
         resolved = resolve_instance_node(node_map["instance"], node_map)
         # The resolved config should include selected_columns from the original
         assert resolved.data.config.get("selected_columns") == ["a", "b"]
-
-
-# ---------------------------------------------------------------------------
-# B13/B14: Streaming chunk size not restored
-# ---------------------------------------------------------------------------
-
-
-class TestBugB13B14ChunkSizeRestore:
-    def test_explicit_prior_chunk_size_is_restored(self, tmp_path: Path) -> None:
-        """Explicit pre-existing chunk size must survive a sink execution."""
-        from haute.executor import write_data_output
-        from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
-
-        out_path = tmp_path / "out.parquet"
-        graph = PipelineGraph(
-            nodes=[
-                GraphNode(
-                    id="src",
-                    data=NodeData(
-                        label="src",
-                        nodeType="dataInput",
-                        config={
-                            "inputType": "file",
-                            "format": "parquet",
-                            "mode": "scan",
-                            "path": "unused.parquet",
-                            "arguments": {},
-                        },
-                    ),
-                ),
-                GraphNode(
-                    id="sink",
-                    data=NodeData(
-                        label="sink",
-                        nodeType="dataOutput",
-                        config={
-                            "outputType": "file",
-                            "format": "parquet",
-                            "mode": "sink",
-                            "path": str(out_path),
-                            "arguments": {},
-                        },
-                    ),
-                ),
-            ],
-            edges=[GraphEdge(id="e1", source="src", target="sink")],
-        )
-        lazy_outputs = {"sink": pl.DataFrame({"x": [1, 2]}).lazy()}
-
-        pl.Config.set_streaming_chunk_size(75_000)
-        with patch(
-            "haute.executor._execute_lazy",
-            return_value=(lazy_outputs, ["src", "sink"], {}, {}),
-        ):
-            result = write_data_output(graph, "sink", project_root=tmp_path)
-
-        assert result.status == "ok"
-        assert pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE") == "75000"
 
 
 # ---------------------------------------------------------------------------

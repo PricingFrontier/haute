@@ -8,10 +8,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 // Mock the API module BEFORE importing the store
 vi.mock("../../api/client.ts", () => ({
   getMlflowDestinations: vi.fn(),
+  getExecutionSettings: vi.fn(),
+  putExecutionSettings: vi.fn(),
 }))
 
 import useSettingsStore from "../../stores/useSettingsStore.ts"
-import { getMlflowDestinations } from "../../api/client.ts"
+import useToastStore from "../../stores/useToastStore.ts"
+import { getExecutionSettings, getMlflowDestinations, putExecutionSettings } from "../../api/client.ts"
 import type {
   MlflowDestinationEntry,
   MlflowDestinationKey,
@@ -82,6 +85,8 @@ function resetStore() {
   useSettingsStore.setState({
     rowLimit: 100,  // store default is 100, not 1000
     streamingChunkSize: 500_000,
+    _confirmedStreamingChunkSize: 500_000,
+    _pendingStreamingChunkSize: null,
     openSections: {},
     mlflow: {
       status: "pending",
@@ -103,6 +108,7 @@ function resetStore() {
 describe("useSettingsStore", () => {
   beforeEach(() => {
     resetStore()
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     vi.clearAllMocks()
   })
 
@@ -127,29 +133,169 @@ describe("useSettingsStore", () => {
   // Streaming chunk size
   // ────────────────────────────────────────────────────────────────
 
-  describe("setStreamingChunkSize", () => {
+  describe("streamingChunkSize", () => {
     it("defaults to 500_000", () => {
       expect(useSettingsStore.getState().streamingChunkSize).toBe(500_000)
     })
 
-    it("updates streaming chunk size", () => {
-      useSettingsStore.getState().setStreamingChunkSize(250_000)
-      expect(useSettingsStore.getState().streamingChunkSize).toBe(250_000)
+    describe("loadStreamingChunkSize", () => {
+      it("stores the server's value", async () => {
+        vi.mocked(getExecutionSettings).mockResolvedValue({ streaming_chunk_size: 250_000 })
+        await useSettingsStore.getState().loadStreamingChunkSize()
+        expect(useSettingsStore.getState().streamingChunkSize).toBe(250_000)
+      })
     })
 
-    it("clamps below-min sizes up to MIN_STREAMING_CHUNK_SIZE", () => {
-      useSettingsStore.getState().setStreamingChunkSize(5)
-      expect(useSettingsStore.getState().streamingChunkSize).toBe(1000)
-    })
+    describe("commitStreamingChunkSize", () => {
+      it("clamps below-min sizes up to MIN_STREAMING_CHUNK_SIZE before sending", async () => {
+        vi.mocked(putExecutionSettings).mockResolvedValue({ streaming_chunk_size: 1000 })
+        await useSettingsStore.getState().commitStreamingChunkSize(5)
+        expect(putExecutionSettings).toHaveBeenCalledWith(1000)
+        expect(useSettingsStore.getState().streamingChunkSize).toBe(1000)
+      })
 
-    it("clamps above-max sizes down to MAX_STREAMING_CHUNK_SIZE", () => {
-      useSettingsStore.getState().setStreamingChunkSize(50_000_000)
-      expect(useSettingsStore.getState().streamingChunkSize).toBe(10_000_000)
-    })
+      it("clamps above-max sizes down to MAX_STREAMING_CHUNK_SIZE before sending", async () => {
+        vi.mocked(putExecutionSettings).mockResolvedValue({ streaming_chunk_size: 10_000_000 })
+        await useSettingsStore.getState().commitStreamingChunkSize(50_000_000)
+        expect(putExecutionSettings).toHaveBeenCalledWith(10_000_000)
+        expect(useSettingsStore.getState().streamingChunkSize).toBe(10_000_000)
+      })
 
-    it("rounds fractional sizes to an integer", () => {
-      useSettingsStore.getState().setStreamingChunkSize(123_456.78)
-      expect(useSettingsStore.getState().streamingChunkSize).toBe(123_457)
+      it("rounds fractional sizes to an integer before sending", async () => {
+        vi.mocked(putExecutionSettings).mockResolvedValue({ streaming_chunk_size: 123_457 })
+        await useSettingsStore.getState().commitStreamingChunkSize(123_456.78)
+        expect(putExecutionSettings).toHaveBeenCalledWith(123_457)
+        expect(useSettingsStore.getState().streamingChunkSize).toBe(123_457)
+      })
+
+      it("stores the server's applied value on success", async () => {
+        vi.mocked(putExecutionSettings).mockResolvedValue({ streaming_chunk_size: 42_000 })
+        await useSettingsStore.getState().commitStreamingChunkSize(250_000)
+        expect(useSettingsStore.getState().streamingChunkSize).toBe(42_000)
+      })
+
+      it("restores the confirmed value and toasts an error on failure", async () => {
+        vi.mocked(putExecutionSettings).mockRejectedValue(new Error("boom"))
+        await useSettingsStore.getState().commitStreamingChunkSize(250_000)
+        expect(useSettingsStore.getState().streamingChunkSize).toBe(500_000)
+        expect(useToastStore.getState().toasts.some((t) => t.type === "error")).toBe(true)
+      })
+
+      it("a load that returns after a save does not overwrite the saved value", async () => {
+        let resolveLoad: (value: { streaming_chunk_size: number }) => void = () => {}
+        vi.mocked(getExecutionSettings).mockReturnValue(
+          new Promise((resolve) => { resolveLoad = resolve }),
+        )
+        vi.mocked(putExecutionSettings).mockResolvedValue({ streaming_chunk_size: 250_000 })
+        const load = useSettingsStore.getState().loadStreamingChunkSize()
+        await useSettingsStore.getState().commitStreamingChunkSize(250_000)
+        resolveLoad({ streaming_chunk_size: 500_000 })
+        await load
+        expect(useSettingsStore.getState().streamingChunkSize).toBe(250_000)
+      })
+
+      it("committing the same value twice (Enter, then blur) saves it once", async () => {
+        vi.mocked(putExecutionSettings).mockResolvedValue({ streaming_chunk_size: 250_000 })
+        await Promise.all([
+          useSettingsStore.getState().commitStreamingChunkSize(250_000),
+          useSettingsStore.getState().commitStreamingChunkSize(250_000),
+        ])
+        expect(putExecutionSettings).toHaveBeenCalledTimes(1)
+        expect(useSettingsStore.getState().streamingChunkSize).toBe(250_000)
+      })
+
+      it("two failed saves leave the confirmed value, not an unsaved one", async () => {
+        vi.mocked(putExecutionSettings).mockRejectedValue(new Error("boom"))
+        await Promise.all([
+          useSettingsStore.getState().commitStreamingChunkSize(250_000),
+          useSettingsStore.getState().commitStreamingChunkSize(300_000),
+        ])
+        expect(useSettingsStore.getState().streamingChunkSize).toBe(500_000)
+        expect(useToastStore.getState().toasts.filter((t) => t.type === "error")).toHaveLength(1)
+      })
+
+      it("a load that overlaps a failed save leaves the server's value, not the default", async () => {
+        let resolveLoad: (value: { streaming_chunk_size: number }) => void = () => {}
+        vi.mocked(getExecutionSettings).mockReturnValue(
+          new Promise((resolve) => { resolveLoad = resolve }),
+        )
+        let rejectSave: (reason: Error) => void = () => {}
+        vi.mocked(putExecutionSettings).mockReturnValue(
+          new Promise((_resolve, reject) => { rejectSave = reject }),
+        )
+        const load = useSettingsStore.getState().loadStreamingChunkSize()
+        const save = useSettingsStore.getState().commitStreamingChunkSize(100_000)
+        resolveLoad({ streaming_chunk_size: 200_000 })
+        await load
+        expect(useSettingsStore.getState().streamingChunkSize).toBe(100_000)
+        rejectSave(new Error("boom"))
+        await save
+        expect(useSettingsStore.getState().streamingChunkSize).toBe(200_000)
+      })
+
+      it("a load that returns after a failed save shows the server's value", async () => {
+        let resolveLoad: (value: { streaming_chunk_size: number }) => void = () => {}
+        vi.mocked(getExecutionSettings).mockReturnValue(
+          new Promise((resolve) => { resolveLoad = resolve }),
+        )
+        vi.mocked(putExecutionSettings).mockRejectedValue(new Error("boom"))
+        const load = useSettingsStore.getState().loadStreamingChunkSize()
+        await useSettingsStore.getState().commitStreamingChunkSize(100_000)
+        resolveLoad({ streaming_chunk_size: 200_000 })
+        await load
+        expect(useSettingsStore.getState().streamingChunkSize).toBe(200_000)
+      })
+
+      it("reopening the settings during a save keeps the saved value", async () => {
+        let resolveSave: (value: { streaming_chunk_size: number }) => void = () => {}
+        vi.mocked(putExecutionSettings).mockReturnValue(
+          new Promise((resolve) => { resolveSave = resolve }),
+        )
+        vi.mocked(getExecutionSettings).mockResolvedValue({ streaming_chunk_size: 500_000 })
+        const save = useSettingsStore.getState().commitStreamingChunkSize(100_000)
+        const reopen = useSettingsStore.getState().loadStreamingChunkSize()
+        resolveSave({ streaming_chunk_size: 100_000 })
+        await Promise.all([save, reopen])
+        expect(getExecutionSettings).not.toHaveBeenCalled()
+        expect(useSettingsStore.getState().streamingChunkSize).toBe(100_000)
+        expect(useSettingsStore.getState()._pendingStreamingChunkSize).toBeNull()
+      })
+
+      it("reopening the settings during a failed save still reports it and allows a retry", async () => {
+        let rejectSave: (reason: Error) => void = () => {}
+        vi.mocked(putExecutionSettings).mockReturnValueOnce(
+          new Promise((_resolve, reject) => { rejectSave = reject }),
+        )
+        vi.mocked(getExecutionSettings).mockResolvedValue({ streaming_chunk_size: 500_000 })
+        const save = useSettingsStore.getState().commitStreamingChunkSize(100_000)
+        const reopen = useSettingsStore.getState().loadStreamingChunkSize()
+        rejectSave(new Error("boom"))
+        await Promise.all([save, reopen])
+        expect(useSettingsStore.getState().streamingChunkSize).toBe(500_000)
+        expect(useToastStore.getState().toasts.filter((t) => t.type === "error")).toHaveLength(1)
+
+        vi.mocked(putExecutionSettings).mockResolvedValueOnce({ streaming_chunk_size: 100_000 })
+        await useSettingsStore.getState().commitStreamingChunkSize(100_000)
+        expect(putExecutionSettings).toHaveBeenCalledTimes(2)
+        expect(useSettingsStore.getState().streamingChunkSize).toBe(100_000)
+      })
+
+      it("saves reach the server in the order they were made", async () => {
+        let resolveFirst: (value: { streaming_chunk_size: number }) => void = () => {}
+        vi.mocked(putExecutionSettings)
+          .mockReturnValueOnce(new Promise((resolve) => { resolveFirst = resolve }))
+          .mockResolvedValueOnce({ streaming_chunk_size: 300_000 })
+        const first = useSettingsStore.getState().commitStreamingChunkSize(250_000)
+        const second = useSettingsStore.getState().commitStreamingChunkSize(300_000)
+        await Promise.resolve()
+        expect(putExecutionSettings).toHaveBeenCalledTimes(1)
+        resolveFirst({ streaming_chunk_size: 250_000 })
+        await Promise.all([first, second])
+        expect(vi.mocked(putExecutionSettings).mock.calls.map(([size]) => size)).toEqual([
+          250_000, 300_000,
+        ])
+        expect(useSettingsStore.getState().streamingChunkSize).toBe(300_000)
+      })
     })
   })
 

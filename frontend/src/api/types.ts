@@ -704,6 +704,10 @@ export interface MlflowDestinationsResponse {
   detail: string
 }
 
+export interface ExecutionSettings {
+  streaming_chunk_size: number
+}
+
 export interface MlflowSettingsResponse {
   section_present: boolean
   tracking_uri: string

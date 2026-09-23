@@ -57,6 +57,14 @@ def test_threshold_config_owns_all_default_mutation_targets() -> None:
     assert all(target.config_path.exists() for target in targets)
     assert all(target.module_path.exists() for target in targets)
     assert all(target.test_paths for target in targets)
+    # A deleted test file makes the target's baseline run fail in CI.
+    missing = [
+        f"{target.name}: {path.relative_to(REPO_ROOT)}"
+        for target in targets
+        for path in target.test_paths
+        if not path.exists()
+    ]
+    assert missing == []
     assert {target.name: target.fail_over for target in targets} == {
         "job-store": 6.0,
         "path-resolution": 5.0,

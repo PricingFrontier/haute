@@ -77,9 +77,6 @@ export default function useExplorePivotActions({
   preamble,
 }: UseExplorePivotActionsInput) {
   const activeSource = useSettingsStore((state) => state.activeSource)
-  const streamingChunkSize = useSettingsStore(
-    (state) => state.streamingChunkSize,
-  )
   const structuralVersion = useGraphStore((state) => state.structuralVersion)
   const startJob = useNodeResultsStore((state) => state.startExplorePivotJob)
   const updateProgress = useNodeResultsStore(
@@ -235,7 +232,6 @@ export default function useExplorePivotActions({
           node_id: node.id,
           pivot,
           source: activeSource,
-          streamingChunkSize,
         })
         if (!claimCurrent()) return
 
@@ -326,7 +322,6 @@ export default function useExplorePivotActions({
       preamble,
       setNotice,
       startStoredJob,
-      streamingChunkSize,
       submodels,
       updateProgress,
     ],

@@ -51,6 +51,7 @@ from haute._local_security import (
 )
 from haute._logging import configure_logging, get_logger
 from haute._pipeline_recovery import pipeline_document_fingerprint
+from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._helpers import (
     _ensure_pipeline_index,
@@ -428,6 +429,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _watcher_task, _artifact_reaper_task
     _watcher_task = None
     _artifact_reaper_task = None
+    # The editor's streaming chunk size is process configuration: fix it before
+    # any worker is spawned so every child inherits it. A value already in the
+    # environment is kept; otherwise the default applies.
+    set_streaming_chunk_size(current_streaming_chunk_size())
     try:
         start_interactive_worker_pool()
         _watcher_task = asyncio.create_task(_watcher_forever())

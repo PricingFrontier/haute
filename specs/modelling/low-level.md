@@ -314,7 +314,7 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
      of a group-by plans `full-width-conservative`/`warned` inside the worker instead of the
      `materialisation_estimate_unavailable` rejection an uncapped surface must raise;
    - the request is plain picklable data (`graph`, `node_id`, `job_id`, `source`,
-     `parquet_path`, modelling `config`, `project_root`, `streaming_chunk_size`, `row_limit`,
+     `parquet_path`, modelling `config`, `project_root`, `row_limit`,
      `exclude`, `keep_columns`, `required_columns_by_node`, `preamble_supplied`, and the
      plan's `seed_plan` handoff); the child never touches the `JobStore`.
    - the job's `execution_metrics` are the reporting process's metrics carrying the whole

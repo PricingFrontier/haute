@@ -26,11 +26,7 @@ from haute._mlflow_utils import (
     mlflow_fluent_operation,
     set_experiment_creating_workspace_folder,
 )
-from haute._polars_utils import (
-    DEFAULT_STREAMING_CHUNK_SIZE,
-    streaming_collect,
-    temporary_streaming_chunk_size,
-)
+from haute._polars_utils import streaming_collect
 from haute._rating import is_rating_dtype_descriptor
 from haute._sandbox import _get_project_root
 from haute._types import SolveResultLike
@@ -356,21 +352,19 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
             non_null_counts = pl.col("scenario_count").filter(
                 pl.col(quote_id_col).is_not_null(),
             )
-            chunk_size = body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE
-            with temporary_streaming_chunk_size(chunk_size):
-                row = streaming_collect(
-                    scenario_counts.select(
-                        pl.col("scenario_count")
-                        .filter(pl.col(quote_id_col).is_null())
-                        .sum()
-                        .alias("null_quote_id_row_count"),
-                        pl.col(quote_id_col).is_not_null().sum().alias("quote_count"),
-                        non_null_counts.min().alias("scenarios_per_quote_min"),
-                        non_null_counts.max().alias("scenarios_per_quote_max"),
-                        non_null_counts.mean().alias("scenarios_per_quote_mean"),
-                        non_null_counts.sum().alias("expanded_row_count"),
-                    ),
-                ).row(0, named=True)
+            row = streaming_collect(
+                scenario_counts.select(
+                    pl.col("scenario_count")
+                    .filter(pl.col(quote_id_col).is_null())
+                    .sum()
+                    .alias("null_quote_id_row_count"),
+                    pl.col(quote_id_col).is_not_null().sum().alias("quote_count"),
+                    non_null_counts.min().alias("scenarios_per_quote_min"),
+                    non_null_counts.max().alias("scenarios_per_quote_max"),
+                    non_null_counts.mean().alias("scenarios_per_quote_mean"),
+                    non_null_counts.sum().alias("expanded_row_count"),
+                ),
+            ).row(0, named=True)
             null_quote_id_rows = int(row["null_quote_id_row_count"] or 0)
             if null_quote_id_rows > 0:
                 # Same contract (status + message) as the solve path's
@@ -943,8 +937,6 @@ def _materialise_ratebook_frontier_point(
     job_id: str,
     point_index: int,
     result_dict: dict[str, Any],
-    *,
-    streaming_chunk_size: int | None = None,
 ) -> tuple[Mapping[str, Any], dict[str, Any], SolveResultLike]:
     job = _store.require_completed_job(job_id)
     cached_result = _cached_materialised_ratebook_frontier_result(
@@ -976,7 +968,6 @@ def _materialise_ratebook_frontier_point(
         factor_level_counts = _ratebook_factor_level_counts_from_artifact(
             factors_handle,
             factor_columns,
-            streaming_chunk_size=streaming_chunk_size,
         )
     factor_level_order = job.get(_RATEBOOK_FACTOR_LEVEL_ORDER_KEY) or {}
     factor_dtypes = job.get("factor_dtypes")

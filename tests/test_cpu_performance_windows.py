@@ -93,7 +93,7 @@ def test_spawned_worker_enables_high_qos_before_user_work(kind: str, tmp_path: P
             assert pickle.loads(results.get(timeout=30)) == ("ready", process.pid)
             # Two jobs also prove the warm worker keeps its policy between requests.
             for job_id in ("first", "second"):
-                requests.put(pickle.dumps(("run", job_id, _policy, (), {}, None, False)))
+                requests.put(pickle.dumps(("run", job_id, _policy, (), {}, None, False, 500_000)))
                 envelope = pickle.loads(results.get(timeout=30))
                 assert envelope[:3] == ("result", job_id, "ok"), envelope
                 control, state = envelope[3]

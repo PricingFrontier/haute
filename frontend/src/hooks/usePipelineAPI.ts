@@ -413,7 +413,6 @@ export default function usePipelineAPI({
   nodeIdCounter: nodeIdCounterRef,
 }: PipelineAPIParams): PipelineAPIReturn {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
-  const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
   const activeSource = useSettingsStore((s) => s.activeSource)
   const addToast = useToastStore((s) => s.addToast)
   const [loading, setLoading] = useState(true)
@@ -440,8 +439,6 @@ export default function usePipelineAPI({
   // trigger re-creation of callbacks. Read at call-time instead.
   const rowLimitRef = useRef(rowLimit)
   useEffect(() => { rowLimitRef.current = rowLimit }, [rowLimit])
-  const streamingChunkSizeRef = useRef(streamingChunkSize)
-  useEffect(() => { streamingChunkSizeRef.current = streamingChunkSize }, [streamingChunkSize])
   const activeSourceRef = useRef(activeSource)
   useEffect(() => { activeSourceRef.current = activeSource }, [activeSource])
   const ensureSnapshotsForNodes = useCallback(
@@ -605,7 +602,6 @@ export default function usePipelineAPI({
     // different sources.
     const snapshotRowLimit = rowLimitRef.current
     const snapshotSource = activeSourceRef.current
-    const snapshotChunkSize = streamingChunkSizeRef.current
     // A snapshot published, refreshed, or cleared after the request is sent
     // may change its rows: the stored preview matches only at this epoch.
     const snapshotNodeDataEpoch = useNodeDataStore.getState().epoch
@@ -699,7 +695,6 @@ export default function usePipelineAPI({
           source: snapshotSource,
           requestedPreviewColumns: previewColumnNamesForNode(node, snapshotSource, structuralVersion),
           portLabel,
-          streamingChunkSize: snapshotChunkSize,
           signal: controller.signal,
         })
       }
@@ -714,7 +709,6 @@ export default function usePipelineAPI({
           source: snapshotSource,
           requestedPreviewColumns: previewColumnNamesForNode(node, snapshotSource, structuralVersion),
           portLabel,
-          streamingChunkSize: snapshotChunkSize,
           signal: controller.signal,
         })
     }
@@ -958,7 +952,6 @@ export default function usePipelineAPI({
     // uses the same snapshot (Issues #33/#34).
     const snapshotRowLimit = rowLimitRef.current
     const snapshotSource = activeSourceRef.current
-    const snapshotChunkSize = streamingChunkSizeRef.current
 
     const previewStaleUpstream = () => new Promise<void>((resolve) => {
       let nextIndex = 0
@@ -997,7 +990,6 @@ export default function usePipelineAPI({
             source: snapshotSource,
             requestedPreviewColumns: previewColumnNamesForNode(upstream, snapshotSource, structuralVersion),
             portLabel: previewPortLabel(upstream),
-            streamingChunkSize: snapshotChunkSize,
             signal: controller.signal,
           })
             .then((result) => {
@@ -1131,7 +1123,6 @@ export default function usePipelineAPI({
             rowLimit: rowLimitRef.current,
             source: activeSourceRef.current,
             portLabel,
-            streamingChunkSize: streamingChunkSizeRef.current,
             signal: controller.signal,
           })
         }
@@ -1145,7 +1136,6 @@ export default function usePipelineAPI({
           rowLimit: rowLimitRef.current,
           source: activeSourceRef.current,
           portLabel,
-          streamingChunkSize: streamingChunkSizeRef.current,
           signal: controller.signal,
         })
       })

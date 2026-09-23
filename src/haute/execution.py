@@ -1464,7 +1464,6 @@ def build_dataframe_execution_cache_request(
     enforce_contracts: bool = False,
     preamble_ns_supplied: bool = False,
     cache: DataFrameExecutionCache | None = None,
-    streaming_chunk_size: int | None = None,
     fast_checkpoint: bool = True,
 ) -> DataFrameExecutionCacheRequest:
     """Build a validated cache request for one lazy execution run."""
@@ -1500,7 +1499,6 @@ def build_dataframe_execution_cache_request(
     return DataFrameExecutionCacheRequest(
         cache=cache if cache is not None else default_dataframe_execution_cache(),
         keys_by_node=keys_by_node,
-        streaming_chunk_size=streaming_chunk_size,
         fast_checkpoint=fast_checkpoint,
     )
 

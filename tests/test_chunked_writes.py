@@ -33,7 +33,7 @@ from haute._hashing import content_hash
 from haute._polars_utils import (
     bounded_sink,
     current_streaming_chunk_size,
-    temporary_streaming_chunk_size,
+    set_streaming_chunk_size,
 )
 from haute.chunking import classify_chunk_local_polars_code
 
@@ -1398,57 +1398,57 @@ def test_a_heavy_row_that_loses_a_match_is_refused(
     assert window_calls == 1
 
 
-def test_a_write_reports_the_rows_per_part_it_chunked_at(tmp_path: Path) -> None:
+def test_a_write_reports_the_rows_per_part_it_chunked_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("POLARS_STREAMING_CHUNK_SIZE", raising=False)
     ambient = 1234
     assert ambient != current_streaming_chunk_size()
-    with temporary_streaming_chunk_size(ambient):
-        # 1. Sliced write with explicit chunk_rows
-        sliced_target = tmp_path / "sliced"
-        sliced_target.mkdir()
-        sliced_lf = pl.DataFrame({"a": list(range(20))}).lazy()
-        sliced_write = write_parts(sliced_target, sliced_lf, chunk_rows=5)
-        assert sliced_write.strategy == "sliced"
-        assert sliced_write.chunk_rows == 5
+    set_streaming_chunk_size(ambient)
 
-        # 2. Keyed chunked join with explicit chunk_rows
-        keyed_target = tmp_path / "keyed"
-        keyed_target.mkdir()
-        base = pl.DataFrame({"k": ["a", "b"] * 10, "v": list(range(20))}).lazy()
-        lookup = pl.DataFrame({"k": ["a", "b"], "v2": [1, 2]}).lazy()
-        keyed_recipe = JoinRecipe(base, lookup, {"how": "inner", "on": "k"})
-        keyed_write = write_parts(
-            keyed_target, keyed_recipe.native(), join=keyed_recipe, chunk_rows=5
-        )
-        assert keyed_write.strategy == "chunked_join"
-        assert keyed_write.chunk_rows == 5
+    # 1. Sliced write with explicit chunk_rows
+    sliced_target = tmp_path / "sliced"
+    sliced_target.mkdir()
+    sliced_lf = pl.DataFrame({"a": list(range(20))}).lazy()
+    sliced_write = write_parts(sliced_target, sliced_lf, chunk_rows=5)
+    assert sliced_write.strategy == "sliced"
+    assert sliced_write.chunk_rows == 5
 
-        # 3. Native write
-        native_target = tmp_path / "native"
-        native_target.mkdir()
-        native_lf = pl.DataFrame({"a": list(range(20))}).lazy().filter(pl.col("a") > 5)
-        native_write = write_parts(native_target, native_lf, chunk_rows=5)
-        assert native_write.strategy == "native"
-        assert native_write.chunk_rows is None
+    # 2. Keyed chunked join with explicit chunk_rows
+    keyed_target = tmp_path / "keyed"
+    keyed_target.mkdir()
+    base = pl.DataFrame({"k": ["a", "b"] * 10, "v": list(range(20))}).lazy()
+    lookup = pl.DataFrame({"k": ["a", "b"], "v2": [1, 2]}).lazy()
+    keyed_recipe = JoinRecipe(base, lookup, {"how": "inner", "on": "k"})
+    keyed_write = write_parts(keyed_target, keyed_recipe.native(), join=keyed_recipe, chunk_rows=5)
+    assert keyed_write.strategy == "chunked_join"
+    assert keyed_write.chunk_rows == 5
 
-        # 4. Cross join
-        cross_target = tmp_path / "cross"
-        cross_target.mkdir()
-        cross_base = pl.DataFrame({"k": ["a", "b"]}).lazy()
-        cross_lookup = pl.DataFrame({"v": [1, 2]}).lazy()
-        cross_recipe = JoinRecipe(cross_base, cross_lookup, {"how": "cross"})
-        cross_write = write_parts(
-            cross_target, cross_recipe.native(), join=cross_recipe, chunk_rows=5
-        )
-        assert cross_write.strategy == "chunked_join"
-        assert cross_write.chunk_rows == 5
+    # 3. Native write
+    native_target = tmp_path / "native"
+    native_target.mkdir()
+    native_lf = pl.DataFrame({"a": list(range(20))}).lazy().filter(pl.col("a") > 5)
+    native_write = write_parts(native_target, native_lf, chunk_rows=5)
+    assert native_write.strategy == "native"
+    assert native_write.chunk_rows is None
 
-        # 5. Caller passes no chunk_rows -> equals current_streaming_chunk_size()
-        default_target = tmp_path / "default_chunk_rows"
-        default_target.mkdir()
-        default_write = write_parts(default_target, sliced_lf)
-        assert default_write.strategy == "sliced"
-        assert default_write.chunk_rows == ambient
-        assert default_write.chunk_rows == current_streaming_chunk_size()
+    # 4. Cross join
+    cross_target = tmp_path / "cross"
+    cross_target.mkdir()
+    cross_base = pl.DataFrame({"k": ["a", "b"]}).lazy()
+    cross_lookup = pl.DataFrame({"v": [1, 2]}).lazy()
+    cross_recipe = JoinRecipe(cross_base, cross_lookup, {"how": "cross"})
+    cross_write = write_parts(cross_target, cross_recipe.native(), join=cross_recipe, chunk_rows=5)
+    assert cross_write.strategy == "chunked_join"
+    assert cross_write.chunk_rows == 5
+
+    # 5. Caller passes no chunk_rows -> equals current_streaming_chunk_size()
+    default_target = tmp_path / "default_chunk_rows"
+    default_target.mkdir()
+    default_write = write_parts(default_target, sliced_lf)
+    assert default_write.strategy == "sliced"
+    assert default_write.chunk_rows == ambient
+    assert default_write.chunk_rows == current_streaming_chunk_size()
 
 
 def test_input_sliced_filter_and_derived_columns_equal_native_strict_order(

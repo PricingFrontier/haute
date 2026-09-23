@@ -221,7 +221,37 @@ function PreviewSettings() {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
   const setRowLimit = useSettingsStore((s) => s.setRowLimit)
   const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
-  const setStreamingChunkSize = useSettingsStore((s) => s.setStreamingChunkSize)
+  const loadStreamingChunkSize = useSettingsStore((s) => s.loadStreamingChunkSize)
+  const commitStreamingChunkSize = useSettingsStore((s) => s.commitStreamingChunkSize)
+  // A local draft while typing; committed on blur/Enter, never per keystroke.
+  const [chunkDraft, setChunkDraft] = useState(String(streamingChunkSize))
+  // Re-sync the draft when the store's value changes from outside a keystroke
+  // (the initial load, or a committed value the server adjusted) — done during
+  // render rather than in an effect, per React's "adjusting state" pattern.
+  const [prevStreamingChunkSize, setPrevStreamingChunkSize] = useState(streamingChunkSize)
+  if (streamingChunkSize !== prevStreamingChunkSize) {
+    setPrevStreamingChunkSize(streamingChunkSize)
+    setChunkDraft(String(streamingChunkSize))
+  }
+
+  // Load once, when the pane (and so this section) mounts.
+  useEffect(() => {
+    void loadStreamingChunkSize()
+  }, [loadStreamingChunkSize])
+
+  const commitChunkDraft = useCallback(() => {
+    const raw = chunkDraft.trim()
+    if (raw === "") {
+      setChunkDraft(String(streamingChunkSize))
+      return
+    }
+    const parsed = Number(raw)
+    if (!Number.isFinite(parsed)) {
+      setChunkDraft(String(streamingChunkSize))
+      return
+    }
+    commitStreamingChunkSize(parsed)
+  }, [chunkDraft, commitStreamingChunkSize, streamingChunkSize])
 
   return (
     <section
@@ -256,13 +286,11 @@ function PreviewSettings() {
           min={MIN_STREAMING_CHUNK_SIZE}
           max={MAX_STREAMING_CHUNK_SIZE}
           step={10000}
-          value={streamingChunkSize}
-          onChange={(e) => {
-            const raw = e.target.value.trim()
-            if (raw === "") return
-            const parsed = Number(raw)
-            if (!Number.isFinite(parsed)) return
-            setStreamingChunkSize(parsed)
+          value={chunkDraft}
+          onChange={(e) => setChunkDraft(e.target.value)}
+          onBlur={commitChunkDraft}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commitChunkDraft()
           }}
           className={NUMBER_INPUT_CLASS}
           style={NUMBER_INPUT_STYLE}
