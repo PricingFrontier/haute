@@ -13,6 +13,7 @@ from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerCrashedError,
     IsolatedWorkerRemoteError,
+    IsolatedWorkerStartError,
     IsolatedWorkerStoppedError,
     IsolatedWorkerTimeoutError,
     process_memory_caps_supported,
@@ -703,6 +704,73 @@ def test_real_spawn_removes_the_workers_private_cgroup_after_it_exits(
 
     assert child_pid != os.getpid()
     assert cleaned == [(child_pid, False)]
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_a_failed_cgroup_cleanup_is_reported_not_swallowed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fails: bool,
+) -> None:
+    """A worker cgroup left behind is the failure when the job succeeded, and a note
+    on the job's own failure when it did not."""
+    import haute._worker_protocol as protocol_mod
+
+    def refuse_cleanup(pid: int) -> None:
+        raise OSError(f"cgroup for {pid} is busy")
+
+    monkeypatch.setattr(protocol_mod, "cleanup_private_cgroups_for_pid", refuse_cleanup)
+
+    if fails:
+        with pytest.raises(WorkerRemoteFailureError) as failure:
+            run_worker_protocol(
+                _failing_worker_recording_pid,
+                _request(),
+                artifact_root=tmp_path / "artifacts",
+                artifact_kinds=frozenset({"model"}),
+                max_artifact_size_bytes=100,
+            )
+        notes = getattr(failure.value, "__notes__", [])
+        assert any(
+            note.startswith("native memory resource cleanup failed: cgroup for") for note in notes
+        )
+    else:
+        with pytest.raises(OSError, match="is busy"):
+            run_worker_protocol(
+                _worker_recording_pid,
+                _request(),
+                artifact_root=tmp_path / "artifacts",
+                artifact_kinds=frozenset({"model"}),
+                max_artifact_size_bytes=100,
+            )
+
+
+def test_a_worker_that_never_started_has_no_cgroup_to_remove(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import multiprocessing.context
+
+    import haute._worker_protocol as protocol_mod
+
+    cleaned: list[int] = []
+    monkeypatch.setattr(protocol_mod, "cleanup_private_cgroups_for_pid", cleaned.append)
+
+    def refuse_start(self: object) -> None:
+        raise OSError("spawn refused")
+
+    monkeypatch.setattr(multiprocessing.context.SpawnProcess, "start", refuse_start)
+
+    with pytest.raises(IsolatedWorkerStartError, match="spawn refused"):
+        run_worker_protocol(
+            _worker_recording_pid,
+            _request(),
+            artifact_root=tmp_path / "artifacts",
+            artifact_kinds=frozenset({"model"}),
+            max_artifact_size_bytes=100,
+        )
+
+    assert cleaned == []
 
 
 def test_real_spawn_forwards_validated_progress_and_result(tmp_path: Path) -> None:

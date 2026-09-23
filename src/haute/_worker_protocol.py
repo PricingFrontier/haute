@@ -460,6 +460,10 @@ def run_worker_protocol(
                     primary_error.add_note(f"process cleanup failed: {exc}")
         try:
             process.join(timeout=2.0)
+            progress_queue.close()
+            progress_queue.join_thread()
+            result_queue.close()
+            result_queue.join_thread()
         except Exception:
             pass
         try:
@@ -471,13 +475,6 @@ def run_worker_protocol(
                 primary_error = exc
             else:
                 primary_error.add_note(f"native memory resource cleanup failed: {exc}")
-        try:
-            progress_queue.close()
-            progress_queue.join_thread()
-            result_queue.close()
-            result_queue.join_thread()
-        except Exception:
-            pass
     cleanup_error = _run_cleanup_callbacks(worker_config.cleanup_callbacks)
     if primary_error is not None:
         if cleanup_error is not None:

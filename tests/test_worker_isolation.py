@@ -1163,6 +1163,11 @@ def test_direct_required_worker_config_requires_a_limit() -> None:
         IsolatedWorkerConfig(require_memory_limit=True)
 
 
+def test_worker_config_rejects_a_negative_address_space_allowance() -> None:
+    with pytest.raises(ValueError, match="address_space_allowance_bytes must not be negative"):
+        IsolatedWorkerConfig(address_space_allowance_bytes=-1)
+
+
 def test_unknown_worker_memory_enforcement_fails_loudly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

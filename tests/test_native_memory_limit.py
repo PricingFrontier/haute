@@ -384,9 +384,25 @@ def test_a_thread_start_failure_under_a_cap_becomes_a_memory_error(
     assert converted.__cause__ is failure
 
 
-def test_other_failures_pass_through_unchanged() -> None:
-    failure = RuntimeError("boom")
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RuntimeError("boom"),
+        MemoryError("can't start new thread"),
+        KeyboardInterrupt("can't start new thread"),
+    ],
+)
+def test_other_failures_pass_through_unchanged(failure: BaseException) -> None:
+    """Only a thread-start failure is converted: a memory error is already one, and
+    a cancellation stays a cancellation whatever its message says."""
     assert native.memory_error_for_thread_start_failure(failure) is failure
+
+
+def test_a_negative_address_space_allowance_is_rejected() -> None:
+    with pytest.raises(ValueError, match="allowance must not be negative"):
+        native.NativeMemoryLease().apply(
+            64 * 1024 * 1024, required=False, address_space_allowance_bytes=-1
+        )
 
 
 def test_rlimit_infinity_restores_exact_pair(monkeypatch: pytest.MonkeyPatch) -> None:
