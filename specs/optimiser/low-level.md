@@ -6,6 +6,7 @@
 |---|---|
 | `src/haute/routes/optimiser.py` | FastAPI router (`/api/optimiser/*`). Owns request/response assembly, frontier-point selection, artifact-payload building/validation for save and MLflow log, and the module-level `_store`/`_solve_service` singletons. |
 | `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService` and its supporting free functions: pipeline execution, schema/value-contract validation, quote-grid construction, solver dispatch (online and ratebook), background frontier-auto-range estimation, ownership-marked apply/ratebook-factor artifact persistence and stale-startup reporting, and ratebook factor-table canonicalisation/serialisation. |
+| `src/haute/routes/_optimiser_worker.py` | The hard-capped spawn workers that materialise optimiser inputs in process mode: `materialise_solve_input_worker` (solve setup's execute/validate/project/factor-extraction and the solver-input parquet) and `frontier_auto_range_worker` (the auto-range totals), their plain-data requests and outcomes, `SolveInput`, and `OptimiserWorkerFailure`, the child's terminal failure record that the parent replays onto the real job (raised there as `OptimiserWorkerFailureError`). |
 | `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT`, `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_apply_preview_payload`, `limited_frontier_payload`. |
 | `src/haute/routes/_frontier_point_summary.py` | The one derivation of a frontier point's solve summary: `frontier_point_summary` (from a `price-contour` frontier row), `apply_frontier_point_summary` (overlays it on a base result) and `FrontierPointDataError` (a malformed point, carrying the HTTP status the route reports). See Frontier point summaries below. |
 | `src/haute/_builders.py` | Cross-component runtime registry owned by [execution-engine](../execution-engine/low-level.md). The optimiser component consumes its optimiser-apply online/ratebook closures; saved artifact validation and trace reconstruction must remain contract-compatible with those closures. |
@@ -158,15 +159,52 @@ are held until the grid is built and released on every exit. No checkpoint direc
    then extracts and persists that edge's factor frame to a parquet artifact (`_extract_factors`).
 6. Explicitly drops the lazy-output references and runs `gc.collect()` before building the grid,
    to release memory ahead of the (often large) grid-build step.
-7. Sinks the scored data to a temp parquet and builds the solver's `QuoteGrid` via
-   `price_contour.build_grid_from_parquet_chunked` (`_build_grid`), choosing a chunk
-   size from either explicit config or a byte-budget policy against the parquet's own metadata.
+7. Writes the scored data to a setup-owned temp parquet, or borrows an unchanged captured
+   snapshot under the plan's lease (`_write_solver_input`), and builds the solver's `QuoteGrid`
+   from that file via `price_contour.build_grid_from_parquet_chunked`
+   (`_build_grid_from_parquet`), choosing a chunk size from either explicit config or a
+   byte-budget policy against the parquet's own metadata. The temp parquet is removed on every
+   exit; a borrowed snapshot never is.
 8. Launches the actual solver thread (`_launch_background`), passing the built
    `QuoteGrid`, config, and (ratebook) the factors handle and factor-level order.
 
+Steps 2–7's pipeline work is materialisation, and it runs in a hard-capped spawn worker in
+production (`HAUTE_INTERACTIVE_EXECUTION_MODE=process`, the default), as training preparation
+does. The setup thread creates the temp parquet path, opens the seed plan under its admitted
+context (`_open_setup_seed_plan`, which prepares inputs and holds the plan's leases until setup
+exits) and runs `materialise_solve_input_worker` through `_run_optimiser_worker`: the admitted
+headroom (`isolated_execution_budget`) is both the child's execution budget and its native cap,
+and the job's cancellation reason is the worker's stop signal, so cancellation or supersession
+terminates the worker. The child adopts the plan (`SeedPlan.adopt`), runs
+`_materialise_solve_input` (`_prepare_solver_frame` — steps 2–6 — then `_write_solver_input`
+with borrowing off) against a private job record, and returns a `SolveInput` (the parent's
+parquet path, the constraint columns and the ratebook factors handle) or the private record's
+terminal failure. The child never borrows a captured snapshot: a capture it made is released
+when its adopted plan closes, before the parent reads the file. Every location the child writes
+is created and removed by the parent, however the worker exits: the solver-input parquet, the
+marked ratebook factors directory (`_new_ratebook_factors_directory`, into which the child
+persists; removed when the job never adopts its handle) and a scratch directory
+(`worker_scratch_directory`) that the child routes all of its Python temporary files into (range
+reducer bucket parts, staged batches, model-scoring temp files), so a stopped, timed-out or killed
+worker leaves nothing behind. The parent checks the returned input is its own file and the handle
+names its own factors directory. A `MemoryError` a native cap raised in the child, however
+translated, leaves the child as that error, so the parent classifies it as `memory_limited`
+rather than the child's generic mapping reporting a 500. A failure is classified in the
+child by `_record_solve_setup_failure`, the same mapping the setup thread uses, and the parent
+replays the record (terminal reason, message, `error`/`error_code`/`error_detail`/
+`http_status_code`, and the child's metrics adopted as worker evidence) onto the real job.
+Worker-level failures map as training preparation's do: a stopped worker is the job's stop, a
+memory-shaped worker failure (`isolated_worker_failure_is_memory`) is a 507 `memory_limit` with
+`isolated_worker_memory_detail`, and any other is a 500 `error`. Only then does the parent build
+the grid from the file (step 7). The explicit `thread` compatibility mode runs steps 2–7 on the
+setup thread against the real job (`_prepare_solver_frame`, then `_build_grid`), with the same
+failure mapping.
+
 `_execute_pipeline(body, job_id, resources, ...)` opens the run's seed plan on the caller's
 `resources` stack (`open_seed_plan`, which prepares the lineage's snapshot-backed inputs, under
-the job's profile — `OPTIMISER_SETUP` or `AUTO_RANGE`) and executes with `prepare_inputs=False`
+the job's profile — `OPTIMISER_SETUP` or `AUTO_RANGE`), or adopts the `seed_plan` handoff a
+worker's supervising parent opened from the same `_setup_seed_plan_request`, and executes with
+`prepare_inputs=False`
 and `snapshot_plan=` that plan, passing the required-column seed to the execution facade, whose
 typed strategy result is attached to the admitted context. The plan's consumed nodes are what
 setup reads afterwards: an explicit target alone (the estimate's data input, the streaming
@@ -265,7 +303,20 @@ HTTP 422; the 422 mapping remains for bounded streaming-collect failures.
   `_full_frame_frontier_ranges` (execute pipeline → resolve source → validate/project →
   `_estimate_scenario_frontier_ranges`' bounded batches). Both feed
   `_reduce_frontier_range_batches`, which reduces every batch into
-  `_ScenarioFrontierRangeAccumulator` and calls `finish()`.
+  `_ScenarioFrontierRangeAccumulator` and calls `finish()`. In process mode the job computes its
+  totals in a hard-capped worker instead (`_frontier_ranges_in_worker`): it opens the seed plan
+  that source would execute under (at the streaming plan's base for a chunked job, at the data
+  input otherwise), runs `frontier_auto_range_worker` through `_run_optimiser_worker` with the
+  job's remaining timeout as the worker's timeout (its expiry publishes the job's `timed_out`),
+  and completes with the returned totals and the worker's metrics adopted as evidence. The child
+  re-plans (`_prepare_frontier_auto_range(prepare_snapshot_inputs=False)`; a chunk plan is not
+  picklable), fails if its chunk decision differs from the parent's, and runs this same job with
+  `isolate=False` against a private job record and the adopted plan, with its temporary files
+  (the reducer's bucket parts) in a parent-owned scratch directory removed after the worker
+  exits; its terminal failure record is replayed through the job's failure mapping
+  (`OptimiserWorkerFailureError`), and a `MemoryError` behind a failure is a 507 as for setup. Progress
+  messages inside the worker are not relayed; the job reports "Estimating frontier range" until
+  its terminal state.
 - `frontier_auto_range_status` enforces the job's timeout lazily, on poll — solve, frontier-sweep,
   and auto-range timeouts are all enforced lazily on their respective status polls (`solve_status`,
   `frontier_status`, `frontier_auto_range_status`), with auto-range additionally checking elapsed
@@ -902,6 +953,21 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   the cap against the polled `result`, since the sweep itself now runs off the request thread), and
   that completed optimiser jobs get their heavy runtime objects slimmed and owned artifacts
   evicted (a job-store/memory-discipline test, not a wall-clock benchmark).
+- **`tests/test_optimiser_setup_worker.py`** — process-mode materialisation: real spawn workers
+  produce the same online and ratebook solves and the same chunked and full-frame auto-range
+  totals as the thread path, and remove the setup-owned parquet; an input the thread path would
+  borrow is written to the parent's file; an auto-range worker stopped mid-reduction leaves no
+  scratch files; a stopped setup worker leaves neither scratch, factors nor input files; a
+  `MemoryError` behind a setup or auto-range failure is a 507; with an inline stand-in for the
+  worker, a child's failure is replayed exactly as the thread path records it, a child over its
+  memory budget ends the job `memory_limited` (auto-range and solve setup), a memory-shaped worker
+  failure is a 507, a stopped worker is the job's stop and its stop signal follows the job's
+  cancellation, the worker's own timeout times the job out, an auto-range already out of time
+  never starts its worker, a failed solver-input write removes the ratebook factors the child
+  persisted, and a crashed worker, a timed-out setup worker (which has no timeout) and a
+  malformed outcome are errors. `OptimiserWorkerFailure` keeps only a record's failure fields,
+  and a child failure before any job mapping (admission, a pre-job HTTP error, a changed chunk
+  plan) is classified in the child.
 - **`tests/performance/test_auto_range_memory.py`** — the chunked auto-range memory bound on the
   representative fixture (200,000 quotes, a scenario expander and real CatBoost scoring between
   the base and the optimiser): at a fixed chunk size, 20 scenarios peak within one and a half

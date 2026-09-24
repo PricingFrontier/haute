@@ -15,7 +15,7 @@ Current behaviour is specified in [the optimiser specification](../optimiser/low
 | OPT-P06 | Planned | P2 | Benchmark bounded frontier parallelism after input isolation. |
 | OPT-P12 | Planned | P2 | Extract the frontier domain service after the scaling decision. |
 | OPT-P14 | Planned | P2 | Complete solver/result publication extraction. |
-| OPT-P16 | Planned | P2 | Optimiser inputs are materialised in a hard-capped worker, not on a server thread. |
+| OPT-P16 | Planned | P2 | The input estimate and auto-range chunk planning read pipeline rows only in a hard-capped worker, never in the server process. |
 
 ## Planned improvements
 
@@ -120,31 +120,29 @@ rather than a mixed domain/utilities module.
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_routes.py`;
 `tests/test_optimiser_golden.py`; `tests/test_optimiser_ratebook_apply_agreement.py`.
 
-### OPT-P16 — Materialise optimiser inputs in a capped worker
-**Why:** The optimiser runs its upstream pipeline execution and its solve on
-daemon threads in the server process, with no hard memory cap and
-cooperative cancellation only. Every other heavy surface (preview, trace,
-Explore, JSON-cache builds, output writes, training preparation) runs in
-killable spawn workers under a native cap. `ROAD-WORKER-04` defers isolating
-the whole optimiser until solvers have versioned persistence, but the
-pipeline execution does not need that: the grid builder already reads a
-Parquet file.
+### OPT-P16 — Keep the input estimate and chunk planning out of the server process
+**Why:** Solve setup and auto-range execute the pipeline in a hard-capped,
+killable spawn worker. Two optimiser paths still read pipeline rows in the
+server process: `POST /api/optimiser/estimate` executes the pipeline and runs
+its quote-count scan on the request thread, and auto-range preparation's
+byte-budgeted chunk planning samples a bounded number of rows of the target
+plan before the job starts.
 
-**Plan:** Run setup and auto-range materialisation in the existing
-hard-capped worker, as training preparation does, writing the projected,
-validated solver input to a parent-owned Parquet artifact. The solve thread
-builds the quote grid from that file as it does now. This also takes the
-pipeline's execution off the server's threads.
+**Plan:** First decide how an estimate pays for isolation: a spawn worker per
+estimate (several seconds of start-up on Windows, on a request the canvas
+makes while the user edits) or a warm interactive worker, as preview and trace
+use. Then run the estimate's execution and scan there, answering the same
+typed 400/507 contract, and move auto-range chunk planning into the auto-range
+worker, which then reports the recorded `chunk_fallback` with its totals.
 
 **Acceptance:** No optimiser code path collects or sinks a pipeline frame in
-the server process; a memory-limited setup ends as a typed `memory_limited`
-job; cancellation during setup terminates the worker; solve results match
-the existing golden tests.
+the server process; a memory-limited estimate answers the typed 507; the
+estimate's single-scan cost contract still holds.
 
 **Dependencies:** The worker protocol and artifact publication specified in
 background jobs; `ROAD-WORKER-04` remains the package for the solver itself.
 
-**Evidence:** `src/haute/routes/_optimiser_service.py::_execute_pipeline`;
-`src/haute/routes/_optimiser_service.py::_build_grid`;
-`src/haute/routes/_training_preparation.py`; `src/haute/_worker_protocol.py`;
-`tests/test_optimiser_golden.py`.
+**Evidence:** `src/haute/routes/optimiser.py::_optimiser_input_metrics`;
+`src/haute/routes/_optimiser_service.py::_prepare_frontier_auto_range`;
+`src/haute/routes/_optimiser_worker.py::frontier_auto_range_worker`;
+`tests/test_optimiser_routes_real_library.py`.

@@ -80,6 +80,15 @@ facade's typed projection/strategy result for their request context. The same bo
 strategy diagnostics and deterministic feature provenance feed execution and admission;
 the optimiser does not select a second planning policy behind the execution engine.
 
+Solve setup and auto-range execute the pipeline in a killable spawn worker under a native memory
+cap, as training preparation does: the worker writes the projected, validated solver input to a
+setup-owned Parquet file (or returns the auto-range totals), and the server process builds the
+quote grid from that file. A setup whose pipeline exceeds its memory budget therefore ends as a
+typed `memory_limited` job instead of growing the server, and cancelling setup terminates the
+worker. The solver itself still runs on a server thread against the grid. The explicit `thread`
+compatibility mode runs the same steps on the job's thread. The input estimate still executes the
+pipeline in the server process.
+
 Once a solve completes, its lambdas, objective/constraint totals, convergence status, and (for
 ratebook) factor tables are available as a job summary. From there a user can:
 

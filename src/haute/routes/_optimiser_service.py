@@ -44,6 +44,7 @@ from haute._execution_admission import (
     ExecutionAdmissionError,
     create_admitted_execution_context,
     execution_budget_for_profile,
+    isolated_execution_budget,
 )
 from haute._execution_context import (
     ExecutionCancellationToken,
@@ -59,6 +60,7 @@ from haute._graph_utils import (
     select_edge_source_output,
     upstream_node_ids,
 )
+from haute._interactive_workers import resolve_interactive_execution_mode
 from haute._logging import get_logger
 from haute._polars_utils import (
     bounded_collect_batches,
@@ -71,7 +73,8 @@ from haute._rating import (
     rating_dtype_descriptor,
     rating_dtype_from_descriptor,
 )
-from haute._seed_plans import SeedPlanRequest, open_seed_plan
+from haute._sandbox import _get_project_root
+from haute._seed_plans import SeedPlan, SeedPlanHandoff, SeedPlanRequest, open_seed_plan
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -79,6 +82,15 @@ from haute._types import (
     PipelineGraph,
     RatebookSolveResultLike,
     SolveResultLike,
+)
+from haute._worker_isolation import (
+    IsolatedWorkerError,
+    IsolatedWorkerStoppedError,
+    IsolatedWorkerTimeoutError,
+    isolated_worker_failure_is_memory,
+    isolated_worker_memory_detail,
+    run_isolated_worker,
+    worker_config_for_memory_policy,
 )
 from haute.errors import (
     BoundedMemoryUnsupportedError,
@@ -126,6 +138,17 @@ from haute.routes._memory_messages import memory_limit_user_message
 from haute.routes._optimiser_limits import (
     enforce_frontier_compute_budget,
     limited_frontier_payload,
+)
+from haute.routes._optimiser_worker import (
+    FrontierAutoRangeWorkerOutcome,
+    FrontierAutoRangeWorkerRequest,
+    OptimiserWorkerFailureError,
+    SolveInput,
+    SolveInputWorkerOutcome,
+    SolveInputWorkerRequest,
+    frontier_auto_range_worker,
+    materialise_solve_input_worker,
+    worker_scratch_directory,
 )
 from haute.schemas import (
     OptimiserChunkFallback,
@@ -664,6 +687,26 @@ def _projected_parquet_input_path(frame: Any) -> Path | None:
         # A changed optimiser IR loses this optional reuse path. Actual data
         # or filesystem errors still propagate through the ordinary setup path.
         return None
+
+
+def _new_solver_input_path() -> str:
+    """Create the empty, setup-owned parquet path the solver input is written to."""
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".parquet")
+    os.close(tmp_fd)
+    return tmp_path
+
+
+def _remove_solver_input(path: str) -> None:
+    """Remove a setup-owned solver-input parquet; a failed removal is logged, not raised."""
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError as cleanup_exc:
+        logger.warning(
+            "optimiser_grid_temp_cleanup_failed",
+            path=path,
+            error=str(cleanup_exc),
+            exc_info=True,
+        )
 
 
 def _positive_int(value: object, *, field: str) -> int:
@@ -1247,6 +1290,15 @@ def _streaming_auto_range_node_is_eligible(
     )
 
 
+def _chunked_base_required_columns(
+    streaming_plan: _StreamingAutoRangePlan,
+) -> dict[str, frozenset[str]] | None:
+    """The column demand a chunked auto-range executes its base node with."""
+    if streaming_plan.base_required_columns is None:
+        return None
+    return {streaming_plan.base_node_id: streaming_plan.base_required_columns}
+
+
 def _upstream_slice_contains_node_type(
     graph: PipelineGraph,
     node_id: str,
@@ -1601,15 +1653,43 @@ def _persist_ratebook_factors_artifact(factors_df: Any) -> dict[str, Any] | None
     }
 
 
-def _persist_ratebook_factors_lazy_artifact(
-    factors_lf: Any,
-) -> dict[str, Any]:
-    """Persist projected ratebook factors without collecting them into memory."""
-    artifact_dir = create_owned_artifact_directory(
+def _new_ratebook_factors_directory() -> Path:
+    """Create the marked artifact directory a setup worker persists ratebook factors into."""
+    return create_owned_artifact_directory(
         _prepare_ratebook_factors_artifact_root(),
         _RATEBOOK_FACTORS_ARTIFACT_DIR_PREFIX,
         _RATEBOOK_FACTORS_ARTIFACT_OWNER,
     )
+
+
+def _remove_ratebook_factors_directory(directory: Path) -> None:
+    """Remove a parent-owned factors directory no job adopted; a failure is logged."""
+    try:
+        shutil.rmtree(directory)
+    except FileNotFoundError:
+        return
+    except OSError as cleanup_exc:
+        logger.warning(
+            "setup_orphan_ratebook_factors_cleanup_failed",
+            path=str(directory),
+            error=str(cleanup_exc),
+        )
+
+
+def _persist_ratebook_factors_lazy_artifact(
+    factors_lf: Any,
+    *,
+    artifact_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Persist projected ratebook factors without collecting them into memory.
+
+    A setup worker persists into the *artifact_dir* its parent created and
+    owns: on failure it removes only its partial file and leaves the
+    directory to the parent.
+    """
+    owns_directory = artifact_dir is None
+    if artifact_dir is None:
+        artifact_dir = _new_ratebook_factors_directory()
     artifact_path = artifact_dir / _RATEBOOK_FACTORS_FILENAME
     try:
         bounded_sink(
@@ -1621,7 +1701,10 @@ def _persist_ratebook_factors_lazy_artifact(
         size_bytes = int(metadata["size_bytes"])
         columns = list(cast(Mapping[str, Any], metadata["columns"]).keys())
     except BaseException:
-        shutil.rmtree(artifact_dir, ignore_errors=True)
+        if owns_directory:
+            shutil.rmtree(artifact_dir, ignore_errors=True)
+        else:
+            artifact_path.unlink(missing_ok=True)
         raise
 
     return {
@@ -3236,10 +3319,17 @@ class OptimiserSolveService:
         setup_job_key: tuple[str, str, str],
         execution_token: ExecutionCancellationToken,
     ) -> None:
-        """Execute solve setup, then hand the prepared grid to the solver worker."""
+        """Execute solve setup, then hand the prepared grid to the solver worker.
+
+        In process mode the pipeline is materialised by a hard-capped worker
+        into a setup-owned parquet and the grid is built from that file here;
+        the explicit thread compatibility mode materialises on this thread.
+        """
         execution_context: ExecutionContext | None = None
         launch_started = False
         ratebook_factors_handle: Any = None
+        solver_input_path: str | None = None
+        ratebook_factors_dir: Path | None = None
         job = self._store.require_job(job_id)
         raw_start_time = job.get("start_time")
         start_time = (
@@ -3268,49 +3358,52 @@ class OptimiserSolveService:
                     expected_status="running",
                 )
                 self._raise_if_solve_stopped(job_id, execution_context=execution_context)
-                lazy_outputs = self._execute_pipeline(
-                    body,
-                    job_id,
-                    resources,
-                    required_columns_by_node=required_columns_by_node,
-                    execution_context=execution_context,
-                )
-                self._raise_if_solve_stopped(job_id, execution_context=execution_context)
-                source_lf = self._resolve_data_input_frame(
-                    lazy_outputs,
-                    body.graph,
-                    config,
-                    body.node_id,
-                    job_id,
-                    execution_context=execution_context,
-                )
-                constraint_cols, scored_lf = self._validate_and_project(
-                    source_lf,
-                    config,
-                    job_id,
-                    execution_context=execution_context,
-                )
-                self._raise_if_solve_stopped(job_id, execution_context=execution_context)
-                ratebook_factors_handle = self._extract_factors(
-                    lazy_outputs,
-                    body.graph,
-                    body.node_id,
-                    config,
-                    mode,
-                    execution_context=execution_context,
-                )
-                self._raise_if_solve_stopped(job_id, execution_context=execution_context)
-                del lazy_outputs
-                gc.collect()
-
-                quote_grid = self._build_grid(
-                    scored_lf,
-                    constraint_cols,
-                    config,
-                    body.node_id,
-                    job_id,
-                    execution_context=execution_context,
-                )
+                if resolve_interactive_execution_mode() == "process":
+                    solver_input_path = _new_solver_input_path()
+                    if mode == "ratebook":
+                        ratebook_factors_dir = _new_ratebook_factors_directory()
+                    solve_input = self._materialise_solve_input_in_worker(
+                        body,
+                        job_id,
+                        resources,
+                        config=config,
+                        mode=mode,
+                        required_columns_by_node=required_columns_by_node,
+                        execution_context=execution_context,
+                        output_path=solver_input_path,
+                        ratebook_factors_dir=ratebook_factors_dir,
+                    )
+                    ratebook_factors_handle = solve_input.ratebook_factors_handle
+                    self._raise_if_solve_stopped(job_id, execution_context=execution_context)
+                    quote_grid = self._build_grid_from_parquet(
+                        solve_input.path,
+                        solve_input.constraint_cols,
+                        config,
+                        body.node_id,
+                        job_id,
+                        execution_context=execution_context,
+                    )
+                else:
+                    constraint_cols, scored_lf, ratebook_factors_handle = (
+                        self._prepare_solver_frame(
+                            body,
+                            job_id,
+                            resources,
+                            config=config,
+                            mode=mode,
+                            required_columns_by_node=required_columns_by_node,
+                            execution_context=execution_context,
+                        )
+                    )
+                    self._raise_if_solve_stopped(job_id, execution_context=execution_context)
+                    quote_grid = self._build_grid(
+                        scored_lf,
+                        constraint_cols,
+                        config,
+                        body.node_id,
+                        job_id,
+                        execution_context=execution_context,
+                    )
                 self._raise_if_solve_stopped(job_id, execution_context=execution_context)
                 self._record_execution_metrics(job_id, execution_context)
                 self._launch_background(
@@ -3328,139 +3421,17 @@ class OptimiserSolveService:
                     factor_level_order=factor_level_order,
                 )
                 launch_started = True
-            except BackgroundJobStoppedError as exc:
-                terminal_reason = _coerce_stopped_terminal_reason(exc.terminal_reason)
-                self._lifecycle.transition(
-                    job_id,
-                    to=terminal_reason,
-                    message=exc.terminal_reason,
-                    fields=(
-                        {
-                            "execution_metrics": execution_context.metrics_payload(
-                                status=terminal_reason,
-                                terminal_reason=terminal_reason,
-                            )
-                        }
-                        if execution_context is not None
-                        else None
-                    ),
-                    elapsed_seconds=time.monotonic() - start_time,
-                )
-            except HTTPException as exc:
-                http_terminal_reason: TerminalReason = (
-                    "memory_limited"
-                    if _is_memory_limit_http_exception(exc)
-                    else "contract_error"
-                    if exc.status_code in (400, 422)
-                    else "error"
-                )
-                error_update: dict[str, Any] = {
-                    "message": str(exc.detail),
-                    "http_status_code": exc.status_code,
-                    "error_detail": exc.detail,
-                }
-                if execution_context is not None:
-                    error_update["execution_metrics"] = execution_context.metrics_payload(
-                        status=http_terminal_reason,
-                        terminal_reason=http_terminal_reason,
-                    )
-                self._lifecycle.transition(
-                    job_id,
-                    to=http_terminal_reason,
-                    fields=error_update,
-                    elapsed_seconds=time.monotonic() - start_time,
-                )
-            except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-                http_exc = _memory_limit_http_exception(exc)
-                elapsed_seconds = time.monotonic() - start_time
-                if execution_context is not None:
-                    memory_error_update = _memory_limit_job_update(
-                        detail=http_exc.detail,
-                        elapsed_seconds=elapsed_seconds,
-                        execution_context=execution_context,
-                    )
-                else:
-                    payload = _normalise_memory_limit_payload(http_exc.detail)
-                    memory_error_update = {
-                        "message": str(payload),
-                        "elapsed_seconds": elapsed_seconds,
-                        "error_code": payload.get("error_code", "memory_limit"),
-                        "http_status_code": http_exc.status_code,
-                        "error_detail": payload,
-                    }
-                self._lifecycle.transition(
-                    job_id,
-                    to="memory_limited",
-                    fields=memory_error_update,
-                    elapsed_seconds=elapsed_seconds,
-                )
-            except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-                elapsed_seconds = time.monotonic() - start_time
-                contract_reason = contract_error_terminal_reason(exc)
-                contract_fields = contract_error_job_fields(exc)
-                contract_fields["elapsed_seconds"] = elapsed_seconds
-                if execution_context is not None:
-                    contract_fields["execution_metrics"] = execution_context.metrics_payload(
-                        status=contract_reason,
-                        terminal_reason=contract_reason,
-                    )
-                self._lifecycle.transition(
-                    job_id,
-                    to=contract_reason,
-                    message=str(exc),
-                    fields=contract_fields,
-                    elapsed_seconds=elapsed_seconds,
-                )
-            except BoundedMemoryUnsupportedError as exc:
-                detail = f"Optimiser setup cannot run in bounded streaming mode: {exc}"
-                logger.warning(
-                    "optimiser_setup_bounded_streaming_unsupported",
-                    error=str(exc),
-                    node_id=body.node_id,
-                    job_id=job_id,
-                )
-                elapsed_seconds = time.monotonic() - start_time
-                bounded_fields: dict[str, Any] = {
-                    "http_status_code": 422,
-                    "error_detail": detail,
-                    "elapsed_seconds": elapsed_seconds,
-                }
-                if execution_context is not None:
-                    bounded_fields["execution_metrics"] = execution_context.metrics_payload(
-                        status="contract_error",
-                        terminal_reason="contract_error",
-                    )
-                self._lifecycle.transition(
-                    job_id,
-                    to="contract_error",
-                    message=detail,
-                    fields=bounded_fields,
-                    elapsed_seconds=elapsed_seconds,
-                )
             except Exception as exc:
-                detail = f"Optimiser setup failed: {exc}"
-                logger.error(
-                    "optimiser_setup_failed",
-                    error=str(exc),
-                    node_id=body.node_id,
-                    job_id=job_id,
-                    exc_info=True,
-                )
-                elapsed_seconds = time.monotonic() - start_time
-                error_fields: dict[str, Any] = {"elapsed_seconds": elapsed_seconds}
-                if execution_context is not None:
-                    error_fields["execution_metrics"] = execution_context.metrics_payload(
-                        status="error",
-                        terminal_reason="error",
-                    )
-                self._lifecycle.transition(
+                self._record_solve_setup_failure(
                     job_id,
-                    to="error",
-                    message=detail,
-                    fields=error_fields,
-                    elapsed_seconds=elapsed_seconds,
+                    exc,
+                    node_id=body.node_id,
+                    execution_context=execution_context,
+                    start_time=start_time,
                 )
             finally:
+                if solver_input_path is not None:
+                    _remove_solver_input(solver_input_path)
                 if not launch_started:
                     if execution_context is not None:
                         execution_context.release_admission()
@@ -3475,6 +3446,403 @@ class OptimiserSolveService:
                             job_id=job_id,
                             event="setup_orphan_ratebook_factors_cleanup_failed",
                         )
+                    elif ratebook_factors_dir is not None:
+                        # A worker that failed or was stopped handed back no handle.
+                        _remove_ratebook_factors_directory(ratebook_factors_dir)
+
+    def _prepare_solver_frame(
+        self,
+        body: OptimiserSolveRequest,
+        job_id: str,
+        resources: contextlib.ExitStack,
+        *,
+        config: dict[str, Any],
+        mode: str,
+        required_columns_by_node: Mapping[str, frozenset[str]],
+        execution_context: ExecutionContext,
+        seed_plan: SeedPlanHandoff | None = None,
+        ratebook_factors_dir: str | None = None,
+    ) -> tuple[list[str], Any, Any]:
+        """Execute, resolve, validate and project the solve's input; persist ratebook factors.
+
+        Returns the constraint columns, the projected solver frame, and the
+        ratebook factors handle (``None`` in online mode). The frame stays
+        valid while *resources* holds the run's seed plan.
+        """
+        lazy_outputs = self._execute_pipeline(
+            body,
+            job_id,
+            resources,
+            required_columns_by_node=required_columns_by_node,
+            execution_context=execution_context,
+            seed_plan=seed_plan,
+        )
+        self._raise_if_solve_stopped(job_id, execution_context=execution_context)
+        source_lf = self._resolve_data_input_frame(
+            lazy_outputs,
+            body.graph,
+            config,
+            body.node_id,
+            job_id,
+            execution_context=execution_context,
+        )
+        constraint_cols, scored_lf = self._validate_and_project(
+            source_lf,
+            config,
+            job_id,
+            execution_context=execution_context,
+        )
+        self._raise_if_solve_stopped(job_id, execution_context=execution_context)
+        ratebook_factors_handle = self._extract_factors(
+            lazy_outputs,
+            body.graph,
+            body.node_id,
+            config,
+            mode,
+            execution_context=execution_context,
+            artifact_dir=ratebook_factors_dir,
+        )
+        del lazy_outputs
+        gc.collect()
+        return constraint_cols, scored_lf, ratebook_factors_handle
+
+    def _materialise_solve_input(
+        self,
+        body: OptimiserSolveRequest,
+        job_id: str,
+        resources: contextlib.ExitStack,
+        *,
+        config: dict[str, Any],
+        mode: str,
+        required_columns_by_node: Mapping[str, frozenset[str]],
+        execution_context: ExecutionContext,
+        output_path: str,
+        ratebook_factors_dir: str | None,
+        seed_plan: SeedPlanHandoff | None = None,
+    ) -> SolveInput:
+        """Write the projected, validated solver input to *output_path* (a worker's step).
+
+        The input is always written, never borrowed: a snapshot this run
+        captured is released when the worker's plan closes, before the parent
+        reads the file. Ratebook factors go to the parent's *ratebook_factors_dir*,
+        which the parent removes if the job never adopts them.
+        """
+        constraint_cols, scored_lf, ratebook_factors_handle = self._prepare_solver_frame(
+            body,
+            job_id,
+            resources,
+            config=config,
+            mode=mode,
+            required_columns_by_node=required_columns_by_node,
+            execution_context=execution_context,
+            seed_plan=seed_plan,
+            ratebook_factors_dir=ratebook_factors_dir,
+        )
+        input_path = self._write_solver_input(
+            scored_lf,
+            output_path,
+            body.node_id,
+            job_id,
+            execution_context=execution_context,
+            allow_borrow=False,
+        )
+        return SolveInput(
+            path=input_path,
+            constraint_cols=constraint_cols,
+            ratebook_factors_handle=ratebook_factors_handle,
+        )
+
+    def _materialise_solve_input_in_worker(
+        self,
+        body: OptimiserSolveRequest,
+        job_id: str,
+        resources: contextlib.ExitStack,
+        *,
+        config: dict[str, Any],
+        mode: str,
+        required_columns_by_node: Mapping[str, frozenset[str]],
+        execution_context: ExecutionContext,
+        output_path: str,
+        ratebook_factors_dir: Path | None,
+    ) -> SolveInput:
+        """Supervise one hard-capped worker that materialises the solve's input.
+
+        The seed plan is opened here and adopted by the worker. The worker
+        writes only into locations this setup created: *output_path*, the
+        *ratebook_factors_dir* and a scratch directory removed when it exits.
+        """
+        handoff = self._open_setup_seed_plan(
+            body,
+            job_id,
+            resources,
+            required_columns_by_node=required_columns_by_node,
+            execution_context=execution_context,
+        )
+        self._raise_if_solve_stopped(job_id, execution_context=execution_context)
+        with worker_scratch_directory() as scratch_dir:
+            outcome = self._run_optimiser_worker(
+                materialise_solve_input_worker,
+                SolveInputWorkerRequest(
+                    body=body,
+                    config=dict(config),
+                    mode=mode,
+                    required_columns_by_node={
+                        node_id: frozenset(columns)
+                        for node_id, columns in required_columns_by_node.items()
+                    },
+                    project_root=str(_get_project_root()),
+                    seed_plan=handoff,
+                    output_path=output_path,
+                    scratch_dir=scratch_dir,
+                    ratebook_factors_dir=(
+                        str(ratebook_factors_dir) if ratebook_factors_dir is not None else None
+                    ),
+                ),
+                job_id=job_id,
+                node_id=body.node_id,
+                execution_context=execution_context,
+                timeout_seconds=None,
+                process_name="haute-optimiser-setup",
+            )
+        if not isinstance(outcome, SolveInputWorkerOutcome):
+            raise RuntimeError(f"Optimiser setup worker returned {type(outcome).__name__}")
+        if outcome.execution_metrics is not None:
+            execution_context.adopt_worker_evidence(outcome.execution_metrics)
+        if outcome.failure is not None:
+            raise OptimiserWorkerFailureError(outcome.failure)
+        solve_input = outcome.solve_input
+        if solve_input is None:
+            raise RuntimeError("Optimiser setup worker returned neither an input nor a failure")
+        if solve_input.path != output_path:
+            raise RuntimeError("Optimiser setup worker wrote its input outside the setup's file")
+        handle = solve_input.ratebook_factors_handle
+        if handle is not None:
+            _factors_path, factors_dir = _validate_ratebook_factors_artifact_handle(handle)
+            if ratebook_factors_dir is None or factors_dir != ratebook_factors_dir.resolve():
+                raise RuntimeError(
+                    "Optimiser setup worker persisted factors outside the setup's directory"
+                )
+        return solve_input
+
+    def _run_optimiser_worker(
+        self,
+        function: Callable[..., Any],
+        request: Any,
+        *,
+        job_id: str,
+        node_id: str,
+        execution_context: ExecutionContext,
+        timeout_seconds: float | None,
+        process_name: str,
+        on_timeout: Callable[[], BaseException] | None = None,
+    ) -> Any:
+        """Run one optimiser materialisation worker under the job's admitted headroom.
+
+        The headroom is the worker's execution budget and its native cap, and
+        the job's cancellation reason is its stop signal, so cancellation,
+        supersession and a polled timeout terminate the worker. Worker-level
+        failures become the exceptions the job's failure mapping already
+        classifies: a stop is the job's stop, the worker's own timeout is
+        whatever *on_timeout* publishes, a memory-shaped failure is a 507
+        ``memory_limit`` and anything else is a 500.
+        """
+        budget = isolated_execution_budget(execution_context)
+        worker_config = worker_config_for_memory_policy(
+            memory_limit_bytes=budget.memory_limit_bytes,
+            timeout_seconds=timeout_seconds,
+            stop_reason=lambda: self._jobs.cancellation_reason(job_id),
+            process_name=process_name,
+        )
+        try:
+            return run_isolated_worker(function, request, budget, config=worker_config)
+        except IsolatedWorkerStoppedError as exc:
+            raise BackgroundJobStoppedError(job_id, exc.terminal_reason) from None
+        except IsolatedWorkerTimeoutError:
+            if on_timeout is None:
+                raise RuntimeError("An optimiser worker without a timeout timed out") from None
+            raise on_timeout() from None
+        except IsolatedWorkerError as exc:
+            if isolated_worker_failure_is_memory(exc):
+                raise HTTPException(
+                    status_code=507,
+                    detail=isolated_worker_memory_detail(
+                        exc,
+                        operation=budget.operation,
+                        memory_limit_bytes=budget.memory_limit_bytes,
+                    ),
+                ) from None
+            logger.error(
+                "optimiser_worker_failed",
+                job_id=job_id,
+                node_id=node_id,
+                operation=budget.operation,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Optimiser worker failed. Check the server logs for details.",
+            ) from None
+
+    def _record_solve_setup_failure(
+        self,
+        job_id: str,
+        exc: Exception,
+        *,
+        node_id: str,
+        execution_context: ExecutionContext | None,
+        start_time: float,
+    ) -> None:
+        """Publish one solve-setup failure as the job's terminal state."""
+        elapsed_seconds = time.monotonic() - start_time
+        if isinstance(exc, OptimiserWorkerFailureError):
+            failure = exc.failure
+            fields = dict(failure.fields)
+            worker_metrics = fields.get("execution_metrics")
+            if execution_context is not None:
+                fields["execution_metrics"] = (
+                    execution_context.metrics_with_worker_evidence(worker_metrics)
+                    if isinstance(worker_metrics, Mapping)
+                    else execution_context.metrics_payload(
+                        status=failure.terminal_reason,
+                        terminal_reason=failure.terminal_reason,
+                    )
+                )
+            self._lifecycle.transition(
+                job_id,
+                to=failure.terminal_reason,
+                message=failure.message,
+                fields=fields,
+                elapsed_seconds=elapsed_seconds,
+            )
+        elif isinstance(exc, BackgroundJobStoppedError):
+            terminal_reason = _coerce_stopped_terminal_reason(exc.terminal_reason)
+            self._lifecycle.transition(
+                job_id,
+                to=terminal_reason,
+                message=exc.terminal_reason,
+                fields=(
+                    {
+                        "execution_metrics": execution_context.metrics_payload(
+                            status=terminal_reason,
+                            terminal_reason=terminal_reason,
+                        )
+                    }
+                    if execution_context is not None
+                    else None
+                ),
+                elapsed_seconds=elapsed_seconds,
+            )
+        elif isinstance(exc, HTTPException):
+            http_terminal_reason: TerminalReason = (
+                "memory_limited"
+                if _is_memory_limit_http_exception(exc)
+                else "contract_error"
+                if exc.status_code in (400, 422)
+                else "error"
+            )
+            error_update: dict[str, Any] = {
+                "message": str(exc.detail),
+                "http_status_code": exc.status_code,
+                "error_detail": exc.detail,
+            }
+            if execution_context is not None:
+                error_update["execution_metrics"] = execution_context.metrics_payload(
+                    status=http_terminal_reason,
+                    terminal_reason=http_terminal_reason,
+                )
+            self._lifecycle.transition(
+                job_id,
+                to=http_terminal_reason,
+                fields=error_update,
+                elapsed_seconds=elapsed_seconds,
+            )
+        elif isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
+            http_exc = _memory_limit_http_exception(exc)
+            if execution_context is not None:
+                memory_error_update = _memory_limit_job_update(
+                    detail=http_exc.detail,
+                    elapsed_seconds=elapsed_seconds,
+                    execution_context=execution_context,
+                )
+            else:
+                payload = _normalise_memory_limit_payload(http_exc.detail)
+                memory_error_update = {
+                    "message": str(payload),
+                    "elapsed_seconds": elapsed_seconds,
+                    "error_code": payload.get("error_code", "memory_limit"),
+                    "http_status_code": http_exc.status_code,
+                    "error_detail": payload,
+                }
+            self._lifecycle.transition(
+                job_id,
+                to="memory_limited",
+                fields=memory_error_update,
+                elapsed_seconds=elapsed_seconds,
+            )
+        elif isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES):
+            contract_reason = contract_error_terminal_reason(exc)
+            contract_fields = contract_error_job_fields(exc)
+            contract_fields["elapsed_seconds"] = elapsed_seconds
+            if execution_context is not None:
+                contract_fields["execution_metrics"] = execution_context.metrics_payload(
+                    status=contract_reason,
+                    terminal_reason=contract_reason,
+                )
+            self._lifecycle.transition(
+                job_id,
+                to=contract_reason,
+                message=str(exc),
+                fields=contract_fields,
+                elapsed_seconds=elapsed_seconds,
+            )
+        elif isinstance(exc, BoundedMemoryUnsupportedError):
+            detail = f"Optimiser setup cannot run in bounded streaming mode: {exc}"
+            logger.warning(
+                "optimiser_setup_bounded_streaming_unsupported",
+                error=str(exc),
+                node_id=node_id,
+                job_id=job_id,
+            )
+            bounded_fields: dict[str, Any] = {
+                "http_status_code": 422,
+                "error_detail": detail,
+                "elapsed_seconds": elapsed_seconds,
+            }
+            if execution_context is not None:
+                bounded_fields["execution_metrics"] = execution_context.metrics_payload(
+                    status="contract_error",
+                    terminal_reason="contract_error",
+                )
+            self._lifecycle.transition(
+                job_id,
+                to="contract_error",
+                message=detail,
+                fields=bounded_fields,
+                elapsed_seconds=elapsed_seconds,
+            )
+        else:
+            detail = f"Optimiser setup failed: {exc}"
+            logger.error(
+                "optimiser_setup_failed",
+                error=str(exc),
+                node_id=node_id,
+                job_id=job_id,
+                exc_info=True,
+            )
+            error_fields: dict[str, Any] = {"elapsed_seconds": elapsed_seconds}
+            if execution_context is not None:
+                error_fields["execution_metrics"] = execution_context.metrics_payload(
+                    status="error",
+                    terminal_reason="error",
+                )
+            self._lifecycle.transition(
+                job_id,
+                to="error",
+                message=detail,
+                fields=error_fields,
+                elapsed_seconds=elapsed_seconds,
+            )
 
     def start_frontier_auto_range(
         self,
@@ -3593,17 +3961,8 @@ class OptimiserSolveService:
             start = job.get("start_time")
             timeout = job.get("timeout", _default_auto_range_timeout())
             if start and (time.monotonic() - start) > timeout:
-                self._jobs.cancel(job_id, reason="timed_out")
-                updated_job = self._lifecycle.transition(
-                    job_id,
-                    to="timed_out",
-                    message=(
-                        f"Auto range timed out after {timeout}s. "
-                        "Reduce the input size or increase HAUTE_AUTO_RANGE_TIMEOUT."
-                    ),
-                    elapsed_seconds=time.monotonic() - start,
-                )
-                job = updated_job if updated_job is not None else self._store.require_job(job_id)
+                self._time_out_frontier_auto_range(job_id, timeout)
+                job = self._store.require_job(job_id)
 
         return self._frontier_auto_range_status_response(job)
 
@@ -3893,7 +4252,14 @@ class OptimiserSolveService:
     def _prepare_frontier_auto_range(
         self,
         body: OptimiserFrontierAutoRangeRequest,
+        *,
+        prepare_snapshot_inputs: bool = True,
     ) -> dict[str, Any]:
+        """Validate an auto-range request and plan it, chunked when the chain allows.
+
+        An auto-range worker re-plans with ``prepare_snapshot_inputs=False``:
+        its parent prepared the inputs and holds the plan's leases.
+        """
         node = _find_optimiser_node(body.graph, body.node_id)
         config = dict(node.data.config)
         mode = self._validate_config(config)
@@ -3909,7 +4275,8 @@ class OptimiserSolveService:
             config,
             mode=mode,
         )
-        self._prepare_auto_range_snapshot_inputs(body.graph, body.node_id)
+        if prepare_snapshot_inputs:
+            self._prepare_auto_range_snapshot_inputs(body.graph, body.node_id)
         streaming_plan, chunk_fallback = _build_streaming_auto_range_plan(
             body.graph,
             body.node_id,
@@ -3991,13 +4358,17 @@ class OptimiserSolveService:
         streaming_plan: _StreamingAutoRangePlan | None,
         chunk_fallback: dict[str, Any] | None = None,
         execution_context: ExecutionContext | None = None,
+        seed_plan: SeedPlanHandoff | None = None,
+        isolate: bool = True,
     ) -> OptimiserFrontierAutoRangeResponse:
         """Run one auto-range job: chunk by chunk when a plan was proven, else whole-frame.
 
         Both paths feed the same range reducer; the job owns admission,
-        cancellation, completion and failure classification for either.
+        cancellation, completion and failure classification for either. In
+        process mode an isolated worker computes the ranges (*isolate* is
+        false only inside that worker, which passes the *seed_plan* handoff).
         """
-        del node, mode, timeout
+        del node, mode
         if execution_context is None:
             # A job entered without a caller-owned context still runs under
             # admission: a materialising boundary is never admitted bare.
@@ -4018,11 +4389,22 @@ class OptimiserSolveService:
             raise BackgroundJobStoppedError(job_id, status) from exc
         self._raise_if_frontier_auto_range_stopped(job_id)
         chunked = streaming_plan is not None
+        worker_metrics: Mapping[str, Any] | None = None
 
         # The seed plan entered on this stack is released on every exit.
         try:
             with contextlib.ExitStack() as resources:
-                if streaming_plan is not None:
+                if isolate and resolve_interactive_execution_mode() == "process":
+                    ranges, worker_metrics = self._frontier_ranges_in_worker(
+                        body,
+                        job_id,
+                        resources,
+                        streaming_plan=streaming_plan,
+                        required_columns_by_node=required_columns_by_node,
+                        timeout=timeout,
+                        execution_context=execution_context,
+                    )
+                elif streaming_plan is not None:
                     ranges = self._chunked_frontier_ranges(
                         body,
                         job_id,
@@ -4031,6 +4413,7 @@ class OptimiserSolveService:
                         partition_count=partition_count,
                         streaming_plan=streaming_plan,
                         execution_context=execution_context,
+                        seed_plan=seed_plan,
                     )
                 else:
                     ranges = self._full_frame_frontier_ranges(
@@ -4042,6 +4425,7 @@ class OptimiserSolveService:
                         partition_count=partition_count,
                         required_columns_by_node=required_columns_by_node,
                         execution_context=execution_context,
+                        seed_plan=seed_plan,
                     )
                 self._raise_if_frontier_auto_range_stopped(job_id)
                 response = OptimiserFrontierAutoRangeResponse(
@@ -4067,12 +4451,39 @@ class OptimiserSolveService:
                         "progress": 1.0,
                         "elapsed_seconds": self._job_elapsed(job_id),
                         "result": response.model_dump(),
-                        "execution_metrics": execution_context.metrics_payload(status="completed"),
+                        "execution_metrics": (
+                            execution_context.metrics_payload(status="completed")
+                            if worker_metrics is None
+                            else execution_context.metrics_with_worker_evidence(worker_metrics)
+                        ),
                     },
                 )
                 return response
         except BackgroundJobStoppedError:
             raise
+        except OptimiserWorkerFailureError as exc:
+            failure = exc.failure
+            fields = dict(failure.fields)
+            failed_metrics = fields.get("execution_metrics")
+            fields["execution_metrics"] = (
+                execution_context.metrics_with_worker_evidence(failed_metrics)
+                if isinstance(failed_metrics, Mapping)
+                else execution_context.metrics_payload(
+                    status=failure.terminal_reason,
+                    terminal_reason=failure.terminal_reason,
+                )
+            )
+            fields["elapsed_seconds"] = self._job_elapsed(job_id)
+            self._lifecycle.transition(
+                job_id,
+                to=failure.terminal_reason,
+                message=failure.message,
+                fields=fields,
+            )
+            raise HTTPException(
+                status_code=failure.http_status_code,
+                detail=failure.http_detail,
+            ) from None
         except ExecutionCancelledError as exc:
             reason = self._jobs.cancellation_reason(job_id) or "cancelled"
             raise BackgroundJobStoppedError(job_id, reason) from exc
@@ -4193,6 +4604,7 @@ class OptimiserSolveService:
         partition_count: int,
         required_columns_by_node: Mapping[str, Iterable[str]],
         execution_context: ExecutionContext,
+        seed_plan: SeedPlanHandoff | None = None,
     ) -> dict[str, dict[str, float]]:
         """Execute the whole pipeline to the data input and reduce it in bounded batches."""
         self._store.atomic_update(
@@ -4211,6 +4623,7 @@ class OptimiserSolveService:
             resources,
             required_columns_by_node=required_columns_by_node,
             execution_context=execution_context,
+            seed_plan=seed_plan,
         )
         self._raise_if_frontier_auto_range_stopped(job_id)
         self._store.atomic_update(
@@ -4273,6 +4686,7 @@ class OptimiserSolveService:
         partition_count: int,
         streaming_plan: _StreamingAutoRangePlan,
         execution_context: ExecutionContext,
+        seed_plan: SeedPlanHandoff | None = None,
     ) -> dict[str, dict[str, float]]:
         """Execute to the base node, then expand, score and reduce one base chunk at a time."""
         import polars as pl
@@ -4291,11 +4705,7 @@ class OptimiserSolveService:
             expected_status="running",
         )
         self._raise_if_frontier_auto_range_stopped(job_id)
-        base_required = None
-        if streaming_plan.base_required_columns is not None:
-            base_required = {
-                streaming_plan.base_node_id: streaming_plan.base_required_columns,
-            }
+        base_required = _chunked_base_required_columns(streaming_plan)
         pinned = preamble_execution_fingerprint(
             body.graph.preamble or "",
             pipeline_dir=_pipeline_dir(body.graph),
@@ -4308,6 +4718,7 @@ class OptimiserSolveService:
             target_node_id=streaming_plan.base_node_id,
             execution_context=execution_context,
             preamble_fingerprint=pinned,
+            seed_plan=seed_plan,
         )
         self._raise_if_frontier_auto_range_stopped(job_id)
         base_lf = lazy_outputs.get(streaming_plan.base_node_id)
@@ -4399,6 +4810,98 @@ class OptimiserSolveService:
             check_cancelled=lambda: self._raise_if_frontier_auto_range_stopped(job_id),
             execution_context=execution_context,
         )
+
+    def _frontier_ranges_in_worker(
+        self,
+        body: OptimiserFrontierAutoRangeRequest,
+        job_id: str,
+        resources: contextlib.ExitStack,
+        *,
+        streaming_plan: _StreamingAutoRangePlan | None,
+        required_columns_by_node: Mapping[str, Iterable[str]],
+        timeout: int,
+        execution_context: ExecutionContext,
+    ) -> tuple[dict[str, dict[str, float]], Mapping[str, Any] | None]:
+        """Supervise one hard-capped worker that computes the auto-range totals.
+
+        The seed plan the worker's execution adopts is opened here: at the
+        streaming base for a chunked job, at the data input otherwise. The
+        job's remaining timeout bounds the worker. Returns the totals and the
+        worker's execution metrics.
+        """
+        self._store.atomic_update(
+            job_id,
+            {
+                "message": "Estimating frontier range",
+                "progress": 0.05,
+                "elapsed_seconds": self._job_elapsed(job_id),
+            },
+            expected_status="running",
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        if streaming_plan is not None:
+            handoff = self._open_setup_seed_plan(
+                body,
+                job_id,
+                resources,
+                required_columns_by_node=_chunked_base_required_columns(streaming_plan),
+                target_node_id=streaming_plan.base_node_id,
+                execution_context=execution_context,
+            )
+        else:
+            handoff = self._open_setup_seed_plan(
+                body,
+                job_id,
+                resources,
+                required_columns_by_node=required_columns_by_node,
+                execution_context=execution_context,
+            )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        remaining = timeout - self._job_elapsed(job_id)
+        if remaining <= 0:
+            raise self._time_out_frontier_auto_range(job_id, timeout)
+        with worker_scratch_directory() as scratch_dir:
+            outcome = self._run_optimiser_worker(
+                frontier_auto_range_worker,
+                FrontierAutoRangeWorkerRequest(
+                    body=body,
+                    project_root=str(_get_project_root()),
+                    seed_plan=handoff,
+                    chunked=streaming_plan is not None,
+                    scratch_dir=scratch_dir,
+                ),
+                job_id=job_id,
+                node_id=body.node_id,
+                execution_context=execution_context,
+                timeout_seconds=remaining,
+                process_name="haute-optimiser-auto-range",
+                on_timeout=lambda: self._time_out_frontier_auto_range(job_id, timeout),
+            )
+        if not isinstance(outcome, FrontierAutoRangeWorkerOutcome):
+            raise RuntimeError(f"Auto-range worker returned {type(outcome).__name__}")
+        if outcome.failure is not None:
+            raise OptimiserWorkerFailureError(outcome.failure)
+        if outcome.ranges is None:
+            raise RuntimeError("Auto-range worker returned neither ranges nor a failure")
+        return outcome.ranges, outcome.execution_metrics
+
+    def _time_out_frontier_auto_range(
+        self,
+        job_id: str,
+        timeout: int | float,
+    ) -> BackgroundJobStoppedError:
+        """Publish an auto-range timeout and return the stop that ends its worker."""
+        self._jobs.cancel(job_id, reason="timed_out")
+        self._lifecycle.transition(
+            job_id,
+            to="timed_out",
+            message=(
+                f"Auto range timed out after {timeout}s. "
+                "Reduce the input size or increase HAUTE_AUTO_RANGE_TIMEOUT."
+            ),
+            elapsed_seconds=_job_elapsed_seconds(self._store.require_job(job_id)),
+        )
+        return BackgroundJobStoppedError(job_id, "timed_out")
 
     def _launch_frontier_auto_range_background(
         self,
@@ -4531,6 +5034,109 @@ class OptimiserSolveService:
                 detail="An optimisation job is already running. Please wait for it to finish.",
             )
 
+    @staticmethod
+    def _setup_execution_scope(
+        body: OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest,
+        target_node_id: str | None,
+    ) -> tuple[str, frozenset[str], tuple[str, ...]]:
+        """Return setup's execution target, preserved side inputs and consumed nodes.
+
+        Consumed are every node setup reads afterwards: an explicit target alone;
+        otherwise the resolved execution target (an Optimiser resolves to its data
+        input) and each banding side input from its own edges that the run
+        executes, API inputs included.
+        """
+        execution_target_node_id = target_node_id or _setup_execution_target_node_id(
+            body.graph, body.node_id
+        )
+        preserved_node_ids = _optimiser_side_input_ids(body.graph, body.node_id)
+        consumed_node_ids: tuple[str, ...] = (execution_target_node_id,)
+        if target_node_id is None:
+            target_lineage = set(upstream_node_ids(execution_target_node_id, body.graph.parents_of))
+            consumed_node_ids += tuple(sorted(preserved_node_ids & target_lineage))
+        return execution_target_node_id, preserved_node_ids, consumed_node_ids
+
+    def _setup_seed_plan_request(
+        self,
+        body: OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest,
+        *,
+        required_columns_by_node: Mapping[str, Iterable[str]] | None,
+        target_node_id: str | None,
+        execution_context: ExecutionContext | None,
+    ) -> SeedPlanRequest:
+        """The seed plan one setup execution runs under.
+
+        The plan decides separately which consumed nodes it can capture.
+        Auto-range captures, at whichever nodes it captures, the columns the
+        following solve reads there — the data input, or the streaming base
+        below the scenario expander — so the solve seeds instead of
+        recomputing. A column a node does not produce is simply not captured.
+        """
+        from haute.executor import _resolve_batch_scenario
+
+        # Resolve scenario: optimiser runs on batch data, not live.
+        scenario = _resolve_batch_scenario(body.graph) or "batch"
+        execution_target_node_id, _preserved, consumed_node_ids = self._setup_execution_scope(
+            body, target_node_id
+        )
+        capture_columns_by_node: Mapping[str, frozenset[str]] = {}
+        if (
+            execution_context is not None
+            and execution_context.profile == ExecutionProfile.AUTO_RANGE
+        ):
+            optimiser_node = _find_optimiser_node(body.graph, body.node_id)
+            if str(optimiser_node.data.config.get("mode", "online")) in {"online", "ratebook"}:
+                capture_columns_by_node = _solve_columns_by_node(
+                    body.graph,
+                    body.node_id,
+                    optimiser_node.data.config,
+                    source=scenario,
+                )
+        return SeedPlanRequest(
+            graph=body.graph,
+            target_node_id=execution_target_node_id,
+            source=scenario,
+            profile=(
+                execution_context.profile
+                if execution_context is not None
+                else ExecutionProfile.LAZY_SINK
+            ),
+            consumed_node_ids=consumed_node_ids,
+            required_columns_by_node=required_columns_by_node,
+            capture_columns_by_node=capture_columns_by_node,
+        )
+
+    def _open_setup_seed_plan(
+        self,
+        body: OptimiserSolveRequest | OptimiserFrontierAutoRangeRequest,
+        job_id: str,
+        resources: contextlib.ExitStack,
+        *,
+        required_columns_by_node: Mapping[str, Iterable[str]] | None = None,
+        target_node_id: str | None = None,
+        execution_context: ExecutionContext,
+    ) -> SeedPlanHandoff:
+        """Open, on *resources*, the seed plan a setup worker adopts, and return its handoff.
+
+        Input preparation runs here, under the parent's admitted context,
+        because a node's signature signs its prepared inputs; the plan's seed
+        leases and capture staging are held until the worker has exited.
+        """
+        flattened = _with_flattened_optimiser_graph(body)
+        with self._setup_execution_failures(flattened, job_id, execution_context):
+            plan = resources.enter_context(
+                open_seed_plan(
+                    self._setup_seed_plan_request(
+                        flattened,
+                        required_columns_by_node=required_columns_by_node,
+                        target_node_id=target_node_id,
+                        execution_context=execution_context,
+                    ),
+                    execution_context=execution_context,
+                )
+            )
+            return plan.handoff()
+
     def _execute_pipeline(
         self,
         body: OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest,
@@ -4541,15 +5147,17 @@ class OptimiserSolveService:
         target_node_id: str | None = None,
         execution_context: ExecutionContext | None = None,
         preamble_fingerprint: str | None = None,
+        seed_plan: SeedPlanHandoff | None = None,
     ) -> dict[str, Any]:
         """Execute the pipeline lazily up to the optimiser node, under a seed plan.
 
         The plan is entered on the caller's *resources* stack, so its seed
         leases and captures stay held until the caller has finished reading
-        the returned frames.
+        the returned frames. A setup worker passes the *seed_plan* handoff its
+        supervising parent opened and adopts it instead of opening its own.
         """
         body = _with_flattened_optimiser_graph(body)
-        try:
+        with self._setup_execution_failures(body, job_id, execution_context):
             from haute._cache import preamble_execution_fingerprint
             from haute.executor import (
                 _build_node_fn,
@@ -4558,9 +5166,7 @@ class OptimiserSolveService:
                 _resolve_batch_scenario,
             )
 
-            # Resolve scenario: optimiser runs on batch data, not live.
             scenario = _resolve_batch_scenario(body.graph) or "batch"
-
             pinned = (
                 preamble_fingerprint
                 if preamble_fingerprint is not None
@@ -4579,60 +5185,23 @@ class OptimiserSolveService:
                 or None
             )
 
-            execution_target_node_id = target_node_id or _setup_execution_target_node_id(
-                body.graph, body.node_id
+            execution_target_node_id, preserved_node_ids, _consumed = self._setup_execution_scope(
+                body, target_node_id
             )
-            preserved_node_ids = _optimiser_side_input_ids(body.graph, body.node_id)
-            # Every node setup reads afterwards: an explicit target alone;
-            # otherwise the resolved execution target (an Optimiser resolves
-            # to its data input) and each banding side input from its own
-            # edges that the run executes, API inputs included. The plan
-            # decides separately which of them it can capture.
-            consumed_node_ids: tuple[str, ...] = (execution_target_node_id,)
-            if target_node_id is None:
-                target_lineage = set(
-                    upstream_node_ids(execution_target_node_id, body.graph.parents_of)
-                )
-                consumed_node_ids += tuple(sorted(preserved_node_ids & target_lineage))
-            # Auto-range captures, at whichever nodes it captures, the
-            # columns the following solve reads there — the data input, or
-            # the streaming base below the scenario expander — so the solve
-            # seeds instead of recomputing. A column a node does not produce
-            # is simply not captured.
-            capture_columns_by_node: Mapping[str, frozenset[str]] = {}
-            if (
-                execution_context is not None
-                and execution_context.profile == ExecutionProfile.AUTO_RANGE
-            ):
-                optimiser_node = _find_optimiser_node(body.graph, body.node_id)
-                if str(optimiser_node.data.config.get("mode", "online")) in {
-                    "online",
-                    "ratebook",
-                }:
-                    capture_columns_by_node = _solve_columns_by_node(
-                        body.graph,
-                        body.node_id,
-                        optimiser_node.data.config,
-                        source=scenario,
-                    )
-            plan = resources.enter_context(
-                open_seed_plan(
-                    SeedPlanRequest(
-                        graph=body.graph,
-                        target_node_id=execution_target_node_id,
-                        source=scenario,
-                        profile=(
-                            execution_context.profile
-                            if execution_context is not None
-                            else ExecutionProfile.LAZY_SINK
+            if seed_plan is not None:
+                plan = resources.enter_context(SeedPlan.adopt(seed_plan))
+            else:
+                plan = resources.enter_context(
+                    open_seed_plan(
+                        self._setup_seed_plan_request(
+                            body,
+                            required_columns_by_node=required_columns_by_node,
+                            target_node_id=target_node_id,
+                            execution_context=execution_context,
                         ),
-                        consumed_node_ids=consumed_node_ids,
-                        required_columns_by_node=required_columns_by_node,
-                        capture_columns_by_node=capture_columns_by_node,
-                    ),
-                    execution_context=execution_context,
+                        execution_context=execution_context,
+                    )
                 )
-            )
             lazy_outputs, *_ = execute_lazy_graph(
                 body.graph,
                 _build_node_fn,
@@ -4647,6 +5216,17 @@ class OptimiserSolveService:
                 snapshot_plan=plan,
             )
             return lazy_outputs
+
+    @contextlib.contextmanager
+    def _setup_execution_failures(
+        self,
+        body: OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest,
+        job_id: str,
+        execution_context: ExecutionContext | None,
+    ) -> Iterator[None]:
+        """Record and translate a failure while opening or executing setup's pipeline."""
+        try:
+            yield
         except HTTPException:
             raise
         except PUBLIC_CONTRACT_ERROR_TYPES as exc:
@@ -4706,7 +5286,7 @@ class OptimiserSolveService:
             raise HTTPException(
                 status_code=500,
                 detail="Pipeline execution failed. Check the server logs for details.",
-            )
+            ) from exc
         finally:
             if execution_context is not None:
                 self._record_execution_metrics(job_id, execution_context)
@@ -5009,6 +5589,7 @@ class OptimiserSolveService:
         mode: str,
         *,
         execution_context: ExecutionContext | None = None,
+        artifact_dir: str | None = None,
     ) -> Any:
         """Extract ratebook factors DataFrame (None for online mode)."""
         import polars as pl
@@ -5084,6 +5665,7 @@ class OptimiserSolveService:
 
             handle = _persist_ratebook_factors_lazy_artifact(
                 projected,
+                artifact_dir=Path(artifact_dir) if artifact_dir is not None else None,
             )
             if int(handle["row_count"]) == 0:
                 _cleanup_orphan_apply_result_artifact(
@@ -5112,6 +5694,31 @@ class OptimiserSolveService:
                     raise
             return handle
 
+    def _write_solver_input(
+        self,
+        scored_lf: Any,
+        output_path: str,
+        node_id: str,
+        job_id: str,
+        *,
+        execution_context: ExecutionContext | None = None,
+        allow_borrow: bool = True,
+    ) -> str:
+        """Write the projected solver input to *output_path*, or borrow its snapshot.
+
+        With *allow_borrow*, an unchanged single-file parquet scan (read under
+        the caller's still-open seed-plan lease) is returned instead of copied.
+        """
+        with (
+            self._grid_construction_failures(node_id, job_id, execution_context),
+            _execution_stage(execution_context, "optimiser_write_solver_input", node_id=node_id),
+        ):
+            borrowed_path = _projected_parquet_input_path(scored_lf) if allow_borrow else None
+            if borrowed_path is not None:
+                return str(borrowed_path)
+            bounded_sink(scored_lf, output_path)
+            return output_path
+
     def _build_grid(
         self,
         scored_lf: Any,
@@ -5123,6 +5730,38 @@ class OptimiserSolveService:
         execution_context: ExecutionContext | None = None,
     ) -> QuoteGrid:
         """Sink scored data to parquet and build the QuoteGrid."""
+        tmp_path = _new_solver_input_path()
+        try:
+            input_path = self._write_solver_input(
+                scored_lf,
+                tmp_path,
+                node_id,
+                job_id,
+                execution_context=execution_context,
+            )
+            del scored_lf
+            return self._build_grid_from_parquet(
+                input_path,
+                constraint_cols,
+                config,
+                node_id,
+                job_id,
+                execution_context=execution_context,
+            )
+        finally:
+            _remove_solver_input(tmp_path)
+
+    def _build_grid_from_parquet(
+        self,
+        input_path: str,
+        constraint_cols: list[str],
+        config: dict[str, Any],
+        node_id: str,
+        job_id: str,
+        *,
+        execution_context: ExecutionContext | None = None,
+    ) -> QuoteGrid:
+        """Build the solver's QuoteGrid from a written or borrowed solver-input parquet."""
         from price_contour import build_grid_from_parquet_chunked
 
         objective = config["objective"]
@@ -5130,66 +5769,57 @@ class OptimiserSolveService:
         mult_col = config.get("scenario_value", "scenario_value")
         step_col = config.get("scenario_index", "scenario_index")
 
-        borrowed_path: Path | None = None
-        tmp_path: str | None = None
-        try:
-            borrowed_path = _projected_parquet_input_path(scored_lf)
-            if borrowed_path is None:
-                tmp_fd, tmp_path = tempfile.mkstemp(suffix=".parquet")
-                os.close(tmp_fd)
-            else:
-                tmp_path = str(borrowed_path)
-            with _execution_stage(
+        with (
+            self._grid_construction_failures(node_id, job_id, execution_context),
+            _execution_stage(execution_context, "optimiser_build_grid", node_id=node_id),
+        ):
+            try:
+                chunk_decision = _chunk_size_decision_for_parquet(
+                    config,
+                    Path(input_path),
+                    source="optimiser_grid",
+                )
+            except ValueError as exc:
+                detail = f"Grid construction failed: {exc}"
+                self._record_http_setup_failure(
+                    job_id,
+                    status_code=400,
+                    detail=detail,
+                    execution_context=execution_context,
+                )
+                raise HTTPException(status_code=400, detail=detail) from exc
+            chunk_size = chunk_decision.chunk_size
+            self._record_setup_chunking(job_id, "optimiser_grid", chunk_decision.provenance)
+
+            _admit_resident_grid(
+                Path(input_path),
+                [qid_col, step_col, mult_col, objective, *constraint_cols],
+                qid_col,
+                len(constraint_cols),
+                chunk_size,
                 execution_context,
-                "optimiser_build_grid",
-                node_id=node_id,
-            ):
-                if borrowed_path is None:
-                    bounded_sink(
-                        scored_lf,
-                        tmp_path,
-                    )
-                del scored_lf
+            )
 
-                try:
-                    chunk_decision = _chunk_size_decision_for_parquet(
-                        config,
-                        Path(tmp_path),
-                        source="optimiser_grid",
-                    )
-                except ValueError as exc:
-                    detail = f"Grid construction failed: {exc}"
-                    self._record_http_setup_failure(
-                        job_id,
-                        status_code=400,
-                        detail=detail,
-                        execution_context=execution_context,
-                    )
-                    raise HTTPException(status_code=400, detail=detail) from exc
-                chunk_size = chunk_decision.chunk_size
-                self._record_setup_chunking(job_id, "optimiser_grid", chunk_decision.provenance)
+            return build_grid_from_parquet_chunked(
+                input_path,
+                constraint_cols,
+                chunk_size,
+                quote_id=qid_col,
+                scenario_index=step_col,
+                scenario_value=mult_col,
+                objective=objective,
+            )
 
-                _admit_resident_grid(
-                    Path(tmp_path),
-                    [qid_col, step_col, mult_col, objective, *constraint_cols],
-                    qid_col,
-                    len(constraint_cols),
-                    chunk_size,
-                    execution_context,
-                )
-
-                build_kwargs = {
-                    "quote_id": qid_col,
-                    "scenario_index": step_col,
-                    "scenario_value": mult_col,
-                    "objective": objective,
-                }
-                quote_grid = build_grid_from_parquet_chunked(
-                    tmp_path,
-                    constraint_cols,
-                    chunk_size,
-                    **build_kwargs,
-                )
+    @contextlib.contextmanager
+    def _grid_construction_failures(
+        self,
+        node_id: str,
+        job_id: str,
+        execution_context: ExecutionContext | None,
+    ) -> Iterator[None]:
+        """Record and translate a failure while writing the solver input or building its grid."""
+        try:
+            yield
         except HTTPException:
             raise
         except (
@@ -5232,19 +5862,6 @@ class OptimiserSolveService:
                 execution_context=execution_context,
             )
             raise HTTPException(status_code=500, detail=detail) from exc
-        finally:
-            if borrowed_path is None and tmp_path is not None and Path(tmp_path).exists():
-                try:
-                    os.unlink(tmp_path)
-                except Exception as cleanup_exc:
-                    logger.warning(
-                        "optimiser_grid_temp_cleanup_failed",
-                        path=tmp_path,
-                        error=str(cleanup_exc),
-                        exc_info=True,
-                    )
-
-        return quote_grid
 
     def _record_setup_chunking(
         self,
