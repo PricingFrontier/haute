@@ -199,11 +199,8 @@ import {
   parseSubmodelCreateResponse,
   parseSubmodelGraphResponse,
   parseTraceResponse,
-  parseUtilityDeleteResponse,
-  parseUtilityListResponse,
-  parseUtilityReadResponse,
-  parseUtilityWriteResponse,
 } from "../types/guards"
+import { expectGeneratedContract } from "../types/generatedContractValidation"
 import {
   parseRemoveUnavailableNodeApplyResponse,
   parseRemoveUnavailableNodeDryRunResponse,
@@ -1871,24 +1868,28 @@ export function getModelVersions(
 // Utility endpoints
 // ---------------------------------------------------------------------------
 
+// Generated response validators load with their first response, so none of
+// them reaches the initial bundle.
+const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
+
 export function listUtilityFiles(
   options?: { signal?: AbortSignal },
 ): Promise<UtilityListResponse> {
-  return request<unknown>("/api/utility", options).then(parseUtilityListResponse)
+  return request<unknown>("/api/utility", options).then(async (data) => expectGeneratedContract("UtilityListResponse", (await utilityValidators()).validateUtilityListResponse, data))
 }
 
 export function readUtilityFile(
   module: string,
   options?: { signal?: AbortSignal },
 ): Promise<UtilityReadResponse> {
-  return request<unknown>(`/api/utility/${encodeURIComponent(module)}`, options).then(parseUtilityReadResponse)
+  return request<unknown>(`/api/utility/${encodeURIComponent(module)}`, options).then(async (data) => expectGeneratedContract("UtilityReadResponse", (await utilityValidators()).validateUtilityReadResponse, data))
 }
 
 export function createUtilityFile(
   payload: { name: string; content?: string },
   options?: { signal?: AbortSignal },
 ): Promise<UtilityWriteResult> {
-  return post<unknown>("/api/utility", payload, options).then(parseUtilityWriteResponse)
+  return post<unknown>("/api/utility", payload, options).then(async (data) => expectGeneratedContract("UtilityWriteResponse", (await utilityValidators()).validateUtilityWriteResponse, data))
 }
 
 export function updateUtilityFile(
@@ -1901,14 +1902,14 @@ export function updateUtilityFile(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content }),
     ...options,
-  }).then(parseUtilityWriteResponse)
+  }).then(async (data) => expectGeneratedContract("UtilityWriteResponse", (await utilityValidators()).validateUtilityWriteResponse, data))
 }
 
 export function deleteUtilityFile(
   module: string,
   options?: { signal?: AbortSignal },
 ): Promise<UtilityDeleteResponse> {
-  return del<unknown>(`/api/utility/${encodeURIComponent(module)}`, options).then(parseUtilityDeleteResponse)
+  return del<unknown>(`/api/utility/${encodeURIComponent(module)}`, options).then(async (data) => expectGeneratedContract("UtilityDeleteResponse", (await utilityValidators()).validateUtilityDeleteResponse, data))
 }
 
 // ---------------------------------------------------------------------------

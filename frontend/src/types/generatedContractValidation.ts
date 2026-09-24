@@ -35,6 +35,22 @@ export function formatGeneratedContractError(
   )
 }
 
+/** A standalone validator emitted by scripts/generate-api-contracts.mjs. */
+export interface GeneratedContractValidator<T> {
+  (data: unknown): data is T
+  readonly errors: readonly GeneratedContractValidationError[] | null
+}
+
+/** Return `value` typed by its generated validator, or throw the contract failure. */
+export function expectGeneratedContract<T>(
+  contract: string,
+  validate: GeneratedContractValidator<T>,
+  value: unknown,
+): T {
+  if (validate(value)) return value
+  throw new Error(formatGeneratedContractError(contract, validate.errors))
+}
+
 export function findGeneratedContractError(
   errors: readonly GeneratedContractValidationError[] | null,
   predicate: (error: GeneratedContractValidationError) => boolean,

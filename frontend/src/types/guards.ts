@@ -158,11 +158,6 @@ import type {
   SubmodelCreateResponse,
   SubmodelGraphResponse,
   TraceResponse,
-  UtilityDeleteResponse,
-  UtilityFile,
-  UtilityListResponse,
-  UtilityReadResponse,
-  UtilityWriteResult,
 } from "../api/types"
 import {
   JOB_STATUS_VALUES,
@@ -3561,50 +3556,6 @@ export function parseFileListResponse(value: unknown): { items?: FileListItem[] 
         ...(itemObj.size === undefined ? {} : { size: expectNullableNumber("parseFileListResponse", itemObj.size, `${field}.size`) }),
       }
     }),
-  }
-}
-
-function parseUtilityFile(value: unknown, field: string): UtilityFile {
-  const obj = expectPlainObject("parseUtilityListResponse", value, field)
-  return {
-    name: expectString("parseUtilityListResponse", obj.name, `${field}.name`),
-    module: expectString("parseUtilityListResponse", obj.module, `${field}.module`),
-  }
-}
-
-export function parseUtilityListResponse(value: unknown): UtilityListResponse {
-  const obj = expectPlainObject("parseUtilityListResponse", value)
-  return {
-    files: optionalArray("parseUtilityListResponse", obj, "files", parseUtilityFile),
-  }
-}
-
-export function parseUtilityReadResponse(value: unknown): UtilityReadResponse {
-  const obj = expectPlainObject("parseUtilityReadResponse", value)
-  return {
-    name: expectString("parseUtilityReadResponse", obj.name, "field `name`"),
-    module: expectString("parseUtilityReadResponse", obj.module, "field `module`"),
-    content: expectString("parseUtilityReadResponse", obj.content, "field `content`"),
-  }
-}
-
-export function parseUtilityWriteResponse(value: unknown): UtilityWriteResult {
-  const obj = expectPlainObject("parseUtilityWriteResponse", value)
-  return {
-    status: optionalString("parseUtilityWriteResponse", obj, "status", "ok"),
-    name: optionalString("parseUtilityWriteResponse", obj, "name"),
-    module: optionalString("parseUtilityWriteResponse", obj, "module"),
-    import_line: optionalString("parseUtilityWriteResponse", obj, "import_line"),
-    error: optionalNullableString("parseUtilityWriteResponse", obj, "error"),
-    error_line: optionalNullableNumber("parseUtilityWriteResponse", obj, "error_line"),
-  }
-}
-
-export function parseUtilityDeleteResponse(value: unknown): UtilityDeleteResponse {
-  const obj = expectPlainObject("parseUtilityDeleteResponse", value)
-  return {
-    status: optionalString("parseUtilityDeleteResponse", obj, "status", "ok"),
-    module: expectString("parseUtilityDeleteResponse", obj.module, "field `module`"),
   }
 }
 

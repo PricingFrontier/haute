@@ -57,10 +57,6 @@ import {
   parseSubmodelGraphResponse,
   parseSolveOptimiserResponse,
   parseExecutionStrategyDiagnostic,
-  parseUtilityDeleteResponse,
-  parseUtilityListResponse,
-  parseUtilityReadResponse,
-  parseUtilityWriteResponse,
   parseNodeDataProfileResponse,
   parseRatingLevelsResponse,
 } from "../guards"
@@ -3071,18 +3067,6 @@ describe("API response guards", () => {
     ).toThrow(/pressure_ratio/i)
   })
 
-  it("parses utility response payloads", () => {
-    const listed = parseUtilityListResponse(loadUiContractFixture("utility_list_response"))
-    const read = parseUtilityReadResponse(loadUiContractFixture("utility_read_response"))
-    const written = parseUtilityWriteResponse(loadUiContractFixture("utility_write_response"))
-    const deleted = parseUtilityDeleteResponse(loadUiContractFixture("utility_delete_response"))
-
-    expect(listed.files[0]?.module).toBe("helpers")
-    expect(read.content).toContain("helper")
-    expect(written.import_line).toContain("utility.helpers")
-    expect(deleted.module).toBe("helpers")
-  })
-
   it("parses git action payloads", () => {
     const archived = parseGitArchiveResponse(loadUiContractFixture("git_archive_response"))
     const deleted = parseGitDeleteBranchResponse(loadUiContractFixture("git_delete_branch_response"))
@@ -3267,17 +3251,6 @@ describe("API response guards", () => {
     expect(() =>
       parseMlflowDestinationsResponse(withFirstEntry({ category: "offline" })),
     ).toThrow(/category/i)
-  })
-
-  it("rejects malformed utility write payloads", () => {
-    const fixture = loadUiContractFixture<Record<string, unknown>>("utility_write_response")
-
-    expect(() =>
-      parseUtilityWriteResponse({
-        ...fixture,
-        import_line: 123,
-      }),
-    ).toThrow(/import_line/i)
   })
 
   it("parses every working-branch readiness state and detached commit context", () => {

@@ -7,8 +7,12 @@ from pathlib import Path
 
 from haute._estimate_calibration import CALIBRATION_MAX_BASIS_POINTS
 from haute._execution_schemas import MAX_JSON_SAFE_INTEGER
+from haute.schemas import TrainEstimateResponse, UtilityWriteResponse
 from scripts.generate_api_contracts import (
     GENERATED_SCHEMA_PATH,
+    RESPONSE_CONTRACT_GROUPS,
+    RESPONSE_GROUPS_KEYWORD,
+    _ResponseJsonSchema,
     build_contract_bundle,
     main,
     render_contract_bundle,
@@ -45,17 +49,27 @@ def test_contract_bundle_contains_closed_contract_roots() -> None:
     assert bundle["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert bundle["type"] == "object"
     assert bundle["additionalProperties"] is False
+    response_roots = [
+        model.__name__ for models in RESPONSE_CONTRACT_GROUPS.values() for model in models
+    ]
     assert bundle["required"] == [
         "execution_strategy_diagnostic",
         "explore_charts",
+        *response_roots,
     ]
     assert bundle["properties"] == {
         "execution_strategy_diagnostic": {"$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"},
         "explore_charts": {"$ref": "#/$defs/ExploreChartsConfig"},
+        **{name: {"$ref": f"#/$defs/{name}"} for name in response_roots},
+    }
+    assert bundle[RESPONSE_GROUPS_KEYWORD] == {
+        group: [model.__name__ for model in models]
+        for group, models in RESPONSE_CONTRACT_GROUPS.items()
     }
 
     definitions = bundle["$defs"]
-    assert set(definitions) == {
+    assert set(definitions) >= set(response_roots)
+    assert set(definitions) - set(response_roots) - {"UtilityFileItem"} == {
         "ChartAxes",
         "ChartAxisConfig",
         "ChartCategory",
@@ -148,6 +162,30 @@ def test_contract_bundle_preserves_browser_safe_bounds_and_recursive_json() -> N
             {"additionalProperties": reference, "type": "object"},
         ]
     }
+
+
+def test_response_contracts_require_every_field_the_server_sends() -> None:
+    utility_write = build_contract_bundle()["$defs"]["UtilityWriteResponse"]
+
+    # Defaulted fields are always serialized, so the browser requires them.
+    assert set(utility_write["required"]) == {
+        "status",
+        "name",
+        "module",
+        "import_line",
+        "error",
+        "error_line",
+    }
+    assert set(utility_write["required"]) == set(UtilityWriteResponse.model_fields)
+
+    # A field the model drops from its output stays optional.
+    estimate = TrainEstimateResponse.model_json_schema(
+        mode="serialization",
+        schema_generator=_ResponseJsonSchema,
+    )
+    assert "evaluation_preview" in estimate["properties"]
+    assert "evaluation_preview" not in estimate["required"]
+    assert "was_downsampled" in estimate["required"]
 
 
 def test_frontend_contract_generators_are_direct_exact_pins() -> None:

@@ -1900,34 +1900,14 @@ export interface FileListItem {
 // Utility types
 // ---------------------------------------------------------------------------
 
-export interface UtilityFile {
-  name: string
-  module: string
-}
-
-export interface UtilityListResponse {
-  files: UtilityFile[]
-}
-
-export interface UtilityReadResponse {
-  name: string
-  module: string
-  content: string
-}
-
-export interface UtilityWriteResult {
-  status: string
-  name: string
-  module: string
-  import_line: string
-  error: string | null
-  error_line: number | null
-}
-
-export interface UtilityDeleteResponse {
-  status: string
-  module: string
-}
+// Generated from the backend response models (scripts/generate_api_contracts.py).
+export type {
+  UtilityDeleteResponse,
+  UtilityFileItem as UtilityFile,
+  UtilityListResponse,
+  UtilityReadResponse,
+  UtilityWriteResponse as UtilityWriteResult,
+} from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------
 // Git types

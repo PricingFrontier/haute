@@ -999,12 +999,158 @@
           "type": "object"
         }
       ]
+    },
+    "UtilityDeleteResponse": {
+      "properties": {
+        "module": {
+          "title": "Module",
+          "type": "string"
+        },
+        "status": {
+          "default": "ok",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "module"
+      ],
+      "title": "UtilityDeleteResponse",
+      "type": "object"
+    },
+    "UtilityFileItem": {
+      "properties": {
+        "module": {
+          "title": "Module",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "module"
+      ],
+      "title": "UtilityFileItem",
+      "type": "object"
+    },
+    "UtilityListResponse": {
+      "properties": {
+        "files": {
+          "items": {
+            "$ref": "#/$defs/UtilityFileItem"
+          },
+          "title": "Files",
+          "type": "array"
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "title": "UtilityListResponse",
+      "type": "object"
+    },
+    "UtilityReadResponse": {
+      "properties": {
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "module": {
+          "title": "Module",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "module",
+        "content"
+      ],
+      "title": "UtilityReadResponse",
+      "type": "object"
+    },
+    "UtilityWriteResponse": {
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "error_line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Line"
+        },
+        "import_line": {
+          "default": "",
+          "title": "Import Line",
+          "type": "string"
+        },
+        "module": {
+          "default": "",
+          "title": "Module",
+          "type": "string"
+        },
+        "name": {
+          "default": "",
+          "title": "Name",
+          "type": "string"
+        },
+        "status": {
+          "default": "ok",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "name",
+        "module",
+        "import_line",
+        "error",
+        "error_line"
+      ],
+      "title": "UtilityWriteResponse",
+      "type": "object"
     }
   },
   "$id": "https://haute.dev/schemas/api-contracts.v1.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "UtilityDeleteResponse": {
+      "$ref": "#/$defs/UtilityDeleteResponse"
+    },
+    "UtilityListResponse": {
+      "$ref": "#/$defs/UtilityListResponse"
+    },
+    "UtilityReadResponse": {
+      "$ref": "#/$defs/UtilityReadResponse"
+    },
+    "UtilityWriteResponse": {
+      "$ref": "#/$defs/UtilityWriteResponse"
+    },
     "execution_strategy_diagnostic": {
       "$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"
     },
@@ -1014,8 +1160,20 @@
   },
   "required": [
     "execution_strategy_diagnostic",
-    "explore_charts"
+    "explore_charts",
+    "UtilityListResponse",
+    "UtilityReadResponse",
+    "UtilityWriteResponse",
+    "UtilityDeleteResponse"
   ],
   "title": "HauteApiContractBundle",
-  "type": "object"
+  "type": "object",
+  "x-haute-response-groups": {
+    "utility": [
+      "UtilityListResponse",
+      "UtilityReadResponse",
+      "UtilityWriteResponse",
+      "UtilityDeleteResponse"
+    ]
+  }
 }
