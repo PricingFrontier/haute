@@ -241,10 +241,10 @@ def _failure_before_job_mapping(
     Only the worker's own start-up (its execution context, the re-plan) can
     fail before a job step's mapping runs.
     """
-    from haute.routes._optimiser_service import _memory_limit_http_exception
+    from haute.routes._contract_errors import memory_limit_http_exception
 
     if isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
-        detail = _memory_limit_http_exception(exc).detail
+        detail = memory_limit_http_exception(exc, operation_noun="Auto-range").detail
         return OptimiserWorkerFailure(
             terminal_reason="memory_limited",
             message=str(detail.get("message", detail)) if isinstance(detail, dict) else "",
