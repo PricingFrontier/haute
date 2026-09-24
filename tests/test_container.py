@@ -31,7 +31,6 @@ from haute.deploy._container import (
     _generate_dockerfile,
     _git_sha_short,
     _next_version,
-    _update_service,
     _validate_base_image,
     _validate_model_name,
     build_and_push_image,
@@ -1360,29 +1359,6 @@ class TestGitShaShortExtra:
 
 
 # ---------------------------------------------------------------------------
-# _update_service
-# ---------------------------------------------------------------------------
-
-
-class TestUpdateService:
-    @pytest.mark.parametrize(
-        "target",
-        ["azure-container-apps", "aws-ecs", "gcp-run", "container"],
-    )
-    def test_raises_not_implemented_for_all_targets(self, target: str) -> None:
-        resolved = _make_resolved(target=target)
-        with pytest.raises(NotImplementedError, match="not yet implemented"):
-            _update_service(target, "img:tag", resolved)
-
-    def test_error_message_contains_target_and_image(self) -> None:
-        with pytest.raises(NotImplementedError) as exc_info:
-            _update_service("gcp-run", "myregistry/model:v1", MagicMock())
-        msg = str(exc_info.value)
-        assert "gcp-run" in msg
-        assert "myregistry/model:v1" in msg
-
-
-# ---------------------------------------------------------------------------
 # build_and_push_image
 # ---------------------------------------------------------------------------
 
@@ -1701,86 +1677,57 @@ class TestDeployToContainer:
 
 
 class TestDeployToPlatformContainer:
-    """Tests for deploy_to_platform_container()."""
+    """Build-and-push-only platform targets finish after the push."""
 
-    @patch("haute.deploy._container._update_service")
-    @patch("haute.deploy._container.build_and_push_image")
-    def test_calls_update_service(
-        self, mock_build: MagicMock, mock_update: MagicMock, tmp_path: Path
-    ) -> None:
-        mock_build.return_value = ContainerBuildResult(
-            image_tag="registry/model:abc",
+    @staticmethod
+    def _built(tmp_path: Path) -> ContainerBuildResult:
+        return ContainerBuildResult(
+            image_tag="registry.example/test-model:abc",
             manifest_path=tmp_path / "manifest.json",
             build_dir=tmp_path,
             model_name="test-model",
             model_version=1,
         )
-        mock_update.return_value = "https://my-service.example.com"
 
-        resolved = _make_resolved(target="azure-container-apps")
-        result = deploy_to_platform_container(resolved)
-
-        assert isinstance(result, DeployResult)
-        assert result.endpoint_url == "https://my-service.example.com"
-        assert result.model_uri == "registry/model:abc"
-        mock_update.assert_called_once_with("azure-container-apps", "registry/model:abc", resolved)
-
-    @patch("haute.deploy._container._update_service")
+    @pytest.mark.parametrize("target", ["azure-container-apps", "aws-ecs", "gcp-run"])
     @patch("haute.deploy._container.build_and_push_image")
-    def test_handles_not_implemented_error(
-        self, mock_build: MagicMock, mock_update: MagicMock, tmp_path: Path
+    def test_returns_the_pushed_image_and_reports_the_manual_update(
+        self, mock_build: MagicMock, target: str, tmp_path: Path
     ) -> None:
-        mock_build.return_value = ContainerBuildResult(
-            image_tag="registry/model:abc",
-            manifest_path=tmp_path / "manifest.json",
-            build_dir=tmp_path,
-            model_name="test-model",
-            model_version=1,
+        mock_build.return_value = self._built(tmp_path)
+        resolved = _make_resolved(
+            target=target,
+            container=ContainerConfig(base_image="python:3.11.9-slim", registry="registry.example"),
         )
-        mock_update.side_effect = NotImplementedError("not yet implemented")
-
-        resolved = _make_resolved(target="aws-ecs")
-        with pytest.raises(NotImplementedError, match="not yet implemented"):
-            deploy_to_platform_container(resolved)
-
-    @patch("haute.deploy._container._update_service")
-    @patch("haute.deploy._container.build_and_push_image")
-    def test_progress_callback_reports_service_update(
-        self, mock_build: MagicMock, mock_update: MagicMock, tmp_path: Path
-    ) -> None:
-        mock_build.return_value = ContainerBuildResult(
-            image_tag="registry/model:abc",
-            manifest_path=tmp_path / "manifest.json",
-            build_dir=tmp_path,
-            model_name="test-model",
-            model_version=1,
-        )
-        mock_update.return_value = None
-
         messages: list[str] = []
-        resolved = _make_resolved(target="gcp-run")
+
         result = deploy_to_platform_container(resolved, progress=messages.append)
 
-        assert any("gcp-run" in m.lower() for m in messages)
+        assert isinstance(result, DeployResult)
+        assert result.model_uri == "registry.example/test-model:abc"
         assert result.endpoint_url is None
-
-    @patch("haute.deploy._container._update_service")
-    @patch("haute.deploy._container.build_and_push_image")
-    def test_no_url_returned_message(
-        self, mock_build: MagicMock, mock_update: MagicMock, tmp_path: Path
-    ) -> None:
-        """When _update_service returns None, progress shows '(no URL returned)'."""
-        mock_build.return_value = ContainerBuildResult(
-            image_tag="registry/model:abc",
-            manifest_path=tmp_path / "manifest.json",
-            build_dir=tmp_path,
-            model_name="test-model",
-            model_version=1,
+        mock_build.assert_called_once_with(resolved, messages.append)
+        assert messages[-1] == (
+            f"Service not updated: updating {target} is not implemented yet. "
+            "Point the service at registry.example/test-model:abc."
         )
-        mock_update.return_value = None
 
-        messages: list[str] = []
-        resolved = _make_resolved(target="gcp-run")
-        deploy_to_platform_container(resolved, progress=messages.append)
+    @patch("haute.deploy._container.build_and_push_image")
+    def test_requires_a_registry_before_building(self, mock_build: MagicMock) -> None:
+        resolved = _make_resolved(target="aws-ecs")
 
-        assert any("no URL returned" in m for m in messages)
+        with pytest.raises(DeployError, match=r"needs a registry.*\[deploy\.container\] registry"):
+            deploy_to_platform_container(resolved)
+
+        mock_build.assert_not_called()
+
+    @patch("haute.deploy._container.build_and_push_image")
+    def test_a_failed_push_fails_the_deploy(self, mock_build: MagicMock) -> None:
+        mock_build.side_effect = DeployError("docker push failed")
+        resolved = _make_resolved(
+            target="gcp-run",
+            container=ContainerConfig(base_image="python:3.11.9-slim", registry="registry.example"),
+        )
+
+        with pytest.raises(DeployError, match="docker push failed"):
+            deploy_to_platform_container(resolved)

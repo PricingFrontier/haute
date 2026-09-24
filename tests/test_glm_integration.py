@@ -19,6 +19,7 @@ import polars as pl
 import pytest
 
 from haute.errors import HauteValidationError
+from tests._source_files import source_files
 
 # ---------------------------------------------------------------------------
 # Gap 1: Config key merge
@@ -1075,7 +1076,7 @@ def test_all_factors_is_gone():
         ("specs", "all_factors"),
         ("docs", "all_factors"),
     ):
-        for path in (root / folder).rglob("*"):
+        for path in source_files(root / folder, suffix=None):
             if (
                 path.suffix not in {".py", ".md", ".ts", ".tsx"}
                 or "node_modules" in path.parts

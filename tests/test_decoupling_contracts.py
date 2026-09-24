@@ -43,6 +43,7 @@ import pytest
 
 import haute.trace as trace_module
 from haute.graph_utils import PipelineGraph
+from tests._source_files import source_files
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -57,7 +58,7 @@ def _iter_py_files(root: Path, *, exclude_dirs: tuple[Path, ...] = ()) -> list[P
     """Yield every ``*.py`` under *root*, skipping ``__pycache__`` and *exclude_dirs*."""
     exclude_resolved = [d.resolve() for d in exclude_dirs]
     out: list[Path] = []
-    for p in root.rglob("*.py"):
+    for p in source_files(root):
         if "__pycache__" in p.parts:
             continue
         resolved = p.resolve()

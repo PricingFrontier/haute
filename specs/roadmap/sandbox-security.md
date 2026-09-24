@@ -16,6 +16,9 @@ These packages come from the
 
 ## Planned improvements
 
+`SBX-R01` touches files that most other packages also change, so it is
+cheapest after them.
+
 ### SBX-R01 — Every containment comparison goes through the one check
 **Why:** `_sandbox.contained_path` is the one containment check, with its
 case, link and absolute-input policy stated in the sandbox-security

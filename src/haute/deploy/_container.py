@@ -286,47 +286,31 @@ def deploy_to_platform_container(
     resolved: ResolvedDeploy,
     progress: Callable[[str], None] | None = None,
 ) -> DeployResult:
-    """Platform container target - build, push, then update the running service.
+    """Platform container target (azure-container-apps, aws-ecs, gcp-run): build and push.
 
-    Shared entry point for azure-container-apps, aws-ecs, gcp-run.
-    After building and pushing the image, calls the platform-specific
-    SDK to create a new revision / update the service.
+    These targets are build and push only: no platform SDK adapter updates the
+    running service yet. The image must reach a registry for anyone to deploy it,
+    so a missing ``container.registry`` fails before the build; after the push the
+    deploy succeeds and reports which image to point the service at.
     """
-    result = build_and_push_image(resolved, progress)
-
-    def _log(msg: str) -> None:
-        if progress:
-            progress(msg)
-
     target = resolved.config.target
-    _log(f"Updating service on {target}...")
-    endpoint_url = _update_service(target, result.image_tag, resolved)
-    _log(f"  ✓ Service updated: {endpoint_url or '(no URL returned)'}")
-
+    if not resolved.config.container.registry:
+        raise DeployError(
+            f"Target '{target}' pushes the scoring image for a manual service update, "
+            "so it needs a registry: set [deploy.container] registry in haute.toml."
+        )
+    result = build_and_push_image(resolved, progress)
+    if progress:
+        progress(
+            f"Service not updated: updating {target} is not implemented yet. "
+            f"Point the service at {result.image_tag}."
+        )
     return DeployResult(
         model_name=result.model_name,
         model_version=result.model_version,
         model_uri=result.image_tag,
-        endpoint_url=endpoint_url,
+        endpoint_url=None,
         manifest_path=result.manifest_path,
-    )
-
-
-def _update_service(
-    target: str,
-    image_tag: str,
-    resolved: ResolvedDeploy,
-) -> str | None:
-    """Call the platform SDK to update the running service with the new image.
-
-    Each platform target will have its own implementation module
-    (e.g. ``_azure_container_apps.py``) once the SDK integration is built.
-    """
-    raise NotImplementedError(
-        f"Service update for '{target}' is not yet implemented. "
-        f"The image has been built and pushed as {image_tag}. "
-        f"You can update the service manually, or wait for the "
-        f"'{target}' SDK integration to be completed."
     )
 
 

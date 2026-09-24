@@ -385,13 +385,17 @@ _unsubscribe_pipeline_document_update = default_bus.subscribe(
 )
 
 
-def _clear_bytecache() -> None:
-    """Remove all .pyc files so stale bytecode never masks code changes."""
+def _remove_bytecode_caches(root: Path) -> None:
+    """Remove every ``__pycache__`` directory under *root*."""
     import shutil
 
-    src_dir = Path(__file__).resolve().parent
-    for pycache in src_dir.rglob("__pycache__"):
+    for pycache in root.rglob("__pycache__"):
         shutil.rmtree(pycache, ignore_errors=True)
+
+
+def _clear_bytecache() -> None:
+    """Remove the package's .pyc files so stale bytecode never masks code changes."""
+    _remove_bytecode_caches(Path(__file__).resolve().parent)
 
 
 async def _reap_stale_job_artifacts_in_background(stale_after_seconds: int) -> None:

@@ -39,23 +39,45 @@ One step is taken: `pipeline_dir` reads `[project].pipeline` through
 `_project._toml_configured_pipeline`, the reader the builders already use,
 instead of parsing `haute.toml` itself.
 
-**Plan:** Resolve one immutable project context (root, pipeline file,
-parsed `haute.toml`) once at CLI or server start through the specified
-four-tier chain, and pass it explicitly or through one accessor. Delete the
-other resolvers and the current-directory fallbacks.
+**Decided (24 September 2026):**
+- *Workers.* The project context is a small frozen, picklable value (the
+  project root and the resolved pipeline file) resolved once at CLI or server
+  start. Every worker request carries it in place of today's bare
+  `project_root` string, and the worker installs it for the length of the
+  request through the one accessor, a context manager over a `ContextVar` (the
+  mechanism `_path_resolution` already uses for the runtime root). Nothing is
+  inherited from the parent and no global is mutated, so concurrent requests
+  in a warm pool cannot see each other's project; `set_project_root` goes.
+  Settings the server can change while running (the `[mlflow]` table that
+  `PUT /api/mlflow/settings` writes) are not frozen into the context: they
+  are read from the context root's `haute.toml` when used, as the MLflow
+  destination resolver does today, so the next request sees an update.
+- *Tests.* A `project` fixture builds the context for `tmp_path` and installs
+  it through the same accessor, and the application is built for a context
+  (`create_app(context)`), so a `TestClient` serves exactly that project.
+  Modules migrate one at a time; a ratchet like the write-sandbox lint counts
+  the remaining `chdir` sites so the number only falls. There is no
+  compatibility shim: the current-directory fallbacks are deleted when the
+  ratchet reaches zero.
+
+**Plan:** Specify the context and its accessor in the pipeline-config and
+server-api specifications. Add the context value, the accessor, the `project`
+fixture, `create_app(context)` and the `chdir` ratchet; carry the context in
+worker requests; move each resolver's callers onto the accessor and delete the
+resolver. Migrate the test modules off `chdir` (about 160) in batches, then
+delete the current-directory fallbacks.
 
 **Acceptance:** One resolver remains; starting the server outside a project
-fails with the specified error; tests that change directory mid-process no
-longer change which project the server serves; the identical helper copies
-are gone.
+fails with the specified error; a server started for project A still serves
+A after the test changes directory to project B; worker requests carry the
+context and no worker mutates a process global; a worker request made after
+an MLflow settings update uses the new destination; the `chdir` ratchet is at
+zero; the identical helper copies are gone.
 
-**Dependencies:** None in the roadmap, but most resolvers sit in files owned
-by the execution, caching, optimiser and assistant work (`executor`, `_cache`,
-`routes/input_cache`, `_input_preparation`, `_data_points`, `assistant`), and
-the worker entry points set the sandbox root per request. Two questions come
-first: how the in-process context reaches isolated workers, and how tests
-select a project once the current directory no longer does (hundreds of
-tests `chdir` into a temporary project today).
+**Dependencies:** `ROAD-WORKER-05` (background jobs), so the worker request
+format changes once. Most resolvers sit in files the execution, caching,
+optimiser and assistant work also touch (`executor`, `_cache`,
+`routes/input_cache`, `_input_preparation`, `_data_points`, `assistant`).
 
 **Evidence:** `src/haute/_project.py::get_project_root`;
 `src/haute/_sandbox.py::_get_project_root`;

@@ -187,6 +187,38 @@ describe("TracePanel", () => {
     expect(alert).toHaveTextContent("aggregate")
   })
 
+  it("labels a step that is one of several identical rows instead of warning about it", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          column: null,
+          steps: [
+            makeStep({ node_id: "source", node_name: "Source", topological_rank: 0, identical_row_count: 2 }),
+            makeStep({ node_id: "target", node_name: "Target", topological_rank: 1 }),
+          ],
+          correlation_diagnostics: [{
+            code: "identical_row_match",
+            severity: "info",
+            reason: "identical_rows",
+            message: "Row correlation for node 'source' matched 2 rows identical in every column.",
+            node_id: "source",
+            child_node_id: "target",
+            match_columns: ["region"],
+            ignored_columns: [],
+            matched_row_indices: [],
+            seed_node_ids: [],
+          }],
+          nodes_in_trace: 2,
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByTestId("trace-identical-rows-source")).toHaveTextContent("One of 2 identical rows")
+    expect(screen.queryByTestId("trace-identical-rows-target")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("trace-correlation-diagnostics")).not.toBeInTheDocument()
+  })
+
   it("interleaves a trace omission between surrounding successful steps", () => {
     render(
       <TracePanel

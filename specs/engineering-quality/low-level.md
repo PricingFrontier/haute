@@ -53,7 +53,7 @@
 | `frontend/scripts/check-ui-dependencies.mjs` | Audits UI dependency constraints used by the frontend bundle check. |
 | `scripts/collect_changed_snapshots.py` | Stages the screenshot baselines a Linux render changed, for the snapshot-refresh lane's artifact. Enumerates with `--untracked-files=all` so a wholly new snapshot directory is reported file by file rather than as one entry, and lets a failed Git query raise rather than read as "nothing changed". |
 | `scripts/check_critical_coverage.py` | Enforces configured backend per-file statement/branch coverage floors from coverage JSON. |
-| `scripts/check_changed_coverage.py` | Intersects a Git new-file-line diff with Coverage.py format-3 statement and branch-arc evidence, enforcing 100% changed executable coverage for the configured execution-critical source surface. |
+| `scripts/check_changed_coverage.py` | Intersects a Git new-file-line diff with Coverage.py format-3 statement and branch-arc evidence for every changed Python file under `report_paths`: enforces 100% changed statement and branch coverage for the safety-critical `paths`, and reports the other files on standard output and in the GitHub job summary without failing. |
 | `scripts/check_dependency_audit.py` | Stdlib-only fail-closed advisory-policy orchestrator/parser: exports the exact locked Python graph, runs pinned `pip-audit` and full-tree `npm audit`, validates report schemas, gives npm meta-findings a topology-independent transitive identity, and subtracts only current exact accepted-risk entries. |
 | `security/accepted-risks.toml` | Versioned exact advisory acceptance registry. Entries require ecosystem/package/advisory identity, owner, exposure, compensating control, approval date, and non-expired review date; stale, duplicate, malformed, mismatched, or unused entries fail the audit. |
 | `scripts/core_test_files.txt` | Curated core test-subset manifest and its selection/refresh rationale for canary/dependency lanes. |
@@ -77,15 +77,9 @@
 | `scripts/setup-worktree.sh` | Sets up a development worktree. |
 | `mutation/README.md` | Documents the maintained mutation-testing workflow and constraints. |
 | `mutation/targets.json` | Declares selected mutation targets, witness suites, survival budgets, and rationales. |
-| `mutation/cosmic-ray.executor.toml` | Cosmic Ray configuration for executor mutation coverage. |
-| `mutation/cosmic-ray.job-store.toml` | Cosmic Ray configuration for job-store mutation coverage. |
-| `mutation/cosmic-ray.parser-conservation.toml` | Cosmic Ray configuration for the parser structural-acceptance-gate mutation coverage (ENG-T12). |
-| `mutation/cosmic-ray.json-cache.toml` | Cosmic Ray configuration for the JSON schema-inference route's mutation coverage. |
 | `mutation/cosmic-ray.jsonpath.toml` | Cosmic Ray configuration for JSONPath mutation coverage. |
 | `mutation/cosmic-ray.json-shred.toml` | Cosmic Ray configuration for JSON-shredding mutation coverage. |
 | `mutation/cosmic-ray.output-assembler.toml` | Cosmic Ray configuration for output-assembler mutation coverage. |
-| `mutation/cosmic-ray.path-resolution.toml` | Cosmic Ray configuration for path-resolution mutation coverage. |
-| `mutation/cosmic-ray.registry.toml` | Cosmic Ray configuration for registry mutation coverage. |
 | `tests/` | Active Python unit, integration, property, regression, contract, E2E-support, and repository-hygiene test corpus. |
 | `tests/test_assistant_example_portfolio.py` | Ordinary specialist evidence for the packaged assistant portfolio: source parity, trace/dry-run, real training/scoring and optimisation/apply, deployment preflight, and adversarial rejection. |
 | `tests/test_api_contract_generation.py` | Backend contract-generation evidence: deterministic Pydantic-to-schema output, stale/read-only check behaviour, root/definition ownership, recursive finite JSON, safe-integer bounds, collection caps, and pinned frontend code-generation dependencies. |
@@ -117,12 +111,15 @@
   minimum statement/branch percentages, and rationale. The coverage JSON path
   is `.cache/coverage/backend.json`.
 - **Changed-code coverage configuration** in `pyproject.toml` names the exact
-  execution-critical source paths governed by the gate and fixes both changed
-  statement and changed branch coverage at 100%. A branch arc is in scope when
-  either positive source-code endpoint is a changed new-file line. The checker
-  unions the merge-base-to-HEAD diff, current tracked worktree changes, and
-  untracked configured source files so local and clean-CI runs apply the same
-  executable-line contract.
+  safety-critical source files the gate governs (`paths`), the directories
+  whose other changed Python files are reported only (`report_paths`), and
+  fixes both changed statement and changed branch coverage at 100%. Both lists
+  are required. A branch arc is in scope when either positive source-code
+  endpoint is a changed new-file line. The checker unions the
+  merge-base-to-HEAD diff, current tracked worktree changes, and untracked
+  source files in scope so local and clean-CI runs apply the same
+  executable-line contract. A gated file missing from the coverage artifact
+  fails; a reported file Coverage.py does not measure is left out.
 - **Frontend critical-coverage entry** in `frontend/package.json` has a source
   glob-like `pattern` and thresholds for statements, branches, functions, and
   lines; the summary artifact is `coverage/coverage-summary.json`. This sits
@@ -234,12 +231,13 @@
    preceding main revision for a push). The coverage-gate checkout contains the
    required history; an unreadable base revision is a gate failure rather than an
    empty-diff pass.
-   Critical coverage follows the implementation owners when a module is retired.
-   The former Explore cache's 84% statement/70% branch floors apply to the shared
-   source store, node snapshots and analysis results. The former Explore service's
-   94%/86% floors apply to node-data orchestration and frame profiling. This
-   preserves the existing floors while checking the modules that now execute
-   those responsibilities; deleted files cannot satisfy a coverage gate.
+   Both gates read the same safety-critical list (the high-level specification).
+   A floor for a module added to the list is seeded two points below its
+   measured statement and branch coverage from a green CI run; a module that is
+   retired leaves both lists in the same change, since a deleted file cannot
+   satisfy a coverage gate. The changed-code check also writes a table of every
+   changed file with changed executable code, gated or reported, to the job
+   summary.
 4. Compatibility, optional-dependency, platform, package, init, and mutation
    configuration smoke lanes run their named commands. The 3.14 probe is
    explicitly allowed to fail without blocking the workflow result.
@@ -381,11 +379,6 @@
   with `# pragma: no mutate`; executable expressions and branch decisions must
   remain in scope and be killed by focused witnesses rather than hidden behind
   a pragma or a relaxed survivor budget.
-- The executor mutation command includes the snapshot-preview lifecycle suite,
-  so leased-generation validation, post-capture input identity and cache-hit
-  refresh races are checked by mutation testing as well as ordinary coverage.
-  The JSON-cache command covers the schema-inference route's path confinement
-  and every error arm.
 - A pytest session owns an isolated source-cache coordination table and closes
   its process-owner handles at session teardown before restoring any previous
   table. This lets an embedded mutation run remove its temporary project on

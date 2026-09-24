@@ -15,7 +15,7 @@
 | `src/haute/_types.py` | `NodeType` (`StrEnum`), the decorator↔NodeType maps, every per-node-type config `TypedDict`, the `SolveResultLike` Protocol family, and the canonical `NodeData` / `GraphNode` / `GraphEdge` / `PipelineGraph` Pydantic models (with `PipelineGraph`'s cached-property-invalidating `model_copy` override). |
 | `src/haute/_pipeline_revision.py` | [submodels](../submodels/low-level.md)-owned canonical parsed-graph revision plus the editor recovery revision over a contained, role-qualified raw-artifact manifest with explicit missing sentinels. |
 | `src/haute/_pipeline_recovery.py` | Side-effect-free editor loader: AST skeleton discovery (a syntax-invalid file becomes a source-only document carrying the syntax error), isolated node resolution, availability/diagnostic propagation, typed sidecar merge, raw-artifact revision assembly, and ready/degraded/source-only classification, plus `pipeline_document_fingerprint`, the one digest of a dumped editor document shared by the load routes, resync, and live-sync frames. It never returns a canonical `PipelineGraph`. |
-| `src/haute/_pipeline_repair.py` | Unavailable-node removal planner and shared revision/plan verification, conservation and rollback service for explicit removal, current-format update and reset. It never accepts client-authored bytes. |
+| `src/haute/_pipeline_repair.py` | Unavailable-node removal planner and shared revision/plan verification, conservation and rollback service for explicit removal, reset and settings recovery. It never accepts client-authored bytes. |
 | `src/haute/_pipeline_repair_actions.py` | Bounded submodel-format update and ordinary-node reset planners; single-node codegen, shared palette defaults, isolated artifact-only preview and strict postconditions. Node-scoped saves and resets write a sidecar for every node that emits one (`node_emits_sidecar`), so a stepped transform's optional polars sidecar is updated alongside its regenerated body. |
 | `src/haute/_submodel_recovery.py` | Literal submodel registration identity evidence used only by recovery, raw revision discovery and explicitly requested updates. |
 | `src/haute/_sidecar.py` | Core read-side `.haute.json` contract: `SidecarModel`, the typed absent/valid/corrupt/unreadable read state, and the sidecar source/position normalisers. Lives outside the web layer so editor recovery never imports routes. |
@@ -1189,11 +1189,11 @@ Any verification or write failure rolls back all touched artifacts.
 
 The additional `/api/pipeline/repair/recover/apply` route accepts
 `PipelineRepairRecoverRequest`, replacing the removal-only `delete_config` option with
-`action: update | reset | recover`. Its responses use `update_node` / `reset_node` /
-`recover_node` and otherwise share the bounded repair transport; recover responses add the engine's
+`action: reset | recover`. Its responses use `reset_node` / `recover_node` and otherwise
+share the bounded repair transport; recover responses add the engine's
 `field_changes` outcome report, the target's completeness entries, and `previous_config`.
 The full scope and acceptance criteria are defined in
-[node recovery actions](node-recovery-actions.md). Updates, resets, and recovers retain
+[node recovery actions](node-recovery-actions.md). Resets and recovers retain
 the target; application checks its recovered availability and compares the complete
 staged structure against the plan's isolated single-node preview. Python replacements use the shared LibCST
 boundary. Ordinary saves validate Data Input/Output structure strictly but tolerate

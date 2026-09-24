@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from haute import _env
+from tests._source_files import source_files
 
 
 class TestEnvHelpers:
@@ -681,7 +682,7 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
 def test_production_direct_environment_reads_match_reviewed_exceptions():
     root = Path(__file__).parents[1]
     discovered: set[DirectEnvRead] = set()
-    for source_path in (root / "src" / "haute").rglob("*.py"):
+    for source_path in source_files(root / "src" / "haute"):
         if source_path.name == "_env.py":
             continue
         relative_path = source_path.relative_to(root).as_posix()

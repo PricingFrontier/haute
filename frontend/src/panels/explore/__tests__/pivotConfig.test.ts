@@ -118,6 +118,20 @@ describe("pivotConfig", () => {
     expect(pivotAggregationsForDtype("Object")).toEqual(["count"])
   })
 
+  it.each([
+    ["card", (raw: ExplorePivotConfig) => raw as Record<string, unknown>, "card"],
+    ["row", (raw: ExplorePivotConfig) => raw.rows[0] as Record<string, unknown>, "rows placement"],
+    ["value", (raw: ExplorePivotConfig) => raw.values[0] as Record<string, unknown>, "value"],
+    ["options", (raw: ExplorePivotConfig) => raw.options as Record<string, unknown>, "options"],
+  ])("rejects an unknown %s field by name, as the server does", (_level, level, scope) => {
+    const raw = structuredClone(pivot())
+    level(raw).future = "compact"
+    expect(parseExplorePivots({ pivots: [raw] })).toMatchObject({
+      ok: false,
+      error: `Pivot 1 ${scope} has an unknown field "future".`,
+    })
+  })
+
   it("rejects versionless cards instead of migrating them", () => {
     // There is no v0 migration: every persisted card is complete version 1.
     expect(

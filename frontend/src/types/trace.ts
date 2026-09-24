@@ -54,6 +54,9 @@ export interface TraceStep {
   /** Set when this step's row was read from the shared snapshot generation
    * the trace was seeded with, instead of computing the node. */
   snapshot_generation_id?: string | null
+  /** Set when this step's row is one of several candidates identical in every
+   * column: how many there are. No physical row was chosen. */
+  identical_row_count?: number | null
 }
 
 export interface RatingStepFactorDetail {

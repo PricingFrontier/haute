@@ -252,7 +252,7 @@ jobs:
         if: always() && steps.combine.outcome == 'success'
         run: uv run python scripts/check_critical_coverage.py --coverage-json .cache/coverage/backend.json
 
-      - name: Enforce 100% changed execution-code coverage
+      - name: Changed-code coverage (gates the safety-critical modules, reports the rest)
         if: always() && steps.combine.outcome == 'success'
         env:
           HAUTE_COVERAGE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}

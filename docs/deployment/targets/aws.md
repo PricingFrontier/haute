@@ -1,12 +1,12 @@
 # AWS ECS
 
-This guide covers preparing a Haute pipeline for **AWS Elastic Container Service (ECS)**. `haute deploy` validates the pipeline, builds its Docker image, and pushes it to the configured registry. It then exits with an error before changing ECS because the ECS service-update adapter is not implemented.
+This guide covers preparing a Haute pipeline for **AWS Elastic Container Service (ECS)**. `haute deploy` validates the pipeline, builds its Docker image, pushes it to the configured registry, and finishes there: updating the ECS service is a manual step, because Haute's ECS service-update adapter is not implemented yet.
 
 !!! info "What is AWS ECS?"
     ECS is Amazon's service for running Docker containers in the cloud. You don't manage individual servers - AWS handles that. You tell it which Docker image to run and how much compute to allocate, and it keeps your API available. Think of it as a managed hosting service for your pricing API.
 
 !!! warning "Platform service update is not yet implemented"
-    Haute currently builds and pushes the Docker image for AWS ECS, then raises `NotImplementedError` before changing the service. This makes the CI `haute deploy` step fail **after** the image has been pushed. Treat the image tag in that failure as the handoff to your IT team; do not expect a green deploy job or an updated service.
+    Haute builds the Docker image for AWS ECS, pushes it to your registry, and then finishes **without** updating the service. The CI deploy job succeeds once the image is pushed and prints the image tag: that tag is the handoff to your IT team, who point the service at it. A registry is required; without one `haute deploy` stops before building. The generated CI has no smoke-test or impact-analysis job for this target, because nothing runs the new image until the service is updated.
 
 !!! note "This target requires IT support"
     AWS ECS involves cloud infrastructure setup (registries, clusters, IAM policies) that is done by an IT or platform team. The "Infrastructure setup" section below is written **for your IT team**. As an analyst, your role is to configure `haute.toml` and merge to main - CI and IT handle the rest.
@@ -95,16 +95,15 @@ You don't run any deploy command. When you merge to main, CI automatically:
 2. Generates a FastAPI app and Dockerfile
 3. Builds the Docker image
 4. Pushes the image to your ECR repository
-5. Exits with a clear `NotImplementedError` before it updates the ECS service
+5. Finishes without updating the ECS service, printing the pushed image tag
 
 !!! warning "Expected CI result until the adapter exists"
-    The deploy job is expected to fail after image push with a message such as `Service update for 'aws-ecs' is not yet implemented`.
+    The deploy job succeeds once the image is pushed. It does not update ECS.
 
-    1. **In your CI provider** - the deploy job is red after the successful image build and push
-    2. **In the CI logs** - a message like `Pushed motor-pricing:a1b2c3d to 123456789012.dkr.ecr.eu-west-1.amazonaws.com`
-    3. **In the CI logs** - the explicit failure records the pushed image tag for the manual ECS update
+    1. **In your CI provider** - the deploy job is green after the image build and push
+    2. **In the CI logs** - `Image pushed: 123456789012.dkr.ecr.eu-west-1.amazonaws.com/motor-pricing:a1b2c3d`, followed by `The aws-ecs service was not updated` and the tag to point it at
 
-    A green validation/build is not an ECS deployment. Your platform team must update the task definition or service, then verify its health.
+    A green deploy job is not an ECS deployment. Your platform team must update the task definition or service, then verify its health. Run `haute smoke` and `haute impact` once the service runs the new image.
 
 Use the pushed image tag when your IT team updates the ECS task definition manually, then deploy that new task-definition revision to the service. The command below only starts new tasks from the service's **current** task definition; it does not replace its image by itself.
 

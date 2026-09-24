@@ -35,6 +35,7 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
+from tests._source_files import source_files
 from tests.conftest import write_data_input_config
 
 # ---------------------------------------------------------------------------
@@ -389,7 +390,7 @@ class TestNoManualInvalidation:
         assert src_root.is_dir(), f"src root not found at {src_root}"
 
         offenders: list[tuple[Path, int]] = []
-        for py in src_root.rglob("*.py"):
+        for py in source_files(src_root):
             tree = ast.parse(py.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):

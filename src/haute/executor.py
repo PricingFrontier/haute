@@ -13,17 +13,12 @@ can optimise the full plan end-to-end.
 from __future__ import annotations
 
 import ast as _ast
-import ctypes
 import functools
 import gc
 import hashlib
 import importlib as _importlib
-import inspect
 import os
-import shutil
-import signal
 import stat as stat_module
-import subprocess
 import sys
 import threading
 import time
@@ -259,62 +254,6 @@ _IS_WINDOWS = os.name == "nt"
 _WINDOWS_OUTPUT_SYNC_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8)
 
 
-# Cache compiled preamble results by (content, pipeline_dir, execution
-# fingerprint) so unchanged preambles (common during training / optimiser
-# runs where the preamble doesn't change between invocations) skip the
-# expensive module eviction + re-import cycle.  ``functools.lru_cache`` is
-# C-implemented, gives O(1) eviction, and ships with ``cache_info()``
-# diagnostics for free.
-
-_DANGEROUS_MODULES = frozenset(
-    {
-        "os",
-        "sys",
-        "subprocess",
-        "shutil",
-        "signal",
-        "ctypes",
-        "importlib",
-    }
-)
-_DANGEROUS_MODULE_OBJECTS = frozenset(
-    {
-        os,
-        os.path,
-        sys,
-        subprocess,
-        shutil,
-        signal,
-        ctypes,
-        _importlib,
-    }
-)
-_DANGEROUS_MODULE_NAMES = frozenset(m.__name__ for m in _DANGEROUS_MODULE_OBJECTS)
-
-
-def _is_dangerous_preamble_binding(value: Any) -> bool:
-    if inspect.ismodule(value):
-        module_name = value.__name__
-        return (
-            value in _DANGEROUS_MODULE_OBJECTS
-            or module_name in _DANGEROUS_MODULE_NAMES
-            or module_name.split(".", 1)[0] in _DANGEROUS_MODULES
-        )
-
-    module = inspect.getmodule(value)
-    module_name = (
-        module.__name__ if module is not None else getattr(value, "__module__", "")
-    ) or ""
-    return (
-        module in _DANGEROUS_MODULE_OBJECTS
-        or module_name in _DANGEROUS_MODULE_NAMES
-        or module_name.split(".", 1)[0] in _DANGEROUS_MODULES
-    )
-
-
-_polars_config_lock = threading.Lock()
-
-
 def _utility_module_candidates(pipeline_dir_str: str | None) -> list[Path]:  # pragma: no mutate
     bases: list[Path] = []
     if pipeline_dir_str is not None:
@@ -423,9 +362,15 @@ def _exec_preamble_namespace(preamble: str) -> dict[str, Any]:
 
         raise PreambleError(msg, source_line=source_line) from exc
 
-    return {
-        k: v for k, v in ns.items() if k not in base_keys and not _is_dangerous_preamble_binding(v)
-    }
+    return {k: v for k, v in ns.items() if k not in base_keys}
+
+
+# Cache compiled preamble results by (content, pipeline_dir, execution
+# fingerprint) so unchanged preambles (common during training / optimiser
+# runs where the preamble doesn't change between invocations) skip the
+# expensive module eviction + re-import cycle.  ``functools.lru_cache`` is
+# C-implemented, gives O(1) eviction, and ships with ``cache_info()``
+# diagnostics for free.
 
 
 class _PreambleCell:

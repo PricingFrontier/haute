@@ -604,7 +604,9 @@ def _recover_ast_submodel_registrations(
                 source_file=source_file,
                 source_span=span,
                 element_id=evidence.name if evidence is not None else None,
-                remediation="Correct the submodel registration identity and file path.",
+                remediation=exc.context.get(
+                    "remediation", "Correct the submodel registration identity and file path."
+                ),
             )
             diagnostics.append(diagnostic)
             if evidence is not None:
@@ -1417,7 +1419,14 @@ def _recover_registered_submodels(
                 captures=captures,
                 code=code,
                 message=_exception_message(exc),
-                remediation=("Open the submodel source and correct the diagnosed definition."),
+                remediation=(
+                    exc.context.get(
+                        "remediation",
+                        "Open the submodel source and correct the diagnosed definition.",
+                    )
+                    if isinstance(exc, HauteError)
+                    else "Open the submodel source and correct the diagnosed definition."
+                ),
             )
             continue
         except Exception:  # noqa: BLE001 - named submodel recovery isolation boundary

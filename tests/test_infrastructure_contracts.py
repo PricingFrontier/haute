@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from haute import _cache
 from haute import _registry as registry
 from haute._types import NodeType
+from tests._source_files import source_files
 
 
 def _exec_builder(*_args: object, **_kwargs: object) -> tuple[str, Any, bool]:
@@ -183,9 +184,8 @@ class TestTestFileNamingContracts:
         offenders = sorted(
             str(path.relative_to(repo_root))
             for root in roots
-            for path in root.rglob("*")
-            if path.is_file()
-            and path.suffix in {".py", ".ts", ".tsx"}
+            for path in source_files(root, suffix=None)
+            if path.suffix in {".py", ".ts", ".tsx"}
             and stage_name.search(str(path.relative_to(repo_root)))
         )
 

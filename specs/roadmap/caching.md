@@ -1,14 +1,5 @@
 # Caching roadmap
 
-Review update, 22 September 2026: the [PR #227 assessment](pr-227-review.md)
-supersedes the earlier review conclusions below for head `97f3e99`. The
-[focused implementation plan](pipeline-cache-memory-design.md) records the
-current scope for the existing Polars/Parquet pipeline and filesystem store,
-with no replacement-engine or catalog work. It records input-lease,
-publication, replacement and consumer-identity defects, and finds that
-ordinary chunked joins also rescan their lookup; the existing package
-descriptions below have not yet been rewritten or implemented to that plan.
-
 ## Scope
 
 The aim is one cache system for Haute: full data at any pipeline point is
@@ -78,10 +69,9 @@ shape; `CACHE-S19` is deferred with the others. `CACHE-S12` (a refused
 capture shown at the node) was retired on 23-Sep-2026: the cache budgets
 whose refusals it would have shown are removed, and a failed build already
 reports its error through the shared job poller. `CACHE-S13` moved down on 20-Sep-2026 because measurement showed
-no preview near its timeout. The packages from the
-[23 September 2026 codebase review](codebase-review-2026-09-23.md)
-(`CACHE-S25`) sits outside that order: it follows the
-pipeline-config package `PCFG-R08`. Every full-frame write is now bounded, so what
+no preview near its timeout. `CACHE-S25`, from the
+[23 September 2026 codebase review](codebase-review-2026-09-23.md), sits
+outside that order: it follows the pipeline-config package `PCFG-R08`. Every full-frame write is now bounded, so what
 is left is measured against cost rather than shape. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
 specified. Every package builds on the node-output snapshot store (signature,

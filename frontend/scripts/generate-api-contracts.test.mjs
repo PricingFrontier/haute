@@ -49,7 +49,6 @@ test(
           "ChartSeriesOverride",
           "ChartValueEncoding",
           "ExploreChartConfig",
-          "JsonValue",
         ],
       ],
       ["UtilityListResponse", ["UtilityFileItem"]],

@@ -23,10 +23,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import Any, NamedTuple
 
 import polars as pl
+from polars.datatypes import DataTypeClass
 
 from haute._edge_join import (
     build_edge_join_kwargs,
@@ -704,6 +705,90 @@ def _record_ambiguous_row_match(
         diagnostics.append(diagnostic)
 
 
+def _deduplicable(dtype: pl.DataType | DataTypeClass) -> bool:
+    """Whether Polars can compare values of *dtype* row against row (no ``Object``)."""
+    if dtype.base_type() is pl.Object:
+        return False
+    if isinstance(dtype, pl.List | pl.Array):
+        return _deduplicable(dtype.inner)
+    if isinstance(dtype, pl.Struct):
+        return all(_deduplicable(field.dtype) for field in dtype.fields)
+    return True
+
+
+def _identical_candidate_count(
+    frame: pl.DataFrame | pl.LazyFrame,
+    *,
+    child_row: Mapping[str, Any],
+    key_columns: Sequence[str],
+    collect: Callable[[pl.LazyFrame], pl.DataFrame] | None = None,
+) -> int | None:
+    """Count the rows matching *child_row* when every one of them is the same row.
+
+    The candidates are the rows the matcher's own comparison accepts on
+    *key_columns*. They are identical when they form exactly one distinct row
+    across every column, compared exactly in their own dtypes (never with the
+    matcher's float tolerance). ``None`` when they differ, or when a column
+    cannot be compared or de-duplicated (decided from the schema, so an error
+    while reading the frame or plan propagates rather than reading as a tie).
+    """
+    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
+    if not all(_deduplicable(dtype) for dtype in schema.values()):
+        return None
+    key_expressions: list[pl.Expr] = []
+    for column in key_columns:
+        expression, _reason = _typed_value_match_expr(column, child_row[column], schema[column])
+        if expression is None:
+            return None
+        key_expressions.append(expression.fill_null(False))
+    counts_plan = frame.filter(pl.all_horizontal(key_expressions)).select(
+        pl.len().alias("candidates"),
+        pl.struct(pl.all()).n_unique().alias("distinct_rows"),
+    )
+    if isinstance(counts_plan, pl.LazyFrame):
+        if collect is None:
+            raise ValueError("counting identical candidates in a plan needs a collect")
+        counts = collect(counts_plan)
+    else:
+        counts = counts_plan
+    candidates, distinct_rows = counts.row(0)
+    return int(candidates) if candidates >= 2 and distinct_rows == 1 else None
+
+
+def _record_identical_row_match(
+    diagnostics: list[dict[str, Any]] | None,
+    *,
+    node_id: str | None,
+    child_node_id: str | None,
+    match_columns: list[str],
+    candidate_count: int,
+) -> None:
+    """Report a tie among identical rows: the step shows their shared values."""
+    node_label = "parent row" if node_id is None else f"node {node_id!r}"
+    child_label = f" for child node {child_node_id!r}" if child_node_id is not None else ""
+    if diagnostics is not None:
+        diagnostics.append(
+            {
+                "code": "identical_row_match",
+                "severity": "info",
+                "reason": "identical_rows",
+                "message": (
+                    f"Row correlation for {node_label}{child_label} matched "
+                    f"{candidate_count} rows identical in every column; any of them "
+                    "gives these values."
+                ),
+                "node_id": node_id,
+                "child_node_id": child_node_id,
+                "match_strategy": "exact",
+                "match_columns": list(match_columns),
+                "ignored_columns": [],
+                "matched_row_count": candidate_count,
+                "matched_row_indices": [],
+                "candidate_count": candidate_count,
+            }
+        )
+
+
 def _find_matching_row(
     df: pl.DataFrame,
     child_row: dict[str, Any],
@@ -713,6 +798,7 @@ def _find_matching_row(
     child_node_id: str | None = None,
     allow_relaxed: bool = True,
     work: CorrelationWork | None = None,
+    identical_candidates: Callable[[], int | None] | None = None,
 ) -> tuple[dict[str, Any] | None, int]:
     """Find the row in *df* that matches *child_row* on shared columns.
 
@@ -729,6 +815,13 @@ def _find_matching_row(
          match wins" behavior without enumerating every subset.
          Competing best rows are ambiguous and no row is selected.
       3. If still no match, return None (fail loudly).
+
+    An exact tie whose candidates are identical in every column is not
+    ambiguous: any of them gives the same values, so those values are
+    returned with position ``-1`` (no physical row is chosen) and an
+    ``identical_row_match`` diagnostic. *identical_candidates* counts the
+    candidates for a frame that holds only some of them (a row-scope lookup);
+    otherwise they are counted in *df*.
     """
     shared = [column for column in child_row if column in df.columns]
     match = _match_rows_vectorized(
@@ -771,6 +864,24 @@ def _find_matching_row(
 
     if match.status is _RowMatchStatus.AMBIGUOUS:
         relaxed = match.relaxation_reason is not None
+        if not relaxed:
+            identical_count = (
+                identical_candidates()
+                if identical_candidates is not None
+                else _identical_candidate_count(
+                    df, child_row=child_row, key_columns=match.effective_key_columns
+                )
+            )
+            if identical_count is not None:
+                candidate = _jsonify_row(df.row(match.candidate_indices[0], named=True))
+                _record_identical_row_match(
+                    diagnostics,
+                    node_id=node_id,
+                    child_node_id=child_node_id,
+                    match_columns=list(match.effective_key_columns),
+                    candidate_count=identical_count,
+                )
+                return candidate, -1
         _record_ambiguous_row_match(
             diagnostics,
             reason="relaxed_match_ambiguous" if relaxed else "duplicate_exact_match",
@@ -1154,7 +1265,9 @@ def _match_parent_row(
     # row; a reordering transform (sort/join/gather/…) falls through
     # and the step is left unresolved rather than attached to the wrong
     # parent row.
-    if len(parent_df) == child_len and child_row_idx < len(parent_df):
+    # A negative index is a row with no known position (one of several
+    # identical rows): it is matched by value only, never aligned by position.
+    if len(parent_df) == child_len and 0 <= child_row_idx < len(parent_df):
         shared = [column for column in match_row if column in parent_df.columns]
         child_may_reorder = _child_transform_may_reorder(child_node)
         if shared:
@@ -1212,6 +1325,13 @@ class _FrameMatch(NamedTuple):
     row: dict[str, Any]
     row_index: int
     width: int
+    # The frame's identical_row_match diagnostic, kept for the winner only.
+    identical: tuple[dict[str, Any], ...] = ()
+
+
+def _identical_evidence(diagnostics: Sequence[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
+    """The identical-row diagnostics among one candidate's suppressed diagnostics."""
+    return tuple(item for item in diagnostics if item.get("code") == "identical_row_match")
 
 
 def _resolve_multi_frame_parent(
@@ -1298,6 +1418,7 @@ def _resolve_multi_frame_parent(
     # noise) and keep the frames that confidently identify a row.
     matches: list[_FrameMatch] = []
     for candidate in candidates:
+        candidate_diagnostics: list[dict[str, Any]] = []
         row_dict, idx, width = _match_parent_row(
             candidate.frame,
             parent_id=parent_id,
@@ -1309,11 +1430,15 @@ def _resolve_multi_frame_parent(
             eager_outputs=eager_outputs,
             edge_metadata=edge_metadata,
             target_role=candidate.target_role,
-            diagnostics=None,
+            diagnostics=candidate_diagnostics,
             work=work,
         )
         if row_dict is not None:
-            matches.append(_FrameMatch(candidate, row_dict, idx, width))
+            matches.append(
+                _FrameMatch(
+                    candidate, row_dict, idx, width, _identical_evidence(candidate_diagnostics)
+                )
+            )
 
     if not matches:
         if diagnostics is not None:
@@ -1372,6 +1497,8 @@ def _resolve_multi_frame_parent(
                 }
             )
         return None, -1
+    if diagnostics is not None:
+        diagnostics.extend(picked[0].identical)
     return picked[0].row, picked[0].row_index
 
 
@@ -1935,6 +2062,27 @@ class RowScopeResolver:
             return plan.get(source_handle) if source_handle is not None else None
         return plan
 
+    def identical_candidate_count(
+        self,
+        node_id: str,
+        source_handle: str | None,
+        values: Mapping[str, Any],
+    ) -> int | None:
+        """Count the uncapped plan's rows matching *values* when they are all one row."""
+        from haute._polars_utils import streaming_collect
+
+        plan = self.plan_for(node_id, source_handle)
+        if plan is None:
+            return None
+        return _identical_candidate_count(
+            plan,
+            child_row=values,
+            key_columns=list(values),
+            collect=lambda counts: streaming_collect(
+                counts, execution_context=self.execution_context
+            ),
+        )
+
     def schema_for(self, node_id: str, source_handle: str | None) -> pl.Schema | None:
         """Return a lineage plan's schema, read at most once per request."""
         key = (node_id, source_handle)
@@ -2225,11 +2373,24 @@ class RowScopeResolver:
             if self._reads_edge(parent_id, child_id, handle, role)
         )
         single = len(edges) == 1
-        port_diagnostics = diagnostics if single else None
-        # (source_handle, row, index, width, frame, from_head)
-        matches: list[tuple[str | None, dict[str, Any], int, int, pl.DataFrame, bool]] = []
+        # (source_handle, row, index, width, frame, from_head, identical)
+        matches: list[
+            tuple[
+                str | None,
+                dict[str, Any],
+                int,
+                int,
+                pl.DataFrame,
+                bool,
+                tuple[dict[str, Any], ...],
+            ]
+        ] = []
         unproven = False
         for source_handle, target_role in edges:
+            # Several ports: each port's ambiguity is noise, but the winning
+            # port's identical-row evidence is kept (below).
+            port_suppressed: list[dict[str, Any]] = []
+            port_diagnostics = diagnostics if single else port_suppressed
             if self._head_edge(parent_id, child_id, source_handle, target_role):
                 frame = self._head_frame(parent_id, source_handle)
                 if frame is None or frame.height == 0:
@@ -2249,7 +2410,17 @@ class RowScopeResolver:
                     work=work,
                 )
                 if row is not None:
-                    matches.append((source_handle, row, index, width, frame, True))
+                    matches.append(
+                        (
+                            source_handle,
+                            row,
+                            index,
+                            width,
+                            frame,
+                            True,
+                            _identical_evidence(port_suppressed),
+                        )
+                    )
                 continue
             transferred = self._transferred_parent_frame(
                 parent_id=parent_id,
@@ -2260,7 +2431,7 @@ class RowScopeResolver:
             if transferred is not None:
                 self._record_frame(parent_id, source_handle, transferred)
                 row = _jsonify_row(transferred.row(0, named=True))
-                matches.append((source_handle, row, 0, transferred.width, transferred, False))
+                matches.append((source_handle, row, 0, transferred.width, transferred, False, ()))
                 continue
             carried = self._carried_values(
                 parent_id=parent_id,
@@ -2285,9 +2456,24 @@ class RowScopeResolver:
                 child_node_id=child_id,
                 allow_relaxed=False,
                 work=work,
+                # The lookup holds at most two rows, so identity is counted
+                # over the node's whole plan.
+                identical_candidates=partial(
+                    self.identical_candidate_count, parent_id, source_handle, carried
+                ),
             )
             if row is not None:
-                matches.append((source_handle, row, index, len(carried), lookup, False))
+                matches.append(
+                    (
+                        source_handle,
+                        row,
+                        index,
+                        len(carried),
+                        lookup,
+                        False,
+                        _identical_evidence(port_suppressed),
+                    )
+                )
         if not matches:
             if diagnostics is not None and (unproven or not single):
                 diagnostics.append(
@@ -2342,7 +2528,9 @@ class RowScopeResolver:
                     }
                 )
             return None, -1
-        handle, row, index, _width, frame, from_head = matches[0]
+        handle, row, index, _width, frame, from_head, identical = matches[0]
+        if diagnostics is not None:
+            diagnostics.extend(identical)
         if from_head:
             self.head_resolved.add(parent_id)
         elif handle is None and frame.height == 1:

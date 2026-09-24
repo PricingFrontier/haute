@@ -116,13 +116,9 @@ namespace as node code. `cli/_train.py`
 executes the training script through `importlib`'s ordinary `exec_module()` path in
 the CLI process without the guard. Imported module source is never validated; a
 `utility` module executes with normal module builtins.
-After preamble execution, the executor exports only names absent from the base
-namespace and rejects direct bindings for dangerous module roots via
-`_is_dangerous_preamble_binding`. Module objects, functions, and classes originating
-from `os`, `sys`, `subprocess`, `shutil`, `signal`, `ctypes`, or `importlib` are
-filtered before node-code namespace assembly. The check is deliberately shallow: it
-does not recursively inspect containers/closures and does not constrain what the
-preamble itself may execute, and node code may import those modules itself.
+After preamble execution, the executor exports every name absent from the base
+namespace, unfiltered: a binding from `os`, `sys`, `shutil` or any other module
+reaches node code exactly as the preamble made it.
 
 **Accident guard (`_sandbox.validate_user_code`)**
 1. Look up `code` in `_validation_cache`; return immediately on a hit (the cache

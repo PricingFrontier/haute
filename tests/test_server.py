@@ -3288,34 +3288,45 @@ class TestSinkEmptyGraph:
 
 
 class TestClearBytecache:
-    """Test _clear_bytecache removes __pycache__ dirs."""
+    """The startup bytecode clear removes every __pycache__ under a tree.
+
+    These run on temporary trees: removing the real package's caches would race
+    other test workers walking the source tree.
+    """
 
     def test_removes_pycache_directories(self, tmp_path: Path):
-        from unittest.mock import patch
+        from haute.server import _remove_bytecode_caches
 
-        # Create a fake source tree with __pycache__
-        fake_src = tmp_path / "haute"
-        fake_src.mkdir()
-        pycache = fake_src / "__pycache__"
-        pycache.mkdir()
-        (pycache / "foo.cpython-312.pyc").write_bytes(b"\x00")
-        nested = fake_src / "routes" / "__pycache__"
+        pycache = tmp_path / "haute" / "__pycache__"
+        pycache.mkdir(parents=True)
+        (tmp_path / "haute" / "__pycache__" / "foo.cpython-312.pyc").write_bytes(b"\x00")
+        nested = tmp_path / "haute" / "routes" / "__pycache__"
         nested.mkdir(parents=True)
 
-        # Patch Path(__file__).resolve().parent to point at our fake dir
-        import haute.server as _srv
-
-        with patch.object(_srv, "__file__", str(fake_src / "server.py")):
-            _srv._clear_bytecache()
+        _remove_bytecode_caches(tmp_path / "haute")
 
         assert not pycache.exists()
         assert not nested.exists()
 
-    def test_handles_missing_pycache(self):
-        """_clear_bytecache should not raise even when there are no __pycache__ dirs."""
-        from haute.server import _clear_bytecache
+    def test_handles_missing_pycache(self, tmp_path: Path):
+        from haute.server import _remove_bytecode_caches
 
-        _clear_bytecache()  # should not raise
+        (tmp_path / "haute").mkdir()
+        _remove_bytecode_caches(tmp_path / "haute")  # should not raise
+
+    def test_startup_clears_the_package_tree(self, monkeypatch: pytest.MonkeyPatch):
+        import inspect
+
+        import haute.server as _srv
+
+        # The suite stubs the startup clear (conftest); unwrap to the real one.
+        clear_bytecache = inspect.unwrap(_srv._clear_bytecache)
+        roots: list[Path] = []
+        monkeypatch.setattr(_srv, "_remove_bytecode_caches", roots.append)
+
+        clear_bytecache()
+
+        assert roots == [Path(_srv.__file__).resolve().parent]
 
 
 class TestMiddleware500:

@@ -28,7 +28,7 @@ function applied(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function renderDialog(action?: "update" | "reset" | "recover") {
+function renderDialog(action?: "reset" | "recover") {
   const onClose = vi.fn()
   const onApplied = vi.fn()
   render(<PipelineRepairDialog target={{ sourceFile: "target.py", recoveryId: "target@1", action }} sourceFile="root.py" sourceRevision="root-rev" onClose={onClose} onApplied={onApplied} />)
@@ -80,19 +80,6 @@ describe("PipelineRepairDialog", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/^Reload before repairing.$/)
     expect(screen.getByTestId("pipeline-repair-dialog")).toBeInTheDocument()
     expect(onClose).not.toHaveBeenCalled()
-  })
-
-  it("updates through the recovery endpoint, states the shared-definition effect and hides config deletion", async () => {
-    applyRecoverUnavailableNode.mockResolvedValueOnce(applied({ repair_kind: "update_node" }))
-    const { onApplied } = renderDialog("update")
-    expect(screen.getByRole("heading", { name: "Update to current format" })).toBeInTheDocument()
-    expect(screen.getByText(/the update affects every one of them/)).toBeInTheDocument()
-    expect(screen.queryByRole("checkbox", { name: "Also delete config" })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Update to current format" }))
-    await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1))
-    expect(applyRecoverUnavailableNode).toHaveBeenCalledWith({
-      sourceFile: "root.py", sourceRevision: "root-rev", targetSourceFile: "target.py", targetRecoveryId: "target@1", action: "update",
-    })
   })
 
   it("applies reset with the dialog's action, keeping a conflict open", async () => {

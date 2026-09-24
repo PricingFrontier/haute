@@ -1478,6 +1478,19 @@ describe("API response guards", () => {
     expect(parsed.trace?.execution_origin).toBe("fresh_execution")
   })
 
+  it("parses a step that is one of several identical rows and rejects a count below two", () => {
+    const fixture = loadUiContractFixture<{ trace: Record<string, unknown> }>("trace_response")
+    const [step] = fixture.trace.steps as Record<string, unknown>[]
+    const withCount = (count: unknown) => ({
+      ...fixture,
+      trace: { ...fixture.trace, steps: [{ ...step, identical_row_count: count }] },
+    })
+
+    expect(parseTraceResponse(withCount(3)).trace?.steps[0]?.identical_row_count).toBe(3)
+    expect(parseTraceResponse(withCount(null)).trace?.steps[0]?.identical_row_count).toBeNull()
+    expect(() => parseTraceResponse(withCount(1))).toThrow("identical_row_count")
+  })
+
   it("parses where a seeded trace read its rows and what it skipped", () => {
     const fixture = loadUiContractFixture<{ trace: Record<string, unknown> }>("trace_response")
     const [step] = fixture.trace.steps as Record<string, unknown>[]

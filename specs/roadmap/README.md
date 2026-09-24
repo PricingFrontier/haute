@@ -18,17 +18,23 @@ or maintenance issue; `P3` opportunistic work.
 | Component | Improvement surface | Start with |
 |---|---|---|
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
-| [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache usage, freshness and retention | `CACHE-S17` |
-| [Engineering quality](engineering-quality.md) | Dead code, coverage gates, test organisation | `ENGQ-R01` |
-| [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E25` |
+| [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache identity | `CACHE-S17` |
+| [Engineering quality](engineering-quality.md) | Dead code, test organisation | `ENGQ-R01` |
+| [Explore and EDA](explore-eda.md) | Advanced pivot and PivotChart parity | — |
 | [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
 | [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients for the optimiser log | `MLF-R02` |
-| [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers, auto-range, input isolation | `OPT-P13` |
-| [Pipeline config](pipeline-config.md) | Project context, non-canonical input, typed configs, editor state, node specification | `PCFG-R04` |
+| [Optimiser](optimiser.md) | Service extraction, scaling, input isolation | `OPT-P13` |
+| [Pipeline config](pipeline-config.md) | Project context, typed configs, editor state, node specification | `PCFG-R04` |
 | [Sandbox security](sandbox-security.md) | Every containment comparison through the one check | `SBX-R01` |
-| [Server API](server-api.md) | Error translation, generated browser contract, recovery scope | `API-R01` |
+| [Server API](server-api.md) | Error translation, generated browser contract | `API-R01` |
 | [Submodels](submodels.md) | One reuse mechanism | `SUB-R01` |
-| [Tracing](tracing.md) | Row identity for traces | `TRACE-R01` |
+
+## Delivery plan — 24 September 2026
+
+The [delivery plan](delivery-plan.md) orders every active package into rounds
+delivered one PR at a time from a single checkout, with each round's
+dependencies, its size and the user-visible changes it makes. It owns only
+the order; the packages above own the work.
 
 ## Codebase review — 23 September 2026
 
@@ -39,60 +45,10 @@ limits and evidence, and maps every finding to the package that tracks it.
 It is a dated supporting report and owns no work; the packages in the
 component roadmaps above carry the plans.
 
-## PR #227 review — 22 September 2026
-
-The [cache and pipeline review](pr-227-review.md) records reproduced defects,
-targeted verification, CI evidence and the merge recommendation for head
-`97f3e99`. The [focused implementation plan](pipeline-cache-memory-design.md)
-is the current plan for the existing Polars/Parquet pipeline and store, narrowed
-at the user's request. Supporting probes, inventories and benchmark results are
-linked from the review. The Fable report and its [reconciliation](pr-227-fable-reconciliation.md)
-are review history; use the current plan for implementation scope. These are
-dated review artifacts; component specifications remain the behavior authority.
-
-The subsequent [independent Fable 5.1 review](pr-227-fable-5.1-review.md)
-challenges the proposed architecture and validates the findings against source.
-Read the [parent reconciliation](pr-227-fable-reconciliation.md) for accepted
-simplifications, corrected assumptions and the refined next steps. Its
-[runtime provenance](pr-227-fable-5.1-provenance.json) verifies the exact model;
-the Fable report is preserved verbatim.
-
-The [implementation evidence](pr-227-implementation-progress.md) records the
-subsequent fixes, reproducible before/after memory and runtime measurements,
-targeted tests, and remaining CI verification for the focused plan.
-
-The supporting inventories record [cache lifecycle evidence](pr-227-cache-evidence.md),
-[materialisation evidence](pr-227-materialisation-evidence.md), and
-[CI implementation evidence](pr-227-ci-implementation-evidence.md). The
-[Fable review request](pr-227-fable-review-request.md) preserves the scope and
-instructions supplied for that independent review.
-
-## MOD-F00 engine probes — 23 September 2026
-
-The [engine probe record](mod-f00-engine-probes.md) holds the dependency,
-packaging and native-behaviour evidence that settled the pre-implementation
-gates of the model-family expansion, which is delivered; the modelling roadmap
-that tracked it is retired.
-It is a dated evidence artifact; component specifications remain the behavior
-authority.
-
-## MOD-F05 CPU release check — 23 September 2026
-
-The [release check](mod-f05-release-check.md) maps every acceptance row of the
-model-family expansion to its test evidence and records the release benchmarks,
-EBM format limits and platform requirements. It is a dated evidence artifact;
-component specifications remain the behavior authority.
-
-## MOD-F06 GPU probes — 23 September 2026
-
-The [GPU probes](mod-f06-gpu-probes.md) record the XGBoost CUDA and LightGBM
-GPU backend evidence behind XGBoost GPU training, `haute gpu-setup`, and the
-decision to keep LightGBM and EBM on the CPU. It is a dated evidence artifact;
-component specifications remain the behavior authority.
-
 ## Working protocol
 
-1. Pick one package from its owning component.
+1. Pick one package from its owning component, in the order the
+   [delivery plan](delivery-plan.md) gives.
 2. For `Reverify`, reproduce the stated failure against `HEAD`; retire the
    package if current code and tests already prove the outcome.
 3. Update the owning component specification before changing behaviour.

@@ -30,7 +30,8 @@
         "calculation": null,
         "node_detail": null,
         "row_lineage_type": "direct",
-        "snapshot_generation_id": null
+        "snapshot_generation_id": null,
+        "identical_row_count": null
       }
     ],
     "omissions": [],

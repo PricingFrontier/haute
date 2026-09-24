@@ -25,6 +25,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from tests._source_files import source_files
+
 _SRC = Path(__file__).parent.parent / "src" / "haute"
 
 # ---------------------------------------------------------------------------
@@ -171,7 +173,7 @@ def _is_secret_env_name(value: str) -> bool:
 
 def test_secret_env_name_references_are_reviewed() -> None:
     findings: set[tuple[str, str]] = set()
-    for path in sorted(_SRC.rglob("*.py")):
+    for path in source_files(_SRC):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         relative = path.relative_to(_SRC).as_posix()
         for node in ast.walk(tree):

@@ -22,6 +22,7 @@ from haute._types import (
 from haute.codegen import graph_to_code_multi
 from haute.errors import ParseError
 from haute.schemas import EditorIdentityRequestNode, RecoverySubmodelDefinition
+from tests._source_files import source_files
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -333,7 +334,7 @@ def test_no_forbidden_tokens_in_src():
     }
     offending: list[tuple[str, int, str]] = []
     src_dir = PROJECT_ROOT / "src" / "haute"
-    for py_file in src_dir.rglob("*.py"):
+    for py_file in source_files(src_dir):
         with open(py_file, "rb") as f:
             for tok in tokenize.tokenize(f.readline):
                 if tok.type == tokenize.NAME and tok.string in forbidden:

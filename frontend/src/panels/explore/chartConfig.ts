@@ -311,6 +311,9 @@ function parseV1Chart(
   return chart
 }
 
+const CARD_PATH = /^\/\d+$/
+const CARD_VERSION_PATH = /^\/\d+\/version$/
+
 function chartPosition(error: GeneratedContractValidationError): number {
   const match = /^\/(\d+)(?:\/|$)/.exec(generatedContractErrorPath(error))
   return match === null ? 1 : Number(match[1]) + 1
@@ -327,9 +330,15 @@ function chartContractError(
   )
   const versionError = findGeneratedContractError(
     errors,
+    // Only the card's own version field: an unknown nested "version" key is an
+    // additional property, reported by name below.
     (error) => sameChart(error) && (
-      (error.keyword === "required" && error.params.missingProperty === "version")
-      || generatedContractErrorPath(error).endsWith("/version")
+      (
+        error.keyword === "required"
+        && error.params.missingProperty === "version"
+        && CARD_PATH.test(error.instancePath)
+      )
+      || CARD_VERSION_PATH.test(error.instancePath)
     ),
   )
   if (versionError !== undefined) return `Chart ${position} version must be 1.`

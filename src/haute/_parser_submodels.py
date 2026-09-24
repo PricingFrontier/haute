@@ -141,11 +141,14 @@ def extract_submodel_registrations(tree: ast.Module) -> list[SubmodelRegistratio
                 raise ParseError(
                     (
                         "pipeline.submodel() no longer accepts label=; "
-                        "an occurrence's name is its alias."
+                        "an occurrence's name is the second argument."
                     ),
                     path=path,
                     line=getattr(link, "lineno", None),
-                    remediation="Remove label= and rename the occurrence by changing alias=.",
+                    remediation=(
+                        "Write pipeline.submodel(<path>, <name>) and let the child "
+                        "file declare its definition id."
+                    ),
                 )
             for keyword in link.keywords:
                 if keyword.arg in {"definition_id", "instance_id", "alias"}:

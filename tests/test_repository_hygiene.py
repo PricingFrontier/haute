@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 import ast
+import functools
+import os
 import re
 import subprocess
+import textwrap
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from tests._source_files import SourceTreeGuard, source_files
+
+pytest_plugins = ["pytester"]
 
 
 def _tracked_files() -> set[str]:
@@ -57,18 +67,356 @@ def test_no_local_mlflow_store_is_tracked() -> None:
     )
 
 
+def test_source_walks_prune_bytecode_caches_before_entering_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Another worker may create or remove a __pycache__ mid-walk, so the walk
+    # must never list one: enumerating a cache directory fails this test.
+    (tmp_path / "pkg" / "__pycache__").mkdir(parents=True)
+    (tmp_path / "pkg" / "__pycache__" / "module.cpython-311.pyc").write_bytes(b"")
+    (tmp_path / "pkg" / "module.py").write_text("", encoding="utf-8")
+    real_scandir = os.scandir
+
+    def scandir(path: str) -> object:
+        if Path(path).name == "__pycache__":
+            raise AssertionError(f"the walk entered {path}")
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+
+    assert source_files(tmp_path) == [tmp_path / "pkg" / "module.py"]
+
+
+def test_source_walks_fail_loudly_when_a_directory_cannot_be_listed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A static scan that silently skipped an unreadable directory would pass
+    # while checking less than it claims.
+    (tmp_path / "pkg").mkdir()
+    real_scandir = os.scandir
+
+    def scandir(path: str) -> object:
+        if Path(path).name == "pkg":
+            raise PermissionError(f"cannot list {path}")
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+
+    with pytest.raises(PermissionError, match="cannot list"):
+        source_files(tmp_path)
+
+
+# Trees that hold no Python, so no bytecode cache can appear in them mid-walk.
+_TREES_WITHOUT_PYTHON = frozenset({"docs", "specs", "frontend"})
+
+# One possible walk root: whether it derives from a ``__file__``, and the path
+# segments it names.
+_Origin = tuple[bool, frozenset[str]]
+_UNANCHORED: _Origin = (False, frozenset())
+# A name's possible values: expressions, or ``(module, name)`` for a name
+# imported from a module of the test package, resolved there when needed.
+_Bindings = dict[str, list[ast.expr | tuple[str, str]]]
+
+
+def _name_bindings(tree: ast.Module) -> _Bindings:
+    """Every expression each name can take, anywhere in the module.
+
+    Assignments bind their value; loop and comprehension targets bind the
+    iterable (whose elements are then separate possible values); a function's
+    parameters bind the arguments of every call to it in the module. A name
+    imported from a module of the test package takes the values it has there.
+    """
+    bindings: _Bindings = {}
+
+    def bind(target: ast.expr, value: ast.expr) -> None:
+        if isinstance(target, ast.Name):
+            bindings.setdefault(target.id, []).append(value)
+        elif isinstance(target, ast.Tuple | ast.List):
+            for element in target.elts:
+                bind(element, value)
+
+    functions = {
+        node.name: node.args
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                bind(target, node.value)
+        elif isinstance(node, ast.AnnAssign | ast.NamedExpr) and node.value is not None:
+            bind(node.target, node.value)
+        elif isinstance(node, ast.For | ast.AsyncFor | ast.comprehension):
+            bind(node.target, node.iter)
+        elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith("tests"):
+            for alias in node.names:
+                bindings.setdefault(alias.asname or alias.name, []).append(
+                    (node.module or "", alias.name)
+                )
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in functions
+        ):
+            parameters = functions[node.func.id]
+            positional = [*parameters.posonlyargs, *parameters.args]
+            for parameter, argument in zip(positional, node.args, strict=False):
+                bindings.setdefault(parameter.arg, []).append(argument)
+            named = {parameter.arg for parameter in [*positional, *parameters.kwonlyargs]}
+            for keyword in node.keywords:
+                if keyword.arg in named:
+                    bindings.setdefault(keyword.arg, []).append(keyword.value)
+    return bindings
+
+
+@functools.cache
+def _module_bindings(module: str) -> _Bindings | None:
+    """The bindings of a test-package module; ``None`` when *module* is a package."""
+    path = _REPO_ROOT.joinpath(*module.split(".")).with_suffix(".py")
+    if not path.is_file():
+        return None
+    return _name_bindings(ast.parse(path.read_text(encoding="utf-8")))
+
+
+_RESOLVING: set[tuple[str, str]] = set()
+
+
+@functools.cache
+def _imported_origins(module: str, name: str) -> frozenset[_Origin]:
+    """What *name* can evaluate to in the test-package *module* that defines it."""
+    bindings = _module_bindings(module)
+    if bindings is None or (module, name) in _RESOLVING:  # a submodule, or a cycle
+        return frozenset({_UNANCHORED})
+    _RESOLVING.add((module, name))
+    try:
+        return frozenset(_walk_origins(ast.Name(id=name), bindings, frozenset()))
+    finally:
+        _RESOLVING.discard((module, name))
+
+
+def _walk_origins(expression: ast.expr, bindings: _Bindings, seen: frozenset[str]) -> set[_Origin]:
+    """Each root *expression* can evaluate to, judged separately."""
+    if (isinstance(expression, ast.Name) and expression.id == "__file__") or (
+        isinstance(expression, ast.Attribute) and expression.attr == "__file__"
+    ):
+        return {(True, frozenset())}
+    if isinstance(expression, ast.Constant):
+        value = expression.value
+        return {(False, frozenset({value}) if isinstance(value, str) else frozenset())}
+    if isinstance(expression, ast.Name):
+        values = [] if expression.id in seen else bindings.get(expression.id, [])
+        inner = seen | {expression.id}
+        origins = {
+            origin
+            for value in values
+            for origin in (
+                _imported_origins(*value)
+                if isinstance(value, tuple)
+                else _walk_origins(value, bindings, inner)
+            )
+        }
+        return origins or {_UNANCHORED}
+    if isinstance(expression, ast.Tuple | ast.List | ast.Set):
+        origins = {
+            origin
+            for element in expression.elts
+            for origin in _walk_origins(element, bindings, seen)
+        }
+        return origins or {_UNANCHORED}
+    # A path built from parts (``root / "src"``, ``Path(...).parents[1]``)
+    # combines every possible value of each part.
+    origins = {_UNANCHORED}
+    for child in ast.iter_child_nodes(expression):
+        if isinstance(child, ast.expr):
+            child_origins = _walk_origins(child, bindings, seen)
+            origins = {
+                (anchored or child_anchored, segments | child_segments)
+                for anchored, segments in origins
+                for child_anchored, child_segments in child_origins
+            }
+    return origins
+
+
+def _walk_receiver(call: ast.Call) -> ast.expr | None:
+    """The directory a recursive walk call descends from, if *call* is one."""
+    if not isinstance(call.func, ast.Attribute):
+        return None
+    method, owner = call.func.attr, call.func.value
+    if method == "walk" and isinstance(owner, ast.Name) and owner.id == "os":
+        return call.args[0] if call.args else None
+    if method in {"rglob", "walk"} and not (isinstance(owner, ast.Name) and owner.id == "ast"):
+        return owner
+    if (
+        method == "glob"
+        and call.args
+        and isinstance(call.args[0], ast.Constant)
+        and "**" in str(call.args[0].value)
+    ):
+        return owner
+    return None
+
+
+def _raw_repository_walks(source: str) -> list[int]:
+    """Lines that walk a repository tree which can hold bytecode caches.
+
+    A walk is flagged when any root it can take derives from a ``__file__``
+    and names none of the trees without Python.
+    """
+    tree = ast.parse(source)
+    bindings = _name_bindings(tree)
+    lines: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or (receiver := _walk_receiver(node)) is None:
+            continue
+        if any(
+            anchored and not segments & _TREES_WITHOUT_PYTHON
+            for anchored, segments in _walk_origins(receiver, bindings, frozenset())
+        ):
+            lines.append(node.lineno)
+    return sorted(lines)
+
+
+def test_raw_repository_walk_detection_follows_names_to_the_repository() -> None:
+    sample = textwrap.dedent(
+        """
+        import os
+        from pathlib import Path
+
+        from tests._source_files import REPO_ROOT
+
+        ROOT = Path(__file__).resolve().parents[1]
+        SOURCE = ROOT / "src"
+        SPECS = ROOT / "specs"
+
+
+        def walks(tmp_path, folder):
+            this_file = Path(__file__).resolve()
+            root = this_file.parents[1]
+            list(SOURCE.rglob("*"))
+            list((root / folder).rglob("*"))
+            list(REPO_ROOT.glob("**/*.py"))
+            list(os.walk(ROOT / "tests"))
+            list(SPECS.rglob("*.md"))
+            list(tmp_path.rglob("*"))
+            list(ROOT.glob("*.md"))
+
+
+        def mixed_roots():
+            roots = (ROOT / "tests", ROOT / "frontend" / "src")
+            return [path for tree in roots for path in tree.rglob("*")]
+
+
+        def frontend_only():
+            return [path for web in (ROOT / "frontend",) for path in web.rglob("*")]
+
+
+        def python_sources(directory):
+            return [name for _, _, names in os.walk(directory) for name in names]
+
+
+        python_sources(ROOT / "src")
+        """
+    )
+
+    assert _raw_repository_walks(sample) == [15, 16, 17, 18, 26, 34]
+
+
+def test_tests_walk_repository_trees_through_the_shared_helper() -> None:
+    offenders = [
+        f"{path.relative_to(_REPO_ROOT).as_posix()}:{line}"
+        for path in source_files(_REPO_ROOT / "tests")
+        if path.name != "_source_files.py"
+        for line in _raw_repository_walks(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == []
+
+
+def _guarded_run(
+    pytester: pytest.Pytester, watched: Path, test_source: str, *args: str
+) -> pytest.RunResult:
+    (watched / "pkg").mkdir(parents=True, exist_ok=True)
+    (watched / "pkg" / "module.py").write_text("", encoding="utf-8")
+    pytester.makeini("[pytest]\nasyncio_default_fixture_loop_scope = function\n")
+    pytester.makepyfile(test_guarded=test_source)
+    return pytester.runpytest(*args, plugins=[SourceTreeGuard(watched, label="src")])
+
+
+def _writes(target: Path) -> str:
+    return textwrap.dedent(
+        f"""
+        from pathlib import Path
+
+
+        def test_writes():
+            target = Path({str(target)!r})
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"x")
+        """
+    )
+
+
+def test_a_file_left_under_the_source_tree_fails_the_session_and_is_named(
+    pytester: pytest.Pytester, tmp_path: Path
+) -> None:
+    watched = tmp_path / "src"
+    result = _guarded_run(
+        pytester, watched, _writes(watched / "pkg" / "mlruns" / "0" / "meta.yaml")
+    )
+
+    result.assert_outcomes(passed=1)
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+    result.stdout.fnmatch_lines(["*files left under src/*", "src/pkg/mlruns/0/meta.yaml"])
+
+
+def test_a_file_left_by_a_test_on_an_xdist_worker_fails_the_controller_session(
+    pytester: pytest.Pytester, tmp_path: Path
+) -> None:
+    watched = tmp_path / "src"
+    result = _guarded_run(
+        pytester, watched, _writes(watched / "pkg" / "left_behind.json"), "-n", "1"
+    )
+
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+    result.stdout.fnmatch_lines(
+        ["*files left under src/*", "src/pkg/left_behind.json", "*1 passed*"]
+    )
+
+
+@pytest.mark.parametrize("left_behind", [None, "pkg/__pycache__/module.cpython-311.pyc"])
+def test_clean_and_bytecode_only_sessions_pass(
+    pytester: pytest.Pytester, tmp_path: Path, left_behind: str | None
+) -> None:
+    watched = tmp_path / "src"
+    source = (
+        "def test_nothing():\n    pass\n" if left_behind is None else _writes(watched / left_behind)
+    )
+    result = _guarded_run(pytester, watched, source)
+
+    assert result.ret == pytest.ExitCode.OK
+    result.stdout.no_fnmatch_line("*files left under*")
+
+
+def test_the_guard_does_nothing_on_an_xdist_worker(tmp_path: Path) -> None:
+    (tmp_path / "pkg").mkdir()
+    guard = SourceTreeGuard(tmp_path, label="src")
+    session = SimpleNamespace(config=SimpleNamespace(workerinput={}), exitstatus=pytest.ExitCode.OK)
+
+    guard.pytest_sessionstart(session)  # type: ignore[arg-type]
+    (tmp_path / "pkg" / "left_behind.json").write_text("{}", encoding="utf-8")
+    guard.pytest_sessionfinish(session)  # type: ignore[arg-type]
+
+    assert guard.added == []
+    assert session.exitstatus == pytest.ExitCode.OK
+
+
 def test_the_roadmap_holds_reports_not_probes_or_benchmark_output() -> None:
     """Executable probes and raw results live in scripts/benchmarks/; the roadmap
-    keeps its Markdown reports and the one provenance record its index links."""
+    keeps only Markdown."""
     tracked = _tracked_files()
     roadmap = sorted(path for path in tracked if path.startswith("specs/roadmap/"))
 
     assert roadmap
-    assert [
-        path
-        for path in roadmap
-        if not path.endswith(".md") and path != "specs/roadmap/pr-227-fable-5.1-provenance.json"
-    ] == []
+    assert [path for path in roadmap if not path.endswith(".md")] == []
 
 
 def test_graphify_is_not_a_runtime_dependency() -> None:
@@ -110,13 +458,10 @@ _SUBPROCESS_IMPORT_ALLOWLIST = {
     # import-only: deliberate F401-suppressed patch-target — tests patch the
     # module attribute and assert this module never shells out.
     "src/haute/cli/_helpers.py",
-    # import-only: sandbox denylist membership (_DANGEROUS_MODULE_OBJECTS);
-    # never launches anything.
-    "src/haute/executor.py",
 }
 
-# The chokepoints that actually launch subprocesses (the two import-only
-# entries above never make calls, so they carry no text-mode call sites).
+# The chokepoints that actually launch subprocesses (the import-only entry
+# above never makes calls, so it carries no text-mode call sites).
 _CALLER_CHOKEPOINTS = (
     "src/haute/_git_core.py",
     "src/haute/_host_memory.py",
@@ -129,7 +474,7 @@ _CALLER_CHOKEPOINTS = (
 def _iter_src_haute_sources() -> list[Path]:
     return sorted(
         path
-        for path in _SRC_HAUTE.rglob("*.py")
+        for path in source_files(_SRC_HAUTE)
         if not any(part in _SCAN_SKIP_DIRS for part in path.parts)
     )
 

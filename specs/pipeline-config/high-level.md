@@ -147,13 +147,19 @@ removes a root `main.py`, creates no `prompts/` directory, and creates no node s
 GitLab CI, Azure DevOps — plus `none`, which writes no workflow files at all, crossed against
 five `--target` deploy targets (`databricks`, `container`, `azure-container-apps`, `aws-ecs`,
 `gcp-run`; the last three are labelled build and push only in the generated `haute.toml`,
-`.env.example` and CI files, because deploy pushes their image only when a registry is
-configured and does not update their service yet). Whichever
+`.env.example` and CI files, because deploy pushes their image to the required registry and
+does not update their service yet). Whichever
 provider is chosen, the generated workflow
 encodes the same fixed release flow: a validate job (lint, type check, test, pipeline lint,
 `haute deploy --dry-run`), an automatic deploy-to-staging job, a smoke test against staging
 (scores `tests/quotes/*.json`), an impact-analysis job comparing staging against production,
-and a production-deploy job gated behind a provider-specific approval mechanism — GitHub uses
+and a production-deploy job gated behind a provider-specific approval mechanism. A
+build-and-push-only target's workflow has no smoke-test or impact-analysis job (its production
+job follows staging directly): nothing runs the pushed image until someone updates the service
+by hand, so those checks would test the old service. The production job tags the release in git:
+Databricks as `deploy/v<registered model version>`; a container-based target, which has no
+registered version, as `deploy/<short commit>` (the commit its image tag carries), leaving an
+existing tag in place when the same commit is deployed again. GitHub uses
 a separate `workflow_dispatch`-triggered workflow (so the split works without GitHub
 Team/Enterprise environment protection rules); GitLab uses `when: manual` on the production
 job; Azure DevOps runs the production job as a `deployment` under an `environment: production`

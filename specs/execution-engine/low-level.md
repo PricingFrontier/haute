@@ -1734,10 +1734,10 @@ present a structural or schema result as execution evidence.
     constructions and not reported. A namespace receiver uses its `namespace` registry entry
     when registered, else is unregistered (cheap, not transparent). A non-frame receiver
     uses its `expr` entry when registered, else is unresolved when any argument is a proven
-    or may-frame, else unregistered (cheap, not transparent). A `replace_strict` call counts as
-    registered only with a literal mapping (`_polars_call_shapes`, the rule the classifiers
-    use): a mapping or default taken from an expression or a name reads whole columns, so
-    the call is classified as an unregistered one is. A proven-frame receiver uses
+    or may-frame, else unregistered (cheap, not transparent). A `replace` or `replace_strict`
+    call counts as registered only with a literal mapping (`_polars_call_shapes`, the rules
+    the classifiers use): a mapping or default taken from an expression or a name reads whole
+    columns, so the call is classified as an unregistered one is. A proven-frame receiver uses
     its `frame` entry when registered, else is an unregistered frame method (costly). A
     may-frame receiver checks all registered `frame` and `expr` entries for the name: costly
     if any is, transparent only if all are, full-input work if any is; if neither is
@@ -2511,8 +2511,8 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   selector node.
 - **`test_executor_critical_edges.py`**, **`test_executor_edge_cases.py`**,
   **`test_executor_mut_witnesses.py`** — focused/mutation-witness pins on the pure
-  helper functions in `executor.py` (preview row-limit math, dangerous-binding
-  detection, cache-satisfies-request logic) that the big integration suites don't
+  helper functions in `executor.py` (preview row-limit math,
+  cache-satisfies-request logic) that the big integration suites don't
   exercise branch-by-branch.
 - **`test_executor_builders.py`**, **`test_port_aware_executor.py`** — per-`NodeType`
   builder dispatch and multi-port/multi-frame routing through the executor; the
@@ -2606,8 +2606,8 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   rejection now quotes them back to the analyst. The boundary operator's
   `materialisation_factor_basis_points` is proved applied to the estimate and
   recorded in the assumptions alongside `boundary_operator`, and a join boundary
-  is proved to sum both ports' widths. This module is under a
-  critical coverage gate: estimates protect users from oversized runtime jobs,
+  is proved to sum both ports' widths. These tests matter because
+  estimates protect users from oversized runtime jobs,
   and an untested estimator is how a wrong number reaches a caller that treats
   "unknown" as "unlimited". Path agreement with the executor is pinned for a
   project whose pipeline sits below the root: a root-relative `dataInput` or

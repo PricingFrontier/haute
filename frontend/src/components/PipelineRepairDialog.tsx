@@ -11,7 +11,7 @@ import { useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
 export interface PipelineRepairTarget {
   sourceFile: string
   recoveryId: string
-  action?: "remove" | "update" | "reset" | "recover"
+  action?: "remove" | "reset" | "recover"
 }
 
 interface PipelineRepairDialogProps {
@@ -29,16 +29,12 @@ function PipelineRepairDialogContent({
   onClose,
   onApplied,
 }: PipelineRepairDialogProps) {
-  const action = (target.action ?? "remove") as "remove" | "update" | "reset" | "recover"
+  const action = target.action ?? "remove"
   const isRemoval = action === "remove"
   const isRecover = action === "recover"
-  const actionTitle = action === "update"
-    ? "Update to current format"
-    : action === "reset" ? "Reset node"
+  const actionTitle = action === "reset" ? "Reset node"
     : isRecover ? "Recover settings" : "Remove unavailable node"
-  const applyLabel = action === "update"
-    ? "Update to current format"
-    : action === "reset" ? "Reset node"
+  const applyLabel = action === "reset" ? "Reset node"
     : isRecover ? "Recover settings" : "Remove node"
   const [deleteConfig, setDeleteConfig] = useState(false)
   const [applying, setApplying] = useState(false)
@@ -97,11 +93,9 @@ function PipelineRepairDialogContent({
         <p className="mt-1 text-xs" style={{ color: "var(--text-secondary)" }}>
           {action === "reset"
             ? "Replace this node's settings and code while preserving its identity and connections. Configuration may be needed before running."
-            : action === "update"
-              ? `Update ${target.recoveryId} to the current submodel format while preserving its authored connections. If other occurrences share this child definition, the update affects every one of them.`
-              : isRecover
-                ? `Rebuild ${target.recoveryId} against the current definitions. Valid settings and code are retained; anything missing stays highlighted in the normal editor afterwards.`
-                : `Remove ${target.recoveryId} and its connection declarations.`}
+            : isRecover
+              ? `Rebuild ${target.recoveryId} against the current definitions. Valid settings and code are retained; anything missing stays highlighted in the normal editor afterwards.`
+              : `Remove ${target.recoveryId} and its connection declarations.`}
         </p>
       </div>
       <div className="max-h-[60vh] space-y-4 overflow-y-auto px-5 py-4 text-xs">

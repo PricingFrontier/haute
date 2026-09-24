@@ -367,22 +367,6 @@ def _definitions_for(
     return definitions
 
 
-def _json_value_definition() -> dict[str, Any]:
-    """Return the recursive finite JSON-value grammar Pydantic cannot emit."""
-    reference = {"$ref": "#/$defs/JsonValue"}
-    return {
-        "anyOf": [
-            {"type": "null"},
-            {"type": "boolean"},
-            {"type": "integer"},
-            {"type": "number"},
-            {"type": "string"},
-            {"items": reference, "type": "array"},
-            {"additionalProperties": reference, "type": "object"},
-        ]
-    }
-
-
 def build_contract_bundle() -> dict[str, Any]:
     """Build one deterministic JSON Schema bundle for the pilots and response groups."""
     definitions: dict[str, Any] = {}
@@ -392,10 +376,6 @@ def build_contract_bundle() -> dict[str, Any]:
     ):
         for name, definition in _definitions_for(model).items():
             _merge_definition(definitions, name=name, value=definition)
-
-    if "JsonValue" not in definitions:
-        raise RuntimeError("Explore chart schema did not declare its JsonValue extension grammar")
-    definitions["JsonValue"] = _json_value_definition()
 
     properties: dict[str, Any] = {
         "execution_strategy_diagnostic": {"$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"},

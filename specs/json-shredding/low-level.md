@@ -170,11 +170,18 @@ validator parses every distinct active path once, sorts the parsed destinations,
 uses adjacent comparisons for duplicate/prefix and array-prefix-chain conflicts
 (`O(n log n)`, not an `O(n²)` pair scan). It also rejects divergent emit prefixes
 within one source frame and, across frames, a second frame whose emit prefix (its
-deepest array prefix) is already taken, naming both frames and one path from each —
-all before any frame collection. `_assemble_document` resolves the lazy schemas
-before data materialisation, maps each emit prefix to its one frame (raising the same
-`OutputMappingSchemaError` if called directly with two frames at one level), and
-collects each emitting frame exactly once. It never joins frames.
+deepest array prefix) is already taken, naming both frames and one path from each.
+Last, `_nesting_key_error` walks every parent/child level pair: the relation keys
+are the parent level's own paths that frames emitting at or below the child carry,
+and the parent's emitting frame plus every frame emitting at or below the child must
+carry all of them. The first frame (parent first, then the subtree's ports in sorted
+order, levels shallowest first) missing one raises `OutputMappingSchemaError` with
+`source_port`, `output_path` (the frame's level, rendered as `$[:]…[:]`) and `key`
+(the missing path) — all before any frame collection. `_assemble_document` resolves
+the lazy schemas before data materialisation, maps each emit prefix to its one frame
+(raising the same `OutputMappingSchemaError` if called directly with two frames at
+one level, or with a frame missing a relation key), and collects each emitting
+frame exactly once. It never joins frames.
 The prefix-tree builder nests child arrays by ancestor values without
 joining siblings. An object's identity at a level is the tuple of its own leaf
 values, canonicalised by `_identity`: scalars (including `None`) pass through
@@ -182,9 +189,9 @@ unchanged, while container-valued leaves (`List`, `Struct`, `Array`) are
 canonicalised into hashable tuples — recursively, with struct fields kept in
 their stable polars field order rather than sorted. Container leaves are
 therefore ordinary valid OUTPUT leaves, grouped and ancestor-indexed by value
-like any scalar. Relation-key guards examine a row only when that row actually
-contains the key; an absent column in another mapping frame is not a null. A present
-null component raises `OutputNestingKeyError`. `_prune` removes null-valued object fields and empty collection
+like any scalar. Every participating frame carries each relation key (the
+validator guarantees it), so the null guards mark the key in each frame that carries
+it. A present null component raises `OutputNestingKeyError`. `_prune` removes null-valued object fields and empty collection
 values from objects, and removes empty-object elements from arrays; null or
 empty-list elements already present inside arrays are retained.
 `render_output_document` applies that same pruning to the collected Polars shape.
@@ -717,15 +724,16 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   `output_path`.
 - `OutputMappingSchemaError` covers a non-array root, two different columns from
   one port targeting the same path, leaf/container prefix collisions, one frame
-  targeting divergent emit prefixes, and two frames emitting at the same array
-  level (`source_ports` names both). `assemble_output_from_mapping` itself runs the
+  targeting divergent emit prefixes, two frames emitting at the same array
+  level (`source_ports` names both), and a frame taking part in a nesting without
+  one of its relation keys (`source_port`, `output_path` naming the frame's level,
+  `key`). `assemble_output_from_mapping` itself runs the
   validator before collecting any frame, so direct/runtime and route callers receive
   the same typed failure. Missing `frames[port]` or `pl.col(source_column)` failures
   remain loud and are never converted into an empty output.
 - `OutputNestingKeyError(OutputMappingSchemaError)` is raised when an active
   participating row contains null in a simple/composite nesting key. It identifies
-  `frame`, `output_path`, and `key` and maps to HTTP 422. Rows from frames that do not
-  carry the key are non-participants, not null-key orphans.
+  `frame`, `output_path`, and `key` and maps to HTTP 422.
 
 ## Testing
 

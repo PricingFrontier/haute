@@ -13,13 +13,14 @@ These packages come from the
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
-| ENGQ-R04 | Decision | P3 | Coverage and documentation gates are pointed at risk and at user-facing documents. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
 
 ## Planned improvements
 
-`ENGQ-R01` is an independent clean-up. `ENGQ-R05` is easier after
-`ENGQ-R04` has set the coverage rule the reorganised suite must meet.
+`ENGQ-R01` is an independent clean-up, cheapest after the larger refactors
+have deleted what they replace. `ENGQ-R05` reorganises the suite under the
+coverage rule the [engineering-quality specification](../engineering-quality/high-level.md)
+states.
 
 ### ENGQ-R01 — Remove unreferenced and test-only production code
 **Why:** Several production functions have no caller at all:
@@ -35,7 +36,8 @@ facade that re-exports private names mainly for tests. In the frontend, knip
 reports 8 unused files (including the banding and rating editor barrels), the
 whole `panels/editors/index.ts` barrel of 22 editors (consumers use the lazy
 editors), 33 unused exports, 91 unused exported types and an unlisted
-`@lezer/highlight` dependency.
+`@lezer/highlight` dependency. The API client's `checkHauteSession` has no
+production caller left.
 
 **Plan:** Delete the unreferenced code. For test-only functions, either move
 the tests to the production entry point the function was meant to serve or
@@ -66,33 +68,8 @@ consumer), so the reviewed allowlist covers it.
 `src/haute/_registry.py::get_exec`; `src/haute/routes/_train_service.py`;
 `frontend/src/panels/editors/index.ts`;
 `frontend/src/panels/editors/banding/index.ts`;
-`frontend/src/panels/editors/rating/index.ts`.
-
-### ENGQ-R04 — Point the gates at risk and at users
-**Why:** About 5,000 lines of tests, plus a 1,360-line coverage ledger, keep
-the internal specification corpus consistent (`test_docs_accuracy.py`,
-`test_workflow_coverage.py`, `test_test_debt.py`, the corpus inventory),
-while only one check (`tests/test_node_reference_docs.py`, from `BUILD-R01`)
-covers a user-facing document. CI requires 100% statement and branch coverage of changed
-code in the execution-critical surface, which rewards line-shaped tests (see
-`ENGQ-R05`).
-
-**Plan:** Decide the coverage rule: keep mutation and critical-file ratchets
-for the safety-critical code (rating, deploy scoring, feature contracts,
-cache identity) and use risk-based review elsewhere, or keep the current
-gate with a reason. Decide which further documentation checks should cover
-`docs/`. Review whether each internal governance check still pays for
-its maintenance.
-
-**Acceptance:** The engineering-quality specification states the coverage
-rule and which documentation checks cover user-facing documents; CI enforces
-it.
-
-**Dependencies:** None.
-
-**Evidence:** `tests/test_docs_accuracy.py`; `tests/test_workflow_coverage.py`;
-`tests/workflow_coverage.toml`; `tests/test_test_debt.py`;
-`scripts/check_changed_coverage.py`; `scripts/spec_corpus_inventory.py`.
+`frontend/src/panels/editors/rating/index.ts`;
+`frontend/src/api/client.ts::checkHauteSession`.
 
 ### ENGQ-R05 — Organise tests by behaviour
 **Why:** Backend tests total 421,000 lines, 2.3 times the source they test;
@@ -111,10 +88,10 @@ split the largest modules by behaviour. Record the target structure in the
 engineering-quality specification.
 
 **Acceptance:** No test module is named after a coverage campaign or fix
-wave; no module exceeds an agreed size; coverage of the critical surface is
-unchanged; suite runtime is recorded before and after.
+wave; no module exceeds an agreed size; coverage of the safety-critical
+modules is unchanged; suite runtime is recorded before and after.
 
-**Dependencies:** `ENGQ-R04`.
+**Dependencies:** None.
 
 **Evidence:** `tests/test_optimiser_routes.py`;
 `tests/test_expression_parser_coverage.py`;

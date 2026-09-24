@@ -656,8 +656,10 @@ def test_reordered_typed_correlation_10k_bounds(
 
 
 def test_ambiguous_correlation_10k_bounds(request: pytest.FixtureRequest) -> None:
-    parent = pl.DataFrame({"bucket": ["same"] * _ROW_LIMIT})
-    target = parent.sort("bucket").with_columns(observed=pl.col("bucket"))
+    # The candidates differ in `id`, which the target drops, so the tie is
+    # genuinely ambiguous (rows identical in every column are shown instead).
+    parent = pl.DataFrame({"bucket": ["same"] * _ROW_LIMIT, "id": range(_ROW_LIMIT)})
+    target = parent.sort("bucket").select("bucket").with_columns(observed=pl.col("bucket"))
     work = CorrelationWork()
     diagnostics: list[dict[str, Any]] = []
     unresolved: dict[str, tuple[str, int]] = {}
@@ -674,7 +676,7 @@ def test_ambiguous_correlation_10k_bounds(request: pytest.FixtureRequest) -> Non
             "target": _node(
                 "target",
                 NodeType.POLARS,
-                {"code": 'df = source.sort("bucket")'},
+                {"code": 'df = source.sort("bucket").select("bucket")'},
             ),
         },
         diagnostics=diagnostics,
@@ -703,6 +705,41 @@ def test_ambiguous_correlation_10k_bounds(request: pytest.FixtureRequest) -> Non
         **_correlation_work_evidence(work),
     )
     assert correlation_seconds < 0.5, f"ambiguous correlation took {correlation_seconds:.3f}s"
+
+
+def test_identical_correlation_10k_bounds(request: pytest.FixtureRequest) -> None:
+    # Every candidate is identical, so correlation proves it with one counting
+    # pass over the whole parent and shows the shared values.
+    parent = pl.DataFrame({"bucket": ["same"] * _ROW_LIMIT})
+    target = parent.sort("bucket").with_columns(observed=pl.col("bucket"))
+    diagnostics: list[dict[str, Any]] = []
+
+    start = time.perf_counter()
+    rows = _correlate_rows_posthoc(
+        {"source": parent, "target": target},
+        ["source", "target"],
+        {"source": [], "target": ["source"]},
+        "target",
+        0,
+        node_map={
+            "source": _node("source", NodeType.DATA_INPUT, {}),
+            "target": _node("target", NodeType.POLARS, {"code": 'df = source.sort("bucket")'}),
+        },
+        diagnostics=diagnostics,
+    )
+    correlation_seconds = time.perf_counter() - start
+
+    assert rows["source"] == {"bucket": "same"}
+    assert [(item["code"], item["candidate_count"]) for item in diagnostics] == [
+        ("identical_row_match", _ROW_LIMIT)
+    ]
+    _record_perf_evidence(
+        request,
+        graph_shape="identical",
+        rows=_ROW_LIMIT,
+        correlation_ms=round(correlation_seconds * 1000, 3),
+    )
+    assert correlation_seconds < 0.5, f"identical correlation took {correlation_seconds:.3f}s"
 
 
 async def _wait_for_thread_event(event: threading.Event, label: str) -> None:

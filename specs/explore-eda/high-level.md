@@ -29,13 +29,13 @@ In scope:
   ComboChart card is complete version 1 — there is no legacy migration, and a card without
   `version: 1` is rejected. Every card has a unique id and
   case-insensitively unique name, a nullable stable pivot id, typed category/Value/series
-  mappings, two typed numeric axes, and a typed legend; unknown simple-literal fields remain
-  round-trippable at every supported nesting level.
+  mappings, two typed numeric axes, and a typed legend; a field the chart models do not declare
+  is rejected by name at every nesting level.
 - Validating the ordered, versioned `pivots` config list attached to an Explore node. Every card
   is complete version 1 — there is no legacy migration, and a card without `version: 1` is
   rejected. Every card has a unique id,
   case-insensitively unique name, visibility state, typed Filter/Columns/Rows/Values placements,
-  and row/column grand-total options; unknown simple-literal fields remain round-trippable.
+  and row/column grand-total options; a field the validator does not know is rejected by name.
 - Starting, polling, and cancelling pivot calculations over the Explore node's leased data point
   (`POST /api/explore/pivots/run`, `GET /api/explore/pivots/status/{job_id}`,
   `POST /api/explore/pivots/cancel/{job_id}`), and listing exact filter members from that same
@@ -347,10 +347,10 @@ Out of scope (owned elsewhere):
   either would abort profiling and take down the whole report, not just that
   column. Both are formatted element-wise instead so one problematic column cannot break the
   report for every other column.
-- **Unknown display keys.** The overview rejects a key it does not know. The pivot and chart
-  validators still preserve unrecognised fields whose values are simple literals (restricted so
-  they survive a `repr()`/codegen round trip);
-  [`EDA-E25`](../roadmap/explore-eda.md) brings them under the canonical-input rule.
+- **Unknown display keys.** The overview, pivot and chart validators reject a key they do not
+  know, naming it, under the canonical-input rule: there is no forward-compatibility
+  passthrough, so a config written by a newer editor fails loudly instead of being carried
+  unread.
 
 ## Interactions
 

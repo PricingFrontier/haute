@@ -22,16 +22,13 @@ and reload before a path is chosen, like every other palette default.
 
 ## Confirmed recovery actions
 
-The recovery inspector extends removal with three explicitly confirmed actions:
+The recovery inspector extends removal with two explicitly confirmed actions. There is
+no migration action: a submodel registration or public port written in a removed form
+(`definition_id=`, `instance_id=`, `alias=` or `label=` on `pipeline.submodel()`, or
+`portId`/`label` port keys) is rejected at load by the parser with a targeted message
+naming the removed form and the current one, which the unavailable node's diagnostic
+carries as its remediation. The author rewrites it, or removes the node.
 
-- **Update to current format** supports the recognised legacy submodel registration
-  (`definition_id`, `instance_id`, `alias`, `label`) and public port (`portId`, `label`)
-  formats. It emits the current file/name registration and retains each old port id as
-  its canonical name so existing connections keep their identity. The child's definition
-  id must agree with the old registration. Child functions, config files, connection
-  statements and custom consumer code are preserved. The parent position key moves from
-  the retired instance id to the occurrence name. Shared child definitions are reported
-  in the preview. Unsupported or conflicting formats fail explicitly.
 - **Reset node** supports known ordinary node types with an unambiguous function span
   and resolvable incoming connections. It uses the same default configuration as adding
   that type from the palette and the current single-node code generator. It preserves
@@ -68,20 +65,19 @@ The recovery inspector extends removal with three explicitly confirmed actions:
   configuration sidecar (malformed JSON, duplicate keys, bad encoding) refuses the
   action with a manual-repair error and changes no bytes — there is no draft archive,
   and Reset is the explicit destructive replacement. Unknown types, node instances,
-  submodels, and ambiguous or shared artifacts cannot be recovered by this action;
-  submodels keep Update to current format.
+  submodels, and ambiguous or shared artifacts cannot be recovered by this action.
 
 ## Consumer error attribution
 
-Updating a submodel may reveal a separately invalid consumer signature. Attribute that
-failure to the consumer and make its recovery inspector available. Do not rewrite or
-erase custom consumer code as part of a submodel update.
+Rewriting a rejected submodel registration may reveal a separately invalid consumer
+signature. Attribute that failure to the consumer and make its recovery inspector
+available; the consumer's custom code is never rewritten on the submodel's behalf.
 
 ## Recovery apply API
 
 `POST /api/pipeline/repair/recover/apply` accepts source file/revision, target source
-file/recovery id, and `action: update | reset | recover`; there is no dry-run step or
-plan hash. Responses carry `repair_kind: update_node | reset_node | recover_node`, the
+file/recovery id, and `action: reset | recover`; there is no dry-run step or
+plan hash. Responses carry `repair_kind: reset_node | recover_node`, the
 applied artifacts, their bounded display diffs (`changes`) and the authoritative
 document. Recover responses additionally carry the engine's field-outcome report
 (`field_changes`: path, `outcome: retained | defaulted | needs_input | removed`, reason),
@@ -92,10 +88,9 @@ its explicit `delete_config` choice. No request accepts replacement bytes or sou
 ## Engine coverage and limits
 
 Configuration recovery preserves valid fields across all 17 ordinary node
-types. Submodels use explicit registration/port adapters through Update to
-current format and retain definition/public-port identity, children and
-connections. Projected ports belong to their definition and require recovery
-there. Unknown types, computed or custom source, and ambiguous shared
+types. Submodels have no recovery action: a removed registration or port form is
+rewritten by the author. Projected ports belong to their definition and require
+recovery there. Unknown types, computed or custom source, and ambiguous shared
 instances remain explicit manual actions. Completeness checks are static:
 successful recovery does not certify runtime data, services or arbitrary user
 code. Field-shape reconciliation precedes semantic validation, and malformed

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 import sys
@@ -22,6 +23,7 @@ from haute.executor import _preview_cache
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.trace import _cache as _trace_cache
 from tests import _write_sandbox as _ws
+from tests._source_files import REPO_ROOT, SourceTreeGuard
 
 _TEST_LOCAL_SESSION_TOKEN = "pytest-haute-local-session-token"
 
@@ -35,6 +37,25 @@ _TEST_LOCAL_SESSION_TOKEN = "pytest-haute-local-session-token"
 # it to its own @settings.
 hypothesis_settings.register_profile("haute", deadline=None)
 hypothesis_settings.load_profile("haute")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _keep_package_bytecode() -> Iterator[None]:
+    """Stop server startup deleting the package's bytecode caches during the suite.
+
+    The app lifespan removes every ``__pycache__`` under ``src/haute``; with
+    several workers that races any test walking the source tree. The stub keeps
+    the real function as ``__wrapped__`` for the test that exercises it.
+    """
+    import haute.server as server
+
+    @functools.wraps(server._clear_bytecache)
+    def keep_bytecode() -> None:
+        return None
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(server, "_clear_bytecache", keep_bytecode)
+        yield
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -909,6 +930,11 @@ def haute_scratch(tmp_path: Path) -> Path:
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    # A test that leaves a file under src/ fails the session (the guard
+    # compares the controller's snapshots; see tests/_source_files.py).
+    config.pluginmanager.register(
+        SourceTreeGuard(REPO_ROOT / "src", label="src"), "haute-source-tree-guard"
+    )
     # Aggregate the write-sandbox census across xdist workers: the controller
     # allocates a shared spool dir before workers spawn; workers inherit it via
     # the environment and dump their in-process records at session finish. The

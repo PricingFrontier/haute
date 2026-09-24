@@ -1,12 +1,12 @@
 # Azure Container Apps
 
-This guide covers preparing a Haute pipeline for **Azure Container Apps**. `haute deploy` validates the pipeline, builds its Docker image, and pushes it to the configured registry. It then exits with an error before creating a Container Apps revision because that service-update adapter is not implemented.
+This guide covers preparing a Haute pipeline for **Azure Container Apps**. `haute deploy` validates the pipeline, builds its Docker image, pushes it to the configured registry, and finishes there: updating the Container Apps service is a manual step, because Haute's Container Apps service-update adapter is not implemented yet.
 
 !!! info "What is Azure Container Apps?"
     Azure Container Apps is Microsoft's serverless container service. You give it a Docker image and it runs it for you - handling scaling, load balancing, and HTTPS certificates automatically. It can even scale to zero when there's no traffic, so you only pay when the API is being used.
 
 !!! warning "Platform service update is not yet implemented"
-    Haute currently builds and pushes the Docker image for Azure Container Apps, then raises `NotImplementedError` before creating a new revision. This makes the CI `haute deploy` step fail **after** the image has been pushed. Treat the image tag in that failure as the handoff to your IT team; do not expect a green deploy job or an updated app.
+    Haute builds the Docker image for Azure Container Apps, pushes it to your registry, and then finishes **without** updating the service. The CI deploy job succeeds once the image is pushed and prints the image tag: that tag is the handoff to your IT team, who point the service at it. A registry is required; without one `haute deploy` stops before building. The generated CI has no smoke-test or impact-analysis job for this target, because nothing runs the new image until the service is updated.
 
 !!! note "This target requires IT support"
     Azure Container Apps involves cloud infrastructure setup (registries, environments, service principals) that is done by an IT or platform team. The "Infrastructure setup" section below is written **for your IT team**. As an analyst, your role is to configure `haute.toml` and merge to main - CI and IT handle the rest.
@@ -96,16 +96,15 @@ You don't run any deploy command. When you merge to main, CI automatically:
 2. Generates a FastAPI app and Dockerfile
 3. Builds the Docker image
 4. Pushes the image to your ACR
-5. Exits with a clear `NotImplementedError` before it creates a Container Apps revision
+5. Finishes without creating a Container Apps revision, printing the pushed image tag
 
 !!! warning "Expected CI result until the adapter exists"
-    The deploy job is expected to fail after image push with a message such as `Service update for 'azure-container-apps' is not yet implemented`.
+    The deploy job succeeds once the image is pushed. It does not create a revision.
 
-    1. **In your CI provider** - the deploy job is red after the successful image build and push
-    2. **In the CI logs** - a message like `Pushed motor-pricing:a1b2c3d to pricingregistry.azurecr.io`
-    3. **In the CI logs** - the explicit failure records the pushed image tag for the manual Container Apps update
+    1. **In your CI provider** - the deploy job is green after the image build and push
+    2. **In the CI logs** - `Image pushed: pricingregistry.azurecr.io/motor-pricing:a1b2c3d`, followed by `The azure-container-apps service was not updated` and the tag to point it at
 
-    A green validation/build is not a Container Apps deployment. Your platform team must create or update a revision, then verify its health.
+    A green deploy job is not a Container Apps deployment. Your platform team must create or update a revision, then verify its health. Run `haute smoke` and `haute impact` once the app runs the new image.
 
 Use the pushed image tag when your IT team updates the container app manually in the Azure Portal:
 

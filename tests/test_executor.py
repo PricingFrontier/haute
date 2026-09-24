@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from unittest.mock import patch
 
 import polars as pl
@@ -213,6 +215,31 @@ class TestExecUserCode:
 
         assert result.collect().to_dict(as_series=False) == {"source": [1]}
 
+    def test_preamble_bindings_from_os_and_shutil_reach_node_code(self, tmp_path):
+        # Project code is trusted: whatever the preamble binds is handed to
+        # node code as written, including helpers from os, sys or shutil.
+        namespace = _compile_preamble(
+            "import shutil\nfrom os.path import join\n",
+            pipeline_dir=tmp_path,
+        )
+        source = pl.LazyFrame({"name": ["a"]})
+
+        result = _exec_user_code(
+            "df = source.with_columns(\n"
+            "    path=pl.lit(join('dir', 'file')),\n"
+            "    copies=pl.lit(shutil.copyfile.__name__),\n"
+            ")",
+            ["source"],
+            (source,),
+            extra_ns=namespace,
+        )
+
+        assert result.collect().to_dict(as_series=False) == {
+            "name": ["a"],
+            "path": [str(Path("dir") / "file")],
+            "copies": ["copyfile"],
+        }
+
     def test_named_input_is_visible_inside_a_nested_user_helper(self):
         source = pl.LazyFrame({"source": [1]})
 
@@ -274,16 +301,12 @@ class TestCompilePreamble:
         expr = ns["make_lit"]()
         assert isinstance(expr, pl.Expr)
 
-    def test_filters_indirect_dangerous_os_path_helpers(self):
-        ns = _compile_preamble("from os.path import join\nSAFE = 1\n")
-        assert "SAFE" in ns
-        assert "join" not in ns
-
-    def test_filters_rebound_dangerous_modules(self):
-        ns = _compile_preamble("import os\nmy_path = os.path\nSAFE = 1\n")
-        assert "SAFE" in ns
-        assert "os" not in ns
-        assert "my_path" not in ns
+    def test_exports_os_bindings_unfiltered(self):
+        ns = _compile_preamble("import os\nfrom os.path import join\nmy_path = os.path\nSAFE = 1\n")
+        assert ns["SAFE"] == 1
+        assert ns["os"] is os
+        assert ns["join"] is os.path.join
+        assert ns["my_path"] is os.path
 
     def test_utility_modules_evicted_between_calls(self, tmp_path, monkeypatch):
         """Ensure utility modules are re-imported fresh each call, not cached."""
@@ -3646,7 +3669,6 @@ class TestPreviewCacheInvalidation:
         monkeypatch,
         _widen_sandbox_root,
     ):
-        from pathlib import Path
 
         from haute.executor import commit_prepared_data_output, prepare_data_output
         from haute.graph_utils import PipelineGraph

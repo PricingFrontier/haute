@@ -22,7 +22,7 @@ from typing import Any
 import polars as pl
 
 from haute._execution_context import ExecutionContext, current_execution_context
-from haute._jsonpath import _ParsedPath, parse_path
+from haute._jsonpath import _ParsedPath, make_output_path, parse_path
 from haute._polars_utils import execution_collect
 from haute.errors import HauteError
 
@@ -318,6 +318,9 @@ def _assemble_document(
                 next(iter(port_paths[port])),
             )
         port_at[pref] = port
+    nesting_error = _nesting_key_error(port_paths)
+    if nesting_error is not None:
+        raise nesting_error
 
     # The array-prefix tree: every frame's emit prefix and all its ancestors.
     nodes: set[tuple[str, ...]] = set()
@@ -347,10 +350,9 @@ def _assemble_document(
             child_ports = sorted(
                 p for p, pref in emit_prefix.items() if pref[: len(child)] == child
             )
+            # Every participant carries every relation key (``_nesting_key_error``).
             for port in parent_ports + child_ports:
-                nonnull_keys_by_port[port].update(
-                    key for key in relation_keys if key in port_paths[port]
-                )
+                nonnull_keys_by_port[port].update(relation_keys)
 
     # Attach private boolean markers to each frame's plan. They retain the
     # originating frame for a null-key error without collecting every source once
@@ -551,6 +553,60 @@ def _same_level_error(
     )
 
 
+def _level_path(parsed: _ParsedPath) -> str:
+    """The array level a path sits at, spelled as a path: ``$[:].a[:].b[:]``."""
+    last_array = max((i for i, seg in enumerate(parsed.segments) if seg.is_array), default=-1)
+    return make_output_path(parsed.segments[: last_array + 1])
+
+
+def _nesting_key_error(
+    port_paths: Mapping[str, Mapping[str, _ParsedPath]],
+) -> OutputMappingSchemaError | None:
+    """The first frame that takes part in a nesting without one of its keys.
+
+    A child level nests under each parent object by its relation keys: the
+    parent level's own paths that the frames emitting at or below the child
+    carry. The parent's emitting frame and every frame in the child's subtree
+    must carry all of them; without one, a frame's rows could match no parent
+    object (or its objects could take no child) and would be lost silently.
+    """
+    emit_path = {
+        port: max(paths.values(), key=lambda parsed: len(_array_prefix(parsed)))
+        for port, paths in port_paths.items()
+        if paths
+    }
+    emit_prefix = {port: _array_prefix(parsed) for port, parsed in emit_path.items()}
+    own: dict[tuple[str, ...], set[str]] = {}
+    for paths in port_paths.values():
+        for path, parsed in paths.items():
+            own.setdefault(_array_prefix(parsed), set()).add(path)
+    levels = {prefix[:depth] for prefix in emit_prefix.values() for depth in range(len(prefix) + 1)}
+    for child in sorted(levels, key=lambda level: (len(level), level)):
+        if not child:
+            continue
+        parent = child[:-1]
+        subtree = sorted(
+            port for port, prefix in emit_prefix.items() if prefix[: len(child)] == child
+        )
+        carried = {path for port in subtree for path in port_paths[port]}
+        relation_keys = own.get(parent, set()) & carried
+        if not relation_keys:
+            continue
+        parent_ports = [port for port, prefix in emit_prefix.items() if prefix == parent]
+        for port in parent_ports + subtree:
+            missing = sorted(relation_keys - port_paths[port].keys())
+            if missing:
+                return OutputMappingSchemaError(
+                    "a source frame taking part in nesting one array level under another "
+                    "must carry every nesting key of that level; carry the key through to "
+                    "this frame upstream, for example with a Join node",
+                    source_port=port,
+                    output_path=_level_path(emit_path[port]),
+                    key=missing[0],
+                )
+    return None
+
+
 def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
     """Validate an ``outputMapping`` structurally — schema-only and loud.
 
@@ -565,7 +621,9 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
     * **one output branch per frame** — every path for one source frame has a
       prefix-comparable array prefix;
     * **one frame per array level** — no two source frames emit at the same
-      array prefix (a frame emits at its deepest one).
+      array prefix (a frame emits at its deepest one);
+    * **nesting keys are carried** — every frame taking part in nesting a level
+      under its parent carries all of that pair's relation keys.
 
     Type-consistency across a shared path is **not** checked here — it needs the
     input frames' column types, which the caller supplies separately at
@@ -628,6 +686,15 @@ def validate_v2_output_mapping(mapping: list[dict[str, Any]]) -> None:
             other_port, other_path = emitting_port[emit_prefix]
             raise _same_level_error(other_port, port, other_path, emit_path)
         emitting_port[emit_prefix] = (port, emit_path)
+
+    nesting_error = _nesting_key_error(
+        {
+            port: {path: _cached_parse(path) for _, path in entries}
+            for port, entries in by_port.items()
+        }
+    )
+    if nesting_error is not None:
+        raise nesting_error
 
 
 def assemble_output_from_mapping(

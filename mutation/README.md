@@ -1,6 +1,9 @@
 # Mutation Testing
 
-This repo uses Cosmic Ray for bounded mutation-testing runs against high-value modules.
+This repo uses Cosmic Ray for bounded mutation-testing runs against the
+safety-critical modules (deploy scoring and API-input snapshot publication;
+the list and the rule are in
+[the engineering-quality specification](../specs/engineering-quality/high-level.md)).
 The checked-in Cosmic Ray config is treated as a template; the runner materialises
 it with the current project Python interpreter so the mutated test runs execute
 inside the active Haute environment instead of the isolated `uvx` tool env.
@@ -15,16 +18,9 @@ tests re-import it without recursively starting pytest.
 
 Current targets (budgets + rationale are owned by [`targets.json`](targets.json)):
 
-- `cosmic-ray.job-store.toml`: [src/haute/routes/_job_store.py](../src/haute/routes/_job_store.py),
-  witnessed by both the store and lifecycle contract suites because lifecycle
-  transitions are implemented by the store
-- `cosmic-ray.path-resolution.toml`: [src/haute/_path_resolution.py](../src/haute/_path_resolution.py)
-- `cosmic-ray.registry.toml`: [src/haute/_registry.py](../src/haute/_registry.py)
 - `cosmic-ray.output-assembler.toml`: [src/haute/_output_assembler.py](../src/haute/_output_assembler.py)
 - `cosmic-ray.jsonpath.toml`: [src/haute/_jsonpath.py](../src/haute/_jsonpath.py)
 - `cosmic-ray.json-shred.toml`: [src/haute/_json_shred/](../src/haute/_json_shred/) (the complete package)
-- `cosmic-ray.json-cache.toml`: [src/haute/routes/json_cache.py](../src/haute/routes/json_cache.py)
-- `cosmic-ray.executor.toml`: [src/haute/executor.py](../src/haute/executor.py)
 
 Run the default mutation suite locally:
 
@@ -50,13 +46,13 @@ runs do not fight over the same SQLite session files.
 Run a single target:
 
 ```bash
-uv run python scripts/run_mutation_suite.py --config mutation/cosmic-ray.job-store.toml
+uv run python scripts/run_mutation_suite.py --config mutation/cosmic-ray.jsonpath.toml
 ```
 
 Preview the PR-smoke selection for changed files without invoking Cosmic Ray:
 
 ```bash
-uv run python scripts/run_mutation_suite.py --dry-run --changed-file src/haute/_path_resolution.py
+uv run python scripts/run_mutation_suite.py --dry-run --changed-file src/haute/_output_assembler.py
 ```
 
 ## Sharding
@@ -75,15 +71,15 @@ keeps the configured timeout headroom and every outcome is deterministic. The
 merged survival therefore equals an unsharded single-run survival, and the
 per-target budgets in [`targets.json`](targets.json) stay valid unchanged. This
 equivalence is covered by `tests/test_mutation_sharding.py` (database level) and
-verified end to end against real targets (unsharded == sharded survival on
-`path-resolution` and `json-cache`, both matching their documented budgets).
+was verified end to end when sharding was introduced (unsharded and sharded
+survival matched on real targets).
 
 Every target explicitly declares a positive-integer `max_pending_per_shard` in
 [`targets.json`](targets.json). The planner counts executable (pending) mutants
 only and creates `max(1, ceil(pending / cap))` shards for each target. Current
-caps are 80 for every target except `json-shred` and `executor`, which are capped
-at 20 so that their 90-second per-mutant ceiling bounds a worst-case shard's test
-portion to 30 minutes. The
+caps are 80 for every target except `json-shred`, which is capped at 20 so that
+its 90-second per-mutant ceiling bounds a worst-case shard's test portion to
+30 minutes. The
 JSON/cache/runtime command currently collects 687 tests, including the complete
 inference cache, strict structural filter, shared-prefix, and byte-range limit
 contracts. Native-filter witnesses check fast-path acceptance as well as schema
@@ -117,14 +113,11 @@ uv run python scripts/run_mutation_suite.py \
 > boundary just as they do in the normal suite.
 
 Timeouts are target-specific upper bounds for one witness-suite invocation.
-Most targets use 30 seconds. `json-shred` uses 90 seconds for its maintained
-557-test streaming, publication, recovery, and lifecycle command. `executor` also
-uses 90 seconds: its expanded 777-test graph-execution command, including
-snapshot-preview lifecycle witnesses, measures 67.0 seconds in pytest and
-72.4 seconds end to end on the Windows development baseline.
-`json-cache` uses 60 seconds for its 75-test cold-cache route command, measured
-at 16.0 seconds in pytest and 19.6 seconds end to end on the Windows development
-baseline. The exact command is measured again during every plan; the extra
+`jsonpath` uses 30 seconds and `output-assembler` 15 seconds (its recursive loops
+hang under loop-bound mutations, so a tight cap flags them quickly).
+`json-shred` uses 90 seconds for its maintained streaming, publication,
+recovery, and lifecycle command. The exact command is measured again during
+every plan; the extra
 target-specific headroom prevents normal hosted-runner variance from classifying
 a passing baseline as a mutant timeout, while an actual calibration regression
 stops before any shard work is dispatched.
@@ -133,7 +126,7 @@ Current CI ratchet:
 
 - mutation target configs are owned by the `mutation/cosmic-ray*.toml` files
 - target rationale, survival budgets, and target-calibrated shard caps are owned in [`targets.json`](targets.json)
-- PR CI selects and runs the touched target subset for configured high-risk modules
+- PR CI selects and runs the touched target subset for the safety-critical modules
 - the mutation workflow runs as three jobs — `plan` builds the shared Cosmic Ray
   work order once and emits a `(target, shard)` matrix; parallel `shard` jobs each
   execute a disjoint mutant slice sequentially; the `mutation` gate job merges the
@@ -144,21 +137,11 @@ Current CI ratchet:
   the touched subset. Both upload the plan, per-shard/per-target logs, HTML,
   rates, and session dumps
 - current maximum estimated survivor rates (budgets — authoritative in `targets.json`):
-  - `registry`: `0%`
   - `jsonpath`: `4%`
-  - `path-resolution`: `5%`
   - `json-shred`: `5%`
-  - `job-store`: `6%`
   - `output-assembler`: `10%`
-  - `json-cache`: `11%`
-  - `executor`: `15%`
 - latest local bounded runs:
-  - `registry`: `0.00%`
-  - `path-resolution`: `3.89%`
   - `json-shred`: `2.32%`
-  - `job-store`: `4.90%`
-  - `json-cache`: `8.56%`
-  - `executor`: `13.43%`
   - (`output-assembler`, `jsonpath` measured under budget during the OUTPUT initiative — see their `targets.json` rationale)
 
 Artifacts include:

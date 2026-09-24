@@ -56,6 +56,7 @@ from haute.routes._isolated_worker_async import (
 )
 from haute.routes._job_lifecycle import JobLifecycle
 from haute.routes._job_store import JobStore
+from tests._source_files import source_files
 
 
 def _return_payload(left: int, right: int) -> dict[str, int]:
@@ -1810,7 +1811,7 @@ def test_every_multiprocessing_spawn_goes_through_the_environment_helper() -> No
     package_root = Path(haute.__file__).resolve().parent
     offenders = [
         f"{path.relative_to(package_root).as_posix()}:{line_number}"
-        for path in sorted(package_root.rglob("*.py"))
+        for path in source_files(package_root)
         for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
         if re.search(r"\bprocess\.start\(\)", line)
     ]

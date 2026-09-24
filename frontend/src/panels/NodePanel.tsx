@@ -66,7 +66,7 @@ type NodePanelProps = {
   /** Node-scoped save for a `scoped_editable` node while the document stays fenced. */
   scopedSave?: () => Promise<{ ok: boolean; error?: string }>
   /** Opens an explicitly confirmed document-level recovery action. */
-  onRemoveUnavailableNode?: (target: { sourceFile: string; recoveryId: string; action?: "remove" | "update" | "reset" | "recover" }) => void
+  onRemoveUnavailableNode?: (target: { sourceFile: string; recoveryId: string; action?: "remove" | "reset" | "recover" }) => void
 }
 
 // ─── Node types that do NOT show the Columns tab ──
@@ -951,7 +951,6 @@ function RecoveryNodePanel({
     && canRepair
     && hasRecoveryTarget
   const nodeType = effectiveNodeType(node)
-  const canUpdate = canRemove && nodeType === NODE_TYPES.SUBMODEL
   const canReset = canRemove
     && Object.hasOwn(NODE_TYPE_META, nodeType)
     && nodeType !== NODE_TYPES.SUBMODEL
@@ -1075,20 +1074,6 @@ function RecoveryNodePanel({
                 style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
               >
                 Recover settings
-              </button>
-            )}
-            {canUpdate && (
-              <button
-                type="button"
-                onClick={() => onRemoveUnavailableNode({
-                  sourceFile: recoveryData._sourceFile!,
-                  recoveryId: recoveryData._recoveryId!,
-                  action: "update",
-                })}
-                className="w-full rounded px-3 py-2 text-[12px] font-semibold"
-                style={{ color: "var(--text-on-accent)", background: "var(--accent)" }}
-              >
-                Update to current format
               </button>
             )}
             {canReset && (
