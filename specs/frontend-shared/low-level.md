@@ -828,10 +828,9 @@ Known gaps: `frontend/src/components/Toolbar.tsx`'s inline millisecond timing he
 `formatBytes`/`formatByteSize`, durations in seconds from `formatDuration`, and the
 non-array-object check from `isPlainObject`/`expectPlainObject` in `types/guards.ts`. ESLint's
 `no-restricted-syntax` rejects a local function named `errorMessage`, `errorMsg`, `errorDetail`,
-`requestErrorDetail`, `previewErrorDetail` or `gitErrorMessage` (declared or assigned; the repair
-dialog's `code: message` text is a marked exception, left with the recovery-scope work, `API-R04`;
-the tracing hook's `technicalDetail` is not error text but the raw detail its Technical details
-disclosure shows whole), the
+`requestErrorDetail`, `previewErrorDetail` or `gitErrorMessage` (declared or assigned, with no
+exceptions; the tracing hook's `technicalDetail` is not error text but the raw detail its Technical
+details disclosure shows whole), the
 `e.detail || e.message` idiom, a local `formatBytes`/`formatMemory`/`formatSize`/`formatDuration`/
 `formatElapsed`, and a local `isRecord`/`asRecord`/`isPlainRecord`/`isPlainObject`/`isObjectLiteral`
 outside the owning modules. `utils/objectLiteral.ts`'s `isObjectLiteral` is the stricter check a
