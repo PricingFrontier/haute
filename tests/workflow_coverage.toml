@@ -616,7 +616,7 @@ tests = [
 invariant = "Cancellation or the deadline of an HTTP API Input table build terminates the live capped worker, settles every generation the parent chose for it, removes its shred scratch and store staging, and publishes nothing; the job reports the stop as cancelled or timed_out."
 
 [scenarios.evidence]
-commit = "11bf870a"
+commit = "8a23de70"
 command = 'uv run pytest "tests/test_input_cache_route.py::test_a_stopped_api_input_build_kills_its_worker_and_discards_its_staging" -q -p no:warnings'
 result = "2 passed in 10.68s"
 

@@ -40,7 +40,9 @@ def test_json_pool_uses_high_qos_initializer(
 
         monkeypatch.setattr(module, "configure_process_high_qos", lambda: "unavailable")
         with pytest.raises(_PoolConstructedError):
-            module._write_tables_in_parallel(tmp_path / "source.jsonl", {}, (), tmp_path, [(0, 1)])
+            module._write_tables_in_parallel(
+                tmp_path / "source.jsonl", {"tables": []}, (), tmp_path, [(0, 1)]
+            )
 
     initializer = captured["initializer"]
     assert initializer is module.configure_process_high_qos

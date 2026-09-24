@@ -174,6 +174,24 @@ _V2_AMOUNT_TABLES = {
 }
 
 
+@pytest.mark.parametrize(
+    ("path", "config"),
+    [
+        ("data.csv", {"tables": _V2_AMOUNT_TABLES["tables"]}),
+        ("data.json", {}),
+        ("data.json", {"tables": [{"label": "", "emit": True, "columns": []}]}),
+    ],
+    ids=["flat_file", "no_tables", "invalid_schema"],
+)
+def test_api_input_without_valid_tables_signs_no_table_pointers(
+    tmp_path: Path, path: str, config: dict
+) -> None:
+    """Only a structured source whose schema parses has table generations to sign."""
+    from haute.execution import _api_input_table_pointer_paths
+
+    assert _api_input_table_pointer_paths({"path": path, **config}, tmp_path / path) == {}
+
+
 def _export_and_cache_amount(data: Path, amount: int) -> None:
     """Write data.json with one record and (re)build its table's input snapshot."""
     from tests.conftest import build_test_api_input_snapshots
