@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 | --- | --- |
-| `src/haute/_sandbox.py` | AST validation of user code (`validate_user_code`), restricted execution globals (`safe_globals`), project-root path containment (`validate_project_path`), and the restricted pickle/joblib unpicklers (`safe_unpickle`, `safe_joblib_load`). |
+| `src/haute/_sandbox.py` | The accident guard for project code (`validate_user_code`), the execution namespace (`safe_globals`), project-root path containment (`validate_project_path`), and the restricted pickle/joblib unpicklers (`safe_unpickle`, `safe_joblib_load`). |
 | `src/haute/_user_exec.py` | The single dynamic-execution call site for pipeline node code (`_exec_user_code`): namespace assembly, validation call, execution, and traceback line annotation. |
 | `src/haute/_local_security.py` | Local-session protection for the FastAPI/WebSocket server: session-token generation/comparison, exact authority parsing, loopback/forwarded-header middleware, HttpOnly-cookie bootstrap policy, HTTP middleware, and WebSocket pre-accept rejection helper. |
 | `src/haute/_path_resolution.py` | Cross-platform runtime path normalization, project/pipeline candidate resolution, symlink-aware containment, and the context-local execution root shared by eager/lazy builders. |
@@ -14,34 +14,31 @@
 ## Key types and data structures
 
 - **`UnsafeCodeError`** (`_sandbox.py`) — a `HauteError` subclass raised by
-  `validate_user_code`/`_ASTValidator` for any blocked construct or unparseable
-  code. Carries the original `SyntaxError` as `__cause__` when validation failed
-  because the code could not be parsed at all.
+  `validate_user_code` for a server-stopping call or unparseable code. Carries the
+  original `SyntaxError` as `__cause__` when validation failed because the code could
+  not be parsed at all.
 - **`ArtifactVersionMismatchError`** (`_sandbox.py`) — a `HauteError` subclass raised
   when a persisted scikit-learn estimator's `_sklearn_version` does not match the
   runtime environment's installed version.
-- **`_ASTValidator(ast.NodeVisitor)`** (`_sandbox.py`) — the structural gate.
-  Constructed per validation call with `allow_imports: bool` and
-  `polars_alias_shadowed: bool` (whether user code rebinds the name `pl` anywhere,
-  computed by `_bound_names`). Overrides `visit_Attribute`, `visit_Call`,
-  `visit_Subscript`, `visit_Import`, `visit_ImportFrom`, `visit_ClassDef`,
-  `visit_AsyncFunctionDef`, `visit_Global`, `visit_Nonlocal`; everything else falls
-  through to `generic_visit` (i.e. is implicitly allowed, including `visit_Lambda`
-  — there is no override for it).
-- **Blocklist frozensets** (`_sandbox.py`, module-level constants):
-  `_BLOCKED_BUILTINS` (removed from the runtime `exec()` namespace),
-  `_BLOCKED_ATTRS` (dunder attribute names rejected by `visit_Attribute`),
-  `_BLOCKED_FRAME_ATTRS` (frame/traceback/generator attribute names, including
-  `__traceback__`, `tb_frame`, `f_globals`, and `gi_frame`), `_BLOCKED_CALLS` (bare-name calls
-  rejected by `visit_Call`). These four lists are independent — a name can appear
-  in one without appearing in another, and each is exercised by its own test class
-  in `tests/test_sandbox.py`.
-- **`_FORMATTER: string.Formatter`**,
-  **`_format_template_has_dunder_traversal()`**, and **`_FORMAT_METHOD_NAMES`**
-  (`{"format", "format_map", "vformat", "get_field", "format_field"}`) — parse
-  replacement fields recursively, including fields nested inside format specs, and
-  drive `_ASTValidator._check_format_call`. Malformed templates raise
-  `UnsafeCodeError`; no regular-expression approximation is used.
+- **`_AccidentGuard(ast.NodeVisitor)`** (`_sandbox.py`) — constructed per
+  validation call with the names the code binds (`_bound_names`). Overrides only
+  `visit_Call`: a call whose callee is a bare `ast.Name` in `_SERVER_STOPPING_CALLS`
+  and not bound by the code raises `UnsafeCodeError`; every other construct is allowed.
+- **`_SERVER_STOPPING_CALLS: dict[str, str]`** (`_sandbox.py`) — `input`, `exit`,
+  `quit` and `breakpoint`, each mapped to the reason the rejection message gives.
+  **`_EXEC_BUILTINS`** is `vars(builtins)` without those four names, copied by every
+  `safe_globals` call, which also sets `__name__` to a numbered
+  `haute_project_code_<n>` (**`PROJECT_CODE_MODULE`** is the prefix), unique per
+  namespace so concurrent executions never resolve each other's names.
+- **`project_code_module(namespace)`** (`_sandbox.py`) — a context manager that
+  registers the namespace in `sys.modules` under its `__name__` (as a stand-in object
+  whose `__dict__` is the namespace) while node code or the preamble runs, and removes
+  it afterwards. `dataclasses` and `typing.get_type_hints` resolve string annotations
+  through that entry; removing it keeps a long-lived server from accumulating modules.
+- **`compile_project_code(code)`** (`_sandbox.py`) — compiles node code and the
+  preamble for `exec()` with `dont_inherit=True`, so haute's own `from __future__
+  import annotations` does not postpone the project's annotations (a dataclass
+  `ClassVar` default and `get_type_hints` on an imported type work as in a module).
 - **`_ALLOWED_PICKLE_GLOBALS: frozenset[tuple[str, str]]`** — exact
   `(module, qualname)` pairs for scaffolding *functions* (NumPy 2 `_core`
   reconstruction helpers, `copyreg` helpers, `_codecs.encode`, pandas block/index
@@ -55,8 +52,8 @@
   and then checked with `isinstance(obj, type)` before being trusted.
 - **`_RestrictedUnpickler(pickle.Unpickler)`** — overrides `find_class` to call
   `_resolve_allowed_global`.
-- **`_validation_cache: LRUCache[tuple[str, bool], bool]`** — bounded at
-  `_VALIDATION_CACHE_MAX_SIZE = 1024`, keyed on `(code, allow_imports)`, backed by
+- **`_validation_cache: LRUCache[str, bool]`** — bounded at
+  `_VALIDATION_CACHE_MAX_SIZE = 1024`, keyed on the code string, backed by
   the shared `haute._lru_cache.LRUCache` primitive (also used by the caching
   component's fingerprint cache — see
   [caching](../caching/low-level.md)).
@@ -91,11 +88,11 @@
    binding named `df` is hidden from node code. Callers whose code box operates
    on one implicit frame named `df` — external files, explore, and post-code
    hooks — opt in explicitly with `alias_first_input_as_df=True`.
-2. Call `validate_user_code(code)` (imports disabled by default). On
-   `UnsafeCodeError` whose `__cause__` is a `SyntaxError`, re-raise the bare
-   `SyntaxError` instead — this normalizes the error type callers see for a plain
-   typo versus a genuine security rejection.
-3. Build one fresh execution namespace from `safe_globals(pl=pl, **extra_ns)`
+2. Call `validate_user_code(code)`. On `UnsafeCodeError` whose `__cause__` is a
+   `SyntaxError`, re-raise the bare `SyntaxError` instead — this normalizes the error
+   type callers see for a plain typo versus a guard rejection.
+3. Build one fresh execution namespace from `safe_globals(pl=pl, **extra_ns)` and
+   `exec` `compile_project_code(code)` in it inside `project_code_module`
    and then overlay the local dataframe bindings before calling `exec`. Input
    names therefore take precedence over same-named preamble globals and remain
    visible inside comprehensions and nested helpers, matching normal generated
@@ -113,50 +110,33 @@
    assigned `df` to a non-Polars value.
 
 **Preamble and training-script distinction.** `executor._compile_preamble` calls
-`validate_user_code(..., allow_imports=True)` and then `exec()`s the preamble with
-`safe_globals(allow_imports=True)`, so its own AST is still checked but imports are
-allowed. `cli/_train.py` also validates with `allow_imports=True`, then executes the
-file through `importlib`'s ordinary `exec_module()` path rather than `safe_globals`.
-In both cases, imported module source is outside the recursive scope of
-`validate_user_code`; a `utility` module executes with normal module builtins.
+`validate_user_code(preamble)` and then `exec()`s `compile_project_code(preamble)`
+with `safe_globals(pl=pl)` inside `project_code_module`, the same guard, compilation and
+namespace as node code. `cli/_train.py`
+executes the training script through `importlib`'s ordinary `exec_module()` path in
+the CLI process without the guard. Imported module source is never validated; a
+`utility` module executes with normal module builtins.
 After preamble execution, the executor exports only names absent from the base
 namespace and rejects direct bindings for dangerous module roots via
 `_is_dangerous_preamble_binding`. Module objects, functions, and classes originating
 from `os`, `sys`, `subprocess`, `shutil`, `signal`, `ctypes`, or `importlib` are
 filtered before node-code namespace assembly. The check is deliberately shallow: it
 does not recursively inspect containers/closures and does not constrain what the
-preamble itself may execute.
+preamble itself may execute, and node code may import those modules itself.
 
-**AST validation (`_sandbox.validate_user_code` → `_validate_user_code_cached`)**
-1. Look up `(code, allow_imports)` in `_validation_cache`; return immediately on a
-   hit (cache stores `True` only for code that validated clean).
+**Accident guard (`_sandbox.validate_user_code`)**
+1. Look up `code` in `_validation_cache`; return immediately on a hit (the cache
+   stores `True` only for accepted code).
 2. `_try_parse_code(code)` — `ast.parse`; on `SyntaxError`, wrap as
    `UnsafeCodeError` with the original chained as `__cause__` (not cached).
-3. Compute `polars_alias_shadowed = "pl" in _bound_names(tree)` —
-   `_bound_names` conservatively collects every name bound anywhere in the tree
-   (assignment targets, function/class defs, function args, import aliases —
-   with a carve-out so `import polars as pl` itself does not count as shadowing —
-   `except ... as name`, and the newer `match` binding forms `MatchAs`/
-   `MatchStar`/`MatchMapping.rest`). This makes the `pl.format(...)` carve-out in
-   `_check_format_call` a static-but-conservative decision: any binding of `pl`
-   anywhere in the module, even one never reached by the `pl.format` call site,
-   disables the carve-out for the whole validation pass.
-4. `_ASTValidator(allow_imports=..., polars_alias_shadowed=...).visit(tree)` — a
-   single full-tree walk; the first blocked construct encountered raises and
-   aborts the walk (no attempt to collect all violations).
-5. On a clean walk, `_validation_cache.put((code, allow_imports), True)`.
-
-**`.format()`-family call guard (`_ASTValidator._check_format_call`)** — triggered
-from `visit_Call` whenever `node.func` is an `ast.Attribute` whose `.attr` is one
-of `_FORMAT_METHOD_NAMES`. Receiver shapes:
-- `ast.Name` equal to `"pl"` and not `polars_alias_shadowed` → allowed
-  unconditionally (trusted as the polars module's `pl.format(...)` builder).
-- `ast.Constant` holding a `str` → parsed by `string.Formatter`; allowed only when
-  neither a top-level nor nested-format-spec replacement field traverses into a
-  dunder. A malformed template raises `UnsafeCodeError`.
-- Anything else (`BinOp` concatenation, a name-bound template variable, a call
-  result, an f-string, …) → always rejected — the validator cannot statically
-  vet what the template will be at runtime.
+3. `_AccidentGuard(_bound_names(tree)).visit(tree)` — a single full-tree walk; the
+   first server-stopping call raises `UnsafeCodeError` naming the call and why it
+   cannot run in the server. `_bound_names` collects every name bound anywhere in the
+   tree (assignment targets, function/class definitions, arguments, import aliases,
+   `except ... as name`, and the `match` binding forms `MatchAs`/`MatchStar`/
+   `MatchMapping.rest`), so a call to the code's own `input` is not the builtin and
+   passes.
+4. On a clean walk, `_validation_cache.put(code, True)`.
 
 **Restricted pickle/joblib load**
 1. `safe_unpickle(path)` / `safe_joblib_load(path)` call
@@ -288,49 +268,18 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
 - **Restricted joblib loading is instance-scoped.** The restricted subclass
   preserves concurrent safety without a lock and without exposing a temporary
   process-wide shim to unrelated joblib callers.
-- **A `pl.format(...)` carve-out that stops applying the moment `pl` is
-  reassigned anywhere in the module** — not just before the call site
-  lexically. This is intentionally conservative (a false rejection is preferred
-  over risking a template smuggled through a shadowed `pl`).
-- **`ast.parse` does not constant-fold string concatenation**, so
-  `('{0.' + '__globals__}').format(g)` or a name-bound `tmpl = '{0.__globals__}';
-  tmpl.format(g)` would defeat a literal-only scan of the *first argument* to
-  `.format`. The guard instead inspects the *receiver* of the `.format` call
-  (the string/expression `.format` is called *on*) and requires it to be a bare
-  string literal, rejecting any non-literal receiver outright rather than trying
-  to prove a concatenation or variable is safe.
-- **The AST validator has no `visit_Lambda`.** Lambda definitions (including
-  nested lambdas) pass validation unconditionally; only their *bodies* are
-  walked and subject to the same call/attribute blocks as any other expression.
-  This is documented behavior (`tests/test_sandbox.py::TestLambdaAllowedInSandbox`),
-  not a gap needing a fix — a lambda is just another callable object, and the
-  restrictions apply uniformly to what it's allowed to *do* when called.
-- **`type`, `getattr`, `vars`, `dir`, `hasattr`, `setattr`, `delattr` are blocked
-  at both layers independently.** The AST layer blocks *calling* these names;
-  a bare reference (`fn = getattr`) passes AST validation because only
-  `ast.Call` nodes are inspected, not `ast.Name` references. The runtime layer
-  closes this gap by omitting these names from `_SAFE_BUILTINS` entirely, so
-  `fn = getattr` still raises `NameError` at `exec()` time once `fn` is looked up
-  from the restricted globals.
-- **`__closure__` is blocked, but `__init__`/`__name__`/`__doc__`/`__qualname__`/
-  `__annotations__` are not.** The blocklist is scoped to dunders with a known
-  escape-relevant use (type traversal, frame access, closure-cell extraction),
-  not every dunder — an unlisted dunder is reachable and callable
-  (`tests/test_sandbox.py::TestNonBlockedDunders`).
+- **The guard inspects calls by bare name only.** An alias (`f = input; f()`)
+  passes the walk, and the namespace omits the four names, so the alias raises
+  `NameError` when it runs. Reaching them deliberately (`import builtins`) is not an
+  accident and is not stopped.
 - **`safe_globals` never returns an aliased mutable namespace.** Each call builds
-  a fresh `inner` dict copied from `_SAFE_BUILTINS`, sets `inner["__builtins__"] =
-  inner` (so nested scopes like comprehensions resolve names correctly), then
-  copies *that* into the returned `ns` — so mutating one exec call's builtins
-  (e.g. code that somehow rebinds a name in `__builtins__`) cannot leak into a
-  subsequent `safe_globals()` call's namespace.
+  a fresh `inner` dict copied from `_EXEC_BUILTINS`, copies its public names into the
+  returned `ns` and sets `ns["__builtins__"] = inner` (so nested scopes like
+  comprehensions resolve names correctly) — so mutating one exec call's builtins
+  cannot leak into a subsequent `safe_globals()` call's namespace.
 - **`safe_joblib_load` falls back only when the top-level `joblib` package is
   absent.** That path degrades to `safe_unpickle`, not unrestricted loading.
   An installed joblib with missing/incompatible private APIs fails loudly.
-- **`_bound_names` treats `import polars as pl` as not-shadowing** (it is the
-  trusted binding the carve-out exists for) but treats every *other* way of
-  binding the name `pl` — assignment, function parameter, `except ... as pl`,
-  `match`/`case` binding forms, a function or class literally named `pl` — as
-  shadowing.
 - **A validated-but-evicted cache entry is not "trusted by omission."**
   `_validation_cache` is bounded at 1024 entries; when it's flooded past that
   size, older entries (including ones already proven safe) are evicted and
@@ -345,13 +294,11 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
 
 ## Error handling
 
-- `UnsafeCodeError` (extends `HauteError`) — raised by `validate_user_code`/
-  `_ASTValidator` for every blocked construct and for unparseable code (chaining
-  the `SyntaxError` as `__cause__`). Propagates uncaught through
-  `_exec_user_code` except for the syntax-error case, which is unwrapped back to
-  a plain `SyntaxError` before re-raising. `cli/_train.py` catches
-  `UnsafeCodeError` at the top level and exits the process with `SystemExit(1)`
-  and a user-facing message.
+- `UnsafeCodeError` (extends `HauteError`) — raised by `validate_user_code` for a
+  server-stopping call and for unparseable code (chaining the `SyntaxError` as
+  `__cause__`). Propagates uncaught through `_exec_user_code` except for the
+  syntax-error case, which is unwrapped back to a plain `SyntaxError` before
+  re-raising.
 - `pickle.UnpicklingError` — raised by `_blocked_pickle_error` (a small factory
   producing a uniform message naming the rejected symbol and the two allowlist
   constants to extend) for every rejected pickle/joblib global. Not caught inside
@@ -388,39 +335,30 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
 ## Testing
 
 - `tests/test_node_code_trust_boundary.py` — the ENG-T04 witnesses through the real
-  `_exec_user_code` entry point: `open`, `__import__`, `import`, reflection and `eval`
-  are rejected before execution with a sentinel file untouched, a permitted Polars
-  transform runs, and (pinning the accepted trust decision, not a defect) a synthetic
+  `_exec_user_code` entry point: `input()`, `exit()`, `quit()` and `breakpoint()` are
+  rejected before execution with a sentinel file untouched, ordinary Python (a class,
+  `getattr`, `type`, `vars`, `global`, an import) runs in a node, a Polars transform
+  runs, and (pinning the accepted trust decision, not a defect) a synthetic
   environment marker and an outside-project write remain reachable through the
   injected Polars module.
 
 - `tests/test_host_binding.py` verifies loopback-only host validation, CLI/config precedence, trusted-host middleware, token non-exposure, and loopback URL formatting.
 
-- `tests/test_sandbox.py` — the primary suite for `_sandbox.py`. `TestSafeGlobals`
-  and `TestValidateUserCode` cover the happy-path/blocked-construct matrix for
-  both layers exhaustively (one test per blocked builtin/attr/call). A large
-  "Adversarial sandbox-escape regression tests" section (`TestTypeBypass`,
-  `TestSubclassWalking`, `TestFormatStringExploitation`,
-  `TestExceptionTracebackExploit`, `TestGeneratorFrameAccess`,
-  `TestDecoratorFrameCapture`, `TestListComprehensionScopeLeaking`,
-  `TestLambdaGetattr`, `TestPickleWithinExec`, `TestImportViaBuiltinsDict`)
-  each encode a named, real CPython sandbox-escape technique and assert it is
-  blocked — these are regression pins, not exploratory tests. A "Gap analysis"
-  section (`TestJoblibFindClassWeakerThanPickle`, `TestPickleAllowlistDotAnchoring`,
-  `TestJoblibMonkeyPatchThreadSafety`, `TestLambdaAllowedInSandbox`,
-  `TestAllowImportsPrivilegeEscalation`, `TestBoundedValidationCache`,
-  `TestNonBlockedDunders`) documents specific historical findings, several with
-  both a "still vulnerable" characterization test and a "FIX: now blocked" pin
-  post-remediation, kept side by side deliberately as living documentation of
-  what changed and why.
+- `tests/test_sandbox.py` — the primary suite for `_sandbox.py`. `TestAccidentGuard`
+  pins the guard: each server-stopping call is rejected, and classes,
+  `global`/`nonlocal`, `getattr`/`type`/`vars`, imports, dunder access, `open` and a
+  code-defined `input` pass and run. `TestSafeGlobals`, `TestSafeGlobalsIsolation` and
+  `TestValidateUserCode` cover the namespace and the parse/cache behaviour;
+  `TestBoundedValidationCache` pins the bounded cache. A "Gap analysis" section
+  (`TestJoblibFindClassWeakerThanPickle`, `TestPickleAllowlistDotAnchoring`,
+  `TestJoblibMonkeyPatchThreadSafety`) and the pickle classes pin the restricted
+  unpickler.
 - `tests/test_sandbox_coverage_gaps.py` — targets the *accept* arms of
   `_RestrictedUnpickler.find_class`/the restricted joblib subclass specifically (the exhaustive
   suite above concentrates on the *reject* arms): exact 2-tuple accepts for both
   the `_ALLOWED_PICKLE_GLOBALS` and `_ALLOWED_PICKLE_CLASSES` tiers, the top-level
-  joblib-package-absent → `safe_unpickle` fallback, installed-private-API failure,
-  and `match`/`case`-bound `pl` alias
-  shadowing (`MatchStar`, `MatchMapping.rest`) not covered by the main suite's
-  simpler shadowing tests.
+  joblib-package-absent → `safe_unpickle` fallback, and installed-private-API
+  failure.
 
 - `tests/test_user_exec_imports.py` — a structural regression pin (not a
   behavioral test of `_exec_user_code` itself): asserts no file under `src/haute`

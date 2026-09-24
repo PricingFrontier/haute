@@ -622,34 +622,6 @@ class TestSymlinkTraversalBrowse:
 
 
 # =========================================================================
-# 12. Second-order injection via stored config
-# =========================================================================
-
-
-class TestSecondOrderCodeInjection:
-    """Code stored in a node config must be rejected by validate_user_code
-    if it contains dangerous constructs like __import__ or os.system.
-    """
-
-    @pytest.mark.parametrize(
-        "malicious_code",
-        [
-            "__import__('os').system('echo pwned')",
-            "__import__('subprocess').call(['rm', '-rf', '/'])",
-            'eval(\'__import__("os").system("id")\')',
-            "exec('import socket')",
-            "getattr(__builtins__, '__import__')('os')",
-            "type('X', (), {'__del__': lambda s: None})()",
-        ],
-    )
-    def test_malicious_code_in_config_rejected(self, malicious_code: str):
-        from haute._sandbox import UnsafeCodeError, validate_user_code
-
-        with pytest.raises((UnsafeCodeError, SyntaxError)):
-            validate_user_code(malicious_code)
-
-
-# =========================================================================
 # 13. Path with URL scheme rejected
 # =========================================================================
 

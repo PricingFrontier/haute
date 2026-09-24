@@ -99,9 +99,8 @@ fragments never reach lint. For a valid graph it checks edges referencing missin
 multi-node graphs, orphan nodes with no edges at all. Those post-parse findings are collected before
 reporting so one run surfaces every independent structural issue.
 
-**`train`**: validates the script exists, runs it through
-`haute._sandbox.validate_user_code(..., allow_imports=True)` before execution, loads it as a module
-via `importlib.util`, looks up a module-level `job` attribute, and calls
+**`train`**: validates the script exists, loads it as a module (trusted project code, run
+without the server's accident guard) via `importlib.util`, looks up a module-level `job` attribute, and calls
 `job.run(progress=_progress)` without an `isinstance(TrainingJob)` check. The documented/generated
 shape is a `TrainingJob`, but at runtime any object implementing that call and returning the fields
 the formatter reads is accepted. Execution and rendering have separate exception boundaries:
@@ -253,8 +252,6 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
   extra — tells the user which `uv add haute[...]` to run), `NotImplementedError` (target not yet
   supported), and `DeployError` (expected target/configuration or operational failure). It has no
   catch-all fallback: implementation exceptions propagate with their original traceback.
-- `_train.handle_train` treats `UnsafeCodeError` from `validate_user_code` as a distinct, clearly
-  labelled failure ("failed safety validation") from a plain execution/import error.
 - Browser auto-open is the one explicit UX fallback: `_helpers._open_browser` catches a
   launcher exception or false return, prints the URL for manual opening, and does not stop
   the server. This does not substitute data or hide a server failure.

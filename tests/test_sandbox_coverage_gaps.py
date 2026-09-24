@@ -24,14 +24,12 @@ from pathlib import Path
 import pytest
 
 from haute._sandbox import (
-    UnsafeCodeError,
     _resolve_allowed_global,
     _RestrictedUnpickler,
     safe_joblib_load,
     safe_unpickle,
     set_project_root,
     validate_project_path,
-    validate_user_code,
 )
 
 
@@ -125,18 +123,6 @@ class TestSandboxBoundaryCoverage:
 
         with pytest.raises(ValueError, match="outside.*project root"):
             validate_project_path(str(f))
-
-    def test_match_star_bound_polars_alias_format_is_not_trusted(self):
-        code = "match [1, 2, 3]:\n    case [*pl]:\n        leaked = pl.format(fn)\n"
-
-        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
-            validate_user_code(code)
-
-    def test_match_mapping_rest_bound_polars_alias_format_is_not_trusted(self):
-        code = 'match {"x": 1}:\n    case {"x": x, **pl}:\n        leaked = pl.format(fn)\n'
-
-        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
-            validate_user_code(code)
 
     def test_allowlisted_class_resolving_to_callable_is_blocked(self):
         def _resolver(_module: str, _name: str):

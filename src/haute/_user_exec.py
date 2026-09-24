@@ -13,7 +13,13 @@ from typing import Any
 import polars as pl
 
 from haute._graph_utils import build_instance_mapping
-from haute._sandbox import UnsafeCodeError, safe_globals, validate_user_code
+from haute._sandbox import (
+    UnsafeCodeError,
+    compile_project_code,
+    project_code_module,
+    safe_globals,
+    validate_user_code,
+)
 from haute._types import _Frame
 from haute.errors import ExecutionError
 
@@ -61,7 +67,7 @@ def _exec_user_code(
             raise uce.__cause__ from None
         raise
 
-    # Start from the restricted globals/preamble, then overlay dataframe
+    # Start from the execution globals/preamble, then overlay dataframe
     # bindings so inputs have ordinary function-parameter precedence. One
     # shared namespace also makes those inputs visible to comprehensions and
     # nested helpers, matching generated function execution. ``df`` is the
@@ -72,7 +78,8 @@ def _exec_user_code(
     execution_ns.update(local_ns)
 
     try:
-        exec(code, execution_ns, execution_ns)
+        with project_code_module(execution_ns):
+            exec(compile_project_code(code), execution_ns, execution_ns)
     except Exception as exc:
         if exc.__traceback__:
             import traceback as _tb

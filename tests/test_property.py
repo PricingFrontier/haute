@@ -846,17 +846,17 @@ class TestCodeValidationConsistency:
     @given(
         code=st.sampled_from(
             [
-                "getattr(obj, 'x')",
-                "import os",
-                "class Foo: pass",
-                "obj.__class__",
-                "eval('1+1')",
+                "value = input()",
+                "exit()",
+                "quit(1)",
+                "breakpoint()",
+                "rows = [input() for _ in range(2)]",
             ]
         ),
     )
     @settings(max_examples=30)
-    def test_unsafe_code_always_rejected(self, code: str):
-        """Unsafe code is always rejected, even on repeated calls."""
+    def test_server_stopping_code_always_rejected(self, code: str):
+        """A server-stopping call is always rejected, even on repeated calls."""
         from haute._sandbox import UnsafeCodeError, validate_user_code
 
         for _ in range(3):

@@ -3,8 +3,8 @@
 ## Purpose
 
 Haute pipelines run user-authored Python (polars transform nodes and preamble/utility
-code) inside the local editor process; the CLI validates then imports training scripts
-inside the separate CLI process. The editor also loads user-supplied model/data
+code) inside the local editor process; the CLI imports training scripts inside the
+separate CLI process. The editor also loads user-supplied model/data
 artifacts (pickle, joblib) from disk.
 
 Project code is trusted first-party code (decision of 6 September 2026, finding F1):
@@ -12,9 +12,9 @@ node text, preambles, utility modules and training scripts run with the privileg
 the process that runs haute, and access to a project is governed by who may edit its
 files, not by haute. Opening a project is running its code. What this component
 defends against is therefore narrower than a hostile author, and it says so rather
-than promising containment it cannot deliver: (1) accidents in node text, the
-`open()`, import, reflection and `eval` shapes that fail confusingly or corrupt state,
-caught by an accident guard before the code runs; (2) arbitrary code execution via
+than promising containment it cannot deliver: (1) accidents in project code run inside
+the server, the calls that would hang it or stop it (`input()`, `exit()`/`quit()`,
+`breakpoint()`), caught by an accident guard before the code runs; (2) arbitrary code execution via
 deserializing untrusted pickle/joblib model artifacts, which can be swapped under a
 project without editing any code; and (3) a random web page driving the local dev
 server through a user's browser (cross-site request/WebSocket hijack against
@@ -26,10 +26,9 @@ the others, not because it shares a threat model with the first three.
 ## Scope
 
 In scope:
-- AST-level static validation of pipeline/preamble code before `exec()`, pivot
-  formulas before `eval()`, and CLI training scripts before module import
-  (`validate_user_code`), plus the restricted builtins namespace used by the
-  `exec()` and `eval()` paths (`safe_globals`).
+- The accident guard run on node code and the preamble before `exec()` and on pivot
+  formulas and expression steps before `eval()` (`validate_user_code`), plus the
+  execution namespace those paths use (`safe_globals`).
 - The actual `exec()` call sites for pipeline node code and its namespace assembly
   (`_exec_user_code`).
 - Restricted unpickling for both raw pickle files and joblib archives
@@ -77,8 +76,9 @@ Out of scope (owned elsewhere, linked where relevant):
   hosted app's own identity inside its single-tenant container (see
   [hosted-databricks-app](../hosted-databricks-app/high-level.md)). Anything that
   identity can do, project code can do.
-- **Allowed operations.** Any Python or Polars the accident guard's syntax rules
-  admit. Direct file, environment and network access from node text is not
+- **Allowed operations.** Any Python or Polars: the accident guard rejects only the
+  calls that would hang or stop the server. Direct file, environment and network access
+  from node text is not
   confined: the injected Polars module carries the whole Python object graph
   beneath it (`pl.io.csv.functions.os` reaches the operating system), a preamble
   imports freely, and no OS-level sandbox (seccomp, Landlock, restricted token,
@@ -98,53 +98,44 @@ Out of scope (owned elsewhere, linked where relevant):
   with its own CI lane. That is a product change (no ad-hoc reads outside the
   project, no network from a transform) and is not planned.
 - `tests/test_node_code_trust_boundary.py` pins the boundary through the real node
-  entry point: the accident shapes are rejected before execution, permitted
-  transforms run, and a synthetic environment marker and an outside-project write
-  remain reachable.
+  entry point: the server-stopping calls are rejected before execution, ordinary
+  Python (classes, reflection, `global`, imports) runs, and a synthetic environment
+  marker and an outside-project write remain reachable.
 
 ## Behaviour
 
-- **Two independent layers gate `exec()`ed pipeline code as an accident guard**,
-  and both must pass: a structural AST walk (`validate_user_code`) rejects known
-  escape-shaped syntax *before* any code runs, and a restricted builtins/globals
-  namespace (`safe_globals`) removes the dangerous callables at runtime as defence
-  in depth even if a pattern slips past the AST layer. Neither layer alone is
-  trusted to be complete, and together they are not a containment boundary (see
-  Trust boundary above).
-- **The AST layer is allowlist-adjacent but implemented as a denylist of named
-  escape primitives**: dunder attribute access to type-system/introspection
-  dunders, frame/traceback/generator-frame attribute access, calls to reflection
-  builtins (`getattr`, `type`, `vars`, `super`, …), `import`/`from import` (unless
-  explicitly permitted), `class`/`async def` definitions, `global`/`nonlocal`, and
-  `__builtins__[...]` subscripting. `.format()`/`.format_map()`/`.vformat()`/
-  `.get_field()`/`.format_field()` calls
-  are additionally restricted to a single statically-vettable string-literal
-  template (with a narrow, name-shadow-aware carve-out for polars' own
-  `pl.format(...)` builder), because runtime-assembled templates can smuggle dunder
-  traversal past a literal-only scan.
-- **Not every dunder is blocked** — only ones with a known escape or introspection
-  use (`__class__`, `__globals__`, `__code__`, `__reduce__`, `__closure__`, …).
-  Harmless dunders (`__init__`, `__name__`, `__doc__`, `__qualname__`,
-  `__annotations__`) are left reachable; `__init__` is directly callable inside the
-  sandbox (e.g. `x.__init__([4, 5])` on a list). Lambdas and nested lambdas are not
-  specially restricted — their *bodies* are still walked and blocked the same as
-  any other code, but the AST validator has no `visit_Lambda` gate of its own.
-- **`allow_imports=True` is an explicit, narrow escape hatch**, used for preamble
-  source and CLI training-script validation. It disables the AST import check.
-  Preamble execution also calls `safe_globals(allow_imports=True)`, restoring the
-  real `__import__` in that restricted exec namespace; the training command instead
-  imports the validated file as an ordinary Python module, so it runs with normal
-  module builtins. Modules imported by either path (including `utility` modules) are
-  not recursively AST-validated and execute in their normal module namespaces.
-  These paths therefore have full import privileges (`os`, `subprocess`, …); they
-  are treated as first-party project code, unlike per-node transform text.
+- **The accident guard catches what would hang or stop the server, and nothing
+  else.** Project code run inside the server (node code through `_exec_user_code`,
+  the preamble, pivot formulas and expression steps) is parsed by
+  `validate_user_code` before it runs. A direct call to `input()` (it waits for
+  console input the server never receives), `exit()` or `quit()` (they stop the server
+  process) or `breakpoint()` (it waits for a debugger on the server's console) is
+  rejected with `UnsafeCodeError`, unless the code binds that name itself. Everything
+  else is ordinary Python: classes, `global`/`nonlocal`, `getattr`/`type`/`vars`,
+  dunder access, `import` statements, `open` and `eval`.
+- **The execution namespace is the ordinary builtins without those four calls.**
+  `safe_globals` gives node code, the preamble, pivot formulas and expression steps
+  the real `__import__` and `__build_class__`, so imports and class definitions run;
+  an alias of a server-stopping call (`f = input`) fails with `NameError` when it runs
+  instead of hanging. Each namespace runs as its own module, `haute_project_code_<n>`
+  (not `__main__`, so a script's `if __name__ == "__main__":` block does not run inside
+  the server), registered in `sys.modules` while its code runs and removed afterwards,
+  and the code is compiled without haute's own `from __future__` imports. A class, a
+  dataclass (including quoted or explicitly postponed annotations) and
+  `typing.get_type_hints` called while the code runs therefore behave as in an ordinary
+  module. Modules the code imports
+  (including `utility` modules) execute in their normal module namespaces.
+- **Training scripts are not guarded.** `haute train` imports the script as an
+  ordinary module in the CLI process, where console input, a debugger and `exit()` are
+  ordinary.
 - **Preamble exports are filtered before node code receives them.** Preamble
   execution itself retains the import privilege above, but
   `executor._is_dangerous_preamble_binding` removes exported top-level values whose
   module root is `os`, `sys`, `subprocess`, `shutil`, `signal`, `ctypes`, or
   `importlib` before the namespace becomes node-code globals. This is a direct-binding
   handoff filter, not recursive inspection of containers or closures and not a claim
-  that preamble execution is sandboxed from those modules.
+  that preamble execution is sandboxed from those modules; node code may import those
+  modules itself.
 - **Unified data I/O does not fork the code sandbox.** Optional `dataInput` code runs
   exactly once through `_exec_user_code` after provider resolution;
   `DataOutputConfig` rejects executable code. Direct locators, source-cache
@@ -152,7 +143,7 @@ Out of scope (owned elsewhere, linked where relevant):
   are each independently contained and rechecked before publication. Resolved
   credentials, provider/cache objects, and leases never enter user globals, persisted
   cache metadata, or user-visible failure text.
-- **Validation results are cached per `(code, allow_imports)` pair** in a bounded
+- **Validation results are cached per code string** in a bounded
   LRU (`_validation_cache`, capped at 1024 entries) so a long-lived server
   previewing/tracing the same node repeatedly does not re-parse identical code.
   Code that fails to parse (`SyntaxError`) is never cached as safe; an evicted
@@ -227,14 +218,12 @@ Out of scope (owned elsewhere, linked where relevant):
 
 ## Design rationale
 
-- **Defence in depth over a single gate.** The AST validator and the restricted
-  builtins namespace independently block the same attack classes (e.g. `getattr`
-  is both an AST-blocked call *and* absent from `safe_globals`'s builtins) so that
-  a bug in one layer does not by itself grant an escape. Several code comments and
-  test classes in this component are explicit "Gap N" write-ups of exactly this
-  reasoning — a name reference to `getattr` passes the AST layer (only *calls* are
-  blocked structurally), so the runtime layer additionally removes `getattr` from
-  the builtins dict entirely.
+- **An accident guard, not a sandbox.** Project code is trusted (decision of
+  6 September 2026), and Polars' own module graph reaches the operating system, so a
+  denylist of escape-shaped syntax protected nothing while rejecting ordinary code
+  (classes, `global`, reflection). The guard keeps only the checks for mistakes that
+  fail confusingly in a server: a call that waits on a console or debugger nobody is
+  watching, or one that ends the process serving every open editor.
 - **Exact-symbol pickle allowlisting over package-prefix allowlisting.** An earlier
   design allowlisted whole trusted-looking module prefixes (`numpy.*`, `sklearn.*`).
   This was found unsafe: large ML libraries ship code-execution gadget functions
@@ -246,12 +235,11 @@ Out of scope (owned elsewhere, linked where relevant):
   `coef_` values inside an otherwise-allowlisted class) is explicitly out of scope
   — that is inherent to trusting a model file's data at all, distinct from
   preventing arbitrary code execution.
-- **Reject, don't sanitize.** Table names, ref names, and code patterns are matched
-  against an allowlist regex or blocked-construct list and rejected outright on any
-  mismatch, rather than attempting to strip or escape dangerous content. This
-  mirrors the project-wide "loud failure over silent fallback" preference — a false
-  positive (legitimate code rejected) is preferred over a false negative (unsafe
-  code silently neutralized incorrectly).
+- **Reject, don't sanitize.** Table names and ref names are matched against an
+  allowlist regex, and the accident guard's calls against a fixed list, and rejected
+  outright on any mismatch, rather than attempting to strip or escape dangerous
+  content. This mirrors the project-wide "loud failure over silent fallback"
+  preference.
 - **`hmac.compare_digest` for token comparison** closes a timing side-channel that
   a naive `==` string comparison would leave open, even though the local-network
   threat model (a same-machine browser tab, not a remote attacker) makes timing
@@ -278,7 +266,7 @@ Out of scope (owned elsewhere, linked where relevant):
 ## Interactions
 
 - Depended on by the [execution engine](../execution-engine/high-level.md):
-  `_user_exec._exec_user_code` (the sandboxed `exec()` path for pipeline node code)
+  `_user_exec._exec_user_code` (the guarded `exec()` path for pipeline node code)
   and `executor.py` both import `validate_user_code`/`safe_globals` directly, and
   `_builders.py`, `chunking.py`, and `_model_scorer.py`/`deploy/_scorer.py` reuse
   the same `_exec_user_code` entry point for node execution and scoring-time code
@@ -291,8 +279,7 @@ Out of scope (owned elsewhere, linked where relevant):
   artifacts (`load_external_object`), and by `routes/optimiser.py` and
   `routes/pipeline.py` for `_get_project_root()` when resolving user-supplied
   output paths against the project root.
-- Depended on by the CLI (`cli/_train.py`) for `validate_user_code` before
-  importing a training script with ordinary module globals, and by `cli/_serve.py` for
+- Depended on by the CLI `cli/_serve.py` for
   `ensure_local_session_token_env`/`TRUSTED_HOSTS_ENV` when starting the dev
   server and its child processes.
 - Depended on by [server-api](../server-api/high-level.md): `server.py` installs
@@ -314,13 +301,13 @@ Out of scope (owned elsewhere, linked where relevant):
 
 ## Failure model
 
-- **Unsafe code raises before execution, always.** `validate_user_code` raises
-  `UnsafeCodeError` (a `HauteError` subclass) for any blocked construct; callers
+- **A guarded call raises before execution, always.** `validate_user_code` raises
+  `UnsafeCodeError` (a `HauteError` subclass) for a server-stopping call; callers
   never fall back to executing the code anyway. A `SyntaxError` during the
   validation parse is wrapped as `UnsafeCodeError` with the original exception
   chained as `__cause__`, and `_exec_user_code` unwraps that specific case back
   into a plain `SyntaxError` so downstream error reporting sees the error shape a
-  syntax mistake would normally produce, not a generic security rejection.
+  syntax mistake would normally produce, not a guard rejection.
 - **Runtime execution errors are re-raised, never swallowed**; `_exec_user_code`
   only annotates the exception with the offending line number
   (`exc._user_code_line`) extracted from the `<string>` frame of the traceback,

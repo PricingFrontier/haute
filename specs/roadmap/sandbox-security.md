@@ -13,7 +13,6 @@ These packages come from the
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | SBX-R01 | Planned | P3 | One path-containment check serves every caller. |
-| SBX-R02 | Decision | P3 | The node-code guard matches the trusted-code decision. |
 
 ## Planned improvements
 
@@ -58,25 +57,3 @@ path-traversal suites pass.
 `src/haute/_file_lock.py::_assert_path_ancestors_plain`;
 `src/haute/routes/_save_pipeline.py::_validate_output_rel_path`;
 `tests/test_path_traversal_fixes.py`.
-
-### SBX-R02 — The node-code guard after the trusted-code decision
-**Why:** Since the 6 September 2026 decision that project code is trusted, the
-AST denylist and restricted builtins for node code no longer protect
-anything: the specification notes that Polars' own module graph reaches the
-operating system. They still reject legitimate code: class definitions,
-`global` and `nonlocal`, and calls to `getattr`, `type` and `vars`.
-
-**Plan:** Decide what the guard is for. If it is an accident guard, keep only
-checks for mistakes that fail confusingly (for example, a bare `open` of a
-project file) and allow ordinary Python. Keep the exact pickle and joblib
-allowlist, which protects against untrusted model artifacts.
-
-**Acceptance:** The sandbox specification states what the node-code guard
-rejects and why; code using classes, `type` or `getattr` runs in a node; the
-pickle allowlist tests are unchanged.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_sandbox.py::validate_user_code`;
-`src/haute/_sandbox.py::safe_globals`; `src/haute/_sandbox.py::_BLOCKED_CALLS`;
-`tests/test_node_code_trust_boundary.py`.

@@ -30,7 +30,8 @@ Out of scope, owned elsewhere:
   [deploy](../deploy/high-level.md).
 - The FastAPI backend that `haute serve` launches — [server-api](../server-api/high-level.md).
 - Model training internals (`TrainingJob`, algorithms, metrics) — [modelling](../modelling/high-level.md).
-- Sandboxed execution of user training scripts — [sandbox-security](../sandbox-security/high-level.md).
+- The trust boundary for user training scripts, which run as trusted project code in the CLI
+  process without the server's accident guard — [sandbox-security](../sandbox-security/high-level.md).
 
 ## Behaviour
 
@@ -137,9 +138,8 @@ Invariants that hold across every command:
 - Depends on [server-api](../server-api/high-level.md) for `serve` (`haute.server:app`,
   `STATIC_DIR`, `static_build_ready`).
 - Depends on [modelling](../modelling/high-level.md) for `train` (`TrainingJob.run`).
-- Depends on [sandbox-security](../sandbox-security/high-level.md) for `train`'s pre-execution
-  safety check (`validate_user_code`) and for `serve`'s local session token
-  (`ensure_local_session_token_env`, `TRUSTED_HOSTS_ENV`).
+- Depends on [sandbox-security](../sandbox-security/high-level.md) for `serve`'s local session
+  token (`ensure_local_session_token_env`, `TRUSTED_HOSTS_ENV`).
 - `haute init` depends on `haute._scaffold` (template generation for `haute.toml`, CI workflows,
   starter pipeline) and `haute._gitignore_guard` — both outside this component's scope but owned by
   the same project-bootstrap concern as [pipeline-config](../pipeline-config/high-level.md).

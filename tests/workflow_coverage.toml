@@ -1354,23 +1354,23 @@ lane = "backend"
 real = ["user-exec", "polars"]
 stubbed = []
 tests = [
-  "tests/test_node_code_trust_boundary.py::TestAccidentGuardAtTheNodeEntryPoint::test_documented_accident_shapes_are_rejected_before_execution",
+  "tests/test_node_code_trust_boundary.py::TestAccidentGuardAtTheNodeEntryPoint::test_a_server_stopping_call_is_rejected_before_execution",
+  "tests/test_node_code_trust_boundary.py::TestAccidentGuardAtTheNodeEntryPoint::test_ordinary_python_runs_in_a_node",
   "tests/test_node_code_trust_boundary.py::TestAccidentGuardAtTheNodeEntryPoint::test_permitted_transform_runs_through_the_same_entry_point",
   "tests/test_node_code_trust_boundary.py::TestNodeCodeIsTrustedProjectCode::test_environment_and_outside_writes_remain_reachable_through_polars",
-  "tests/test_sandbox.py::TestSafeGlobals::test_import_blocked",
-  "tests/test_sandbox.py::TestSafeGlobals::test_open_blocked",
-  "tests/test_sandbox.py::TestSafeGlobals::test_eval_blocked",
-  "tests/test_sandbox.py::TestSafeGlobals::test_all_dangerous_builtins_blocked",
+  "tests/test_sandbox.py::TestAccidentGuard::test_a_server_stopping_call_is_rejected",
+  "tests/test_sandbox.py::TestAccidentGuard::test_ordinary_python_is_accepted",
+  "tests/test_sandbox.py::TestSafeGlobals::test_a_server_stopping_builtin_cannot_be_called_through_an_alias",
   "tests/test_sandbox.py::TestValidateProjectPath::test_path_outside_root_raises",
   "tests/test_sandbox.py::TestValidateProjectPath::test_traversal_attack_blocked",
   "tests/test_sandbox.py::TestSafeUnpickle::test_os_system_blocked",
 ]
-invariant = "Project code is trusted first-party code, stated in sandbox-security, execution-engine, the hosted app specification and the node editor: through the real node entry point the accident guard rejects open, imports, reflection and eval before any code runs and leaves a sentinel untouched, a permitted Polars transform runs, haute's own file loads stay inside the project root, untrusted model artifacts cannot execute code, and a synthetic environment marker and an outside-project write remain reachable through the injected Polars module and are pinned as the accepted posture rather than claimed contained."
+invariant = "Project code is trusted first-party code, stated in sandbox-security, execution-engine, the hosted app specification and the node editor: through the real node entry point the accident guard rejects input(), exit(), quit() and breakpoint() before any code runs and leaves a sentinel untouched, ordinary Python (a class, getattr, type, vars, global, an import) and a Polars transform run, haute's own file loads stay inside the project root, untrusted model artifacts cannot execute code, and a synthetic environment marker and an outside-project write remain reachable through the injected Polars module and are pinned as the accepted posture rather than claimed contained."
 
 [scenarios.evidence]
-commit = "db045aee"
+commit = "b1345006"
 command = 'uv run pytest tests/test_node_code_trust_boundary.py tests/test_sandbox.py -q -p no:warnings'
-result = "331 passed, 7 skipped in 11.98s; the environment-marker and outside-write probes of the 5 September 2026 review reproduce on every tree and are pinned as the accepted trust posture, not contained"
+result = "200 passed, 5 skipped in 8.92s on the SBX-R02 working tree over b1345006; the environment-marker and outside-write probes of the 5 September 2026 review reproduce on every tree and are pinned as the accepted trust posture, not contained"
 
 [[scenarios]]
 id = "W15-S02"
