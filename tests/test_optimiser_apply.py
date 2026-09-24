@@ -351,7 +351,11 @@ class TestCodegen:
             },
         )
         code = _generate_node_code(node, source_names=["df"])
-        assert "optimised_value_column='selected_price_factor'" in code
+        # The column lives in the sidecar the decorator references, and the
+        # body's shared helper reads it from there.
+        assert code.startswith('@pipeline.optimiser_apply(config="config/apply_optimisation/')
+        assert "selected_price_factor" not in code
+        assert "apply_optimiser_apply_from_config(" in code
 
     def test_codegen_ratebook_input(self):
         node = _make_node(
@@ -362,7 +366,10 @@ class TestCodegen:
             },
         )
         code = _generate_node_code(node, source_names=["scored_quotes", "banded_quotes"])
-        assert "ratebook_input='banded_quotes'" in code
+        # The sidecar names the ratebook input; the body passes the exact
+        # source names so the shared helper can resolve it.
+        assert "ratebook_input=" not in code
+        assert "source_names=['scored_quotes', 'banded_quotes']" in code
 
 
 # ---------------------------------------------------------------------------

@@ -143,7 +143,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "background-jobs-api",
     "build-and-distribution",
     "caching",
-    "codegen",
     "deploy",
     "engineering-quality",
     "execution-engine",

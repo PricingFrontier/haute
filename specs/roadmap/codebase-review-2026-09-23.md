@@ -377,7 +377,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §4.7 Four reuse mechanisms | `SUB-R01` ([submodels](submodels.md)) |
 | §4.8 Implicit-join output assembly | `JSON-R02` ([JSON shredding](json-shredding.md)) |
 | §4.9 Node-code guard | `SBX-R02` ([sandbox security](sandbox-security.md)) |
-| §4.10 Codegen decorator splice | `CODEGEN-R01` ([codegen](codegen.md)) |
+| §4.10 Codegen decorator splice | `CODEGEN-R01` (codegen, delivered; its roadmap file is retired) |
 | §4.10 Node registry | `PCFG-R09` ([pipeline config](pipeline-config.md)) |
 | §4.10 `ExecutionContext` size | `EXEC-R07` ([execution engine](execution-engine.md)) |
 | §4.10 Cache identity framework | `CACHE-S25` ([caching](caching.md)) |

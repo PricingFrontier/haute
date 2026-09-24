@@ -21,7 +21,6 @@ or maintenance issue; `P3` opportunistic work.
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
 | [Build and distribution](build-and-distribution.md) | A node reference that documents the node types that exist | `BUILD-R01` |
 | [Caching](caching.md) | Automatic API-input table snapshots, planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache usage, freshness and retention | `CACHE-S08` |
-| [Codegen](codegen.md) | Config-backed decorators emitted directly | `CODEGEN-R01` |
 | [Deploy](deploy.md) | A slim scoring runtime, offered targets | `DEP-R02` |
 | [Engineering quality](engineering-quality.md) | Dead code, tracked artifacts, specification drift, coverage gates, test organisation | `ENGQ-R01` |
 | [Execution engine](execution-engine.md) | Chunked runner, one execution walker, execution context | `EXEC-R05` |
