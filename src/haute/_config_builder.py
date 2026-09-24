@@ -261,12 +261,14 @@ def _attach_code_from_body(
 
 
 def _is_contract_resolve_fallback_exception(exc: BaseException) -> bool:
-    """Return whether *exc* should fall back to an opaque parse-time contract.
+    """Return whether *exc* is a named infrastructure failure.
 
-    Matches ``_execute_lazy`` while avoiding an eager module import of
-    MLflow just to populate an ``except`` tuple at import time.
+    Only a missing or unreadable file, a missing optional dependency or an
+    MLflow failure degrades the parse-time check to an opaque contract; a
+    configuration or programmer error propagates. MLflow is imported lazily
+    rather than to populate an ``except`` tuple at import time.
     """
-    if isinstance(exc, (ConfigError, OSError, ImportError, RuntimeError)):
+    if isinstance(exc, (OSError, ImportError)):
         return True
     try:
         from mlflow.exceptions import MlflowException
@@ -294,13 +296,14 @@ def _derive_parse_time_contract(node_type: NodeType, config: dict[str, Any]) -> 
 def resolve_parse_time_contract(node_type: NodeType, config: dict[str, Any]) -> Contract:
     """Return the builder contract a parse-time declaration is checked against.
 
-    If the builder contract cannot be resolved right now (for example a
-    missing artifact file or temporarily unavailable external dependency),
-    the builder is treated as fully opaque. The check re-runs at execution
-    time when runtime resources are actually loaded, so a drifted annotation
-    still surfaces - just not at offline parse-time. Programmer errors
-    (AttributeError / TypeError / KeyError) propagate so they aren't masked
-    as a "harmless parse-time fallback to opaque".
+    If the builder contract cannot be resolved right now because of a named
+    infrastructure failure (a missing artifact file, a missing optional
+    dependency, an unreachable MLflow server), the builder is treated as fully
+    opaque. The check re-runs at execution time when runtime resources are
+    actually loaded, so a drifted annotation still surfaces - just not at
+    offline parse-time. Configuration errors (``ConfigError``) and programmer
+    errors propagate so they aren't masked as a "harmless parse-time fallback
+    to opaque".
     """
     try:
         return _derive_parse_time_contract(node_type, config)

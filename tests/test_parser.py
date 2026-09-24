@@ -428,7 +428,7 @@ pipeline.connect("source", "inspect_claims")
         with pytest.raises(ConfigError, match=message):
             parse_pipeline_file(p)
 
-    def test_explore_decorator_preserves_unknown_sane_overview_keys(self, tmp_path):
+    def test_explore_decorator_rejects_an_unknown_overview_card(self, tmp_path):
         code = """\
 import polars as pl
 import haute
@@ -461,18 +461,8 @@ pipeline.connect("source", "inspect_claims")
         write_data_input_config(tmp_path, "source", "data.parquet")
         p = _write_pipeline(tmp_path, code)
 
-        graph = parse_pipeline_file(p)
-        node_map = {n.id: n for n in graph.nodes}
-
-        assert node_map["inspect_claims"].data.config["overview"] == {
-            "schema": True,
-            "custom_card": {
-                "label": "Loss ratio",
-                "columns": ["premium", "claims"],
-                "enabled": False,
-                "empty": None,
-            },
-        }
+        with pytest.raises(ConfigError, match="Explore overview has no card 'custom_card'"):
+            parse_pipeline_file(p)
 
     def test_explore_decorator_with_outgoing_edge_raises(self, tmp_path):
         code = """\

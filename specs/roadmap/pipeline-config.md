@@ -12,7 +12,6 @@ is specified in [the pipeline-config specification](../pipeline-config/low-level
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | PCFG-R04 | Planned | P2 | One project context, resolved once, replaces a dozen project-root and pipeline-directory resolvers. |
-| PCFG-R06 | Decision | P2 | One stated rule for non-canonical input, and code that follows it. |
 | PCFG-R07 | Planned | P2 | Every node type has a typed config model that is the single validation boundary. |
 | PCFG-R08 | Planned | P3 | Editor-only state travels beside the node config, not inside it. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
@@ -69,43 +68,6 @@ tests `chdir` into a temporary project today).
 `src/haute/modelling/_mlflow_settings.py::_project_root_default`;
 `src/haute/assistant/_config.py::_normalise_project_root`;
 `src/haute/executor.py::_pipeline_dir`; `src/haute/_cache.py::_pipeline_dir`.
-
-### PCFG-R06 — One rule for non-canonical input
-**Why:** The specification README says the implementation "has no branches or
-diagnostics that recognise historical Haute input". The code recognises
-retired keys in config recovery (`baseInput`, `joinInput`, `scored_input`,
-`factors_input`), retired Edge Join decorator arguments, removed config keys
-in validation, and legacy modelling `split`/`cross_validation` objects in two
-places. Projection synthesises identity "for legacy callers". The assistant
-keeps a legacy catalogue and examples (removed by `ASSIST-R01`, which applies
-this rule). Explore display validators preserve
-unknown keys so "a newer UI can round-trip through an older parser". The
-parse-time contract check falls
-back to an opaque contract on `ConfigError`, `OSError`, `ImportError`,
-`RuntimeError` or `MlflowException`, which this component's own specification
-calls broader than infrastructure-only failure.
-
-**Plan:** Decide the rule and write it in the specification README, for
-example: targeted rejection messages for removed fields are allowed; no
-migration, no silent drop, no forward-compatibility passthrough; fallbacks
-only for named infrastructure failures. Then make each listed site follow it,
-and give the modelling legacy check one home.
-
-**Acceptance:** The README states the rule; each listed site other than the
-assistant's either follows it or is removed; one test per site pins the
-behaviour; the legacy modelling check exists once.
-
-**Dependencies:** None. `ASSIST-R01` (assistant) and `SUB-R01`
-(submodels) depend on the rule this package decides.
-
-**Evidence:** `src/haute/_node_config_recovery.py::reconcile_config`;
-`src/haute/_edge_join.py::_LEGACY_ROLE_DECORATOR_ARGS`;
-`src/haute/_config_validation.py::reject_removed_config_keys`;
-`src/haute/modelling/_train_config.py::build_training_job_kwargs`;
-`src/haute/routes/_training_lifecycle.py::_validate_config`;
-`src/haute/projection.py::_projection_edges`;
-`src/haute/_explore_overview.py::validate_explore_overview`;
-`src/haute/_config_builder.py::_is_contract_resolve_fallback_exception`.
 
 ### PCFG-R07 — Typed config models per node type
 **Why:** `NodeData.config` is `dict[str, Any]`. The shared validator is strict

@@ -61,7 +61,11 @@ def test_builder_rejects_missing_evaluation_and_legacy_public_fields() -> None:
             }
         },
     ):
-        with pytest.raises(TrainingConfigError, match="legacy"):
+        (removed,) = legacy
+        with pytest.raises(
+            TrainingConfigError,
+            match=f"field '{removed}' was removed; use the versioned 'evaluation' object",
+        ):
             build_training_job_kwargs(
                 {
                     "target": "y",

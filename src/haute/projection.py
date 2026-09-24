@@ -4102,32 +4102,11 @@ class _LineageInputBinding:
 
 def _projection_edges(
     order: Iterable[str],
-    children_of: Mapping[str, Iterable[str]],
-    relevant_edges: Iterable[GraphEdge] | None,
+    relevant_edges: Iterable[GraphEdge],
 ) -> tuple[GraphEdge, ...]:
-    """Return authoritative edges, synthesising identity for legacy callers."""
+    """Return the prepared graph's edges between planned nodes."""
     known = set(order)
-    if relevant_edges is not None:
-        return tuple(
-            edge for edge in relevant_edges if edge.source in known and edge.target in known
-        )
-
-    # ``compute_prepared_plan`` predates port-aware planning and remains a
-    # useful low-level API for adjacency-only tests/callers.  Give every
-    # adjacency occurrence a deterministic complete identity.  Runtime paths
-    # always pass the real GraphEdge objects.
-    occurrences: dict[tuple[str, str], int] = {}
-    synthesised: list[GraphEdge] = []
-    for source in order:
-        for target in children_of.get(source, ()):
-            if target not in known:
-                continue
-            pair = (source, target)
-            ordinal = occurrences.get(pair, 0)
-            occurrences[pair] = ordinal + 1
-            edge_id = f"e_{source}_{target}" if ordinal == 0 else f"e_{source}_{target}_{ordinal}"
-            synthesised.append(GraphEdge(id=edge_id, source=source, target=target))
-    return tuple(synthesised)
+    return tuple(edge for edge in relevant_edges if edge.source in known and edge.target in known)
 
 
 def _edges_by_endpoint(
@@ -4371,19 +4350,22 @@ def compute_prepared_plan(
     node_map: Mapping[str, GraphNode],
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
     *,
-    relevant_edges: Iterable[GraphEdge] | None = None,
+    relevant_edges: Iterable[GraphEdge],
     submodels: Mapping[str, Any] | None = None,
     selector_aliases: frozenset[str] = frozenset(),
     known_output_columns: Mapping[tuple[str, str | None], frozenset[str]] | None = None,
 ) -> ProjectionPlan:
     """Run the reverse topological projection sweep on a prepared graph.
 
+    ``relevant_edges`` are the prepared graph's edges; they carry the port
+    identity every projection key is built from.
+
     ``known_output_columns`` are output schemas observed for built nodes, keyed
     by node and port (``None`` for a single-frame node). They stand in for a
     parent's schema where demand is routed (lineage input bindings and Edge Join
     ownership) and never replace an unknown demand.
     """
-    prepared_edges = _projection_edges(order, children_of, relevant_edges)
+    prepared_edges = _projection_edges(order, relevant_edges)
     incoming_by_target, outgoing_by_source = _edges_by_endpoint(order, prepared_edges)
     registered_contracts: dict[str, Contract] = {}
     effective_contracts: dict[str, Contract] = {}

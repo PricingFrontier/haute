@@ -32,7 +32,7 @@ from haute._types import (
 )
 from haute.errors import ContractMismatchError
 from haute.projection import compute_prepared_plan
-from tests._projection_helpers import edge_keys_for_pair, pair_value
+from tests._projection_helpers import adjacency_edges, edge_keys_for_pair, pair_value
 from tests.conftest import make_output_config
 
 
@@ -478,6 +478,7 @@ def _needed_by_node(
         children_of,
         node_map,
         required_columns_by_node,
+        relevant_edges=adjacency_edges(order, children_of),
     ).needed_by_node
 
 
@@ -766,7 +767,9 @@ class TestUnprovableProjectionDiagnostics:
         }
         children_of = _build_children_of(order, parents_of)
 
-        plan = compute_prepared_plan(order, children_of, node_map)
+        plan = compute_prepared_plan(
+            order, children_of, node_map, relevant_edges=adjacency_edges(order, children_of)
+        )
 
         assert plan.needed_by_node["join"] == {"quote_id", "premium"}
         assert plan.needed_by_node["left"] is None
@@ -794,6 +797,7 @@ class TestUnprovableProjectionDiagnostics:
             children_of,
             node_map,
             required_columns_by_node={"mid": {"a"}},
+            relevant_edges=adjacency_edges(order, children_of),
         )
 
         assert plan.needed_by_node["mid"] is None
@@ -830,7 +834,9 @@ class TestUnprovableProjectionDiagnostics:
         }
         children_of = _build_children_of(order, parents_of)
 
-        plan = compute_prepared_plan(order, children_of, node_map)
+        plan = compute_prepared_plan(
+            order, children_of, node_map, relevant_edges=adjacency_edges(order, children_of)
+        )
 
         assert plan.needed_by_node["left"] is None
         assert plan.needed_by_node["right"] is None
@@ -869,7 +875,9 @@ class TestUnprovableProjectionDiagnostics:
         }
         children_of = _build_children_of(order, parents_of)
 
-        plan = compute_prepared_plan(order, children_of, node_map)
+        plan = compute_prepared_plan(
+            order, children_of, node_map, relevant_edges=adjacency_edges(order, children_of)
+        )
 
         assert plan.needed_by_node["left"] is None
         assert plan.needed_by_node["right"] is None
@@ -906,7 +914,9 @@ class TestUnprovableProjectionDiagnostics:
         }
         children_of = _build_children_of(order, parents_of)
 
-        plan = compute_prepared_plan(order, children_of, node_map)
+        plan = compute_prepared_plan(
+            order, children_of, node_map, relevant_edges=adjacency_edges(order, children_of)
+        )
 
         assert pair_value(plan.edge_demands, "left", "join") == {"quote_id", "left_value"}
         assert pair_value(plan.edge_demands, "right", "join") == {"quote_id", "right_value"}

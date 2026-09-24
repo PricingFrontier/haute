@@ -395,11 +395,11 @@ rating table leaves the prior sidecar untouched.
 
 Contract validation at parse time deliberately avoids contacting MLflow for model-scoring nodes:
 their input side is treated as opaque while the locally configured output column is still
-checked. For other node types, a `ConfigError`, `OSError`, `ImportError`, `RuntimeError`, or
-`MlflowException` raised while deriving a contract causes that comparison to use an opaque
-contract; programmer-shaped errors such as `TypeError`, `AttributeError`, and `KeyError`
-propagate. This fallback is broader than infrastructure-only failure because `ConfigError` and
-`RuntimeError` are included by the implementation.
+checked. For other node types, only a named infrastructure failure raised while deriving a
+contract (`OSError`, `ImportError` or `MlflowException`) makes that comparison use an opaque
+contract, as the [canonical-input rule](../README.md#canonical-only-format-policy) allows. A
+`ConfigError`, a `RuntimeError` and programmer-shaped errors such as `TypeError`,
+`AttributeError` and `KeyError` propagate, so the node fails to load with that error.
 
 Windows-reserved device filenames (`CON`, `NUL`, `COM1`, etc.) are rejected on every
 platform, not only when running on Windows, so a project saved on Linux or macOS stays

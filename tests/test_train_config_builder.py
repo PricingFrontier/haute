@@ -512,7 +512,10 @@ class TestEvaluationConfig:
 
     @pytest.mark.parametrize("legacy_key", ["split", "cross_validation"])
     def test_legacy_public_fields_are_rejected(self, legacy_key):
-        with pytest.raises(TrainingConfigError, match="legacy"):
+        with pytest.raises(
+            TrainingConfigError,
+            match=f"field '{legacy_key}' was removed; use the versioned 'evaluation' object",
+        ):
             build_training_job_kwargs(
                 {
                     "target": "y",

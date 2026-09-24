@@ -63,10 +63,7 @@
   It carries no Explore node identity, because every consumer of the point shares it.
 - **`EXPLORE_OVERVIEW_TOGGLE_KEYS`** (`_explore_overview.py`) — frozenset of the five known
   overview card keys: `dataset_snapshot`, `data_quality`, `numeric_summary`,
-  `categorical_summary`, `schema`. These must map to `bool`; any other key must map to a
-  "round-trippable" value per `_is_round_trippable_overview_value` (recursively: `None`, `str`,
-  `bool`, `int`, finite `float`, or `list`/`dict` of the same, with dict keys required to be
-  `str`).
+  `categorical_summary`, `schema`. These must map to `bool`; any other key is rejected.
 - **`ExploreChartConfig`** (`_explore_chart_contracts.py`, Pydantic model) — the
   canonical structural authority for one persisted version-1 ComboChart with stable
   id/name/enabled/source-pivot linkage, chart `orientation` (`"vertical"`/`"horizontal"`), Rows
@@ -581,7 +578,7 @@ levels use (`run_synchronous_analysis` inside `run_until_disconnected`):
   named-source isolation, and the data-version invalidation matrix for upstream code, the
   consumer's own code, the preamble, the source file, and the input source.
 - `tests/test_explore_round_trip.py` — exercises the Explore display validators indirectly
-  through `graph_to_code` → `parse_pipeline_source`: overview toggle/unknown-key round trips,
+  through `graph_to_code` → `parse_pipeline_source`: overview toggle round trips,
   ordered pivot and enabled/disabled chart cards with future settings, and omission of empty
   `overview={}`/`pivots=[]`/`charts=[]` kwargs.
 - `tests/test_explore_charts.py` — pins chart-container/card shape validation, required state,

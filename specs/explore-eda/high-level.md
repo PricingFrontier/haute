@@ -208,12 +208,11 @@ Out of scope (owned elsewhere):
   are excluded, so those edits reuse the calculation.
   Starting a newer calculation supersedes only
   an older job for the same source, Explore node, and pivot id.
-- `validate_explore_overview` accepts only a dict at the top level with string keys. The five
-  known toggle keys must be booleans; any other key's value must be JSON-round-trippable through
-  codegen (`None`, `str`, `bool`, `int`, a finite `float`, or nested lists/dicts of the same) so
-  a newer UI's overview cards remain readable by, and rewritable through, an older parser/codegen
-  pair. An empty `overview` dict is preserved as empty (not defaulted) so callers can choose to
-  omit the config entirely rather than emit `overview={}`.
+- `validate_explore_overview` accepts only a dict at the top level whose keys are the five
+  known card keys, each a boolean. Any other key is rejected with a `ConfigError` naming it and
+  the known cards: the [canonical-input rule](../README.md#canonical-only-format-policy) allows
+  no forward-compatibility passthrough. An empty `overview` dict is preserved as empty (not
+  defaulted) so callers can choose to omit the config entirely rather than emit `overview={}`.
 - Canonical Pydantic chart models structurally validate each complete version-1 card;
   `validate_explore_charts` is the stable persisted-config adapter that accepts only a list of
   dicts, returns plain dicts, and maps validation failures to `ConfigError`. The same model schema
@@ -348,10 +347,10 @@ Out of scope (owned elsewhere):
   either would abort profiling and take down the whole report, not just that
   column. Both are formatted element-wise instead so one problematic column cannot break the
   report for every other column.
-- **Round-trippable unknown display keys.** The Explore display validators preserve unrecognised
-  keys (rather than stripping them) so that a pipeline `.py` file edited by a newer UI version
-  still parses and re-serialises correctly under an older backend, at the cost of restricting
-  unknown values to simple literals that are guaranteed to survive a `repr()`/codegen round trip.
+- **Unknown display keys.** The overview rejects a key it does not know. The pivot and chart
+  validators still preserve unrecognised fields whose values are simple literals (restricted so
+  they survive a `repr()`/codegen round trip);
+  [`EDA-E25`](../roadmap/explore-eda.md) brings them under the canonical-input rule.
 
 ## Interactions
 
@@ -392,8 +391,8 @@ Out of scope (owned elsewhere):
 - A pivot or member request against a point with no current data answers `cache_required` with
   that state, never a partial aggregation.
 - The Explore display validators raise `ConfigError` (not a generic exception) for invalid
-  top-level containers, non-string keys, wrong-typed known fields, or unknown values that are not
-  round-trippable. Chart validation also rejects malformed entries and blank or duplicate ids;
+  top-level containers, non-string keys, wrong-typed known fields, an unknown overview key, or
+  unknown pivot/chart values that are not round-trippable. Chart validation also rejects malformed entries and blank or duplicate ids;
   callers do not catch and paper over these failures.
 
 **Statistics-shape caveat.** `NodeDataProfile`/`_build_frame_stats`

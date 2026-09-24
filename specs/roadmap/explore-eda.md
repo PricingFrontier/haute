@@ -15,6 +15,7 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 | EDA-E18 | Deferred | P3 | Evaluate advanced Excel-parity pivot operations after representative use. |
 | EDA-E23 | Deferred | P3 | Add shared chart filter and hierarchy interactions after representative use. |
 | EDA-E24 | Deferred | P3 | Evaluate the remaining PivotChart parity surface from evidence. |
+| EDA-E25 | Planned | P3 | Pivot and chart configs reject unknown fields by name. |
 
 ## Planned improvements
 
@@ -88,3 +89,28 @@ and never reinterpret pivot categories as row-level observations.
 the candidate crosses shared interactions, and representative use evidence.
 
 **Evidence:** `src/haute/routes/_pivot_service.py`; `frontend/src/panels/explore/chartConfig.ts`; `frontend/src/panels/explore/ExploreChartsPane.tsx`; `tests/test_explore_charts.py`; chart configuration/render telemetry, export requests, support feedback, and measured browser/bundle performance.
+
+### EDA-E25 — Pivot and chart configs reject unknown fields
+
+**Why:** The [canonical-input rule](../README.md#canonical-only-format-policy)
+allows no forward-compatibility passthrough, and the Explore overview now
+rejects a key it does not know. The pivot and chart validators still preserve
+unrecognised fields whose values are simple literals, at every nesting level,
+so that a newer UI's fields survive an older parser.
+
+**Plan:** Reject an unknown pivot field by name in
+`_explore_pivots._copy_known_dict` (and delete the unused `_copy_simple_dict`),
+and make the chart models forbid extra fields instead of
+`ExtensibleChartModel`'s `extra="allow"`, regenerating the chart contract the
+frontend validates with. First confirm that the editor never writes a field the
+server does not declare.
+
+**Acceptance:** An unknown pivot or chart field fails validation with a
+`ConfigError` naming it; the generated chart contract forbids additional
+properties; no test pins a preserved unknown field.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/_explore_pivots.py::_copy_known_dict`;
+`src/haute/_explore_chart_contracts.py::ExtensibleChartModel`;
+`frontend/src/generated/api-contracts.explore-charts.validators.mjs`.

@@ -268,7 +268,9 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
    `categorical_levels` from the node and its upstream ancestors
    (`_declared_categorical_levels_for_training`); `_validate_config` (target set,
    algorithm registered, canonical `evaluation` and optional `tuning` parsed,
-   legacy `split`/`cross_validation` rejected, GLM family/link validity or CatBoost
+   the removed `split`/`cross_validation` rejected by the one check
+   `src/haute/modelling/_train_config.py::reject_removed_evaluation_fields`, GLM family/link
+   validity or CatBoost
    loss validity via `resolve_loss_function`, then `training_objective_issue` for
    completeness); under
    `_start_lock`, reject if another job is already `"running"`
