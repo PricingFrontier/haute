@@ -28,7 +28,7 @@ from hypothesis import strategies as st
 from haute._builders import _apply_ratebook
 from haute._optimiser_apply_explainability import _match_ratebook_entry
 from haute._rating import normalise_rating_key
-from haute.routes._optimiser_service import (
+from haute.routes._optimiser_solver import (
     _ratebook_factor_dtypes,
     _ratebook_factor_level_counts,
     _serialise_ratebook_factor_tables,

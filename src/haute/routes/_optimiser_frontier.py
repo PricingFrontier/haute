@@ -50,9 +50,12 @@ from haute.routes._optimiser_limits import (
     limited_frontier_payload,
 )
 from haute.routes._optimiser_service import (
-    _FRONTIER_GENERATION_KEY,
     _FRONTIER_RECOMPUTE_JOB_TYPE,
     _JOB_TYPE_KEY,
+    _solve_timeout_from_config,
+)
+from haute.routes._optimiser_solver import (
+    _FRONTIER_GENERATION_KEY,
     _RATEBOOK_FACTOR_LEVEL_ORDER_KEY,
     _auto_frontier_ranges_from_config,
     _build_ratebook_factor_contexts,
@@ -60,7 +63,6 @@ from haute.routes._optimiser_service import (
     _ratebook_factor_dtypes_from_artifact,
     _ratebook_factor_level_counts_from_artifact,
     _serialise_ratebook_factor_tables,
-    _solve_timeout_from_config,
     solver_worker_context,
 )
 from haute.schemas import (

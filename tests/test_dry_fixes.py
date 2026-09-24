@@ -44,7 +44,7 @@ class TestFinalizeOnline:
     """D6: _finalize_solve_result for online mode."""
 
     def test_shared_keys_present(self) -> None:
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         result = _FakeSolveResult(converged=True)
         store = JobStore()
@@ -70,7 +70,7 @@ class TestFinalizeOnline:
         assert "warning" not in rd
 
     def test_extra_fields_merged(self) -> None:
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         result = _FakeSolveResult()
         store = JobStore()
@@ -91,7 +91,7 @@ class TestFinalizeOnline:
         assert rd["n_quotes"] == 100
 
     def test_non_converged_adds_warning(self) -> None:
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         result = _FakeSolveResult(converged=False)
         store = JobStore()
@@ -112,7 +112,7 @@ class TestFinalizeOnline:
         assert "not converge" in rd["warning"]
 
     def test_job_status_fields(self) -> None:
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         result = _FakeSolveResult()
         store = JobStore()
@@ -142,7 +142,7 @@ class TestFinalizeOnline:
         stats and histogram should be populated."""
         import numpy as np
 
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         class ResultWithDF(_FakeSolveResult):
             def __init__(self, **kw: Any) -> None:
@@ -193,7 +193,7 @@ class TestFinalizeOnline:
 
     def test_no_extra_fields_when_none(self) -> None:
         """extra_fields=None should not add any extra keys."""
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         result = _FakeSolveResult()
         store = JobStore()
@@ -219,7 +219,7 @@ class TestFinalizeRatebook:
     """D6: _finalize_solve_result for ratebook mode."""
 
     def test_ratebook_extra_fields(self) -> None:
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         result = _FakeSolveResult(converged=True)
         store = JobStore()
@@ -260,7 +260,7 @@ class TestFinalizeRatebook:
 @pytest.fixture()
 def _in_solver_worker_context():
     """The heavy solver entrypoints are guarded against inline execution."""
-    from haute.routes._optimiser_service import solver_worker_context
+    from haute.routes._optimiser_solver import solver_worker_context
 
     with solver_worker_context():
         yield
@@ -274,7 +274,7 @@ class TestFinalizeFrontier:
         """Online mode + constraints + frontier_ranges → frontier_data populated."""
         from unittest.mock import MagicMock
 
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         result = _FakeSolveResult(
             converged=True,
@@ -330,7 +330,7 @@ class TestFinalizeFrontier:
         from types import SimpleNamespace
         from unittest.mock import MagicMock
 
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         result = _FakeSolveResult(converged=True, baseline_constraints={"loss": 0.9})
         store = JobStore()
@@ -386,7 +386,7 @@ class TestFinalizeFrontier:
 
     def test_frontier_skipped_no_constraints(self) -> None:
         """Online mode + empty constraints → frontier_data is None."""
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         result = _FakeSolveResult(converged=True)
         store = JobStore()
@@ -417,7 +417,7 @@ class TestFinalizeFrontier:
         """solver.frontier() raising does not fail the solve — status is still completed."""
         from unittest.mock import MagicMock
 
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         result = _FakeSolveResult(
             converged=True,
@@ -457,7 +457,7 @@ class TestFinalizeFrontier:
         """Absolute frontier ranges do not depend on baseline constraint values."""
         from unittest.mock import MagicMock
 
-        from haute.routes._optimiser_service import _finalize_solve_result
+        from haute.routes._optimiser_solver import _finalize_solve_result
 
         result = _FakeSolveResult(
             converged=True,

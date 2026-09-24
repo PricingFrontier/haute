@@ -65,11 +65,8 @@ from haute.routes._optimiser_input import (
 from haute.routes._optimiser_limits import (
     limited_apply_preview_payload,
 )
-from haute.routes._optimiser_service import (
-    OptimiserSolveService,
-    _job_elapsed_seconds,
-    _with_flattened_optimiser_graph,
-)
+from haute.routes._optimiser_service import OptimiserSolveService, _with_flattened_optimiser_graph
+from haute.routes._optimiser_solver import _job_elapsed_seconds
 from haute.routes._optimiser_worker import OptimiserEstimateOutcome, optimiser_estimate_worker
 from haute.routes.pipeline import (
     _interactive_affinity_key,

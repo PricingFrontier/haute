@@ -32,12 +32,11 @@ from haute.errors import GroupByExecutionUnsupportedError
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import (
     OptimiserSolveService,
-    SolveContext,
-    _compute_scenario_value_stats,
     _memory_limit_message,
     _normalise_memory_limit_payload,
     _optional_positive_int,
 )
+from haute.routes._optimiser_solver import SolveContext, _compute_scenario_value_stats
 from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
 from tests.conftest import (
     make_edge,
@@ -708,7 +707,7 @@ def test_multi_quote_real_solve_pins_result_shape(client, tmp_path, clean_job_st
 
 def test_online_solver_value_error_is_wrapped_as_solver_execution_error() -> None:
     """A price-contour ValueError is an algorithm failure, not a data error."""
-    from haute.routes._optimiser_service import (
+    from haute.routes._optimiser_solver import (
         _OptimiserSolverExecutionError,
         _solve_online,
         solver_worker_context,
