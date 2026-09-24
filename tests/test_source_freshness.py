@@ -21,6 +21,8 @@ from haute._json_shred._source_proof import (
     FileSignature,
     Freshness,
     SourceChangedError,
+    _proof_record_root,
+    _StrongFileRevision,
     clear_file_signatures,
     file_signature,
     observe_freshness,
@@ -368,7 +370,8 @@ def _replace_record(record_path: Path, raw: bytes) -> None:
 
 
 def _record(path: Path) -> dict[str, Any]:
-    return json.loads(_record_path(path).read_bytes())
+    record: dict[str, Any] = json.loads(_record_path(path).read_bytes())
+    return record
 
 
 def _current_revision_record(path: Path) -> dict[str, object]:
@@ -546,3 +549,67 @@ def test_a_file_that_changes_while_hashed_records_only_its_settled_revision(
 
     assert recorded == [_current_revision_record(path)]
     assert _record(path)["digest"] == signature.digest == content_hash(path)
+
+
+def test_records_live_in_the_project_cache(haute_scratch: Path) -> None:
+    # Imported before the autouse fixture redirects the module's root.
+    assert _proof_record_root() == haute_scratch / ".haute_cache" / "source_proofs"
+
+
+_WINDOWS_REVISION = _StrongFileRevision(
+    file_identity=(7, bytes(range(1, 17))), size=12, mtime_ns=34, change_token=56
+)
+_POSIX_REVISION = _StrongFileRevision(file_identity=(7, 123), size=12, mtime_ns=34, change_token=56)
+
+
+@pytest.mark.parametrize(
+    ("revision", "kind"),
+    [(_WINDOWS_REVISION, "windows_usn_v1"), (_POSIX_REVISION, "posix_ctime_v1")],
+)
+def test_a_revision_round_trips_through_its_record(
+    revision: _StrongFileRevision, kind: str
+) -> None:
+    record = _source_proof._revision_record(revision)
+
+    assert record["kind"] == kind
+    assert _source_proof._parse_revision(json.loads(json.dumps(record))) == revision
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        "not_a_mapping",
+        "missing_key",
+        "negative_volume",
+        "non_hex_windows_id",
+        "short_windows_id",
+        "zero_posix_inode",
+        "string_posix_inode",
+        "zero_change_token",
+        "unknown_kind",
+    ],
+)
+def test_a_broken_revision_record_is_refused(broken: str) -> None:
+    windows = _source_proof._revision_record(_WINDOWS_REVISION)
+    posix = _source_proof._revision_record(_POSIX_REVISION)
+    record: object
+    if broken == "not_a_mapping":
+        record = [windows]
+    elif broken == "missing_key":
+        record = {key: value for key, value in windows.items() if key != "change_token"}
+    elif broken == "negative_volume":
+        record = {**windows, "file_identity": [-1, windows["file_identity"][1]]}  # type: ignore[index]
+    elif broken == "non_hex_windows_id":
+        record = {**windows, "file_identity": [7, "z" * 32]}
+    elif broken == "short_windows_id":
+        record = {**windows, "file_identity": [7, "ab" * 8]}
+    elif broken == "zero_posix_inode":
+        record = {**posix, "file_identity": [7, 0]}
+    elif broken == "string_posix_inode":
+        record = {**posix, "file_identity": [7, "123"]}
+    elif broken == "zero_change_token":
+        record = {**posix, "change_token": 0}
+    else:
+        record = {**posix, "kind": "stat"}
+
+    assert _source_proof._parse_revision(record) is None
