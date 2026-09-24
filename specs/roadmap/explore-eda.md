@@ -12,36 +12,11 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| EDA-E10 | Planned | P2 | Add one cached on-demand relationship/key-analysis service. |
 | EDA-E18 | Deferred | P3 | Evaluate advanced Excel-parity pivot operations after representative use. |
 | EDA-E23 | Deferred | P3 | Add shared chart filter and hierarchy interactions after representative use. |
 | EDA-E24 | Deferred | P3 | Evaluate the remaining PivotChart parity surface from evidence. |
 
 ## Planned improvements
-
-### EDA-E10 — Target relationships
-
-**Why:** A report needs bounded, target-aware signals for feature investigation.
-
-**Plan:** Building on the bounded distribution primitives the profile now
-has, add one on-demand analysis job/cache surface with explicit cache-miss and
-cancellation behaviour. It owns bounded numeric/categorical target
-aggregations, target/weight configuration, and exact user-selected
-multi-column key uniqueness checks. Key analysis is not a second synchronous
-scan path or a base-report estimate.
-
-**Acceptance:** Tests cover cache miss, cancellation/supersession, target and
-weight validation, numeric and categorical results, bounded levels, ranked UI
-rendering, exact single-/multi-column key counts, unhashable key rejection, and
-cache identity for the selected analysis and columns.
-
-**Dependencies:** The current bounded collection, the shared data
-point and its analysis-result store, and the job-lifecycle and tab/panel
-contracts.
-
-**Evidence:** `src/haute/routes/explore.py`;
-`src/haute/routes/_pivot_service.py`; `frontend/src/panels/explore`;
-`tests/test_analysis_results.py`.
 
 ### EDA-E18 — Advanced Excel pivot parity
 

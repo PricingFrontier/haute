@@ -429,7 +429,7 @@ def _format_duration(value: timedelta | None) -> str | None:
     return str(value)
 
 
-def _categorical_value_label_expr(name: str, dtype: pl.DataType) -> pl.Expr:
+def categorical_label_expr(name: str, dtype: pl.DataType) -> pl.Expr:
     """Return the String-typed expression whose distinct values are counted.
 
     Binary columns may hold arbitrary, non-UTF-8 bytes. A strict
@@ -456,7 +456,7 @@ def _categorical_value_label_expr(name: str, dtype: pl.DataType) -> pl.Expr:
 
 def _categorical_value_counts_expr(name: str, dtype: pl.DataType) -> pl.Expr:
     return (
-        _categorical_value_label_expr(name, dtype)
+        categorical_label_expr(name, dtype)
         .value_counts(sort=True, name=CATEGORICAL_COUNT_FIELD)
         .struct.rename_fields([_CATEGORICAL_VALUE_FIELD, CATEGORICAL_COUNT_FIELD])
         .head(_CATEGORICAL_VALUE_COUNT_LIMIT)
@@ -467,7 +467,7 @@ def _categorical_value_counts_expr(name: str, dtype: pl.DataType) -> pl.Expr:
 def _categorical_label_group_count_expr(name: str, dtype: pl.DataType) -> pl.Expr:
     """Count value-count groups after conversion to their display labels."""
 
-    return _categorical_value_label_expr(name, dtype).n_unique()
+    return categorical_label_expr(name, dtype).n_unique()
 
 
 def _parse_categorical_value_counts(
@@ -823,7 +823,7 @@ def _build_frame_stats(
             aggregations.append(min_max_expr.min().alias(f"min::{name}"))
             aggregations.append(min_max_expr.max().alias(f"max::{name}"))
         if dtype.base_type() in _TEXT_DTYPE_BASES:
-            text_expr = _categorical_value_label_expr(name, dtype).str.len_chars()
+            text_expr = categorical_label_expr(name, dtype).str.len_chars()
             aggregations.append(text_expr.min().alias(f"text_min_length::{name}"))
             aggregations.append(text_expr.mean().alias(f"text_mean_length::{name}"))
             aggregations.append(text_expr.max().alias(f"text_max_length::{name}"))

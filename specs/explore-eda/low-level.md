@@ -4,7 +4,8 @@
 
 | File | Responsibility |
 | --- | --- |
-| `src/haute/routes/explore.py` | FastAPI router (`/api/explore`): the `/pivots` run/status/cancel/member endpoints. Graph-bearing requests share `flatten_graph`, `_ensure_source_file`, and `_validate_runtime_input_paths` before service delegation. Explore's data is built and reported through the shared node-data routes, so this router owns no materialisation of its own. |
+| `src/haute/routes/explore.py` | FastAPI router (`/api/explore`): the `/pivots` run/status/cancel/member endpoints and `/relationships`. Graph-bearing requests share `flatten_graph`, `_ensure_source_file`, and `_validate_runtime_input_paths` before service delegation. Explore's data is built and reported through the shared node-data routes, so this router owns no materialisation of its own. |
+| `src/haute/routes/_explore_relationships.py` | Target relationships and key checks over the shared data point (`ExploreRelationshipsService`), answered inside the request through the shared synchronous-analysis helper; see [Relationships and key checks](#relationships-and-key-checks). |
 | `src/haute/_frame_profile.py` | The data profile computation itself: per-column statistics and the overview summary (`_build_frame_stats`, `_build_data_quality_summary`, `_build_categorical_summary`, `_build_overview_summary`), independent of any node or cache. |
 | `src/haute/routes/_pivot_service.py` | Pivot service: resolves the Explore node's shared data point, leases it for the whole calculation, validates fields/aggregations, applies typed exact-member filters, enforces cardinality before aggregation, runs latest-wins admitted jobs, and caches typed matrices by `(point digest, data version, calculation identity)`. Members answer inside the request through the shared synchronous-analysis helper. |
 | `src/haute/_polars_utils.py` | [io-layer](../io-layer/low-level.md)-owned `cancellable_streaming_collect` primitive consumed by Explore so a cancelled analysis interrupts its in-flight native Polars query. |
@@ -401,6 +402,42 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
 - `values` comes from the `values_by_column` dict built in `_build_frame_stats`; columns without
   an entry get `[]`.
 
+## Relationships and key checks
+
+`POST /api/explore/relationships` answers two bounded questions about the whole data point an
+Explore node reads, through the synchronous-analysis surface the banding statistics and rating
+levels use (`run_synchronous_analysis` inside `run_until_disconnected`):
+
+- **Cache miss and identity.** A point that is not current answers `status: "cache_required"`
+  and reads nothing. An answer is memoised by point digest, data version and the normalised
+  question (`target`, `weight`, `features`, `key_columns`, `level_limit`, analysis version), so
+  the same question on the same data is served without a scan and any other question, or a
+  rebuilt point, is recomputed. The consumer's column demand is widened by every referenced
+  column, as rating levels widen theirs.
+- **Cancellation and supersession.** A client that disconnects cancels the scan; the Relationships
+  pane aborts its previous request whenever its question changes.
+- **Validation (HTTP 422, plain-string detail).** No features and no key columns; features without
+  a target; a weight equal to the target; a feature equal to the target or weight; a column the
+  data lacks; a target that is not numeric or Boolean; a weight that is not numeric; a feature
+  that is unhashable or nested; an unhashable key column. At most
+  `EXPLORE_RELATIONSHIP_FEATURE_LIMIT` (50) features and `EXPLORE_KEY_COLUMN_LIMIT` (8) key columns.
+- **Relationships.** Rows are used when the target is finite and, with a weight, the weight is
+  finite and non-negative. A numeric feature is read as `NUMERIC_RELATIONSHIP_BINS` (10)
+  equal-width bins placed exactly as the profile's histogram places values
+  (`numeric_bin_scale`), plus a `(missing)` level for null or non-finite values. A categorical
+  feature keeps its `level_limit` heaviest values (by weight, then label), folds the rest into one
+  `Other` level (`levels_truncated`), and puts `(missing)` last; only those levels and a few sums
+  are collected, never every distinct value. Each level reports rows, summed weight and the
+  weighted target mean. `strength` is the weighted correlation ratio over all levels before
+  folding, `(Σ S_l²/W_l − S²/W) / (Q − S²/W)` with every sum taken over the target centred on its
+  weighted mean, so a large mean cannot round the variance away; it is clamped to [0, 1] and is 0
+  when the centred spread is below 1e-12 of the target's scale. Relationships are ranked by
+  strength, then feature name. Categorical labels use the profile's `categorical_label_expr`
+  (Binary decoded leniently, Duration formatted), so every groupable dtype the pane offers works.
+- **Key check.** Over every row: exact distinct keys (`n_unique` of the column or of a struct of
+  the columns), rows with any missing key value, duplicate rows (`rows − distinct_keys`), and
+  `unique` only when there are neither duplicates nor missing key values.
+
 ## Edge cases and invariants
 
 - **Object dtype**: excluded from `n_unique` entirely (`is_unhashable_dtype`); `distinct_count`
@@ -527,6 +564,10 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
   `values_truncated` display-label group count, including the null label
   (`test_categorical_truncation_counts_null_bucket_as_a_group`) and the no-false-truncation
   regressions for unsupported Lists and colliding Binary display labels.
+- `tests/test_explore_relationships.py` — relationships and key checks: cache miss, every 422, numeric
+  bins and the missing level, exact large-integer bins, categorical folding, strength 1 and 0 and
+  ranking, weight exclusion, single/composite/duplicate/missing key counts, unhashable feature and
+  key refusal, cache identity, a cancelled token, and the route.
 - `tests/test_analysis_results.py` — the profile through `POST /api/node-data/profile`: an
   Explore node's point profiled once and then served from the analysis store, a rebuilt point
   never answering with the previous data version's profile, one column-statistics run against a

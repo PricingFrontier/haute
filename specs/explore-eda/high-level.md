@@ -19,6 +19,9 @@ In scope:
   counts, text/temporal cues, cardinality flags, capped server-binned histograms of numeric
   columns, and an exact duplicate-row count when every column is hashable — as the `profile`
   analysis of a shared data point, so every consumer of that data sees the same statistics.
+- Relating chosen features to a numeric target (optionally weighted) and checking whether chosen
+  key columns identify a row, over the whole data point, on demand: bounded levels per feature,
+  ranked by the share of the target's variance they explain, and exact key counts.
 - Validating the `overview` config dict attached to an Explore node — the set of toggle cards
   (`dataset_snapshot`, `data_quality`, `numeric_summary`, `categorical_summary`, `schema`) a user
   has enabled, plus round-trip-safe storage of any unrecognised keys.
@@ -318,6 +321,11 @@ Out of scope (owned elsewhere):
   say so explicitly instead of drawing an empty chart. Adding the histograms bumped
   `PROFILE_ANALYSIS_VERSION` to 2, so stored profiles are recomputed rather than served
   without them.
+- **Relationships answer inside the request.** Relationships and key checks use the same
+  synchronous-analysis surface as banding statistics and rating levels rather than a background
+  job: the pane asks while it is open, a disconnect cancels the scan, a changed question aborts
+  the previous one, and answers are memoised by data version and question. The choices are the
+  pane's own state, not node config, so asking never edits the pipeline.
 - **Data and analysis kept apart.** The point's snapshot (parquet on disk, keyed by the node
   snapshot signature) and the profile stored against it (keyed by point digest, data version,
   analysis kind, and analysis version) are deliberately independent. This lets an `overview`,

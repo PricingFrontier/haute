@@ -1715,6 +1715,57 @@ class RatingLevelsResponse(BaseModel):
     columns: list[RatingLevelColumn] = Field(default_factory=list)
 
 
+EXPLORE_RELATIONSHIP_FEATURE_LIMIT = 50
+EXPLORE_KEY_COLUMN_LIMIT = 8
+
+
+class ExploreRelationshipsRequest(NodeDataRequest):
+    """Target relationships and a key check over the data point an Explore node reads."""
+
+    target: str | None = None
+    weight: str | None = None
+    features: list[str] = Field(default_factory=list, max_length=EXPLORE_RELATIONSHIP_FEATURE_LIMIT)
+    key_columns: list[str] = Field(default_factory=list, max_length=EXPLORE_KEY_COLUMN_LIMIT)
+    level_limit: int = Field(default=12, ge=2, le=50)
+
+
+class ExploreRelationshipLevel(BaseModel):
+    label: str
+    kind: Literal["value", "bin", "missing", "other"]
+    rows: int
+    weight: float
+    target_mean: float | None
+
+
+class ExploreRelationship(BaseModel):
+    feature: str
+    kind: Literal["numeric", "categorical"]
+    strength: float
+    levels: list[ExploreRelationshipLevel]
+    levels_truncated: bool
+
+
+class ExploreKeyCheck(BaseModel):
+    columns: list[str]
+    rows: int
+    distinct_keys: int
+    duplicate_rows: int
+    null_key_rows: int
+    unique: bool
+
+
+class ExploreRelationshipsResponse(BaseModel):
+    status: Literal["ok", "cache_required"]
+    point: NodeDataPointResponse
+    data_version: str | None = None
+    total_rows: int = 0
+    target: str | None = None
+    weight: str | None = None
+    used_rows: int = 0
+    relationships: list[ExploreRelationship] = Field(default_factory=list)
+    key_check: ExploreKeyCheck | None = None
+
+
 class ExplorePivotMembersRequest(BaseModel):
     graph: Graph
     node_id: str

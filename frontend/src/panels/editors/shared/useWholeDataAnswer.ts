@@ -55,6 +55,11 @@ export interface WholeDataAnswer<TResponse> {
   cache: NodeDataCache
   /** The answer, only while it describes the data this node reads now. */
   answer: TResponse | null
+  /**
+   * The server answered that the data is not cached for this question, even
+   * though this editor's point looked current: the point needs caching again.
+   */
+  cacheRequired: boolean
   loading: boolean
   basis: WholeDataBasis
   error: string | null
@@ -174,6 +179,7 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
   return {
     cache,
     answer: current ? matching : null,
+    cacheRequired: available === "current" && matching?.status === "cache_required",
     loading: loading?.identity === requestIdentity ? loading.value : false,
     error: error?.identity === requestIdentity ? error.value : null,
     basis: current ? "all" : available === "stale" ? "stale" : "sample",
