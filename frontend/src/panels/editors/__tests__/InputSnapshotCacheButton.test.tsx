@@ -305,4 +305,27 @@ describe("InputSnapshotCacheButton", () => {
       vi.useRealTimers()
     }
   })
+
+  it("shows build progress from its one job poll, with no separate progress timer", async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(getInputCacheJob).mockResolvedValue({
+        schema_version: 1, job_id: "job-1", identity_digest: "snapshot",
+        status: "running", terminal_reason: null, message: "Building",
+        refresh: false, build_class: "bounded",
+        progress: { phase: "building", rows: 1234, batches: 2, bytes: 64, elapsed_seconds: 2.4 },
+        snapshot: null, error_code: null,
+      })
+      renderButton()
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      fireEvent.click(screen.getByRole("button", { name: "Cache as Parquet" }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
+
+      // The build wait polls at 0, 800, 1600 and 2400 ms, and nothing else does.
+      expect(getInputCacheJob).toHaveBeenCalledTimes(4)
+      expect(screen.getByRole("button", { name: /building… 1,234 rows · 2s/ })).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

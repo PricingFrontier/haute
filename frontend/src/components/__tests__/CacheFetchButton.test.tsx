@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
-import { CacheFetchButton, type BaseCacheStatus } from "../CacheFetchButton"
+import { CacheFetchButton, type BaseCacheStatus, type CacheBuildProgress } from "../CacheFetchButton"
 
 type TestStatus = BaseCacheStatus & {
   cached_at: number
@@ -16,8 +16,7 @@ const labels = {
 function renderCacheButton(overrides: Partial<{
   resourceKey: string
   getStatus: (key: string) => Promise<TestStatus>
-  startFetch: (key: string) => Promise<TestStatus>
-  getProgress: (key: string) => Promise<{ active: boolean; rows?: number; elapsed?: number; phase?: string }>
+  startFetch: (key: string, onProgress: (progress: CacheBuildProgress) => void) => Promise<TestStatus>
   deleteCache: (key: string) => Promise<TestStatus>
   onCacheReady: (status: TestStatus) => void
 }> = {}) {
@@ -34,7 +33,6 @@ function renderCacheButton(overrides: Partial<{
       resourceKey={overrides.resourceKey ?? "rating/data/input.json"}
       getStatus={overrides.getStatus ?? vi.fn().mockResolvedValue(uncached)}
       startFetch={overrides.startFetch ?? vi.fn().mockResolvedValue(uncached)}
-      getProgress={overrides.getProgress ?? vi.fn().mockResolvedValue({ active: false })}
       deleteCache={overrides.deleteCache ?? vi.fn().mockResolvedValue(uncached)}
       timestampField="cached_at"
       labels={labels}
@@ -98,7 +96,6 @@ describe("CacheFetchButton", () => {
         resourceKey="new.json"
         getStatus={getStatus}
         startFetch={vi.fn().mockResolvedValue(status({}))}
-        getProgress={vi.fn().mockResolvedValue({ active: false })}
         deleteCache={vi.fn().mockResolvedValue(status({}))}
         timestampField="cached_at"
         labels={labels}
@@ -132,7 +129,6 @@ describe("CacheFetchButton", () => {
         resourceKey="new.json"
         getStatus={getStatus}
         startFetch={vi.fn().mockResolvedValue(status({}))}
-        getProgress={vi.fn().mockResolvedValue({ active: false })}
         deleteCache={vi.fn().mockResolvedValue(status({}))}
         timestampField="cached_at"
         labels={labels}
@@ -208,7 +204,6 @@ describe("CacheFetchButton", () => {
         resourceKey="new.json"
         getStatus={getStatus}
         startFetch={vi.fn().mockResolvedValue(status({}))}
-        getProgress={vi.fn().mockResolvedValue({ active: false })}
         deleteCache={vi.fn().mockResolvedValue(status({}))}
         timestampField="cached_at"
         labels={labels}
@@ -246,7 +241,6 @@ describe("CacheFetchButton", () => {
         resourceKey="new.json"
         getStatus={getStatus}
         startFetch={vi.fn().mockResolvedValue(status({}))}
-        getProgress={vi.fn().mockResolvedValue({ active: false })}
         deleteCache={vi.fn().mockResolvedValue(status({}))}
         timestampField="cached_at"
         labels={labels}
@@ -260,34 +254,91 @@ describe("CacheFetchButton", () => {
     })
   })
 
-  it("keeps building while start fetch is pending even if progress is inactive", async () => {
+  it("shows the progress its caller reports until the build settles, and never polls", async () => {
     vi.useFakeTimers()
     const start = deferred<TestStatus>()
-    const startFetch = vi.fn().mockReturnValue(start.promise)
-    const getProgress = vi.fn().mockResolvedValue({ active: false })
-    renderCacheButton({ startFetch, getProgress })
+    let report: ((progress: CacheBuildProgress) => void) | undefined
+    const startFetch = vi.fn((_key: string, onProgress: (progress: CacheBuildProgress) => void) => {
+      report = onProgress
+      return start.promise
+    })
+    renderCacheButton({ startFetch })
 
     await act(async () => {
       await Promise.resolve()
     })
     fireEvent.click(screen.getByRole("button", { name: /Fetch Cache/i }))
     expect(screen.getByText("Fetching...")).toBeInTheDocument()
+    // No timer is armed for progress: the caller's own wait reports it.
+    expect(vi.getTimerCount()).toBe(0)
 
-    await act(async () => {
-      vi.advanceTimersByTime(1000)
-      await Promise.resolve()
-    })
-
-    expect(getProgress).toHaveBeenCalledTimes(1)
-    expect(screen.getByText("Fetching...")).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: /Fetching/i }))
+    act(() => report?.({ rows: 1234, elapsed: 3, phase: "building" }))
+    expect(screen.getByText(/building… 1,234 rows · 3s/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: /building/i }))
     expect(startFetch).toHaveBeenCalledTimes(1)
 
     await act(async () => {
       start.resolve(status({ cached: true, row_count: 5, column_count: 2, size_bytes: 20, cached_at: 1 }))
     })
-
     vi.useRealTimers()
+    expect(await screen.findByText("5 rows")).toBeInTheDocument()
+  })
+
+  it("drops a report that arrives after its build settled, so the next build starts clean", async () => {
+    const builds: Array<{
+      result: ReturnType<typeof deferred<TestStatus>>
+      report: (progress: CacheBuildProgress) => void
+    }> = []
+    const startFetch = vi.fn((_key: string, onProgress: (progress: CacheBuildProgress) => void) => {
+      const result = deferred<TestStatus>()
+      builds.push({ result, report: onProgress })
+      return result.promise
+    })
+    renderCacheButton({ startFetch })
+
+    fireEvent.click(await screen.findByRole("button", { name: /Fetch Cache/i }))
+    await act(async () => {
+      builds[0].result.resolve(status({ cached: true, row_count: 5, column_count: 2, size_bytes: 20, cached_at: 1 }))
+    })
     await screen.findByText("5 rows")
+    act(() => builds[0].report({ rows: 9, elapsed: 9, phase: "late" }))
+
+    fireEvent.click(screen.getByRole("button", { name: /Refresh Cache/i }))
+    expect(screen.getByRole("button", { name: /Fetching\.\.\./ })).toBeInTheDocument()
+    expect(screen.queryByText(/late…/)).not.toBeInTheDocument()
+
+    // The running build's own report still shows.
+    act(() => builds[1].report({ rows: 3, elapsed: 1, phase: "second" }))
+    expect(screen.getByRole("button", { name: /second… 3 rows · 1s/ })).toBeInTheDocument()
+  })
+
+  it("drops progress reported for a previous resource while the next resource builds", async () => {
+    const reports: Array<(progress: CacheBuildProgress) => void> = []
+    const startFetch = vi.fn((_key: string, onProgress: (progress: CacheBuildProgress) => void) => {
+      reports.push(onProgress)
+      return new Promise<TestStatus>(() => {})
+    })
+    const { rerender } = renderCacheButton({ startFetch })
+    fireEvent.click(await screen.findByRole("button", { name: /Fetch Cache/i }))
+
+    rerender(
+      <CacheFetchButton<TestStatus>
+        resourceKey="rating/data/other.json"
+        getStatus={vi.fn().mockResolvedValue(status({}))}
+        startFetch={startFetch}
+        deleteCache={vi.fn().mockResolvedValue(status({}))}
+        timestampField="cached_at"
+        labels={labels}
+      />,
+    )
+    fireEvent.click(await screen.findByRole("button", { name: /Fetch Cache/i }))
+    expect(startFetch).toHaveBeenCalledTimes(2)
+
+    act(() => reports[0]?.({ rows: 7, elapsed: 1, phase: "stale" }))
+    expect(screen.queryByText(/stale…/)).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Fetching\.\.\./ })).toBeInTheDocument()
+
+    act(() => reports[1]?.({ rows: 2, elapsed: 1, phase: "current" }))
+    expect(screen.getByRole("button", { name: /current… 2 rows · 1s/ })).toBeInTheDocument()
   })
 })

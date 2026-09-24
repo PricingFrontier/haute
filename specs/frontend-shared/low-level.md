@@ -258,7 +258,9 @@ cancels the job; a caller that owns the job decides that. The callers are:
   `cancelInputSnapshotBuild` waits at most 48 seconds for the cancelled build
   to stop, then raises `CancellationFailedError`.
 - `InputSnapshotCacheButton` waits for its build with a signal aborted on
-  unmount and when its configuration changes; the server build continues.
+  unmount and when its configuration changes; the server build continues. Its
+  `onStatus` reports each running status as `CacheFetchButton`'s progress, so
+  there is no second progress poll.
 - `useOptimiserAutoRange` waits with the active run's signal and retires the
   run from `onStatus` once it is no longer current.
 

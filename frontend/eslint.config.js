@@ -121,18 +121,7 @@ export default defineConfig([
     },
   },
   {
-    // Its progress interval and error text go with the component, or onto the
-    // shared poller and apiErrorMessage, in CACHE-S08.
-    files: ['src/components/CacheFetchButton.tsx'],
-    rules: {
-      'no-restricted-syntax': 'warn',
-    },
-  },
-  {
-    files: [
-      'src/components/CacheFetchButton.tsx',
-      'src/panels/GitPanel.tsx',
-    ],
+    files: ['src/panels/GitPanel.tsx'],
     rules: {
       'react-hooks/refs': 'warn',
     },

@@ -15,7 +15,7 @@
 | `frontend/src/components/ReadOnlyNodeConfig.tsx`, `frontend/src/components/FramesTable.tsx`, `frontend/src/components/KeyPickerModal.tsx` | Inert configuration (`NodeConfigEditor` in read-only mode with no-op callbacks, empty graph context and default panes), API-frame rows and reusable API-input key picker. |
 | `frontend/src/panels/editors/index.ts` | Public editor exports. |
 | `frontend/src/panels/editors/_shared.tsx` | Shared editor types, styles, file browser (nullable directory size, numeric file-size rendering), schema preview and the input-source bar (chips keyed by edge id, showing each edge's input name — the code argument — with the source node named in the tooltip). |
-| `frontend/src/components/ColumnTable.tsx`, `frontend/src/components/CacheFetchButton.tsx` | Reusable column-selection table and API-input cache action/status control. |
+| `frontend/src/components/ColumnTable.tsx`, `frontend/src/components/CacheFetchButton.tsx` | Reusable column-selection table and the snapshot cache action/status control. `CacheFetchButton` never polls: its `startFetch` receives an `onProgress` callback, and it shows the progress its caller reports for the current resource and build only. |
 | `frontend/src/utils/dataInputMode.ts` | Shared `dataInputIsDirect` derivation mirroring the backend's `data_input_is_direct`; drives the Data Input editor's cache surface and [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)'s `ensureInputSnapshots` orchestration. |
 | `frontend/src/panels/editors/CodeEditor.tsx`, `frontend/src/panels/editors/CodeMirrorEditor.tsx`, `frontend/src/panels/editors/shared/PolarsCodePanel.tsx`, `frontend/src/panels/editors/shared/SteppedCodePane.tsx`, `frontend/src/panels/editors/shared/PathPickerField.tsx` | Code-editor wrappers, Polars-specific panel, the shared stepped-code pane (step builder while `config.steps` is a list, otherwise the code box with the discard notice; takes the start mode and the eligible step input names), and the shared selected-path picker. |
 | `frontend/src/panels/editors/ConstantEditor.tsx`, `frontend/src/panels/editors/TransformEditor.tsx`, `frontend/src/panels/editors/EdgeJoinEditor.tsx`, `frontend/src/panels/editors/LiveSwitchEditor.tsx`, `frontend/src/panels/editors/ScenarioExpanderEditor.tsx` | Editors for scalar, transform, join, conditional-switch and scenario nodes. `TransformEditor` is the `SteppedCodePane` in `input` mode with the transform's code hint and starter code. `EdgeJoinEditor` exposes fixed canvas-derived base/join roles, atomic swap, the seven supported join modes, mutually exclusive same-name/asymmetric key forms, and advanced Polars options. |
@@ -268,8 +268,10 @@ control; a stored `read`-mode Parquet input is snapshot-backed and renders
 the cache control like any other snapshot input. Snapshot build classification is execution metadata and is not shown
 as technical diagnostic copy in the editor. Builds use `lazy_sink`, except admitted-eager formats use
 `preview_eager`, and refresh a ready snapshot. The adapter waits for jobs to a
-terminal result through the shared `waitForJob`, stops polling (leaving the build
-running) when it unmounts or its configuration changes, allows the active button
+terminal result through the shared `waitForJob`, reports each running status of that
+wait as the button's progress (so a build is polled once, not also by a progress
+timer), stops polling (leaving the build running) when it unmounts or its
+configuration changes, allows the active button
 action to cancel the current job,
 and keeps stale readiness reactive so `Source changed since cache — Refresh to
 update.` remains visible. Required source fields gate all build actions.

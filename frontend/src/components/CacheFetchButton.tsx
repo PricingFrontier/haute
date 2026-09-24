@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef } from "react"
 import { Loader2, HardDriveDownload, Trash2, XCircle, AlertCircle } from "lucide-react"
-import { ApiError } from "../api/client"
+import { apiErrorMessage } from "../api/errors"
 import { formatBytes } from "../utils/formatBytes"
 import { formatTime } from "../utils/formatTime"
 
@@ -14,7 +14,8 @@ export type BaseCacheStatus = {
   size_bytes: number
 }
 
-type ProgressPayload = { active: boolean; rows?: number; elapsed?: number; phase?: string }
+/** How far a running build has got, as its caller reports it. */
+export type CacheBuildProgress = { rows: number; elapsed: number; phase: string }
 
 export const PARQUET_CACHE_LABELS = {
   fetchLabel: "Cache as Parquet",
@@ -28,10 +29,11 @@ export type CacheFetchButtonProps<TStatus extends BaseCacheStatus> = {
 
   /** API: check current cache status. */
   getStatus: (key: string) => Promise<TStatus>
-  /** API: kick off a fetch / build. */
-  startFetch: (key: string) => Promise<TStatus>
-  /** API: poll progress while building. */
-  getProgress: (key: string) => Promise<ProgressPayload>
+  /**
+   * API: build and wait for the cache. The caller reports how the build is
+   * going through `onProgress` from its own wait, so the button never polls.
+   */
+  startFetch: (key: string, onProgress: (progress: CacheBuildProgress) => void) => Promise<TStatus>
   /** API: delete the cached data. */
   deleteCache: (key: string) => Promise<TStatus>
   /** API: cancel an in-progress build. Optional — when absent, no cancel button shown. */
@@ -71,7 +73,6 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
   resourceKey,
   getStatus,
   startFetch,
-  getProgress,
   deleteCache: deleteCacheFn,
   cancelFetch: cancelFetchFn,
   timestampField,
@@ -82,27 +83,25 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
 }: CacheFetchButtonProps<TStatus>) {
   const [cache, setCache] = useState<TStatus | null>(null)
   const [building, setBuilding] = useState(false)
-  const [progress, setProgress] = useState<{ rows: number; elapsed: number; phase: string } | null>(null)
+  const [progress, setProgress] = useState<CacheBuildProgress | null>(null)
   const [error, setError] = useState("")
   const [statusError, setStatusError] = useState("")
   const activeResourceKeyRef = useRef(resourceKey)
   const statusGenerationRef = useRef(0)
   const fetchGenerationRef = useRef(0)
-  const progressGenerationRef = useRef(0)
   const deleteGenerationRef = useRef(0)
-  const startPendingRef = useRef(false)
 
   // Keep a ref for onCacheReady to avoid stale closure in useEffect
   const onCacheReadyRef = useRef(onCacheReady)
-  onCacheReadyRef.current = onCacheReady
+  useEffect(() => {
+    onCacheReadyRef.current = onCacheReady
+  })
 
   useLayoutEffect(() => {
     activeResourceKeyRef.current = resourceKey
     statusGenerationRef.current += 1
     fetchGenerationRef.current += 1
-    progressGenerationRef.current += 1
     deleteGenerationRef.current += 1
-    startPendingRef.current = false
     setCache(null)
     setBuilding(false)
     setProgress(null)
@@ -127,63 +126,43 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
         if (activeResourceKeyRef.current !== requestKey || statusGenerationRef.current !== generation) return
         console.warn("cache status fetch failed", e)
         setCache(null)
-        const msg = e instanceof ApiError ? e.detail || e.message : e instanceof Error ? e.message : String(e)
-        setStatusError(`Unable to check cache status: ${msg}`)
+        setStatusError(`Unable to check cache status: ${apiErrorMessage(e)}`)
       })
   // eslint-disable-next-line react-hooks/exhaustive-deps -- stable callback props, including would restart polling
   }, [resourceKey])
-
-  // Poll progress while building
-  useEffect(() => {
-    if (!building || !resourceKey) return
-    const requestKey = resourceKey
-    const generation = ++progressGenerationRef.current
-    const id = setInterval(() => {
-      getProgress(requestKey)
-        .then((data) => {
-          if (
-            activeResourceKeyRef.current !== requestKey ||
-            progressGenerationRef.current !== generation
-          ) {
-            return
-          }
-          if (data.active) {
-            setProgress({ rows: data.rows || 0, elapsed: data.elapsed || 0, phase: data.phase || "" })
-          } else if (!startPendingRef.current) {
-            setBuilding(false)
-          }
-        })
-        .catch((e) => { console.warn("progress poll failed", e) })
-    }, 1000)
-    return () => {
-      progressGenerationRef.current += 1
-      clearInterval(id)
-      setProgress(null)
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- stable callback prop, including would restart interval
-  }, [building, resourceKey])
 
   const doFetch = () => {
     if (!resourceKey || building) return
     const requestKey = resourceKey
     const generation = ++fetchGenerationRef.current
+    const isCurrent = () =>
+      activeResourceKeyRef.current === requestKey && fetchGenerationRef.current === generation
+    // Retires this build's progress callback once the build has settled.
+    let settled = false
     statusGenerationRef.current += 1
-    startPendingRef.current = true
     setBuilding(true)
     setError("")
     setStatusError("")
-    startFetch(requestKey)
+    // Progress comes from the caller's own wait for the build, so a build is
+    // polled once; a report for an earlier resource or build, or one arriving
+    // after its build settled, is dropped.
+    startFetch(requestKey, (next) => {
+      if (!settled && isCurrent()) setProgress(next)
+    })
+      .finally(() => {
+        settled = true
+      })
       .then((data) => {
-        if (activeResourceKeyRef.current !== requestKey || fetchGenerationRef.current !== generation) return
-        startPendingRef.current = false
+        if (!isCurrent()) return
         setCache(data)
         setBuilding(false)
+        setProgress(null)
         onCacheReadyRef.current?.(data)
       })
-      .catch((e: Error) => {
-        if (activeResourceKeyRef.current !== requestKey || fetchGenerationRef.current !== generation) return
-        startPendingRef.current = false
-        const msg = e instanceof ApiError ? e.detail || e.message : e.message
+      .catch((e: unknown) => {
+        if (!isCurrent()) return
+        setProgress(null)
+        const msg = apiErrorMessage(e)
         // Don't show cancellation as an error
         if (msg === "Cache build cancelled") {
           setError("")
@@ -209,9 +188,9 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
         if (activeResourceKeyRef.current !== requestKey || deleteGenerationRef.current !== generation) return
         setCache(data)
       })
-      .catch((e: Error) => {
+      .catch((e: unknown) => {
         if (activeResourceKeyRef.current !== requestKey || deleteGenerationRef.current !== generation) return
-        setError(e instanceof ApiError ? e.detail || e.message : e.message)
+        setError(apiErrorMessage(e))
       })
   }
 
