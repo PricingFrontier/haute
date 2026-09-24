@@ -155,7 +155,10 @@ describe("chart config", () => {
   ])("rejects an unknown field on the %s, as the server does", (_level, level) => {
     const raw = structuredClone(configured()) as unknown as Record<string, unknown>
     level(raw).future = "compact"
-    expect(parseExploreCharts({ charts: [raw] }).ok).toBe(false)
+    expect(parseExploreCharts({ charts: [raw] })).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/\/future: must NOT have additional properties$/),
+    })
   })
 
   it.each([
