@@ -14,7 +14,6 @@ import gc
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from contextlib import nullcontext
 from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
@@ -47,14 +46,12 @@ from haute._execution_context import (
 )
 from haute._graph_utils import (
     _sanitize_func_name,
-    select_edge_source_output,
     upstream_node_ids,
 )
 from haute._interactive_workers import resolve_interactive_execution_mode
 from haute._logging import get_logger
 from haute._polars_utils import (
     bounded_collect_batches,
-    bounded_sink,
     streaming_collect,
 )
 from haute._rating import (
@@ -89,7 +86,6 @@ from haute.errors import (
 from haute.execution import (
     execute_lazy_graph,
     prune_source_switch_edges,
-    ratebook_factor_required_columns,
 )
 from haute.executor import _build_node_fn
 from haute.graph_utils import NodeType, flatten_graph, graph_fingerprint
@@ -122,29 +118,28 @@ from haute.routes._job_store import (
 )
 from haute.routes._optimiser_input import (
     _NULL_QUOTE_ID_DETAIL_PREFIX,
-    _QUOTE_ID_NULL_COUNT_ALIAS,
-    _admit_resident_grid,
+    OptimiserSetupError,
     _chunk_size_decision_for_parquet,
     _ChunkSizeDecision,
     _data_source_feeds_optimiser_through_parallel_edges,
+    _execution_stage,
     _explicit_chunk_size_from_config,
     _find_optimiser_node,
-    _invalid_quote_id_dtype_detail,
-    _missing_columns_detail,
-    _non_finite_check_columns,
-    _non_finite_detail_from_counts,
-    _null_check_columns,
-    _null_value_detail_from_counts,
     _optimiser_side_input_ids,
     _optimiser_solve_required_columns_by_node,
     _positive_int,
-    _projected_parquet_input_path,
-    _quote_id_null_detail,
     _resolve_optimiser_data_input_id,
     _resolve_optimiser_input_edge,
     _setup_execution_target_node_id,
     _solve_columns_by_node,
-    _value_contract_validation_exprs,
+    build_quote_grid,
+    extract_ratebook_factors,
+    grid_chunk_decision,
+    grid_construction_failures,
+    resolve_data_input_frame,
+    validate_and_project,
+    validate_and_project_auto_range,
+    write_solver_input,
 )
 from haute.routes._optimiser_limits import (
     enforce_frontier_compute_budget,
@@ -404,17 +399,6 @@ def _http_exception_job_update(
         execution_context=execution_context,
         terminal_reason=terminal_reason,
     )
-
-
-def _execution_stage(
-    execution_context: ExecutionContext | None,
-    name: str,
-    *,
-    node_id: str | None = None,
-) -> Any:
-    if execution_context is None:
-        return nullcontext()
-    return execution_context.stage(name, node_id=node_id)
 
 
 def _coerce_stopped_terminal_reason(reason: str) -> TerminalReason:
@@ -4361,6 +4345,25 @@ class OptimiserSolveService:
             if execution_context is not None:
                 self._record_execution_metrics(job_id, execution_context)
 
+    @contextlib.contextmanager
+    def _recorded_setup_failures(
+        self,
+        job_id: str,
+        execution_context: ExecutionContext | None,
+    ) -> Iterator[None]:
+        """Record a setup step's refusal as the job's terminal state, then answer it."""
+        try:
+            yield
+        except OptimiserSetupError as failure:
+            self._record_setup_failure(
+                job_id,
+                to=failure.reason,
+                message=failure.message,
+                fields=failure.fields,
+                execution_context=execution_context,
+            )
+            raise failure.http_exception() from failure
+
     def _resolve_data_input_frame(
         self,
         lazy_outputs: dict[str, Any],
@@ -4372,54 +4375,8 @@ class OptimiserSolveService:
         execution_context: ExecutionContext | None = None,
     ) -> Any:
         """Pick the correct lazy source from pipeline outputs."""
-        data_edge = _resolve_optimiser_input_edge(
-            graph,
-            node_id,
-            config,
-            field="data_input",
-            infer_single=True,
-        )
-        source_lf = None
-        if data_edge is not None:
-            source_output = lazy_outputs.get(data_edge.source)
-            if source_output is None:
-                configured_name = config.get("data_input")
-                error_msg = (
-                    f"Configured optimiser data_input {configured_name!r} did not produce data. "
-                    "Make sure it is connected to the optimiser node and produces a dataframe."
-                )
-                self._record_http_setup_failure(
-                    job_id,
-                    status_code=400,
-                    detail=error_msg,
-                    execution_context=execution_context,
-                )
-                raise HTTPException(status_code=400, detail=error_msg)
-            try:
-                source_lf = select_edge_source_output(source_output, data_edge)
-            except (KeyError, RuntimeError, ValueError) as exc:
-                error_msg = f"Configured optimiser data_input could not resolve its frame: {exc}"
-                self._record_http_setup_failure(
-                    job_id,
-                    status_code=400,
-                    detail=error_msg,
-                    execution_context=execution_context,
-                )
-                raise HTTPException(status_code=400, detail=error_msg) from exc
-        if source_lf is None:
-            error_msg = (
-                "No data arrived at the optimiser node. "
-                "Make sure an upstream data source is connected and producing data."
-            )
-            self._record_http_setup_failure(
-                job_id,
-                status_code=400,
-                detail=error_msg,
-                execution_context=execution_context,
-            )
-            raise HTTPException(status_code=400, detail=error_msg)
-
-        return source_lf
+        with self._recorded_setup_failures(job_id, execution_context):
+            return resolve_data_input_frame(lazy_outputs, graph, config, node_id)
 
     def _validate_and_project(
         self,
@@ -4434,152 +4391,16 @@ class OptimiserSolveService:
 
         Returns (constraint_cols, projected_lazy_frame).
         """
-        import polars as pl
-
-        with _execution_stage(
-            execution_context,
-            "optimiser_validate_and_project",
+        with (
+            _execution_stage(execution_context, "optimiser_validate_and_project"),
+            self._recorded_setup_failures(job_id, execution_context),
         ):
-            objective = str(config["objective"])
-            constraints = config["constraints"]
-            qid_col = str(config.get("quote_id", "quote_id"))
-            mult_col = str(config.get("scenario_value", "scenario_value"))
-            step_col = str(config.get("scenario_index", "scenario_index"))
-
-            schema = source_lf.collect_schema()
-            available_cols = set(schema.names())
-            required_cols = {objective, qid_col, mult_col, step_col}
-            for cname in constraints:
-                required_cols.add(cname)
-            detail = _missing_columns_detail(required_cols, available_cols)
-            if detail is not None:
-                self._record_http_setup_failure(
-                    job_id,
-                    status_code=400,
-                    detail=detail,
-                    execution_context=execution_context,
-                )
-                raise HTTPException(status_code=400, detail=detail)
-
-            constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []
-            qid_dtype = schema[qid_col]
-            detail = _invalid_quote_id_dtype_detail(schema, qid_col)
-            if detail is not None:
-                self._record_http_setup_failure(
-                    job_id,
-                    status_code=400,
-                    detail=detail,
-                    execution_context=execution_context,
-                )
-                raise HTTPException(status_code=400, detail=detail)
-
-            # ── Value contracts, computed in one streaming pass ─────────────
-            # Non-finite objective/constraint/scenario values must fail here
-            # as an explicit contract error naming the column — downstream
-            # library behaviour silently accepts e.g. a NaN objective and
-            # "converges" on wrong totals (C7). Only float-typed columns can
-            # carry NaN/inf; the solver consumes Float32 (see cast_map below),
-            # so float columns are checked at that precision to also reject
-            # Float64 values that overflow to ±inf on the cast. scenario_index
-            # is cast to Int32 downstream, so its source values are checked.
-            # Genuinely-null values (any dtype) are rejected in the same pass:
-            # the external aggregation's treatment of null is undefined.
-            self._validate_input_value_contracts(
+            return validate_and_project(
                 source_lf,
-                schema,
-                job_id,
-                quote_id_col=qid_col,
+                config,
                 validate_quote_id_nulls=validate_quote_id_nulls,
-                finite_columns=[objective, mult_col, step_col, *constraint_cols],
-                cast_to_float32_columns={objective, mult_col, *constraint_cols},
-                execution_context=execution_context,
-                profile=ExecutionProfile.OPTIMISER_SETUP,
-            )
-
-            solver_cols = [qid_col, step_col, mult_col, objective] + [
-                c for c in constraint_cols if c in available_cols
-            ]
-            cast_map: dict[str, pl.DataType] = {
-                step_col: pl.Int32(),
-                mult_col: pl.Float32(),
-                objective: pl.Float32(),
-            }
-            for c in constraint_cols:
-                cast_map[c] = pl.Float32()
-            cast_exprs = [pl.col(c).cast(t) for c, t in cast_map.items() if schema[c] != t]
-            if qid_dtype == pl.String:
-                cast_exprs.append(pl.col(qid_col).cast(pl.Categorical))
-
-            scored_lf = source_lf.select(solver_cols).with_columns(cast_exprs)
-            return constraint_cols, scored_lf
-
-    def _validate_input_value_contracts(
-        self,
-        source_lf: Any,
-        schema: Any,
-        job_id: str,
-        *,
-        quote_id_col: str,
-        validate_quote_id_nulls: bool,
-        finite_columns: Iterable[str],
-        cast_to_float32_columns: Iterable[str],
-        execution_context: ExecutionContext | None,
-        profile: ExecutionProfile,
-    ) -> None:
-        finite_columns = list(finite_columns)
-        non_finite_check_cols = _non_finite_check_columns(schema, finite_columns)
-        null_check_cols = _null_check_columns(schema, finite_columns)
-        validation_exprs = _value_contract_validation_exprs(
-            quote_id_col=quote_id_col,
-            validate_quote_id_nulls=validate_quote_id_nulls,
-            non_finite_check_cols=non_finite_check_cols,
-            null_check_cols=null_check_cols,
-            cast_to_float32_cols=set(cast_to_float32_columns),
-        )
-        if not validation_exprs:
-            return
-
-        validation_counts = streaming_collect(
-            source_lf.select(validation_exprs),
-            execution_context=execution_context,
-        )
-        if validate_quote_id_nulls:
-            null_count = int(validation_counts.get_column(_QUOTE_ID_NULL_COUNT_ALIAS).item())
-            if null_count > 0:
-                detail = _quote_id_null_detail(null_count)
-                self._record_http_setup_failure(
-                    job_id,
-                    status_code=400,
-                    detail=detail,
-                    execution_context=execution_context,
-                )
-                raise HTTPException(status_code=400, detail=detail)
-
-        non_finite_detail = _non_finite_detail_from_counts(
-            validation_counts,
-            non_finite_check_cols,
-        )
-        if non_finite_detail is not None:
-            self._record_http_setup_failure(
-                job_id,
-                status_code=400,
-                detail=non_finite_detail,
                 execution_context=execution_context,
             )
-            raise HTTPException(status_code=400, detail=non_finite_detail)
-
-        null_value_detail = _null_value_detail_from_counts(
-            validation_counts,
-            null_check_cols,
-        )
-        if null_value_detail is not None:
-            self._record_http_setup_failure(
-                job_id,
-                status_code=400,
-                detail=null_value_detail,
-                execution_context=execution_context,
-            )
-            raise HTTPException(status_code=400, detail=null_value_detail)
 
     def _validate_and_project_auto_range(
         self,
@@ -4589,66 +4410,13 @@ class OptimiserSolveService:
         *,
         execution_context: ExecutionContext | None = None,
     ) -> tuple[list[str], Any]:
-        """Validate and project only the columns auto-range needs.
-
-        Auto-range computes per-quote extrema for configured constraints. When
-        the projected input includes the configured objective, it validates the
-        objective for parity with solver input contracts, but it never passes
-        objective, scenario index, or scenario value columns to the range
-        estimator.
-        """
-        import polars as pl
-
-        constraints = config["constraints"]
-        objective = str(config["objective"])
-        qid_col = str(config.get("quote_id", "quote_id"))
-
-        schema = source_lf.collect_schema()
-        available_cols = set(schema.names())
-        constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []
-        required_cols = {qid_col, *constraint_cols}
-        detail = _missing_columns_detail(required_cols, available_cols)
-        if detail is not None:
-            self._record_http_setup_failure(
-                job_id,
-                status_code=400,
-                detail=detail,
+        """Validate and project only the columns auto-range needs."""
+        with self._recorded_setup_failures(job_id, execution_context):
+            return validate_and_project_auto_range(
+                source_lf,
+                config,
                 execution_context=execution_context,
             )
-            raise HTTPException(status_code=400, detail=detail)
-
-        qid_dtype = schema[qid_col]
-        detail = _invalid_quote_id_dtype_detail(schema, qid_col)
-        if detail is not None:
-            self._record_http_setup_failure(
-                job_id,
-                status_code=400,
-                detail=detail,
-                execution_context=execution_context,
-            )
-            raise HTTPException(status_code=400, detail=detail)
-
-        value_check_cols = [*constraint_cols]
-        if objective in available_cols:
-            value_check_cols.insert(0, objective)
-        self._validate_input_value_contracts(
-            source_lf,
-            schema,
-            job_id,
-            quote_id_col=qid_col,
-            validate_quote_id_nulls=True,
-            finite_columns=value_check_cols,
-            cast_to_float32_columns=value_check_cols,
-            execution_context=execution_context,
-            profile=ExecutionProfile.AUTO_RANGE,
-        )
-
-        auto_range_cols = [qid_col, *constraint_cols]
-        cast_exprs = [pl.col(c).cast(pl.Float32()) for c in constraint_cols]
-        if qid_dtype == pl.String:
-            cast_exprs.append(pl.col(qid_col).cast(pl.Categorical))
-        scored_lf = source_lf.select(auto_range_cols).with_columns(cast_exprs)
-        return constraint_cols, scored_lf
 
     @staticmethod
     def _extract_factors(
@@ -4661,108 +4429,23 @@ class OptimiserSolveService:
         execution_context: ExecutionContext | None = None,
         artifact_dir: str | None = None,
     ) -> Any:
-        """Extract ratebook factors DataFrame (None for online mode)."""
-        import polars as pl
+        """Extract ratebook factors DataFrame (None for online mode).
 
-        if mode != "ratebook":
-            return None
-        banding_source = config.get("banding_source")
-        banding_edge = _resolve_optimiser_input_edge(
-            graph,
-            optimiser_node_id,
-            config,
-            field="banding_source",
-        )
-        node_id = banding_edge.source if banding_edge is not None else None
-        with _execution_stage(
-            execution_context,
-            "optimiser_extract_factors",
-            node_id=node_id,
-        ):
-            if banding_edge is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Ratebook mode requires a configured banding_source. "
-                        "Select a banding node in the Rating Factor Source dropdown."
-                    ),
-                )
-            if banding_edge.source not in lazy_outputs:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Configured ratebook banding_source {banding_source!r} did not "
-                        "produce data. Make sure it is connected to the optimiser node."
-                    ),
-                )
-
-            try:
-                source = select_edge_source_output(
-                    lazy_outputs[banding_edge.source],
-                    banding_edge,
-                )
-            except (KeyError, RuntimeError, ValueError) as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Configured ratebook banding_source could not resolve its frame: {exc}",
-                ) from exc
-            factors_lf = source.lazy() if isinstance(source, pl.DataFrame) else source
-            schema = factors_lf.collect_schema()
-            available_cols = set(schema.names())
-            required_cols = ratebook_factor_required_columns(config)
-            missing_cols = sorted(required_cols - available_cols)
-            if missing_cols:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Missing columns in ratebook banding source: "
-                        f"{missing_cols}. Available: {sorted(available_cols)}"
-                    ),
-                )
-
-            qid_col = str(config.get("quote_id", "quote_id"))
-            raw_factor_columns = config.get("factor_columns") or []
-            factor_cols = list(
-                dict.fromkeys(
-                    column
-                    for group in raw_factor_columns
-                    for column in group
-                    if isinstance(column, str)
-                )
+        A refusal is answered but not recorded here: the setup failure mapping
+        records it as the job's terminal state.
+        """
+        try:
+            return extract_ratebook_factors(
+                lazy_outputs,
+                graph,
+                optimiser_node_id,
+                config,
+                mode,
+                execution_context=execution_context,
+                artifact_dir=artifact_dir,
             )
-            ordered_cols = list(dict.fromkeys([qid_col, *factor_cols]))
-            projected = factors_lf.select([pl.col(column) for column in ordered_cols])
-
-            handle = _optimiser_artifacts._persist_ratebook_factors_lazy_artifact(
-                projected,
-                artifact_dir=Path(artifact_dir) if artifact_dir is not None else None,
-            )
-            if int(handle["row_count"]) == 0:
-                _optimiser_artifacts._cleanup_orphan_apply_result_artifact(
-                    handle,
-                    job_id="<setup>",
-                    event="empty_ratebook_factor_artifact_cleanup_failed",
-                )
-                raise HTTPException(
-                    status_code=400,
-                    detail="Ratebook banding source is empty.",
-                )
-            if execution_context is not None:
-                # If checkpoint raises, the handle never returns and the
-                # caller's finally cannot see it — clean up here.
-                try:
-                    execution_context.checkpoint(
-                        label="after_ratebook_factor_sink",
-                        node_id=node_id,
-                    )
-                except BaseException:
-                    _optimiser_artifacts._cleanup_orphan_apply_result_artifact(
-                        handle,
-                        job_id="<setup>",
-                        event="extract_factors_post_sink_checkpoint_cleanup_failed",
-                    )
-                    raise
-            return handle
+        except OptimiserSetupError as failure:
+            raise failure.http_exception() from failure
 
     def _write_solver_input(
         self,
@@ -4774,20 +4457,15 @@ class OptimiserSolveService:
         execution_context: ExecutionContext | None = None,
         allow_borrow: bool = True,
     ) -> str:
-        """Write the projected solver input to *output_path*, or borrow its snapshot.
-
-        With *allow_borrow*, an unchanged single-file parquet scan (read under
-        the caller's still-open seed-plan lease) is returned instead of copied.
-        """
-        with (
-            self._grid_construction_failures(node_id, job_id, execution_context),
-            _execution_stage(execution_context, "optimiser_write_solver_input", node_id=node_id),
-        ):
-            borrowed_path = _projected_parquet_input_path(scored_lf) if allow_borrow else None
-            if borrowed_path is not None:
-                return str(borrowed_path)
-            bounded_sink(scored_lf, output_path)
-            return output_path
+        """Write the projected solver input to *output_path*, or borrow its snapshot."""
+        with self._recorded_setup_failures(job_id, execution_context):
+            return write_solver_input(
+                scored_lf,
+                output_path,
+                node_id,
+                execution_context=execution_context,
+                allow_borrow=allow_borrow,
+            )
 
     def _build_grid(
         self,
@@ -4832,106 +4510,20 @@ class OptimiserSolveService:
         execution_context: ExecutionContext | None = None,
     ) -> QuoteGrid:
         """Build the solver's QuoteGrid from a written or borrowed solver-input parquet."""
-        from price_contour import build_grid_from_parquet_chunked
-
-        objective = config["objective"]
-        qid_col = config.get("quote_id", "quote_id")
-        mult_col = config.get("scenario_value", "scenario_value")
-        step_col = config.get("scenario_index", "scenario_index")
-
         with (
-            self._grid_construction_failures(node_id, job_id, execution_context),
+            self._recorded_setup_failures(job_id, execution_context),
+            grid_construction_failures(node_id),
             _execution_stage(execution_context, "optimiser_build_grid", node_id=node_id),
         ):
-            try:
-                chunk_decision = _chunk_size_decision_for_parquet(
-                    config,
-                    Path(input_path),
-                    source="optimiser_grid",
-                )
-            except ValueError as exc:
-                detail = f"Grid construction failed: {exc}"
-                self._record_http_setup_failure(
-                    job_id,
-                    status_code=400,
-                    detail=detail,
-                    execution_context=execution_context,
-                )
-                raise HTTPException(status_code=400, detail=detail) from exc
-            chunk_size = chunk_decision.chunk_size
-            self._record_setup_chunking(job_id, "optimiser_grid", chunk_decision.provenance)
-
-            _admit_resident_grid(
-                Path(input_path),
-                [qid_col, step_col, mult_col, objective, *constraint_cols],
-                qid_col,
-                len(constraint_cols),
-                chunk_size,
-                execution_context,
-            )
-
-            return build_grid_from_parquet_chunked(
+            decision = grid_chunk_decision(config, input_path)
+            self._record_setup_chunking(job_id, "optimiser_grid", decision.provenance)
+            return build_quote_grid(
                 input_path,
                 constraint_cols,
-                chunk_size,
-                quote_id=qid_col,
-                scenario_index=step_col,
-                scenario_value=mult_col,
-                objective=objective,
-            )
-
-    @contextlib.contextmanager
-    def _grid_construction_failures(
-        self,
-        node_id: str,
-        job_id: str,
-        execution_context: ExecutionContext | None,
-    ) -> Iterator[None]:
-        """Record and translate a failure while writing the solver input or building its grid."""
-        try:
-            yield
-        except HTTPException:
-            raise
-        except (
-            ExecutionAdmissionError,
-            ExecutionCancelledError,
-            ExecutionMemoryLimitExceededError,
-        ):
-            raise
-        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-            self._record_setup_failure(
-                job_id,
-                to=contract_error_terminal_reason(exc),
-                message=str(exc),
-                fields=contract_error_job_fields(exc),
+                config,
+                decision.chunk_size,
                 execution_context=execution_context,
             )
-            raise contract_error_http_exception(exc) from None
-        except BoundedMemoryUnsupportedError as exc:
-            detail = f"Grid construction cannot run in bounded streaming mode: {exc}"
-            logger.warning(
-                "grid_bounded_streaming_unsupported",
-                error=str(exc),
-                node_id=node_id,
-            )
-            self._record_http_setup_failure(
-                job_id,
-                status_code=422,
-                detail=detail,
-                execution_context=execution_context,
-            )
-            raise HTTPException(status_code=422, detail=detail) from exc
-        except Exception as exc:
-            detail = "Grid construction failed. Check the server logs for details."
-            logger.error("grid_build_failed", error=str(exc), node_id=node_id, exc_info=True)
-            self._record_http_setup_failure(
-                job_id,
-                status_code=500,
-                detail=detail,
-                to="error",
-                execution_context=execution_context,
-            )
-            raise HTTPException(status_code=500, detail=detail) from exc
 
     def _record_setup_chunking(
         self,

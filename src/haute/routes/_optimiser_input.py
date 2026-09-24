@@ -9,11 +9,13 @@ publication; the solve service orchestrates these steps.
 
 from __future__ import annotations
 
+import contextlib
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 
@@ -22,14 +24,19 @@ from haute._execution_admission import (
     execution_budget_for_profile,
 )
 from haute._execution_context import (
+    ExecutionCancelledError,
     ExecutionContext,
+    ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
 from haute._graph_utils import (
     incoming_edge_bindings,
     incoming_edge_for_name,
+    select_edge_source_output,
 )
+from haute._logging import get_logger
 from haute._polars_utils import (
+    bounded_sink,
     read_parquet_metadata,
     streaming_collect,
 )
@@ -38,12 +45,27 @@ from haute._types import (
     GraphNode,
     PipelineGraph,
 )
+from haute.errors import BoundedMemoryUnsupportedError
 from haute.execution import (
     ProjectionRequest,
     plan_projection,
+    ratebook_factor_required_columns,
 )
 from haute.graph_utils import NodeType
+from haute.routes import _optimiser_artifacts
+from haute.routes._contract_errors import (
+    PUBLIC_CONTRACT_ERROR_TYPES,
+    contract_error_http_exception,
+    contract_error_job_fields,
+    contract_error_terminal_reason,
+)
 from haute.routes._helpers import find_typed_node
+from haute.routes._job_store import TerminalReason
+
+if TYPE_CHECKING:
+    from price_contour import QuoteGrid
+
+logger = get_logger(component="server")
 
 _DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MIN_BYTES = 16 * 1024 * 1024
 _DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MAX_BYTES = 512 * 1024 * 1024
@@ -542,3 +564,458 @@ def _resolve_optimiser_data_input_id(
 def _find_optimiser_node(graph: PipelineGraph, node_id: str) -> GraphNode:
     """Find and validate an optimiser node in the graph."""
     return find_typed_node(graph, node_id, NodeType.OPTIMISER, "optimiser")
+
+
+# ---------------------------------------------------------------------------
+# Setup steps
+#
+# Each step runs one part of solve or auto-range setup and raises
+# ``OptimiserSetupError`` for a refusal. The steps never touch the job store:
+# the service records a failure on the job, returns chunk provenance to it,
+# and answers the request.
+# ---------------------------------------------------------------------------
+
+
+class OptimiserSetupError(Exception):
+    """A setup step's refusal: what the job records and what the request answers.
+
+    *fields* default to the HTTP status and detail (``http_status_code``,
+    ``error_detail``); a public contract error carries the fields
+    ``contract_error_job_fields`` supplies instead.
+    """
+
+    def __init__(
+        self,
+        status_code: int,
+        detail: object,
+        *,
+        reason: TerminalReason = "contract_error",
+        message: str | None = None,
+        fields: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(str(detail))
+        self.status_code = status_code
+        self.detail = detail
+        self.reason: TerminalReason = reason
+        self.message = str(detail) if message is None else message
+        self.fields: dict[str, Any] = (
+            dict(fields)
+            if fields is not None
+            else {"http_status_code": status_code, "error_detail": detail}
+        )
+
+    def http_exception(self) -> HTTPException:
+        return HTTPException(status_code=self.status_code, detail=self.detail)
+
+
+def _execution_stage(
+    execution_context: ExecutionContext | None,
+    name: str,
+    *,
+    node_id: str | None = None,
+) -> Any:
+    if execution_context is None:
+        return nullcontext()
+    return execution_context.stage(name, node_id=node_id)
+
+
+def resolve_data_input_frame(
+    lazy_outputs: dict[str, Any],
+    graph: PipelineGraph,
+    config: dict[str, Any],
+    node_id: str,
+) -> Any:
+    """Pick the optimiser's data-input frame from the pipeline outputs."""
+    data_edge = _resolve_optimiser_input_edge(
+        graph,
+        node_id,
+        config,
+        field="data_input",
+        infer_single=True,
+    )
+    source_lf = None
+    if data_edge is not None:
+        source_output = lazy_outputs.get(data_edge.source)
+        if source_output is None:
+            configured_name = config.get("data_input")
+            raise OptimiserSetupError(
+                400,
+                f"Configured optimiser data_input {configured_name!r} did not produce data. "
+                "Make sure it is connected to the optimiser node and produces a dataframe.",
+            )
+        try:
+            source_lf = select_edge_source_output(source_output, data_edge)
+        except (KeyError, RuntimeError, ValueError) as exc:
+            raise OptimiserSetupError(
+                400, f"Configured optimiser data_input could not resolve its frame: {exc}"
+            ) from exc
+    if source_lf is None:
+        raise OptimiserSetupError(
+            400,
+            "No data arrived at the optimiser node. "
+            "Make sure an upstream data source is connected and producing data.",
+        )
+    return source_lf
+
+
+def validate_input_value_contracts(
+    source_lf: Any,
+    schema: Any,
+    *,
+    quote_id_col: str,
+    validate_quote_id_nulls: bool,
+    finite_columns: Iterable[str],
+    cast_to_float32_columns: Iterable[str],
+    execution_context: ExecutionContext | None,
+) -> None:
+    """Reject null quote ids and non-finite or null values in one streaming pass."""
+    finite_columns = list(finite_columns)
+    non_finite_check_cols = _non_finite_check_columns(schema, finite_columns)
+    null_check_cols = _null_check_columns(schema, finite_columns)
+    validation_exprs = _value_contract_validation_exprs(
+        quote_id_col=quote_id_col,
+        validate_quote_id_nulls=validate_quote_id_nulls,
+        non_finite_check_cols=non_finite_check_cols,
+        null_check_cols=null_check_cols,
+        cast_to_float32_cols=set(cast_to_float32_columns),
+    )
+    if not validation_exprs:
+        return
+
+    validation_counts = streaming_collect(
+        source_lf.select(validation_exprs),
+        execution_context=execution_context,
+    )
+    if validate_quote_id_nulls:
+        null_count = int(validation_counts.get_column(_QUOTE_ID_NULL_COUNT_ALIAS).item())
+        if null_count > 0:
+            raise OptimiserSetupError(400, _quote_id_null_detail(null_count))
+
+    non_finite_detail = _non_finite_detail_from_counts(validation_counts, non_finite_check_cols)
+    if non_finite_detail is not None:
+        raise OptimiserSetupError(400, non_finite_detail)
+
+    null_value_detail = _null_value_detail_from_counts(validation_counts, null_check_cols)
+    if null_value_detail is not None:
+        raise OptimiserSetupError(400, null_value_detail)
+
+
+def validate_and_project(
+    source_lf: Any,
+    config: dict[str, Any],
+    *,
+    validate_quote_id_nulls: bool = True,
+    execution_context: ExecutionContext | None = None,
+) -> tuple[list[str], Any]:
+    """Validate the solver columns and project the solver input.
+
+    Returns ``(constraint_cols, projected_lazy_frame)``.
+    """
+    import polars as pl
+
+    objective = str(config["objective"])
+    constraints = config["constraints"]
+    qid_col = str(config.get("quote_id", "quote_id"))
+    mult_col = str(config.get("scenario_value", "scenario_value"))
+    step_col = str(config.get("scenario_index", "scenario_index"))
+
+    schema = source_lf.collect_schema()
+    available_cols = set(schema.names())
+    required_cols = {objective, qid_col, mult_col, step_col}
+    for cname in constraints:
+        required_cols.add(cname)
+    detail = _missing_columns_detail(required_cols, available_cols)
+    if detail is not None:
+        raise OptimiserSetupError(400, detail)
+
+    constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []
+    qid_dtype = schema[qid_col]
+    detail = _invalid_quote_id_dtype_detail(schema, qid_col)
+    if detail is not None:
+        raise OptimiserSetupError(400, detail)
+
+    # Non-finite objective/constraint/scenario values fail here as an explicit
+    # contract error naming the column; downstream library behaviour silently
+    # accepts e.g. a NaN objective and "converges" on wrong totals (C7). Only
+    # float-typed columns can carry NaN/inf; the solver consumes Float32 (see
+    # cast_map below), so float columns are checked at that precision to also
+    # reject Float64 values that overflow to +-inf on the cast. scenario_index
+    # is cast to Int32 downstream, so its source values are checked.
+    # Genuinely-null values (any dtype) are rejected in the same pass: the
+    # external aggregation's treatment of null is undefined.
+    validate_input_value_contracts(
+        source_lf,
+        schema,
+        quote_id_col=qid_col,
+        validate_quote_id_nulls=validate_quote_id_nulls,
+        finite_columns=[objective, mult_col, step_col, *constraint_cols],
+        cast_to_float32_columns={objective, mult_col, *constraint_cols},
+        execution_context=execution_context,
+    )
+
+    solver_cols = [qid_col, step_col, mult_col, objective] + [
+        c for c in constraint_cols if c in available_cols
+    ]
+    cast_map: dict[str, pl.DataType] = {
+        step_col: pl.Int32(),
+        mult_col: pl.Float32(),
+        objective: pl.Float32(),
+    }
+    for c in constraint_cols:
+        cast_map[c] = pl.Float32()
+    cast_exprs = [pl.col(c).cast(t) for c, t in cast_map.items() if schema[c] != t]
+    if qid_dtype == pl.String:
+        cast_exprs.append(pl.col(qid_col).cast(pl.Categorical))
+
+    return constraint_cols, source_lf.select(solver_cols).with_columns(cast_exprs)
+
+
+def validate_and_project_auto_range(
+    source_lf: Any,
+    config: dict[str, Any],
+    *,
+    execution_context: ExecutionContext | None = None,
+) -> tuple[list[str], Any]:
+    """Validate and project only the columns auto-range needs.
+
+    Auto-range computes per-quote extrema for configured constraints. When the
+    projected input includes the configured objective, it validates the
+    objective for parity with solver input contracts, but it never passes
+    objective, scenario index, or scenario value columns to the range
+    estimator.
+    """
+    import polars as pl
+
+    constraints = config["constraints"]
+    objective = str(config["objective"])
+    qid_col = str(config.get("quote_id", "quote_id"))
+
+    schema = source_lf.collect_schema()
+    available_cols = set(schema.names())
+    constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []
+    detail = _missing_columns_detail({qid_col, *constraint_cols}, available_cols)
+    if detail is not None:
+        raise OptimiserSetupError(400, detail)
+
+    qid_dtype = schema[qid_col]
+    detail = _invalid_quote_id_dtype_detail(schema, qid_col)
+    if detail is not None:
+        raise OptimiserSetupError(400, detail)
+
+    value_check_cols = [*constraint_cols]
+    if objective in available_cols:
+        value_check_cols.insert(0, objective)
+    validate_input_value_contracts(
+        source_lf,
+        schema,
+        quote_id_col=qid_col,
+        validate_quote_id_nulls=True,
+        finite_columns=value_check_cols,
+        cast_to_float32_columns=value_check_cols,
+        execution_context=execution_context,
+    )
+
+    auto_range_cols = [qid_col, *constraint_cols]
+    cast_exprs = [pl.col(c).cast(pl.Float32()) for c in constraint_cols]
+    if qid_dtype == pl.String:
+        cast_exprs.append(pl.col(qid_col).cast(pl.Categorical))
+    return constraint_cols, source_lf.select(auto_range_cols).with_columns(cast_exprs)
+
+
+def extract_ratebook_factors(
+    lazy_outputs: dict[str, Any],
+    graph: PipelineGraph,
+    optimiser_node_id: str,
+    config: dict[str, Any],
+    mode: str,
+    *,
+    execution_context: ExecutionContext | None = None,
+    artifact_dir: str | None = None,
+) -> Any:
+    """Persist the ratebook factor artifact and return its handle (None for online mode)."""
+    import polars as pl
+
+    if mode != "ratebook":
+        return None
+    banding_source = config.get("banding_source")
+    banding_edge = _resolve_optimiser_input_edge(
+        graph,
+        optimiser_node_id,
+        config,
+        field="banding_source",
+    )
+    node_id = banding_edge.source if banding_edge is not None else None
+    with _execution_stage(execution_context, "optimiser_extract_factors", node_id=node_id):
+        if banding_edge is None:
+            raise OptimiserSetupError(
+                400,
+                "Ratebook mode requires a configured banding_source. "
+                "Select a banding node in the Rating Factor Source dropdown.",
+            )
+        if banding_edge.source not in lazy_outputs:
+            raise OptimiserSetupError(
+                400,
+                f"Configured ratebook banding_source {banding_source!r} did not "
+                "produce data. Make sure it is connected to the optimiser node.",
+            )
+
+        try:
+            source = select_edge_source_output(lazy_outputs[banding_edge.source], banding_edge)
+        except (KeyError, RuntimeError, ValueError) as exc:
+            raise OptimiserSetupError(
+                400, f"Configured ratebook banding_source could not resolve its frame: {exc}"
+            ) from exc
+        factors_lf = source.lazy() if isinstance(source, pl.DataFrame) else source
+        schema = factors_lf.collect_schema()
+        available_cols = set(schema.names())
+        missing_cols = sorted(ratebook_factor_required_columns(config) - available_cols)
+        if missing_cols:
+            raise OptimiserSetupError(
+                400,
+                "Missing columns in ratebook banding source: "
+                f"{missing_cols}. Available: {sorted(available_cols)}",
+            )
+
+        qid_col = str(config.get("quote_id", "quote_id"))
+        raw_factor_columns = config.get("factor_columns") or []
+        factor_cols = list(
+            dict.fromkeys(
+                column
+                for group in raw_factor_columns
+                for column in group
+                if isinstance(column, str)
+            )
+        )
+        ordered_cols = list(dict.fromkeys([qid_col, *factor_cols]))
+        projected = factors_lf.select([pl.col(column) for column in ordered_cols])
+
+        handle = _optimiser_artifacts._persist_ratebook_factors_lazy_artifact(
+            projected,
+            artifact_dir=Path(artifact_dir) if artifact_dir is not None else None,
+        )
+        if int(handle["row_count"]) == 0:
+            _optimiser_artifacts._cleanup_orphan_apply_result_artifact(
+                handle,
+                job_id="<setup>",
+                event="empty_ratebook_factor_artifact_cleanup_failed",
+            )
+            raise OptimiserSetupError(400, "Ratebook banding source is empty.")
+        if execution_context is not None:
+            # If checkpoint raises, the handle never returns and the caller's
+            # finally cannot see it, so clean up here.
+            try:
+                execution_context.checkpoint(label="after_ratebook_factor_sink", node_id=node_id)
+            except BaseException:
+                _optimiser_artifacts._cleanup_orphan_apply_result_artifact(
+                    handle,
+                    job_id="<setup>",
+                    event="extract_factors_post_sink_checkpoint_cleanup_failed",
+                )
+                raise
+        return handle
+
+
+@contextlib.contextmanager
+def grid_construction_failures(node_id: str) -> Iterator[None]:
+    """Translate a failure while writing the solver input or building its grid.
+
+    Refusals already typed (``OptimiserSetupError``, ``HTTPException``) and
+    execution admission, cancellation and memory errors pass through.
+    """
+    try:
+        yield
+    except (
+        OptimiserSetupError,
+        HTTPException,
+        ExecutionAdmissionError,
+        ExecutionCancelledError,
+        ExecutionMemoryLimitExceededError,
+    ):
+        raise
+    except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+        http_exc = contract_error_http_exception(exc)
+        raise OptimiserSetupError(
+            http_exc.status_code,
+            http_exc.detail,
+            reason=contract_error_terminal_reason(exc),
+            message=str(exc),
+            fields=contract_error_job_fields(exc),
+        ) from None
+    except BoundedMemoryUnsupportedError as exc:
+        logger.warning("grid_bounded_streaming_unsupported", error=str(exc), node_id=node_id)
+        raise OptimiserSetupError(
+            422, f"Grid construction cannot run in bounded streaming mode: {exc}"
+        ) from exc
+    except Exception as exc:
+        logger.error("grid_build_failed", error=str(exc), node_id=node_id, exc_info=True)
+        raise OptimiserSetupError(
+            500,
+            "Grid construction failed. Check the server logs for details.",
+            reason="error",
+        ) from exc
+
+
+def write_solver_input(
+    scored_lf: Any,
+    output_path: str,
+    node_id: str,
+    *,
+    execution_context: ExecutionContext | None = None,
+    allow_borrow: bool = True,
+) -> str:
+    """Write the projected solver input to *output_path*, or borrow its snapshot.
+
+    With *allow_borrow*, an unchanged single-file parquet scan (read under the
+    caller's still-open seed-plan lease) is returned instead of copied.
+    """
+    with (
+        grid_construction_failures(node_id),
+        _execution_stage(execution_context, "optimiser_write_solver_input", node_id=node_id),
+    ):
+        borrowed_path = _projected_parquet_input_path(scored_lf) if allow_borrow else None
+        if borrowed_path is not None:
+            return str(borrowed_path)
+        bounded_sink(scored_lf, output_path)
+        return output_path
+
+
+def grid_chunk_decision(config: Mapping[str, Any], input_path: str) -> _ChunkSizeDecision:
+    """The chunk size for building the quote grid from *input_path*, with its provenance."""
+    try:
+        return _chunk_size_decision_for_parquet(config, Path(input_path), source="optimiser_grid")
+    except ValueError as exc:
+        raise OptimiserSetupError(400, f"Grid construction failed: {exc}") from exc
+
+
+def build_quote_grid(
+    input_path: str,
+    constraint_cols: list[str],
+    config: Mapping[str, Any],
+    chunk_size: int,
+    *,
+    execution_context: ExecutionContext | None,
+) -> QuoteGrid:
+    """Admit the resident grid, then build it from the solver-input parquet."""
+    from price_contour import build_grid_from_parquet_chunked
+
+    objective = config["objective"]
+    qid_col = config.get("quote_id", "quote_id")
+    mult_col = config.get("scenario_value", "scenario_value")
+    step_col = config.get("scenario_index", "scenario_index")
+    _admit_resident_grid(
+        Path(input_path),
+        [qid_col, step_col, mult_col, objective, *constraint_cols],
+        qid_col,
+        len(constraint_cols),
+        chunk_size,
+        execution_context,
+    )
+    return build_grid_from_parquet_chunked(
+        input_path,
+        constraint_cols,
+        chunk_size,
+        quote_id=qid_col,
+        scenario_index=step_col,
+        scenario_value=mult_col,
+        objective=objective,
+    )

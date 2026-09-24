@@ -923,8 +923,9 @@ class TestExecutionBoundaryGuardrails:
         )
 
     def test_ratebook_factor_column_contract_is_owned_by_projection_planner(self) -> None:
+        # The ratebook factor extraction step lives with the other setup steps.
         optimiser_service = ast.parse(
-            (_ROUTES_DIR / "_optimiser_service.py").read_text(encoding="utf-8")
+            (_ROUTES_DIR / "_optimiser_input.py").read_text(encoding="utf-8")
         )
 
         local_helpers = [

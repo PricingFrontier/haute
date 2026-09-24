@@ -8007,7 +8007,7 @@ class TestExecutePipelineArgs:
         with (
             patch.object(service, "_execute_pipeline", return_value={"source": scored_lf}),
             patch(
-                "haute.routes._optimiser_service.streaming_collect",
+                "haute.routes._optimiser_input.streaming_collect",
                 side_effect=error,
             ),
             patch.object(service, "_build_grid") as build_grid,
@@ -8421,7 +8421,7 @@ class TestBuildGridBoundedSink:
         mock_grid = MagicMock()
         with (
             patch(
-                "haute.routes._optimiser_service.bounded_sink",
+                "haute.routes._optimiser_input.bounded_sink",
                 side_effect=patched_bounded_sink,
             ) as mock_sink,
             patch(
@@ -14059,7 +14059,7 @@ class TestBuildGrid:
 
         mock_grid = MagicMock()
         with (
-            patch("haute.routes._optimiser_service.bounded_sink") as mock_sink,
+            patch("haute.routes._optimiser_input.bounded_sink") as mock_sink,
             patch(
                 "price_contour.build_grid_from_parquet_chunked",
                 return_value=mock_grid,
@@ -14130,7 +14130,7 @@ class TestBuildGrid:
             expected_chunk_size = max(1, 256 // estimated_row_bytes)
 
         with (
-            patch("haute.routes._optimiser_service.bounded_sink") as mock_sink,
+            patch("haute.routes._optimiser_input.bounded_sink") as mock_sink,
             patch(
                 "price_contour.build_grid_from_parquet_chunked",
                 return_value=mock_grid,
@@ -14183,7 +14183,7 @@ class TestBuildGrid:
 
         with (
             patch(
-                "haute.routes._optimiser_service.bounded_sink",
+                "haute.routes._optimiser_input.bounded_sink",
                 side_effect=lambda lf, path, **kw: lf.collect().write_parquet(path),
             ),
             patch(
@@ -14369,7 +14369,7 @@ class TestBuildGrid:
         }
 
         with (
-            patch("haute.routes._optimiser_service.bounded_sink") as mock_sink,
+            patch("haute.routes._optimiser_input.bounded_sink") as mock_sink,
             patch(
                 "price_contour.build_grid_from_parquet_chunked",
                 side_effect=RuntimeError("grid failed"),
@@ -14411,7 +14411,7 @@ class TestBuildGrid:
         )
 
         with patch(
-            "haute.routes._optimiser_service.bounded_sink",
+            "haute.routes._optimiser_input.bounded_sink",
             side_effect=BoundedMemoryUnsupportedError("Bounded streaming sink failed"),
         ):
             with pytest.raises(HTTPException) as exc_info:
@@ -15355,7 +15355,7 @@ class TestBuildGridHTTPExceptionPassthrough:
         original_exc = HTTPException(status_code=403, detail="not allowed")
 
         with (
-            patch("haute.routes._optimiser_service.bounded_sink") as mock_sink,
+            patch("haute.routes._optimiser_input.bounded_sink") as mock_sink,
             patch("price_contour.build_grid_from_parquet_chunked", side_effect=original_exc),
         ):
             mock_sink.side_effect = lambda lf, path, **kw: lf.collect().write_parquet(path)

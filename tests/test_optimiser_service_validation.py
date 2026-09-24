@@ -435,7 +435,7 @@ def test_build_grid_adapts_public_contract_errors() -> None:
     job_id = store.create_job({"status": "running"})
 
     with patch(
-        "haute.routes._optimiser_service.bounded_sink",
+        "haute.routes._optimiser_input.bounded_sink",
         side_effect=_group_by_contract_error(),
     ):
         with pytest.raises(HTTPException) as exc_info:
@@ -768,7 +768,8 @@ def test_grid_reuses_plain_projected_parquet_without_removing_it(tmp_path, monke
     service = service_module.OptimiserSolveService(store)
     observed = []
     monkeypatch.setattr(
-        service_module, "bounded_sink", lambda *_a, **_k: pytest.fail("rewrote borrowed input")
+        "haute.routes._optimiser_input.bounded_sink",
+        lambda *_a, **_k: pytest.fail("rewrote borrowed input"),
     )
     monkeypatch.setattr(
         price_contour,
@@ -862,3 +863,40 @@ def test_grid_borrows_only_unmodified_single_parquet(tmp_path, change):
     else:
         frame = pl.scan_parquet([path, path])
     assert _projected_parquet_input_path(frame) is None
+
+
+def test_setup_steps_raise_typed_failures_without_touching_a_job_store() -> None:
+    """The extracted setup steps carry what the job records; the service records it."""
+    from haute.routes._optimiser_input import (
+        OptimiserSetupError,
+        grid_construction_failures,
+        validate_and_project,
+    )
+
+    frame = _two_quote_frame().lazy().drop("expected_income")
+    with pytest.raises(OptimiserSetupError) as missing:
+        validate_and_project(frame, _solver_config())
+    assert missing.value.status_code == 400
+    assert missing.value.reason == "contract_error"
+    assert missing.value.fields == {
+        "http_status_code": 400,
+        "error_detail": missing.value.detail,
+    }
+    assert "expected_income" in str(missing.value.detail)
+
+    with pytest.raises(OptimiserSetupError) as contract:
+        with grid_construction_failures("opt"):
+            raise _group_by_contract_error()
+    assert contract.value.status_code == 422
+    assert contract.value.fields["error_code"] == "group_by_execution_unsupported"
+
+    store = JobStore()
+    service = OptimiserSolveService(store)
+    job_id = store.create_job({"status": "running"})
+    with pytest.raises(HTTPException) as answered:
+        service._validate_and_project(frame, _solver_config(), job_id)
+    assert answered.value.status_code == 400
+    job = store.require_job(job_id)
+    assert job["status"] == "contract_error"
+    assert job["http_status_code"] == 400
+    assert job["error_detail"] == missing.value.detail
