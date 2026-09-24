@@ -1366,7 +1366,7 @@ class TestConfig:
 
         config = DeployConfig.from_toml(Path("haute.toml"))
         assert config.model_name == "motor-pricing"
-        assert config.pipeline_file == Path("rating/main.py")
+        assert config.pipeline_file == Path("examples/reference/main.py")
         assert config.databricks.experiment_name == "/Shared/haute/motor-pricing"
         assert config.databricks.serving_workload_size == "Small"
 

@@ -8,6 +8,7 @@
 | `examples/reference/config/data_input/quotes.json` | Data Input sidecar: a scanned CSV at the project-root-relative path `examples/reference/data/quotes.csv`. |
 | `examples/reference/config/quote_response/priced.json` | Output sidecar mapping `quote_id`, `vehicle_age`, `driver_band` and `sum_insured` from the `features` port to `$[:].<column>`. |
 | `examples/reference/data/quotes.csv` | Six synthetic quotes: `quote_id`, `driver_age`, `vehicle_year`, `region`, `sum_insured`. |
+| `examples/reference/utility/__init__.py` | The project's utility package, empty apart from the docstring the editor's utility routes write when they create it; the pipeline imports nothing from it. |
 
 The repository-root `haute.toml` points `[project].pipeline` at
 `examples/reference/main.py`; the canonical project resolver therefore treats this

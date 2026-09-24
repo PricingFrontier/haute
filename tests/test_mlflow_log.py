@@ -129,9 +129,9 @@ def _candidate(
 def local_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
     """The local destination as a real file store under a temporary project root.
 
-    Yields a client bound to it; MLflow's fluent URIs are restored afterwards.
+    Yields a client bound to it. The conftest restores MLflow's fluent URIs and
+    the URI variables ``mlflow.set_tracking_uri`` exports after every test.
     """
-    import mlflow
     from mlflow.tracking import MlflowClient
 
     from haute._sandbox import set_project_root
@@ -141,12 +141,7 @@ def local_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
     tracking_uri, backend = resolve_tracking_backend()
     assert backend == "local"
-    previous = mlflow.get_tracking_uri(), mlflow.get_registry_uri()
-    try:
-        yield MlflowClient(tracking_uri=tracking_uri, registry_uri=tracking_uri)
-    finally:
-        mlflow.set_tracking_uri(previous[0])
-        mlflow.set_registry_uri(previous[1])
+    yield MlflowClient(tracking_uri=tracking_uri, registry_uri=tracking_uri)
 
 
 def _only_run(client: Any, experiment_name: str) -> Any:
