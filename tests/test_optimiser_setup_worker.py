@@ -32,7 +32,7 @@ from haute._worker_isolation import (
 )
 from haute.routes import _optimiser_artifacts, _optimiser_service, _optimiser_worker
 from haute.routes._background_jobs import BackgroundJobStoppedError
-from haute.routes._job_store import JobStore
+from haute.routes._job_store import JobStore, get_job_store
 from haute.routes._optimiser_service import OptimiserSolveService
 from haute.routes._optimiser_worker import (
     FrontierAutoRangeWorkerOutcome,
@@ -907,3 +907,52 @@ class TestFailureRecords:
         assert failure.http_status_code == status_code
         if terminal_reason == "memory_limited":
             assert failure.fields["error_code"] == "memory_limit"
+
+
+class TestPrivateRecords:
+    """A worker's private job record never outlives the worker, whatever its outcome."""
+
+    @pytest.mark.parametrize("fails", [False, True], ids=["completes", "fails"])
+    def test_a_setup_worker_leaves_its_store_as_it_found_it(
+        self, client, project: Path, monkeypatch: pytest.MonkeyPatch, fails: bool
+    ) -> None:
+        store = get_job_store("optimiser_worker")
+        unrelated = store.create_job({"status": "running"})
+        before = set(store.list_jobs())
+        _process_mode(monkeypatch)
+        monkeypatch.setattr(_optimiser_service, "run_isolated_worker", _InlineWorker())
+        overrides = {"objective": "missing_column"} if fails else {}
+
+        status = _solve(client, _online_graph(_scored_parquet(project), **overrides))
+
+        assert status["status"] == ("contract_error" if fails else "completed")
+        assert set(store.list_jobs()) == before
+        assert store.get_job(unrelated) is not None
+
+    @pytest.mark.parametrize("fails", [False, True], ids=["completes", "fails"])
+    def test_an_auto_range_worker_leaves_its_store_as_it_found_it(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch, fails: bool
+    ) -> None:
+        store = get_job_store("optimiser_worker")
+        unrelated = store.create_job({"status": "running"})
+        before = set(store.list_jobs())
+        _process_mode(monkeypatch)
+        monkeypatch.setattr(_optimiser_service, "run_isolated_worker", _InlineWorker())
+        graph = _online_graph(_scored_parquet(project, null_quote=fails))
+        body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
+        service = OptimiserSolveService(JobStore())
+        prepared = service._prepare_frontier_auto_range(body)
+        job_id = service._store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+        service._store.atomic_update(job_id, {"start_time": time.monotonic()})
+
+        if fails:
+            with pytest.raises(HTTPException):
+                service._run_frontier_auto_range_job(body, job_id, **prepared)
+        else:
+            service._run_frontier_auto_range_job(body, job_id, **prepared)
+
+        assert service._store.require_job(job_id)["status"] == (
+            "contract_error" if fails else "completed"
+        )
+        assert set(store.list_jobs()) == before
+        assert store.get_job(unrelated) is not None

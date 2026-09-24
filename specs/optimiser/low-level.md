@@ -179,7 +179,8 @@ headroom (`isolated_execution_budget`) is both the child's execution budget and 
 and the job's cancellation reason is the worker's stop signal, so cancellation or supersession
 terminates the worker. The child adopts the plan (`SeedPlan.adopt`), runs
 `_materialise_solve_input` (`_prepare_solver_frame` — steps 2–6 — then `_write_solver_input`
-with borrowing off) against a private job record, and returns a `SolveInput` (the parent's
+with borrowing off) against a private job record in the `optimiser_worker` job store,
+deleted when the child finishes, and returns a `SolveInput` (the parent's
 parquet path, the constraint columns and the ratebook factors handle) or the private record's
 terminal failure. The child never borrows a captured snapshot: a capture it made is released
 when its adopted plan closes, before the parent reads the file. Every location the child writes

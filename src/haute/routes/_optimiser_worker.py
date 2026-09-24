@@ -7,8 +7,9 @@ way training preparation runs; the explicit ``thread`` compatibility mode runs
 the same service methods on the job's own thread instead.
 
 A child runs the unchanged :class:`OptimiserSolveService` steps against a
-private job record: the steps' own failure mapping classifies any failure onto
-that record, and the record crosses the process boundary as plain data
+private job record in the ``optimiser_worker`` store, deleted when the child
+finishes: the steps' own failure mapping classifies any failure onto that
+record, and the record crosses the process boundary as plain data
 (:class:`OptimiserWorkerFailure`) for the parent to replay onto the real job.
 The child adopts the seed plan its parent opened, so input preparation and the
 plan's leases stay with the parent, and it never touches the parent's store.
@@ -47,6 +48,7 @@ from haute._execution_context import ExecutionContext, ExecutionMemoryLimitExcee
 from haute._logging import get_logger
 from haute._seed_plans import SeedPlanHandoff
 from haute.routes._job_lifecycle import TERMINAL_REASONS, TerminalReason
+from haute.routes._job_store import get_job_store
 from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
 
 if TYPE_CHECKING:
@@ -284,12 +286,11 @@ def materialise_solve_input_worker(
 ) -> SolveInputWorkerOutcome:
     """Spawn entrypoint: materialise the solve's input under the child's own hard cap."""
     from haute._sandbox import set_project_root
-    from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
 
     # The spawned child starts with the interpreter's default sandbox root.
     set_project_root(Path(request.project_root))
-    store = JobStore()
+    store = get_job_store("optimiser_worker")
     service = OptimiserSolveService(store)
     job_id = _private_solve_job(store, request)
     context: ExecutionContext | None = None
@@ -331,6 +332,7 @@ def materialise_solve_input_worker(
             failure=_recorded_failure(store, job_id, exc, operation_noun="Optimiser setup"),
         )
     finally:
+        store.delete_job(job_id)
         if context is not None:
             context.release_admission(preserve_primary_error=True)
 
@@ -341,11 +343,10 @@ def frontier_auto_range_worker(
 ) -> FrontierAutoRangeWorkerOutcome:
     """Spawn entrypoint: compute auto-range totals under the child's own hard cap."""
     from haute._sandbox import set_project_root
-    from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
 
     set_project_root(Path(request.project_root))
-    store = JobStore()
+    store = get_job_store("optimiser_worker")
     service = OptimiserSolveService(store)
     job_id = _private_auto_range_job(store, request)
     context: ExecutionContext | None = None
@@ -385,5 +386,6 @@ def frontier_auto_range_worker(
             failure=_recorded_failure(store, job_id, exc, operation_noun="Frontier auto range"),
         )
     finally:
+        store.delete_job(job_id)
         if context is not None:
             context.release_admission(preserve_primary_error=True)
