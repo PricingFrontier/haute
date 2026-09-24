@@ -108,14 +108,13 @@ _REPOSITORY_PATH_PREFIXES = (
     ".github/",
     "docs/",
     "frontend/",
+    "examples/",
     "mutation/",
-    "rating/",
     "scripts/",
     "specs/",
     "src/",
     "tests/",
     "security/",
-    "repro/",
 )
 _REQUIRED_HIGH_LEVEL_HEADINGS = (
     "## Purpose",
@@ -1618,12 +1617,12 @@ def _repository_operational_sources() -> list[Path]:
 
     paths.extend(
         path
-        for path in (ROOT / "rating").rglob("*")
+        for path in (ROOT / "examples").rglob("*")
         if path.is_file()
         and path in tracked
-        and path.suffix in {".json", ".py", ".rsglm"}
+        and path.suffix in {".csv", ".json", ".py"}
         and not {"__pycache__", "output", "outputs"}.intersection(
-            path.relative_to(ROOT / "rating").parts
+            path.relative_to(ROOT / "examples").parts
         )
     )
 

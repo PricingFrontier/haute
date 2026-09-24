@@ -1,6 +1,6 @@
 """Small review probes for PR 227. No production code is modified.
 
-Run: uv run python specs/roadmap/pr-227-review-probes.py
+Run: uv run python scripts/benchmarks/pr-227-review-probes.py
 Each probe prints observations, including defects; success is not an approval.
 """
 

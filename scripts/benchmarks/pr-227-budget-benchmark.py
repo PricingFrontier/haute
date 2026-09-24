@@ -1,6 +1,6 @@
 """Fresh-process measurements for PR-227's budget-aware writer paths.
 
-Run with ``uv run python specs/roadmap/pr-227-budget-benchmark.py``. Fixtures
+Run with ``uv run python scripts/benchmarks/pr-227-budget-benchmark.py``. Fixtures
 and verification live in the parent; each write runs in a fresh interpreter
 with two Polars threads and external RSS sampled every five milliseconds.
 Logical source occurrences count query-plan references, not physical I/O.

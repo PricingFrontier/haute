@@ -1,6 +1,6 @@
 """Reproducible write-only measurements; verification runs in the parent.
 
-Run with uv run python specs/roadmap/pr-227-implementation-benchmark.py.
+Run with uv run python scripts/benchmarks/pr-227-implementation-benchmark.py.
 Fixtures and output live in a private temporary directory. Two Polars threads,
 25,000-row groups/chunks, fresh real interpreters, 5ms external RSS sampling.
 Scan counts are logical source occurrences in executed query plans, not an

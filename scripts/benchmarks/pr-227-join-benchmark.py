@@ -203,7 +203,7 @@ def main() -> int:
             "polars": pl.__version__,
             "numpy": np.__version__,
         },
-        "command": "uv run python specs/roadmap/pr-227-join-benchmark.py",
+        "command": "uv run python scripts/benchmarks/pr-227-join-benchmark.py",
         "seed": SEED,
         "chunk_rows": CHUNK_ROWS,
         "results": results,

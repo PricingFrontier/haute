@@ -218,6 +218,7 @@ __marimo__/
 output/
 outputs/
 mlruns/
+mlflow.db
 
 # CatBoost training logs and model binaries
 catboost_info/

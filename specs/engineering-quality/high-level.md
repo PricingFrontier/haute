@@ -32,7 +32,7 @@ Out of scope:
 - Package composition, static-asset build policy, and documentation publication,
   owned by [build-and-distribution](../build-and-distribution/high-level.md).
 - Product behaviour described by individual component specs.
-- `specs/roadmap/`, `repro/`, and generated directories such as `site/`,
+- `specs/roadmap/`, `scripts/benchmarks/`, and generated directories such as `site/`,
   `dist/`, coverage reports, mutation run output, test reports, caches, and
   local runtime/model outputs. Roadmaps record intended delivery rather than a
   quality gate or product contract; none of these paths promise current

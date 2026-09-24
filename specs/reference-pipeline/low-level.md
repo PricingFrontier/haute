@@ -4,134 +4,53 @@
 
 | File | Responsibility |
 |---|---|
-| `rating/__init__.py` | Marks the reference project directory as a Python package, matching the layout scaffolded by `haute init`. |
-| `rating/main.haute.json` | Stores the main pipeline canvas positions, available source list, and active source selection. |
-| `rating/main.py` | Generated `pipeline` graph object for the my-pipeline example: v2 JSON API input, output node, and four named port connections. |
-| `rating/config/quote_input/quotes.json` | V2 API-input sidecar defining emitted quotes/drivers/vehicles/licenses tables, JSONPath columns, inferred statuses, and opaque contract. |
-| `rating/config/quote_response/Quote_Response_9.json` | Output sidecar defining JSON output mappings for columns from each input port and an empty input/output contract declaration. |
-| `rating/modules/model_stuff.py` | Generated `submodel` graph object for the model-stuff example, with Polars transforms, a scenario-expander transform, and its internal graph connections. |
-| `rating/utility/__init__.py` | Marks the project utility package and supplies its module documentation. |
-| `rating/utility/features.py` | Project-authored Polars date/interval, postcode, dotted-column cleanup, and predicate-based column selection helpers. |
-| `rating/models/conversion.rsglm` | Checked-in project GLM model artifact. |
-| `rating/models/Model_Training_11.rsglm` | Checked-in project GLM model artifact. |
-| `rating/models/modelling_8.rsglm` | Checked-in project GLM model artifact. |
+| `examples/reference/main.py` | Generated `pipeline` graph object named `reference`: the `quotes` Data Input, the `features` Polars transform and the `priced` output, wired in a line. |
+| `examples/reference/config/data_input/quotes.json` | Data Input sidecar: a scanned CSV at the project-root-relative path `examples/reference/data/quotes.csv`. |
+| `examples/reference/config/quote_response/priced.json` | Output sidecar mapping `quote_id`, `vehicle_age`, `driver_band` and `sum_insured` from the `features` port to `$[:].<column>`. |
+| `examples/reference/data/quotes.csv` | Six synthetic quotes: `quote_id`, `driver_age`, `vehicle_year`, `region`, `sum_insured`. |
 
-The map deliberately lists only tracked reference files. This is a
-non-runnable layout/example snapshot, not an executable compatibility fixture:
-rating/data/quotes/nest_example.json, the generated main pipeline's
-project-relative quote-data input, and
-rating/config/expander/premium.json, the generated submodel's sidecar, are
-missing from the tracked tree. Local output directories, additional local model
-files, and Python bytecode may also exist in a working directory but are not
-part of this checked-in reference-pipeline specification.
-
-The repository-root `haute.toml` points `[project].pipeline` at `rating/main.py`;
-the canonical project resolver therefore treats this reference graph as the
-repository's authoritative default pipeline.
+The repository-root `haute.toml` points `[project].pipeline` at
+`examples/reference/main.py`; the canonical project resolver therefore treats this
+graph as the repository's default pipeline.
 
 ## Key types and data structures
 
-- **Main metadata** in `rating/main.haute.json` is a JSON object containing
-  `positions` keyed by node ID, `sources`, and `active_source`. `active_source` must be one of
-  `sources`. It is UI/project metadata, not executable graph wiring.
-- **API-input v2 sidecar** in `rating/config/quote_input/quotes.json` has a
-  top-level `path`, `contract`, and `tables` array. Each table declares a
-  JSONPath `path`, `displayPath`, label, emit flag, optional row-id column, and columns with
-  name/path/type/status/selected (boolean emit/selection flag)/levels fields.
-- **Output sidecar** in `rating/config/quote_response/Quote_Response_9.json`
-  has `outputMapping` entries (`source_port`, `source_column`, `output_path`,
-  `enabled`), `outputFormat`, and a contract object.
-- **Generated main pipeline** is a `haute.Pipeline` whose API-input decorator names
-  the relative path "config/quote_input/quotes.json" and its opaque contract. The callable returns
-  `pl.LazyFrame | dict[str, pl.LazyFrame]`; this four-table sidecar produces the mapping form.
-  Its output callable accepts four lazy-frame ports and returns a lazy frame.
-- **Generated submodel** is a `haute.Submodel` with `@submodel.polars` and
-  `@submodel.scenario_expander` callables. Its generated contracts are either
-  explicit input/output column lists or the string `"opaque"`.
-- **Utility helper interfaces** include `to_date(col_name, fmt) -> pl.Expr`,
-  `years_between(earlier, later) -> pl.Expr`, `months_between(earlier, later)
-  -> pl.Expr`, `days_between(earlier, later) -> pl.Expr`,
-  `postcode_area(col_name) -> pl.Expr`, `clean_columns(df) -> pl.LazyFrame`,
-  and `cols_matching(all_cols, pattern_fn) -> list[str]`.
+- **Data Input sidecar**: `inputType` `file`, `format` `csv`, `mode` `scan`, a
+  project-root-relative `path`, and empty `arguments`.
+- **Output sidecar**: `outputMapping` entries (`source_port`, `source_column`,
+  `output_path`, `enabled`) and `outputFormat` `json`.
+- **Generated pipeline**: the decorators carry their sidecar paths and generated
+  contracts; each body resolves its sidecar against the script directory
+  (`_HAUTE_CONFIG_BASE`) and the project root.
 
 ## Control flow
 
-1. Parsing `rating/main.py` loads and validates both decorators' referenced sidecars. Importing
-   the file constructs `haute.Pipeline("my_pipeline")`, registers the decorated `quotes` and
-   `Quote_Response_9` functions, then declares the four source-port connections.
-2. Running `quotes()` passes the relative path "config/quote_input/quotes.json" and the resolved generated-script
-   directory to `resolve_api_input_from_config()`. The shared helper anchors and project-boundary-checks
-   the sidecar's `path` first, rejects an absent or non-list `tables`, validates the v2 schema, and calls
-   `load_v2_api_source()` to yield the multi-table lazy input. The missing data file surfaces as
-   `FileNotFoundError` when the shared loader opens the resolved source for record iteration.
-3. `Quote_Response_9()` receives the four graph ports but returns the first
-   (`quotes`) unchanged. The `Quote_Response_9` sidecar separately tells the
-   output mechanism how port columns map to nested JSON paths.
-4. Importing `rating/modules/model_stuff.py` constructs its submodel, registers
-   `sale_flag`, `competitor_features`, and `premium`, and connects `sale_flag`
-   to the latter two nodes. At execution, `sale_flag` derives `sale_flag` and
-   `burn_cost`; `competitor_features` derives a premium ratio; `premium` applies
-   the scenario multiplier.
-5. Project-authored code may import `rating/utility/features.py` helpers to
-   construct Polars expressions. The model artifacts have no executable import
-   path in this reference; a model workflow must select/load them separately.
+1. `haute run` (or the editor) resolves `examples/reference/main.py` from the root
+   `haute.toml` and parses it into the three-node graph.
+2. Execution prepares the `quotes` Data Input's snapshot from the CSV, runs
+   `features`, and assembles `priced` from its mapping.
+3. `haute run` prints each node's row and column counts and the last node's rows.
 
 ## Edge cases and invariants
 
-- The tracked quote-input sidecar has four emitted table labels that match the
-  four `pipeline.connect()` source ports and the output function's parameter
-  order: `quotes`, `drivers`, `vehicles`, and `licenses`.
-- `rating/main.py` requires a v2 `tables` list even though its decorator contract
-  is `"opaque"`; it rejects an absent/non-list table map before calling the
-  loader.
-- The generated `Quote_Response_9` function accepts `quotes_2`, `quotes_3`, and
-  `quotes_4` but does not read them directly. Their contribution is represented
-  in the output sidecar mappings, not by Python-frame transformations in the
-  function body.
-- `clean_columns()` only calls `LazyFrame.rename()` when a schema column contains
-  `.`; otherwise it returns the input lazy frame. `cols_matching()` preserves
-  incoming column order because it filters the supplied list directly.
-- The reference is non-runnable from the checked-in tree: it has no tracked
-  rating/data/quotes/nest_example.json at the generated main pipeline's
-  expected project-relative location and no tracked
-  rating/config/expander/premium.json sidecar named by the submodel decorator.
-  This is a property of the snapshot, not a claim that a maintainer's local
-  project cannot supply either file.
-- `.rsglm` contents are opaque to this component. Their filenames do not imply
-  compatibility with every installed Haute/model-library version.
+- `driver_band` is text (`(-inf, 25]`, `(25, 40]`, `(40, 65]`, `(65, inf]`), so
+  the output mapping carries it as a JSON string.
+- The six quotes produce six output rows; the example neither filters nor joins.
+- `main.py` is the code generator's output for its graph; editing the graph in
+  the editor rewrites it the same way it would any project pipeline.
 
 ## Error handling
 
-- Sidecar/data filesystem operations propagate errors such as `FileNotFoundError`; the current
-  missing quote data surfaces as `FileNotFoundError` when `load_v2_api_source()` opens the resolved
-  source for record iteration (generated standalone code shreds its source in-process). No placeholder frame or default
-  JSON is supplied.
-- `resolve_api_input_from_config()` propagates `ValueError` (`src/haute/_node_apply.py`) for a
-  missing or blank data path, `RuntimePathOutsideProjectError` (`src/haute/_path_resolution.py`) if
-  the data path escapes the project root, `ApiInputSchemaError` (`src/haute/_api_input_schema.py`)
-  for an absent or non-list `tables` array or invalid v2 schema, and `RuntimeError`
-  (`src/haute/_json_shred/_cache.py`) if no tables emit or no columns are selected.
-- `features.to_date()` and other Polars helpers defer expression errors until
-  Polars evaluates the enclosing plan; `clean_columns()` can propagate schema
-  collection/rename errors. They intentionally do not swallow invalid columns,
-  types, formats, or predicate failures.
-- Generated decorators/connections and output mappings rely on Haute's generic
-  parser/runtime validation for graph, port, contract, and mapping failures;
-  this reference adds no error translation around those operations.
+- Input preparation, transform and output-assembly errors propagate through the
+  generic execution contract; `haute run` reports the failing node and exits 1.
+- The example supplies no fallback data and no error translation of its own.
 
 ## Testing
 
-- `tests/test_output_nest_example_contract.py` parses the checked-in `rating/main.py` and
-  pins its two node ids and four source-handle edges, but its shred/assemble contract
-  runs on inline copies of the two sidecars rather than the checked-in files, so the
-  tracked sidecars' contents have no direct regression coverage.
-- `tests/test_docs_accuracy.py` requires every tracked `rating/` Python, JSON, and model artifact
-  to appear in this module map.
-- The generic mechanisms it exercises are covered by active tests such as
-  `tests/test_pipeline.py`, `tests/test_v2_codec_and_shred.py`,
-  `tests/test_apiinput_multi_port_runtime.py`, `tests/test_output_assembler.py`,
-  and `tests/test_scenario_expander.py`.
-- This indirect coverage does not certify that the reference's missing local
-  data, model artifacts, generated code, or sidecars form a runnable complete
-  scenario. A maintainer changing it should add focused coverage if they intend
-  to promote it from example material to an executable contract.
+- `tests/test_reference_pipeline.py` copies the tracked root `haute.toml` and
+  `examples/` into an empty directory and runs `haute run` there: every node
+  succeeds and `priced` returns six rows of four columns.
+- `tests/test_docs_accuracy.py` requires every tracked `examples/` Python, JSON and
+  CSV file to appear in this module map.
+- `tests/test_repository_hygiene.py` requires pipeline sidecars to live under
+  `examples/reference/config/`, never at the repository root.

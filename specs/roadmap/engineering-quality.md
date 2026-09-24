@@ -13,13 +13,12 @@ These packages come from the
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
-| ENGQ-R02 | Planned | P3 | The repository stops tracking generated and local-state files. |
 | ENGQ-R04 | Decision | P3 | Coverage and documentation gates are pointed at risk and at user-facing documents. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
 
 ## Planned improvements
 
-`ENGQ-R01` and `ENGQ-R02` are independent clean-ups. `ENGQ-R05` is easier after
+`ENGQ-R01` is an independent clean-up. `ENGQ-R05` is easier after
 `ENGQ-R04` has set the coverage rule the reorganised suite must meet.
 
 ### ENGQ-R01 — Remove unreferenced and test-only production code
@@ -69,33 +68,6 @@ and the reviewed allowlist covers the runner while it remains live.
 `frontend/src/panels/editors/index.ts`;
 `frontend/src/panels/editors/banding/index.ts`;
 `frontend/src/panels/editors/rating/index.ts`.
-
-### ENGQ-R02 — Stop tracking generated and local-state files
-**Why:** The repository tracks a 612 KB local `mlflow.db`, benchmark and
-reproduction scripts under `repro/`, and executable PR #227 probes and
-benchmark results under `specs/roadmap/`. The `rating/` reference project is
-not runnable (it lacks `rating/data/quotes/nest_example.json` and the
-scenario-expander sidecar it names), yet the root `haute.toml` selects it as
-the repository's pipeline.
-
-**Plan:** Decide whether `mlflow.db` and `repro/` carry value; delete them or
-move them to a documented fixtures location. Move the PR #227 probes out of
-`specs/roadmap/` when their reports retire. Either make `rating/` runnable with its missing
-files and one smoke test, or remove it and point `haute.toml` at a runnable
-example.
-
-**Acceptance:** No local database is tracked; `specs/roadmap/` holds no
-executable probe or benchmark output (the Markdown reports and the
-provenance record the roadmap index links may stay); the repository's
-default pipeline loads and previews from a fresh clone, or the reference
-project is gone.
-
-**Dependencies:** The reference-pipeline specification changes with any
-decision about `rating/`.
-
-**Evidence:** `mlflow.db`; `repro/benchmark_optimiser_auto_range.py`;
-`rating/main.py`; `haute.toml`; `specs/roadmap/pr-227-review-probes.py`;
-`.gitignore`.
 
 ### ENGQ-R04 — Point the gates at risk and at users
 **Why:** About 5,000 lines of tests, plus a 1,360-line coverage ledger, keep

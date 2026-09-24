@@ -7,7 +7,7 @@ contribution sums, persistence, and EBM's ``bags`` leakage semantics.
 Run from the repository root in an environment holding Haute's dependencies
 plus the probed engines (see ``mod-f00-engine-probes.md``)::
 
-    PYTHONPATH=src python specs/roadmap/mod-f00-engine-probes.py OUTPUT.json
+    PYTHONPATH=src python scripts/benchmarks/mod-f00-engine-probes.py OUTPUT.json
 """
 
 from __future__ import annotations

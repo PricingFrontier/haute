@@ -8,7 +8,7 @@ above the pre-fit baseline, and the saved model's size (which bounds what an
 
 Run from the repository root with Haute's dependencies installed::
 
-    PYTHONPATH=src python specs/roadmap/mod-f05-release-benchmarks.py OUTPUT.json
+    PYTHONPATH=src python scripts/benchmarks/mod-f05-release-benchmarks.py OUTPUT.json
 """
 
 from __future__ import annotations

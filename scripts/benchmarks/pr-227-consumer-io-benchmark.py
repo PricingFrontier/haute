@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT))
 from scripts.memory_smoke import run_smoke
 
 alloc_spec = importlib.util.spec_from_file_location(
-    "alloc", ROOT / "specs/roadmap/pr-227-allocation-benchmark.py"
+    "alloc", ROOT / "scripts/benchmarks/pr-227-allocation-benchmark.py"
 )
 alloc = importlib.util.module_from_spec(alloc_spec)
 alloc_spec.loader.exec_module(alloc)

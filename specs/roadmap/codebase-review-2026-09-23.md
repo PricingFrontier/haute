@@ -352,7 +352,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §2.3 Unreferenced and test-only code | `ENGQ-R01` ([engineering quality](engineering-quality.md)); the preview-reader protocol is `TRACE-R02` ([tracing](tracing.md)) |
 | §2.4 Per-request chunk-size knob | `EXEC-R01` ([execution engine](execution-engine.md)), with §1.1 |
 | §2.5 Assistant legacy catalogue and harnesses | `ASSIST-R01` (assistant, delivered; its roadmap file is retired) |
-| §2.6 Tracked artifacts and the `rating/` reference | `ENGQ-R02` ([engineering quality](engineering-quality.md)); the external assembler document is `JSON-R02` (JSON shredding, delivered; its roadmap file is retired) |
+| §2.6 Tracked artifacts and the `rating/` reference | `ENGQ-R02` (engineering quality, delivered); the external assembler document is `JSON-R02` (JSON shredding, delivered; its roadmap file is retired) |
 | §3.1 Error translation | `API-R01` ([server API](server-api.md)) |
 | §3.1 HTTP types in services | `API-R02` ([server API](server-api.md)) |
 | §3.1 Three worker mechanisms | `ROAD-WORKER-05` ([background jobs](background-jobs-api.md)) |

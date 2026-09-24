@@ -9,7 +9,7 @@ progress callback can cancel a device fit, and peak device memory.
 Run from the repository root in an environment with a CUDA XGBoost build (the
 full ``xgboost`` wheel, not ``xgboost-cpu``) and LightGBM::
 
-    python specs/roadmap/mod-f06-gpu-probes.py OUTPUT.json [CPU_PYTHON]
+    python scripts/benchmarks/mod-f06-gpu-probes.py OUTPUT.json [CPU_PYTHON]
 
 ``CPU_PYTHON`` is an interpreter with only ``xgboost-cpu`` installed; when
 given, GPU-trained XGBoost models are re-scored there to prove CPU serving.

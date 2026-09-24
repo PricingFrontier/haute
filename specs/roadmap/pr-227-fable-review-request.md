@@ -22,9 +22,9 @@ Read these first:
 
 - `specs/roadmap/pr-227-review.md`
 - `specs/roadmap/pipeline-cache-memory-design.md`
-- `specs/roadmap/pr-227-review-probes.py`
-- `specs/roadmap/pr-227-frontend-probes.test.tsx`
-- `specs/roadmap/pr-227-join-benchmark.py` and its `.json` results
+- `scripts/benchmarks/pr-227-review-probes.py`
+- `scripts/benchmarks/pr-227-frontend-probes.test.tsx`
+- `scripts/benchmarks/pr-227-join-benchmark.py` and its `.json` results
 - `specs/roadmap/pr-227-cache-evidence.md`
 - `specs/roadmap/pr-227-materialisation-evidence.md`
 
