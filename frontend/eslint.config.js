@@ -18,7 +18,7 @@ const POLLING_SELECTORS = [
   },
 ]
 // One helper per repeated concern; each owning module is exempt from its own ban.
-const ERROR_HELPER_NAMES = '/^(errorMessage|errorMsg|errorDetail|requestErrorDetail|previewErrorDetail)$/'
+const ERROR_HELPER_NAMES = '/^(errorMessage|errorMsg|errorDetail|requestErrorDetail|previewErrorDetail|gitErrorMessage)$/'
 const ERROR_TEXT_SELECTORS = [
   {
     // A variable of that name holding a string is fine; a function is a copy.

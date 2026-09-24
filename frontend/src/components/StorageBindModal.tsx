@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
-import { gitErrorMessage } from "../utils/gitError"
+import { apiErrorMessage } from "../api/errors"
 import ModalShell from "./ModalShell"
 
 interface StorageBindModalProps {
@@ -82,7 +82,7 @@ export default function StorageBindModal({ onClose }: StorageBindModalProps) {
       addToast("info", "Saving this project to storage - you can keep working.")
       onClose()
     } catch (err: unknown) {
-      setLocalError(gitErrorMessage(err, "Could not bind storage"))
+      setLocalError(apiErrorMessage(err, "Could not bind storage"))
     } finally {
       setBusy(false)
     }
@@ -99,7 +99,7 @@ export default function StorageBindModal({ onClose }: StorageBindModalProps) {
       addToast("info", "Forked, and saving the copy to storage - you can keep working.")
       onClose()
     } catch (err: unknown) {
-      setLocalError(gitErrorMessage(err, "Could not fork the storage location"))
+      setLocalError(apiErrorMessage(err, "Could not fork the storage location"))
     } finally {
       setBusy(false)
     }

@@ -13,53 +13,43 @@ Generating the API contract is planned in the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FSH-R02 | Planned | P3 | One debounce hook, one modal base and one table base. |
+| FSH-R02 | Planned | P3 | One table base, and the repair dialog's error text through `apiErrorMessage`. |
 | FSH-R03 | Planned | P3 | The results store holds results; validation and optimiser logic move out. |
 
 ## Planned improvements
 
-### FSH-R02 — One debounce hook, one modal base and one table base
-**Delivered so far:** error text goes through `apiErrorMessage`, byte counts
-through `formatBytes`/`formatByteSize`, durations through `formatDuration`,
-and object checks through `isPlainObject`/`expectPlainObject` or
-`isObjectLiteral`; ESLint rejects new local copies of each. The remaining
-repeats are below.
+### FSH-R02 — One table base and the repair dialog's error text
+**Delivered so far:** error text goes through `apiErrorMessage` (the Git UI's
+`gitErrorMessage` included), byte counts through `formatBytes`/`formatByteSize`,
+durations through `formatDuration`, and object checks through
+`isPlainObject`/`expectPlainObject` or `isObjectLiteral`; ESLint rejects new
+local copies of each. Scheduled calls debounce through `useDebouncedCallback`
+(the code editor, the utility panel's autosave and the canvas preview); a
+delayed request inside an effect that clears its timer and aborts its request
+on cleanup stays in that effect. The node-search palette sits on a top-placed
+`ModalShell`, and the working-branch, divergence and identity modals share
+`ModalForm`. The tracing hook's `technicalDetail` is not error text: it keeps
+the raw detail whole for the trace panel's Technical details disclosure.
 
-**Why:** Debouncing is hand-rolled eight times (the banding statistics and
-rating levels hooks, the rendered-steps hook, the filter member picker, the
-code editor, the preview debounce, the utility panel's save timer and the edge
-click preview). Two dialogs build their own overlays instead of `ModalShell`
-(the node search palette, which is top-aligned, and a toolbar dialog), the
-identity, working-branch and divergence modals repeat the same form blocks,
-and 22 tables are hand-built while the shared `SimpleTable` goes mostly
-unused. `gitErrorMessage` (40 call sites) still unwraps JSON-encoded string
-details on its own, and the tracing hook's raw-detail text and the repair
-dialog's `code: message` text are separate formatters.
+**Why:** Tables are hand-built one by one; the review's premise that a shared
+`SimpleTable` already exists is wrong, as none has ever been in the frontend.
+The repair dialog's `code: message` text is a separate error formatter.
 
-**Plan:** Add one debounce hook (the banding and rating hooks share one
-request hook, `useWholeDataAnswer`), move the two overlays onto `ModalShell`
-(which then needs a top-aligned placement), extract the shared modal form
-block, move simple tables onto `SimpleTable`, and decide whether the git,
-tracing and repair formatters fold into `apiErrorMessage`.
+**Plan:** Decide whether a shared table base is worth adding (the plain value
+tables in the modelling and Explore panels are the candidates; their styling
+differs today), and fold the repair dialog's text into `apiErrorMessage` if
+the dialog survives the recovery-scope work.
 
 **Acceptance:** Each concern has one implementation, and lint or a test
 rejects a new local copy where that is cheap to express; the existing
 component tests pass.
 
-**Dependencies:** None.
+**Dependencies:** `API-R04` ([server API](server-api.md)) decides the repair
+dialog's future.
 
-**Evidence:** `frontend/src/panels/editors/polarsSteps/useRenderedSteps.ts`;
-`frontend/src/panels/editors/explorePivots/FilterMemberPicker.tsx`;
-`frontend/src/panels/editors/CodeMirrorEditor.tsx`;
-`frontend/src/hooks/usePipelineAPI.ts`; `frontend/src/panels/UtilityPanel.tsx`;
-`frontend/src/hooks/useEdgeHandlers.ts`; `frontend/src/components/Toolbar.tsx`;
-`frontend/src/components/ModalShell.tsx`;
-`frontend/src/components/NodeSearch.tsx`;
-`frontend/src/components/IdentityPromptModal.tsx`;
-`frontend/src/components/WorkingBranchModal.tsx`;
-`frontend/src/components/DivergenceModal.tsx`;
-`frontend/src/panels/editors/_shared.tsx`; `frontend/src/utils/gitError.ts`;
-`frontend/src/hooks/useTracing.ts`;
+**Evidence:** `frontend/src/panels/modelling/SummaryTab.tsx`;
+`frontend/src/panels/explore/ExploreSummaryCards.tsx`;
+`frontend/src/panels/explore/ExploreRelationshipsPane.tsx`;
 `frontend/src/components/PipelineRepairDialog.tsx`.
 
 ### FSH-R03 — The results store holds results

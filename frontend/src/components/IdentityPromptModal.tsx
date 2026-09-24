@@ -4,7 +4,7 @@ import { setGitIdentity } from "../api/client"
 import { dismissIdentityPrompt } from "../stores/identityPrompt"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
-import { gitErrorMessage } from "../utils/gitError"
+import { apiErrorMessage } from "../api/errors"
 import { GitIdentityFields, ModalFormActions, ModalFormHeader } from "./ModalForm"
 import ModalShell from "./ModalShell"
 
@@ -51,7 +51,7 @@ export default function IdentityPromptModal({ onSaved, onClose }: IdentityPrompt
       onClose()
       onSaved()
     } catch (err: unknown) {
-      addToast("error", `Could not set your git identity: ${gitErrorMessage(err, "unknown error")}`)
+      addToast("error", `Could not set your git identity: ${apiErrorMessage(err, "unknown error")}`)
     } finally {
       setBusy(false)
     }

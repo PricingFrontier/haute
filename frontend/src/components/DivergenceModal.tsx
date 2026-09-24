@@ -3,7 +3,7 @@ import { useState } from "react"
 import { setWorkingBranch } from "../api/client"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
-import { gitErrorMessage } from "../utils/gitError"
+import { apiErrorMessage } from "../api/errors"
 import useUIStore from "../stores/useUIStore"
 import { ModalFormActions, ModalFormHeader } from "./ModalForm"
 import ModalShell from "./ModalShell"
@@ -52,7 +52,7 @@ export default function DivergenceModal({ onConfirmed, onClose }: DivergenceModa
       addToast("success", `Working branch set to ${target}`)
       onConfirmed()
     } catch (err: unknown) {
-      const detail = gitErrorMessage(err, "unknown error")
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Could not switch working branch: ${detail}`)
     } finally {
       setBusy(false)

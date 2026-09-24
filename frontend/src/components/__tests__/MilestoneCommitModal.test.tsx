@@ -143,6 +143,25 @@ describe("MilestoneCommitModal", () => {
     expect(screen.queryByTestId("milestone-fork-confirm")).not.toBeInTheDocument()
   })
 
+  it("names the status, not the raw body, for a 409 it cannot read", async () => {
+    const unknown = { detail: { status: "something_else", oops: true } }
+    mockCommit.mockRejectedValueOnce(
+      new ApiError("HTTP 409", 409, JSON.stringify(unknown), unknown),
+    )
+    render(<MilestoneCommitModal onConfirmed={vi.fn()} onClose={vi.fn()} />)
+    fireEvent.change(screen.getByTestId("milestone-message"), {
+      target: { value: "My milestone" },
+    })
+    fireEvent.click(screen.getByTestId("milestone-confirm"))
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.map((toast) => toast.text)).toContain(
+        "Could not commit: HTTP 409",
+      )
+    })
+    expect(screen.queryByTestId("milestone-fork-confirm")).not.toBeInTheDocument()
+  })
+
   it("can back out of the fork warning without committing", async () => {
     const fork = {
       status: "would_fork",
