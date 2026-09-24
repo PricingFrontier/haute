@@ -11,18 +11,27 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-_BYTECODE_CACHE = "__pycache__"
+# Bytecode and tool caches: never source, and created or removed by other
+# processes while a walk runs.
+_CACHE_DIRECTORIES = frozenset({"__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"})
 
 
 def source_files(root: Path, *, suffix: str | None = ".py") -> list[Path]:
-    """Every file under *root* ending in *suffix* (any file for ``None``), sorted."""
+    """Every file under *root* ending in *suffix* (any file for ``None``), sorted.
+
+    Cache directories are pruned before they are listed. Any other directory
+    that cannot be listed raises, so a scan never checks less than it claims.
+    """
     files: list[Path] = []
-    for directory, subdirectories, names in os.walk(root):
-        subdirectories[:] = sorted(name for name in subdirectories if name != _BYTECODE_CACHE)
+    for directory, subdirectories, names in os.walk(root, onerror=_raise):
+        subdirectories[:] = sorted(
+            name for name in subdirectories if name not in _CACHE_DIRECTORIES
+        )
         files.extend(
             Path(directory, name)
             for name in sorted(names)
@@ -31,8 +40,12 @@ def source_files(root: Path, *, suffix: str | None = ".py") -> list[Path]:
     return files
 
 
+def _raise(error: OSError) -> NoReturn:
+    raise error
+
+
 def tree_snapshot(root: Path) -> frozenset[str]:
-    """The relative paths of every file under *root*, bytecode caches excluded."""
+    """The relative paths of every file under *root*, cache directories excluded."""
     return frozenset(path.relative_to(root).as_posix() for path in source_files(root, suffix=None))
 
 

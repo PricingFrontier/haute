@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import functools
 import os
 import re
 import subprocess
@@ -86,53 +87,154 @@ def test_source_walks_prune_bytecode_caches_before_entering_them(
     assert source_files(tmp_path) == [tmp_path / "pkg" / "module.py"]
 
 
+def test_source_walks_fail_loudly_when_a_directory_cannot_be_listed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A static scan that silently skipped an unreadable directory would pass
+    # while checking less than it claims.
+    (tmp_path / "pkg").mkdir()
+    real_scandir = os.scandir
+
+    def scandir(path: str) -> object:
+        if Path(path).name == "pkg":
+            raise PermissionError(f"cannot list {path}")
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+
+    with pytest.raises(PermissionError, match="cannot list"):
+        source_files(tmp_path)
+
+
 # Trees that hold no Python, so no bytecode cache can appear in them mid-walk.
 _TREES_WITHOUT_PYTHON = frozenset({"docs", "specs", "frontend"})
 
+# One possible walk root: whether it derives from a ``__file__``, and the path
+# segments it names.
+_Origin = tuple[bool, frozenset[str]]
+_UNANCHORED: _Origin = (False, frozenset())
+# A name's possible values: expressions, or ``(module, name)`` for a name
+# imported from a module of the test package, resolved there when needed.
+_Bindings = dict[str, list[ast.expr | tuple[str, str]]]
 
-def _name_bindings(tree: ast.Module) -> dict[str, list[ast.expr]]:
-    """Every expression a module assigns to each name, anywhere in the module.
 
-    Names imported from the test package count as bound to the repository
-    (``REPO_ROOT`` and friends are anchored at ``__file__``).
+def _name_bindings(tree: ast.Module) -> _Bindings:
+    """Every expression each name can take, anywhere in the module.
+
+    Assignments bind their value; loop and comprehension targets bind the
+    iterable (whose elements are then separate possible values); a function's
+    parameters bind the arguments of every call to it in the module. A name
+    imported from a module of the test package takes the values it has there.
     """
-    bindings: dict[str, list[ast.expr]] = {}
+    bindings: _Bindings = {}
+
+    def bind(target: ast.expr, value: ast.expr) -> None:
+        if isinstance(target, ast.Name):
+            bindings.setdefault(target.id, []).append(value)
+        elif isinstance(target, ast.Tuple | ast.List):
+            for element in target.elts:
+                bind(element, value)
+
+    functions = {
+        node.name: node.args
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    }
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
-            targets, value = node.targets, node.value
-        elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            targets, value = [node.target], node.value
+            for target in node.targets:
+                bind(target, node.value)
+        elif isinstance(node, ast.AnnAssign | ast.NamedExpr) and node.value is not None:
+            bind(node.target, node.value)
+        elif isinstance(node, ast.For | ast.AsyncFor | ast.comprehension):
+            bind(node.target, node.iter)
         elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith("tests"):
             for alias in node.names:
-                bindings.setdefault(alias.asname or alias.name, []).append(ast.Name(id="__file__"))
-            continue
-        else:
-            continue
-        for target in targets:
-            if isinstance(target, ast.Name):
-                bindings.setdefault(target.id, []).append(value)
+                bindings.setdefault(alias.asname or alias.name, []).append(
+                    (node.module or "", alias.name)
+                )
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in functions
+        ):
+            parameters = functions[node.func.id]
+            positional = [*parameters.posonlyargs, *parameters.args]
+            for parameter, argument in zip(positional, node.args, strict=False):
+                bindings.setdefault(parameter.arg, []).append(argument)
+            named = {parameter.arg for parameter in [*positional, *parameters.kwonlyargs]}
+            for keyword in node.keywords:
+                if keyword.arg in named:
+                    bindings.setdefault(keyword.arg, []).append(keyword.value)
     return bindings
 
 
-def _walk_origin(
-    expression: ast.expr, bindings: dict[str, list[ast.expr]], seen: frozenset[str]
-) -> tuple[bool, set[str]]:
-    """Whether *expression* derives from a ``__file__``, and the path segments it names."""
-    anchored = False
-    segments: set[str] = set()
-    for node in ast.walk(expression):
-        if (isinstance(node, ast.Name) and node.id == "__file__") or (
-            isinstance(node, ast.Attribute) and node.attr == "__file__"
-        ):
-            anchored = True
-        elif isinstance(node, ast.Name) and node.id in bindings and node.id not in seen:
-            for value in bindings[node.id]:
-                value_anchored, value_segments = _walk_origin(value, bindings, seen | {node.id})
-                anchored |= value_anchored
-                segments |= value_segments
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            segments.add(node.value)
-    return anchored, segments
+@functools.cache
+def _module_bindings(module: str) -> _Bindings | None:
+    """The bindings of a test-package module; ``None`` when *module* is a package."""
+    path = _REPO_ROOT.joinpath(*module.split(".")).with_suffix(".py")
+    if not path.is_file():
+        return None
+    return _name_bindings(ast.parse(path.read_text(encoding="utf-8")))
+
+
+_RESOLVING: set[tuple[str, str]] = set()
+
+
+@functools.cache
+def _imported_origins(module: str, name: str) -> frozenset[_Origin]:
+    """What *name* can evaluate to in the test-package *module* that defines it."""
+    bindings = _module_bindings(module)
+    if bindings is None or (module, name) in _RESOLVING:  # a submodule, or a cycle
+        return frozenset({_UNANCHORED})
+    _RESOLVING.add((module, name))
+    try:
+        return frozenset(_walk_origins(ast.Name(id=name), bindings, frozenset()))
+    finally:
+        _RESOLVING.discard((module, name))
+
+
+def _walk_origins(expression: ast.expr, bindings: _Bindings, seen: frozenset[str]) -> set[_Origin]:
+    """Each root *expression* can evaluate to, judged separately."""
+    if (isinstance(expression, ast.Name) and expression.id == "__file__") or (
+        isinstance(expression, ast.Attribute) and expression.attr == "__file__"
+    ):
+        return {(True, frozenset())}
+    if isinstance(expression, ast.Constant):
+        value = expression.value
+        return {(False, frozenset({value}) if isinstance(value, str) else frozenset())}
+    if isinstance(expression, ast.Name):
+        values = [] if expression.id in seen else bindings.get(expression.id, [])
+        inner = seen | {expression.id}
+        origins = {
+            origin
+            for value in values
+            for origin in (
+                _imported_origins(*value)
+                if isinstance(value, tuple)
+                else _walk_origins(value, bindings, inner)
+            )
+        }
+        return origins or {_UNANCHORED}
+    if isinstance(expression, ast.Tuple | ast.List | ast.Set):
+        origins = {
+            origin
+            for element in expression.elts
+            for origin in _walk_origins(element, bindings, seen)
+        }
+        return origins or {_UNANCHORED}
+    # A path built from parts (``root / "src"``, ``Path(...).parents[1]``)
+    # combines every possible value of each part.
+    origins = {_UNANCHORED}
+    for child in ast.iter_child_nodes(expression):
+        if isinstance(child, ast.expr):
+            child_origins = _walk_origins(child, bindings, seen)
+            origins = {
+                (anchored or child_anchored, segments | child_segments)
+                for anchored, segments in origins
+                for child_anchored, child_segments in child_origins
+            }
+    return origins
 
 
 def _walk_receiver(call: ast.Call) -> ast.expr | None:
@@ -155,15 +257,21 @@ def _walk_receiver(call: ast.Call) -> ast.expr | None:
 
 
 def _raw_repository_walks(source: str) -> list[int]:
-    """Lines that walk a repository tree which can hold bytecode caches."""
+    """Lines that walk a repository tree which can hold bytecode caches.
+
+    A walk is flagged when any root it can take derives from a ``__file__``
+    and names none of the trees without Python.
+    """
     tree = ast.parse(source)
     bindings = _name_bindings(tree)
     lines: list[int] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or (receiver := _walk_receiver(node)) is None:
             continue
-        anchored, segments = _walk_origin(receiver, bindings, frozenset())
-        if anchored and not segments & _TREES_WITHOUT_PYTHON:
+        if any(
+            anchored and not segments & _TREES_WITHOUT_PYTHON
+            for anchored, segments in _walk_origins(receiver, bindings, frozenset())
+        ):
             lines.append(node.lineno)
     return sorted(lines)
 
@@ -191,10 +299,26 @@ def test_raw_repository_walk_detection_follows_names_to_the_repository() -> None
             list(SPECS.rglob("*.md"))
             list(tmp_path.rglob("*"))
             list(ROOT.glob("*.md"))
+
+
+        def mixed_roots():
+            roots = (ROOT / "tests", ROOT / "frontend" / "src")
+            return [path for tree in roots for path in tree.rglob("*")]
+
+
+        def frontend_only():
+            return [path for web in (ROOT / "frontend",) for path in web.rglob("*")]
+
+
+        def python_sources(directory):
+            return [name for _, _, names in os.walk(directory) for name in names]
+
+
+        python_sources(ROOT / "src")
         """
     )
 
-    assert _raw_repository_walks(sample) == [15, 16, 17, 18]
+    assert _raw_repository_walks(sample) == [15, 16, 17, 18, 26, 34]
 
 
 def test_tests_walk_repository_trees_through_the_shared_helper() -> None:

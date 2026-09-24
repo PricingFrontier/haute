@@ -64,10 +64,13 @@ Out of scope:
   stops the server's startup bytecode clear for its duration (a session
   fixture), so no test removes the package's `__pycache__` directories, and
   every test that walks a repository tree that can hold Python (`src/`,
-  `tests/`, `examples/`) goes through `source_files`, which prunes bytecode
-  caches before entering them. A hygiene test rejects any recursive walk
-  (`rglob`, `os.walk`, a `**` glob) whose root derives from a module's
-  `__file__` unless it targets `docs/`, `specs/` or `frontend/`.
+  `tests/`, `examples/`) goes through `source_files`, which prunes bytecode and
+  tool caches before entering them and raises when any other directory cannot
+  be listed. A hygiene test rejects any recursive walk (`rglob`, `os.walk`,
+  `Path.walk`, a `**` glob) that can take a root derived from a module's
+  `__file__` outside `docs/`, `specs/` and `frontend/`; it follows
+  assignments, loop and comprehension variables, function parameters and names
+  imported from the test package, and judges each possible root separately.
 - A versioned workflow coverage ledger, `tests/workflow_coverage.toml`, records
   every supported workflow family, node type, and component with the scenarios
   that carry its executable witnesses. Each scenario is `covered`, `gap`,
