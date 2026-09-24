@@ -69,7 +69,7 @@
 | `frontend/src/utils/mlflowModelMetadata.ts` | Pure MLflow model metadata helpers for Model Score: `resolveLoadedVersion` (the loaded version a stored choice resolves to; `latest` is the newest) and `recordedModelTask` (a run's recorded `task` param when it is `regression` or `classification`, else `null`). |
 | `frontend/src/components/NodeTypeIcon.tsx` | Shared node-type icon wrapper: looks up canonical metadata and deliberately renders the Polars icon for an absent or unknown type, so compact lists never crash on incomplete historical data. |
 | `frontend/src/components/ToggleButtonGroup.tsx` | Generic controlled segmented single-choice group with radio semantics, roving `tabIndex`, Arrow/Home/End selection and focus movement, optional accessible name, and token-derived active styling. |
-| `frontend/src/components/form/CommittedTextField.tsx` | Controlled-looking input/textarea with a local draft: commits once on blur (and Enter for the input), skips no-op commits, and discards a stale draft when the external value changes, preserving one edit/one undo snapshot. |
+| `frontend/src/components/form/CommittedTextField.tsx` | Controlled-looking input/textarea with a local draft: commits once on blur (and Enter for the input), skips no-op commits, and discards a stale draft when the external value changes, preserving one edit/one undo snapshot. `ValidatedTextField` is the validated single-line variant the API Input and Output editors share: an invalid candidate is refused with its error beside the field and the draft kept, an invalid committed value shows its error too, a commit its owner refuses (`{ ok: false }`) keeps the draft, an owner's `commitError` shows while the value itself is valid, and a non-blocking `warning` shows only when there is no error. |
 | `frontend/src/components/form/ConfigCheckbox.tsx` | Labelled controlled checkbox using a caller id or React `useId`, disabled semantics, and shared accent/text tokens. |
 | `frontend/src/components/form/EditorLabel.tsx` | Consistent micro-label primitive; can be a correctly associated `<label>` or non-form span/div for display-only content. |
 | `frontend/src/components/form/index.ts` | Public barrel for the committed text field/area, checkbox, and editor-label primitives; editor callers import the shared contract rather than deep paths. |
@@ -803,7 +803,8 @@ Arrow/Home/End radio-group selection/focus behaviour;
 `frontend/src/components/form/__tests__/CommittedTextField.test.tsx`,
 `frontend/src/__tests__/components/form/ConfigCheckbox.test.tsx`, and
 `frontend/src/__tests__/components/form/EditorLabel.test.tsx` cover commit boundaries,
-no-op blur, external-value draft reset, and form-label/control semantics.
+no-op blur, external-value draft reset, `ValidatedTextField`'s refused candidates, owner
+refusals, commit errors and warnings, and form-label/control semantics.
 `frontend/src/utils/__tests__/chartHelpers.test.ts` and
 `frontend/src/utils/__tests__/formatTrace.test.ts` respectively pin numeric
 ticks/formatting and trace substitutions/non-finite display.

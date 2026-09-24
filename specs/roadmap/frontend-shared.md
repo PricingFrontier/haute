@@ -37,7 +37,7 @@ details on its own, and the tracing hook's raw-detail text and the repair
 dialog's `code: message` text are separate formatters.
 
 **Plan:** Add one debounce hook (the banding and rating hooks share one
-request hook after `FNE-R01`), move the two overlays onto `ModalShell`
+request hook, `useWholeDataAnswer`), move the two overlays onto `ModalShell`
 (which then needs a top-aligned placement), extract the shared modal form
 block, move simple tables onto `SimpleTable`, and decide whether the git,
 tracing and repair formatters fold into `apiErrorMessage`.

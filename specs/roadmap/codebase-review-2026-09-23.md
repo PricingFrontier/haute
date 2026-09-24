@@ -363,7 +363,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §3.1 Git outside the chokepoint | `DEP-R04` ([deploy](deploy.md)) |
 | §3.2 Polling | `FSH-R01` ([frontend shared](frontend-shared.md)) |
 | §3.2 Error, format, debounce, modal and table helpers | `FSH-R02` ([frontend shared](frontend-shared.md)) |
-| §3.2 Editor clones and the read-only dispatcher | `FNE-R01` ([frontend node editors](frontend-node-editors.md)) |
+| §3.2 Editor clones and the read-only dispatcher | `FNE-R01` (frontend node editors, delivered; its roadmap file is retired) |
 | §3.2 Modelling tab and chart clones | `FMO-R01` ([frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md)) |
 | §3.2 Results store | `FSH-R03` ([frontend shared](frontend-shared.md)) |
 | §3.3 Invariants validated three times | `MOD-T10` ([modelling](modelling.md)) |

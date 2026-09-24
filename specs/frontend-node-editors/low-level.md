@@ -656,6 +656,19 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   source label otherwise — so display and persisted identity cannot diverge. An unresolvable
   API-input edge renders the block header in the explicit unresolved state (parent label
   retained as identifying text plus a visible warning marker), never a normal-looking fallback.
+- The Output editor mirrors the backend's one-frame-per-array-level rule
+  ([JSON shredding](../json-shredding/high-level.md)): over the active rows (enabled, with a
+  column and a grammatical path) a frame emits at the deepest array prefix of its paths, and
+  when two frames emit at the same level a danger banner names the frames and the level and
+  says to join them upstream (for example with a Join node) or map one of them to a different
+  level. A frame whose array prefixes do not form one chain is left to its own error. Like the
+  per-frame path-conflict warning, the banner never blocks an edit; the backend validator is
+  the authority.
+- The API Input label, table-path and column name/path fields and the Output mapping path
+  field are the shared `ValidatedTextField`
+  ([frontend shared](../frontend-shared/low-level.md)): the API Input fields pass the
+  `OnUpdateConfig` result so a refused commit keeps its draft and shows `commitError`, and the
+  Output path passes its per-frame conflict warning.
 - Edge Join roles are never config values: they come exclusively from the incoming edges'
   `targetHandle="base"` / `targetHandle="join"` values and can only be exchanged by the atomic
   swap action. Creating, connecting, swapping, splitting, or deleting role edges does not write
@@ -737,7 +750,7 @@ collision preflight rejection surfaced inline via the `OnUpdateConfig` result wi
 asserted unchanged), by the editor suites
 that render `InputSourcesBar` (`ModelScoreEditor`, `OptimiserApplyEditor`,
 `ScenarioExpanderEditor`, `BandingEditor`, and the hover suite), by the OutputEditor suite's
-name-equals-`framePortId` and unresolved-block-header cases, and by
+name-equals-`framePortId`, unresolved-block-header and same-array-level banner cases, and by
 `frontend/src/utils/__tests__/apiInputPorts.test.ts` for the shared `edgeInputName`
 derivation. Every suite constructing `InputSource` fixtures (Transform, RatingStep, LiveSwitch,
 ScenarioExpander, ModelScore, OptimiserApply, Banding, ExternalFile, ExploreCode, and the
