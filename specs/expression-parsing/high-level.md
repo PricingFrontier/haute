@@ -145,8 +145,9 @@ Out of scope (owned by neighbouring components, cross-linked below):
 
 - The primary structural parser uses Python's `ast` module because pipeline files are executable
   Python and this path only needs structural reads. Codegen is a separate text-generation path:
-  it currently uses source templates plus `tokenize`-aware rewrites, not this parser's AST and not
-  a LibCST write-back implementation.
+  it renders source from string templates, and its post-generation edits (such as contract
+  injection) go through the LibCST-based structured-syntax boundary in `haute._python_syntax`,
+  never through this parser's AST.
 - Neutral syntax recovery exists so that a single syntax error need not blank the editor while
   strict runtime consumers still fail loudly. Recovered call/decorator *sites* are found textually
   (the whole file is unparseable by definition), and individual fragments are re-parsed with

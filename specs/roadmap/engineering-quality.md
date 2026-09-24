@@ -14,13 +14,12 @@ These packages come from the
 |---|---|---:|---|
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
 | ENGQ-R02 | Planned | P3 | The repository stops tracking generated and local-state files. |
-| ENGQ-R03 | Planned | P3 | The specification statements the review found untrue are corrected. |
 | ENGQ-R04 | Decision | P3 | Coverage and documentation gates are pointed at risk and at user-facing documents. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
 
 ## Planned improvements
 
-`ENGQ-R01` to `ENGQ-R03` are independent clean-ups. `ENGQ-R05` is easier after
+`ENGQ-R01` and `ENGQ-R02` are independent clean-ups. `ENGQ-R05` is easier after
 `ENGQ-R04` has set the coverage rule the reorganised suite must meet.
 
 ### ENGQ-R01 — Remove unreferenced and test-only production code
@@ -105,29 +104,6 @@ decision about `rating/`.
 **Evidence:** `mlflow.db`; `repro/benchmark_optimiser_auto_range.py`;
 `rating/main.py`; `haute.toml`; `specs/roadmap/pr-227-review-probes.py`;
 `.gitignore`.
-
-### ENGQ-R03 — Correct the known specification drift
-**Why:** The review found specification statements that the code
-contradicts. The expression-parsing high-level specification says code
-generation uses `tokenize`-aware rewrites and not LibCST, while
-`_python_syntax.py` is built on LibCST. The deploy specification says the
-source-cache lease registry is process-local and uncoordinated across
-processes, while the source cache keeps cross-process lease markers. The
-codegen splice (`CODEGEN-R01`) and the route-helper fallback (`PCFG-R04`)
-are corrected by their own packages.
-
-**Plan:** Correct each statement against the code, and add a documentation
-check where one is cheap (for example, that a module named as "not LibCST" does
-not import `libcst`).
-
-**Acceptance:** Each listed statement matches the code; the documentation
-tests pass.
-
-**Dependencies:** None.
-
-**Evidence:** `specs/expression-parsing/high-level.md`;
-`src/haute/_python_syntax.py`; `specs/deploy/high-level.md`;
-`src/haute/_source_cache.py::_LEASE_PREFIX`.
 
 ### ENGQ-R04 — Point the gates at risk and at users
 **Why:** About 5,000 lines of tests, plus a 1,360-line coverage ledger, keep

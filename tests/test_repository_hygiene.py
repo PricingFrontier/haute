@@ -151,6 +151,23 @@ def test_subprocess_imported_only_in_chokepoint_modules() -> None:
     )
 
 
+def test_libcst_is_imported_only_by_the_structured_syntax_boundary() -> None:
+    """``haute._python_syntax`` is the one module that uses LibCST (ENGQ-R03).
+
+    The codegen structured-syntax boundary specification says that module hides
+    LibCST behind small typed results; a second importer would make the
+    specification, and the expression-parsing account of how codegen edits
+    source, untrue.
+    """
+    importing = {
+        _rel_posix(path)
+        for path in _iter_src_haute_sources()
+        if _imports_module(ast.parse(path.read_text(encoding="utf-8")), "libcst")
+    }
+
+    assert importing == {"src/haute/_python_syntax.py"}
+
+
 def test_only_the_git_command_core_starts_git() -> None:
     """Every git subprocess goes through ``_git_core.py`` (DEP-R04).
 

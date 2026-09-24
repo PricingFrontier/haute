@@ -575,11 +575,11 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 - **Deploy scoring never performs persistence writes.** `dataOutput` is a
   pass-through in the served graph, its configured writer is never invoked, and
   persistence-only branches outside the output ancestry are removed by pruning.
-- **Snapshot leases are process-local.** `ResolvedDeploy` holds the selected generation's
-  `SourceCacheStore.lease()` through shipment, which prevents same-process refresh,
-  clear, and eviction from deleting it. The source-cache layer does not yet coordinate
-  leases or retirement across OS processes, so a refresh from another process remains a
-  known limitation rather than a guarantee made by deploy.
+- **Snapshot leases hold across processes.** `ResolvedDeploy` holds the selected
+  generation's `SourceCacheStore.lease()` through shipment. The lease writes a marker
+  naming the holding process's lock-file token into the generation directory, so refresh,
+  clear and retirement in this or any other process skip that generation while its holder
+  is alive.
 
 ## Error handling
 
