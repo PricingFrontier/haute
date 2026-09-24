@@ -32,7 +32,10 @@
   ],
   "n_points": 1,
   "points_returned": 1,
-  "constraint_names": ["loss"],
+  "constraint_names": [
+    "loss"
+  ],
   "points_limit": 2000,
-  "points_truncated": false
+  "points_truncated": false,
+  "job_id": null
 }

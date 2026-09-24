@@ -217,8 +217,11 @@ function makeTrainResponse(overrides: Record<string, unknown> = {}) {
     glm_inference: null,
     glm_smooth_terms: [],
     glm_regularization: null,
+    ebm_terms: [],
     diagnostics_errors: [],
     feature_selection: null,
+    final_tree_count: null,
+    fit_evidence: null,
     ...overrides,
   }
 }
@@ -231,9 +234,26 @@ function makeTrainStatusResponse(overrides: Record<string, unknown> = {}) {
     iteration: 1,
     total_iterations: 10,
     train_loss: {},
+    train_loss_history: [],
+    train_loss_history_truncated: false,
     elapsed_seconds: 1,
     result: null,
     warning: null,
+    terminal_reason: null,
+    execution_metrics: null,
+    feature_selection: null,
+    error_code: null,
+    http_status_code: null,
+    error_detail: null,
+    phase: null,
+    trial_index: null,
+    trial_count: null,
+    fold_index: null,
+    fold_count: null,
+    completed_fits: null,
+    total_fits: null,
+    best_objective: null,
+    export_receipts: { mlflow: [], model_files: [] },
     ...overrides,
   }
 }
@@ -543,7 +563,13 @@ describe("request() core via loadPipeline", () => {
 
   it("getExecutionSettings rejects a malformed response", async () => {
     mockFetch.mockReturnValue(jsonResponse({ streaming_chunk_size: "not-a-number" }))
-    await expect(getExecutionSettings()).rejects.toThrow()
+    await expect(getExecutionSettings()).rejects.toThrow(
+      "ExecutionSettings: invalid contract at /streaming_chunk_size: type",
+    )
+    mockFetch.mockReturnValue(jsonResponse({ streaming_chunk_size: 0 }))
+    await expect(getExecutionSettings()).rejects.toThrow(
+      "ExecutionSettings: invalid contract at /streaming_chunk_size: minimum",
+    )
   })
 
   it("putExecutionSettings issues a PUT with the JSON payload and parses the response", async () => {
@@ -874,6 +900,7 @@ describe("endpoint contracts", () => {
   })
 
   it("listFiles GETs /api/files with dir and optional extensions", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ dir: "data", items: [] }))
     await listFiles("data", ".csv,.parquet")
     const [url] = mockFetch.mock.calls[0]
     expect(url).toContain("/api/files?")
@@ -1647,6 +1674,7 @@ describe("no request carries streaming_chunk_size", () => {
 
   it("estimateOptimiserSolve body omits streaming_chunk_size", async () => {
     const { estimateOptimiserSolve } = await import("../client")
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_estimate_response")))
     await estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt1" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")

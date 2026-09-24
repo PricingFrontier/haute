@@ -280,6 +280,7 @@ describe("RemotePushControl", () => {
       message:
         "The working branch on 'origin' changed since you last synced. " +
         "haute never force-pushes - your local work is safe.",
+      is_rewrite: false,
     }
     mockGitPush.mockRejectedValue(
       new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
@@ -348,6 +349,7 @@ describe("RemotePushControl", () => {
       working: { status: "behind", ahead: 0, behind: 2 },
       ledger: { status: "behind", ahead: 0, behind: 2 },
       message: "behind 'origin' - never force-pushes.",
+      is_rewrite: false,
     }
     mockGitPush.mockRejectedValue(
       new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
@@ -368,6 +370,7 @@ describe("RemotePushControl", () => {
       working: { status: "diverged", ahead: 1, behind: 2 },
       ledger: { status: "diverged", ahead: 1, behind: 2 },
       message: "forked 'origin' - never force-pushes.",
+      is_rewrite: false,
     }
     mockGitPush.mockRejectedValue(
       new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),

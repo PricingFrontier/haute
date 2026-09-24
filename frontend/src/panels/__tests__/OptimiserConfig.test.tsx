@@ -8,6 +8,7 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import type { SimpleNode, SimpleEdge } from "../editors"
 import type { MlflowDestinationEntry, MlflowDestinationKey } from "../../api/types"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
+import { makeSolveResult } from "../../test-utils/factories"
 
 // ── Mock API client ──
 const mockSolveOptimiser = vi.fn()
@@ -1322,7 +1323,7 @@ describe("OptimiserConfig", () => {
       useNodeResultsStore.setState({
         solveResults: {
           opt_1: {
-            result: {
+            result: makeSolveResult({
               total_objective: 1000,
               baseline_objective: 900,
               constraints: {},
@@ -1330,14 +1331,14 @@ describe("OptimiserConfig", () => {
               lambdas: {},
               converged: true,
               iterations: 5,
-            },
+            }),
             jobId: "job_42",
             configHash: matchingHash,
             source: "live",
             structuralVersion: 0,
             constraints: {},
             nodeLabel: "Optimiser",
-            originalResult: {
+            originalResult: makeSolveResult({
               total_objective: 1000,
               baseline_objective: 900,
               constraints: {},
@@ -1345,7 +1346,7 @@ describe("OptimiserConfig", () => {
               lambdas: {},
               converged: true,
               iterations: 5,
-            },
+            }),
             frontier: null,
             selectedPointIndex: null,
           },
@@ -1360,7 +1361,7 @@ describe("OptimiserConfig", () => {
       useNodeResultsStore.setState({
         solveResults: {
           opt_1: {
-            result: {
+            result: makeSolveResult({
               total_objective: 1000,
               baseline_objective: 900,
               constraints: {},
@@ -1368,14 +1369,14 @@ describe("OptimiserConfig", () => {
               lambdas: {},
               converged: true,
               iterations: 5,
-            },
+            }),
             jobId: "job_42",
             configHash: "definitely_stale_hash",
             source: "live",
             structuralVersion: 0,
             constraints: {},
             nodeLabel: "Optimiser",
-            originalResult: {
+            originalResult: makeSolveResult({
               total_objective: 1000,
               baseline_objective: 900,
               constraints: {},
@@ -1383,7 +1384,7 @@ describe("OptimiserConfig", () => {
               lambdas: {},
               converged: true,
               iterations: 5,
-            },
+            }),
             frontier: null,
             selectedPointIndex: null,
           },
@@ -1405,7 +1406,7 @@ describe("OptimiserConfig", () => {
 
   describe("Results display", () => {
     const convergedResult = {
-      result: {
+      result: makeSolveResult({
         total_objective: 1000,
         baseline_objective: 900,
         constraints: { loss_ratio: 0.65 },
@@ -1415,12 +1416,12 @@ describe("OptimiserConfig", () => {
         iterations: 15,
         n_quotes: 5000,
         n_steps: 3,
-      },
+      }),
       jobId: "job_42",
       configHash: "",
       constraints: { loss_ratio: { max: 1.05 } },
       nodeLabel: "Optimiser",
-      originalResult: {
+      originalResult: makeSolveResult({
         total_objective: 1000,
         baseline_objective: 900,
         constraints: { loss_ratio: 0.65 },
@@ -1430,7 +1431,7 @@ describe("OptimiserConfig", () => {
         iterations: 15,
         n_quotes: 5000,
         n_steps: 3,
-      },
+      }),
       frontier: null,
       selectedPointIndex: null,
       source: "live",
@@ -1452,18 +1453,18 @@ describe("OptimiserConfig", () => {
         solveResults: {
           opt_1: {
             ...convergedResult,
-            result: {
+            result: makeSolveResult({
               ...convergedResult.result,
               mode: "ratebook",
               iterations: 11,
               cd_iterations: null,
-            },
-            originalResult: {
+            }),
+            originalResult: makeSolveResult({
               ...convergedResult.originalResult,
               mode: "ratebook",
               iterations: 11,
               cd_iterations: null,
-            },
+            }),
           },
         },
       })
@@ -1628,7 +1629,7 @@ describe("OptimiserConfig", () => {
       useNodeResultsStore.setState({
         solveResults: {
           opt_1: {
-            result: {
+            result: makeSolveResult({
               total_objective: 1000,
               baseline_objective: 900,
               constraints: {},
@@ -1636,14 +1637,14 @@ describe("OptimiserConfig", () => {
               lambdas: {},
               converged: true,
               iterations: 5,
-            },
+            }),
             jobId: "job_42",
             configHash: "definitely_stale_hash",
             source: "live",
             structuralVersion: 0,
             constraints: {},
             nodeLabel: "Optimiser",
-            originalResult: {
+            originalResult: makeSolveResult({
               total_objective: 1000,
               baseline_objective: 900,
               constraints: {},
@@ -1651,7 +1652,7 @@ describe("OptimiserConfig", () => {
               lambdas: {},
               converged: true,
               iterations: 5,
-            },
+            }),
             frontier: null,
             selectedPointIndex: null,
           },

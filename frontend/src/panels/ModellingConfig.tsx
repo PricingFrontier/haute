@@ -549,6 +549,8 @@ export default function ModellingConfig({
           ebm_terms: [],
           diagnostics_errors: [],
           feature_selection: null,
+          final_tree_count: null,
+          fit_evidence: null,
         },
         failureStatus(error, message),
       )
@@ -562,7 +564,7 @@ export default function ModellingConfig({
 
     setCancelling(true)
     try {
-      const status = await cancelTrain<TrainProgress>(job.jobId)
+      const status = await cancelTrain(job.jobId)
       if (status.status === "completed" && status.result) completeTrainJob(nodeId, status.result, status)
       else if (FAILED_JOB_STATUSES.has(status.status)) failTrainJob(nodeId, status.message || "Training stopped", status)
       else updateTrainProgress(nodeId, status)

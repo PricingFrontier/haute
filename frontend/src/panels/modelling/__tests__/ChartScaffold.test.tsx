@@ -4,6 +4,7 @@ import {
   ChartEmptyState,
   ChartLegend,
   ChartSvg,
+  ChartValuesTable,
   ChartValueGrid,
   ResponsiveChart,
   TwoChartLayout,
@@ -175,5 +176,27 @@ describe("TwoChartLayout", () => {
     expect(screen.getByTestId("layout").textContent).toBe("stacked 1200")
     expect(chartRow()).toHaveClass("space-y-6")
     expect(chartRow()).not.toHaveClass("grid-cols-2")
+  })
+})
+
+describe("ChartValuesTable", () => {
+  it("keeps a chart's values behind a closed disclosure, one header per column and per row", () => {
+    render(
+      <ChartValuesTable
+        summary="View bin values"
+        ariaLabel="Bin values"
+        headers={["Bin", "Actual"]}
+        rows={[
+          ["low", "0.1"],
+          ["high", <span key="v">0.9</span>],
+        ]}
+      />,
+    )
+    expect(screen.getByText("View bin values").closest("details")).not.toHaveAttribute("open")
+    const table = screen.getByRole("table", { name: "Bin values" })
+    expect(table).toHaveClass("validation-value-table")
+    expect(screen.getAllByRole("columnheader").map((cell) => cell.textContent)).toEqual(["Bin", "Actual"])
+    expect(screen.getAllByRole("rowheader").map((cell) => cell.textContent)).toEqual(["low", "high"])
+    expect(screen.getAllByRole("cell").map((cell) => cell.textContent)).toEqual(["0.1", "0.9"])
   })
 })

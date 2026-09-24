@@ -282,9 +282,10 @@ are not the user's data, and **mutations**, which always surface an error.
 - **Push inspection/validation failures** use that mutation path: authentication, timeout,
   non-empty-missing-default, or unrelated-history refusal shows the push error toast, does
   not show the bootstrap success toast, and is never retried automatically.
-- **Structured 409 bodies** (fork warning, push rejection) are parsed defensively
-  (`parseGitMilestoneFork`, `parseGitPushRejection`); an unparseable body falls through to
-  the generic error-toast path rather than throwing.
+- **Structured 409 bodies** (fork warning, push rejection) are read defensively
+  (`parseGitMilestoneFork`, `parseGitPushRejection`, checked by the generated git
+  contract); an unparseable body falls through to the generic error-toast path rather than
+  throwing.
 - Nothing in this component retries automatically; every recovery (catch-up, branch-away,
   retry a switch) is a distinct user-initiated action.
 

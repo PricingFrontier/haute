@@ -537,3 +537,96 @@ def test_tuning_artifacts_reject_tampering_and_non_contiguous_trials() -> None:
             elapsed_seconds=0.0,
         )
     assert canonical_json_bytes({"x": 1}) == b'{"x":1}'
+
+
+def _saved_tuning_plan(tmp_path: Path) -> tuple[TuningPlanArtifact, Path]:
+    plan = TuningPlanArtifact.create(
+        config=parse(tuning_raw(trial_count=5), folds=2),
+        base_params={"iterations": 100, "depth": 6},
+        evaluation_plan_sha256="a" * 64,
+        sampler="TPESampler",
+        sampler_version="4.9.0",
+    )
+    plan_path = tmp_path / "plan.json"
+    save_tuning_plan(plan, plan_path)
+    return plan, plan_path
+
+
+def _fitted_trials() -> list[TuningTrialResult]:
+    return [
+        fitted_trial(index, objective)
+        for index, objective in enumerate((0.4, 0.5, 0.45, 0.42, 0.41))
+    ]
+
+
+def test_tuning_trial_labels_follow_their_index() -> None:
+    with pytest.raises(ValueError, match="trial zero must be labelled baseline"):
+        replace(fitted_trial(0, 0.4), label="sampled")
+    with pytest.raises(ValueError, match="non-zero trials must be labelled sampled"):
+        replace(fitted_trial(1, 0.5), label="baseline")
+
+
+@pytest.mark.parametrize(
+    ("index", "changes", "message"),
+    [
+        (0, {"sampled_params": {"depth": 6}}, "unsampled baseline trial zero"),
+        (1, {"sampled_params": {}}, "trials after baseline must be sampled"),
+        (1, {"aggregate_metrics": {"gini": 0.5}}, "identical metric and fit contracts"),
+        (1, {"fits": fitted_trial(1, 0.5).fits[::-1]}, "fit indices must be contiguous"),
+        (
+            1,
+            {
+                "fits": (
+                    EvaluationFitResult(1, 0, 8, 2, {"gini": 0.5}, 9),
+                    EvaluationFitResult(1, 1, 8, 2, {"gini": 0.5}, 11),
+                )
+            },
+            "fit metric names must match aggregate metrics",
+        ),
+    ],
+)
+def test_tuning_trials_reject_an_incoherent_trial_set(
+    index: int, changes: dict[str, object], message: str
+) -> None:
+    trials = _fitted_trials()
+    trials[index] = replace(trials[index], **changes)
+    with pytest.raises(ValueError, match=message):
+        TuningTrialsArtifact(
+            schema_version=1,
+            plan_sha256="a" * 64,
+            evaluation_plan_sha256="a" * 64,
+            trials=tuple(trials),
+        )
+
+
+@pytest.mark.parametrize(
+    ("index", "changes", "message"),
+    [
+        (0, {"resolved_params": {"iterations": 100, "depth": 7}}, "baseline parameters"),
+        (1, {"resolved_params": {"iterations": 100, "depth": 99}}, "plan fit/metric contract"),
+        (1, {"objective": 0.2}, "plan fit/metric contract"),
+    ],
+)
+def test_tuning_report_rejects_trials_that_disagree_with_the_plan(
+    tmp_path: Path, index: int, changes: dict[str, object], message: str
+) -> None:
+    plan, plan_path = _saved_tuning_plan(tmp_path)
+    trials = _fitted_trials()
+    trials[index] = replace(trials[index], **changes)
+    artifact = TuningTrialsArtifact(
+        schema_version=1,
+        plan_sha256=file_sha256(plan_path),
+        evaluation_plan_sha256="a" * 64,
+        trials=tuple(trials),
+    )
+    trials_path = tmp_path / "trials.json"
+    save_tuning_trials(artifact, trials_path)
+
+    with pytest.raises(ValueError, match=message):
+        build_tuning_report(
+            plan,
+            artifact,
+            trials_sha256=file_sha256(trials_path),
+            final_params={"iterations": 10, "depth": 5},
+            final_tree_count=10,
+        )

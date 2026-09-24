@@ -132,6 +132,52 @@ export function ChartSvg({
   )
 }
 
+/**
+ * A chart's raw values behind a native disclosure, closed by default. The
+ * first cell of each row is its header; the other columns are right-aligned
+ * values (`validation-value-table` in validation.css).
+ */
+export function ChartValuesTable({
+  summary,
+  ariaLabel,
+  headers,
+  rows,
+}: {
+  summary: string
+  ariaLabel: string
+  headers: ReactNode[]
+  rows: ReactNode[][]
+}) {
+  return (
+    <details className="validation-values">
+      <summary>{summary}</summary>
+      <div className="overflow-x-auto">
+        <table className="validation-value-table" aria-label={ariaLabel}>
+          <thead>
+            <tr>
+              {headers.map((header, index) => (
+                <th key={index} scope="col">
+                  {header}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(([rowHeader, ...values], rowIndex) => (
+              <tr key={rowIndex}>
+                <th scope="row">{rowHeader}</th>
+                {values.map((value, index) => (
+                  <td key={index}>{value}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  )
+}
+
 export function ChartEmptyState({ children }: { children: ReactNode }) {
   return (
     <div

@@ -17,7 +17,7 @@ import { getOptimiserStatus, getTrainStatus } from "../../api/client.ts"
 import useNodeResultsStore from "../../stores/useNodeResultsStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useBackgroundJobs from "../../hooks/useBackgroundJobs.ts"
-import { makeTrainResult } from "../../test-utils/factories.ts"
+import { makeTrainResult, makeTrainStatus, makeSolveResult, makeOptimiserStatus } from "../../test-utils/factories.ts"
 
 function resetStores() {
   useNodeResultsStore.setState({
@@ -60,14 +60,14 @@ describe("useBackgroundJobs - gap tests", () => {
       const mockSolve = vi.mocked(getOptimiserStatus)
       const mockTrain = vi.mocked(getTrainStatus)
 
-      const solveResult = {
+      const solveResult = makeSolveResult({
         total_objective: 100,
         baseline_objective: 80,
         constraints: {},
         baseline_constraints: {},
         lambdas: {},
         converged: true,
-      }
+      })
       const trainResult = makeTrainResult({
         final_test_metrics: { rmse: 0.01 },
         feature_importance: [],
@@ -77,22 +77,22 @@ describe("useBackgroundJobs - gap tests", () => {
       })
 
       // Solve: running → completed
-      mockSolve.mockResolvedValueOnce({
+      mockSolve.mockResolvedValueOnce(makeOptimiserStatus({
         status: "running",
         progress: 0.5,
         message: "Solving...",
         elapsed_seconds: 2,
-      })
-      mockSolve.mockResolvedValueOnce({
+      }))
+      mockSolve.mockResolvedValueOnce(makeOptimiserStatus({
         status: "completed",
         progress: 1.0,
         message: "Done",
         elapsed_seconds: 5,
         result: solveResult,
-      })
+      }))
 
       // Train: running → completed
-      mockTrain.mockResolvedValueOnce({
+      mockTrain.mockResolvedValueOnce(makeTrainStatus({
         status: "running",
         progress: 0.3,
         message: "Training...",
@@ -100,8 +100,8 @@ describe("useBackgroundJobs - gap tests", () => {
         total_iterations: 100,
         train_loss: { rmse: 0.5 },
         elapsed_seconds: 2,
-      })
-      mockTrain.mockResolvedValueOnce({
+      }))
+      mockTrain.mockResolvedValueOnce(makeTrainStatus({
         status: "completed",
         progress: 1.0,
         message: "Done",
@@ -110,7 +110,7 @@ describe("useBackgroundJobs - gap tests", () => {
         train_loss: { rmse: 0.01 },
         elapsed_seconds: 10,
         result: trainResult,
-      })
+      }))
 
       // Start both jobs
       act(() => {
@@ -152,25 +152,25 @@ describe("useBackgroundJobs - gap tests", () => {
       mockSolve.mockImplementation((jobId: string) => {
         callCount++
         if (jobId === "job-a") {
-          return Promise.resolve({
+          return Promise.resolve(makeOptimiserStatus({
             status: "completed",
             progress: 1,
             message: "Done",
             elapsed_seconds: 1,
-            result: { total_objective: 1, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: true },
-          })
+            result: makeSolveResult({ total_objective: 1, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: true }),
+          }))
         }
         // job-b: running on first call, completed on second
         if (callCount <= 2) {
-          return Promise.resolve({ status: "running", progress: 0.5, message: "...", elapsed_seconds: 1 })
+          return Promise.resolve(makeOptimiserStatus({ status: "running", progress: 0.5, message: "...", elapsed_seconds: 1 }))
         }
-        return Promise.resolve({
+        return Promise.resolve(makeOptimiserStatus({
           status: "completed",
           progress: 1,
           message: "Done",
           elapsed_seconds: 2,
-          result: { total_objective: 2, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: true },
-        })
+          result: makeSolveResult({ total_objective: 2, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: true }),
+        }))
       })
 
       act(() => {
@@ -201,7 +201,7 @@ describe("useBackgroundJobs - gap tests", () => {
       // the onFail callback didn't fire, training failures would be
       // silently swallowed with no user feedback.
       const mockTrain = vi.mocked(getTrainStatus)
-      mockTrain.mockResolvedValueOnce({
+      mockTrain.mockResolvedValueOnce(makeTrainStatus({
         status: "error",
         progress: 0,
         message: "CUDA out of memory",
@@ -209,7 +209,7 @@ describe("useBackgroundJobs - gap tests", () => {
         total_iterations: 100,
         train_loss: {},
         elapsed_seconds: 30,
-      })
+      }))
 
       act(() => {
         useNodeResultsStore.getState().startTrainJob("t1", "tj-1", "GLM Node", "th", "live", 0)
@@ -239,12 +239,12 @@ describe("useBackgroundJobs - gap tests", () => {
       // field, getErrorMessage should fall back to "Unknown error"
       // instead of showing "undefined" in the toast.
       const mockSolve = vi.mocked(getOptimiserStatus)
-      mockSolve.mockResolvedValueOnce({
+      mockSolve.mockResolvedValueOnce(makeOptimiserStatus({
         status: "error",
         progress: 0,
         elapsed_seconds: 1,
         // message is intentionally missing
-      })
+      }))
 
       act(() => {
         useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h", "live", 0)
@@ -270,19 +270,19 @@ describe("useBackgroundJobs - gap tests", () => {
       // First call: network error. Second call: still running. Third: completed.
       mockSolve
         .mockRejectedValueOnce(new Error("fetch failed"))
-        .mockResolvedValueOnce({
+        .mockResolvedValueOnce(makeOptimiserStatus({
           status: "running",
           progress: 0.5,
           message: "Working...",
           elapsed_seconds: 3,
-        })
-        .mockResolvedValueOnce({
+        }))
+        .mockResolvedValueOnce(makeOptimiserStatus({
           status: "completed",
           progress: 1,
           message: "Done",
           elapsed_seconds: 5,
-          result: { total_objective: 1, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: true },
-        })
+          result: makeSolveResult({ total_objective: 1, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: true }),
+        }))
 
       act(() => {
         useNodeResultsStore.getState().startSolveJob("n1", "job-1", "Node 1", {}, "h", "live", 0)

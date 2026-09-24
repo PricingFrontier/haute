@@ -6,6 +6,7 @@ import {
   ChartLegend,
   ChartSvg,
   ChartValueGrid,
+  ChartValuesTable,
   MODELLING_CHART_AXIS_FONT_SIZE as axisFontSize,
   MODELLING_CHART_AXIS_TEXT_COLOR as axisTextColor,
   MODELLING_CHART_GRID_COLOR as gridColor,
@@ -104,43 +105,17 @@ function LiftPanel({ data, width, height }: { data: LiftPoint[]; width: number; 
         Double lift
       </h4>
       <DoubleLiftChart data={data} width={width} height={height} />
-      <details className="mt-3">
-        <summary className="cursor-pointer text-[12px]" style={{ color: "var(--text-secondary)" }}>
-          View lift values
-        </summary>
-        <table className="mt-2 w-full text-[12px]" style={{ color: "var(--text-secondary)" }}>
-          <thead>
-            <tr style={{ borderBottom: "1px solid var(--border)" }}>
-              <th scope="col" className="py-1 text-left font-medium">
-                Decile
-              </th>
-              <th scope="col" className="py-1 text-right font-medium">
-                Actual
-              </th>
-              <th scope="col" className="py-1 text-right font-medium">
-                Predicted
-              </th>
-              <th scope="col" className="py-1 text-right font-medium">
-                Count
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.map((row) => (
-              <tr key={row.decile}>
-                <th scope="row" className="py-1 text-left font-normal">
-                  {row.decile}
-                </th>
-                <td className="py-1 text-right tabular-nums">{row.actual.toFixed(4)}</td>
-                <td className="py-1 text-right tabular-nums" style={{ color: predictedColor }}>
-                  {row.predicted.toFixed(4)}
-                </td>
-                <td className="py-1 text-right tabular-nums">{row.count.toLocaleString()}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </details>
+      <ChartValuesTable
+        summary="View lift values"
+        ariaLabel="Lift values"
+        headers={["Decile", "Actual", "Predicted", "Count"]}
+        rows={data.map((row) => [
+          row.decile,
+          row.actual.toFixed(4),
+          <span style={{ color: predictedColor }}>{row.predicted.toFixed(4)}</span>,
+          row.count.toLocaleString(),
+        ])}
+      />
     </div>
   )
 }

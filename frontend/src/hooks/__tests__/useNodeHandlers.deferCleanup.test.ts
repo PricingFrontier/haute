@@ -18,7 +18,7 @@ import type { Node, Edge } from "@xyflow/react"
 import useNodeHandlers from "../useNodeHandlers"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useUIStore from "../../stores/useUIStore"
-import { makeNode } from "../../test-utils/factories"
+import { makeNode, makeSolveResult } from "../../test-utils/factories"
 
 vi.mock("../../utils/layout", () => ({
   getLayoutedElements: vi.fn(async (nodes: Node[]) => nodes),
@@ -77,22 +77,22 @@ describe("useNodeHandlers - cache cleanup deferred on delete (#32)", () => {
       solveJobs: {},
       solveResults: {
         n1: {
-          result: {
+          result: makeSolveResult({
             total_objective: 100,
             baseline_objective: 80,
             constraints: {},
             baseline_constraints: {},
             lambdas: {},
             converged: true,
-          },
-          originalResult: {
+          }),
+          originalResult: makeSolveResult({
             total_objective: 100,
             baseline_objective: 80,
             constraints: {},
             baseline_constraints: {},
             lambdas: {},
             converged: true,
-          },
+          }),
           jobId: "j1",
           configHash: "h1",
           source: "live",

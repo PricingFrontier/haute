@@ -2,8 +2,8 @@
 
 Evidence that the XGBoost, LightGBM and EBM families are complete on CPU, reviewed
 against every acceptance row of the model-family expansion plan's release
-acceptance (the plan is delivered and retired from the
-[modelling roadmap](modelling.md); git history keeps its text).
+acceptance (the plan is delivered and retired with the modelling roadmap;
+git history keeps its text).
 This is a dated evidence record, not a specification: the behaviour is specified in
 the owning component specifications (`specs/modelling`, `specs/sandbox-security`,
 `specs/frontend-modelling-optimiser-ui`, `specs/codegen`, `specs/deploy`,

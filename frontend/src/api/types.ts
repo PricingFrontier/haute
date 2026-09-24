@@ -10,13 +10,29 @@ import type {
 } from "../types/node"
 import type {
   EvaluationPreviewPayload as EvaluationPreview,
-  GitRemoteLeg as GeneratedGitRemoteLeg,
+  BandingStatsResponse as GeneratedBandingStatsResponse,
+  ExplorePivotMemberOption as GeneratedExplorePivotMemberOption,
+  ExplorePivotMembersResponse as GeneratedExplorePivotMembersResponse,
+  ExplorePivotPath as GeneratedExplorePivotPath,
+  ExplorePivotResult as GeneratedExplorePivotResult,
+  ExplorePivotRunResponse as GeneratedExplorePivotRunResponse,
+  ExplorePivotStatusResponse as GeneratedExplorePivotStatusResponse,
   GitStorageBind as GeneratedGitStorageBind,
   GitStorageSync as GeneratedGitStorageSync,
   GitWorkingBranchResponse as GeneratedGitWorkingBranchResponse,
   MlflowDestinationEntry as GeneratedMlflowDestinationEntry,
   MlflowTestConnectionResponse as GeneratedMlflowTestConnectionResponse,
+  NodeDataProfileResponse as GeneratedNodeDataProfileResponse,
+  OptimiserFrontierAutoRangeStatusResponse as GeneratedOptimiserFrontierAutoRangeStatusResponse,
+  OptimiserFrontierResponse as GeneratedOptimiserFrontierResponse,
+  OptimiserFrontierStatusResponse as GeneratedOptimiserFrontierStatusResponse,
+  OptimiserSolveResponse as GeneratedOptimiserSolveResponse,
+  OptimiserSolveResult as GeneratedOptimiserSolveResult,
+  OptimiserStatusResponse as GeneratedOptimiserStatusResponse,
+  RatingLevelsResponse as GeneratedRatingLevelsResponse,
   TrainEstimateResponse as GeneratedTrainEstimateResponse,
+  TrainResponse as GeneratedTrainResponse,
+  TrainStatusResponse as GeneratedTrainStatusResponse,
 } from "../generated/api-contracts.generated"
 import type {
   ExecutionStrategyBoundaryCollectionPayload as GeneratedExecutionStrategyCollection,
@@ -40,17 +56,13 @@ export interface EditorIdentityBatchRequest {
   nodes: EditorIdentityRequestNode[]
 }
 
-export interface EditorNodeIdentity {
-  node_id: string
-  function_name: string
-  config_reference: string | null
-  default_input_name: string | null
-  source_handle_input_names: Record<string, string>
-}
-
-export interface EditorIdentityBatchResponse {
-  identities: EditorNodeIdentity[]
-}
+// Editor identities, Polars step rendering and execution settings are generated.
+export type {
+  EditorIdentitiesResponse as EditorIdentityBatchResponse,
+  EditorIdentityResponseNode as EditorNodeIdentity,
+  ExecutionSettings,
+  PolarsStepsRenderResponse,
+} from "../generated/api-contracts.generated"
 export interface SchemaWarning {
   column: string
   status: string
@@ -465,58 +477,14 @@ export interface SchemaResult {
  * never hard-codes registry knowledge: its grouping, input/output modes,
  * accepted arguments, execution guarantees, and unavailable engines.
  */
-export interface IoInputCapability {
-  modes: ("scan" | "read")[]
-  arguments: Record<string, string[]>
-  engines_missing: string[]
-  cache_mode: "direct" | "snapshot"
-  direct_bounded: boolean
-  needs_schema_when_bounded: boolean
-  snapshot_build: "bounded" | "admitted_eager" | "unsupported"
-  cached_read: boolean
-}
-
-export interface IoOutputCapability {
-  modes: ("sink" | "write")[]
-  arguments: Record<string, string[]>
-  engines_missing: string[]
-  native_sink: boolean
-  eager_writer: boolean
-  publication: "atomic_file" | "transactional"
-}
-
-export interface IoFormatCapability {
-  name: string
-  label: string
-  group: "file" | "database" | "lakehouse" | "inline"
-  extensions: string[]
-  unstable: boolean
-  input: IoInputCapability | null
-  output: IoOutputCapability | null
-}
-
-export interface IoFieldCapability {
-  name: string
-  label: string
-  kind: "path" | "connection" | "text" | "query" | "table" | "records"
-  required: boolean
-}
-
-export interface IoCapabilityGroup {
-  name: "file" | "database" | "lakehouse" | "databricks" | "inline"
-  label: string
-  input_available: boolean
-  output_available: boolean
-  cache_modes: ("direct" | "snapshot")[]
-  input_fields: IoFieldCapability[]
-  output_fields: IoFieldCapability[]
-  formats: IoFormatCapability[]
-}
-
-export interface IoCapabilitiesResponse {
-  schema_version: 1
-  groups: IoCapabilityGroup[]
-}
+export type {
+  IoCapabilitiesResponse,
+  IoCapabilityGroup,
+  IoFieldCapability,
+  IoFormatCapability,
+  IoInputCapability,
+  IoOutputCapability,
+} from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------
 // Cache-inventory contracts (/api/cache)
@@ -734,10 +702,6 @@ export type MlflowDestinationKey = GeneratedMlflowDestinationEntry["key"]
 
 export type MlflowProbeCategory = GeneratedMlflowTestConnectionResponse["category"]
 
-export interface ExecutionSettings {
-  streaming_chunk_size: number
-}
-
 export interface MlflowSettingsUpdateRequest {
   tracking_uri: string
   folder: string
@@ -902,89 +866,6 @@ export interface TrainFeatureSelection {
   excluded_columns: TrainFeatureSelectionCollection<TrainFeatureSelectionExcludedColumn>
 }
 
-export interface EvaluationFit {
-  schema_version: 1
-  fit_index: number
-  train_rows: number
-  validation_rows: number
-  metrics: Record<string, number>
-  best_iteration: number | null
-}
-
-export interface EvaluationMetricSummary {
-  mean: number
-  stddev: number
-  min: number
-  max: number
-  fit_count: number
-  validation_rows: number
-}
-
-export interface EvaluationSummary {
-  development_rows: number
-  test_rows: number
-  validation_fit_count: number
-  development_group_count: number | null
-  test_group_count: number | null
-  development_date_count: number | null
-  test_date_count: number | null
-}
-
-export interface EvaluationReport {
-  schema_version: 1
-  strategy: "random" | "group" | "temporal"
-  validation_method: "none" | "single" | "cross_validation"
-  validation_fit_count: number
-  fit_count: number
-  refit_on_development?: boolean
-  development_rows: number
-  final_test_rows: number
-  selection_fits: EvaluationFit[]
-  selection_metrics: Record<string, EvaluationMetricSummary>
-  plan_sha256: string
-  results_sha256: string
-  plan_path: string
-  results_path: string
-  report_path: string
-  summary: EvaluationSummary
-}
-
-export interface TuningTrial {
-  schema_version: 1
-  trial_index: number
-  label: "baseline" | "sampled"
-  sampled_params: Record<string, unknown>
-  resolved_params: Record<string, unknown>
-  fits: EvaluationFit[]
-  aggregate_metrics: Record<string, number>
-  objective: number
-  elapsed_seconds: number
-}
-
-export interface TuningReport {
-  schema_version: 1
-  plan_sha256: string
-  trials_sha256: string
-  evaluation_plan_sha256: string
-  metric: string
-  direction: "maximize" | "minimize"
-  baseline_objective: number
-  winner_trial_index: number
-  winner_objective: number
-  improvement: number
-  best_sampled_params: Record<string, unknown>
-  final_params: Record<string, unknown>
-  /** Absent for a fixed-budget family (EBM), whose refit reuses the winning budget. */
-  final_tree_count?: number
-  trial_count: number
-  trial_fit_count: number
-  total_fit_count: number
-  trials: TuningTrial[]
-  plan_path: string
-  trials_path: string
-  report_path: string
-}
-
 /** One axis of an EBM term: the missing bin first, then categories or value bins. */
 export interface EbmTermAxis {
   feature: string
@@ -1003,110 +884,56 @@ export interface EbmTerm {
   scores: number[] | number[][]
 }
 
-export interface TrainResponse {
-  status: "started" | "completed" | "error"
-  job_id: string | null
-  diagnostic_metrics: Record<string, number>
-  final_test_metrics: Record<string, number>
+// The training contracts are generated (scripts/generate_api_contracts.py).
+export type {
+  EvaluationFitPayload as EvaluationFit,
+  EvaluationMetricSummaryPayload as EvaluationMetricSummary,
+  EvaluationReportPayload as EvaluationReport,
+  EvaluationSummaryPayload as EvaluationSummary,
+  MlflowExportReceipt,
+  ModelFileExportReceipt,
+  TrainExportReceipts,
+  TuningReportPayload as TuningReport,
+  TuningTrialPayload as TuningTrial,
+} from "../generated/api-contracts.generated"
+
+/**
+ * Fields the server model leaves as open objects (diagnostic rows, loss history)
+ * or that the UI reshapes (feature selection); `parseTrainResponse` gives them
+ * these shapes on top of the generated structure.
+ */
+type TrainResponseUiFields = {
   feature_importance: TrainFeatureImportanceRow[]
-  model_path: string
-  development_rows: number
-  final_test_rows: number
-  diagnostics_set: "development" | "validation" | "final_test"
-  features: string[]
-  cat_features: string[]
-  error: string | null
-  best_iteration: number | null
-  final_tree_count?: number | null
-  fit_evidence?: {
-    threads: number
-    rounds_configured: number | null
-    rounds_fitted: number | null
-    /** EBM's native best_iteration_: term updates per stage, never rounds. */
-    term_update_steps: number[] | null
-    stopping_reason: "none" | "validation" | "native_exhaustion" | null
-    /** The device XGBoost actually trained on (``cuda:0``) for a GPU fit. */
-    device?: string | null
-  } | null
   loss_history: Array<{ iteration: number; [key: string]: number }>
-  loss_history_truncated: boolean
   double_lift: TrainDoubleLiftRow[]
   shap_summary: TrainShapSummaryRow[]
   feature_importance_loss: TrainFeatureImportanceRow[]
   ave_per_feature: TrainAvePerFeatureRow[]
   residuals_histogram: TrainResidualHistogramRow[]
-  residuals_stats: Record<string, number>
   actual_vs_predicted: ActualVsPredictedRow[]
   lorenz_curve: LorenzCurvePoint[]
   lorenz_curve_perfect: LorenzCurvePoint[]
   pdp_data: PdpFeatureRow[]
-  warning: string | null
-  total_source_rows: number | null
   glm_coefficients: GlmCoefficientRow[]
   glm_relativities: GlmRelativityRow[]
-  glm_fit_statistics: Record<string, number>
   glm_inference: GlmInference | null
   glm_smooth_terms: GlmSmoothTerm[]
   glm_regularization: GlmRegularization | null
   ebm_terms: EbmTerm[]
   diagnostics_errors: TrainDiagnosticsError[]
   feature_selection: TrainFeatureSelection | null
-  evaluation?: EvaluationReport
-  tuning?: TuningReport
 }
 
-export interface TrainStatusResponse {
-  status: JobStatus
-  progress: number
-  message: string
-  iteration: number
-  total_iterations: number
-  train_loss: Record<string, number>
-  train_loss_history?: Array<{ iteration: number; [key: string]: number }>
-  train_loss_history_truncated?: boolean
-  elapsed_seconds: number
-  result?: TrainResponse | null
-  warning?: string | null
-  terminal_reason?: string | null
-  error_code?: string | null
-  http_status_code?: number | null
-  error_detail?: unknown
-  execution_metrics?: ExecutionMetrics | null
-  feature_selection?: TrainFeatureSelection | null
-  phase?: "planning" | "trial_fit" | "trial_complete" | "final_fit" | "publication" | "completed" | null
-  trial_index?: number | null
-  trial_count?: number | null
-  fold_index?: number | null
-  fold_count?: number | null
-  completed_fits?: number | null
-  total_fits?: number | null
-  best_objective?: number | null
-  /** Where the completed result has been exported, oldest first. */
-  export_receipts?: TrainExportReceipts
+export type TrainResponse = Omit<GeneratedTrainResponse, keyof TrainResponseUiFields> & TrainResponseUiFields
+
+type TrainStatusUiFields = {
+  train_loss_history: Array<{ iteration: number; [key: string]: number }>
+  result: TrainResponse | null
+  execution_metrics: ExecutionMetrics | null
+  feature_selection: TrainFeatureSelection | null
 }
 
-export interface MlflowExportReceipt {
-  operation_id: string
-  /** The request's destination: `""` is the local folder. */
-  destination: "" | MlflowDestinationKey
-  backend: string
-  experiment_name: string
-  run_id: string
-  run_url: string | null
-  tracking_uri: string
-  logged_at: string
-}
-
-export interface ModelFileExportReceipt {
-  path: string
-  feature_contract_path: string
-  saved_at: string
-}
-
-export interface TrainExportReceipts {
-  mlflow: MlflowExportReceipt[]
-  model_files: ModelFileExportReceipt[]
-}
+export type TrainStatusResponse = Omit<GeneratedTrainStatusResponse, keyof TrainStatusUiFields> & TrainStatusUiFields
 
 // ---------------------------------------------------------------------------
 // Explore types
@@ -1272,66 +1099,27 @@ export interface NodeDataProfile {
   generated_at: number
 }
 
-export interface BandingHistogramBin {
-  lower: number
-  upper: number
-  count: number
-}
+// The banding, rating-level and data-profile responses are generated. The
+// node-data point and profile keep their hand types until the node-data
+// responses are generated; the generated shapes are assignable to them.
+export type {
+  BandingHistogramBin,
+  BandingValueCount,
+  RatingLevelColumn,
+  RatingLevelValue,
+} from "../generated/api-contracts.generated"
 
-export interface BandingValueCount {
-  value: string
-  count: number
-}
-
-/** Whole-dataset statistics for one banding factor, or why there are none. */
-export interface BandingStatsResponse {
-  status: "ok" | "cache_required"
+export type BandingStatsResponse = Omit<GeneratedBandingStatsResponse, "point"> & {
   point: NodeDataPointResponse
-  data_version?: string | null
-  total_rows: number
-  null_count: number
-  /** Numeric modes: values no bin can hold, and the extent of those it can. */
-  non_finite_count?: number | null
-  minimum?: number | null
-  maximum?: number | null
-  bins: BandingHistogramBin[]
-  /** Categorical mode. */
-  values: BandingValueCount[]
-  distinct_count?: number | null
-  other_count?: number | null
-  /** Counts aligned to the user's rules, and the rows no rule claimed. */
-  rule_counts: number[]
-  unmatched_count?: number | null
 }
 
-export interface RatingLevelValue {
-  value: string
-  count: number
-}
-
-/** What one column offers as rating levels, neither missing nor blank. */
-export interface RatingLevelColumn {
-  column: string
-  values: RatingLevelValue[]
-  distinct_count: number
-  null_count: number
-}
-
-/** Whole-dataset levels for raw rating factor columns, or why there are none. */
-export interface RatingLevelsResponse {
-  status: "ok" | "cache_required"
+export type RatingLevelsResponse = Omit<GeneratedRatingLevelsResponse, "point"> & {
   point: NodeDataPointResponse
-  data_version?: string | null
-  total_rows: number
-  columns: RatingLevelColumn[]
 }
 
-export interface NodeDataProfileResponse {
-  status: "completed" | "started" | "joined" | "cache_required"
-  job_id?: string | null
-  message: string
-  result?: NodeDataProfile | null
+export type NodeDataProfileResponse = Omit<GeneratedNodeDataProfileResponse, "point" | "result"> & {
   point: NodeDataPointResponse
+  result: NodeDataProfile | null
 }
 
 export interface NodeDataStatusResponse {
@@ -1370,92 +1158,45 @@ export type ExplorePivotMemberKey =
   | { kind: "boolean"; value: boolean }
   | { kind: "float"; value: number }
 
-export interface ExplorePivotFailure {
-  reason_code: string
-  message: string
-  remediation: string
-  dimensions: Record<string, string | number>
-}
+export type {
+  ExplorePivotCell,
+  ExplorePivotFailure,
+  ExplorePivotValueIdentity,
+} from "../generated/api-contracts.generated"
 
-export interface ExplorePivotMemberOption {
-  key: ExplorePivotMemberKey
-  label: string
-  count: number
-}
-
-export interface ExplorePivotValueIdentity {
-  id: string
-  field: string
-  aggregation: "sum" | "count" | "average" | "min" | "max" | "median" | "distinct_count" | "formula"
-}
-
-export interface ExplorePivotPath {
+// The pivot responses are generated; the UI narrows each member key to the
+// value its kind carries and parses execution metrics with the shared parser.
+export type ExplorePivotPath = Omit<GeneratedExplorePivotPath, "members"> & {
   members: ExplorePivotMemberKey[]
-  is_grand_total: boolean
 }
 
-export interface ExplorePivotCell {
-  row_index: number
-  column_index: number
-  value_id: string
-  value: string | number | boolean | null
+export type ExplorePivotMemberOption = Omit<GeneratedExplorePivotMemberOption, "key"> & {
+  key: ExplorePivotMemberKey
 }
 
-export interface ExplorePivotResult {
-  version: 1
-  node_id: string
-  pivot_id: string
-  source: string
-  data_version: string
-  calculation_key: string
-  row_fields: string[]
-  column_fields: string[]
-  values: ExplorePivotValueIdentity[]
+export type ExplorePivotResult = Omit<
+  GeneratedExplorePivotResult,
+  "row_paths" | "column_paths" | "execution_metrics"
+> & {
   row_paths: ExplorePivotPath[]
   column_paths: ExplorePivotPath[]
-  cells: ExplorePivotCell[]
-  warnings: string[]
-  generated_at: number
   execution_metrics: ExecutionMetrics | null
 }
 
-export interface ExplorePivotRunResponse {
-  status: "started" | "completed" | "cache_required"
-  job_id: string | null
-  cached: boolean
-  message: string
+export type ExplorePivotRunResponse = Omit<GeneratedExplorePivotRunResponse, "result"> & {
   result: ExplorePivotResult | null
-  failure: ExplorePivotFailure | null
 }
 
-export interface ExplorePivotStatusResponse {
-  status: JobStatus
-  progress: number
-  message: string
+export type ExplorePivotStatusResponse = Omit<
+  GeneratedExplorePivotStatusResponse,
+  "result" | "execution_metrics"
+> & {
   result: ExplorePivotResult | null
-  failure: ExplorePivotFailure | null
-  terminal_reason: string | null
   execution_metrics: ExecutionMetrics | null
 }
 
-export interface ExplorePivotMembersResponse {
-  status: "ok" | "cache_required" | "error"
-  field: string | null
+export type ExplorePivotMembersResponse = Omit<GeneratedExplorePivotMembersResponse, "members"> & {
   members: ExplorePivotMemberOption[]
-  failure: ExplorePivotFailure | null
-}
-
-export interface MlflowLogResponse {
-  status: string
-  backend: string
-  experiment_name: string
-  run_id: string | null
-  run_url: string | null
-  tracking_uri: string
-  error: string | null
-  /** The logged operation (training logs only); a retry with it returns this run. */
-  operation_id?: string | null
-  logged_at?: string | null
 }
 
 export interface ModelSaveDestinationRequest {
@@ -1476,57 +1217,36 @@ export interface SaveModelRequest {
 // Optimiser types
 // ---------------------------------------------------------------------------
 
-export interface OptimiserSolveResponse {
-  status: string
-  job_id: string | null
-  error: string | null
-}
+// The optimiser responses are generated. A frontier keeps the UI's typed view of
+// its open point objects, and the status responses parse execution metrics with
+// the shared parser.
+export type {
+  OptimiserApplyResponse as ApplyOptimiserResponse,
+  OptimiserEstimateResponse as OptimiserEstimate,
+  OptimiserFrontierAutoRangeResponse as FrontierAutoRangeResponse,
+  OptimiserFrontierAutoRangeStartResponse as FrontierAutoRangeStartResponse,
+  OptimiserFrontierPointSummary as FrontierPointSummary,
+  OptimiserFrontierRange as FrontierRange,
+  OptimiserFrontierSelectResponse as FrontierSelectResponse,
+  OptimiserHistoryEntry,
+  OptimiserMlflowLogResponse as MlflowLogResponse,
+  OptimiserSaveResponse as SaveOptimiserResponse,
+  OptimiserScenarioValueHistogram,
+  OptimiserScenarioValueStats,
+  OptimiserSolveResponse,
+} from "../generated/api-contracts.generated"
 
-export type SolveOptimiserResponse = OptimiserSolveResponse
-
-export interface OptimiserEstimate {
-  /** Raw ancestor source row count from parquet metadata, or null when unreadable. */
-  total_rows: number | null
-  /** Distinct quotes in the optimiser input after scenario expansion. */
-  quote_count?: number | null
-  /** Minimum scenario rows per quote in the optimiser input. */
-  scenarios_per_quote_min?: number | null
-  /** Maximum scenario rows per quote in the optimiser input. */
-  scenarios_per_quote_max?: number | null
-  /** Mean scenario rows per quote in the optimiser input. */
-  scenarios_per_quote_mean?: number | null
-  /** Total rows in the optimiser input after scenario expansion. */
-  expanded_row_count?: number | null
-}
+export type SolveOptimiserResponse = GeneratedOptimiserSolveResponse
 
 export interface ApplyOptimiserRequest {
   job_id: string
   point_index?: number
 }
 
-export interface ApplyOptimiserResponse {
-  status: string
-  total_objective: number
-  constraints: Record<string, number>
-  from_artifact: boolean
-  preview: Record<string, unknown>[]
-  row_count: number
-  preview_row_count: number
-  preview_row_limit: number | null
-  preview_truncated: boolean
-  error: string | null
-}
-
 export interface SaveOptimiserRequest {
   job_id: string
   output_path: string
   point_index?: number
-}
-
-export interface SaveOptimiserResponse {
-  status: string
-  path: string | null
-  message: string
 }
 
 export interface LogOptimiserToMlflowRequest {
@@ -1544,46 +1264,12 @@ export type FrontierPoint = Record<string, unknown> & {
   lambdas?: Record<string, number>
 }
 
-/** The server's summary of one frontier point: every result field that
- *  differs from its solve, `null` where the point has none (applying it
- *  clears that field). Mirrors `OptimiserFrontierPointSummary` in
- *  `src/haute/schemas.py`. */
-export interface FrontierPointSummary {
-  total_objective: number
-  constraints: Record<string, number>
-  lambdas: Record<string, number>
-  converged: boolean
-  iterations: number | null
-  cd_iterations: number | null
-  clamp_rate: number | null
-  history: OptimiserHistoryEntry[] | null
-  scenario_value_stats: OptimiserScenarioValueStats | null
-  scenario_value_histogram: OptimiserScenarioValueHistogram | null
-  factor_tables: Record<string, Record<string, unknown>[]> | null
-  warning: string | null
-  frontier_error: string | null
-}
-
-export interface FrontierResponse {
-  status: string
+export type FrontierResponse = Omit<GeneratedOptimiserFrontierResponse, "points"> & {
   points: FrontierPoint[]
-  /** One server summary per point, in point order. */
-  point_summaries: FrontierPointSummary[]
-  n_points: number
-  points_returned: number
-  constraint_names: string[]
-  points_limit: number | null
-  points_truncated: boolean
-  /** Pollable frontier job handle when `status === "started"`. */
-  job_id?: string | null
 }
 
-export type FrontierData = Omit<FrontierResponse, 'status'>
-
-export interface FrontierRange {
-  min: number
-  max: number
-}
+/** A solve's frontier as the results store keeps it. */
+export type FrontierData = Omit<FrontierResponse, "status" | "job_id">
 
 export const JOB_STATUS_VALUES = [
   "running",
@@ -1612,128 +1298,32 @@ export const TERMINAL_JOB_STATUSES: ReadonlySet<JobStatus> = new Set([
   ...FAILED_JOB_STATUSES,
 ])
 
-export interface FrontierAutoRangeResponse {
-  status: string
-  ranges: Record<string, FrontierRange>
-  method: string
-  warning: string | null
-}
-
-export interface FrontierAutoRangeStartResponse {
-  status: "started" | "error"
-  job_id: string | null
-  error: string | null
-}
-
-export interface FrontierStatusResponse {
-  status: JobStatus
-  progress: number
-  message: string
-  elapsed_seconds: number
+export type FrontierStatusResponse = Omit<
+  GeneratedOptimiserFrontierStatusResponse,
+  "result" | "execution_metrics"
+> & {
   result: FrontierResponse | null
-  terminal_reason?: string | null
-  error_code?: string | null
-  http_status_code?: number | null
-  error_detail?: unknown
-  execution_metrics?: ExecutionMetrics | null
+  execution_metrics: ExecutionMetrics | null
 }
 
-export interface FrontierAutoRangeStatusResponse {
-  status: JobStatus
-  progress: number
-  message: string
-  elapsed_seconds: number
-  result: FrontierAutoRangeResponse | null
-  terminal_reason?: string | null
-  error_code?: string | null
-  http_status_code?: number | null
-  error_detail?: unknown
-  execution_metrics?: ExecutionMetrics | null
+export type FrontierAutoRangeStatusResponse = Omit<
+  GeneratedOptimiserFrontierAutoRangeStatusResponse,
+  "execution_metrics"
+> & {
+  execution_metrics: ExecutionMetrics | null
 }
 
-export interface OptimiserHistoryEntry {
-  iteration: number
-  total_objective: number
-  max_lambda_change: number
-  all_constraints_satisfied?: boolean
-  lambdas?: Record<string, number>
-  total_constraints?: Record<string, number>
+export type OptimiserSolveResult = Omit<GeneratedOptimiserSolveResult, "frontier"> & {
+  frontier: FrontierResponse | null
 }
 
-export interface OptimiserScenarioValueStats {
-  mean: number
-  std: number
-  min: number
-  max: number
-  p5: number
-  p25: number
-  p50: number
-  p75: number
-  p95: number
-  pct_increase: number
-  pct_decrease: number
-}
-
-export interface OptimiserScenarioValueHistogram {
-  counts: number[]
-  edges: number[]
-}
-
-export interface OptimiserSolveResult {
-  mode?: string | null
-  total_objective: number
-  baseline_objective: number
-  constraints: Record<string, number>
-  baseline_constraints: Record<string, number>
-  lambdas: Record<string, number>
-  converged: boolean
-  iterations?: number | null
-  n_quotes?: number | null
-  n_steps?: number | null
-  cd_iterations?: number | null
-  factor_tables?: Record<string, Record<string, unknown>[]>
-  history?: OptimiserHistoryEntry[] | null
-  warning?: string | null
-  frontier_error?: string | null
-  scenario_value_stats?: OptimiserScenarioValueStats
-  scenario_value_histogram?: OptimiserScenarioValueHistogram
-  clamp_rate?: number | null
-  frontier?: FrontierResponse | null
-  /** Index of the frontier point the backend auto-selected for this solve,
-   *  or null when none. Mirrors `OptimiserSolveResult.selected_frontier_point`
-   *  in `src/haute/schemas.py`. */
-  selected_frontier_point?: number | null
-}
-
-export interface OptimiserStatusResponse {
-  status: JobStatus
-  progress: number
-  message?: string
-  elapsed_seconds: number
-  result?: OptimiserSolveResult | null
-  frontier?: FrontierResponse | null
-  terminal_reason?: string | null
-  execution_metrics?: ExecutionMetrics | null
-}
-
-export interface FrontierSelectResponse {
-  status: string
-  point_index?: number | null
-  total_objective: number
-  constraints: Record<string, number>
-  baseline_objective: number
-  baseline_constraints: Record<string, number>
-  lambdas: Record<string, number>
-  converged: boolean
-  iterations?: number | null
-  cd_iterations?: number | null
-  factor_tables?: Record<string, Record<string, unknown>[]>
-  history?: OptimiserHistoryEntry[] | null
-  warning?: string | null
-  scenario_value_stats?: OptimiserScenarioValueStats
-  scenario_value_histogram?: OptimiserScenarioValueHistogram
-  clamp_rate?: number | null
-  error: string | null
+export type OptimiserStatusResponse = Omit<
+  GeneratedOptimiserStatusResponse,
+  "result" | "frontier" | "execution_metrics"
+> & {
+  result: OptimiserSolveResult | null
+  frontier: FrontierResponse | null
+  execution_metrics: ExecutionMetrics | null
 }
 
 // ---------------------------------------------------------------------------
@@ -1760,12 +1350,11 @@ export type {
 // File browsing types
 // ---------------------------------------------------------------------------
 
-export interface FileListItem {
-  name: string
-  path: string
-  type: "file" | "directory"
-  size?: number | null
-}
+export type {
+  BrowseFilesResponse,
+  FileItem as FileListItem,
+  SessionStatusResponse,
+} from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------
 // Utility types
@@ -1834,40 +1423,5 @@ export type SyncFailure = NonNullable<GeneratedGitStorageSync["failure"]>
 
 export type BindState = GeneratedGitStorageBind["state"]
 
-/** A non-fast-forward push rejection (P7 M7): the body of a 409 from
- *  POST /api/git/push, carrying the per-leg divergence so the UI shows the honest
- *  fork rather than a dead-end string. `ledger` is null when it isn't spawned. */
-export interface GitPushRejection {
-  status: "rejected_diverged"
-  remote: string
-  working: GeneratedGitRemoteLeg
-  ledger: GeneratedGitRemoteLeg | null
-  message: string
-  /** X3: the remote dropped a published commit (a rebase/force-push upstream),
-   *  not an ordinary divergence — the modal says so distinctly. */
-  is_rewrite: boolean
-}
-
-/** The pre-milestone fork warning (P7 U4/D4): the body of a 409 from
- *  POST /api/git/commit when the working branch is behind its remote, so a
- *  milestone now would branch off the shared copy. Drives the warn + "commit
- *  anyway (creates a fork)" confirm. */
-export interface GitMilestoneFork {
-  status: "would_fork"
-  remote: string
-  working: GeneratedGitRemoteLeg
-  message: string
-}
-
-/** Result of rendering a low-code Transform step list to Polars code. A step
- *  validation failure is data (`ok: false` with the failing step index and
- *  message), never a transport error. */
-export interface PolarsStepsRenderResponse {
-  ok: boolean
-  code: string
-  /** 1-based inclusive `[start, end]` line range per step. */
-  step_lines: number[][]
-  /** Zero-based index of the failing step; null for a list-level problem. */
-  step_index: number | null
-  message: string
-}
+// The 409 advisory bodies of a diverged push and a forking milestone.
+export type { GitMilestoneFork, GitPushRejection } from "../generated/api-contracts.generated"

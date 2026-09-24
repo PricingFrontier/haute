@@ -28,7 +28,8 @@
         "text_min_length": null,
         "text_mean_length": null,
         "text_max_length": null,
-        "temporal_span": null
+        "temporal_span": null,
+        "histogram": null
       },
       {
         "name": "premium",
@@ -52,7 +53,8 @@
         "text_min_length": null,
         "text_mean_length": null,
         "text_max_length": null,
-        "temporal_span": null
+        "temporal_span": null,
+        "histogram": null
       },
       {
         "name": "region",
@@ -76,7 +78,8 @@
         "text_min_length": 5,
         "text_mean_length": 5.5,
         "text_max_length": 9,
-        "temporal_span": null
+        "temporal_span": null,
+        "histogram": null
       }
     ],
     "overview_summary": {

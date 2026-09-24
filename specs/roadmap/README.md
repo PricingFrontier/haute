@@ -22,9 +22,8 @@ or maintenance issue; `P3` opportunistic work.
 | [Engineering quality](engineering-quality.md) | Dead code, coverage gates, test organisation | `ENGQ-R01` |
 | [Execution engine](execution-engine.md) | Chunked runner, one execution walker | `EXEC-R05` |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | — |
-| [Frontend shared](frontend-shared.md) | A table base, the repair dialog's error text; results store | `FSH-R02` |
+| [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
 | [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients for the optimiser log | `MLF-R02` |
-| [Modelling](modelling.md) | Evaluation and tuning invariants checked once | `MOD-T10` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers, auto-range, input isolation | `OPT-P13` |
 | [Pipeline config](pipeline-config.md) | Repair, save validation, the error a rejected config reports, project context, typed configs, node specification | `PCFG-R01` |
 | [Sandbox security](sandbox-security.md) | One path-containment check, the node-code guard | `SBX-R01` |
@@ -73,8 +72,8 @@ instructions supplied for that independent review.
 
 The [engine probe record](mod-f00-engine-probes.md) holds the dependency,
 packaging and native-behaviour evidence that settled the pre-implementation
-gates of the model-family expansion, which is delivered and retired from the
-[modelling roadmap](modelling.md).
+gates of the model-family expansion, which is delivered; the modelling roadmap
+that tracked it is retired.
 It is a dated evidence artifact; component specifications remain the behavior
 authority.
 

@@ -25,10 +25,10 @@ import { getExplorePivotStatus, getOptimiserStatus, getTrainStatus } from "../..
 import useNodeResultsStore from "../../stores/useNodeResultsStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useBackgroundJobs from "../../hooks/useBackgroundJobs.ts"
-import { explorePivotResultKey, type ExplorePivotProgress, type SolveProgress, type TrainProgress } from "../../stores/useNodeResultsStore.ts"
-import type { ExplorePivotResult } from "../../api/types.ts"
+import { explorePivotResultKey, type ExplorePivotProgress, type SolveProgress } from "../../stores/useNodeResultsStore.ts"
+import type { ExplorePivotResult, TrainStatusResponse } from "../../api/types.ts"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
-import { makeTrainResult } from "../../test-utils/factories.ts"
+import { makeTrainResult, makeTrainStatus, makeOptimiserStatus, makeSolveResult } from "../../test-utils/factories.ts"
 import { ApiResponseValidationError } from "../../api/responseValidation"
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -46,18 +46,18 @@ function resetStores() {
   })
 }
 
-function makeSolveProgress(overrides: Partial<SolveProgress> = {}): SolveProgress {
-  return {
+function makeSolveProgress(overrides: Partial<SolveProgress> = {}) {
+  return makeOptimiserStatus({
     status: "running",
     progress: 0.5,
     message: "Working...",
     elapsed_seconds: 5,
     ...overrides,
-  }
+  })
 }
 
-function makeTrainProgress(overrides: Partial<TrainProgress> = {}): TrainProgress {
-  return {
+function makeTrainProgress(overrides: Partial<TrainStatusResponse> = {}): TrainStatusResponse {
+  return makeTrainStatus({
     status: "running",
     progress: 0.5,
     message: "Training...",
@@ -66,7 +66,7 @@ function makeTrainProgress(overrides: Partial<TrainProgress> = {}): TrainProgres
     train_loss: { rmse: 0.1 },
     elapsed_seconds: 5,
     ...overrides,
-  }
+  })
 }
 
 function makePivotResult(overrides: Partial<ExplorePivotResult> = {}): ExplorePivotResult {
@@ -109,14 +109,14 @@ describe("useBackgroundJobs", () => {
   describe("solve job polling", () => {
     it("polls and completes a solve job when API returns completed status", async () => {
       const mockGetStatus = vi.mocked(getOptimiserStatus)
-      const solveResult = {
+      const solveResult = makeSolveResult({
         total_objective: 100,
         baseline_objective: 80,
         constraints: {},
         baseline_constraints: {},
         lambdas: {},
         converged: true,
-      }
+      })
 
       // First poll: still running
       mockGetStatus.mockResolvedValueOnce(
@@ -562,14 +562,14 @@ describe("useBackgroundJobs", () => {
         return Promise.resolve(
           makeSolveProgress({
             status: "completed",
-            result: {
+            result: makeSolveResult({
               total_objective: 1,
               baseline_objective: 1,
               constraints: {},
               baseline_constraints: {},
               lambdas: {},
               converged: true,
-            },
+            }),
           }),
         )
       })

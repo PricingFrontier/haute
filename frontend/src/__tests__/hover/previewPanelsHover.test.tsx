@@ -441,7 +441,7 @@ import type { OptimiserPreviewData } from "../../panels/OptimiserPreview"
 import type { OptimiserSolveResult } from "../../api/types"
 import type { ModellingPreviewData } from "../../panels/ModellingPreview"
 import PreviewPanelFrame from "../../panels/PreviewPanelFrame"
-import { makeTrainResult } from "../../test-utils/factories"
+import { makeTrainResult, makeSolveResult as makeSolveResultFactory } from "../../test-utils/factories"
 
 function makePreviewData(): PreviewData {
   return {
@@ -464,7 +464,7 @@ function makePreviewData(): PreviewData {
 }
 
 function makeSolveResult(): OptimiserSolveResult {
-  return {
+  return makeSolveResultFactory({
     total_objective: 1.5,
     baseline_objective: 1.0,
     constraints: { c1: 0.5 },
@@ -473,7 +473,7 @@ function makeSolveResult(): OptimiserSolveResult {
     converged: true,
     iterations: 10,
     n_quotes: 1000,
-  }
+  })
 }
 
 function makeOptimiserPreviewData(): OptimiserPreviewData {

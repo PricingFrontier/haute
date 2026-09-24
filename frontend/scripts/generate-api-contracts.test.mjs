@@ -8,6 +8,7 @@ import {
   CONSTANTS_FILENAME,
   GENERATED_TYPES_FILENAME,
   extractContractSchema,
+  extractModuleContractSchema,
   run,
   validatorModules,
 } from "./generate-api-contracts.mjs";
@@ -59,6 +60,29 @@ test(
       assert.equal(extracted.reachableDefinitionCount, expectedDefinitions.length + 1);
       assert.equal(Object.hasOwn(extracted.schema.$defs, definitionName), false);
     }
+
+    // A module with several contracts compiles one schema holding every
+    // definition they reach, so a shared definition is compiled once.
+    const training = validatorModules(schema).find(({ validatorFilename }) =>
+      validatorFilename === "api-contracts.training.validators.mjs");
+    const trainingSchema = extractModuleContractSchema(schema, training);
+    const trainingDefinitions = Object.keys(trainingSchema.$defs);
+    assert.deepEqual(trainingDefinitions, [...trainingDefinitions].sort());
+    assert.ok(trainingDefinitions.includes("TrainResponse"));
+    assert.ok(trainingDefinitions.includes("TrainStatusResponse"));
+    assert.equal(
+      trainingDefinitions.length,
+      new Set([
+        ...Object.keys(extractContractSchema(schema, "TrainResponse").schema.$defs),
+        ...Object.keys(extractContractSchema(schema, "TrainStatusResponse").schema.$defs),
+        "TrainResponse",
+        "TrainStatusResponse",
+      ]).size,
+    );
+    assert.deepEqual(
+      Object.keys(trainingSchema).sort(),
+      ["$defs", "$id", "$schema"],
+    );
 
     await cp(
       path.join(sourceDirectory, "api-contracts.schema.json"),
@@ -114,7 +138,9 @@ test(
     );
 
     const declarations = await readFile(path.join(temporaryDirectory, GENERATED_TYPES_FILENAME), "utf8");
-    assert.equal(declarations.includes("[k: string]: unknown"), false);
+    // Models are closed; only a field the server declares as an open mapping
+    // keeps an index signature, nested under that field.
+    assert.doesNotMatch(declarations, /^export interface \w+ \{\n(?:  [^\n]*\n)*?  \[k: string\]: unknown;/m);
     assert.equal(declarations.includes("HauteApiContractRoots"), false);
     // Every serialized response field is required, defaults included.
     assert.match(

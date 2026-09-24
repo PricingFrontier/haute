@@ -44,6 +44,7 @@ import { readFileSync, readdirSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import useToastStore from "../../stores/useToastStore"
+import { makeSolveResult } from "../../test-utils/factories"
 
 // ═══════════════════════════════════════════════════════════════════
 //  Source walker (shared by all structural tests)
@@ -423,7 +424,7 @@ describe("OptimiserPreview frontier-point switching stays local", () => {
 
   function makeData(): OptimiserPreviewData {
     return {
-      result: {
+      result: makeSolveResult({
         total_objective: 1234567,
         baseline_objective: 1200000,
         constraints: { loss_ratio: 0.65 },
@@ -433,7 +434,7 @@ describe("OptimiserPreview frontier-point switching stays local", () => {
         iterations: 15,
         n_quotes: 50000,
         history: null,
-      },
+      }),
       jobId: "job_123",
       constraints: { loss_ratio: { max: 1.05 } },
       nodeLabel: "My Optimiser",

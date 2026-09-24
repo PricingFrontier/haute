@@ -23,16 +23,13 @@ import { formatChartNumber } from "../../utils/chartHelpers"
 import type { SimpleEdge, SimpleNode } from "../editors"
 import useWholeDataAnswer from "../editors/shared/useWholeDataAnswer"
 import type { ExploreDataView } from "./exploreDataView"
+import ExploreTableHead from "./ExploreTableHead"
+import { CELL_CLASS, LABEL_CLASS, MUTED_STYLE, PRIMARY_STYLE, SECONDARY_STYLE } from "./exploreTableStyles"
 
 /** The server's bounds: features per question and columns per key. */
 const FEATURE_LIMIT = 50
 const KEY_COLUMN_LIMIT = 8
 
-const MUTED_STYLE = { color: "var(--text-muted)" } as const
-const PRIMARY_STYLE = { color: "var(--text-primary)" } as const
-const SECONDARY_STYLE = { color: "var(--text-secondary)" } as const
-const LABEL_CLASS = "text-[10px] font-bold uppercase tracking-[0.08em]"
-const CELL_CLASS = "px-2 py-1.5"
 const CARD_STYLE = { background: "var(--bg-elevated)", border: "1px solid var(--border)" } as const
 const SELECT_STYLE = {
   background: "var(--bg-input)",
@@ -156,15 +153,7 @@ function RelationshipRows({ relationship }: { relationship: ExploreRelationship 
         <tr>
           <td colSpan={4} className="px-6 pb-2">
             <table className="w-full text-[11px]" aria-label={`Levels of ${relationship.feature}`}>
-              <thead>
-                <tr>
-                  {["Level", "Rows", "Weight", "Target mean"].map((header) => (
-                    <th key={header} className={`${LABEL_CLASS} text-left px-2 py-1`} style={SECONDARY_STYLE}>
-                      {header}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
+              <ExploreTableHead dense labels={["Level", "Rows", "Weight", "Target mean"]} />
               <tbody>
                 {relationship.levels.map((level, index) => (
                   <tr key={`${level.kind}-${level.label}-${index}`}>
@@ -385,15 +374,7 @@ export default function ExploreRelationshipsPane({
                 {answer.weight ? `, weighted by ${answer.weight}` : ""}.
               </p>
               <table className="w-full text-[11px]" aria-label="Feature relationships">
-                <thead>
-                  <tr>
-                    {["Feature", "Kind", "Strength", "Levels"].map((header) => (
-                      <th key={header} className={`${LABEL_CLASS} text-left px-2 py-1.5`} style={SECONDARY_STYLE}>
-                        {header}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
+                <ExploreTableHead labels={["Feature", "Kind", "Strength", "Levels"]} />
                 <tbody>
                   {answer.relationships.map((relationship) => (
                     <RelationshipRows key={relationship.feature} relationship={relationship} />
