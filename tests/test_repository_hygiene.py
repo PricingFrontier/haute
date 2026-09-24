@@ -27,6 +27,10 @@ def test_generated_and_local_agent_artifacts_are_not_tracked() -> None:
         or path == "graphify-out"
         or "/graphify-out/" in f"/{path}/"
         or (Path(path).name.startswith("PR23_") and path.endswith(".md"))
+        # Installed packages and their tool caches (a Vitest results cache
+        # under a stray root-level node_modules/ was once committed).
+        or path.startswith("node_modules/")
+        or "/node_modules/" in f"/{path}"
     )
 
     assert offenders == []
@@ -148,6 +152,48 @@ def test_subprocess_imported_only_in_chokepoint_modules() -> None:
     assert missing == [], (
         "Allowlist is stale: these modules no longer import subprocess. Remove "
         f"their entries so the allowlist stays meaningful: {missing}"
+    )
+
+
+def test_libcst_is_imported_only_by_the_structured_syntax_boundary() -> None:
+    """``haute._python_syntax`` is the one module that uses LibCST (ENGQ-R03).
+
+    The codegen structured-syntax boundary specification says that module hides
+    LibCST behind small typed results; a second importer would make the
+    specification, and the expression-parsing account of how codegen edits
+    source, untrue.
+    """
+    importing = {
+        _rel_posix(path)
+        for path in _iter_src_haute_sources()
+        if _imports_module(ast.parse(path.read_text(encoding="utf-8")), "libcst")
+    }
+
+    assert importing == {"src/haute/_python_syntax.py"}
+
+
+def test_only_the_git_command_core_starts_git() -> None:
+    """Every git subprocess goes through ``_git_core.py`` (DEP-R04).
+
+    Only allowlisted modules may import ``subprocess``, so a git process can be
+    launched elsewhere only by one of them building a git argument list. None
+    of the other chokepoints (docker, npm, nvidia-smi, the installer) has a
+    reason to; a consumer that needs git calls the core's helpers instead.
+    """
+    offenders: list[str] = []
+    for rel in sorted(_SUBPROCESS_IMPORT_ALLOWLIST - {"src/haute/_git_core.py"}):
+        tree = ast.parse((_REPO_ROOT / rel).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, (ast.List, ast.Tuple))
+                and node.elts
+                and isinstance(node.elts[0], ast.Constant)
+                and node.elts[0].value == "git"
+            ):
+                offenders.append(f"{rel}:{node.lineno}")
+    assert offenders == [], (
+        "A git command is built outside the git command core; call the core's "
+        f"_run_git / _run_git_ok / _run_git_rc instead. Offenders: {offenders}"
     )
 
 

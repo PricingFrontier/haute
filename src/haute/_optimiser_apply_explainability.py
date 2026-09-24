@@ -13,6 +13,7 @@ from haute._builders import (
     _split_ratebook_level,
     has_ratio_constraint,
 )
+from haute._json_safe import to_json_safe
 from haute._logging import get_logger
 from haute._rating import (
     is_rating_dtype_descriptor,
@@ -259,11 +260,11 @@ def _explain_online(
             for name, spec in constraints.items()
         },
         "lambdas": dict(lambdas),
-        "output": {"column": output_col, "value": _json_safe(output_value)},
+        "output": {"column": output_col, "value": to_json_safe(output_value)},
         "output_column": output_col,
-        "output_value": _json_safe(output_value),
+        "output_value": to_json_safe(output_value),
         "quote_id_column": qid_col,
-        "quote_id_value": _json_safe(quote_id_value),
+        "quote_id_value": to_json_safe(quote_id_value),
         "scenario_index_column": step_col,
         "scenario_value_column": value_col,
         "objective_column": objective_col,
@@ -420,9 +421,9 @@ def _explain_ratebook(
             )
 
         if len(join_columns) == 1:
-            input_value_payload = _json_safe(input_values[0])
+            input_value_payload = to_json_safe(input_values[0])
         else:
-            input_value_payload = _json_safe(dict(zip(join_columns, input_values)))
+            input_value_payload = to_json_safe(dict(zip(join_columns, input_values)))
 
         before = running_product
         running_product *= numeric_factor
@@ -431,17 +432,17 @@ def _explain_ratebook(
                 "factor": factor_name,
                 "name": factor_name,
                 "input_value": input_value_payload,
-                "factor_value": _json_safe(factor_value),
+                "factor_value": to_json_safe(factor_value),
                 "factor_column": factor_col,
                 "output_column": factor_col,
-                "running_product_before": _json_safe(before),
-                "running_product_after": _json_safe(running_product),
-                "running_total": _json_safe(running_product),
+                "running_product_before": to_json_safe(before),
+                "running_product_after": to_json_safe(running_product),
+                "running_total": to_json_safe(running_product),
                 "status": "default" if unseen else "matched",
                 "default_used": unseen,
                 "unseen": unseen,
                 "matched": matched_entry is not None,
-                "matched_entry": _json_safe(matched_entry),
+                "matched_entry": to_json_safe(matched_entry),
             }
         )
 
@@ -465,16 +466,16 @@ def _explain_ratebook(
         "mode": "ratebook",
         "status": "ok",
         "artifact_version": artifact.get("version"),
-        "output": {"column": output_col, "value": _json_safe(final_value)},
+        "output": {"column": output_col, "value": to_json_safe(final_value)},
         "output_column": output_col,
-        "output_value": _json_safe(final_value),
+        "output_value": to_json_safe(final_value),
         "base_value": 1.0,
         "factor_ladder": factor_ladder,
         "factors": factor_ladder,
-        "final_value": _json_safe(final_value),
+        "final_value": to_json_safe(final_value),
         "lambdas": dict(artifact.get("lambdas") or {}),
         "constraints": dict(artifact.get("constraints") or {}),
-        "input_row": _json_safe(matched_input),
+        "input_row": to_json_safe(matched_input),
     }
     return detail
 
@@ -713,17 +714,3 @@ def _error_detail(
         "error": str(exc),
         "error_type": type(exc).__name__,
     }
-
-
-def _json_safe(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(k): _json_safe(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_json_safe(v) for v in value]
-    if isinstance(value, tuple):
-        return [_json_safe(v) for v in value]
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return str(value)

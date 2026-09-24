@@ -18,6 +18,7 @@ import polars as pl
 
 from haute._execution_context import ExecutionCancelledError, ExecutionContext
 from haute._logging import get_logger
+from haute._polars_dtypes import contract_dtype_name
 from haute._polars_utils import bounded_collect_batches, streaming_collect
 from haute.errors import HauteError, HauteValidationError
 from haute.modelling._algorithms import (
@@ -221,31 +222,6 @@ def _training_streaming_collect(
         label=f"after_{stage_name}",
     )
     return df
-
-
-def _polars_dtype_name(dtype: Any) -> str:
-    """Canonical dtype name used by the MLflow signature and feature contract.
-
-    Collapses Polars' many integer/float variants to the scalar numeric/string
-    types ``build_signature`` understands, while preserving Date, full
-    parameterised Datetime, and other unknown descriptors for deliberate
-    validation at contract-build time.
-    """
-    if dtype == pl.Boolean:
-        return "Boolean"
-    if dtype in (pl.Utf8, pl.String, pl.Categorical):
-        return "String"
-    if dtype == pl.Date:
-        return "Date"
-    if getattr(dtype, "base_type", lambda: None)() == pl.Datetime:
-        # Preserve Polars' full canonical descriptor, including time unit and
-        # zone, so the feature contract remains faithful at the MLflow boundary.
-        return str(dtype)
-    if dtype.is_integer() if hasattr(dtype, "is_integer") else False:
-        return "Int64"
-    if dtype.is_float() if hasattr(dtype, "is_float") else False:
-        return "Float64"
-    return str(dtype)
 
 
 def _record_diag_error(
@@ -1976,18 +1952,18 @@ class TrainingJob:
             features, cat_features = self._derive_features(schema_df)
             # Snapshot dtypes before we drop the schema frame — downstream
             # consumers (MLflow signature, feature contract) need them.
-            feature_dtypes = {f: _polars_dtype_name(schema_df[f].dtype) for f in features}
+            feature_dtypes = {f: contract_dtype_name(schema_df[f].dtype) for f in features}
             categorical_levels = self._categorical_levels_for_contract(
                 features,
                 cat_features,
             )
             target_dtype = (
-                _polars_dtype_name(schema_df[self.target].dtype)
+                contract_dtype_name(schema_df[self.target].dtype)
                 if self.target in schema_df.columns
                 else ""
             )
             offset_dtype = (
-                _polars_dtype_name(schema_df[self.offset].dtype)
+                contract_dtype_name(schema_df[self.offset].dtype)
                 if self.offset and self.offset in schema_df.columns
                 else ""
             )

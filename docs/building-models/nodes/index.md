@@ -3,7 +3,7 @@
 Every step in a Haute pipeline is a node. You connect nodes on the canvas to define how data flows from source to output. Each node type is described on its own page.
 
 !!! tip "First pipeline?"
-    If you're building your first pipeline, a common path is: [Quote Input](quote-input.md) or [Data Source](data-source.md) → [Polars](polars.md) (clean your data) → [Banding](banding.md) and [Rating Step](rating-step.md) (build your rating structure) → [Output](output.md). You don't need every node type to get started.
+    If you're building your first pipeline, a common path is: [Quote Input](quote-input.md) or [Data Input](data-input.md) → [Polars](polars.md) (clean your data) → [Banding](banding.md) and [Rating Step](rating-step.md) (build your rating structure) → [Output](output.md). You don't need every node type to get started.
 
 !!! info "About the config examples"
     The JSON examples on these pages show the underlying configuration. In the Haute UI, you configure most of these through forms, dropdowns, and editable tables  - you don't need to write JSON by hand.
@@ -15,7 +15,7 @@ Every step in a Haute pipeline is a node. You connect nodes on the canvas to def
 | I want to... | Use this node |
 |---|---|
 | Bring in quote data for live pricing | [Quote Input](quote-input.md) |
-| Load a CSV, parquet file, or Databricks table | [Data Source](data-source.md) |
+| Load a parquet or CSV file, a database, lakehouse or Databricks table | [Data Input](data-input.md) |
 | Store fixed parameters (tax rate, loadings) | [Constant](constant.md) |
 | Join, filter, or calculate new columns | [Polars](polars.md) |
 | Join another dataframe into an existing connection | [Edge Join](edge-join.md) |
@@ -27,7 +27,8 @@ Every step in a Haute pipeline is a node. You connect nodes on the canvas to def
 | Apply saved optimisation results | [Optimiser Apply](optimiser-apply.md) |
 | Switch between live and batch data | [Source Switch](source-switch.md) |
 | Choose which columns to return from the API | [Output](output.md) |
-| Save results to a file | [Data Sink](data-sink.md) |
+| Profile a dataset, build pivot tables and charts | [Explore](explore.md) |
+| Save results to a file or table | [Data Output](data-output.md) |
 | Group nodes into a reusable block | [Submodel](submodel.md) |
 | Reuse a node's logic with different inputs | [Instances](instances.md) |
 
@@ -74,7 +75,7 @@ Below is a simple motor pricing pipeline that takes in quote data, enriches it, 
 Nodes that bring data into your pipeline. They have no upstream connections.
 
 - **[Quote Input](quote-input.md)**  - entry point for live pricing; reads a preview file during development
-- **[Data Source](data-source.md)**  - loads flat files (parquet, CSV) or Databricks tables
+- **[Data Input](data-input.md)**  - reads files (parquet, CSV and more), lakehouse, database or Databricks tables, or inline records
 - **[Constant](constant.md)**  - stores fixed values like expense loadings or tax rates
 
 ## Transforms
@@ -100,7 +101,11 @@ Nodes that bring data into your pipeline. They have no upstream connections.
 ## Pipeline outputs
 
 - **[Output](output.md)**  - chooses which columns to return in the API response
-- **[Data Sink](data-sink.md)**  - saves results to a file
+- **[Data Output](data-output.md)**  - saves results to a file, lakehouse or database table
+
+## Analysis
+
+- **[Explore](explore.md)**  - profiles the data at any step and builds pivot tables and charts, without feeding the pipeline
 
 ## Organisation
 

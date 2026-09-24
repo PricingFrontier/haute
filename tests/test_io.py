@@ -250,8 +250,29 @@ class TestReadSourceProjectionAndSchema:
         path = tmp_path / "data.csv"
         pl.DataFrame({"a": [1]}).write_csv(path)
 
-        with pytest.raises(SchemaMismatchError, match="Unsupported declared source dtype"):
+        with pytest.raises(SchemaMismatchError, match="Unsupported declared dtype"):
             read_source(path, schema_overrides={"a": "NotAType"})
+
+    @pytest.mark.parametrize("name", ["col", "DataFrame", "Expr", "Config"])
+    def test_a_polars_attribute_that_is_not_a_dtype_is_rejected(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        path = tmp_path / "data.csv"
+        pl.DataFrame({"a": [1]}).write_csv(path)
+
+        with pytest.raises(SchemaMismatchError, match=rf"column=a, dtype={name}\)"):
+            read_source(path, schema_overrides={"a": name})
+
+    def test_declared_dtypes_use_the_shared_dtype_vocabulary(self, tmp_path: Path) -> None:
+        path = tmp_path / "data.csv"
+        pl.DataFrame({"a": [1], "b": ["1.25"]}).write_csv(path)
+
+        lf = read_source(
+            path,
+            schema_overrides={"a": "float", "b": {"type": "Decimal", "precision": 6, "scale": 2}},
+        )
+
+        assert lf.collect_schema() == pl.Schema({"a": pl.Float64, "b": pl.Decimal(6, 2)})
 
     def test_parquet_schema_declarations_validate_without_replacing_schema(
         self,

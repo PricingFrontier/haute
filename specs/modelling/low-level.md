@@ -129,9 +129,12 @@ keyboard sorting and invalid inference, and disclosed Summary evidence.
   `offset_column`. `CONTRACT_FILENAME = "feature_contract.json"`;
   per-model files are named via `_training_job.model_contract_filename(name)` →
   `"{name}.feature_contract.json"`.
-  `_training_job._polars_dtype_name` preserves `Date` and full
+  Feature types are named by `_polars_dtypes.contract_dtype_name`, the
+  feature-contract view of the shared dtype vocabulary that deploy scoring
+  also uses; it preserves `Date` and full
   `Datetime(time_unit=..., time_zone=...)` descriptors. `_signature._map_dtype`
-  maps both temporal families to MLflow `DataType.datetime`; it recognises
+  maps a contract name to MLflow through `_polars_dtypes.contract_mlflow_type_name`,
+  so both temporal families become MLflow `DataType.datetime`; it recognises
   `Decimal(...)` separately and raises the actionable unsupported-type error
   rather than falling through to an unknown type or `double`.
 - **`TrainingJob`** (`_training_job.py`) — the orchestrator. Public-node construction

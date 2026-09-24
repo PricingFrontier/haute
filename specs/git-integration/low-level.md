@@ -63,7 +63,10 @@ only to re-export their stable surface. This keeps the graph acyclic and prevent
 subprocess or clone-state owner from appearing during future work.
 
 **Process boundary.** `_git_core.py` is the sole module that imports or invokes
-`subprocess`. Ordinary local commands use `_run_git`, `_run_git_ok`, or `_run_git_rc`.
+`subprocess` for Git, in the Git modules and everywhere else: a consumer outside the Git
+component, such as the container deploy target's image tag, calls the core too, and a
+repository-hygiene test rejects a Git argument list in any other subprocess-importing
+module. Ordinary local commands use `_run_git`, `_run_git_ok`, or `_run_git_rc`.
 Commands that need an explicit timeout, non-interactive remote environment, replacement
 decoding, or binary output use the overloaded `_run_git_process` adapter. The adapter
 returns an immutable typed result (`str` output by default, `bytes` when `binary=True`) and

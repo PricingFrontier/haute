@@ -28,6 +28,7 @@ from haute._hashing import content_hash_bytes
 from haute._io import load_external_object
 from haute._logging import get_logger
 from haute._node_builder import NodeBuildHooks, NodeFnResult, node_fn_name, wrap_builder
+from haute._polars_dtypes import contract_dtype_name
 from haute._polars_utils import streaming_collect
 from haute._stat_gated_cache import StatGatedCache, artifact_cache_key, resolve_artifact_path
 from haute._types import (
@@ -509,7 +510,7 @@ def _assert_runtime_contract_matches(
             # placeholder so the diff names the missing column.
             feature_types[name] = "MISSING"
             continue
-        canonical = _canonical_dtype(dtype)
+        canonical = contract_dtype_name(dtype)
         feature_types[name] = canonical
     for name in runtime_features:
         if feature_types.get(name) == "String":
@@ -563,22 +564,6 @@ def _assert_runtime_contract_matches(
     if validate_values:
         validate_categorical_value_domains(lf, score_levels)
     return {column: list(levels) for column, levels in score_levels.items()}
-
-
-def _canonical_dtype(dtype: Any) -> str:
-    """Map a polars dtype to the canonical contract dtype string.
-
-    Matches the convention used by ``haute.modelling._training_job``.
-    """
-    if dtype == pl.Boolean:
-        return "Boolean"
-    if dtype in (pl.Utf8, pl.String, pl.Categorical):
-        return "String"
-    if hasattr(dtype, "is_integer") and dtype.is_integer():
-        return "Int64"
-    if hasattr(dtype, "is_float") and dtype.is_float():
-        return "Float64"
-    return str(dtype)
 
 
 def score_graph_lazy(

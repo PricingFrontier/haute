@@ -17,6 +17,7 @@ import polars as pl
 from haute._execution_context import ExecutionProfile
 from haute._hashing import content_hash
 from haute._logging import get_logger
+from haute._polars_dtypes import parse_dtype
 from haute._polars_utils import (
     is_bounded_execution_profile,
     normalise_execution_profile,
@@ -62,27 +63,6 @@ def _observed_source_suffix(path: str) -> str:
     return suffixes[-1] if suffixes else ""
 
 
-_POLARS_DTYPE_ALIASES: Mapping[str, Any] = {
-    "bool": pl.Boolean,
-    "boolean": pl.Boolean,
-    "date": pl.Date,
-    "datetime": pl.Datetime,
-    "float32": pl.Float32,
-    "float64": pl.Float64,
-    "int8": pl.Int8,
-    "int16": pl.Int16,
-    "int32": pl.Int32,
-    "int64": pl.Int64,
-    "string": pl.String,
-    "str": pl.String,
-    "uint8": pl.UInt8,
-    "uint16": pl.UInt16,
-    "uint32": pl.UInt32,
-    "uint64": pl.UInt64,
-    "utf8": pl.String,
-}
-
-
 def _normalise_columns(columns: Iterable[str] | None) -> tuple[str, ...] | None:
     if columns is None:
         return None
@@ -100,26 +80,6 @@ def _normalise_columns(columns: Iterable[str] | None) -> tuple[str, ...] | None:
     return tuple(ordered)
 
 
-def _normalise_dtype(value: Any, *, column: str) -> Any:
-    if not isinstance(value, str):
-        return value
-
-    dtype_name = value.strip()
-    key = dtype_name.lower()
-    if key in _POLARS_DTYPE_ALIASES:
-        return _POLARS_DTYPE_ALIASES[key]
-
-    dtype = getattr(pl, dtype_name, None)
-    if dtype is not None:
-        return dtype
-
-    raise SchemaMismatchError(
-        "Unsupported declared source dtype.",
-        column=column,
-        dtype=value,
-    )
-
-
 def _normalise_schema_overrides(
     schema_overrides: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -130,7 +90,7 @@ def _normalise_schema_overrides(
     for column, dtype in schema_overrides.items():
         if not isinstance(column, str) or not column:
             raise SchemaMismatchError("Source schema columns must be non-empty strings.")
-        normalised[column] = _normalise_dtype(dtype, column=column)
+        normalised[column] = parse_dtype(dtype, column=column)
     return normalised
 
 

@@ -6,7 +6,6 @@ import ast
 import asyncio
 import importlib.util
 import json
-import subprocess
 import sys
 import threading
 from importlib.metadata import PackageNotFoundError, version
@@ -1247,14 +1246,13 @@ class TestCheckDockerAvailableExtra:
 
 
 # ---------------------------------------------------------------------------
-# _git_sha_short (additional: CalledProcessError path)
+# _git_sha_short (additional: failed git command path)
 # ---------------------------------------------------------------------------
 
 
 class TestGitShaShortExtra:
-    def test_returns_local_on_called_process_error(self) -> None:
-        with patch("haute.deploy._container.subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(1, "git")
+    def test_returns_local_when_the_git_command_fails(self) -> None:
+        with patch("haute.deploy._container._run_git_ok", return_value=(False, "")):
             assert _git_sha_short() == "local"
 
 

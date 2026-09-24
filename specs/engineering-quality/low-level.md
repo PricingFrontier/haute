@@ -531,7 +531,7 @@ are never retained in the report artifact.
 - `tests/test_frontend_e2e_server.py` — browser-harness contracts for augmenting the blank scaffold with a complete, executable fixture graph.
 - `tests/test_performance_docs.py` — documentation contracts for Python/Polars/frontend/memory performance workflows and links.
 - `tests/test_property.py` — Hypothesis properties for sanitisation, topology, path resolution, banding/rating, codegen/parser round-trips, fingerprints, config, validation, and cache invariants.
-- `tests/test_repository_hygiene.py` — repository artifact/path, dependency-import, subprocess, encoding, sanitizer, and persistence-path hygiene.
+- `tests/test_repository_hygiene.py` — repository artifact/path (no tracked `node_modules/` directory or tool cache anywhere in the tree), dependency-import, subprocess, encoding, sanitizer, and persistence-path hygiene.
 - `tests/test_small_module_contracts.py` — JSON-safe serialization, shared contracts, and package-init module contracts.
 - `tests/test_test_debt.py` — AST debt scanner budgets and explicit-reason
   contracts for backend/frontend skip/xfail/fixme markers, plus the zero

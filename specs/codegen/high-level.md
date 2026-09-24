@@ -129,14 +129,14 @@ Out of scope (owned by neighbouring components):
   `definition_id`, complete literal `input_ports`/`output_ports` contract,
   description, preamble, and preserved blocks. Unused declared outputs
   therefore survive parse/save/reload without inference from parent edges.
-- **Config-folder rewrite.** Node types with a declarative JSON sidecar
-  (`haute._config_io.has_config_folder`) get their decorator's inline kwargs
-  replaced with a single `config="config/<type>/<name>.json"` reference after
-  the type-specific body is generated. The config content itself is written
-  separately by the config-io save path. A config-backed type without a
-  registered decorator, or a builder result without a function definition,
-  is a `HauteError`; codegen never defaults to a generic decorator or silently
-  skips the rewrite.
+- **Config-backed decorators.** A node type with a declarative JSON sidecar
+  (`haute._config_io.has_config_folder`) has its builder emit
+  `@pipeline.<decorator>(config="config/<type>/<name>.json")` itself, through
+  one shared helper: the decorator carries only the sidecar's path, never the
+  config's contents, and codegen does not rewrite a builder's output after the
+  fact. The config content itself is written separately by the config-io save
+  path. A config-backed type without a registered decorator is a `HauteError`;
+  codegen never defaults to a generic decorator.
   The generated `_HAUTE_CONFIG_BASE` import and assignment are module
   infrastructure, emitted exactly once outside authored preamble ownership.
   Its value always resolves to the parent pipeline directory: a pipeline file
@@ -315,7 +315,7 @@ rendering passed through the same finaliser its kind's extraction ends with.
 
 - **Depends on** [pipeline-config](../pipeline-config/high-level.md)
   (`haute._config_io`) for config-folder path conventions and to know which
-  node types get their kwargs rewritten to a `config=` reference.
+  node types emit a `config=` reference as their decorator.
 - **Depends on** `haute._registry.NODE_REGISTRY` as the single source of
   truth for which builder handles which `NodeType`; a missing codegen entry
   is a registry wiring bug, not something codegen falls back for.
@@ -356,9 +356,8 @@ execution time on a mis-wired pipeline). Concretely:
   defect (every `NodeType` must have both an exec and a codegen builder per
   `NODE_REGISTRY` contract), never silently handled by falling back to a
   generic transform template.
-- **Config-folder rewrite has no decorator mapping or no generated `def`** →
-  `HauteError` with the node id, label, and type. Codegen never substitutes
-  `@pipeline.polars` or leaves stale inline decorator arguments behind.
+- **A config-backed node type has no decorator mapping** → `HauteError` with
+  the node id, label, and type. Codegen never substitutes `@pipeline.polars`.
 - **Generated source or the injected keyword is invalid structured Python, the
   keyword already exists, or no `@pipeline.*`/`@submodel.*` decorator was found** →
   `HauteError` from `_python_syntax` / `_inject_contract_kwarg`, carrying a
