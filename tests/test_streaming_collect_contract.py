@@ -17,7 +17,7 @@ BOUNDED_COLLECT_CALLERS = [
     Path("src/haute/deploy/_scorer.py"),
     Path("src/haute/modelling/_training_job.py"),
     Path("src/haute/routes/_optimiser_service.py"),
-    Path("src/haute/routes/optimiser.py"),
+    Path("src/haute/routes/_optimiser_input.py"),
 ]
 
 DIRECT_STREAMING_COLLECT = re.compile(
