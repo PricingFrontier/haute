@@ -657,7 +657,6 @@ export default function ApiInputEditor({
             <InputSnapshotCacheButton
               config={{ ...writeV2(v2), path: currentPath }}
               nodeType="apiInput"
-              admittedEager={false}
               requiredReady={!cacheDisabled}
               disabledReason={cacheReason}
             />

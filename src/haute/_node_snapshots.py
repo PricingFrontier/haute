@@ -49,6 +49,7 @@ from haute._cache import (
     graph_fingerprint,
 )
 from haute._chunked_writes import part_name, part_paths, scan_parts
+from haute._env import optional_int_env
 from haute._execution_context import ExecutionProfile
 from haute._file_lock import FileLock
 from haute._file_ops import atomic_write_text, ensure_disk_headroom, remove_tree
@@ -84,6 +85,10 @@ BOUNDED_SEMANTICS_CLASS = "bounded"
 _SLOT_INDEX_SCHEMA_VERSION = 1
 _LAST_USED_UPDATE_INTERVAL_SECONDS = 60.0
 _RETIRED_PREFIX = ".retired-"
+#: Unless configured, automatic captures may hold the smaller of this and a
+#: tenth of the store's free disk.
+AUTOMATIC_CAPTURE_BUDGET_CEILING_BYTES = 20 * 1024**3
+AUTOMATIC_CAPTURE_BUDGET_ENV = "HAUTE_AUTOMATIC_CAPTURE_MAX_BYTES"
 
 Retention = Literal["pinned", "automatic"]
 SlotState = Literal["current", "stale", "missing", "corrupt"]
@@ -151,6 +156,40 @@ class CacheInventory:
     unattributed_generations: int
     unattributed_bytes: int
     unmarked_identities: int
+
+
+@dataclass(frozen=True, slots=True)
+class CacheStoreUsage:
+    """The store's size, and the part of it the automatic-capture budget governs."""
+
+    #: Every generation and in-flight staging directory, of every kind.
+    total_bytes: int
+    #: Node-output generations no pin protects, which is what the budget counts.
+    automatic_bytes: int
+    automatic_budget_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class _AutomaticCapture:
+    """One node-output generation no pin protects, as the budget sees it."""
+
+    identity: SourceCacheIdentity
+    generation_id: str
+    size_bytes: int
+    last_used: float
+
+
+def automatic_capture_budget(inputs_root: Path) -> int:
+    """The bytes automatic node-output captures may hold together, read now.
+
+    ``HAUTE_AUTOMATIC_CAPTURE_MAX_BYTES`` sets it. Otherwise it is the smaller
+    of 20 GiB and a tenth of the free disk under *inputs_root*, so a filling
+    disk shrinks what previews may keep rather than letting them take the rest.
+    """
+    configured = optional_int_env(AUTOMATIC_CAPTURE_BUDGET_ENV)
+    if configured is not None:
+        return configured
+    return min(AUTOMATIC_CAPTURE_BUDGET_CEILING_BYTES, shutil.disk_usage(inputs_root).free // 10)
 
 
 # Descriptor keys that name an input source without disclosing anything: a
@@ -853,7 +892,189 @@ class NodeSnapshotStore(SourceCacheStore):
             unmarked_identities=unmarked_identities,
         )
 
+    # ---------------------------------------------------------- the budget
+
+    def usage(self) -> CacheStoreUsage:
+        """The store's size and the automatic captures' share of it, against their budget."""
+        total, automatic = self._scan_usage()
+        return CacheStoreUsage(
+            total_bytes=total,
+            automatic_bytes=sum(capture.size_bytes for capture in automatic),
+            automatic_budget_bytes=automatic_capture_budget(self.inputs_root),
+        )
+
+    def enforce_automatic_budget(self) -> int:
+        """Evict automatic captures, least recently leased first, until they fit the budget.
+
+        The budget governs only node-output generations no pin protects. Input
+        snapshots and a pinned slot's current generation (an explicit build,
+        and every capture that has replaced one since) neither count toward it
+        nor are ever evicted, and neither is a generation any process leases.
+        Evicting a current generation is clearing it: its pointer goes, so the
+        next reader finds the node's data missing and computes it again.
+        Returns the bytes evicted.
+
+        One pass runs at a time across processes, so a second pass scans after
+        the first one's evictions. The scan itself takes no lock; the decision
+        does. Under the lease lock, which every Clear, pin and pointer commit
+        also takes, the pass re-verifies what still counts before it computes
+        the excess, and evicts within that same hold. A capture that left the
+        total after the scan is therefore accounted for before anything is
+        evicted. A capture published after the scan is not counted, so a race
+        can only leave the captures over budget until the next pass.
+        """
+        retired: list[Path] = []
+        evicted = 0
+        try:
+            with self._budget_lock():
+                budget = automatic_capture_budget(self.inputs_root)
+                _total, scanned = self._scan_usage()
+                with self._coordination.lease_lock:
+                    automatic = self._still_automatic_locked(scanned)
+                    excess = sum(capture.size_bytes for capture in automatic) - budget
+                    for capture in sorted(automatic, key=lambda capture: capture.last_used):
+                        if evicted >= excess:
+                            break
+                        if self._evict_capture_locked(capture, retired):
+                            evicted += capture.size_bytes
+        finally:
+            self._delete_retired(retired)
+        if evicted:
+            logger.info(
+                "node_snapshot_automatic_budget_enforced",
+                budget_bytes=budget,
+                evicted_bytes=evicted,
+            )
+        return evicted
+
+    def _scan_usage(self) -> tuple[int, list[_AutomaticCapture]]:
+        """Total the store and list the node-output generations no pin protects.
+
+        Takes no lock: it is a snapshot for decisions each eviction re-checks
+        under the lease lock. A generation this cannot classify (unreadable
+        metadata, a corrupt pointer or slot index) counts toward the total and
+        is never taken for automatic, because the budget only removes what it
+        can show no pin protects.
+        """
+        total = 0
+        automatic: list[_AutomaticCapture] = []
+        pins: dict[str, str | None] = {}
+        try:
+            entries = tuple(self.inputs_root.iterdir())
+        except FileNotFoundError:
+            return 0, []
+        for identity_dir in entries:
+            if (
+                not identity_dir.is_dir()
+                or identity_dir.is_symlink()
+                or identity_dir.name.startswith(".")
+            ):
+                continue
+            total += _staging_bytes(identity_dir)
+            try:
+                generation_dirs = tuple((identity_dir / "generations").iterdir())
+            except FileNotFoundError:
+                continue
+            for generation_dir in generation_dirs:
+                if not generation_dir.is_dir() or generation_dir.is_symlink():
+                    continue
+                size = generation_bytes(generation_dir)
+                total += size
+                capture = self._automatic_capture(identity_dir.name, generation_dir, size, pins)
+                if capture is not None:
+                    automatic.append(capture)
+        return total, automatic
+
+    def _automatic_capture(
+        self,
+        identity_digest: str,
+        generation_dir: Path,
+        size: int,
+        pins: dict[str, str | None],
+    ) -> _AutomaticCapture | None:
+        """The generation as an automatic capture, or ``None`` when it is not one.
+
+        *pins* caches each slot's pinned identity for one scan.
+        """
+        facts = _read_generation_facts(generation_dir)
+        if facts is None or facts.provider != NODE_OUTPUT_PROVIDER:
+            return None
+        try:
+            identity = SourceCacheIdentity(
+                provider=facts.provider,
+                descriptor=dict(facts.descriptor),
+                schema_version=facts.schema_version,
+            )
+            slot, _signature = NodeSnapshotSlot.from_identity(identity)
+            if slot.digest not in pins:
+                pins[slot.digest] = self._read_slot_index(slot)["pinned_identity"]
+            current = self._current_generation_id(identity_digest) == generation_dir.name
+        except (ValueError, SourceCacheCorruptError):
+            return None
+        if identity.digest != identity_digest or (current and pins[slot.digest] is not None):
+            # A pinned slot's current generation is what `_describe` reports
+            # as ``pinned``; every other node-output generation is automatic.
+            return None
+        return _AutomaticCapture(
+            identity=identity,
+            generation_id=generation_dir.name,
+            size_bytes=size,
+            last_used=self._last_used(generation_dir, facts.created_at or 0.0),
+        )
+
+    def _still_automatic_locked(self, scanned: list[_AutomaticCapture]) -> list[_AutomaticCapture]:
+        """The scanned captures that still exist unpinned. Caller holds the lease lock."""
+        pins: dict[str, str | None] = {}
+        automatic: list[_AutomaticCapture] = []
+        for capture in scanned:
+            identity = capture.identity
+            if not self._generation_dir(identity.digest, capture.generation_id).is_dir():
+                continue
+            slot, _signature = NodeSnapshotSlot.from_identity(identity)
+            if slot.digest not in pins:
+                pins[slot.digest] = self._read_slot_index(slot)["pinned_identity"]
+            if (
+                pins[slot.digest] is not None
+                and self._current_generation_id(identity.digest) == capture.generation_id
+            ):
+                continue
+            automatic.append(capture)
+        return automatic
+
+    def _evict_capture_locked(self, capture: _AutomaticCapture, retired: list[Path]) -> bool:
+        """Retire one verified capture unless a process leases it. Caller holds the lease lock.
+
+        The renamed directory joins *retired* for deletion once the lock is released.
+        """
+        identity = capture.identity
+        generation_dir = self._generation_dir(identity.digest, capture.generation_id)
+        if self._has_live_holders_locked(generation_dir):
+            return False
+        if self._current_generation_id(identity.digest) == capture.generation_id:
+            self._pointer_path(identity).unlink(missing_ok=True)
+        path = self._retire_generation_locked(identity.digest, capture.generation_id)
+        if not self._generations_remaining_locked(identity.digest):
+            # Kept indexed while anything remains, so a deferred retirement
+            # stays where the next publish or Clear finds it.
+            self._prune_identity_locked(identity)
+        if path is None:
+            return False
+        retired.append(path)
+        return True
+
     # ------------------------------------------------------------------ paths
+
+    def _budget_lock(self) -> FileLock:
+        """The store-wide lock one automatic-budget pass holds from scan to last eviction.
+
+        Taken with no other store lock held; the pass takes the lease lock
+        inside it.
+        """
+        coordination = self._coordination
+        with coordination.guard:
+            if coordination.budget_lock is None:
+                coordination.budget_lock = FileLock(self._locks_dir / "automatic-budget.lock")
+            return coordination.budget_lock
 
     def _publication_lock(self, identity: SourceCacheIdentity) -> FileLock:
         coordination = self._coordination
@@ -1457,6 +1678,13 @@ class NodeSnapshotStore(SourceCacheStore):
             return False
         return not latest.fresh or columns.strictly_contains(latest.columns) or refresh
 
+    def _enforce_budget_after_capture(self) -> None:
+        """Keep automatic captures within budget; a store fault never fails the capture."""
+        try:
+            self.enforce_automatic_budget()
+        except (OSError, SourceCacheError) as exc:
+            logger.warning("node_snapshot_automatic_budget_failed", error=str(exc))
+
     def publish_node_output(
         self,
         identity: SourceCacheIdentity,
@@ -1472,7 +1700,9 @@ class NodeSnapshotStore(SourceCacheStore):
         """Publish *artifact* under the publication rule and lease what was published.
 
         ``explicit`` marks an explicit cache build: it pins the slot and may
-        replace a corrupt generation; an automatic capture does neither.
+        replace a corrupt generation; an automatic capture does neither, and
+        once it publishes, automatic captures are brought back within their
+        budget (`enforce_automatic_budget`).
         The writer always continues from its own data: on ``superseded`` the
         returned handle owns the artifact.
         """
@@ -1588,6 +1818,10 @@ class NodeSnapshotStore(SourceCacheStore):
         try:
             generation = self._metadata_from_path(identity, generation_id)
             described = self.describe_generation(identity, generation)
+            if not explicit:
+                # The publisher's lease protects this capture from its own
+                # enforcement; an explicit build adds nothing the budget counts.
+                self._enforce_budget_after_capture()
         except BaseException:
             self._release_node_lease(identity, generation_id)
             raise

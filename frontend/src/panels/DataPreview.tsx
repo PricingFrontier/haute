@@ -2,6 +2,7 @@ import { memo, useState, useCallback, useRef, useEffect, useMemo, type MouseEven
 import { X, AlertCircle, CheckCircle2, Table2, Search, Layers } from "lucide-react"
 import { getDtypeColor } from "../utils/dtypeColors"
 import { formatValue } from "../utils/formatValue"
+import CacheStoreSize from "../components/CacheStoreSize"
 import ExecutionDiagnosticsIndicator from "../components/ExecutionDiagnosticsIndicator"
 import PreviewOutOfDateBadge from "../components/PreviewOutOfDateBadge"
 import type { ColumnInfo } from "../types/node"
@@ -515,6 +516,8 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
           <span className="text-[11px] animate-pulse" style={{ color: 'var(--text-muted)' }}>Running...</span>
         )}
         <div className="ml-auto flex items-center gap-1.5">
+          {/* A settled preview may have added captures, so it reads the size again. */}
+          <CacheStoreSize refreshKey={data.status === "loading" ? null : data} />
           {/* In embedded mode there is no PreviewPanelFrame header to carry
               the dropdown, so it lives here beside the column search; in the
               framed (canvas) case it sits in the frame's actions slot beside

@@ -13,6 +13,7 @@ import type {
   ApplyOptimiserResponse,
   CacheClearResponse,
   CacheNodesResponse,
+  CacheUsageResponse,
   DatabricksCatalogsResponse,
   DatabricksSchemasResponse,
   DatabricksTablesResponse,
@@ -115,6 +116,7 @@ import {
   parseApplyOptimiserResponse,
   parseCacheClearResponse,
   parseCacheNodesResponse,
+  parseCacheUsageResponse,
   parseDissolveSubmodelResponse,
   parseEditorNodeIdentityBatchResponse,
   parseExplorePivotMembersResponse,
@@ -1154,6 +1156,18 @@ export function clearCacheIdentities(
   options?: { signal?: AbortSignal },
 ): Promise<CacheClearResponse> {
   return post<unknown>("/api/cache/clear", { digests }, options).then(parseCacheClearResponse)
+}
+
+/**
+ * The snapshot store's size and the automatic captures' share of its budget.
+ *
+ * One pass over the store and no point resolution, so the preview status bar
+ * reads it each time a preview settles.
+ */
+export function fetchCacheUsage(
+  options?: { signal?: AbortSignal },
+): Promise<CacheUsageResponse> {
+  return request<unknown>("/api/cache/usage", options).then(parseCacheUsageResponse)
 }
 
 export function fetchCacheNodes(

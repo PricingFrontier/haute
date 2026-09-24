@@ -1622,7 +1622,7 @@ describe("usePipelineAPI", () => {
         job_id: "snapshot-job",
         identity_digest: "snapshot-identity",
         status: "running",
-        joined: false,
+        joined: false, build_class: "bounded",
       })
       let completeJob!: (value: InputCacheJobStatusResponse) => void
       mockGetInputCacheJob.mockImplementation(() => new Promise((resolve) => { completeJob = resolve }))
@@ -1695,7 +1695,7 @@ describe("usePipelineAPI", () => {
       job_id: "snapshot-job",
       identity_digest: "snapshot-identity",
       status: "running",
-      joined: false,
+      joined: false, build_class: "bounded",
     })
     mockGetInputCacheJob.mockResolvedValue(inputCacheJob("completed"))
     mockPreview.mockResolvedValue({
@@ -1748,7 +1748,7 @@ describe("usePipelineAPI", () => {
       job_id: "snapshot-job",
       identity_digest: "snapshot-identity",
       status: "running",
-      joined: false,
+      joined: false, build_class: "bounded",
     })
     mockGetInputCacheJob.mockResolvedValue(inputCacheJob("completed"))
     mockPreview.mockResolvedValue({
@@ -1791,7 +1791,7 @@ describe("usePipelineAPI", () => {
       job_id: "snapshot-job",
       identity_digest: "snapshot-identity",
       status: "running",
-      joined: false,
+      joined: false, build_class: "bounded",
     })
     mockGetInputCacheJob.mockResolvedValue(inputCacheJob("completed"))
     mockPreview.mockResolvedValue({
@@ -1859,7 +1859,7 @@ describe("usePipelineAPI", () => {
       job_id: "snapshot-job",
       identity_digest: "snapshot-identity",
       status: "running",
-      joined: false,
+      joined: false, build_class: "bounded",
     })
     mockGetInputCacheJob.mockResolvedValue(
       inputCacheJob("error", "Snapshot quota is exhausted."),

@@ -25,6 +25,7 @@
 | `frontend/src/panels/previewPanelLayout.ts` | Shared preview-panel dimensions and header/action layout constants. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-diagnostic banner owned by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md) and consumed by Explore progress and cache reports. |
 | `frontend/src/components/ExecutionDiagnosticsIndicator.tsx` | Compact preview-header execution diagnostic indicator. |
+| `frontend/src/components/CacheStoreSize.tsx` | The snapshot store's size in the preview status bar, read from `GET /api/cache/usage` when a preview settles. |
 | `frontend/src/panels/ExplorePreview.tsx` | Explore's shared-data-cache and profile composition: the data-cache action, the profiling progress, and the Preview/Overview/Pivots/Charts tabs. It owns no cache of its own. |
 | `frontend/src/hooks/useNodeDataCache.ts`, `frontend/src/hooks/useNodeDataProfile.ts`, `frontend/src/components/DataCacheStatus.tsx`, `frontend/src/components/dataCacheLabels.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned shared data-cache state, the shared `profile` analysis of the data a consumer reads, and the one cache state and its wording every consumer shows. |
 | `frontend/src/panels/explore/exploreDataView.ts` | Adapts a point's profile into what the Explore panes render, and returns nothing when the profile does not describe the data version the point currently holds. |
@@ -76,7 +77,11 @@
 3. One delegated tbody click handler reads row/column dataset attributes and calls the supplied
    trace callback. Embedded mode omits outer frame chrome; normal mode uses the shared frame.
 4. The status bar of an `ok` preview states its row and column counts and any execution
-   diagnostic, and nothing about where its rows came from. Reading a `seeded` entry instead of
+   diagnostic, and nothing about where its rows came from. In every state the status bar
+   also shows the project's snapshot-store size (`CacheStoreSize`). It is read again
+   whenever a preview settles, and the last reading stays while the next preview runs.
+   Its tooltip gives the automatic captures' share of their budget, and a failed read
+   shows nothing. Reading a `seeded` entry instead of
    recomputing the node is ordinary operation, not a finding, so it is not reported there; the
    warning and error affordances stay for things the user has to act on. `seed_plan` still
    reaches the trace, which is seeded from exactly what the preview read.
@@ -292,8 +297,9 @@ rather than duplicating the strategy remediation, a terminal memory-limit failur
 is reported instead of the warned strategy — in `ExecutionDiagnosticsIndicator`
 too, where the pressure diagnostic's title wins over the warned strategy's while
 the warned detail stays in the explanation — and the requested and blocking nodes
-are promoted to the canvas warning state. Cache storage has no byte/count budgets and
-produces no quota-refusal diagnostic. Activating the
+are promoted to the canvas warning state. Cache storage refuses nothing for size
+(automatic captures are evicted rather than refused), so there is no quota-refusal
+diagnostic. Activating the
 icon explains projection limits, correctness, possible I/O/memory cost,
 and remediation without exposing raw bounded-collection JSON.
 `ExplorePreview` passes progress or cache-report metrics to

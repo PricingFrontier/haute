@@ -24,10 +24,9 @@ These packages come from the
 
 ### ENGQ-R01 — Remove unreferenced and test-only production code
 **Why:** Several production functions have no caller at all:
-`ensure_execution_context`, `_rating_table_materialises`, `iter_slices`,
-`reads_only_memory`, `_callable_owner`, and the git guard
-`_assert_not_protected` (the guard is enforced through `_is_protected`
-instead). Others are called only by tests: `resolve_point`, `_compute_schema_hash`, `validate_submodel_instances`,
+`ensure_execution_context`, `_rating_table_materialises`, `_callable_owner`,
+and the git guard `_assert_not_protected` (the guard is enforced through
+`_is_protected` instead). Others are called only by tests: `_compute_schema_hash`, `validate_submodel_instances`,
 `remove_config_file`, `find_config_by_func_name`, the `_ram_estimate` helpers
 `_parquet_metadata`, `_resolve_edge_join_column_names` and
 `_resolve_target_column_names`, `wrap_path_case_audit`, and the registry's
@@ -56,11 +55,8 @@ and the reviewed allowlist covers the runner while it remains live.
 
 **Evidence:** `src/haute/_execution_context.py::ensure_execution_context`;
 `src/haute/_rating.py::_rating_table_materialises`;
-`src/haute/_chunked_writes.py::iter_slices`;
-`src/haute/_chunked_writes.py::reads_only_memory`;
 `src/haute/_polars_io_registry.py::_callable_owner`;
 `src/haute/_git_core.py::_assert_not_protected`;
-`src/haute/_data_points.py::resolve_point`;
 `src/haute/_model_scorer.py::_compute_schema_hash`;
 `src/haute/_submodel_instances.py::validate_submodel_instances`;
 `src/haute/_config_io.py::remove_config_file`;

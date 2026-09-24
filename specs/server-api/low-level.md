@@ -26,7 +26,7 @@
 | `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
 | `src/haute/routes/input_cache.py` | `/api/input-cache/*`, the shared build/status/cancel/clear lifecycle for snapshot-backed inputs. |
 | `src/haute/routes/node_data.py` | `/api/node-data/point`, `/run`, `/status/{job_id}`, `/cancel/{job_id}`, and `/clear` for the data a consumer node reads. |
-| `src/haute/routes/cache.py` | `POST /api/cache/nodes`, the per-node inventory of stored datasets plus owners outside the open graph; and `POST /api/cache/clear`, which clears the identities a report's row names. The inventory answers explicit requests rather than polling. |
+| `src/haute/routes/cache.py` | `POST /api/cache/nodes`, the per-node inventory of stored datasets plus owners outside the open graph; `POST /api/cache/clear`, which clears the identities a report's row names; and `GET /api/cache/usage`, the store's size for the preview status bar. The inventory answers explicit requests rather than polling. |
 | `src/haute/routes/banding.py` | FastAPI router (`/api/banding`): whole-dataset statistics for the banding factor being edited, delegating to `_banding_stats.py`. |
 | `src/haute/routes/rating.py` | FastAPI router (`/api/rating`): whole-dataset levels for the raw factor columns a Rating Step rates on, delegating to `_rating_levels.py`. |
 | `src/haute/routes/_rating_levels.py` | Reads those levels over the node's shared data point under `run_synchronous_analysis`, keyed by the rating lookup's own key expression. |
@@ -230,7 +230,7 @@ when a path/query/body fails model validation):
 | `GET /api/files` | Query `dir="."`, `extensions=null`; omission derives readable extensions from the I/O registry | `BrowseFilesResponse {dir, items:[{name,path,type,size?}]}`; files have numeric byte size, directories serialize `size: null` |
 | `GET /api/io-capabilities` | No body | Versioned provider groups, format capabilities, modes, accepted arguments, optional engines, cache modes, and materialisation diagnostics |
 | `GET /api/schema` | Required query `path`; XML uses the structured API-input decoder | `SchemaResponse {path, columns, row_count?, row_count_estimated=false, column_count, preview=[]}`; invalid/unsafe XML is 400 |
-| `POST /api/input-cache/build` | Canonical `dataInput` config and source identity | Starts or coalesces a cache-generation build and returns its job identity |
+| `POST /api/input-cache/build` | Canonical `dataInput` config and source identity (no build profile: the server chooses) | Starts or coalesces a cache-generation build and returns its job identity and `build_class` |
 | `POST /api/input-cache/status` | Canonical `dataInput` config | Current published-generation readiness, freshness, metadata, and active job |
 | `POST /api/input-cache/clear` | Canonical `dataInput` config | Clears published cache generations when no active lease prevents deletion |
 | `GET /api/input-cache/jobs/{job_id}` / `DELETE /api/input-cache/jobs/{job_id}` | Job id | Polls or requests cancellation of a cache build |
@@ -600,13 +600,21 @@ killed the worker over its RSS limit.
 
 ### Cache usage
 
-**User-managed inventory.** The cache API lists and clears stored data without
-byte or entry-count budgets. The budget-only `GET /api/cache/usage` endpoint
-and its response types are removed. `POST /api/cache/nodes` lists data owned by
-the graph's nodes plus every remaining stored dataset; `/api/cache/clear`
-clears the identities named by the selected row. Cache-specific quota errors
-and eviction diagnostics are removed. Active-reader leases, replacement,
-disk-headroom checks and real write failures retain their existing behavior.
+**Inventory, size and clearing.** `GET /api/cache/usage` returns
+`CacheUsageResponse`:
+
+- `total_bytes`: every generation and in-flight staging directory in the store;
+- `automatic_bytes`: node-output captures no pin protects;
+- `automatic_budget_bytes`: the
+  [automatic-capture budget](../io-layer/low-level.md#node-output-snapshots).
+
+It costs one pass over the store with a small metadata read per generation and no
+point resolution, so the preview status bar reads it each time a preview settles.
+`POST /api/cache/nodes` lists data owned by the graph's nodes plus every remaining
+stored dataset; `/api/cache/clear` clears the identities named by the selected row.
+No request is refused for a quota, and eviction sends the browser no diagnostic.
+Active-reader leases, replacement, disk-headroom checks and real write failures keep
+their existing behaviour.
 
 **Per-node cache report** (`routes/cache.py`): `POST /api/cache/nodes` takes a graph and a
 source and returns `CacheNodesResponse`. The graph is flattened first, so a submodel's nodes

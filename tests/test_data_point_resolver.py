@@ -20,7 +20,6 @@ from haute._data_points import (
     PointColumnsMissingError,
     consumer_point,
     lease_point_frame,
-    resolve_point,
 )
 from haute._execution_context import ExecutionProfile
 from haute._json_shred import _writer
@@ -198,11 +197,11 @@ def test_a_captured_narrow_generation_is_current_for_banding_and_partial_for_exp
     banding = consumer_point(graph, "banding")
     explore = consumer_point(graph, "explore")
 
-    banding_state = resolve_point(
-        graph, banding.point, source="live", columns=banding.demand, store=store
+    banding_state = DataPointResolver(graph, source="live", store=store).resolve(
+        banding.point, banding.demand
     )
-    explore_state = resolve_point(
-        graph, explore.point, source="live", columns=explore.demand, store=store
+    explore_state = DataPointResolver(graph, source="live", store=store).resolve(
+        explore.point, explore.demand
     )
 
     assert (banding_state.kind, banding_state.state) == ("node_output", "current")
@@ -274,7 +273,9 @@ def test_instance_nodes_resolve_through_their_originals(project: Path) -> None:
     assert banding_copy.point == DataPoint("join", None)
     assert banding_copy.demand == NodeSnapshotColumns.of(["premium"])
     assert explore_copy.point == DataPoint("explore_copy", None)
-    source_copy = resolve_point(graph, DataPoint("source_copy", None), source="live", columns=ALL)
+    source_copy = DataPointResolver(graph, source="live").resolve(
+        DataPoint("source_copy", None), ALL
+    )
     assert (source_copy.kind, source_copy.state) == ("data_input", "current")
     with lease_point_frame(graph, DataPoint("source_copy", None), "live", ALL) as leased:
         assert leased.scan.collect().height == 10
@@ -285,26 +286,25 @@ def test_node_output_states_missing_stale_building_and_corrupt(project: Path) ->
     store = NodeSnapshotStore(project)
     point = DataPoint("join", None)
 
-    assert resolve_point(graph, point, source="live", columns=ALL, store=store).state == "missing"
-    building = resolve_point(
-        graph,
-        point,
-        source="live",
-        columns=ALL,
-        store=store,
-        building=lambda kind, key: kind == "node_output",
+    assert (
+        DataPointResolver(graph, source="live", store=store).resolve(point, ALL).state == "missing"
     )
+    building = DataPointResolver(
+        graph, source="live", store=store, building=lambda kind, key: kind == "node_output"
+    ).resolve(point, ALL)
     assert building.state == "building"
 
     with _capture(store, graph, "join", ALL) as publication:
         generation = publication.generation
     edited = _graph(project, join_code="df = source.head(3)")
-    assert resolve_point(edited, point, source="live", columns=ALL, store=store).state == "stale"
+    assert (
+        DataPointResolver(edited, source="live", store=store).resolve(point, ALL).state == "stale"
+    )
 
     assert generation is not None
     _corrupt(generation.generation.data_paths[0])
     store._verified_generations.clear()
-    corrupt = resolve_point(graph, point, source="live", columns=ALL, store=store)
+    corrupt = DataPointResolver(graph, source="live", store=store).resolve(point, ALL)
     assert corrupt.state == "corrupt"
     for state_graph, expected in ((edited, "stale"), (graph, "corrupt")):
         with pytest.raises(CacheRequiredError) as raised:
@@ -318,12 +318,12 @@ def test_a_direct_parquet_data_input_is_current_and_versioned_by_its_file(projec
     graph = _graph(project)
     point = DataPoint("source", None)
 
-    first = resolve_point(graph, point, source="live", columns=ALL)
+    first = DataPointResolver(graph, source="live").resolve(point, ALL)
     time.sleep(0.01)
     pl.DataFrame({"policy_id": [1], "premium": [1.0], "region": ["east"]}).write_parquet(
         project / "quotes.parquet"
     )
-    second = resolve_point(graph, point, source="live", columns=ALL)
+    second = DataPointResolver(graph, source="live").resolve(point, ALL)
 
     assert (first.kind, first.state) == ("data_input", "current")
     assert second.state == "current"
@@ -366,8 +366,8 @@ def test_a_data_input_point_yields_exactly_the_frame_a_run_produces(project: Pat
 
     assert frame.columns == ["policy_id", "gross_premium"]
     assert_frame_equal(frame, _run_frame(graph, "source"))
-    assert resolve_point(graph, point, source="live", columns=ALL).data_version != (
-        resolve_point(_graph(project), point, source="live", columns=ALL).data_version
+    assert DataPointResolver(graph, source="live").resolve(point, ALL).data_version != (
+        DataPointResolver(_graph(project), source="live").resolve(point, ALL).data_version
     )
 
 
@@ -381,7 +381,7 @@ def test_a_data_input_with_post_load_code_is_one_shared_node_output(project: Pat
     store = NodeSnapshotStore(project)
     point = DataPoint("source", None)
 
-    assert resolve_point(graph, point, source="live", columns=ALL, store=store).kind == (
+    assert DataPointResolver(graph, source="live", store=store).resolve(point, ALL).kind == (
         "node_output"
     )
     with _capture(store, graph, "source", ALL):
@@ -394,7 +394,9 @@ def test_a_data_input_with_post_load_code_is_one_shared_node_output(project: Pat
     assert_frame_equal(first_rows, second_rows)
     assert set(first_rows.columns) >= {"premium", "uplift"}
     edited = _graph(project, source_code=code.replace(">= 2", ">= 3"))
-    assert resolve_point(edited, point, source="live", columns=ALL, store=store).state == "stale"
+    assert (
+        DataPointResolver(edited, source="live", store=store).resolve(point, ALL).state == "stale"
+    )
 
 
 def test_a_missing_snapshot_backed_data_input_starts_no_build(project: Path) -> None:
@@ -407,7 +409,7 @@ def test_a_missing_snapshot_backed_data_input_starts_no_build(project: Path) -> 
     )
     point = DataPoint("source", None)
 
-    resolution = resolve_point(graph, point, source="live", columns=ALL)
+    resolution = DataPointResolver(graph, source="live").resolve(point, ALL)
     assert (resolution.kind, resolution.state) == ("data_input", "missing")
     with pytest.raises(CacheRequiredError) as raised:
         with lease_point_frame(graph, point, "live", ALL):
@@ -431,7 +433,7 @@ def test_a_built_snapshot_backed_data_input_is_current_then_stale(project: Path)
     build_input_snapshot(config, store=store, base_dir=project)
     point = DataPoint("source", None)
 
-    current = resolve_point(graph, point, source="live", columns=ALL, store=store)
+    current = DataPointResolver(graph, source="live", store=store).resolve(point, ALL)
     assert current.state == "current"
     with lease_point_frame(graph, point, "live", ALL, store=store) as leased:
         assert leased.scan.collect()["premium"].to_list() == [1.0, 2.0]
@@ -439,7 +441,7 @@ def test_a_built_snapshot_backed_data_input_is_current_then_stale(project: Path)
 
     time.sleep(0.01)
     pl.DataFrame({"premium": [5.0]}).write_csv(csv_path)
-    assert resolve_point(graph, point, source="live", columns=ALL, store=store).state == "stale"
+    assert DataPointResolver(graph, source="live", store=store).resolve(point, ALL).state == "stale"
 
 
 def _api_config(data_path: Path) -> dict[str, Any]:
@@ -514,7 +516,7 @@ def test_two_api_input_ports_resolve_distinct_points_and_scan_only_their_tables(
     assert policies.point == DataPoint("api", "policies")
     assert drivers.point == DataPoint("api", "drivers")
     for consumer, expected in ((policies, {"policy_id": [1, 2]}), (drivers, None)):
-        resolution = resolve_point(graph, consumer.point, source="live", columns=ALL)
+        resolution = DataPointResolver(graph, source="live").resolve(consumer.point, ALL)
         assert (resolution.kind, resolution.state) == ("api_input_table", "current")
         with lease_point_frame(graph, consumer.point, "live", ALL) as leased:
             frame = leased.scan.collect()
@@ -535,7 +537,7 @@ def test_an_api_input_table_stays_current_when_its_source_is_removed(project: Pa
     data_path.unlink()
     point = DataPoint("api", "policies")
 
-    assert resolve_point(graph, point, source="live", columns=ALL).state == "current"
+    assert DataPointResolver(graph, source="live").resolve(point, ALL).state == "current"
     with lease_point_frame(graph, point, "live", ALL) as leased:
         assert leased.scan.collect()["policy_id"].to_list() == [1, 2]
 
@@ -555,7 +557,7 @@ def test_an_uncached_api_input_table_is_cache_required_without_shredding(
 
     monkeypatch.setattr(_writer, "_shred_data_file_to_direct_spill", forbidden_shred)
 
-    assert resolve_point(graph, point, source="live", columns=ALL).state == "missing"
+    assert DataPointResolver(graph, source="live").resolve(point, ALL).state == "missing"
     with pytest.raises(CacheRequiredError) as raised:
         with lease_point_frame(graph, point, "live", ALL):
             pass
