@@ -21,6 +21,7 @@
 | `frontend/src/components/WorkingBranchModal.tsx` | Startup / save-gate branch-selection modal, with an inline git-identity sub-form. |
 | `frontend/src/components/RemotePushControl.tsx` | Remote dropdown, ahead/behind + ledger-divergence display, explicit push (including empty-remote default-bootstrap tooltip/toast and the pending-save integrity confirm), catch-up, the non-fast-forward `PushRejectedModal`, `AheadBehind`/`LedgerStatus`/`RejectedLeg` sub-components. |
 | `frontend/src/components/DivergenceModal.tsx` | Recorded-branch-vs-HEAD divergence recovery modal (go home / stay here / open branch manager). |
+| `frontend/src/components/ModalForm.tsx` | The form blocks the working-branch, divergence and save-time identity modals share inside `ModalShell`: the heading with its line of context, the modal text input, the git identity fields (name, email, global-config checkbox) and the cancel/submit row. |
 | `frontend/src/utils/vcHistory.ts` | Records switch/archive/restore/delete as undoable entries on `useGraphStore`'s VC history stacks; each entry's undo/redo leg re-syncs git status + the panel's history nonce. |
 | `frontend/src/utils/gitError.ts` | Formats Git UI failures by preferring a human-readable string `ApiError.detail`, then `Error.message`, then a stable fallback; serialized structured details are left to their dedicated parsers rather than rendered as raw JSON. |
 
@@ -476,6 +477,9 @@ Library component/unit tests (no e2e for this surface).
 - **`frontend/src/components/__tests__/DivergenceModal.gaps.test.tsx`** — error-toast surfacing on a
   rejected `setWorkingBranch` (both `Error` and non-`Error`), the busy/"Working…" disabled
   state, double-submit guarding, and null-status placeholder rendering.
+- **`frontend/src/components/__tests__/ModalForm.test.tsx`** — the shared heading, the identity
+  fields (change callbacks under the caller's test ids, email type, autofocus, the global-config
+  checkbox) and the cancel/submit row (cancel, busy label on a disabled submit).
 
 Known coverage gaps: none flagged in the suites' own comments; the layout test file's
 breadth (60+ cases) suggests `computeGitGraphLayout`/`computeRailRuns` are the

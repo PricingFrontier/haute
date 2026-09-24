@@ -41,7 +41,7 @@
 | `frontend/src/utils/portableKey.ts` | Browser-owned persistence key; intentionally not Python-compatible or reversible. Executable identity comes only from server metadata. |
 | `frontend/src/components/ErrorBoundary.tsx` | Class-component error boundary with a "Try again" fallback UI. |
 | `frontend/src/components/Toast.tsx` | `ToastMessage` type + `ToastContainer`, rendering `useToastStore`'s queue with per-type icon/colour and auto-dismiss. |
-| `frontend/src/components/ModalShell.tsx` | Shared dialog chrome: backdrop, Escape-close, full Tab focus trap, focus restore on unmount. |
+| `frontend/src/components/ModalShell.tsx` | Shared dialog chrome: backdrop, Escape-close, full Tab focus trap, focus restore on unmount; the panel is centred, or top-aligned with `placement="top"` (the node-search palette). |
 | `frontend/src/components/Tooltip.tsx` | Zero-delay hover and focus tooltip. The bubble renders into the document body with fixed positioning, so scrolling or overflow-clipped panels never cut it off; it is placed from the anchor's viewport rectangle, clamped inside the viewport horizontally, flipped between top and bottom when the preferred side would clip, closed on scroll or resize, wraps long unbroken text such as URLs, and describes the control that takes focus: a single element child receives the tooltip in its described-by reference (unless its accessible label already is the tooltip text), a function child receives the id to place on a nested control such as a native radio inside its label, and only text or fragment children leave the reference on the hover wrapper. |
 | `frontend/src/components/ContextMenu.tsx` | Node right-click menu: rename/duplicate/create-instance/dissolve-submodel/delete, arrow-key roving focus. |
 | `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
@@ -52,7 +52,7 @@
 | `frontend/src/components/BreakdownDropdown.tsx` | Sorted, accessible timing/memory breakdown disclosure used by the shared toolbar. |
 | `frontend/src/panels/ImportsPanel.tsx` | Active pipeline-imports right panel: `PanelShell` plus `CodeEditor`, explanatory always-included imports, and callback-only preamble mutation/close handling. `App.tsx` supplies the graph-store-backed preamble and selects it through `importsOpen`. |
 | `frontend/src/components/BackgroundJobPolling.tsx` | Zero-render mount point (`memo`) that only invokes `useBackgroundJobs()`. |
-| `frontend/src/components/NodeSearch.tsx` | Ctrl+K command palette: dynamically imported by `App.tsx` only while open, filters/windows the current React Flow node list, supports arrow-key navigation, and hands the chosen node to `App.tsx`, which selects it and asks `useActiveNodeReveal` to centre it at zoom 0.8 within the canvas area the inspector leaves (see [frontend-graph-canvas](../frontend-graph-canvas/high-level.md), Active node visibility). |
+| `frontend/src/components/NodeSearch.tsx` | Ctrl+K command palette on a top-aligned `ModalShell` (which owns Escape, backdrop close and the focus trap): dynamically imported by `App.tsx` only while open, filters/windows the current React Flow node list, supports arrow-key navigation, and hands the chosen node to `App.tsx`, which selects it and asks `useActiveNodeReveal` to centre it at zoom 0.8 within the canvas area the inspector leaves (see [frontend-graph-canvas](../frontend-graph-canvas/high-level.md), Active node visibility). |
 | `frontend/src/components/BreadcrumbBar.tsx` | Pipeline → submodel navigation trail; renders nothing at stack depth ≤ 1. |
 | `frontend/src/hooks/useClickOutside.ts` | Attaches/detaches a `mousedown` listener that fires `onClose` when the click lands outside `ref`, only while `active`. |
 | `frontend/src/hooks/useDebouncedCallback.ts` | The one debounce for a scheduled call: `schedule(args, delayMs?)` runs the latest callback with the latest arguments once the delay passes without another schedule (a per-call delay overrides the hook's), `flush()` runs a waiting call now and returns its result, `cancel()` drops it, and `pending()` reads its arguments. On unmount a waiting call is dropped, or run when the owner asks for `onUnmount: "flush"`. The code editor's change commit, the utility panel's autosave and the canvas preview fetch use it; a delayed request inside an effect, whose cleanup clears the timer and aborts the request, stays in that effect. |
@@ -731,7 +731,7 @@ same Vitest config.
   (root-level, under `frontend/src/__tests__/components/`),
   `frontend/src/components/__tests__/ModalShell.test.tsx` and
   `frontend/src/components/__tests__/ModalShell.focusTrap.test.tsx` (focus trap and
-  restore-on-close in particular),
+  restore-on-close in particular; centred or top placement),
   `frontend/src/components/__tests__/Toast.test.tsx`,
   `frontend/src/components/__tests__/Tooltip.test.tsx`,
   `frontend/src/components/__tests__/ContextMenu.test.tsx`,
