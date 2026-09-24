@@ -109,7 +109,6 @@ def test_contract_bundle_contains_closed_contract_roots() -> None:
         "ExecutionStrategyReasonPayload",
         "ExploreChartConfig",
         "ExploreChartsConfig",
-        "JsonValue",
     }
 
     diagnostic = definitions["ExecutionStrategyDiagnosticPayload"]
@@ -135,7 +134,7 @@ def test_contract_bundle_contains_closed_contract_roots() -> None:
     }
 
 
-def test_contract_bundle_preserves_browser_safe_bounds_and_recursive_json() -> None:
+def test_contract_bundle_preserves_browser_safe_bounds_and_closes_chart_models() -> None:
     definitions = build_contract_bundle()["$defs"]
 
     boundary_rank = definitions["ExecutionStrategyBoundaryPayload"]["properties"][
@@ -173,18 +172,20 @@ def test_contract_bundle_preserves_browser_safe_bounds_and_recursive_json() -> N
     )
     assert calibration["maximum"] == CALIBRATION_MAX_BASIS_POINTS
 
-    reference = {"$ref": "#/$defs/JsonValue"}
-    assert definitions["JsonValue"] == {
-        "anyOf": [
-            {"type": "null"},
-            {"type": "boolean"},
-            {"type": "integer"},
-            {"type": "number"},
-            {"type": "string"},
-            {"items": reference, "type": "array"},
-            {"additionalProperties": reference, "type": "object"},
-        ]
-    }
+    # Chart configs take no field their models do not declare, so no
+    # open JSON grammar remains in the bundle.
+    assert "JsonValue" not in definitions
+    for name in (
+        "ExploreChartConfig",
+        "ChartCategory",
+        "ChartValueEncoding",
+        "ChartSeriesOverride",
+        "ChartAxes",
+        "ChartAxisConfig",
+        "ChartSecondaryAxisConfig",
+        "ChartLegend",
+    ):
+        assert definitions[name]["additionalProperties"] is False, name
 
 
 def test_response_contracts_require_every_field_the_server_sends() -> None:

@@ -20,7 +20,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache identity | `CACHE-S17` |
 | [Engineering quality](engineering-quality.md) | Test hygiene, dead code, coverage gates, test organisation | `ENGQ-R06` |
-| [Explore and EDA](explore-eda.md) | Pivot and chart config validation, advanced pivot and PivotChart parity | `EDA-E25` |
+| [Explore and EDA](explore-eda.md) | Advanced pivot and PivotChart parity | — |
 | [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
 | [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients for the optimiser log | `MLF-R02` |
 | [Optimiser](optimiser.md) | Service extraction, scaling, input isolation | `OPT-P13` |

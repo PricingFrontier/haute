@@ -14,10 +14,10 @@ from haute.errors import ConfigError
 def _chart_validation_message(details: Sequence[Mapping[str, Any]]) -> str:
     """Translate Pydantic structure failures to the stable config vocabulary."""
     for detail in details:
-        if detail["type"] in {"invalid-json-value", "invalid_key", "finite_number"} and not any(
-            field in detail["loc"] for field in ("minimum", "maximum")
-        ):
-            return "Explore chart fields must use string keys and simple literals."
+        if detail["type"] == "extra_forbidden":
+            return f"Explore chart has an unknown field {detail['loc'][-1]!r}."
+        if detail["type"] == "invalid_key":
+            return "Explore chart fields must use string keys."
 
     for detail in details:
         if detail["type"] == "finite_number" and any(

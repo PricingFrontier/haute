@@ -181,7 +181,6 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
         "number_format": "percent",
         "decimal_places": 1,
         "use_grouping": False,
-        "future_formula_setting": {"style": "compact"},
     }
     pivots = [
         {
@@ -228,7 +227,6 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
                     "number_format": "currency_eur",
                     "decimal_places": 2,
                     "use_grouping": False,
-                    "future_value_setting": {"precision": 2},
                 }
             ],
             "formulas": ["formula_1"],
@@ -237,9 +235,7 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
                 "row_grand_totals": True,
                 "column_grand_totals": False,
                 "sort_by": "value_1",
-                "future_option": "compact",
             },
-            "future_setting": {"palette": "warm"},
         },
         {
             "version": 1,
@@ -272,7 +268,6 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
                 "source": "rows",
                 "include_grand_total": False,
                 "label_rotation": 0,
-                "future": {"nested": ["literal"]},
             },
             "value_encodings": [
                 {
@@ -306,7 +301,6 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
                 },
             },
             "legend": {"visible": True, "position": "bottom"},
-            "future_setting": {"palette": "warm", "columns": ["premium"]},
         }
     ]
     graph = _explore_graph_with_config(

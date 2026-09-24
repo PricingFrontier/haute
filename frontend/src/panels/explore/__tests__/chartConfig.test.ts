@@ -107,29 +107,19 @@ describe("chart config", () => {
     })
   })
 
-  it("validates and detaches a complete v1 card with nested future literals", () => {
+  it("validates and detaches a complete v1 card", () => {
     const raw = configured(pivot(), {
-      future: { nested: [1] },
       category: {
         source: "rows",
         include_grand_total: true,
         label_rotation: -45,
-        future_category: ["safe"],
       },
-      value_encodings: [
-        {
-          ...seedValueEncodings(pivot())[0],
-          future_style: { safe: true },
-        },
-        ...seedValueEncodings(pivot()).slice(1),
-      ],
       axes: {
         primary: {
           title: "Paid",
           minimum: -1,
           maximum: 10,
           number_format: "currency_gbp",
-          future_axis: [1],
         },
         secondary: {
           title: "",
@@ -138,12 +128,10 @@ describe("chart config", () => {
           number_format: "integer",
           enabled: true,
         },
-        future_axes: "safe",
       },
       legend: {
         visible: true,
         position: "right",
-        future_legend: 1,
       },
     })
     const parsed = parseExploreCharts({ charts: [raw] })
@@ -155,6 +143,19 @@ describe("chart config", () => {
     expect(parsed.charts[0].value_encodings[0]).not.toBe(
       raw.value_encodings[0],
     )
+  })
+
+  it.each([
+    ["card", (chart: Record<string, unknown>) => chart],
+    ["category", (chart: Record<string, unknown>) => mutableRecord(chart.category)],
+    ["value encoding", (chart: Record<string, unknown>) => firstMutableRecord(chart.value_encodings)],
+    ["axes", (chart: Record<string, unknown>) => mutableRecord(chart.axes)],
+    ["primary axis", (chart: Record<string, unknown>) => mutableRecord(mutableRecord(chart.axes).primary)],
+    ["legend", (chart: Record<string, unknown>) => mutableRecord(chart.legend)],
+  ])("rejects an unknown field on the %s, as the server does", (_level, level) => {
+    const raw = structuredClone(configured()) as unknown as Record<string, unknown>
+    level(raw).future = "compact"
+    expect(parseExploreCharts({ charts: [raw] }).ok).toBe(false)
   })
 
   it.each([
@@ -200,12 +201,12 @@ describe("chart config", () => {
       mutableRecord(chart.legend).position = "centre"
     }],
   ])("rejects invalid known %s fields", (_case, mutate) => {
-    const raw = structuredClone(configured()) as Record<string, unknown>
+    const raw = structuredClone(configured()) as unknown as Record<string, unknown>
     mutate(raw)
     expect(parseExploreCharts({ charts: [raw] }).ok).toBe(false)
   })
 
-  it("rejects duplicate card/nested identities, duplicate names, and complex future values", () => {
+  it("rejects duplicate card/nested identities, duplicate names, and unknown fields", () => {
     const first = configured()
     expect(parseExploreCharts({ charts: [first, first] })).toMatchObject({
       ok: false,

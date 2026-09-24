@@ -12,8 +12,8 @@
 | `src/haute/_column_summary.py` | Dtype facts shared with the [assistant](../assistant/low-level.md)'s value profiles: `is_unhashable_dtype` (the distinct-count gate), the reserved count-field alias `CATEGORICAL_COUNT_FIELD`, and `json_safe_scalar`. Explore's display formatting stays local to the service; only the facts that a second summariser would otherwise have to rediscover as production failures live here. |
 | `src/haute/_explore_overview.py` | Standalone validator for the Explore node's `overview` config dict (`validate_explore_overview`, `EXPLORE_OVERVIEW_TOGGLE_KEYS`). Imported by codegen (`_codegen_builders.py`) and the parser (`_config_builder.py`), not by the service or route module. |
 | `src/haute/_explore_chart_contracts.py` | Canonical Pydantic structural authority for version-1 PivotChart cards and their nested category, value, series, style, axes, and legend models. It accepts only finite recursive JSON extension values and owns field shape, required values, literals, and scalar bounds; model validators own Python-side identity, stack, and axis relationships. |
-| `src/haute/_explore_charts.py` | Stable persisted-config adapter around the canonical chart models: accepts an ordered list of mappings, returns plain dicts, preserves finite additive fields, and translates Pydantic failures into `ConfigError`. It performs no migration, repair, or default materialisation. |
-| `src/haute/_explore_pivots.py` | Standalone strict validator for ordered version-1 Explore pivot cards, placements, typed members, supported aggregations/options, unique ids/names, and simple-literal future fields. Versionless cards are rejected, never migrated. |
+| `src/haute/_explore_charts.py` | Stable persisted-config adapter around the canonical chart models: accepts an ordered list of mappings, returns plain dicts, rejects any field the models do not declare (`extra="forbid"`), and translates Pydantic failures into `ConfigError`. It performs no migration, repair, or default materialisation. |
+| `src/haute/_explore_pivots.py` | Standalone strict validator for ordered version-1 Explore pivot cards, placements, typed members, supported aggregations/options and unique ids/names; a field outside each object's known keys is rejected by name. Versionless cards are rejected, never migrated. |
 | `src/haute/schemas.py` | Shared Explore API contracts owned by [server-api](../server-api/low-level.md): the per-column statistic and overview-summary models the shared profile analysis returns, plus pivot run/status/member requests, typed failures, member/path/value/cell structures, and result matrices. |
 
 ## Key types and data structures
@@ -504,7 +504,7 @@ levels use (`run_synchronous_analysis` inside `run_until_disconnected`):
   implementation).
 - **Explore display-config round-trip**: an explicit `False` overview toggle or disabled chart
   must be preserved through codegen → parse (not treated the same as an absent key); pivot cards
-  retain ordered ids and future fields. Empty `overview: {}`, `pivots: []`, and `charts: []`
+  retain ordered ids. Empty `overview: {}`, `pivots: []`, and `charts: []`
   values must not be emitted as decorator kwargs. Non-empty kwargs are emitted in stable
   overview-then-pivots-then-charts order.
 - **Downstream-edit cache stability**: the data point an Explore node reads, and therefore its
@@ -579,12 +579,12 @@ levels use (`run_synchronous_analysis` inside `run_until_disconnected`):
   consumer's own code, the preamble, the source file, and the input source.
 - `tests/test_explore_round_trip.py` — exercises the Explore display validators indirectly
   through `graph_to_code` → `parse_pipeline_source`: overview toggle round trips,
-  ordered pivot and enabled/disabled chart cards with future settings, and omission of empty
+  ordered pivot and enabled/disabled chart cards, and omission of empty
   `overview={}`/`pivots=[]`/`charts=[]` kwargs.
 - `tests/test_explore_charts.py` — pins chart-container/card shape validation, required state,
-  duplicate-id rejection, future simple-literal fields, order preservation, and detached output.
+  duplicate-id rejection, unknown-field rejection, order preservation, and detached output.
 - `tests/test_explore_pivots.py` — pins pivot-container/card shape validation, duplicate-id
-  rejection, future simple-literal fields, order preservation, and detached output.
+  rejection, unknown-field rejection, order preservation, and detached output.
 - `tests/test_explore_pivot_routes.py` exercises the point a pivot reads, typed filters,
   bounded aggregation/cardinality, sorting/totals, latest-wins job lifecycle, member lookup,
   export, and JSON-safe scalar results including Binary and Duration min/max values.

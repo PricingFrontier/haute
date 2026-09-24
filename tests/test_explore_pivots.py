@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from typing import Any
 
 import pytest
 
@@ -112,7 +113,7 @@ def test_validate_explore_pivots_rejects_versionless_cards_instead_of_migrating(
 
 
 def test_validate_explore_pivots_accepts_v1_and_returns_a_deep_detached_copy() -> None:
-    raw = [_pivot(future={"nested": [1, 2]})]
+    raw = [_pivot()]
     expected = copy.deepcopy(raw)
 
     validated = validate_explore_pivots(raw, context="test")
@@ -121,7 +122,31 @@ def test_validate_explore_pivots_accepts_v1_and_returns_a_deep_detached_copy() -
     assert validated is not raw
     assert validated[0] is not raw[0]
     assert validated[0]["filters"] is not raw[0]["filters"]
-    assert validated[0]["future"] is not raw[0]["future"]
+
+
+@pytest.mark.parametrize(
+    ("level", "scope"),
+    [
+        (lambda pivot: pivot, "card"),
+        (lambda pivot: pivot["filters"][0], "filters placement"),
+        (lambda pivot: pivot["filters"][0]["members"][0], "member"),
+        (lambda pivot: pivot["columns"][0], "columns placement"),
+        (lambda pivot: pivot["rows"][0], "rows placement"),
+        (lambda pivot: pivot["values"][0], "value"),
+        (lambda pivot: pivot["options"], "options"),
+    ],
+    ids=["card", "filter", "member", "column", "row", "value", "options"],
+)
+def test_validate_explore_pivots_rejects_an_unknown_field_at_every_level(
+    level: Any, scope: str
+) -> None:
+    # No forward-compatibility passthrough: an undeclared field is named and
+    # refused, never carried unread.
+    pivot = _pivot()
+    level(pivot)["future"] = "compact"
+
+    with pytest.raises(ConfigError, match=f"pivot {scope} has an unknown field .future."):
+        validate_explore_pivots([pivot], context="test")
 
 
 @pytest.mark.parametrize(
@@ -671,7 +696,7 @@ def test_validate_explore_pivots_derives_legacy_active_value_sort_target() -> No
             ],
             "does not match its kind",
         ),
-        ([_pivot(future=object())], "simple literals"),
+        ([_pivot(future=object())], "unknown field .future."),
     ],
 )
 def test_validate_explore_pivots_rejects_malformed_values(value: object, message: str) -> None:

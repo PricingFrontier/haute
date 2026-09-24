@@ -251,9 +251,7 @@
       "type": "object"
     },
     "ChartAxes": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
+      "additionalProperties": false,
       "properties": {
         "primary": {
           "$ref": "#/$defs/ChartAxisConfig"
@@ -270,9 +268,7 @@
       "type": "object"
     },
     "ChartAxisConfig": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
+      "additionalProperties": false,
       "properties": {
         "maximum": {
           "anyOf": [
@@ -330,9 +326,7 @@
       "type": "object"
     },
     "ChartCategory": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
+      "additionalProperties": false,
       "properties": {
         "include_grand_total": {
           "title": "Include Grand Total",
@@ -359,9 +353,7 @@
       "type": "object"
     },
     "ChartLegend": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
+      "additionalProperties": false,
       "properties": {
         "position": {
           "enum": [
@@ -386,9 +378,7 @@
       "type": "object"
     },
     "ChartSecondaryAxisConfig": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
+      "additionalProperties": false,
       "properties": {
         "enabled": {
           "title": "Enabled",
@@ -451,9 +441,7 @@
       "type": "object"
     },
     "ChartSeriesOverride": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
+      "additionalProperties": false,
       "properties": {
         "axis": {
           "enum": [
@@ -537,9 +525,7 @@
       "type": "object"
     },
     "ChartValueEncoding": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
+      "additionalProperties": false,
       "properties": {
         "axis": {
           "enum": [
@@ -3804,9 +3790,7 @@
       "type": "object"
     },
     "ExploreChartConfig": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
+      "additionalProperties": false,
       "properties": {
         "axes": {
           "$ref": "#/$defs/ChartAxes"
@@ -7051,37 +7035,6 @@
       ],
       "title": "IoOutputCapability",
       "type": "object"
-    },
-    "JsonValue": {
-      "anyOf": [
-        {
-          "type": "null"
-        },
-        {
-          "type": "boolean"
-        },
-        {
-          "type": "integer"
-        },
-        {
-          "type": "number"
-        },
-        {
-          "type": "string"
-        },
-        {
-          "items": {
-            "$ref": "#/$defs/JsonValue"
-          },
-          "type": "array"
-        },
-        {
-          "additionalProperties": {
-            "$ref": "#/$defs/JsonValue"
-          },
-          "type": "object"
-        }
-      ]
     },
     "LogExperimentResponse": {
       "properties": {

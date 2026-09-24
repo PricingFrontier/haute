@@ -162,14 +162,6 @@ const CARD_KEYS = new Set([
 const FORMULA_REFERENCE_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 const RESERVED_FORMULA_REFERENCE_PREFIX = "__haute_"
 
-function isSimpleLiteral(value: unknown): boolean {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return true
-  if (typeof value === "number") return Number.isFinite(value)
-  if (Array.isArray(value)) return value.every(isSimpleLiteral)
-  if (isObjectLiteral(value)) return Object.values(value).every(isSimpleLiteral)
-  return false
-}
-
 function cloneLiteral<T>(value: T): T {
   if (Array.isArray(value)) return value.map(cloneLiteral) as T
   if (isObjectLiteral(value)) {
@@ -350,24 +342,23 @@ function memberValueMatchesKind(kind: PivotMemberKind, value: unknown): boolean 
   }
 }
 
-function validateFutureFields(
+/** Mirror the server: a field outside an object's known keys is rejected by name. */
+function validateKnownFields(
   raw: Record<string, unknown>,
   known: ReadonlySet<string>,
   position: number,
   scope: string,
 ): string | null {
-  for (const [key, value] of Object.entries(raw)) {
-    if (!known.has(key) && !isSimpleLiteral(value)) {
-      return `Pivot ${position} ${scope} field "${key}" must contain only simple literal values.`
-    }
+  for (const key of Object.keys(raw)) {
+    if (!known.has(key)) return `Pivot ${position} ${scope} has an unknown field "${key}".`
   }
   return null
 }
 
 function parseMember(raw: unknown, position: number): PivotMember | string {
   if (!isObjectLiteral(raw)) return `Pivot ${position} filter members must be objects.`
-  const futureError = validateFutureFields(raw, new Set(["kind", "value"]), position, "member")
-  if (futureError) return futureError
+  const unknownFieldError = validateKnownFields(raw, new Set(["kind", "value"]), position, "member")
+  if (unknownFieldError) return unknownFieldError
   if (typeof raw.kind !== "string" || !MEMBER_KINDS.has(raw.kind as PivotMemberKind)) {
     return `Pivot ${position} member has an unsupported kind.`
   }
@@ -408,8 +399,8 @@ function parseAxisZone(
             "decimal_places",
             "use_grouping",
           ])
-    const futureError = validateFutureFields(entry, known, position, `${zone} placement`)
-    if (futureError) return futureError
+    const unknownFieldError = validateKnownFields(entry, known, position, `${zone} placement`)
+    if (unknownFieldError) return unknownFieldError
     if (!nonEmptyString(entry.id)) return `Pivot ${position} placement id must be a non-empty string.`
     if (!nonEmptyString(entry.field)) return `Pivot ${position} placement field must be a non-empty string.`
     if (placementIds.has(entry.id)) return `Pivot ${position} has duplicate placement id "${entry.id}".`
@@ -462,7 +453,7 @@ function parseValues(
   const values: PivotValuePlacement[] = []
   for (const entry of raw) {
     if (!isObjectLiteral(entry)) return `Pivot ${position} value entries must be objects.`
-    const futureError = validateFutureFields(
+    const unknownFieldError = validateKnownFields(
       entry,
       new Set([
         "id",
@@ -480,7 +471,7 @@ function parseValues(
       position,
       "value",
     )
-    if (futureError) return futureError
+    if (unknownFieldError) return unknownFieldError
     if (!nonEmptyString(entry.id)) return `Pivot ${position} placement id must be a non-empty string.`
     if (!nonEmptyString(entry.field)) return `Pivot ${position} placement field must be a non-empty string.`
     if (placementIds.has(entry.id)) return `Pivot ${position} has duplicate placement id "${entry.id}".`
@@ -548,13 +539,13 @@ function parseFormulaDefinition(
   entry: Record<string, unknown>,
   position: number,
 ): PivotFormulaPlacement | string {
-  const futureError = validateFutureFields(
+  const unknownFieldError = validateKnownFields(
     entry,
     FORMULA_KEYS,
     position,
     "formula",
   )
-  if (futureError) return futureError
+  if (unknownFieldError) return unknownFieldError
   if (!nonEmptyString(entry.id)) {
     return `Pivot ${position} formula id must be a non-empty string.`
   }
@@ -686,8 +677,8 @@ function parseV1Pivot(
   position: number,
   sharedFormulas: SharedFormulaState,
 ): ExplorePivotConfig | string {
-  const futureError = validateFutureFields(raw, CARD_KEYS, position, "card")
-  if (futureError) return futureError
+  const unknownFieldError = validateKnownFields(raw, CARD_KEYS, position, "card")
+  if (unknownFieldError) return unknownFieldError
   if (raw.version !== 1) return `Pivot ${position} version must be 1.`
   if (!nonEmptyString(raw.id)) return `Pivot ${position} id must be a non-empty string.`
   if (!nonEmptyString(raw.name)) return `Pivot ${position} name must be a non-empty string.`
@@ -730,7 +721,7 @@ function parseV1Pivot(
     }
   }
   if (!isObjectLiteral(raw.options)) return `Pivot ${position} options must be an object.`
-  const optionError = validateFutureFields(
+  const optionError = validateKnownFields(
     raw.options,
     new Set(["row_grand_totals", "column_grand_totals", "sort_by"]),
     position,

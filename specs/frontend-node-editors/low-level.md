@@ -345,7 +345,8 @@ the checkbox button, so either action leaves `enabled` unchanged.
 **Explore chart-card workflow.** `parseExploreCharts` mirrors the backend chart trust boundary:
 every card must be complete version 1 (versionless cards are rejected, never migrated), all
 known nested fields are
-validated, and unknown simple-literal fields are retained. `Add Chart` writes the first unused
+validated, and an unknown field is rejected (the generated validator forbids additional
+properties). `Add Chart` writes the first unused
 `chart_N`, first unused `Chart N` name, `enabled: true`, `pivot_id: null`, `kind: "combo"`, empty
 encodings/overrides, Rows category defaults, automatic primary/secondary axes, and bottom legend.
 The card label is its persisted name. Its labelled toggle-card body updates only enabled;
