@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 import os
 import shutil
 import sys
@@ -399,6 +400,26 @@ def _clear_source_signatures():
     clear_file_signatures()
     yield
     clear_file_signatures()
+
+
+@pytest.fixture(autouse=True)
+def source_proof_records(
+    request: pytest.FixtureRequest,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Keep durable source-proof records in this test's own directory.
+
+    Records otherwise land under the project root, which for many tests is the
+    repository. The directory sits outside ``tmp_path`` (a test may list that)
+    and is created only when a record is written.
+    """
+    from haute._json_shred import _source_proof
+
+    test_key = hashlib.sha256(request.node.nodeid.encode("utf-8")).hexdigest()[:16]
+    root = tmp_path_factory.getbasetemp() / "source-proofs" / test_key
+    monkeypatch.setattr(_source_proof, "_proof_record_root", lambda: root)
+    return root
 
 
 @pytest.fixture()

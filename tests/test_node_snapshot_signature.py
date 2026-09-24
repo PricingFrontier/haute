@@ -280,3 +280,143 @@ def test_an_instance_nodes_signature_follows_its_original(project: Path) -> None
     edited = _with_config(graph, "join", code="df = transform.head(1)")
 
     assert _signature(edited, node_id="join_copy") != baseline
+
+
+# ------------------------------------------------------------ source switches
+
+
+def _data_input(node_id: str, path: Path) -> GraphNode:
+    return _node(
+        node_id,
+        NodeType.DATA_INPUT,
+        {"inputType": "file", "format": "parquet", "mode": "scan", "path": str(path)},
+    )
+
+
+def _switch_graph(project: Path) -> PipelineGraph:
+    """Two branches into a live switch that reads ``live_t`` for live and ``batch_t`` for batch."""
+    for name in ("live", "batch"):
+        pl.DataFrame({"premium": [1.0, 2.0]}).write_parquet(project / f"{name}.parquet")
+    return PipelineGraph(
+        nodes=[
+            _data_input("live_src", project / "live.parquet"),
+            _data_input("batch_src", project / "batch.parquet"),
+            _node("live_t", NodeType.POLARS, {"code": "df = live_src"}),
+            _node("batch_t", NodeType.POLARS, {"code": "df = batch_src"}),
+            _node(
+                "switch",
+                NodeType.LIVE_SWITCH,
+                {
+                    "input_scenario_map": {"live_t": "live", "batch_t": "batch"},
+                    "inputs": ["live_t", "batch_t"],
+                },
+            ),
+            _node("below", NodeType.POLARS, {"code": "df = switch"}),
+        ],
+        edges=[
+            GraphEdge(id="s1", source="live_src", target="live_t"),
+            GraphEdge(id="s2", source="batch_src", target="batch_t"),
+            GraphEdge(id="s3", source="live_t", target="switch"),
+            GraphEdge(id="s4", source="batch_t", target="switch"),
+            GraphEdge(id="s5", source="switch", target="below"),
+        ],
+        preamble="import polars as pl",
+        source_file=str(project / "main.py"),
+    )
+
+
+def _rewrite(path: Path) -> None:
+    time.sleep(0.01)
+    pl.DataFrame({"premium": [1.0, 2.0, 3.0]}).write_parquet(path)
+
+
+@pytest.mark.parametrize("change", ["branch_code", "branch_input_file"])
+def test_the_branch_a_source_does_not_read_is_not_signed(project: Path, change: str) -> None:
+    graph = _switch_graph(project)
+    baseline = _signature(graph, node_id="below", source="batch")
+
+    if change == "branch_code":
+        graph = _with_config(graph, "live_t", code="df = live_src.head(1)")
+    else:
+        _rewrite(project / "live.parquet")
+
+    assert _signature(graph, node_id="below", source="batch") == baseline
+
+
+def test_the_unread_branchs_input_file_is_never_hashed(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._json_shred import _source_proof
+
+    hashed: list[Path] = []
+    real = _source_proof._hash_file
+
+    def counting(path: Path) -> str:
+        hashed.append(Path(path).resolve())
+        return real(path)
+
+    monkeypatch.setattr(_source_proof, "_hash_file", counting)
+
+    _signature(_switch_graph(project), node_id="below", source="batch")
+
+    assert (project / "live.parquet").resolve() not in hashed
+    assert (project / "batch.parquet").resolve() in hashed
+
+
+@pytest.mark.parametrize("change", ["branch_code", "branch_input_file", "switch_mapping"])
+def test_the_branch_a_source_reads_is_signed(project: Path, change: str) -> None:
+    graph = _switch_graph(project)
+    baseline = _signature(graph, node_id="below", source="batch")
+
+    if change == "branch_code":
+        graph = _with_config(graph, "batch_t", code="df = batch_src.head(1)")
+    elif change == "branch_input_file":
+        _rewrite(project / "batch.parquet")
+    else:
+        graph = _with_config(
+            graph, "switch", input_scenario_map={"live_t": "batch", "batch_t": "live"}
+        )
+
+    assert _signature(graph, node_id="below", source="batch") != baseline
+
+
+@pytest.mark.parametrize("edited", ["live_t", "batch_t"])
+def test_a_source_the_switch_does_not_map_signs_both_branches(project: Path, edited: str) -> None:
+    graph = _switch_graph(project)
+    baseline = _signature(graph, node_id="below", source="scenario")
+
+    changed = _with_config(graph, edited, code=f"df = {edited.removesuffix('_t')}_src.head(1)")
+
+    assert _signature(changed, node_id="below", source="scenario") != baseline
+
+
+def test_each_source_keeps_its_own_signature_across_a_toggle(project: Path) -> None:
+    graph = _switch_graph(project)
+    live = _signature(graph, node_id="below", source="live")
+    batch = _signature(graph, node_id="below", source="batch")
+
+    assert live != batch
+    assert _signature(graph, node_id="below", source="live") == live
+    assert _signature(graph, node_id="below", source="batch") == batch
+
+
+def test_a_switch_free_lineage_is_the_upstream_subgraph(project: Path) -> None:
+    """Without a live switch nothing is pruned, so no existing capture is re-keyed."""
+    from haute._cache import graph_fingerprint
+    from haute._graph_utils import upstream_subgraph
+    from haute.execution import dataframe_graph_input_fingerprint, source_lineage_graph
+
+    graph = _graph(project)
+    for node_id in ("join", "explore"):
+        lineage = source_lineage_graph(graph, node_id, source="live")
+        upstream = upstream_subgraph(graph, node_id)
+
+        assert graph_fingerprint(lineage) == graph_fingerprint(upstream)
+        assert dataframe_graph_input_fingerprint(
+            lineage, target_node_id=node_id, source="live"
+        ) == dataframe_graph_input_fingerprint(graph, target_node_id=node_id, source="live")
+
+
+def test_signing_an_unknown_node_fails(project: Path) -> None:
+    with pytest.raises(ValueError, match="unknown node 'missing'"):
+        _signature(_graph(project), node_id="missing")

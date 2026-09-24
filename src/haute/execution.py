@@ -110,6 +110,7 @@ __all__ = [
     "preview_lineage_cache_key",
     "prune_source_switch_edges",
     "ratebook_factor_required_columns",
+    "source_lineage_graph",
     "source_scan_projection",
 ]
 
@@ -1158,8 +1159,16 @@ def _api_input_table_pointer_paths(config: Mapping[str, Any], path: Path) -> dic
     }
 
 
-def _lineage_runtime_graph(graph: PipelineGraph, prepared: PreparedGraph) -> PipelineGraph:
-    """Return the source-pruned target lineage used for runtime-input hashing."""
+def source_lineage_graph(
+    graph: PipelineGraph, target_node_id: str | None, *, source: str
+) -> PipelineGraph:
+    """Return *target_node_id* and its lineage as the executor runs it for *source*.
+
+    The executor's own live-switch pruning (``prepare_graph``) drops every
+    switch input *source* does not read, so a branch it never executes is
+    neither signed nor hashed by an identity built on this graph.
+    """
+    prepared = prepare_graph(graph, target_node_id, source=source)
     relevant_ids = set(prepared.order)
     return graph.model_copy(
         update={
@@ -1199,9 +1208,8 @@ def lineage_runtime_input_identity(
     The identity the preview/trace cache key signs; a caller that must key an
     entry by the inputs its execution read, not by a later read, keeps it.
     """
-    prepared = prepare_graph(graph, target_node_id, source=source)
     return dataframe_graph_input_identity(
-        _lineage_runtime_graph(graph, prepared),
+        source_lineage_graph(graph, target_node_id, source=source),
         target_node_id=None,
         source=source,
         memo=memo,
