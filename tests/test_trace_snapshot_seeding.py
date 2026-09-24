@@ -364,31 +364,6 @@ def test_trace_of_column_projected_capture_executes_that_point(
     assert trace["trace"]["omissions"] == []
 
 
-def test_trace_reuses_the_preview_entry_stored_under_its_plan(
-    project: Path, api: Any, store: NodeSnapshotStore
-) -> None:
-    from haute.executor import _preview_cache, execute_graph
-    from haute.trace import execute_trace
-
-    graph = _join_graph(project)
-    generation = _publish(
-        store, graph, "join", pl.DataFrame({"id": [1, 2], "a": [3, 4], "d": [0.1, 0.2]})
-    )
-    # A full-materialisation preview seeded from the join, keyed by that seed.
-    execute_graph(graph, target_node_id="banding", row_limit=200, shared_snapshots=True)
-    assert len(_preview_cache) == 1
-
-    result = execute_trace(
-        graph,
-        target_node_id="banding",
-        row_limit=200,
-        preview=_preview_cache,
-        seed_plan=[ListedSeed("join", _identity(store, graph, "join").digest, generation)],
-    )
-
-    assert result.execution_origin == "preview_cache"
-
-
 def test_an_expired_seed_plan_from_a_worker_is_a_conflict() -> None:
     from fastapi import HTTPException
 

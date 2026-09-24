@@ -85,10 +85,9 @@ Out of scope (owned elsewhere, linked where relevant):
 ## Behaviour
 
 - **Pure observation layer.** Tracing never modifies pipeline execution or its
-  outputs. It either reuses the exact DataFrames a preview execution already
-  produced, or (on a cache miss) runs the same eager-execution path the preview
-  uses. Either way, the trace shows exactly the data the user sees in the preview
-  table.
+  outputs. It either reuses the frames of an earlier trace of the same lineage
+  (its own trace cache), or runs the same eager-execution path the preview uses.
+  Either way, the trace shows exactly the data the user sees in the preview table.
 - **Trace follows the limited preview.** A preview limits the previewed node's output
   rather than its sources, so the rows it shows depend on uncapped joins, filters, and
   aggregations. Trace locates the clicked row in the previewed node's limited output (or,
@@ -222,7 +221,8 @@ Out of scope (owned elsewhere, linked where relevant):
   serialise and send to the frontend.
 - **Generation provenance is explicit and narrow.** Every response carries a UTC
   `generated_at`, the pipeline/source identity available to the server, and an
-  `execution_origin` of `fresh_execution`, `preview_cache`, or `trace_cache`.
+  `execution_origin` of `fresh_execution` or `trace_cache`. (The response
+  contract still admits a `preview_cache` value, which trace no longer produces.)
   These fields describe how the trace snapshot was assembled; they do not claim
   that an external data source is fresh.
   Provider group, safe source identity, selected snapshot generation, and
@@ -239,18 +239,14 @@ Out of scope (owned elsewhere, linked where relevant):
   computed and requires no changes to user-authored node code, at the cost of
   needing careful, node-type-aware matching logic (see the edge-join
   provenance rules below).
-- **Preview-cache decoupling via a `PreviewReader` protocol.** Rather than
-  reaching into `haute.executor`'s private preview-cache singleton, the trace
-  module accepts anything exposing `get(fingerprint) -> dict | None` (a
-  reader) or a pre-materialised snapshot dict. This keeps the trace module
-  testable in isolation and leaves room for a future non-in-process preview
-  store, at the cost of the caller (the HTTP route) being responsible for
-  wiring the executor's cache in explicitly.
-  The current HTTP preview route publishes target-only cache entries, while a
-  truthful trace requires full ancestor materialisation. Those shapes
-  deliberately do not share a key, so the first trace after an ordinary HTTP
-  preview executes cold; the trace layer never accepts a partial snapshot to
-  manufacture the appearance of reuse.
+- **Trace does not read the preview cache.** A truthful trace needs every
+  head-framed ancestor materialised, while the HTTP preview route publishes
+  target-only cache entries. The two shapes deliberately never share a key, so a
+  preview entry could never satisfy a trace, and the first trace after a preview
+  executes cold. `execute_trace` therefore takes no preview input at all; its
+  only prior results are its own trace cache, keyed by the full-lineage
+  fingerprint. The trace never accepts a partial snapshot to manufacture the
+  appearance of reuse.
 - **Edge-join-aware parent projection.** A generic "keep the child's columns that
   exist in the parent" projection is provably wrong for the JOIN-role (right)
   parent of an edge-join, because Polars renames the right frame's copy of every
@@ -342,12 +338,8 @@ Out of scope (owned elsewhere, linked where relevant):
   -matches to choose a specific status code (404 for missing target node, 400 for
   out-of-range row or a multi-frame target, 409 for a genuine or ambiguous row
   mismatch).
-- **A malformed `preview` argument fails loudly as `TypeError`.** `execute_trace`
-  only accepts `None`, a `PreviewReader`-shaped reader, or a snapshot dict; any
-  other type, or a reader whose `get` returns something other than
-  `dict | None`, raises immediately rather than being coerced.
 - **Underlying execution errors propagate unchanged.** If a cold execution (no
-  usable preview cache) fails — a bad node config, a contract mismatch — the
+  usable trace cache entry) fails — a bad node config, a contract mismatch — the
   original exception (including `ContractMismatchError`) propagates out of
   `execute_trace` unmodified. Nothing catches and reinterprets it.
 - **Unsupported target correlation dtypes fail as a public typed error.**

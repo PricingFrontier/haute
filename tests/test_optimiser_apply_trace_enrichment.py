@@ -473,8 +473,11 @@ def test_ratebook_execute_trace_explains_configured_input_factor_ladder(tmp_path
     assert ladder[1]["running_product_after"] == pytest.approx(0.98 * 1.10)
 
 
-def test_ratebook_trace_uses_exact_multi_frame_api_input_name(tmp_path):
+def test_ratebook_trace_uses_exact_multi_frame_api_input_name(tmp_path, monkeypatch):
     """Trace enrichment must select the same physical API frame as runtime apply."""
+    import haute.execution as execution_facade
+    import haute.trace as trace_mod
+
     artifact_path = _write_json(tmp_path / "ratebook.json", _ratebook_artifact())
     scored = pl.DataFrame(
         {
@@ -533,17 +536,27 @@ def test_ratebook_trace_uses_exact_multi_frame_api_input_name(tmp_path):
         }
     )
 
+    def materialise_request_frames(*, graph, target_node_id, source, **_kwargs):
+        # The API Input has no payload to execute, so the lineage's head frames
+        # are supplied directly; plans stay unbuilt, as on a trace-cache hit.
+        prepared = execution_facade.prepare_graph(graph, target_node_id, source=source)
+        frames = {"request": {"scored": scored, "banded": banded}, "apply": applied}
+        return (
+            frames,
+            list(prepared.order),
+            prepared.parents_of,
+            prepared.node_map,
+            {"request"},
+            None,
+        )
+
+    monkeypatch.setattr(trace_mod, "_materialize_eager_outputs", materialise_request_frames)
+
     result = execute_trace(
         graph,
         row_index=0,
         target_node_id="apply",
         column="selected_factor",
-        preview={
-            "eager_outputs": {
-                "request": {"scored": scored, "banded": banded},
-                "apply": applied,
-            }
-        },
     )
 
     detail = _step_by_id(result, "apply").node_detail

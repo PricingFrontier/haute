@@ -137,7 +137,7 @@ def test_ambiguous_relevant_parent_is_preserved_as_an_omission(tmp_path) -> None
         assert retired_field not in payload["steps"][0]
 
 
-def test_trace_provenance_distinguishes_all_execution_origins(tmp_path) -> None:
+def test_trace_provenance_distinguishes_fresh_and_cached_executions(tmp_path) -> None:
     from haute import trace
 
     source_path = tmp_path / "source.parquet"
@@ -153,21 +153,12 @@ def test_trace_provenance_distinguishes_all_execution_origins(tmp_path) -> None:
 
     fresh = execute_trace(graph, target_node_id="source", row_limit=10)
     cached = execute_trace(graph, target_node_id="source", row_limit=10)
-    trace._cache.clear()
-    preview = execute_trace(
-        graph,
-        target_node_id="source",
-        row_limit=10,
-        preview={"eager_outputs": {"source": pl.DataFrame({"value": [7]})}},
-    )
 
     assert fresh.execution_origin == "fresh_execution"
     assert cached.execution_origin == "trace_cache"
-    assert preview.execution_origin == "preview_cache"
     assert fresh.pipeline_source == "pricing/example.py"
     assert datetime.fromisoformat(fresh.generated_at).utcoffset().total_seconds() == 0
     assert datetime.fromisoformat(cached.generated_at).utcoffset().total_seconds() == 0
-    assert datetime.fromisoformat(preview.generated_at).utcoffset().total_seconds() == 0
 
 
 def test_trace_omission_schema_requires_linkable_evidence() -> None:

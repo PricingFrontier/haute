@@ -114,7 +114,6 @@ from haute.executor import (
     DataOutputPublicationError,
     PreparedDataOutput,
     PreviewProjectionError,
-    _preview_cache,
     _preview_required_columns_by_node,
     commit_prepared_data_output,
     data_output_seed_plan_request,
@@ -1201,7 +1200,6 @@ def _execute_trace_worker(
             row_limit=body.row_limit,
             source=body.source,
             row_values=body.row_values,
-            preview=_preview_cache,
             fingerprint_memo=GraphFingerprintMemo(),
             execution_context=context,
             seed_plan=_listed_seeds(body),
@@ -1283,10 +1281,6 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
                     row_limit=body.row_limit,
                     source=body.source,
                     row_values=body.row_values,
-                    # Inject the executor's preview cache explicitly so the
-                    # trace module is not coupled to a private singleton on
-                    # another module.
-                    preview=_preview_cache,
                     fingerprint_memo=fingerprint_memo,
                     execution_context=trace_context,
                     seed_plan=_listed_seeds(body),

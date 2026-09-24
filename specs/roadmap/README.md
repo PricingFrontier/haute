@@ -39,7 +39,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Sandbox security](sandbox-security.md) | One path-containment check, the node-code guard | `SBX-R01` |
 | [Server API](server-api.md) | Error translation, generated browser contract, recovery scope | `API-R01` |
 | [Submodels](submodels.md) | One reuse mechanism | `SUB-R01` |
-| [Tracing](tracing.md) | Row identity for traces, the preview-reader abstraction | `TRACE-R02` |
+| [Tracing](tracing.md) | Row identity for traces | `TRACE-R01` |
 
 ## Codebase review — 23 September 2026
 

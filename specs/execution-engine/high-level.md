@@ -659,8 +659,8 @@ keep reporting the failing line so the editor can name the failing step.
   restricted-globals `exec`.
 - [tracing](../tracing/high-level.md): built directly on `_execute_eager_core` and
   `ExecutionContext`'s stage/checkpoint instrumentation to reconstruct a run's
-  timeline; shares the preview cache's fingerprint shape so a trace can reuse
-  preview-cached frames.
+  timeline; shares the preview cache's lineage-key shape for its own trace cache,
+  but never reads preview-cached frames.
 - [io-layer](../io-layer/high-level.md) / [databricks-io](../databricks-io/high-level.md):
   supply the actual scan/read functions that source-node builders call; this
   component only decides when a source is re-read vs. reused.

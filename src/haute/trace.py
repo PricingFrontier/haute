@@ -11,10 +11,10 @@ Current surface:
   • TraceStep / TraceResult dataclasses
 
 The trace is a pure observation layer — it never modifies the execution
-pipeline.  It uses the same DataFrames produced by the preview execution
-and correlates rows between parent and child nodes post-hoc using column
-value matching.  This guarantees that the trace always shows exactly the
-data the user sees in the preview table.
+pipeline.  It runs the same eager path the preview uses and correlates rows
+between parent and child nodes post-hoc using column value matching.  This
+guarantees that the trace always shows exactly the data the user sees in the
+preview table.
 
 Module layout — this file is the public facade and execute-trace
 orchestrator.  Heavy lifting lives in sibling modules:
@@ -40,7 +40,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Any, cast
 
 import polars as pl
 
@@ -110,7 +110,6 @@ from haute.graph_utils import (
 logger = get_logger(component="trace")
 
 __all__ = [
-    "PreviewReader",
     "SchemaDiff",
     "TraceOmission",
     "TraceResult",
@@ -128,30 +127,6 @@ __all__ = [
     "parse_expression_chain",
     "trace_result_to_dict",
 ]
-
-
-# ---------------------------------------------------------------------------
-# Preview injection — decouples the trace from ``haute.executor``'s private
-# ``_preview_cache`` singleton.  Callers (the FastAPI route handler, tests,
-# future CLI commands) construct a snapshot or reader themselves and pass
-# it in.  This keeps the trace a pure observation layer with an explicit
-# data dependency instead of a module-level reach-through.
-# ---------------------------------------------------------------------------
-
-
-@runtime_checkable
-class PreviewReader(Protocol):
-    """Read-only preview-cache lookup surface used by :func:`execute_trace`.
-
-    Any object that exposes ``get(fingerprint) -> dict | None`` satisfies
-    this protocol, so the production route handler can forward the
-    executor's cache directly and tests can inject a trivial stub without
-    touching ``haute.executor``.
-    """
-
-    def get(self, fingerprint: str) -> dict[str, Any] | None:
-        """Return the preview slot-dict for *fingerprint*, or ``None`` on miss."""
-        ...
 
 
 # ---------------------------------------------------------------------------
@@ -372,16 +347,15 @@ def execute_trace(
     source: str = "live",
     row_values: dict[str, Any] | None = None,
     preamble_ns: dict[str, Any] | None = None,
-    preview: PreviewReader | dict[str, Any] | None = None,
     fingerprint_memo: GraphFingerprintMemo | None = None,
     execution_context: ExecutionContext | None = None,
     seed_plan: Sequence[ListedSeed] | None = None,
 ) -> TraceResult:
     """Execute a pipeline graph and return a single-row trace.
 
-    The trace is a pure observation layer — it uses the same DataFrames
-    produced by the preview execution and correlates rows between parent
-    and child nodes post-hoc.  The execution pipeline is never modified.
+    The trace is a pure observation layer — it runs the same eager path the
+    preview uses and correlates rows between parent and child nodes post-hoc.
+    The execution pipeline is never modified.
 
     Args:
         graph: React Flow graph with "nodes" and "edges".
@@ -394,14 +368,6 @@ def execute_trace(
         row_values: Optional dict of the clicked row's values from the frontend.
                     Used to verify the trace is operating on the same data the
                     user sees.  If the values don't match, a ValueError is raised.
-        preview: Optional preview-cache lookup surface — either a reader
-                 object implementing :class:`PreviewReader` (``get``)
-                 or a pre-materialised snapshot dict with an
-                 ``eager_outputs`` slot.  When provided the trace reuses
-                 the materialised DataFrames instead of re-executing the
-                 upstream graph; when ``None`` (tests, CLI, cold requests)
-                 the trace falls back to a fresh execution.  This keeps the
-                 trace module decoupled from ``haute.executor._preview_cache``.
         fingerprint_memo: Optional request-scoped
                  :class:`~haute._cache.GraphFingerprintMemo` shared with the
                  caller (the trace route reuses the memo from its
@@ -451,7 +417,6 @@ def execute_trace(
                 source=source,
                 row_values=row_values,
                 preamble_ns=preamble_ns,
-                preview=preview,
                 fingerprint_memo=fingerprint_memo,
                 execution_context=admitted_context,
                 seed_plan=seed_plan,
@@ -469,7 +434,6 @@ def execute_trace(
         source=source,
         row_values=row_values,
         preamble_ns=preamble_ns,
-        preview=preview,
         fingerprint_memo=fingerprint_memo,
         execution_context=execution_context,
         t_start=t_start,
@@ -573,7 +537,6 @@ def _execute_trace_core(
     source: str,
     row_values: dict[str, Any] | None,
     preamble_ns: dict[str, Any] | None,
-    preview: PreviewReader | dict[str, Any] | None,
     fingerprint_memo: GraphFingerprintMemo | None,
     execution_context: ExecutionContext,
     snapshot_plan: SeedPlan | None,
@@ -683,19 +646,13 @@ def _execute_trace_core(
             prev_fingerprint=(_cache.most_recent_key or "")[:8],
         )
 
-        # A target-only preview deliberately retains only the selected node,
-        # so it can never satisfy a trace's full-ancestor evidence invariant.
-        # Consult only the exact full-lineage key; projected target previews
-        # otherwise add a guaranteed miss before every first trace click.
-        preview_fps = [fp]
-
+        execution_origin = "fresh_execution"
         (
             eager_outputs,
             order,
             parents_of,
             node_map,
             source_ids,
-            execution_origin,
             plans,
         ) = _materialize_eager_outputs(
             graph=graph,
@@ -703,11 +660,7 @@ def _execute_trace_core(
             row_limit=row_limit,
             prefixes=prefixes,
             source=source,
-            row_values=row_values,
             preamble_ns=preamble_ns,
-            preview_fps=preview_fps,
-            fp=fp,
-            preview=preview,
             execution_context=execution_context,
             snapshot_plan=snapshot_plan,
         )
@@ -1044,54 +997,6 @@ def _execute_trace_core(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_preview_snapshot(
-    preview: PreviewReader | dict[str, Any] | None,
-    preview_fps: list[str],
-) -> tuple[dict[str, Any], str] | None:
-    """Normalise *preview* into the slot-dict shape or ``None``.
-
-    Accepts three input shapes so callers can inject whichever is
-    cheapest to construct:
-
-    * ``None`` — caller opted out of preview reuse; returns ``None``.
-    * A reader with ``get(fingerprint) -> dict | None`` — we call it with
-      each candidate fingerprint and return the first hit.
-    * A snapshot dict — treated as a pre-materialised cache entry.  The
-      caller has already done the fingerprint lookup, so we return the
-      dict verbatim without consulting *preview_fp*.
-
-    This indirection is what lets :func:`execute_trace` stay agnostic to
-    where the preview data came from (executor cache, unit-test stub,
-    future Redis-backed reader, …).
-    """
-    if preview is None:
-        return None
-    # A snapshot dict also exposes ``get``; recognise the concrete snapshot
-    # shape before duck-typing the reader protocol so it is not mistaken for
-    # a keyed cache reader and queried with the fingerprint.
-    if isinstance(preview, dict):
-        return preview, preview_fps[0] if preview_fps else ""
-    # Duck-type the reader protocol. ``isinstance(..., PreviewReader)`` would
-    # also work since the Protocol is ``@runtime_checkable``, but
-    # ``hasattr`` is explicit about what we actually call.
-    get = getattr(preview, "get", None)
-    if callable(get):
-        for preview_fp in preview_fps:
-            result = get(preview_fp)
-            if result is None:
-                continue
-            if not isinstance(result, dict):
-                raise TypeError(
-                    f"PreviewReader.get must return dict | None, got {type(result).__name__}"
-                )
-            return result, preview_fp
-        return None
-    raise TypeError(
-        "execute_trace(preview=...) expects a PreviewReader, a snapshot dict, or None; "
-        f"got {type(preview).__name__}"
-    )
-
-
 def _materialize_eager_outputs(
     *,
     graph: PipelineGraph,
@@ -1099,102 +1004,28 @@ def _materialize_eager_outputs(
     row_limit: int,
     prefixes: Mapping[str, int],
     source: str,
-    row_values: dict[str, Any] | None,
     preamble_ns: dict[str, Any] | None,
-    preview_fps: list[str],
-    fp: str,
-    preview: PreviewReader | dict[str, Any] | None,
     execution_context: ExecutionContext | None,
     snapshot_plan: SeedPlan | None = None,
 ) -> tuple[
-    dict[str, pl.DataFrame],
+    dict[str, pl.DataFrame | dict[str, pl.DataFrame]],
     list[str],
     dict[str, list[str]],
     dict[str, Any],
     set[str],
-    str,
-    dict[str, Any] | None,
+    dict[str, Any],
 ]:
-    """Populate the trace cache: reuse preview outputs if available, else execute.
+    """Execute the trace lineage for the trace cache.
 
     Only head-framed nodes (those whose own first *prefixes* rows contain the
     target preview's lineage) are materialised, each to its prefix length.
+    If the frontend supplied clicked row values, execute_trace verifies or
+    relocates the target row before correlation so the trace stays anchored
+    to the preview row the user clicked.
 
     Returns ``(eager_outputs, order, parents_of, node_map, source_ids,
-    execution_origin, plans)``; ``plans`` is ``None`` when frames came from the
-    preview cache and are built on demand for row-scoped lookups.
-
-    The *preview* parameter is the sole source of preview-cache data.
-    Passing ``None`` forces a cold execution; passing a reader or a
-    snapshot dict lets callers reuse already-materialised DataFrames
-    without this module reaching into ``haute.executor``'s private
-    singleton.
+    plans)``, where ``plans`` holds every lineage node's uncapped runtime plan.
     """
-    # --- Try to reuse outputs from the injected preview ---------------
-    # The injected preview is either a reader object (``get(fp) -> dict |
-    # None``) or a pre-materialised snapshot dict. ``None`` disables
-    # cache lookup entirely and forces a fresh execution.
-    preview_lookup = _resolve_preview_snapshot(preview, preview_fps)
-    preview_data = preview_lookup[0] if preview_lookup is not None else None
-    matched_preview_fp = preview_lookup[1] if preview_lookup is not None else ""
-
-    if preview_data is not None:
-        # Snapshot dicts without an ``eager_outputs`` slot are treated
-        # as empty — the cold-execute path below will handle them.
-        prev_outputs = preview_data.get("eager_outputs") or {}
-        # Preview uses swallow_errors=True, so some outputs may be None on
-        # error.  Only reuse when the full ancestor chain is present; target-
-        # only previews intentionally cache just the selected node.
-        if target_node_id in prev_outputs and prev_outputs[target_node_id] is not None:
-            # Graph-structure metadata still needs computing for
-            # the trace-specific fields (parents_of, node_map, etc.)
-            prepared = execution_facade.prepare_graph(
-                graph,
-                target_node_id,
-                source=source,
-            )
-            node_map = prepared.node_map
-            order = _planned_order(prepared.order, snapshot_plan)
-            parents_of = prepared.parents_of
-            # A full-materialisation preview collects every node to
-            # ``row_limit``; those frames are head frames only where the
-            # propagated prefix is ``row_limit`` too. Anything else falls
-            # through to cold trace execution below.
-            missing_preview_nodes = [
-                nid for nid in order if nid in prefixes and prev_outputs.get(nid) is None
-            ]
-            if missing_preview_nodes or any(prefix != row_limit for prefix in prefixes.values()):
-                logger.debug(
-                    "trace_preview_cache_partial",
-                    fingerprint=fp[:8],
-                    preview_fingerprint=matched_preview_fp[:8],
-                    target=target_node_id,
-                    missing_nodes=missing_preview_nodes,
-                )
-            else:
-                eager_outputs = {nid: prev_outputs[nid] for nid in order if nid in prefixes}
-                source_ids = _trace_source_ids(order, parents_of, snapshot_plan)
-                logger.debug(
-                    "trace_reused_preview_cache",
-                    fingerprint=fp[:8],
-                    preview_fingerprint=matched_preview_fp[:8],
-                    target=target_node_id,
-                    reused_nodes=len(eager_outputs),
-                )
-                return (
-                    eager_outputs,
-                    order,
-                    parents_of,
-                    node_map,
-                    source_ids,
-                    "preview_cache",
-                    None,
-                )
-
-    # No usable preview cache. Execute fresh; if the frontend supplied
-    # clicked row values, execute_trace verifies or relocates the target
-    # row before correlation so the trace stays anchored to the preview
-    # row the user clicked.
     compiled_preamble_ns = _compile_preamble(
         graph.preamble or "",
         pipeline_dir=_pipeline_dir(graph),
@@ -1234,7 +1065,6 @@ def _materialize_eager_outputs(
         parents_of,
         node_map,
         source_ids,
-        "fresh_execution",
         dict(result.plans),
     )
 
