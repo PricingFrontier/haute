@@ -77,8 +77,11 @@ mtime), which every write moves, including a same-size rewrite that restores the
 Where the platform has no native revision the token is the file's stat, trusted only for a
 file last modified at least two seconds before it was observed; a younger file is proved again
 on every use. A file's content signature (`xxh64:<digest>:<size>`) is hashed once per
-unchanged token and shared by every consumer in the process, so one edit costs one hash. The
-proof lives in process memory: a fresh process proves each file once.
+unchanged token and shared by every consumer in the process, so one edit costs one hash. A
+proof made under a native revision is also recorded on disk in the project's `.haute_cache`,
+so a restarted server reuses it while that exact revision holds instead of reading the whole
+file again; a proof made under the stat fallback lives only in process memory, so without a
+native revision a fresh process proves each file once.
 
 A structured (JSON, JSONL, NDJSON, XML) API Input's emitting tables are input
 snapshots in the same store as Data Input snapshots, one per table: automatic

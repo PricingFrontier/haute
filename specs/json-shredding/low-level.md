@@ -668,12 +668,16 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   every source kind shares (see [caching](../caching/low-level.md)). The published
   table generations themselves are verified by the store (part digests, footers and
   schema) before they are read.
-- **Source signatures use bounded in-process proof reuse**: the shared
-  `file_signature` cache keys at most 256 immutable `FileSignature` entries by
-  canonical path; per-path single-flight prevents a concurrent hashing herd. The
-  token is read before and after hashing and the result is published only if it
-  held; one moving token retries, a second raises `SourceChangedError`. Nothing is
-  persisted: a new process hashes each source once. Loader failure publishes
+- **Source signatures use bounded in-process proof reuse, backed by durable
+  records**: the shared `file_signature` cache keys at most 256 immutable
+  `FileSignature` entries by canonical path; per-path single-flight prevents a
+  concurrent hashing herd. The token is read before and after hashing and the result
+  is published only if it held; one moving token retries, a second raises
+  `SourceChangedError`. A proof made under a native revision is also recorded in
+  `.haute_cache/source_proofs/` and reused by a new process while that exact revision
+  holds (the record contract and outcomes are in
+  [caching](../caching/low-level.md#durable-source-proofs)); without a native
+  revision nothing is persisted and a new process hashes each source once. Loader failure publishes
   nothing, and least-recently-used entries are evicted at the bound. A path with no
   native revision logs `source_revision_unavailable` once, so a platform capability
   problem stays operationally visible.
