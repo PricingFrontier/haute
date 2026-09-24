@@ -30,6 +30,7 @@ from haute.cli import cli
 from haute.cli._init_cmd import InitConfig, handle_init
 from haute.parser import parse_pipeline_file
 from scripts.spec_corpus_inventory import load_corpus_manifest
+from tests._source_files import source_files
 
 # Every check here reads repository files — specs, docs, source listings — and
 # compares them to each other. Nothing it asserts can come out differently on a
@@ -1549,8 +1550,8 @@ def _unreferenced_sources(paths: list[Path]) -> list[str]:
 def _backend_production_sources() -> list[Path]:
     tracked = _versionable_repo_files()
     sources: list[Path] = []
-    for path in BACKEND_SOURCE_ROOT.rglob("*"):
-        if not path.is_file() or path not in tracked:
+    for path in source_files(BACKEND_SOURCE_ROOT, suffix=None):
+        if path not in tracked:
             continue
         relative = path.relative_to(BACKEND_SOURCE_ROOT)
         if any(part in _BACKEND_COVERAGE_EXCLUDED_DIRS for part in relative.parts):
@@ -1603,13 +1604,10 @@ def _repository_operational_sources() -> list[Path]:
 
     paths.extend(
         path
-        for path in (ROOT / "examples").rglob("*")
-        if path.is_file()
-        and path in tracked
+        for path in source_files(ROOT / "examples", suffix=None)
+        if path in tracked
         and path.suffix in {".csv", ".json", ".py"}
-        and not {"__pycache__", "output", "outputs"}.intersection(
-            path.relative_to(ROOT / "examples").parts
-        )
+        and not {"output", "outputs"}.intersection(path.relative_to(ROOT / "examples").parts)
     )
 
     missing = [path.relative_to(ROOT).as_posix() for path in paths if not path.is_file()]

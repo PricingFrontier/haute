@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import ast
+import os
 import re
 import subprocess
+import textwrap
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
-from tests._source_files import source_files
+import pytest
+
+from tests._source_files import SourceTreeGuard, source_files
+
+pytest_plugins = ["pytester"]
 
 
 def _tracked_files() -> set[str]:
@@ -59,24 +66,223 @@ def test_no_local_mlflow_store_is_tracked() -> None:
     )
 
 
-def test_source_walks_never_enter_bytecode_caches(tmp_path: Path) -> None:
-    # Another worker may create or remove a __pycache__ mid-walk; the shared
-    # walk prunes caches before listing them.
+def test_source_walks_prune_bytecode_caches_before_entering_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Another worker may create or remove a __pycache__ mid-walk, so the walk
+    # must never list one: enumerating a cache directory fails this test.
     (tmp_path / "pkg" / "__pycache__").mkdir(parents=True)
-    (tmp_path / "pkg" / "__pycache__" / "stale.py").write_text("", encoding="utf-8")
+    (tmp_path / "pkg" / "__pycache__" / "module.cpython-311.pyc").write_bytes(b"")
     (tmp_path / "pkg" / "module.py").write_text("", encoding="utf-8")
+    real_scandir = os.scandir
+
+    def scandir(path: str) -> object:
+        if Path(path).name == "__pycache__":
+            raise AssertionError(f"the walk entered {path}")
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
 
     assert source_files(tmp_path) == [tmp_path / "pkg" / "module.py"]
 
 
-def test_tests_walk_source_trees_through_the_shared_helper() -> None:
-    raw_walk = "rglob(" + '"*.py")'
+# Trees that hold no Python, so no bytecode cache can appear in them mid-walk.
+_TREES_WITHOUT_PYTHON = frozenset({"docs", "specs", "frontend"})
+
+
+def _name_bindings(tree: ast.Module) -> dict[str, list[ast.expr]]:
+    """Every expression a module assigns to each name, anywhere in the module.
+
+    Names imported from the test package count as bound to the repository
+    (``REPO_ROOT`` and friends are anchored at ``__file__``).
+    """
+    bindings: dict[str, list[ast.expr]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith("tests"):
+            for alias in node.names:
+                bindings.setdefault(alias.asname or alias.name, []).append(ast.Name(id="__file__"))
+            continue
+        else:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                bindings.setdefault(target.id, []).append(value)
+    return bindings
+
+
+def _walk_origin(
+    expression: ast.expr, bindings: dict[str, list[ast.expr]], seen: frozenset[str]
+) -> tuple[bool, set[str]]:
+    """Whether *expression* derives from a ``__file__``, and the path segments it names."""
+    anchored = False
+    segments: set[str] = set()
+    for node in ast.walk(expression):
+        if (isinstance(node, ast.Name) and node.id == "__file__") or (
+            isinstance(node, ast.Attribute) and node.attr == "__file__"
+        ):
+            anchored = True
+        elif isinstance(node, ast.Name) and node.id in bindings and node.id not in seen:
+            for value in bindings[node.id]:
+                value_anchored, value_segments = _walk_origin(value, bindings, seen | {node.id})
+                anchored |= value_anchored
+                segments |= value_segments
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            segments.add(node.value)
+    return anchored, segments
+
+
+def _walk_receiver(call: ast.Call) -> ast.expr | None:
+    """The directory a recursive walk call descends from, if *call* is one."""
+    if not isinstance(call.func, ast.Attribute):
+        return None
+    method, owner = call.func.attr, call.func.value
+    if method == "walk" and isinstance(owner, ast.Name) and owner.id == "os":
+        return call.args[0] if call.args else None
+    if method in {"rglob", "walk"} and not (isinstance(owner, ast.Name) and owner.id == "ast"):
+        return owner
+    if (
+        method == "glob"
+        and call.args
+        and isinstance(call.args[0], ast.Constant)
+        and "**" in str(call.args[0].value)
+    ):
+        return owner
+    return None
+
+
+def _raw_repository_walks(source: str) -> list[int]:
+    """Lines that walk a repository tree which can hold bytecode caches."""
+    tree = ast.parse(source)
+    bindings = _name_bindings(tree)
+    lines: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or (receiver := _walk_receiver(node)) is None:
+            continue
+        anchored, segments = _walk_origin(receiver, bindings, frozenset())
+        if anchored and not segments & _TREES_WITHOUT_PYTHON:
+            lines.append(node.lineno)
+    return sorted(lines)
+
+
+def test_raw_repository_walk_detection_follows_names_to_the_repository() -> None:
+    sample = textwrap.dedent(
+        """
+        import os
+        from pathlib import Path
+
+        from tests._source_files import REPO_ROOT
+
+        ROOT = Path(__file__).resolve().parents[1]
+        SOURCE = ROOT / "src"
+        SPECS = ROOT / "specs"
+
+
+        def walks(tmp_path, folder):
+            this_file = Path(__file__).resolve()
+            root = this_file.parents[1]
+            list(SOURCE.rglob("*"))
+            list((root / folder).rglob("*"))
+            list(REPO_ROOT.glob("**/*.py"))
+            list(os.walk(ROOT / "tests"))
+            list(SPECS.rglob("*.md"))
+            list(tmp_path.rglob("*"))
+            list(ROOT.glob("*.md"))
+        """
+    )
+
+    assert _raw_repository_walks(sample) == [15, 16, 17, 18]
+
+
+def test_tests_walk_repository_trees_through_the_shared_helper() -> None:
     offenders = [
-        path.relative_to(_REPO_ROOT).as_posix()
+        f"{path.relative_to(_REPO_ROOT).as_posix()}:{line}"
         for path in source_files(_REPO_ROOT / "tests")
-        if path.name != "_source_files.py" and raw_walk in path.read_text(encoding="utf-8")
+        if path.name != "_source_files.py"
+        for line in _raw_repository_walks(path.read_text(encoding="utf-8"))
     ]
     assert offenders == []
+
+
+def _guarded_run(
+    pytester: pytest.Pytester, watched: Path, test_source: str, *args: str
+) -> pytest.RunResult:
+    (watched / "pkg").mkdir(parents=True, exist_ok=True)
+    (watched / "pkg" / "module.py").write_text("", encoding="utf-8")
+    pytester.makeini("[pytest]\nasyncio_default_fixture_loop_scope = function\n")
+    pytester.makepyfile(test_guarded=test_source)
+    return pytester.runpytest(*args, plugins=[SourceTreeGuard(watched, label="src")])
+
+
+def _writes(target: Path) -> str:
+    return textwrap.dedent(
+        f"""
+        from pathlib import Path
+
+
+        def test_writes():
+            target = Path({str(target)!r})
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"x")
+        """
+    )
+
+
+def test_a_file_left_under_the_source_tree_fails_the_session_and_is_named(
+    pytester: pytest.Pytester, tmp_path: Path
+) -> None:
+    watched = tmp_path / "src"
+    result = _guarded_run(
+        pytester, watched, _writes(watched / "pkg" / "mlruns" / "0" / "meta.yaml")
+    )
+
+    result.assert_outcomes(passed=1)
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+    result.stdout.fnmatch_lines(["*files left under src/*", "src/pkg/mlruns/0/meta.yaml"])
+
+
+def test_a_file_left_by_a_test_on_an_xdist_worker_fails_the_controller_session(
+    pytester: pytest.Pytester, tmp_path: Path
+) -> None:
+    watched = tmp_path / "src"
+    result = _guarded_run(
+        pytester, watched, _writes(watched / "pkg" / "left_behind.json"), "-n", "1"
+    )
+
+    assert result.ret == pytest.ExitCode.TESTS_FAILED
+    result.stdout.fnmatch_lines(
+        ["*files left under src/*", "src/pkg/left_behind.json", "*1 passed*"]
+    )
+
+
+@pytest.mark.parametrize("left_behind", [None, "pkg/__pycache__/module.cpython-311.pyc"])
+def test_clean_and_bytecode_only_sessions_pass(
+    pytester: pytest.Pytester, tmp_path: Path, left_behind: str | None
+) -> None:
+    watched = tmp_path / "src"
+    source = (
+        "def test_nothing():\n    pass\n" if left_behind is None else _writes(watched / left_behind)
+    )
+    result = _guarded_run(pytester, watched, source)
+
+    assert result.ret == pytest.ExitCode.OK
+    result.stdout.no_fnmatch_line("*files left under*")
+
+
+def test_the_guard_does_nothing_on_an_xdist_worker(tmp_path: Path) -> None:
+    (tmp_path / "pkg").mkdir()
+    guard = SourceTreeGuard(tmp_path, label="src")
+    session = SimpleNamespace(config=SimpleNamespace(workerinput={}), exitstatus=pytest.ExitCode.OK)
+
+    guard.pytest_sessionstart(session)  # type: ignore[arg-type]
+    (tmp_path / "pkg" / "left_behind.json").write_text("{}", encoding="utf-8")
+    guard.pytest_sessionfinish(session)  # type: ignore[arg-type]
+
+    assert guard.added == []
+    assert session.exitstatus == pytest.ExitCode.OK
 
 
 def test_the_roadmap_holds_reports_not_probes_or_benchmark_output() -> None:

@@ -23,7 +23,7 @@ from haute.executor import _preview_cache
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.trace import _cache as _trace_cache
 from tests import _write_sandbox as _ws
-from tests._source_files import source_tree_snapshot
+from tests._source_files import REPO_ROOT, SourceTreeGuard
 
 _TEST_LOCAL_SESSION_TOKEN = "pytest-haute-local-session-token"
 
@@ -930,6 +930,11 @@ def haute_scratch(tmp_path: Path) -> Path:
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    # A test that leaves a file under src/ fails the session (the guard
+    # compares the controller's snapshots; see tests/_source_files.py).
+    config.pluginmanager.register(
+        SourceTreeGuard(REPO_ROOT / "src", label="src"), "haute-source-tree-guard"
+    )
     # Aggregate the write-sandbox census across xdist workers: the controller
     # allocates a shared spool dir before workers spawn; workers inherit it via
     # the environment and dump their in-process records at session finish. The
@@ -941,36 +946,14 @@ def pytest_configure(config: pytest.Config) -> None:
     config._ws_census_spool = spool
 
 
-def pytest_sessionstart(session: pytest.Session) -> None:
-    # The controller (or a run without xdist) records the source tree so the
-    # session can fail if a test leaves a file under src/ (see sessionfinish).
-    if not hasattr(session.config, "workerinput"):
-        session.config._haute_source_tree = source_tree_snapshot()
-
-
 def pytest_sessionfinish(session: pytest.Session) -> None:
     census_dir = os.environ.get(_ws.ENV_CENSUS_DIR)
     if census_dir and _ws.VIOLATIONS:
         worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
         _ws.dump_census(census_dir, worker)
-    before = getattr(session.config, "_haute_source_tree", None)
-    if before is not None:
-        added = sorted(source_tree_snapshot() - before)
-        if added:
-            session.config._haute_source_tree_added = added
-            session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 def pytest_terminal_summary(terminalreporter) -> None:
-    added = getattr(terminalreporter.config, "_haute_source_tree_added", None)
-    if added:
-        terminalreporter.section("files left under src/", red=True)
-        for path in added:
-            terminalreporter.line(f"src/{path}")
-        terminalreporter.line(
-            f"{len(added)} file(s) appeared under src/ during the run; tests must write "
-            "under tmp_path, never into the package tree."
-        )
     violations = list(_ws.VIOLATIONS)
     census_dir = os.environ.get(_ws.ENV_CENSUS_DIR)
     if census_dir:

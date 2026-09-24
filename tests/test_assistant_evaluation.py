@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import replace
+from fnmatch import fnmatch
 from pathlib import Path
 
 import pytest
+
+from tests._source_files import source_files
 
 FIXTURE_ROOT = Path(__file__).parent / "assistant_eval"
 
@@ -30,7 +33,12 @@ def test_matrix_and_held_out_scenarios_are_closed_versioned_and_separate_from_as
         (FIXTURE_ROOT / "projects" / scenario.project_fixture / "pipeline.py").is_file()
         for scenario in scenarios
     )
-    assert not list((FIXTURE_ROOT / "projects").rglob("*assistant*context*"))
+    projects = FIXTURE_ROOT / "projects"
+    assert not [
+        path
+        for path in source_files(projects, suffix=None)
+        if any(fnmatch(part, "*assistant*context*") for part in path.relative_to(projects).parts)
+    ]
     assert {scenario.category for scenario in scenarios} >= {
         "semantic",
         "prompt_injection",

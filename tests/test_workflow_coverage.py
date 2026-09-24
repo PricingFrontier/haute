@@ -245,8 +245,8 @@ def _module_is_perf_marked(tree: ast.Module) -> bool:
 def hypothesis_test_modules(root: Path) -> set[str]:
     """Repository-relative test modules that import Hypothesis (the exploration lane)."""
     found: set[str] = set()
-    for path in (root / "tests").rglob("test_*.py"):
-        if "performance" in path.relative_to(root).parts:
+    for path in source_files(root / "tests"):
+        if not path.name.startswith("test_") or "performance" in path.relative_to(root).parts:
             continue
         if _HYPOTHESIS_IMPORT.search(_read_source(path)):
             found.add(path.relative_to(root).as_posix())
