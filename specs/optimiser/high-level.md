@@ -86,8 +86,12 @@ setup-owned Parquet file (or returns the auto-range totals), and the server proc
 quote grid from that file. A setup whose pipeline exceeds its memory budget therefore ends as a
 typed `memory_limited` job instead of growing the server, and cancelling setup terminates the
 worker. The solver itself still runs on a server thread against the grid. The explicit `thread`
-compatibility mode runs the same steps on the job's thread. The input estimate still executes the
-pipeline in the server process.
+compatibility mode runs the same steps on the job's thread. The input estimate runs on the warm
+interactive worker pool that preview and trace use, under the estimate's admitted memory caps,
+and a memory-limited estimate answers the typed 507. Auto-range's byte-budgeted chunk sizing,
+which samples rows, also runs in the auto-range worker; the server process decides only from the
+graph's structure whether a job can be chunked. No optimiser path reads pipeline rows in the
+server process in process mode.
 
 Once a solve completes, its lambdas, objective/constraint totals, convergence status, and (for
 ratebook) factor tables are available as a job summary. From there a user can:

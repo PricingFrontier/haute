@@ -192,8 +192,17 @@ def _ratebook_graph(path: Path, banding_path: Path) -> dict[str, Any]:
     ).model_dump()
 
 
-def _chunked_auto_range_graph(path: Path) -> dict[str, Any]:
-    """Base -> scenario expander -> row-local feature node: a provably chunkable chain."""
+def _chunked_auto_range_graph(
+    path: Path, *, auto_range_chunk_size: int | None = 6
+) -> dict[str, Any]:
+    """Base -> scenario expander -> row-local feature node: a provably chunkable chain.
+
+    Without an ``auto_range_chunk_size`` the chunks are sized from a byte budget,
+    which samples rows of the target plan.
+    """
+    sizing: dict[str, int] = {}
+    if auto_range_chunk_size is not None:
+        sizing["auto_range_chunk_size"] = auto_range_chunk_size
     base = path.parent / "base.parquet"
     pl.DataFrame(
         {
@@ -258,7 +267,7 @@ def _chunked_auto_range_graph(path: Path) -> dict[str, Any]:
                         "config": _optimiser_config(
                             scenario_value="premium_multiplier",
                             data_input="features",
-                            auto_range_chunk_size=6,
+                            **sizing,
                         ),
                     },
                 },
@@ -993,3 +1002,144 @@ def test_a_self_admitted_auto_range_job_returns_its_admission_when_it_fails(
         assert held() == []
     finally:
         gc.enable()
+
+
+class TestEstimateWorker:
+    """The estimate's warm-pool entrypoint and the route's answers to the pool."""
+
+    @staticmethod
+    def _estimate(project: Path, *, null_quote: bool) -> Any:
+        from haute._execution_admission import (
+            create_admitted_execution_context,
+            isolated_execution_budget,
+        )
+        from haute.routes._optimiser_worker import optimiser_estimate_worker
+        from haute.schemas import OptimiserEstimateRequest
+
+        graph = _online_graph(_scored_parquet(project, null_quote=null_quote))
+        body = OptimiserEstimateRequest.model_validate({"graph": graph, "node_id": "opt"})
+        context = create_admitted_execution_context(
+            operation="optimiser_estimate",
+            profile=ExecutionProfile.OPTIMISER_SETUP,
+        )
+        before = set(get_job_store("optimiser_worker").list_jobs())
+        try:
+            outcome = optimiser_estimate_worker(body, isolated_execution_budget(context))
+        finally:
+            context.release_admission()
+        # The worker's private estimate job is gone once it answers.
+        assert set(get_job_store("optimiser_worker").list_jobs()) == before
+        return outcome
+
+    def test_counts_come_back_and_the_private_job_is_removed(self, project: Path) -> None:
+        outcome = self._estimate(project, null_quote=False)
+
+        assert outcome.failure is None
+        assert outcome.metrics is not None
+        assert outcome.metrics["quote_count"] > 0
+
+    def test_a_refusal_comes_back_as_its_typed_answer(self, project: Path) -> None:
+        outcome = self._estimate(project, null_quote=True)
+
+        assert outcome.metrics is None
+        assert outcome.failure is not None
+        status_code, detail = outcome.failure
+        assert status_code == 400
+        assert "quote_id" in str(detail)
+
+    def test_a_worker_memory_kill_answers_the_typed_507(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._interactive_workers import InteractiveWorkerMemoryLimitError
+        from haute.routes import optimiser as optimiser_routes
+        from haute.schemas import OptimiserEstimateRequest
+
+        class _MemoryKilledPool:
+            def run(self, *_args: Any, **_kwargs: Any) -> Any:
+                raise InteractiveWorkerMemoryLimitError(rss_bytes=2048, limit_bytes=1024)
+
+        _process_mode(monkeypatch)
+        monkeypatch.setattr(optimiser_routes, "interactive_worker_pool", _MemoryKilledPool)
+        body = OptimiserEstimateRequest.model_validate(
+            {"graph": _online_graph(_scored_parquet(project)), "node_id": "opt"}
+        )
+
+        with pytest.raises(HTTPException) as raised:
+            optimiser_routes._optimiser_input_metrics(body)
+
+        assert raised.value.status_code == 507
+        assert raised.value.detail == {
+            "error_code": "memory_limit",
+            "rss_bytes": 2048,
+            "rss_limit_bytes": 1024,
+            "reason": "worker_rss_limit_exceeded",
+        }
+
+
+class TestAutoRangeChunkSizingInTheWorker:
+    """A process-mode start plans structurally; the worker sizes the chunks."""
+
+    def test_a_process_mode_start_reads_no_rows_in_the_server(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute.chunking as chunking
+
+        graph = _chunked_auto_range_graph(_scored_parquet(project), auto_range_chunk_size=None)
+        body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
+        service = OptimiserSolveService(JobStore())
+        monkeypatch.setattr(
+            chunking,
+            "_sample_variable_column_widths",
+            lambda *_args, **_kwargs: pytest.fail("sampled rows in the server process"),
+        )
+
+        prepared = service._prepare_frontier_auto_range(body, sample_row_widths=False)
+
+        assert prepared["streaming_plan"] is not None
+        assert prepared["streaming_plan"].sized is False
+        # Control: sizing the same plan does sample rows.
+        with pytest.raises(pytest.fail.Exception, match="sampled rows"):
+            service._prepare_frontier_auto_range(body)
+
+    def test_a_sizing_fallback_in_the_worker_runs_the_whole_frame(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import haute.chunking as chunking
+        from haute.errors import ChunkPlanUnsupportedError
+
+        graph = _chunked_auto_range_graph(_scored_parquet(project), auto_range_chunk_size=None)
+        body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
+
+        def unsampleable(*_args: Any, **_kwargs: Any) -> Any:
+            raise ChunkPlanUnsupportedError("The target's wide columns cannot be sampled.")
+
+        monkeypatch.setattr(chunking, "_sample_variable_column_widths", unsampleable)
+
+        def run(service: OptimiserSolveService, prepared: dict[str, Any]) -> tuple[Any, str]:
+            job_id = service._store.create_job(
+                {"status": "running", "job_type": "frontier_auto_range"}
+            )
+            service._store.atomic_update(job_id, {"start_time": time.monotonic()})
+            response = service._run_frontier_auto_range_job(body, job_id, **prepared)
+            return response, job_id
+
+        thread_service = OptimiserSolveService(JobStore())
+        thread_prepared = thread_service._prepare_frontier_auto_range(body)
+        assert thread_prepared["streaming_plan"] is None
+        thread_response, _ = run(thread_service, thread_prepared)
+
+        _process_mode(monkeypatch)
+        worker = _InlineWorker()
+        monkeypatch.setattr(_optimiser_service, "run_isolated_worker", worker)
+        service = OptimiserSolveService(JobStore())
+        prepared = service._prepare_frontier_auto_range(body, sample_row_widths=False)
+        assert prepared["streaming_plan"] is not None
+        response, job_id = run(service, prepared)
+
+        assert [call["request"].chunked for call in worker.calls] == [True, False]
+        assert response.ranges == thread_response.ranges
+        assert response.chunk_fallback is not None
+        assert response.chunk_fallback.code == "chunk_plan_unsupported"
+        assert response.warning == response.chunk_fallback.message
+        recorded = service._store.require_job(job_id)["chunk_fallback"]
+        assert recorded["code"] == "chunk_plan_unsupported"

@@ -6,9 +6,9 @@
 |---|---|
 | `src/haute/routes/optimiser.py` | FastAPI router (`/api/optimiser/*`). Owns request/response assembly, frontier-point selection, artifact-payload building/validation for save and MLflow log, and the module-level `_store`/`_solve_service` singletons. |
 | `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService` and its supporting free functions: pipeline execution, setup orchestration, solver dispatch (online and ratebook), background frontier-auto-range estimation, and ratebook factor-table canonicalisation/serialisation. Each setup step is one orchestration method over a free step in `_optimiser_input.py`: `_recorded_setup_failures` records an `OptimiserSetupError` on the job as its terminal state and answers the matching `HTTPException`; chunk provenance is recorded by `_record_setup_chunking`; a ratebook factor-extraction refusal is recorded by the setup failure mapping instead. It owns no filesystem deletion. |
-| `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`, `_solve_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the value-contract expressions and their failure details, solver-input chunk sizing (`_chunk_size_decision_for_parquet`), resident-grid admission (`_admit_resident_grid`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `write_solver_input`, `grid_chunk_decision` (returns the chunk size and its provenance) and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. |
+| `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`, `_solve_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the value-contract expressions and their failure details, solver-input chunk sizing (`_chunk_size_decision_for_parquet`), resident-grid admission (`_admit_resident_grid`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `write_solver_input`, `grid_chunk_decision` (returns the chunk size and its provenance) and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. The input estimate's pre-flight and single scan (`estimate_input_metrics`) and its typed answers (`ESTIMATE_MAPPED_ERRORS`, `estimate_failure_http_exception`) live here too, shared by the in-process count and the pool worker. |
 | `src/haute/routes/_optimiser_artifacts.py` | The owned artifact lifecycle: the two ownership-marked artifact families (apply result, ratebook factors) — their roots, handle validation, persistence, loading, job-store cleaners, orphan cleanup and stale-startup reaping (`reap_stale_optimiser_artifacts`) — and setup's temporary files (the solver-input parquet, a worker's ratebook factors directory, the range reducer's spill directory). |
-| `src/haute/routes/_optimiser_worker.py` | The hard-capped spawn workers that materialise optimiser inputs in process mode: `materialise_solve_input_worker` (solve setup's execute/validate/project/factor-extraction and the solver-input parquet) and `frontier_auto_range_worker` (the auto-range totals), their plain-data requests and outcomes, `SolveInput`, and `OptimiserWorkerFailure`, the child's terminal failure record that the parent replays onto the real job (raised there as `OptimiserWorkerFailureError`). |
+| `src/haute/routes/_optimiser_worker.py` | The hard-capped spawn workers that materialise optimiser inputs in process mode: `materialise_solve_input_worker` (solve setup's execute/validate/project/factor-extraction and the solver-input parquet) and `frontier_auto_range_worker` (the auto-range totals), their plain-data requests and outcomes, `SolveInput`, and `OptimiserWorkerFailure`, the child's terminal failure record that the parent replays onto the real job (raised there as `OptimiserWorkerFailureError`). It also holds the warm-pool estimate entrypoint `optimiser_estimate_worker`, which returns an `OptimiserEstimateOutcome` (the counts, or a status and detail) and records nothing. |
 | `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT`, `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_apply_preview_payload`, `limited_frontier_payload`. |
 | `src/haute/routes/_frontier_point_summary.py` | The one derivation of a frontier point's solve summary: `frontier_point_summary` (from a `price-contour` frontier row), `apply_frontier_point_summary` (overlays it on a base result) and `FrontierPointDataError` (a malformed point, carrying the HTTP status the route reports). See Frontier point summaries below. |
 | `src/haute/_builders.py` | Cross-component runtime registry owned by [execution-engine](../execution-engine/low-level.md). The optimiser component consumes its optimiser-apply online/ratebook closures; saved artifact validation and trace reconstruction must remain contract-compatible with those closures. |
@@ -314,9 +314,18 @@ HTTP 422; the 422 mapping remains for bounded streaming-collect failures.
   that source would execute under (at the streaming plan's base for a chunked job, at the data
   input otherwise), runs `frontier_auto_range_worker` through `_run_optimiser_worker` with the
   job's remaining timeout as the worker's timeout (its expiry publishes the job's `timed_out`),
-  and completes with the returned totals and the worker's metrics adopted as evidence. The child
-  re-plans (`_prepare_frontier_auto_range(prepare_snapshot_inputs=False)`; a chunk plan is not
-  picklable), fails if its chunk decision differs from the parent's, and runs this same job with
+  and completes with the returned totals and the worker's metrics adopted as evidence. In process
+  mode `start_frontier_auto_range` plans with `sample_row_widths=False`: without a configured
+  `auto_range_chunk_size` the plan is structural (`_StreamingAutoRangePlan.sized` is false), fixing
+  the base node and its columns without sampling rows, and the in-process chunk runner refuses an
+  unsized plan. The child re-plans (`_prepare_frontier_auto_range(prepare_snapshot_inputs=False)`;
+  a chunk plan is not picklable) and sizes the chunks. When sizing loses the chunked plan the child
+  returns only the `chunk_fallback`; the parent records it on the job, opens a whole-frame seed
+  plan and runs a whole-frame worker (`_frontier_ranges_attempt` opens each attempt's plan and
+  closes it when that worker exits), and the result carries the fallback. A sizing refusal that is
+  not a chunk-plan rejection (`ChunkMemoryRiskError`) is the job's failure, not a start-time 422.
+  Any other difference between the parent's and child's chunk decisions fails. The child runs this
+  same job with
   `isolate=False` against a private job record and the adopted plan, with its temporary files
   (the reducer's bucket parts) in a parent-owned scratch directory removed after the worker
   exits; its terminal failure record is replayed through the job's failure mapping
@@ -705,13 +714,22 @@ returned as a generic `status: "error"` payload.
   overlapping on the same graph/node; synchronous estimate does not use that coordinator.
 - **`_ESTIMATE_JOB_TYPE` is assigned by `/estimate`, not by frontier auto-range.**
   `haute.routes.optimiser._optimiser_input_metrics` (backing `POST /api/optimiser/estimate`)
-  creates a short-lived job tagged `job_type = _ESTIMATE_JOB_TYPE`, owns an admitted
-  `OPTIMISER_SETUP` context for the complete pipeline-and-aggregation scan, releases that
-  admission, and unconditionally removes the job in a
-  `finally: _remove_estimate_job(job_id)` block. An admission or sampled-memory failure is a
-  structured HTTP 507 response with optimiser-estimate-specific user wording, never a generic
-  HTTP 500. The job tag is what lets `_NON_BLOCKING_RUNNING_JOB_TYPES` exempt an in-flight
-  `/estimate` call from `_check_no_concurrent_jobs`'s store-wide scan.
+  validates the config, owns an admitted `OPTIMISER_SETUP` context for the whole count and
+  releases it on every exit. `OptimiserSolveService.estimate_input` does the count: it creates a
+  short-lived job tagged `job_type = _ESTIMATE_JOB_TYPE`, executes the pipeline to the data
+  input, runs `estimate_input_metrics` (one streaming aggregation scan with the null-`quote_id`
+  check folded in) and removes the job in a `finally`. In process mode the count runs on the
+  warm interactive worker pool (`optimiser_estimate_worker`, the pipeline's lineage affinity
+  key, the admission's native and RSS caps, `HAUTE_OPTIMISER_ESTIMATE_TIMEOUT` seconds,
+  default 300): the job lives in the worker's private `optimiser_worker` store, and the worker
+  returns the counts or a `(status, detail)` answer (`OptimiserEstimateOutcome`). The route
+  answers a pool memory kill with the typed 507, a timeout with 504, and a crash or unexpected
+  worker error as preview does. In `thread` mode the service counts in-process. An admission,
+  sampled-memory, bounded-streaming or contract failure has its typed answer
+  (`estimate_failure_http_exception`: 507 with optimiser-estimate wording, 422, or the public
+  contract answer), never a generic 500. The job tag is what lets
+  `_NON_BLOCKING_RUNNING_JOB_TYPES` exempt an in-flight in-process `/estimate` call from
+  `_check_no_concurrent_jobs`'s store-wide scan.
 - **`/estimate`'s `total_rows` is null only when the source size is unknown.**
   `_detailed_ancestor_source_metadata` answers an unknown size itself, with no row count:
   live data without Parquet backing, or a source whose metadata read raises `OSError`,

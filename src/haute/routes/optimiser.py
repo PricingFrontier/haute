@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import math
 import threading
@@ -14,31 +13,38 @@ from typing import Any, Literal, Protocol, cast
 
 from fastapi import APIRouter, HTTPException
 
-from haute._execution_admission import ExecutionAdmissionError, create_admitted_execution_context
+from haute._env import float_env
+from haute._execution_admission import (
+    create_admitted_execution_context,
+    isolated_execution_budget,
+)
 from haute._execution_context import (
     ExecutionContext,
-    ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
 from haute._file_ops import atomic_write_text
+from haute._interactive_workers import (
+    InteractiveWorkerCrashedError,
+    InteractiveWorkerMemoryLimitError,
+    InteractiveWorkerRemoteError,
+    InteractiveWorkerStoppedError,
+    InteractiveWorkerTimeoutError,
+    interactive_worker_pool,
+    resolve_interactive_execution_mode,
+)
 from haute._logging import get_logger
 from haute._mlflow_utils import (
     allow_file_store_if_local,
     ensure_experiment,
     registry_uri_for_tracking,
 )
-from haute._polars_utils import streaming_collect
 from haute._rating import is_rating_dtype_descriptor
 from haute._sandbox import _get_project_root, contained_path
 from haute._types import SolveResultLike
-from haute.errors import BoundedMemoryUnsupportedError
+from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.routes._background_jobs import (
     BackgroundJobStoppedError,
     CancellableJobRegistry,
-)
-from haute.routes._contract_errors import (
-    PUBLIC_CONTRACT_ERROR_TYPES,
-    contract_error_http_exception,
 )
 from haute.routes._frontier_point_summary import (
     NON_CONVERGED_WARNING,
@@ -50,7 +56,6 @@ from haute.routes._frontier_point_summary import (
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._job_lifecycle import JobLifecycle, TerminalReason, require_job_status
 from haute.routes._job_store import JobSnapshot, RunningJobFields, get_job_store
-from haute.routes._memory_messages import memory_limit_user_message
 from haute.routes._mlflow_log_errors import mlflow_log_http_exception, require_mlflow_installed
 from haute.routes._optimiser_artifacts import (
     _APPLY_RESULT_HANDLE_KEY,
@@ -60,10 +65,10 @@ from haute.routes._optimiser_artifacts import (
     _persist_apply_result_artifact,
 )
 from haute.routes._optimiser_input import (
-    _NULL_QUOTE_ID_DETAIL_PREFIX,
+    ESTIMATE_MAPPED_ERRORS,
+    _estimate_quote_id_column_or_raise,  # noqa: F401 - estimate pre-flight, re-exported
     _find_optimiser_node,
-    _optimiser_solve_required_columns_by_node,
-    _resolve_optimiser_data_input_id,
+    estimate_failure_http_exception,
 )
 from haute.routes._optimiser_limits import (
     FrontierComputeBudgetExceededError,
@@ -72,7 +77,6 @@ from haute.routes._optimiser_limits import (
     limited_frontier_payload,
 )
 from haute.routes._optimiser_service import (
-    _ESTIMATE_JOB_TYPE,
     _FRONTIER_GENERATION_KEY,
     _FRONTIER_RECOMPUTE_JOB_TYPE,
     _JOB_TYPE_KEY,
@@ -89,7 +93,13 @@ from haute.routes._optimiser_service import (
     _with_flattened_optimiser_graph,
     solver_worker_context,
 )
-from haute.routes.pipeline import _prepare_runtime_graph
+from haute.routes._optimiser_worker import OptimiserEstimateOutcome, optimiser_estimate_worker
+from haute.routes.pipeline import (
+    _interactive_affinity_key,
+    _prepare_runtime_graph,
+    _raise_interactive_remote_http_error,
+    _raise_interactive_worker_crash_http_error,
+)
 from haute.schemas import (
     OptimiserApplyRequest,
     OptimiserApplyResponse,
@@ -126,12 +136,6 @@ _MAX_FRONTIER_APPLY_ARTIFACTS = 8
 _frontier_state_lock = threading.RLock()
 _frontier_jobs = CancellableJobRegistry()
 _CONSTRAINT_THRESHOLD_KEYS = ("min", "max", "min_pct", "max_pct")
-
-
-class _OptimiserEstimateRunningJob(RunningJobFields):
-    job_type: Literal["estimate"]
-    config: dict[str, Any]
-    node_label: str
 
 
 class _FrontierRecomputeRunningJob(RunningJobFields):
@@ -235,160 +239,73 @@ def _cleanup_orphan_apply_artifact(
         )
 
 
-def _remove_estimate_job(job_id: str) -> None:
-    _store.delete_job(job_id)
-
-
-def _estimate_quote_id_column_or_raise(source_lf: Any, config: dict[str, Any]) -> str:
-    """Schema-only pre-flight for the estimate; returns the quote-id column.
-
-    Mirrors the column-presence and quote-id dtype checks (and their exact
-    messages) from ``_validate_and_project`` WITHOUT its value-contract
-    scans: solve-grade NaN/inf validation is the solve path's job, while the
-    estimate only counts rows and must stay a single-scan operation.
-    ``collect_schema()`` resolves the lazy schema without reading data.
-    """
-    import polars as pl
-
-    objective = str(config["objective"])
-    constraints = config.get("constraints") or {}
-    qid_col = str(config.get("quote_id", "quote_id"))
-    mult_col = str(config.get("scenario_value", "scenario_value"))
-    step_col = str(config.get("scenario_index", "scenario_index"))
-
-    schema = source_lf.collect_schema()
-    available_cols = set(schema.names())
-    required_cols = {objective, qid_col, mult_col, step_col, *constraints}
-    missing_cols = sorted(required_cols - available_cols)
-    if missing_cols:
-        avail = sorted(available_cols)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Missing columns in scored data: {missing_cols}. Available: {avail}",
-        )
-
-    qid_dtype = schema[qid_col]
-    if not (
-        qid_dtype == pl.String or qid_dtype == pl.Categorical or isinstance(qid_dtype, pl.Enum)
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"{qid_col} must be Utf8 (String), Categorical, or Enum, got {qid_dtype}. "
-                "Numeric, binary, and other dtypes are not supported as quote_id columns."
-            ),
-        )
-    return qid_col
+def _estimate_timeout() -> float:
+    return float_env("HAUTE_OPTIMISER_ESTIMATE_TIMEOUT", 300.0)
 
 
 def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | float | None]:
     """Return quote/scenario counts for the actual projected optimiser input.
 
-    Cost contract (pinned by the single-scan tests in
-    ``tests/test_optimiser_routes_real_library.py``): this executes the
-    pipeline up to the optimiser's data input — reusing the optimiser-setup
-    dataframe-execution cache when warm — and then runs exactly ONE
-    streaming aggregation scan over the quote-id column.  The
-    null-``quote_id`` contract check is folded into that same scan rather
-    than running as a separate full pass, and solve-grade value validation
-    (NaN/inf contract scans) is deliberately left to the solve path.
+    The route owns admission and the answer; the count itself
+    (``OptimiserSolveService.estimate_input``: the pipeline, then ONE
+    streaming aggregation scan) runs in the warm interactive worker pool in
+    process mode, under that admission's memory caps, and in-process in the
+    explicit ``thread`` compatibility mode. No frame is collected in the
+    server process.
     """
-    import polars as pl
-
     body = cast(OptimiserEstimateRequest, _with_flattened_optimiser_graph(body))
     node = _find_optimiser_node(body.graph, body.node_id)
-    config = node.data.config
-    _solve_service._validate_config(config)
-    data_input_id = _resolve_optimiser_data_input_id(body.graph, body.node_id, config)
-    required_columns_by_node = _optimiser_solve_required_columns_by_node(
-        body.graph,
-        body.node_id,
-        config,
+    _solve_service._validate_config(node.data.config)
+    execution_context = create_admitted_execution_context(
+        operation="optimiser_estimate",
+        profile=ExecutionProfile.OPTIMISER_SETUP,
     )
-
-    initial_job: _OptimiserEstimateRunningJob = {
-        "status": "running",
-        "job_type": _ESTIMATE_JOB_TYPE,
-        "message": "Estimating optimiser input",
-        "config": dict(config),
-        "node_label": node.data.label,
-    }
-    job_id = _store.create_job(initial_job)
-    # The seed plan entered on this stack is held while the estimate reads
-    # its frames, and released on every exit.
-    execution_context: ExecutionContext | None = None
     try:
-        with contextlib.ExitStack() as resources:
-            execution_context = create_admitted_execution_context(
-                operation="optimiser_estimate",
-                profile=ExecutionProfile.OPTIMISER_SETUP,
-                job_id=job_id,
-            )
-            lazy_outputs = _solve_service._execute_pipeline(
-                body,
-                job_id,
-                resources,
-                required_columns_by_node=required_columns_by_node,
-                target_node_id=data_input_id or body.node_id,
-                execution_context=execution_context,
-            )
-            source_lf = _solve_service._resolve_data_input_frame(
-                lazy_outputs,
-                body.graph,
-                config,
-                body.node_id,
-                job_id,
-            )
-            quote_id_col = _estimate_quote_id_column_or_raise(source_lf, config)
-            # Counting only needs the quote-id column; selecting it first
-            # lets projection pushdown skip every other solver column.  The
-            # null-quote_id contract check is folded into the same scan:
-            # null keys form their own ``group_by`` group, so their row
-            # count comes for free instead of costing a second full pass.
-            scenario_counts = (
-                source_lf.select(pl.col(quote_id_col))
-                .group_by(quote_id_col)
-                .agg(pl.len().alias("scenario_count"))
-            )
-            non_null_counts = pl.col("scenario_count").filter(
-                pl.col(quote_id_col).is_not_null(),
-            )
-            row = streaming_collect(
-                scenario_counts.select(
-                    pl.col("scenario_count")
-                    .filter(pl.col(quote_id_col).is_null())
-                    .sum()
-                    .alias("null_quote_id_row_count"),
-                    pl.col(quote_id_col).is_not_null().sum().alias("quote_count"),
-                    non_null_counts.min().alias("scenarios_per_quote_min"),
-                    non_null_counts.max().alias("scenarios_per_quote_max"),
-                    non_null_counts.mean().alias("scenarios_per_quote_mean"),
-                    non_null_counts.sum().alias("expanded_row_count"),
-                ),
-            ).row(0, named=True)
-            null_quote_id_rows = int(row["null_quote_id_row_count"] or 0)
-            if null_quote_id_rows > 0:
-                # Same contract (status + message) as the solve path's
-                # standalone null check in ``_validate_and_project``.
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"{_NULL_QUOTE_ID_DETAIL_PREFIX} ({null_quote_id_rows} rows). "
-                        "Every row must have a non-null quote_id; "
-                        "check upstream filters and joins."
-                    ),
-                )
-            return {
-                "quote_count": row["quote_count"],
-                "scenarios_per_quote_min": row["scenarios_per_quote_min"],
-                "scenarios_per_quote_max": row["scenarios_per_quote_max"],
-                "scenarios_per_quote_mean": row["scenarios_per_quote_mean"],
-                "expanded_row_count": row["expanded_row_count"],
-            }
+        if resolve_interactive_execution_mode() == "process":
+            return _optimiser_input_metrics_in_worker(body, execution_context)
+        return _solve_service.estimate_input(body, execution_context=execution_context)
     finally:
-        if execution_context is not None:
-            execution_context.release_admission(preserve_primary_error=True)
-        _remove_estimate_job(job_id)
+        execution_context.release_admission(preserve_primary_error=True)
+
+
+def _optimiser_input_metrics_in_worker(
+    body: OptimiserEstimateRequest,
+    execution_context: ExecutionContext,
+) -> dict[str, int | float | None]:
+    """Run the estimate on the warm pool and answer its failures as preview does."""
+    budget = isolated_execution_budget(execution_context)
+    try:
+        outcome = interactive_worker_pool().run(
+            optimiser_estimate_worker,
+            body,
+            budget,
+            affinity_key=_interactive_affinity_key(body.graph, body.source),
+            timeout_seconds=_estimate_timeout(),
+            absolute_rss_limit_bytes=budget.process_rss_limit_bytes,
+            memory_growth_limit_bytes=budget.memory_limit_bytes,
+            require_memory_limit=resolve_worker_memory_enforcement() == "required",
+        )
+    except InteractiveWorkerMemoryLimitError as exc:
+        raise HTTPException(status_code=507, detail=exc.to_payload()) from None
+    except InteractiveWorkerTimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Optimiser estimate timed out ({_estimate_timeout():.0f}s limit)",
+        ) from None
+    except InteractiveWorkerStoppedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except InteractiveWorkerCrashedError as exc:
+        _raise_interactive_worker_crash_http_error(exc, operation="optimiser_estimate")
+    except InteractiveWorkerRemoteError as exc:
+        _raise_interactive_remote_http_error(exc, operation="optimiser_estimate")
+    if not isinstance(outcome, OptimiserEstimateOutcome):
+        raise RuntimeError(f"Optimiser estimate worker returned {type(outcome).__name__}")
+    if outcome.failure is not None:
+        status_code, detail = outcome.failure
+        raise HTTPException(status_code=status_code, detail=detail)
+    if outcome.metrics is None:
+        raise RuntimeError("Optimiser estimate worker returned neither counts nor a failure")
+    return outcome.metrics
 
 
 def _frontier_ranges_for_request(
@@ -1204,23 +1121,8 @@ def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
 
     try:
         metrics = _optimiser_input_metrics(body)
-    except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-        memory_detail = exc.to_payload()
-        memory_detail["message"] = memory_limit_user_message(
-            exc,
-            operation_noun="Optimiser estimate",
-        )
-        raise HTTPException(status_code=507, detail=memory_detail) from None
-    except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-        raise contract_error_http_exception(exc) from None
-    except BoundedMemoryUnsupportedError as exc:
-        detail = f"Optimiser estimate cannot run in bounded streaming mode: {exc}"
-        logger.warning(
-            "optimiser_estimate_bounded_streaming_unsupported",
-            error=str(exc),
-            node_id=body.node_id,
-        )
-        raise HTTPException(status_code=422, detail=detail) from exc
+    except ESTIMATE_MAPPED_ERRORS as exc:
+        raise estimate_failure_http_exception(exc, node_id=body.node_id) from None
     return OptimiserEstimateResponse(
         total_rows=total_rows,
         quote_count=cast(int | None, metrics.get("quote_count")),

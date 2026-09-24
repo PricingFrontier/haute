@@ -555,3 +555,59 @@ def test_interactive_route_worker_failures_have_stable_http_status(
         asyncio.run(invocation)
 
     assert exc_info.value.status_code == expected_status
+
+
+def test_the_optimiser_estimate_counts_in_the_spawn_worker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Process mode: the estimate's scan runs in the warm worker, never the server.
+
+    The server-side scan is patched to fail; the spawned worker imports its own
+    copy of the module, so only an in-process count would trip it.
+    """
+    from unittest.mock import patch
+
+    import polars as pl
+
+    from haute._interactive_workers import shutdown_interactive_worker_pool
+    from haute._sandbox import set_project_root
+    from haute.server import app
+    from tests.test_optimiser_routes_real_library import _online_graph
+
+    path = tmp_path / "scored.parquet"
+    pl.DataFrame(
+        {
+            "quote_id": ["q1", "q1", "q2", "q2", "q2"],
+            "scenario_index": pl.Series([0, 1, 0, 1, 2], dtype=pl.Int32),
+            "scenario_value": pl.Series([0.9, 1.1, 0.8, 1.0, 1.2], dtype=pl.Float32),
+            "expected_income": pl.Series([100.0, 110.0, 90.0, 95.0, 98.0], dtype=pl.Float32),
+            "volume": pl.Series([1.0, 0.9, 1.2, 1.1, 1.0], dtype=pl.Float32),
+        }
+    ).write_parquet(path)
+    # A spawned worker's project root is the working directory it starts in.
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
+    monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
+    monkeypatch.setenv("HAUTE_INTERACTIVE_WORKER_COUNT", "1")
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+    shutdown_interactive_worker_pool()
+    try:
+        with (
+            patch(
+                "haute.routes._optimiser_input.streaming_collect",
+                side_effect=AssertionError("the estimate collected in the server process"),
+            ),
+            TestClient(app, raise_server_exceptions=False) as client,
+        ):
+            response = client.post(
+                "/api/optimiser/estimate",
+                json={"graph": _online_graph(str(path)), "node_id": "opt"},
+            )
+    finally:
+        shutdown_interactive_worker_pool()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["quote_count"] == 2
+    assert body["scenarios_per_quote_max"] == 3
+    assert body["expanded_row_count"] == 5

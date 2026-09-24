@@ -24,6 +24,10 @@ is released when its adopted plan closes, before the parent reads the file.
 A ``MemoryError`` a native cap raised in the child leaves it as that error, so
 the parent classifies it as ``memory_limited`` like any memory-shaped worker
 failure, instead of the child's generic failure mapping reporting a 500.
+
+The input estimate runs on the warm interactive worker pool instead
+(:func:`optimiser_estimate_worker`): it answers a request, so it returns the
+counts or a typed answer and records nothing.
 """
 
 from __future__ import annotations
@@ -49,7 +53,15 @@ from haute._logging import get_logger
 from haute._seed_plans import SeedPlanHandoff
 from haute.routes._job_lifecycle import TERMINAL_REASONS, TerminalReason
 from haute.routes._job_store import get_job_store
-from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
+from haute.routes._optimiser_input import (
+    ESTIMATE_MAPPED_ERRORS,
+    estimate_failure_http_exception,
+)
+from haute.schemas import (
+    OptimiserEstimateRequest,
+    OptimiserFrontierAutoRangeRequest,
+    OptimiserSolveRequest,
+)
 
 if TYPE_CHECKING:
     from haute.routes._job_store import JobStore
@@ -134,9 +146,12 @@ class SolveInputWorkerOutcome:
 class FrontierAutoRangeWorkerRequest:
     """Everything the auto-range child needs, as picklable plain data.
 
-    ``chunked`` is the parent's plan decision; the child re-plans (a chunk
-    plan is not picklable) and fails loudly if it decides otherwise, because
-    the parent opened the seed plan for that decision's execution target.
+    ``chunked`` is the parent's structural plan decision; the child re-plans
+    (a chunk plan is not picklable) and sizes the chunks, which samples rows,
+    so the server process never reads them. Sizing can lose a chunked plan:
+    the child then reports the fallback without computing anything, because
+    the parent opened the seed plan for the chunked execution target. Any
+    other disagreement fails loudly.
     """
 
     body: OptimiserFrontierAutoRangeRequest
@@ -153,6 +168,8 @@ class FrontierAutoRangeWorkerOutcome:
     ranges: dict[str, dict[str, float]] | None = None
     execution_metrics: dict[str, Any] | None = None
     failure: OptimiserWorkerFailure | None = None
+    # Set when sizing the chunks lost the parent's chunked plan.
+    chunk_fallback: dict[str, Any] | None = None
 
 
 @contextlib.contextmanager
@@ -357,7 +374,13 @@ def frontier_auto_range_worker(
                 request.body,
                 prepare_snapshot_inputs=False,
             )
-            if (prepared["streaming_plan"] is not None) != request.chunked:
+            planned_chunked = prepared["streaming_plan"] is not None
+            if request.chunked and not planned_chunked and prepared["chunk_fallback"]:
+                return FrontierAutoRangeWorkerOutcome(
+                    execution_metrics=context.metrics_payload(status="completed"),
+                    chunk_fallback=prepared["chunk_fallback"],
+                )
+            if planned_chunked != request.chunked:
                 raise RuntimeError(
                     "Auto-range chunk planning changed between the request and its worker; "
                     "start auto-range again."
@@ -389,3 +412,45 @@ def frontier_auto_range_worker(
         store.delete_job(job_id)
         if context is not None:
             context.release_admission(preserve_primary_error=True)
+
+
+@dataclass(frozen=True)
+class OptimiserEstimateOutcome:
+    """The estimate worker's only return value: the counts, or a typed answer."""
+
+    metrics: dict[str, int | float | None] | None = None
+    failure: tuple[int, Any] | None = None
+
+
+def optimiser_estimate_worker(
+    body: OptimiserEstimateRequest,
+    budget: IsolatedExecutionBudget,
+) -> OptimiserEstimateOutcome:
+    """Interactive-pool entrypoint: count the optimiser's input under the worker's cap.
+
+    The estimate job lives in this worker's private ``optimiser_worker`` store
+    and is removed when the count finishes. A refusal with a typed answer comes
+    back as ``(status_code, detail)``; anything else, including a
+    ``MemoryError`` behind a translated failure, leaves the worker as an
+    exception for the pool to classify.
+    """
+    from haute.routes._optimiser_service import OptimiserSolveService
+
+    service = OptimiserSolveService(get_job_store("optimiser_worker"))
+    context = create_isolated_execution_context(budget)
+    try:
+        return OptimiserEstimateOutcome(
+            metrics=service.estimate_input(body, execution_context=context)
+        )
+    except HTTPException as exc:
+        return OptimiserEstimateOutcome(failure=(exc.status_code, exc.detail))
+    except ESTIMATE_MAPPED_ERRORS as exc:
+        answer = estimate_failure_http_exception(exc, node_id=body.node_id)
+        return OptimiserEstimateOutcome(failure=(answer.status_code, answer.detail))
+    except Exception as exc:
+        memory_error = _memory_error_in(exc)
+        if memory_error is not None:
+            raise memory_error from None
+        raise
+    finally:
+        context.release_admission(preserve_primary_error=True)

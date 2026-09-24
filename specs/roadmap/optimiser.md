@@ -13,17 +13,15 @@ Current behaviour is specified in [the optimiser specification](../optimiser/low
 | OPT-P06 | Planned | P2 | Benchmark bounded frontier parallelism after input isolation. |
 | OPT-P12 | Planned | P2 | Extract the frontier domain service after the scaling decision. |
 | OPT-P14 | Planned | P2 | Complete solver/result publication extraction. |
-| OPT-P16 | Planned | P2 | The input estimate and auto-range chunk planning read pipeline rows only in a hard-capped worker, never in the server process. |
 
 ## Planned improvements
 
 The setup steps are free functions in `_optimiser_input.py` that raise typed
 failures (`OptimiserSetupError`); the service records them. Delivery order is
 the `OPT-P06` performance decision → `OPT-P12` → `OPT-P14`; later packages
-must not bypass those isolation boundaries. `OPT-P16`, from the
-[23 September 2026 codebase review](codebase-review-2026-09-23.md), is
-independent of that order: it is a step towards `ROAD-WORKER-04` that needs
-no solver persistence.
+must not bypass those isolation boundaries. No optimiser path reads pipeline
+rows in the server process: the input estimate runs on the warm interactive
+worker pool and auto-range sizes its chunks in its worker.
 
 ### OPT-P06 — Frontier compute scaling
 **Why:** Frontier calculation misses safe bounded parallelism.
@@ -82,37 +80,3 @@ rather than a mixed domain/utilities module.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_routes.py`;
 `tests/test_optimiser_golden.py`; `tests/test_optimiser_ratebook_apply_agreement.py`.
-
-### OPT-P16 — Keep the input estimate and chunk planning out of the server process
-**Why:** Solve setup and auto-range execute the pipeline in a hard-capped,
-killable spawn worker. Two optimiser paths still read pipeline rows in the
-server process: `POST /api/optimiser/estimate` executes the pipeline and runs
-its quote-count scan on the request thread, and auto-range preparation's
-byte-budgeted chunk planning samples a bounded number of rows of the target
-plan before the job starts.
-
-**Decided (24 September 2026):** the estimate runs on the warm interactive
-worker pool that preview and trace use. A spawn worker per estimate would add
-several seconds of start-up on Windows to a request the canvas makes while the
-user edits, and `ROAD-WORKER-05` makes the warm pool the single worker
-primitive anyway.
-
-**Plan:** Add an estimate request to the interactive worker pool that runs
-the pipeline and the quote-count scan under the pool's memory limit and
-answers the same typed 400/507 contract; the route keeps only admission and
-response assembly. Move auto-range chunk planning into the auto-range spawn
-worker, which then reports the recorded `chunk_fallback` with its totals.
-Update the optimiser and background-jobs specifications first.
-
-**Acceptance:** No optimiser code path collects or sinks a pipeline frame in
-the server process; a memory-limited estimate answers the typed 507; the
-estimate's single-scan cost contract still holds.
-
-**Dependencies:** The worker protocol and artifact publication specified in
-background jobs; `ROAD-WORKER-04` remains the package for the solver itself.
-
-**Evidence:** `src/haute/routes/optimiser.py::_optimiser_input_metrics`;
-`src/haute/_interactive_workers.py::InteractiveWorkerPool`;
-`src/haute/routes/_optimiser_service.py::_prepare_frontier_auto_range`;
-`src/haute/routes/_optimiser_worker.py::frontier_auto_range_worker`;
-`tests/test_optimiser_routes_real_library.py`.
