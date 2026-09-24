@@ -461,7 +461,7 @@ levels use (`run_synchronous_analysis` inside `run_until_disconnected`):
   restricts the `nan::{name}` aggregation and the resulting `nan_count` field to
   `Float32`/`Float64` columns only, leaving it `None` for every other dtype including other
   numeric ones.
-- **Binary columns with non-UTF-8 bytes**: `_categorical_value_label_expr` uses
+- **Binary columns with non-UTF-8 bytes**: `categorical_label_expr` uses
   `map_elements(_lossy_decode_binary, ...)` instead of `cast(pl.String)`; undecodable bytes
   become `"�"` (the invariant under test in
   `test_build_frame_stats_survives_non_utf8_binary_column`).
