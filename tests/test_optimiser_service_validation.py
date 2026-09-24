@@ -736,12 +736,12 @@ def test_online_solver_value_error_is_wrapped_as_solver_execution_error() -> Non
 
 
 def test_setup_chunk_size_uses_decoded_dictionary_width(tmp_path, monkeypatch) -> None:
-    from haute.routes import _optimiser_service as service
+    from haute.routes import _optimiser_input as optimiser_input
 
     path = tmp_path / "dictionary.parquet"
     pl.DataFrame({"label": ["x" * 4096] * 2000}).write_parquet(path)
-    monkeypatch.setattr(service, "_optimiser_setup_target_chunk_bytes", lambda: 64 * 1024)
-    decision = service._chunk_size_decision_for_parquet({}, path, source="ratebook_factors")
+    monkeypatch.setattr(optimiser_input, "_optimiser_setup_target_chunk_bytes", lambda: 64 * 1024)
+    decision = optimiser_input._chunk_size_decision_for_parquet({}, path, source="ratebook_factors")
     assert decision.chunk_size <= 16
     assert decision.provenance["estimated_row_bytes"] >= 4096
 
@@ -846,7 +846,7 @@ def test_grid_admission_precedes_library_and_keeps_borrowed_input(
 
 @pytest.mark.parametrize("change", ["filter", "slice", "derived", "row_index", "multipart"])
 def test_grid_borrows_only_unmodified_single_parquet(tmp_path, change):
-    from haute.routes._optimiser_service import _projected_parquet_input_path
+    from haute.routes._optimiser_input import _projected_parquet_input_path
 
     path = tmp_path / "part.parquet"
     pl.DataFrame({"a": [1, 2], "b": [3, 4]}).write_parquet(path)

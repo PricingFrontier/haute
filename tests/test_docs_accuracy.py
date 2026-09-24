@@ -141,9 +141,7 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "assistant",
     "background-jobs-api",
-    "build-and-distribution",
     "caching",
-    "codegen",
     "deploy",
     "engineering-quality",
     "execution-engine",

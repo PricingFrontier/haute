@@ -14,13 +14,12 @@ These packages come from the
 |---|---|---:|---|
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
 | ENGQ-R02 | Planned | P3 | The repository stops tracking generated and local-state files. |
-| ENGQ-R03 | Planned | P3 | The specification statements the review found untrue are corrected. |
 | ENGQ-R04 | Decision | P3 | Coverage and documentation gates are pointed at risk and at user-facing documents. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
 
 ## Planned improvements
 
-`ENGQ-R01` to `ENGQ-R03` are independent clean-ups. `ENGQ-R05` is easier after
+`ENGQ-R01` and `ENGQ-R02` are independent clean-ups. `ENGQ-R05` is easier after
 `ENGQ-R04` has set the coverage rule the reorganised suite must meet.
 
 ### ENGQ-R01 — Remove unreferenced and test-only production code
@@ -78,23 +77,21 @@ and the reviewed allowlist covers the runner while it remains live.
 `frontend/src/panels/editors/rating/index.ts`.
 
 ### ENGQ-R02 — Stop tracking generated and local-state files
-**Why:** The repository tracks a Vitest results cache under a root-level
-`node_modules/.vite` directory, a 612 KB local `mlflow.db`, benchmark and
+**Why:** The repository tracks a 612 KB local `mlflow.db`, benchmark and
 reproduction scripts under `repro/`, and executable PR #227 probes and
 benchmark results under `specs/roadmap/`. The `rating/` reference project is
 not runnable (it lacks `rating/data/quotes/nest_example.json` and the
 scenario-expander sidecar it names), yet the root `haute.toml` selects it as
 the repository's pipeline.
 
-**Plan:** Untrack the Vitest cache and add it to `.gitignore`. Decide whether
-`mlflow.db` and `repro/` carry value; delete them or move them to a
-documented fixtures location. Move the PR #227 probes out of `specs/roadmap/`
-when their reports retire. Either make `rating/` runnable with its missing
+**Plan:** Decide whether `mlflow.db` and `repro/` carry value; delete them or
+move them to a documented fixtures location. Move the PR #227 probes out of
+`specs/roadmap/` when their reports retire. Either make `rating/` runnable with its missing
 files and one smoke test, or remove it and point `haute.toml` at a runnable
 example.
 
-**Acceptance:** No build cache or local database is tracked; `specs/roadmap/`
-holds no executable probe or benchmark output (the Markdown reports and the
+**Acceptance:** No local database is tracked; `specs/roadmap/` holds no
+executable probe or benchmark output (the Markdown reports and the
 provenance record the roadmap index links may stay); the repository's
 default pipeline loads and previews from a fresh clone, or the reference
 project is gone.
@@ -106,50 +103,27 @@ decision about `rating/`.
 `rating/main.py`; `haute.toml`; `specs/roadmap/pr-227-review-probes.py`;
 `.gitignore`.
 
-### ENGQ-R03 — Correct the known specification drift
-**Why:** The review found specification statements that the code
-contradicts. The expression-parsing high-level specification says code
-generation uses `tokenize`-aware rewrites and not LibCST, while
-`_python_syntax.py` is built on LibCST. The deploy specification says the
-source-cache lease registry is process-local and uncoordinated across
-processes, while the source cache keeps cross-process lease markers. The
-codegen splice (`CODEGEN-R01`) and the route-helper fallback (`PCFG-R04`)
-are corrected by their own packages.
-
-**Plan:** Correct each statement against the code, and add a documentation
-check where one is cheap (for example, that a module named as "not LibCST" does
-not import `libcst`).
-
-**Acceptance:** Each listed statement matches the code; the documentation
-tests pass.
-
-**Dependencies:** None.
-
-**Evidence:** `specs/expression-parsing/high-level.md`;
-`src/haute/_python_syntax.py`; `specs/deploy/high-level.md`;
-`src/haute/_source_cache.py::_LEASE_PREFIX`.
-
 ### ENGQ-R04 — Point the gates at risk and at users
 **Why:** About 5,000 lines of tests, plus a 1,360-line coverage ledger, keep
 the internal specification corpus consistent (`test_docs_accuracy.py`,
 `test_workflow_coverage.py`, `test_test_debt.py`, the corpus inventory),
-while the published node reference documents removed node types
-(`BUILD-R01`). CI requires 100% statement and branch coverage of changed
+while only one check (`tests/test_node_reference_docs.py`, from `BUILD-R01`)
+covers a user-facing document. CI requires 100% statement and branch coverage of changed
 code in the execution-critical surface, which rewards line-shaped tests (see
 `ENGQ-R05`).
 
 **Plan:** Decide the coverage rule: keep mutation and critical-file ratchets
 for the safety-critical code (rating, deploy scoring, feature contracts,
 cache identity) and use risk-based review elsewhere, or keep the current
-gate with a reason. Point at least one documentation check at `docs/`
-(`BUILD-R01`). Review whether each internal governance check still pays for
+gate with a reason. Decide which further documentation checks should cover
+`docs/`. Review whether each internal governance check still pays for
 its maintenance.
 
 **Acceptance:** The engineering-quality specification states the coverage
 rule and which documentation checks cover user-facing documents; CI enforces
 it.
 
-**Dependencies:** `BUILD-R01` (build and distribution).
+**Dependencies:** None.
 
 **Evidence:** `tests/test_docs_accuracy.py`; `tests/test_workflow_coverage.py`;
 `tests/workflow_coverage.toml`; `tests/test_test_debt.py`;

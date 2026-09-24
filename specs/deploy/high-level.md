@@ -72,10 +72,10 @@ the pruned path references, and dry-runs the graph once to infer input and outpu
 schemas. The result is a `ResolvedDeploy` — the single handoff object every backend
 target consumes. Snapshot-backed Data Inputs hold a cache-generation lease from
 resolution through backend shipment; the result owns that lifetime and records the
-selected generation's signed provenance in the deploy manifest. The source-cache lease
-registry is currently process-local: it protects refresh/clear activity in the same
-process, but a second process is not coordinated and remains a known source-cache
-limitation.
+selected generation's signed provenance in the deploy manifest. The lease holds across
+processes: while it is held, a marker naming the holding process sits in the generation's
+directory, and refresh, clear and retirement in any process leave a generation with a
+live holder's marker in place.
 
 Every local file read needed by the pruned deploy graph is resolved with pipeline-relative
 precedence and must remain inside the resolved project root. This includes API sample

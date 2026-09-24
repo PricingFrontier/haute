@@ -10,7 +10,7 @@ import polars as pl
 import pytest
 from fastapi import HTTPException
 
-from haute.routes._optimiser_service import (
+from haute.routes._optimiser_artifacts import (
     _APPLY_RESULT_HANDLE_KIND,
     _ARTIFACT_HANDLE_VERSION,
     _cleanup_apply_result_artifact,
@@ -103,7 +103,7 @@ def test_apply_artifact_read_failure_logs_underlying_cause_before_wrapping() -> 
     try:
         with (
             patch("polars.read_parquet", side_effect=OSError("corrupt parquet")),
-            patch("haute.routes._optimiser_service.logger.error") as log_error,
+            patch("haute.routes._optimiser_artifacts.logger.error") as log_error,
             pytest.raises(HTTPException) as exc_info,
         ):
             _load_apply_result_artifact(handle)

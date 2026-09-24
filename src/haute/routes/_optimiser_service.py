@@ -11,10 +11,6 @@ import contextvars
 import dataclasses
 import functools
 import gc
-import math
-import os
-import shutil
-import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -33,10 +29,6 @@ if TYPE_CHECKING:
 
     from haute.chunking import ChunkPlan
 
-from haute._artifact_housekeeping import (
-    create_owned_artifact_directory,
-    reap_stale_artifact_directories,
-)
 from haute._banding_config import normalise_banding_factors
 from haute._contracts import Contract, get_column_contract
 from haute._env import int_env, optional_int_env
@@ -44,6 +36,7 @@ from haute._execution_admission import (
     ExecutionAdmissionError,
     create_admitted_execution_context,
     execution_budget_for_profile,
+    isolated_execution_budget,
 )
 from haute._execution_context import (
     ExecutionCancellationToken,
@@ -54,16 +47,14 @@ from haute._execution_context import (
 )
 from haute._graph_utils import (
     _sanitize_func_name,
-    incoming_edge_bindings,
-    incoming_edge_for_name,
     select_edge_source_output,
     upstream_node_ids,
 )
+from haute._interactive_workers import resolve_interactive_execution_mode
 from haute._logging import get_logger
 from haute._polars_utils import (
     bounded_collect_batches,
     bounded_sink,
-    read_parquet_metadata,
     streaming_collect,
 )
 from haute._rating import (
@@ -71,14 +62,23 @@ from haute._rating import (
     rating_dtype_descriptor,
     rating_dtype_from_descriptor,
 )
-from haute._seed_plans import SeedPlanRequest, open_seed_plan
+from haute._sandbox import _get_project_root
+from haute._seed_plans import SeedPlan, SeedPlanHandoff, SeedPlanRequest, open_seed_plan
 from haute._types import (
-    GraphEdge,
     GraphNode,
     OnlineSolveResultLike,
     PipelineGraph,
     RatebookSolveResultLike,
     SolveResultLike,
+)
+from haute._worker_isolation import (
+    IsolatedWorkerError,
+    IsolatedWorkerStoppedError,
+    IsolatedWorkerTimeoutError,
+    isolated_worker_failure_is_memory,
+    isolated_worker_memory_detail,
+    run_isolated_worker,
+    worker_config_for_memory_policy,
 )
 from haute.errors import (
     BoundedMemoryUnsupportedError,
@@ -87,14 +87,13 @@ from haute.errors import (
     SchemaMismatchError,
 )
 from haute.execution import (
-    ProjectionRequest,
     execute_lazy_graph,
-    plan_projection,
     prune_source_switch_edges,
     ratebook_factor_required_columns,
 )
 from haute.executor import _build_node_fn
 from haute.graph_utils import NodeType, flatten_graph, graph_fingerprint
+from haute.routes import _optimiser_artifacts
 from haute.routes._background_jobs import (
     BackgroundJobStoppedError,
     CancellableJobRegistry,
@@ -108,7 +107,6 @@ from haute.routes._contract_errors import (
     contract_error_terminal_reason,
 )
 from haute.routes._frontier_point_summary import NON_CONVERGED_WARNING
-from haute.routes._helpers import find_typed_node
 from haute.routes._job_lifecycle import (
     TERMINAL_REASONS,
     JobLifecycle,
@@ -120,12 +118,48 @@ from haute.routes._job_store import (
     JobSnapshot,
     JobStore,
     RunningJobFields,
-    register_artifact_cleaner,
 )
 from haute.routes._memory_messages import memory_limit_user_message
+from haute.routes._optimiser_input import (
+    _NULL_QUOTE_ID_DETAIL_PREFIX,
+    _QUOTE_ID_NULL_COUNT_ALIAS,
+    _admit_resident_grid,
+    _chunk_size_decision_for_parquet,
+    _ChunkSizeDecision,
+    _data_source_feeds_optimiser_through_parallel_edges,
+    _explicit_chunk_size_from_config,
+    _find_optimiser_node,
+    _invalid_quote_id_dtype_detail,
+    _missing_columns_detail,
+    _non_finite_check_columns,
+    _non_finite_detail_from_counts,
+    _null_check_columns,
+    _null_value_detail_from_counts,
+    _optimiser_side_input_ids,
+    _optimiser_solve_required_columns_by_node,
+    _positive_int,
+    _projected_parquet_input_path,
+    _quote_id_null_detail,
+    _resolve_optimiser_data_input_id,
+    _resolve_optimiser_input_edge,
+    _setup_execution_target_node_id,
+    _solve_columns_by_node,
+    _value_contract_validation_exprs,
+)
 from haute.routes._optimiser_limits import (
     enforce_frontier_compute_budget,
     limited_frontier_payload,
+)
+from haute.routes._optimiser_worker import (
+    FrontierAutoRangeWorkerOutcome,
+    FrontierAutoRangeWorkerRequest,
+    OptimiserWorkerFailureError,
+    SolveInput,
+    SolveInputWorkerOutcome,
+    SolveInputWorkerRequest,
+    frontier_auto_range_worker,
+    materialise_solve_input_worker,
+    worker_scratch_directory,
 )
 from haute.schemas import (
     OptimiserChunkFallback,
@@ -169,27 +203,9 @@ def _default_auto_range_partitions() -> int:
 _DEFAULT_AUTO_RANGE_TARGET_CHUNK_MIN_BYTES = 16 * 1024 * 1024
 _DEFAULT_AUTO_RANGE_TARGET_CHUNK_MAX_BYTES = 512 * 1024 * 1024
 _DEFAULT_AUTO_RANGE_TARGET_CHUNK_BUDGET_DIVISOR = 16
-_DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MIN_BYTES = 16 * 1024 * 1024
-_DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MAX_BYTES = 512 * 1024 * 1024
-_DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_BUDGET_DIVISOR = 16
 _DEFAULT_TOLERANCE = 1e-6  # convergence tolerance for solver
 _DEFAULT_MAX_CD_ITERATIONS = 10  # max coordinate-descent iterations (ratebook)
 _DEFAULT_CD_TOLERANCE = 1e-3  # coordinate-descent convergence tolerance (ratebook)
-_APPLY_RESULT_HANDLE_KEY = "apply_result"
-_APPLY_RESULT_HANDLE_KIND = "optimiser_apply_result"
-_RATEBOOK_FACTORS_HANDLE_KEY = "ratebook_factors"
-_RATEBOOK_FACTORS_HANDLE_KIND = "optimiser_ratebook_factors"
-_ARTIFACT_HANDLE_VERSION = 1
-_APPLY_ARTIFACT_ROOT_NAME = "haute/artifacts/v1/optimiser_apply"
-_APPLY_ARTIFACT_DIR_PREFIX = "apply_"
-_APPLY_RESULT_FILENAME = "result.parquet"
-_RATEBOOK_FACTORS_ARTIFACT_ROOT_NAME = "haute/artifacts/v1/optimiser_ratebook_factors"
-_RATEBOOK_FACTORS_ARTIFACT_DIR_PREFIX = "factors_"
-_RATEBOOK_FACTORS_FILENAME = "factors.parquet"
-_APPLY_ARTIFACT_OWNER = "optimiser_apply"
-_RATEBOOK_FACTORS_ARTIFACT_OWNER = "optimiser_ratebook_factors"
-_ARTIFACT_STALE_SECONDS_ENV = "HAUTE_ARTIFACT_STALE_SECONDS"
-_DEFAULT_ARTIFACT_STALE_SECONDS = 86_400
 _JOB_TYPE_KEY = "job_type"
 
 
@@ -207,12 +223,6 @@ _FRONTIER_AUTO_RANGE_JOB_TYPE: Literal["frontier_auto_range"] = "frontier_auto_r
 _FRONTIER_RECOMPUTE_JOB_TYPE: Literal["frontier_recompute"] = "frontier_recompute"
 _FRONTIER_GENERATION_KEY = "frontier_generation"
 _GRAPH_NODE_SETUP_COORDINATION_TYPE = "optimiser_graph_node_setup"
-_NULL_QUOTE_ID_DETAIL_PREFIX = "Null quote_id values found in optimiser input"
-_NON_FINITE_DETAIL_PREFIX = "Non-finite values found in optimiser input"
-_NULL_VALUE_DETAIL_PREFIX = "Null values found in optimiser input"
-_QUOTE_ID_NULL_COUNT_ALIAS = "__haute_quote_id_null_count"
-_NON_FINITE_COUNT_ALIAS_PREFIX = "__haute_non_finite_count_"
-_NULL_COUNT_ALIAS_PREFIX = "__haute_null_count_"
 _AUTO_RANGE_BUCKET_COLUMN = "__haute_frontier_auto_range_bucket"
 _FRONTIER_AUTO_RANGE_CANCELLED_STATUS = "cancelled"
 _FRONTIER_AUTO_RANGE_SUPERSEDED_STATUS = "superseded"
@@ -304,126 +314,6 @@ def _with_flattened_optimiser_graph(
     if flat_graph is body.graph:
         return body
     return body.model_copy(update={"graph": flat_graph})
-
-
-def _missing_columns_detail(
-    required_cols: Iterable[str],
-    available_cols: Iterable[str],
-) -> str | None:
-    missing_cols = sorted(set(required_cols) - set(available_cols))
-    if not missing_cols:
-        return None
-    return f"Missing columns in scored data: {missing_cols}. Available: {sorted(available_cols)}"
-
-
-def _invalid_quote_id_dtype_detail(schema: Any, qid_col: str) -> str | None:
-    import polars as pl
-
-    qid_dtype = schema[qid_col]
-    if qid_dtype == pl.String or qid_dtype == pl.Categorical or isinstance(qid_dtype, pl.Enum):
-        return None
-    return (
-        f"{qid_col} must be Utf8 (String), Categorical, or Enum, got {qid_dtype}. "
-        "Numeric, binary, and other dtypes are not supported as quote_id columns."
-    )
-
-
-def _quote_id_null_detail(null_count: int) -> str:
-    return (
-        f"{_NULL_QUOTE_ID_DETAIL_PREFIX} ({null_count} rows). "
-        "Every row must have a non-null quote_id; check upstream filters and joins."
-    )
-
-
-def _non_finite_check_columns(schema: Any, column_names: Iterable[str]) -> list[str]:
-    return [
-        cname
-        for cname in dict.fromkeys(column_names)
-        if cname in schema and schema[cname].is_float()
-    ]
-
-
-def _null_check_columns(schema: Any, column_names: Iterable[str]) -> list[str]:
-    return [cname for cname in dict.fromkeys(column_names) if cname in schema]
-
-
-def _value_contract_validation_exprs(
-    *,
-    quote_id_col: str,
-    validate_quote_id_nulls: bool,
-    non_finite_check_cols: list[str],
-    null_check_cols: list[str],
-    cast_to_float32_cols: set[str],
-) -> list[Any]:
-    import polars as pl
-
-    validation_exprs: list[Any] = []
-    if validate_quote_id_nulls:
-        validation_exprs.append(pl.col(quote_id_col).null_count().alias(_QUOTE_ID_NULL_COUNT_ALIAS))
-    for index, cname in enumerate(non_finite_check_cols):
-        checked = pl.col(cname).cast(pl.Float32) if cname in cast_to_float32_cols else pl.col(cname)
-        validation_exprs.append(
-            checked.is_nan().sum().alias(f"{_NON_FINITE_COUNT_ALIAS_PREFIX}nan_{index}")
-        )
-        validation_exprs.append(
-            checked.is_infinite().sum().alias(f"{_NON_FINITE_COUNT_ALIAS_PREFIX}inf_{index}")
-        )
-    # Nulls are checked on the source dtype: is_nan()/is_infinite() return
-    # null for null inputs, so sum() skips them and the finite check alone
-    # cannot see a genuinely-null value.
-    for index, cname in enumerate(null_check_cols):
-        validation_exprs.append(
-            pl.col(cname).null_count().alias(f"{_NULL_COUNT_ALIAS_PREFIX}{index}")
-        )
-    return validation_exprs
-
-
-def _non_finite_detail_from_counts(
-    validation_counts: Any,
-    non_finite_check_cols: list[str],
-) -> str | None:
-    non_finite_summaries = []
-    for index, cname in enumerate(non_finite_check_cols):
-        nan_count = int(
-            validation_counts.get_column(f"{_NON_FINITE_COUNT_ALIAS_PREFIX}nan_{index}").item()
-        )
-        inf_count = int(
-            validation_counts.get_column(f"{_NON_FINITE_COUNT_ALIAS_PREFIX}inf_{index}").item()
-        )
-        kinds = [
-            f"{count} {kind} row{'s' if count != 1 else ''}"
-            for count, kind in ((nan_count, "NaN"), (inf_count, "infinite"))
-            if count > 0
-        ]
-        if kinds:
-            non_finite_summaries.append(f"'{cname}' ({', '.join(kinds)})")
-    if not non_finite_summaries:
-        return None
-    return (
-        f"{_NON_FINITE_DETAIL_PREFIX}: {', '.join(non_finite_summaries)}. "
-        "The optimiser requires finite objective, constraint, and scenario values; "
-        "check upstream joins and calculations for division by zero or overflow."
-    )
-
-
-def _null_value_detail_from_counts(
-    validation_counts: Any,
-    null_check_cols: list[str],
-) -> str | None:
-    null_summaries = []
-    for index, cname in enumerate(null_check_cols):
-        null_count = int(validation_counts.get_column(f"{_NULL_COUNT_ALIAS_PREFIX}{index}").item())
-        if null_count > 0:
-            null_summaries.append(
-                f"'{cname}' ({null_count} null row{'s' if null_count != 1 else ''})"
-            )
-    if not null_summaries:
-        return None
-    return (
-        f"{_NULL_VALUE_DETAIL_PREFIX}: {', '.join(null_summaries)}. "
-        "The optimiser requires non-null objective, constraint, and scenario values; "
-        "check upstream joins and filters for rows with missing values."
-    )
 
 
 def _memory_limit_http_exception(
@@ -615,110 +505,6 @@ def _chunk_fallback_message(
     )
 
 
-@dataclass(frozen=True, slots=True)
-class _ChunkSizeDecision:
-    chunk_size: int
-    provenance: dict[str, int | str | None]
-
-
-def _projected_parquet_input_path(frame: Any) -> Path | None:
-    """Borrow only an unchanged single-file scan under the caller's input lease."""
-    import json
-
-    import polars as pl
-
-    from haute._chunked_writes import _SUPPORTED_IR_MAJOR
-
-    if not isinstance(frame, pl.LazyFrame):
-        return None
-    try:
-        traverser = frame._ldf.visit()
-        if traverser.version()[0] != _SUPPORTED_IR_MAJOR:
-            return None
-        node = traverser.view_current_node()
-        if type(node).__name__ != "Scan" or node.scan_type[0] != "parquet":
-            return None
-        options = node.file_options
-        if (
-            len(node.paths) != 1
-            or node.predicate is not None
-            or node.hive_parts is not None
-            or options.n_rows is not None
-            or options.row_index is not None
-            or options.include_file_paths is not None
-            or options.column_mapping is not None
-            or options.deletion_files is not None
-            or json.loads(node.scan_type[1]).get("schema") is not None
-        ):
-            return None
-        path = Path(node.paths[0])
-        if not path.is_file():
-            return None
-        physical_schema = pl.read_parquet_schema(path)
-        if any(
-            physical_schema.get(name) != dtype for name, dtype in frame.collect_schema().items()
-        ):
-            return None
-        return path
-    except (AttributeError, NotImplementedError):
-        # A changed optimiser IR loses this optional reuse path. Actual data
-        # or filesystem errors still propagate through the ordinary setup path.
-        return None
-
-
-def _positive_int(value: object, *, field: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"{field} must be a positive integer.")
-    return int(value)
-
-
-def _admit_resident_grid(
-    path: Path,
-    columns: list[str],
-    quote_id: str,
-    constraint_count: int,
-    chunk_rows: int,
-    execution_context: ExecutionContext | None,
-) -> None:
-    if execution_context is None or execution_context.remaining_memory_bytes() is None:
-        return
-    import polars as pl
-
-    from haute._polars_utils import cancellable_streaming_collect
-    from haute._ram_estimate import (
-        decoded_frame_row_width_bytes,
-        estimate_optimiser_grid_peak_bytes,
-    )
-
-    row_count = int(read_parquet_metadata(path)["row_count"])
-    sample = cancellable_streaming_collect(
-        pl.scan_parquet(path).select(list(dict.fromkeys(columns))).head(512),
-        execution_context=execution_context,
-    )
-    peak_bytes = estimate_optimiser_grid_peak_bytes(
-        row_count=row_count,
-        constraint_count=constraint_count,
-        quote_id_width_bytes=decoded_frame_row_width_bytes(
-            sample.select(pl.col(quote_id).cast(pl.String))
-        ),
-        input_row_width_bytes=decoded_frame_row_width_bytes(sample),
-        chunk_rows=chunk_rows,
-    )
-    del sample
-    remaining = execution_context.remaining_memory_bytes()
-    assert remaining is not None
-    if peak_bytes > remaining:
-        raise ExecutionAdmissionError(
-            execution_context.operation,
-            profile=execution_context.profile,
-            memory_limit_bytes=execution_context.memory_limit_bytes or remaining,
-            rss_at_admission_bytes=execution_context.memory_sampler(),
-            rss_limit_bytes=execution_context.rss_limit_bytes,
-            reason=f"resident optimiser grid needs an estimated {peak_bytes} bytes; "
-            f"{remaining} bytes remain in the execution allowance",
-        )
-
-
 def _optional_positive_int(value: object, *, field: str) -> int | None:
     if value is None or value == "":
         return None
@@ -729,77 +515,6 @@ def _solve_timeout_from_config(config: Mapping[str, Any]) -> int | None:
     if "timeout" not in config:
         return _default_solver_timeout()
     return _optional_positive_int(config.get("timeout"), field="timeout")
-
-
-def _explicit_chunk_size_from_config(config: Mapping[str, Any]) -> int | None:
-    if "chunk_size" not in config:
-        return None
-    return _positive_int(config["chunk_size"], field="chunk_size")
-
-
-def _optimiser_setup_target_chunk_bytes() -> int:
-    budget = execution_budget_for_profile(ExecutionProfile.OPTIMISER_SETUP)
-    budget_scaled = max(
-        1,
-        budget.memory_limit_bytes // _DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_BUDGET_DIVISOR,
-    )
-    return min(
-        _DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MAX_BYTES,
-        max(_DEFAULT_OPTIMISER_SETUP_TARGET_CHUNK_MIN_BYTES, budget_scaled),
-    )
-
-
-def _chunk_size_decision_for_parquet(
-    config: Mapping[str, Any],
-    parquet_path: Path,
-    *,
-    source: str,
-) -> _ChunkSizeDecision:
-    import polars as pl
-
-    from haute._ram_estimate import decoded_frame_row_width_bytes
-
-    explicit_chunk_size = _explicit_chunk_size_from_config(config)
-    if explicit_chunk_size is not None:
-        return _ChunkSizeDecision(
-            chunk_size=explicit_chunk_size,
-            provenance={
-                "policy": "explicit_rows",
-                "chunk_size": explicit_chunk_size,
-                "target_chunk_bytes": None,
-                "estimated_row_bytes": None,
-                "row_count": None,
-                "size_bytes": None,
-                "uncompressed_size_bytes": None,
-                "source": source,
-            },
-        )
-
-    metadata = read_parquet_metadata(parquet_path)
-    row_count = _positive_int(int(metadata["row_count"]), field="parquet row_count")
-    row_bytes_basis = int(metadata.get("uncompressed_size_bytes") or metadata["size_bytes"])
-    row_bytes_basis = _positive_int(row_bytes_basis, field="parquet byte size")
-    target_chunk_bytes = _optimiser_setup_target_chunk_bytes()
-    sample = streaming_collect(pl.scan_parquet(parquet_path).head(512))
-    estimated_row_bytes = max(
-        1,
-        math.ceil(row_bytes_basis / row_count),
-        math.ceil(decoded_frame_row_width_bytes(sample)),
-    )
-    chunk_size = max(1, target_chunk_bytes // estimated_row_bytes)
-    return _ChunkSizeDecision(
-        chunk_size=chunk_size,
-        provenance={
-            "policy": "byte_budget",
-            "chunk_size": chunk_size,
-            "target_chunk_bytes": target_chunk_bytes,
-            "estimated_row_bytes": estimated_row_bytes,
-            "row_count": int(metadata["row_count"]),
-            "size_bytes": int(metadata["size_bytes"]),
-            "uncompressed_size_bytes": int(metadata.get("uncompressed_size_bytes") or 0),
-            "source": source,
-        },
-    )
 
 
 def _auto_range_chunk_size_from_config(config: dict[str, Any]) -> int:
@@ -844,100 +559,6 @@ def _job_elapsed_seconds(job: Mapping[str, Any], fallback: float = 0.0) -> float
     if isinstance(start_time, bool) or not isinstance(start_time, int | float):
         return fallback_elapsed
     return max(fallback_elapsed, time.monotonic() - float(start_time), 0.0)
-
-
-def _optimiser_side_input_ids(graph: PipelineGraph, node_id: str) -> frozenset[str]:
-    """Return optimiser parent ids that are consumed after graph execution.
-
-    The optimiser node may pass its input frame through, but solve/estimate
-    setup resolves the configured ``data_input`` from the output map after the
-    lazy executor has finished.  Treat that configured node as a retained
-    setup input, just like ratebook's factor source, so checkpoint cleanup does
-    not discard an intermediate parent once the optimiser node has consumed it.
-    """
-    node = _find_optimiser_node(graph, node_id)
-    config = node.data.config
-    preserved: set[str] = set()
-    data_edge = _resolve_optimiser_input_edge(
-        graph,
-        node_id,
-        config,
-        field="data_input",
-        infer_single=True,
-    )
-    if data_edge is not None:
-        preserved.add(data_edge.source)
-    if config.get("mode", "online") != "ratebook":
-        return frozenset(preserved)
-    banding_edge = _resolve_optimiser_input_edge(
-        graph,
-        node_id,
-        config,
-        field="banding_source",
-    )
-    if banding_edge is not None:
-        preserved.add(banding_edge.source)
-    return frozenset(preserved)
-
-
-def _setup_execution_target_node_id(graph: PipelineGraph, node_id: str) -> str:
-    """The node setup executes to: an online Optimiser's configured data input, else itself."""
-    optimiser_node = _find_optimiser_node(graph, node_id)
-    configured_data_input = optimiser_node.data.config.get("data_input")
-    if (
-        optimiser_node.data.config.get("mode", "online") == "online"
-        and isinstance(configured_data_input, str)
-        and configured_data_input
-    ):
-        data_input_id = _resolve_optimiser_data_input_id(
-            graph,
-            node_id,
-            optimiser_node.data.config,
-        )
-        if isinstance(data_input_id, str) and data_input_id:
-            return data_input_id
-    return node_id
-
-
-def _solve_columns_by_node(
-    graph: PipelineGraph,
-    node_id: str,
-    config: dict[str, Any],
-    *,
-    source: str,
-) -> dict[str, frozenset[str]]:
-    """The columns the solve's setup reads at every node it executes.
-
-    A node the solve reads whole (no concrete demand) is left out: a capture
-    cannot promise it, so the solve recomputes that node as before.
-    """
-    projection = plan_projection(
-        ProjectionRequest(
-            graph=graph,
-            target_node_id=_setup_execution_target_node_id(graph, node_id),
-            profile=ExecutionProfile.OPTIMISER_SETUP,
-            required_columns_by_node=_optimiser_solve_required_columns_by_node(
-                graph, node_id, config
-            ),
-            source=source,
-        )
-    )
-    return {
-        needed_node_id: frozenset(columns)
-        for needed_node_id, columns in projection.needed_by_node.items()
-        if columns is not None
-    }
-
-
-def _optimiser_input_required_columns(config: dict[str, Any]) -> frozenset[str]:
-    """Return the columns needed to validate and consume optimiser input."""
-    objective = str(config["objective"])
-    qid_col = str(config.get("quote_id", "quote_id"))
-    mult_col = str(config.get("scenario_value", "scenario_value"))
-    step_col = str(config.get("scenario_index", "scenario_index"))
-    constraints = config.get("constraints") or {}
-    constraint_cols = [str(cname) for cname in constraints]
-    return frozenset({qid_col, step_col, mult_col, objective, *constraint_cols})
 
 
 def _auto_range_input_required_columns(
@@ -1061,99 +682,6 @@ def _auto_range_required_columns_by_node(
     return {node_id: required}
 
 
-def _optimiser_solve_required_columns_by_node(
-    graph: PipelineGraph,
-    node_id: str,
-    config: dict[str, Any],
-) -> dict[str, frozenset[str]]:
-    """Return lazy projection seeds for solve/estimate optimiser input.
-
-    The optimiser node may also receive side inputs, for example ratebook
-    banding factors.  Seed the proven data-input parent only, so side-input
-    branches are not asked for solver columns they do not own.  When the data
-    source also feeds the optimiser through a second physical edge (two frames
-    of one multi-frame source), a node-keyed seed cannot describe one edge, so
-    seed the optimiser itself and let the optimiser parent-demand rule keep
-    those edges full-width.
-    """
-    required = _optimiser_input_required_columns(config)
-    data_input_id = _resolve_optimiser_data_input_id(graph, node_id, config)
-    if isinstance(data_input_id, str) and data_input_id:
-        if _data_source_feeds_optimiser_through_parallel_edges(graph, node_id, data_input_id):
-            return {node_id: required}
-        return {data_input_id: required}
-    return {}
-
-
-def _resolve_optimiser_input_edge(
-    graph: PipelineGraph,
-    node_id: str,
-    config: Mapping[str, Any],
-    *,
-    field: str,
-    infer_single: bool = False,
-) -> GraphEdge | None:
-    """Resolve an optimiser selector as one exact incoming-edge name."""
-    configured_name = config.get(field)
-    if isinstance(configured_name, str) and configured_name:
-        try:
-            return incoming_edge_for_name(graph, node_id, configured_name)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Configured optimiser {field} {configured_name!r} is invalid: {exc}",
-            ) from exc
-    if configured_name not in (None, ""):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Configured optimiser {field} must be an exact input name.",
-        )
-    bindings = incoming_edge_bindings(graph, node_id)
-    if infer_single and len(bindings) == 1:
-        return bindings[0][0]
-    if infer_single and len(bindings) > 1:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Optimiser {field} must name one exact connected input when the node "
-                f"has multiple inputs: {[name for _edge, name in bindings]!r}."
-            ),
-        )
-    return None
-
-
-def _data_source_feeds_optimiser_through_parallel_edges(
-    graph: PipelineGraph,
-    node_id: str,
-    data_input_id: str,
-) -> bool:
-    """Return whether the data source reaches the optimiser via >1 physical edge.
-
-    Node-keyed projection seeds and per-node caches cannot express one frame of
-    a multi-frame source; callers must fall back to optimiser-level handling.
-    """
-    parallel_edges = sum(
-        1 for edge in graph.edges if edge.target == node_id and edge.source == data_input_id
-    )
-    return parallel_edges > 1
-
-
-def _resolve_optimiser_data_input_id(
-    graph: PipelineGraph,
-    node_id: str,
-    config: dict[str, Any],
-) -> str | None:
-    """Return the source node for the optimiser's exact selected data edge."""
-    edge = _resolve_optimiser_input_edge(
-        graph,
-        node_id,
-        config,
-        field="data_input",
-        infer_single=True,
-    )
-    return edge.source if edge is not None else None
-
-
 def _resolve_online_auto_range_data_input_id(
     graph: PipelineGraph,
     node_id: str,
@@ -1245,6 +773,15 @@ def _streaming_auto_range_node_is_eligible(
             line=decision.line,
         ),
     )
+
+
+def _chunked_base_required_columns(
+    streaming_plan: _StreamingAutoRangePlan,
+) -> dict[str, frozenset[str]] | None:
+    """The column demand a chunked auto-range executes its base node with."""
+    if streaming_plan.base_required_columns is None:
+        return None
+    return {streaming_plan.base_node_id: streaming_plan.base_required_columns}
 
 
 def _upstream_slice_contains_node_type(
@@ -1405,388 +942,6 @@ def _build_streaming_auto_range_plan(
         ),
         None,
     )
-
-
-def _apply_artifact_root() -> Path:
-    return (Path(tempfile.gettempdir()) / _APPLY_ARTIFACT_ROOT_NAME).resolve()
-
-
-def _ratebook_factors_artifact_root() -> Path:
-    return (Path(tempfile.gettempdir()) / _RATEBOOK_FACTORS_ARTIFACT_ROOT_NAME).resolve()
-
-
-def _prepare_apply_artifact_root() -> Path:
-    root = _apply_artifact_root()
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-
-def _prepare_ratebook_factors_artifact_root() -> Path:
-    root = _ratebook_factors_artifact_root()
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-
-def _artifact_stale_seconds() -> int:
-    raw = os.environ.get(_ARTIFACT_STALE_SECONDS_ENV)
-    if raw is None:
-        return _DEFAULT_ARTIFACT_STALE_SECONDS
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise ValueError(f"{_ARTIFACT_STALE_SECONDS_ENV} must be a non-negative integer") from exc
-    if value < 0:
-        raise ValueError(f"{_ARTIFACT_STALE_SECONDS_ENV} must be a non-negative integer")
-    return value
-
-
-def reap_stale_optimiser_artifacts(
-    stale_after_seconds: int,
-) -> dict[str, dict[str, int]]:
-    """Reap stale marked artifacts from the optimiser's dedicated roots only."""
-    reports: dict[str, dict[str, int]] = {}
-    for name, root, owner in (
-        ("apply", _apply_artifact_root(), _APPLY_ARTIFACT_OWNER),
-        ("ratebook_factors", _ratebook_factors_artifact_root(), _RATEBOOK_FACTORS_ARTIFACT_OWNER),
-    ):
-        if root.is_dir():
-            reports[name] = reap_stale_artifact_directories(root, owner, stale_after_seconds)
-    logger.info("optimiser_artifact_reap_completed", reports=reports)
-    return reports
-
-
-def _validate_server_owned_parquet_handle(
-    handle: dict[str, Any],
-    *,
-    kind: str,
-    root: Path,
-    directory_prefix: str,
-    filename: str,
-    description: str,
-) -> tuple[Path, Path]:
-    """Return validated ``(path, directory)`` for a server-owned parquet artifact."""
-    if handle.get("kind") != kind:
-        raise ValueError(f"Invalid {description} artifact handle.")
-    if handle.get("version") != _ARTIFACT_HANDLE_VERSION:
-        raise ValueError(f"Unsupported {description} artifact handle.")
-    if handle.get("format") != "parquet":
-        raise ValueError(f"Unsupported {description} artifact format.")
-
-    raw_directory = handle.get("directory")
-    if not isinstance(raw_directory, str) or not raw_directory:
-        raise ValueError(f"{description} artifact handle has no directory.")
-    raw_path = handle.get("path")
-    if not isinstance(raw_path, str) or not raw_path:
-        raise ValueError(f"{description} artifact handle has no path.")
-    if "\x00" in raw_directory or "\x00" in raw_path:
-        raise ValueError(f"{description} artifact handle contains an invalid path.")
-
-    directory_input = Path(raw_directory)
-    path_input = Path(raw_path)
-    if not directory_input.is_absolute() or not path_input.is_absolute():
-        raise ValueError(f"{description} artifact handle must use absolute paths.")
-
-    directory = directory_input.resolve(strict=directory_input.exists())
-    artifact_path = path_input.resolve(strict=path_input.exists())
-
-    if not directory.is_relative_to(root):
-        raise ValueError(f"{description} artifact directory is outside the artifact root.")
-    if directory.parent != root or not directory.name.startswith(directory_prefix):
-        raise ValueError(f"{description} artifact directory is invalid.")
-    if artifact_path.parent != directory:
-        raise ValueError(f"{description} artifact path is outside its directory.")
-    if artifact_path.name != filename:
-        raise ValueError(f"{description} artifact path is invalid.")
-    return artifact_path, directory
-
-
-def _validate_apply_result_artifact_handle(handle: dict[str, Any]) -> tuple[Path, Path]:
-    """Return validated ``(path, directory)`` for a server-owned apply artifact."""
-    return _validate_server_owned_parquet_handle(
-        handle,
-        kind=_APPLY_RESULT_HANDLE_KIND,
-        root=_apply_artifact_root(),
-        directory_prefix=_APPLY_ARTIFACT_DIR_PREFIX,
-        filename=_APPLY_RESULT_FILENAME,
-        description="Optimiser apply",
-    )
-
-
-def _validate_ratebook_factors_artifact_handle(handle: dict[str, Any]) -> tuple[Path, Path]:
-    """Return validated ``(path, directory)`` for a server-owned ratebook factor artifact."""
-    return _validate_server_owned_parquet_handle(
-        handle,
-        kind=_RATEBOOK_FACTORS_HANDLE_KIND,
-        root=_ratebook_factors_artifact_root(),
-        directory_prefix=_RATEBOOK_FACTORS_ARTIFACT_DIR_PREFIX,
-        filename=_RATEBOOK_FACTORS_FILENAME,
-        description="Optimiser ratebook factors",
-    )
-
-
-def _persist_apply_result_artifact(solve_result: SolveResultLike) -> dict[str, Any] | None:
-    """Persist the large apply/detail dataframe behind an explicit handle."""
-    if not hasattr(solve_result, "dataframe"):
-        return None
-
-    import polars as pl
-
-    df = solve_result.dataframe
-    if not isinstance(df, pl.DataFrame):
-        return None
-
-    artifact_dir = create_owned_artifact_directory(
-        _prepare_apply_artifact_root(), _APPLY_ARTIFACT_DIR_PREFIX, _APPLY_ARTIFACT_OWNER
-    )
-    artifact_path = artifact_dir / _APPLY_RESULT_FILENAME
-    try:
-        df.write_parquet(artifact_path)
-        row_count = len(df)
-    except BaseException:
-        shutil.rmtree(artifact_dir, ignore_errors=True)
-        raise
-    try:
-        cast(Any, solve_result).dataframe = None
-    except Exception:
-        logger.debug(
-            "optimiser_apply_dataframe_reference_not_clearable",
-            solve_result_type=type(solve_result).__name__,
-        )
-
-    return {
-        "kind": _APPLY_RESULT_HANDLE_KIND,
-        "version": _ARTIFACT_HANDLE_VERSION,
-        "format": "parquet",
-        "path": str(artifact_path),
-        "directory": str(artifact_dir),
-        "row_count": row_count,
-    }
-
-
-def _persist_ratebook_factors_artifact(factors_df: Any) -> dict[str, Any] | None:
-    """Persist ratebook factors behind an explicit handle instead of the job dict."""
-    if factors_df is None:
-        return None
-
-    import polars as pl
-
-    if not isinstance(factors_df, pl.DataFrame):
-        return None
-
-    artifact_dir = create_owned_artifact_directory(
-        _prepare_ratebook_factors_artifact_root(),
-        _RATEBOOK_FACTORS_ARTIFACT_DIR_PREFIX,
-        _RATEBOOK_FACTORS_ARTIFACT_OWNER,
-    )
-    artifact_path = artifact_dir / _RATEBOOK_FACTORS_FILENAME
-    try:
-        factors_df.write_parquet(artifact_path)
-        metadata = read_parquet_metadata(artifact_path)
-        row_count = int(metadata["row_count"])
-        size_bytes = int(metadata["size_bytes"])
-        columns = list(factors_df.columns)
-    except BaseException:
-        shutil.rmtree(artifact_dir, ignore_errors=True)
-        raise
-
-    return {
-        "kind": _RATEBOOK_FACTORS_HANDLE_KIND,
-        "version": _ARTIFACT_HANDLE_VERSION,
-        "format": "parquet",
-        "path": str(artifact_path),
-        "directory": str(artifact_dir),
-        "row_count": row_count,
-        "size_bytes": size_bytes,
-        "columns": columns,
-    }
-
-
-def _persist_ratebook_factors_lazy_artifact(
-    factors_lf: Any,
-) -> dict[str, Any]:
-    """Persist projected ratebook factors without collecting them into memory."""
-    artifact_dir = create_owned_artifact_directory(
-        _prepare_ratebook_factors_artifact_root(),
-        _RATEBOOK_FACTORS_ARTIFACT_DIR_PREFIX,
-        _RATEBOOK_FACTORS_ARTIFACT_OWNER,
-    )
-    artifact_path = artifact_dir / _RATEBOOK_FACTORS_FILENAME
-    try:
-        bounded_sink(
-            factors_lf,
-            artifact_path,
-        )
-        metadata = read_parquet_metadata(artifact_path)
-        row_count = int(metadata["row_count"])
-        size_bytes = int(metadata["size_bytes"])
-        columns = list(cast(Mapping[str, Any], metadata["columns"]).keys())
-    except BaseException:
-        shutil.rmtree(artifact_dir, ignore_errors=True)
-        raise
-
-    return {
-        "kind": _RATEBOOK_FACTORS_HANDLE_KIND,
-        "version": _ARTIFACT_HANDLE_VERSION,
-        "format": "parquet",
-        "path": str(artifact_path),
-        "directory": str(artifact_dir),
-        "row_count": row_count,
-        "size_bytes": size_bytes,
-        "columns": columns,
-    }
-
-
-def _cleanup_apply_result_artifact(handle: dict[str, Any]) -> None:
-    """Remove a newly-created apply artifact that no job owns."""
-    _artifact_path, artifact_dir = _validate_apply_result_artifact_handle(handle)
-    if artifact_dir.exists():
-        shutil.rmtree(artifact_dir)
-
-
-def _cleanup_ratebook_factors_artifact(handle: dict[str, Any]) -> None:
-    """Remove a persisted ratebook factors artifact owned by an expired job."""
-    _artifact_path, artifact_dir = _validate_ratebook_factors_artifact_handle(handle)
-    if artifact_dir.exists():
-        shutil.rmtree(artifact_dir)
-
-
-def _log_artifact_load_failure(
-    event: str,
-    handle: Mapping[str, Any],
-    exc: BaseException,
-) -> None:
-    logger.error(
-        event,
-        path=str(handle.get("path") or "<unknown>"),
-        error=str(exc),
-        exc_info=True,
-    )
-
-
-def _load_apply_result_artifact(handle: dict[str, Any]) -> Any:
-    """Load a persisted optimiser apply dataframe from a validated handle."""
-    import polars as pl
-
-    try:
-        artifact_path, _artifact_dir = _validate_apply_result_artifact_handle(handle)
-    except ValueError as exc:
-        _log_artifact_load_failure("optimiser_apply_artifact_validation_failed", handle, exc)
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Optimiser apply artifact reference is invalid. Re-run the solve to regenerate it."
-            ),
-        ) from exc
-    if not artifact_path.is_file():
-        logger.warning("optimiser_apply_artifact_missing", path=str(artifact_path))
-        raise HTTPException(
-            status_code=410,
-            detail=(
-                "Optimiser apply artifact is no longer available. "
-                "Re-run the solve to regenerate it."
-            ),
-        )
-
-    try:
-        return pl.read_parquet(artifact_path)
-    except Exception as exc:
-        _log_artifact_load_failure("optimiser_apply_artifact_read_failed", handle, exc)
-        raise HTTPException(
-            status_code=500,
-            detail="Optimiser apply artifact is corrupt. Re-run the solve to regenerate it.",
-        ) from exc
-
-
-def _load_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
-    """Load persisted ratebook factors from a validated handle."""
-    import polars as pl
-
-    try:
-        artifact_path, _artifact_dir = _validate_ratebook_factors_artifact_handle(handle)
-    except ValueError as exc:
-        _log_artifact_load_failure("optimiser_ratebook_artifact_validation_failed", handle, exc)
-        raise HTTPException(
-            status_code=500,
-            detail="Optimiser ratebook factor artifact reference is invalid. Re-run the solve.",
-        ) from exc
-    if not artifact_path.is_file():
-        logger.warning("optimiser_ratebook_artifact_missing", path=str(artifact_path))
-        raise HTTPException(
-            status_code=410,
-            detail="Optimiser ratebook factor artifact is no longer available. Re-run the solve.",
-        )
-    try:
-        return pl.read_parquet(artifact_path)
-    except Exception as exc:
-        _log_artifact_load_failure("optimiser_ratebook_artifact_read_failed", handle, exc)
-        raise HTTPException(
-            status_code=500,
-            detail="Optimiser ratebook factor artifact is corrupt. Re-run the solve.",
-        ) from exc
-
-
-def _scan_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
-    """Return a lazy scan for a validated ratebook factor artifact."""
-    import polars as pl
-
-    try:
-        artifact_path, _artifact_dir = _validate_ratebook_factors_artifact_handle(handle)
-    except ValueError as exc:
-        _log_artifact_load_failure(
-            "optimiser_ratebook_artifact_scan_validation_failed",
-            handle,
-            exc,
-        )
-        raise HTTPException(
-            status_code=500,
-            detail="Optimiser ratebook factor artifact reference is invalid. Re-run the solve.",
-        ) from exc
-    if not artifact_path.is_file():
-        logger.warning("optimiser_ratebook_artifact_scan_missing", path=str(artifact_path))
-        raise HTTPException(
-            status_code=410,
-            detail="Optimiser ratebook factor artifact is no longer available. Re-run the solve.",
-        )
-    try:
-        return pl.scan_parquet(artifact_path)
-    except Exception as exc:
-        _log_artifact_load_failure("optimiser_ratebook_artifact_scan_failed", handle, exc)
-        raise HTTPException(
-            status_code=500,
-            detail="Optimiser ratebook factor artifact is corrupt. Re-run the solve.",
-        ) from exc
-
-
-register_artifact_cleaner(_APPLY_RESULT_HANDLE_KIND, _cleanup_apply_result_artifact)
-register_artifact_cleaner(_RATEBOOK_FACTORS_HANDLE_KIND, _cleanup_ratebook_factors_artifact)
-
-
-def _cleanup_orphan_apply_result_artifact(
-    handle: dict[str, Any],
-    *,
-    job_id: str,
-    event: str,
-) -> None:
-    """Best-effort cleanup for apply artifacts that were never attached to a job."""
-    try:
-        if handle.get("kind") == _RATEBOOK_FACTORS_HANDLE_KIND:
-            _cleanup_ratebook_factors_artifact(handle)
-        else:
-            _cleanup_apply_result_artifact(handle)
-    except Exception as cleanup_exc:
-        raw_path = handle.get("directory") or handle.get("path") or "<unknown>"
-        logger.warning(
-            event,
-            job_id=job_id,
-            path=str(raw_path),
-            error=str(cleanup_exc),
-            exc_info=True,
-        )
-
-
-def _find_optimiser_node(graph: PipelineGraph, node_id: str) -> GraphNode:
-    """Find and validate an optimiser node in the graph."""
-    return find_typed_node(graph, node_id, NodeType.OPTIMISER, "optimiser")
 
 
 def _compute_scenario_value_stats(
@@ -2091,8 +1246,6 @@ def _estimate_scenario_frontier_ranges(
     temporary parquet files so quotes split across read batches are recombined
     without one global per-quote aggregate table.
     """
-    import polars as pl
-
     if not constraint_cols:
         return {}
 
@@ -2101,31 +1254,58 @@ def _estimate_scenario_frontier_ranges(
     chunk_size = _positive_int(ctx.chunk_size, field="chunk_size")
     partition_count = _positive_int(ctx.partition_count, field="partition_count")
     execution_context = ctx.execution_context
-    selected_lf = scored_lf.select(
-        [
-            pl.col(quote_id_col).cast(pl.String).alias(quote_id_col),
-            *[pl.col(cname) for cname in constraint_cols],
-        ]
+    selected_lf = scored_lf.select(_frontier_range_batch_columns(quote_id_col, constraint_cols))
+    # ``chunk_size`` is the per-batch row count for the auto-range reducer;
+    # the underlying scan and collect stream at the process chunk size.
+    return _reduce_frontier_range_batches(
+        bounded_collect_batches(
+            selected_lf,
+            chunk_size=chunk_size,
+            maintain_order=False,
+            execution_context=execution_context,
+            stage_name="frontier_range_collect_batch",
+        ),
+        quote_id_col=quote_id_col,
+        constraint_cols=constraint_cols,
+        partition_count=partition_count,
+        check_cancelled=check_cancelled,
+        execution_context=execution_context,
     )
 
-    with tempfile.TemporaryDirectory(prefix="haute_frontier_range_parts_") as raw_dir:
+
+def _frontier_range_batch_columns(quote_id_col: str, constraint_cols: list[str]) -> list[Any]:
+    """The columns one range batch carries: the quote id as text, then each constraint."""
+    import polars as pl
+
+    return [
+        pl.col(quote_id_col).cast(pl.String).alias(quote_id_col),
+        *[pl.col(cname) for cname in constraint_cols],
+    ]
+
+
+def _reduce_frontier_range_batches(
+    batches: Iterable[pl.DataFrame],
+    *,
+    quote_id_col: str,
+    constraint_cols: list[str],
+    partition_count: int,
+    check_cancelled: Callable[[], None] | None = None,
+    execution_context: ExecutionContext | None = None,
+) -> dict[str, dict[str, float]]:
+    """Reduce range batches, whichever path produced them, to exact range totals.
+
+    Each batch is reduced to per-quote extrema and hash-partitioned to
+    temporary parquet parts, so a quote split across batches is recombined in
+    ``finish()`` without one global per-quote aggregate table.
+    """
+    with _optimiser_artifacts._range_parts_directory() as parts_root:
         accumulator = _ScenarioFrontierRangeAccumulator(
             quote_id_col=quote_id_col,
             constraint_cols=constraint_cols,
             partition_count=partition_count,
-            parts_root=Path(raw_dir),
+            parts_root=parts_root,
         )
-        # ``chunk_size`` is the per-batch row count for the auto-range reducer;
-        # the underlying scan and collect stream at the process chunk size.
-        for batch_index, batch in enumerate(
-            bounded_collect_batches(
-                selected_lf,
-                chunk_size=chunk_size,
-                maintain_order=False,
-                execution_context=execution_context,
-                stage_name="frontier_range_collect_batch",
-            )
-        ):
+        for batch_index, batch in enumerate(batches):
             if check_cancelled is not None:
                 check_cancelled()
             _add_frontier_range_batch(
@@ -2410,7 +1590,7 @@ def _ratebook_factor_level_counts_from_artifact(
 ) -> dict[str, dict[str, int]]:
     """Count ratebook factor levels from the persisted factor artifact lazily."""
     return _ratebook_factor_level_counts(
-        _scan_ratebook_factors_artifact(handle),
+        _optimiser_artifacts._scan_ratebook_factors_artifact(handle),
         factor_columns,
     )
 
@@ -2421,7 +1601,7 @@ def _ratebook_factor_dtypes_from_artifact(
 ) -> dict[str, list[dict[str, Any]]]:
     """Read ratebook dtype metadata from the persisted solved-factor schema."""
     return _ratebook_factor_dtypes(
-        _scan_ratebook_factors_artifact(handle),
+        _optimiser_artifacts._scan_ratebook_factors_artifact(handle),
         factor_columns,
     )
 
@@ -2455,7 +1635,9 @@ def _build_ratebook_factor_contexts(
     """Build price-contour factor contexts from a persisted ratebook factor artifact."""
     from price_contour import build_ratebook_factor_contexts_from_parquet_chunked
 
-    artifact_path, _artifact_dir = _validate_ratebook_factors_artifact_handle(handle)
+    artifact_path, _artifact_dir = _optimiser_artifacts._validate_ratebook_factors_artifact_handle(
+        handle
+    )
     quote_ids = _quote_grid_quote_ids(quote_grid)
     try:
         if chunk_decision is None:
@@ -2783,9 +1965,9 @@ def _finalize_solve_result(
     def publish_completion_fields() -> Mapping[str, Any]:
         """Persist durable artifacts only after this worker owns completion."""
         artifact_handles: dict[str, Any] = {}
-        apply_result_handle = _persist_apply_result_artifact(solve_result)
+        apply_result_handle = _optimiser_artifacts._persist_apply_result_artifact(solve_result)
         if apply_result_handle is not None:
-            artifact_handles[_APPLY_RESULT_HANDLE_KEY] = apply_result_handle
+            artifact_handles[_optimiser_artifacts._APPLY_RESULT_HANDLE_KEY] = apply_result_handle
             uncommitted_handles.append(
                 (
                     apply_result_handle,
@@ -2795,7 +1977,7 @@ def _finalize_solve_result(
 
         factor_handle = ratebook_factors_handle
         if factor_handle is None:
-            factor_handle = _persist_ratebook_factors_artifact(factors_df)
+            factor_handle = _optimiser_artifacts._persist_ratebook_factors_artifact(factors_df)
             if factor_handle is not None:
                 uncommitted_handles.append(
                     (
@@ -2804,7 +1986,7 @@ def _finalize_solve_result(
                     )
                 )
         if factor_handle is not None:
-            artifact_handles[_RATEBOOK_FACTORS_HANDLE_KEY] = factor_handle
+            artifact_handles[_optimiser_artifacts._RATEBOOK_FACTORS_HANDLE_KEY] = factor_handle
 
         completion_fields: dict[str, Any] = {
             "progress": 1.0,
@@ -2825,7 +2007,7 @@ def _finalize_solve_result(
 
     def cleanup_uncommitted_handles() -> None:
         for handle, event in uncommitted_handles:
-            _cleanup_orphan_apply_result_artifact(
+            _optimiser_artifacts._cleanup_orphan_apply_result_artifact(
                 handle,
                 job_id=job_id,
                 event=event,
@@ -2974,8 +2156,8 @@ def _solve_ratebook(
         )
     factor_columns_valid = [list(group) for group in raw_factor_columns]
 
-    factor_artifact_path, _factor_artifact_dir = _validate_ratebook_factors_artifact_handle(
-        ratebook_factors_handle
+    factor_artifact_path, _factor_artifact_dir = (
+        _optimiser_artifacts._validate_ratebook_factors_artifact_handle(ratebook_factors_handle)
     )
     factor_chunk_decision = _chunk_size_decision_for_parquet(
         config,
@@ -3211,10 +2393,17 @@ class OptimiserSolveService:
         setup_job_key: tuple[str, str, str],
         execution_token: ExecutionCancellationToken,
     ) -> None:
-        """Execute solve setup, then hand the prepared grid to the solver worker."""
+        """Execute solve setup, then hand the prepared grid to the solver worker.
+
+        In process mode the pipeline is materialised by a hard-capped worker
+        into a setup-owned parquet and the grid is built from that file here;
+        the explicit thread compatibility mode materialises on this thread.
+        """
         execution_context: ExecutionContext | None = None
         launch_started = False
         ratebook_factors_handle: Any = None
+        solver_input_path: str | None = None
+        ratebook_factors_dir: Path | None = None
         job = self._store.require_job(job_id)
         raw_start_time = job.get("start_time")
         start_time = (
@@ -3243,49 +2432,54 @@ class OptimiserSolveService:
                     expected_status="running",
                 )
                 self._raise_if_solve_stopped(job_id, execution_context=execution_context)
-                lazy_outputs = self._execute_pipeline(
-                    body,
-                    job_id,
-                    resources,
-                    required_columns_by_node=required_columns_by_node,
-                    execution_context=execution_context,
-                )
-                self._raise_if_solve_stopped(job_id, execution_context=execution_context)
-                source_lf = self._resolve_data_input_frame(
-                    lazy_outputs,
-                    body.graph,
-                    config,
-                    body.node_id,
-                    job_id,
-                    execution_context=execution_context,
-                )
-                constraint_cols, scored_lf = self._validate_and_project(
-                    source_lf,
-                    config,
-                    job_id,
-                    execution_context=execution_context,
-                )
-                self._raise_if_solve_stopped(job_id, execution_context=execution_context)
-                ratebook_factors_handle = self._extract_factors(
-                    lazy_outputs,
-                    body.graph,
-                    body.node_id,
-                    config,
-                    mode,
-                    execution_context=execution_context,
-                )
-                self._raise_if_solve_stopped(job_id, execution_context=execution_context)
-                del lazy_outputs
-                gc.collect()
-
-                quote_grid = self._build_grid(
-                    scored_lf,
-                    constraint_cols,
-                    config,
-                    body.node_id,
-                    job_id,
-                    execution_context=execution_context,
-                )
+                if resolve_interactive_execution_mode() == "process":
+                    solver_input_path = _optimiser_artifacts._new_solver_input_path()
+                    if mode == "ratebook":
+                        ratebook_factors_dir = (
+                            _optimiser_artifacts._new_ratebook_factors_directory()
+                        )
+                    solve_input = self._materialise_solve_input_in_worker(
+                        body,
+                        job_id,
+                        resources,
+                        config=config,
+                        mode=mode,
+                        required_columns_by_node=required_columns_by_node,
+                        execution_context=execution_context,
+                        output_path=solver_input_path,
+                        ratebook_factors_dir=ratebook_factors_dir,
+                    )
+                    ratebook_factors_handle = solve_input.ratebook_factors_handle
+                    self._raise_if_solve_stopped(job_id, execution_context=execution_context)
+                    quote_grid = self._build_grid_from_parquet(
+                        solve_input.path,
+                        solve_input.constraint_cols,
+                        config,
+                        body.node_id,
+                        job_id,
+                        execution_context=execution_context,
+                    )
+                else:
+                    constraint_cols, scored_lf, ratebook_factors_handle = (
+                        self._prepare_solver_frame(
+                            body,
+                            job_id,
+                            resources,
+                            config=config,
+                            mode=mode,
+                            required_columns_by_node=required_columns_by_node,
+                            execution_context=execution_context,
+                        )
+                    )
+                    self._raise_if_solve_stopped(job_id, execution_context=execution_context)
+                    quote_grid = self._build_grid(
+                        scored_lf,
+                        constraint_cols,
+                        config,
+                        body.node_id,
+                        job_id,
+                        execution_context=execution_context,
+                    )
                 self._raise_if_solve_stopped(job_id, execution_context=execution_context)
                 self._record_execution_metrics(job_id, execution_context)
                 self._launch_background(
@@ -3303,139 +2497,17 @@ class OptimiserSolveService:
                     factor_level_order=factor_level_order,
                 )
                 launch_started = True
-            except BackgroundJobStoppedError as exc:
-                terminal_reason = _coerce_stopped_terminal_reason(exc.terminal_reason)
-                self._lifecycle.transition(
-                    job_id,
-                    to=terminal_reason,
-                    message=exc.terminal_reason,
-                    fields=(
-                        {
-                            "execution_metrics": execution_context.metrics_payload(
-                                status=terminal_reason,
-                                terminal_reason=terminal_reason,
-                            )
-                        }
-                        if execution_context is not None
-                        else None
-                    ),
-                    elapsed_seconds=time.monotonic() - start_time,
-                )
-            except HTTPException as exc:
-                http_terminal_reason: TerminalReason = (
-                    "memory_limited"
-                    if _is_memory_limit_http_exception(exc)
-                    else "contract_error"
-                    if exc.status_code in (400, 422)
-                    else "error"
-                )
-                error_update: dict[str, Any] = {
-                    "message": str(exc.detail),
-                    "http_status_code": exc.status_code,
-                    "error_detail": exc.detail,
-                }
-                if execution_context is not None:
-                    error_update["execution_metrics"] = execution_context.metrics_payload(
-                        status=http_terminal_reason,
-                        terminal_reason=http_terminal_reason,
-                    )
-                self._lifecycle.transition(
-                    job_id,
-                    to=http_terminal_reason,
-                    fields=error_update,
-                    elapsed_seconds=time.monotonic() - start_time,
-                )
-            except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-                http_exc = _memory_limit_http_exception(exc)
-                elapsed_seconds = time.monotonic() - start_time
-                if execution_context is not None:
-                    memory_error_update = _memory_limit_job_update(
-                        detail=http_exc.detail,
-                        elapsed_seconds=elapsed_seconds,
-                        execution_context=execution_context,
-                    )
-                else:
-                    payload = _normalise_memory_limit_payload(http_exc.detail)
-                    memory_error_update = {
-                        "message": str(payload),
-                        "elapsed_seconds": elapsed_seconds,
-                        "error_code": payload.get("error_code", "memory_limit"),
-                        "http_status_code": http_exc.status_code,
-                        "error_detail": payload,
-                    }
-                self._lifecycle.transition(
-                    job_id,
-                    to="memory_limited",
-                    fields=memory_error_update,
-                    elapsed_seconds=elapsed_seconds,
-                )
-            except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-                elapsed_seconds = time.monotonic() - start_time
-                contract_reason = contract_error_terminal_reason(exc)
-                contract_fields = contract_error_job_fields(exc)
-                contract_fields["elapsed_seconds"] = elapsed_seconds
-                if execution_context is not None:
-                    contract_fields["execution_metrics"] = execution_context.metrics_payload(
-                        status=contract_reason,
-                        terminal_reason=contract_reason,
-                    )
-                self._lifecycle.transition(
-                    job_id,
-                    to=contract_reason,
-                    message=str(exc),
-                    fields=contract_fields,
-                    elapsed_seconds=elapsed_seconds,
-                )
-            except BoundedMemoryUnsupportedError as exc:
-                detail = f"Optimiser setup cannot run in bounded streaming mode: {exc}"
-                logger.warning(
-                    "optimiser_setup_bounded_streaming_unsupported",
-                    error=str(exc),
-                    node_id=body.node_id,
-                    job_id=job_id,
-                )
-                elapsed_seconds = time.monotonic() - start_time
-                bounded_fields: dict[str, Any] = {
-                    "http_status_code": 422,
-                    "error_detail": detail,
-                    "elapsed_seconds": elapsed_seconds,
-                }
-                if execution_context is not None:
-                    bounded_fields["execution_metrics"] = execution_context.metrics_payload(
-                        status="contract_error",
-                        terminal_reason="contract_error",
-                    )
-                self._lifecycle.transition(
-                    job_id,
-                    to="contract_error",
-                    message=detail,
-                    fields=bounded_fields,
-                    elapsed_seconds=elapsed_seconds,
-                )
             except Exception as exc:
-                detail = f"Optimiser setup failed: {exc}"
-                logger.error(
-                    "optimiser_setup_failed",
-                    error=str(exc),
-                    node_id=body.node_id,
-                    job_id=job_id,
-                    exc_info=True,
-                )
-                elapsed_seconds = time.monotonic() - start_time
-                error_fields: dict[str, Any] = {"elapsed_seconds": elapsed_seconds}
-                if execution_context is not None:
-                    error_fields["execution_metrics"] = execution_context.metrics_payload(
-                        status="error",
-                        terminal_reason="error",
-                    )
-                self._lifecycle.transition(
+                self._record_solve_setup_failure(
                     job_id,
-                    to="error",
-                    message=detail,
-                    fields=error_fields,
-                    elapsed_seconds=elapsed_seconds,
+                    exc,
+                    node_id=body.node_id,
+                    execution_context=execution_context,
+                    start_time=start_time,
                 )
             finally:
+                if solver_input_path is not None:
+                    _optimiser_artifacts._remove_solver_input(solver_input_path)
                 if not launch_started:
                     if execution_context is not None:
                         execution_context.release_admission()
@@ -3443,13 +2515,415 @@ class OptimiserSolveService:
                     if (
                         mode == "ratebook"
                         and isinstance(ratebook_factors_handle, dict)
-                        and ratebook_factors_handle.get("kind") == _RATEBOOK_FACTORS_HANDLE_KIND
+                        and ratebook_factors_handle.get("kind")
+                        == _optimiser_artifacts._RATEBOOK_FACTORS_HANDLE_KIND
                     ):
-                        _cleanup_orphan_apply_result_artifact(
+                        _optimiser_artifacts._cleanup_orphan_apply_result_artifact(
                             ratebook_factors_handle,
                             job_id=job_id,
                             event="setup_orphan_ratebook_factors_cleanup_failed",
                         )
+                    elif ratebook_factors_dir is not None:
+                        # A worker that failed or was stopped handed back no handle.
+                        _optimiser_artifacts._remove_ratebook_factors_directory(
+                            ratebook_factors_dir
+                        )
+
+    def _prepare_solver_frame(
+        self,
+        body: OptimiserSolveRequest,
+        job_id: str,
+        resources: contextlib.ExitStack,
+        *,
+        config: dict[str, Any],
+        mode: str,
+        required_columns_by_node: Mapping[str, frozenset[str]],
+        execution_context: ExecutionContext,
+        seed_plan: SeedPlanHandoff | None = None,
+        ratebook_factors_dir: str | None = None,
+    ) -> tuple[list[str], Any, Any]:
+        """Execute, resolve, validate and project the solve's input; persist ratebook factors.
+
+        Returns the constraint columns, the projected solver frame, and the
+        ratebook factors handle (``None`` in online mode). The frame stays
+        valid while *resources* holds the run's seed plan.
+        """
+        lazy_outputs = self._execute_pipeline(
+            body,
+            job_id,
+            resources,
+            required_columns_by_node=required_columns_by_node,
+            execution_context=execution_context,
+            seed_plan=seed_plan,
+        )
+        self._raise_if_solve_stopped(job_id, execution_context=execution_context)
+        source_lf = self._resolve_data_input_frame(
+            lazy_outputs,
+            body.graph,
+            config,
+            body.node_id,
+            job_id,
+            execution_context=execution_context,
+        )
+        constraint_cols, scored_lf = self._validate_and_project(
+            source_lf,
+            config,
+            job_id,
+            execution_context=execution_context,
+        )
+        self._raise_if_solve_stopped(job_id, execution_context=execution_context)
+        ratebook_factors_handle = self._extract_factors(
+            lazy_outputs,
+            body.graph,
+            body.node_id,
+            config,
+            mode,
+            execution_context=execution_context,
+            artifact_dir=ratebook_factors_dir,
+        )
+        del lazy_outputs
+        gc.collect()
+        return constraint_cols, scored_lf, ratebook_factors_handle
+
+    def _materialise_solve_input(
+        self,
+        body: OptimiserSolveRequest,
+        job_id: str,
+        resources: contextlib.ExitStack,
+        *,
+        config: dict[str, Any],
+        mode: str,
+        required_columns_by_node: Mapping[str, frozenset[str]],
+        execution_context: ExecutionContext,
+        output_path: str,
+        ratebook_factors_dir: str | None,
+        seed_plan: SeedPlanHandoff | None = None,
+    ) -> SolveInput:
+        """Write the projected, validated solver input to *output_path* (a worker's step).
+
+        The input is always written, never borrowed: a snapshot this run
+        captured is released when the worker's plan closes, before the parent
+        reads the file. Ratebook factors go to the parent's *ratebook_factors_dir*,
+        which the parent removes if the job never adopts them.
+        """
+        constraint_cols, scored_lf, ratebook_factors_handle = self._prepare_solver_frame(
+            body,
+            job_id,
+            resources,
+            config=config,
+            mode=mode,
+            required_columns_by_node=required_columns_by_node,
+            execution_context=execution_context,
+            seed_plan=seed_plan,
+            ratebook_factors_dir=ratebook_factors_dir,
+        )
+        input_path = self._write_solver_input(
+            scored_lf,
+            output_path,
+            body.node_id,
+            job_id,
+            execution_context=execution_context,
+            allow_borrow=False,
+        )
+        return SolveInput(
+            path=input_path,
+            constraint_cols=constraint_cols,
+            ratebook_factors_handle=ratebook_factors_handle,
+        )
+
+    def _materialise_solve_input_in_worker(
+        self,
+        body: OptimiserSolveRequest,
+        job_id: str,
+        resources: contextlib.ExitStack,
+        *,
+        config: dict[str, Any],
+        mode: str,
+        required_columns_by_node: Mapping[str, frozenset[str]],
+        execution_context: ExecutionContext,
+        output_path: str,
+        ratebook_factors_dir: Path | None,
+    ) -> SolveInput:
+        """Supervise one hard-capped worker that materialises the solve's input.
+
+        The seed plan is opened here and adopted by the worker. The worker
+        writes only into locations this setup created: *output_path*, the
+        *ratebook_factors_dir* and a scratch directory removed when it exits.
+        """
+        handoff = self._open_setup_seed_plan(
+            body,
+            job_id,
+            resources,
+            required_columns_by_node=required_columns_by_node,
+            execution_context=execution_context,
+        )
+        self._raise_if_solve_stopped(job_id, execution_context=execution_context)
+        with worker_scratch_directory() as scratch_dir:
+            outcome = self._run_optimiser_worker(
+                materialise_solve_input_worker,
+                SolveInputWorkerRequest(
+                    body=body,
+                    config=dict(config),
+                    mode=mode,
+                    required_columns_by_node={
+                        node_id: frozenset(columns)
+                        for node_id, columns in required_columns_by_node.items()
+                    },
+                    project_root=str(_get_project_root()),
+                    seed_plan=handoff,
+                    output_path=output_path,
+                    scratch_dir=scratch_dir,
+                    ratebook_factors_dir=(
+                        str(ratebook_factors_dir) if ratebook_factors_dir is not None else None
+                    ),
+                ),
+                job_id=job_id,
+                node_id=body.node_id,
+                execution_context=execution_context,
+                timeout_seconds=None,
+                process_name="haute-optimiser-setup",
+            )
+        if not isinstance(outcome, SolveInputWorkerOutcome):
+            raise RuntimeError(f"Optimiser setup worker returned {type(outcome).__name__}")
+        if outcome.execution_metrics is not None:
+            execution_context.adopt_worker_evidence(outcome.execution_metrics)
+        if outcome.failure is not None:
+            raise OptimiserWorkerFailureError(outcome.failure)
+        solve_input = outcome.solve_input
+        if solve_input is None:
+            raise RuntimeError("Optimiser setup worker returned neither an input nor a failure")
+        if solve_input.path != output_path:
+            raise RuntimeError("Optimiser setup worker wrote its input outside the setup's file")
+        handle = solve_input.ratebook_factors_handle
+        if handle is not None:
+            _factors_path, factors_dir = (
+                _optimiser_artifacts._validate_ratebook_factors_artifact_handle(handle)
+            )
+            if ratebook_factors_dir is None or factors_dir != ratebook_factors_dir.resolve():
+                raise RuntimeError(
+                    "Optimiser setup worker persisted factors outside the setup's directory"
+                )
+        return solve_input
+
+    def _run_optimiser_worker(
+        self,
+        function: Callable[..., Any],
+        request: Any,
+        *,
+        job_id: str,
+        node_id: str,
+        execution_context: ExecutionContext,
+        timeout_seconds: float | None,
+        process_name: str,
+        on_timeout: Callable[[], BaseException] | None = None,
+    ) -> Any:
+        """Run one optimiser materialisation worker under the job's admitted headroom.
+
+        The headroom is the worker's execution budget and its native cap, and
+        the job's cancellation reason is its stop signal, so cancellation,
+        supersession and a polled timeout terminate the worker. Worker-level
+        failures become the exceptions the job's failure mapping already
+        classifies: a stop is the job's stop, the worker's own timeout is
+        whatever *on_timeout* publishes, a memory-shaped failure is a 507
+        ``memory_limit`` and anything else is a 500.
+        """
+        budget = isolated_execution_budget(execution_context)
+        worker_config = worker_config_for_memory_policy(
+            memory_limit_bytes=budget.memory_limit_bytes,
+            timeout_seconds=timeout_seconds,
+            stop_reason=lambda: self._jobs.cancellation_reason(job_id),
+            process_name=process_name,
+        )
+        try:
+            return run_isolated_worker(function, request, budget, config=worker_config)
+        except IsolatedWorkerStoppedError as exc:
+            raise BackgroundJobStoppedError(job_id, exc.terminal_reason) from None
+        except IsolatedWorkerTimeoutError:
+            if on_timeout is None:
+                raise RuntimeError("An optimiser worker without a timeout timed out") from None
+            raise on_timeout() from None
+        except IsolatedWorkerError as exc:
+            if isolated_worker_failure_is_memory(exc):
+                raise HTTPException(
+                    status_code=507,
+                    detail=isolated_worker_memory_detail(
+                        exc,
+                        operation=budget.operation,
+                        memory_limit_bytes=budget.memory_limit_bytes,
+                    ),
+                ) from None
+            logger.error(
+                "optimiser_worker_failed",
+                job_id=job_id,
+                node_id=node_id,
+                operation=budget.operation,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Optimiser worker failed. Check the server logs for details.",
+            ) from None
+
+    def _record_solve_setup_failure(
+        self,
+        job_id: str,
+        exc: Exception,
+        *,
+        node_id: str,
+        execution_context: ExecutionContext | None,
+        start_time: float,
+    ) -> None:
+        """Publish one solve-setup failure as the job's terminal state."""
+        elapsed_seconds = time.monotonic() - start_time
+        if isinstance(exc, OptimiserWorkerFailureError):
+            failure = exc.failure
+            fields = dict(failure.fields)
+            worker_metrics = fields.get("execution_metrics")
+            if execution_context is not None:
+                fields["execution_metrics"] = (
+                    execution_context.metrics_with_worker_evidence(worker_metrics)
+                    if isinstance(worker_metrics, Mapping)
+                    else execution_context.metrics_payload(
+                        status=failure.terminal_reason,
+                        terminal_reason=failure.terminal_reason,
+                    )
+                )
+            self._lifecycle.transition(
+                job_id,
+                to=failure.terminal_reason,
+                message=failure.message,
+                fields=fields,
+                elapsed_seconds=elapsed_seconds,
+            )
+        elif isinstance(exc, BackgroundJobStoppedError):
+            terminal_reason = _coerce_stopped_terminal_reason(exc.terminal_reason)
+            self._lifecycle.transition(
+                job_id,
+                to=terminal_reason,
+                message=exc.terminal_reason,
+                fields=(
+                    {
+                        "execution_metrics": execution_context.metrics_payload(
+                            status=terminal_reason,
+                            terminal_reason=terminal_reason,
+                        )
+                    }
+                    if execution_context is not None
+                    else None
+                ),
+                elapsed_seconds=elapsed_seconds,
+            )
+        elif isinstance(exc, HTTPException):
+            http_terminal_reason: TerminalReason = (
+                "memory_limited"
+                if _is_memory_limit_http_exception(exc)
+                else "contract_error"
+                if exc.status_code in (400, 422)
+                else "error"
+            )
+            error_update: dict[str, Any] = {
+                "message": str(exc.detail),
+                "http_status_code": exc.status_code,
+                "error_detail": exc.detail,
+            }
+            if execution_context is not None:
+                error_update["execution_metrics"] = execution_context.metrics_payload(
+                    status=http_terminal_reason,
+                    terminal_reason=http_terminal_reason,
+                )
+            self._lifecycle.transition(
+                job_id,
+                to=http_terminal_reason,
+                fields=error_update,
+                elapsed_seconds=elapsed_seconds,
+            )
+        elif isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
+            http_exc = _memory_limit_http_exception(exc)
+            if execution_context is not None:
+                memory_error_update = _memory_limit_job_update(
+                    detail=http_exc.detail,
+                    elapsed_seconds=elapsed_seconds,
+                    execution_context=execution_context,
+                )
+            else:
+                payload = _normalise_memory_limit_payload(http_exc.detail)
+                memory_error_update = {
+                    "message": str(payload),
+                    "elapsed_seconds": elapsed_seconds,
+                    "error_code": payload.get("error_code", "memory_limit"),
+                    "http_status_code": http_exc.status_code,
+                    "error_detail": payload,
+                }
+            self._lifecycle.transition(
+                job_id,
+                to="memory_limited",
+                fields=memory_error_update,
+                elapsed_seconds=elapsed_seconds,
+            )
+        elif isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES):
+            contract_reason = contract_error_terminal_reason(exc)
+            contract_fields = contract_error_job_fields(exc)
+            contract_fields["elapsed_seconds"] = elapsed_seconds
+            if execution_context is not None:
+                contract_fields["execution_metrics"] = execution_context.metrics_payload(
+                    status=contract_reason,
+                    terminal_reason=contract_reason,
+                )
+            self._lifecycle.transition(
+                job_id,
+                to=contract_reason,
+                message=str(exc),
+                fields=contract_fields,
+                elapsed_seconds=elapsed_seconds,
+            )
+        elif isinstance(exc, BoundedMemoryUnsupportedError):
+            detail = f"Optimiser setup cannot run in bounded streaming mode: {exc}"
+            logger.warning(
+                "optimiser_setup_bounded_streaming_unsupported",
+                error=str(exc),
+                node_id=node_id,
+                job_id=job_id,
+            )
+            bounded_fields: dict[str, Any] = {
+                "http_status_code": 422,
+                "error_detail": detail,
+                "elapsed_seconds": elapsed_seconds,
+            }
+            if execution_context is not None:
+                bounded_fields["execution_metrics"] = execution_context.metrics_payload(
+                    status="contract_error",
+                    terminal_reason="contract_error",
+                )
+            self._lifecycle.transition(
+                job_id,
+                to="contract_error",
+                message=detail,
+                fields=bounded_fields,
+                elapsed_seconds=elapsed_seconds,
+            )
+        else:
+            detail = f"Optimiser setup failed: {exc}"
+            logger.error(
+                "optimiser_setup_failed",
+                error=str(exc),
+                node_id=node_id,
+                job_id=job_id,
+                exc_info=True,
+            )
+            error_fields: dict[str, Any] = {"elapsed_seconds": elapsed_seconds}
+            if execution_context is not None:
+                error_fields["execution_metrics"] = execution_context.metrics_payload(
+                    status="error",
+                    terminal_reason="error",
+                )
+            self._lifecycle.transition(
+                job_id,
+                to="error",
+                message=detail,
+                fields=error_fields,
+                elapsed_seconds=elapsed_seconds,
+            )
 
     def start_frontier_auto_range(
         self,
@@ -3568,17 +3042,8 @@ class OptimiserSolveService:
             start = job.get("start_time")
             timeout = job.get("timeout", _default_auto_range_timeout())
             if start and (time.monotonic() - start) > timeout:
-                self._jobs.cancel(job_id, reason="timed_out")
-                updated_job = self._lifecycle.transition(
-                    job_id,
-                    to="timed_out",
-                    message=(
-                        f"Auto range timed out after {timeout}s. "
-                        "Reduce the input size or increase HAUTE_AUTO_RANGE_TIMEOUT."
-                    ),
-                    elapsed_seconds=time.monotonic() - start,
-                )
-                job = updated_job if updated_job is not None else self._store.require_job(job_id)
+                self._time_out_frontier_auto_range(job_id, timeout)
+                job = self._store.require_job(job_id)
 
         return self._frontier_auto_range_status_response(job)
 
@@ -3868,7 +3333,14 @@ class OptimiserSolveService:
     def _prepare_frontier_auto_range(
         self,
         body: OptimiserFrontierAutoRangeRequest,
+        *,
+        prepare_snapshot_inputs: bool = True,
     ) -> dict[str, Any]:
+        """Validate an auto-range request and plan it, chunked when the chain allows.
+
+        An auto-range worker re-plans with ``prepare_snapshot_inputs=False``:
+        its parent prepared the inputs and holds the plan's leases.
+        """
         node = _find_optimiser_node(body.graph, body.node_id)
         config = dict(node.data.config)
         mode = self._validate_config(config)
@@ -3884,7 +3356,8 @@ class OptimiserSolveService:
             config,
             mode=mode,
         )
-        self._prepare_auto_range_snapshot_inputs(body.graph, body.node_id)
+        if prepare_snapshot_inputs:
+            self._prepare_auto_range_snapshot_inputs(body.graph, body.node_id)
         streaming_plan, chunk_fallback = _build_streaming_auto_range_plan(
             body.graph,
             body.node_id,
@@ -3966,8 +3439,17 @@ class OptimiserSolveService:
         streaming_plan: _StreamingAutoRangePlan | None,
         chunk_fallback: dict[str, Any] | None = None,
         execution_context: ExecutionContext | None = None,
+        seed_plan: SeedPlanHandoff | None = None,
+        isolate: bool = True,
     ) -> OptimiserFrontierAutoRangeResponse:
-        del node, mode, timeout
+        """Run one auto-range job: chunk by chunk when a plan was proven, else whole-frame.
+
+        Both paths feed the same range reducer; the job owns admission,
+        cancellation, completion and failure classification for either. In
+        process mode an isolated worker computes the ranges (*isolate* is
+        false only inside that worker, which passes the *seed_plan* handoff).
+        """
+        del node, mode
         if execution_context is None:
             # A job entered without a caller-owned context still runs under
             # admission: a materialising boundary is never admitted bare.
@@ -3976,101 +3458,63 @@ class OptimiserSolveService:
                 profile=ExecutionProfile.AUTO_RANGE,
                 job_id=job_id,
             )
+            bind_running_execution_metrics_publisher(
+                self._store,
+                job_id,
+                execution_context,
+            )
         try:
             execution_context.checkpoint(label="frontier_auto_range_start")
         except ExecutionCancelledError as exc:
             status = str(self._store.require_job(job_id).get("status", "running"))
             raise BackgroundJobStoppedError(job_id, status) from exc
         self._raise_if_frontier_auto_range_stopped(job_id)
-        if streaming_plan is not None:
-            return self._run_streaming_frontier_auto_range_job(
-                body,
-                job_id,
-                config=config,
-                chunk_size=chunk_size,
-                partition_count=partition_count,
-                streaming_plan=streaming_plan,
-                execution_context=execution_context,
-            )
+        chunked = streaming_plan is not None
+        worker_metrics: Mapping[str, Any] | None = None
 
         # The seed plan entered on this stack is released on every exit.
         try:
             with contextlib.ExitStack() as resources:
-                self._store.atomic_update(
-                    job_id,
-                    {
-                        "message": "Executing pipeline",
-                        "progress": 0.05,
-                        "elapsed_seconds": self._job_elapsed(job_id),
-                    },
-                    expected_status="running",
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                lazy_outputs = self._execute_pipeline(
-                    body,
-                    job_id,
-                    resources,
-                    required_columns_by_node=required_columns_by_node,
-                    execution_context=execution_context,
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                self._store.atomic_update(
-                    job_id,
-                    {
-                        "message": "Projecting auto-range columns",
-                        "progress": 0.65,
-                        "elapsed_seconds": self._job_elapsed(job_id),
-                    },
-                    expected_status="running",
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                source_lf = self._resolve_data_input_frame(
-                    lazy_outputs,
-                    body.graph,
-                    config,
-                    body.node_id,
-                    job_id,
-                    execution_context=execution_context,
-                )
-                constraint_cols, scored_lf = self._validate_and_project_auto_range(
-                    source_lf,
-                    config,
-                    job_id,
-                    execution_context=execution_context,
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                del lazy_outputs
-                gc.collect()
-
-                self._store.atomic_update(
-                    job_id,
-                    {
-                        "message": "Aggregating scenario envelope",
-                        "progress": 0.75,
-                        "elapsed_seconds": self._job_elapsed(job_id),
-                    },
-                    expected_status="running",
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                ranges = _estimate_scenario_frontier_ranges(
-                    FrontierAutoRangeContext(
+                if isolate and resolve_interactive_execution_mode() == "process":
+                    ranges, worker_metrics = self._frontier_ranges_in_worker(
+                        body,
+                        job_id,
+                        resources,
+                        streaming_plan=streaming_plan,
+                        required_columns_by_node=required_columns_by_node,
+                        timeout=timeout,
+                        execution_context=execution_context,
+                    )
+                elif streaming_plan is not None:
+                    ranges = self._chunked_frontier_ranges(
+                        body,
+                        job_id,
+                        resources,
+                        config=config,
+                        partition_count=partition_count,
+                        streaming_plan=streaming_plan,
+                        execution_context=execution_context,
+                        seed_plan=seed_plan,
+                    )
+                else:
+                    ranges = self._full_frame_frontier_ranges(
+                        body,
+                        job_id,
+                        resources,
+                        config=config,
                         chunk_size=chunk_size,
                         partition_count=partition_count,
+                        required_columns_by_node=required_columns_by_node,
                         execution_context=execution_context,
-                    ),
-                    scored_lf=scored_lf,
-                    quote_id_col=str(config.get("quote_id", "quote_id")),
-                    constraint_cols=constraint_cols,
-                    check_cancelled=lambda: self._raise_if_frontier_auto_range_stopped(job_id),
-                )
+                        seed_plan=seed_plan,
+                    )
                 self._raise_if_frontier_auto_range_stopped(job_id)
-                response_ranges = {
-                    name: OptimiserFrontierRange(min=value["min"], max=value["max"])
-                    for name, value in ranges.items()
-                }
                 response = OptimiserFrontierAutoRangeResponse(
                     status="ok",
-                    ranges=response_ranges,
+                    ranges={
+                        name: OptimiserFrontierRange(min=value["min"], max=value["max"])
+                        for name, value in ranges.items()
+                    },
                     warning=(
                         str(chunk_fallback["message"]) if chunk_fallback is not None else None
                     ),
@@ -4088,12 +3532,39 @@ class OptimiserSolveService:
                         "progress": 1.0,
                         "elapsed_seconds": self._job_elapsed(job_id),
                         "result": response.model_dump(),
-                        "execution_metrics": execution_context.metrics_payload(status="completed"),
+                        "execution_metrics": (
+                            execution_context.metrics_payload(status="completed")
+                            if worker_metrics is None
+                            else execution_context.metrics_with_worker_evidence(worker_metrics)
+                        ),
                     },
                 )
                 return response
         except BackgroundJobStoppedError:
             raise
+        except OptimiserWorkerFailureError as exc:
+            failure = exc.failure
+            fields = dict(failure.fields)
+            failed_metrics = fields.get("execution_metrics")
+            fields["execution_metrics"] = (
+                execution_context.metrics_with_worker_evidence(failed_metrics)
+                if isinstance(failed_metrics, Mapping)
+                else execution_context.metrics_payload(
+                    status=failure.terminal_reason,
+                    terminal_reason=failure.terminal_reason,
+                )
+            )
+            fields["elapsed_seconds"] = self._job_elapsed(job_id)
+            self._lifecycle.transition(
+                job_id,
+                to=failure.terminal_reason,
+                message=failure.message,
+                fields=fields,
+            )
+            raise HTTPException(
+                status_code=failure.http_status_code,
+                detail=failure.http_detail,
+            ) from None
         except ExecutionCancelledError as exc:
             reason = self._jobs.cancellation_reason(job_id) or "cancelled"
             raise BackgroundJobStoppedError(job_id, reason) from exc
@@ -4153,6 +3624,7 @@ class OptimiserSolveService:
                 error=str(exc),
                 node_id=body.node_id,
                 job_id=job_id,
+                chunked=chunked,
             )
             self._lifecycle.transition(
                 job_id,
@@ -4185,6 +3657,7 @@ class OptimiserSolveService:
                 "frontier_auto_range_failed",
                 error=str(exc),
                 node_id=body.node_id,
+                chunked=chunked,
                 exc_info=True,
             )
             self._lifecycle.transition(
@@ -4201,309 +3674,315 @@ class OptimiserSolveService:
                 detail="Frontier auto range failed. Check the server logs for details.",
             ) from exc
 
-    def _run_streaming_frontier_auto_range_job(
+    def _full_frame_frontier_ranges(
         self,
         body: OptimiserFrontierAutoRangeRequest,
         job_id: str,
+        resources: contextlib.ExitStack,
         *,
         config: dict[str, Any],
         chunk_size: int,
         partition_count: int,
+        required_columns_by_node: Mapping[str, Iterable[str]],
+        execution_context: ExecutionContext,
+        seed_plan: SeedPlanHandoff | None = None,
+    ) -> dict[str, dict[str, float]]:
+        """Execute the whole pipeline to the data input and reduce it in bounded batches."""
+        self._store.atomic_update(
+            job_id,
+            {
+                "message": "Executing pipeline",
+                "progress": 0.05,
+                "elapsed_seconds": self._job_elapsed(job_id),
+            },
+            expected_status="running",
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        lazy_outputs = self._execute_pipeline(
+            body,
+            job_id,
+            resources,
+            required_columns_by_node=required_columns_by_node,
+            execution_context=execution_context,
+            seed_plan=seed_plan,
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        self._store.atomic_update(
+            job_id,
+            {
+                "message": "Projecting auto-range columns",
+                "progress": 0.65,
+                "elapsed_seconds": self._job_elapsed(job_id),
+            },
+            expected_status="running",
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        source_lf = self._resolve_data_input_frame(
+            lazy_outputs,
+            body.graph,
+            config,
+            body.node_id,
+            job_id,
+            execution_context=execution_context,
+        )
+        constraint_cols, scored_lf = self._validate_and_project_auto_range(
+            source_lf,
+            config,
+            job_id,
+            execution_context=execution_context,
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        del lazy_outputs
+        gc.collect()
+
+        self._store.atomic_update(
+            job_id,
+            {
+                "message": "Aggregating scenario envelope",
+                "progress": 0.75,
+                "elapsed_seconds": self._job_elapsed(job_id),
+            },
+            expected_status="running",
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        return _estimate_scenario_frontier_ranges(
+            FrontierAutoRangeContext(
+                chunk_size=chunk_size,
+                partition_count=partition_count,
+                execution_context=execution_context,
+            ),
+            scored_lf=scored_lf,
+            quote_id_col=str(config.get("quote_id", "quote_id")),
+            constraint_cols=constraint_cols,
+            check_cancelled=lambda: self._raise_if_frontier_auto_range_stopped(job_id),
+        )
+
+    def _chunked_frontier_ranges(
+        self,
+        body: OptimiserFrontierAutoRangeRequest,
+        job_id: str,
+        resources: contextlib.ExitStack,
+        *,
+        config: dict[str, Any],
+        partition_count: int,
         streaming_plan: _StreamingAutoRangePlan,
-        execution_context: ExecutionContext | None = None,
-    ) -> OptimiserFrontierAutoRangeResponse:
+        execution_context: ExecutionContext,
+        seed_plan: SeedPlanHandoff | None = None,
+    ) -> dict[str, dict[str, float]]:
+        """Execute to the base node, then expand, score and reduce one base chunk at a time."""
         import polars as pl
 
-        if execution_context is None:
-            execution_context = create_admitted_execution_context(
-                operation="frontier_auto_range_streaming",
-                profile=ExecutionProfile.AUTO_RANGE,
-                job_id=job_id,
-            )
-            bind_running_execution_metrics_publisher(
-                self._store,
-                job_id,
-                execution_context,
-            )
-        try:
-            self._raise_if_frontier_auto_range_stopped(job_id)
-            with (
-                contextlib.ExitStack() as resources,
-                tempfile.TemporaryDirectory(prefix="haute_frontier_range_parts_") as parts_dir,
-            ):
-                self._store.atomic_update(
-                    job_id,
-                    {
-                        "message": "Executing base pipeline",
-                        "progress": 0.05,
-                        "elapsed_seconds": self._job_elapsed(job_id),
-                    },
-                    expected_status="running",
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                base_required = None
-                if streaming_plan.base_required_columns is not None:
-                    base_required = {
-                        streaming_plan.base_node_id: streaming_plan.base_required_columns,
-                    }
-                from haute._cache import preamble_execution_fingerprint
-                from haute.executor import _pipeline_dir
+        from haute._cache import preamble_execution_fingerprint
+        from haute.chunking import ChunkRunnerRequest, iter_chunked_frames
+        from haute.executor import _compile_preamble, _pipeline_dir
 
-                pinned = preamble_execution_fingerprint(
-                    body.graph.preamble or "",
-                    pipeline_dir=_pipeline_dir(body.graph),
-                )
-                lazy_outputs = self._execute_pipeline(
-                    body,
+        self._store.atomic_update(
+            job_id,
+            {
+                "message": "Executing base pipeline",
+                "progress": 0.05,
+                "elapsed_seconds": self._job_elapsed(job_id),
+            },
+            expected_status="running",
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        base_required = _chunked_base_required_columns(streaming_plan)
+        pinned = preamble_execution_fingerprint(
+            body.graph.preamble or "",
+            pipeline_dir=_pipeline_dir(body.graph),
+        )
+        lazy_outputs = self._execute_pipeline(
+            body,
+            job_id,
+            resources,
+            required_columns_by_node=base_required,
+            target_node_id=streaming_plan.base_node_id,
+            execution_context=execution_context,
+            preamble_fingerprint=pinned,
+            seed_plan=seed_plan,
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        base_lf = lazy_outputs.get(streaming_plan.base_node_id)
+        if base_lf is None:
+            raise ValueError(
+                "Streaming auto-range base node did not produce a dataframe: "
+                f"{streaming_plan.base_node_id!r}."
+            )
+
+        qid_col = str(config.get("quote_id", "quote_id"))
+        constraints = config.get("constraints")
+        constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []
+        self._store.atomic_update(
+            job_id,
+            {
+                "message": "Streaming scenario chunks",
+                "progress": 0.30,
+                "elapsed_seconds": self._job_elapsed(job_id),
+            },
+            expected_status="running",
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        preamble_ns = (
+            _compile_preamble(
+                body.graph.preamble or "",
+                pipeline_dir=_pipeline_dir(body.graph),
+                execution_fingerprint=pinned,
+            )
+            or None
+        )
+        chunk_frames = iter_chunked_frames(
+            ChunkRunnerRequest(
+                graph=body.graph,
+                plan=streaming_plan.chunk_plan,
+                build_node_fn=_build_node_fn,
+                preamble_ns=preamble_ns,
+                execution_context=execution_context,
+                start_frame=(base_lf if isinstance(base_lf, pl.LazyFrame) else base_lf.lazy()),
+            )
+        )
+
+        def scored_chunk_batches() -> Iterator[pl.DataFrame]:
+            for chunk_index, chunk in enumerate(chunk_frames, start=1):
+                self._raise_if_frontier_auto_range_stopped(job_id)
+                validated_constraints, scored_lf = self._validate_and_project_auto_range(
+                    chunk.frame.lazy(),
+                    config,
                     job_id,
-                    resources,
-                    required_columns_by_node=base_required,
-                    target_node_id=streaming_plan.base_node_id,
                     execution_context=execution_context,
-                    preamble_fingerprint=pinned,
                 )
                 self._raise_if_frontier_auto_range_stopped(job_id)
-                base_lf = lazy_outputs.get(streaming_plan.base_node_id)
-                if base_lf is None:
-                    raise ValueError(
-                        "Streaming auto-range base node did not produce a dataframe: "
-                        f"{streaming_plan.base_node_id!r}."
-                    )
-
-                qid_col = str(config.get("quote_id", "quote_id"))
-                constraint_cols = (
-                    list(config["constraints"].keys())
-                    if isinstance(config.get("constraints"), dict)
-                    else []
-                )
-                accumulator = _ScenarioFrontierRangeAccumulator(
-                    quote_id_col=qid_col,
-                    constraint_cols=constraint_cols,
-                    partition_count=partition_count,
-                    parts_root=Path(parts_dir),
-                )
-
-                self._store.atomic_update(
-                    job_id,
-                    {
-                        "message": "Streaming scenario chunks",
-                        "progress": 0.30,
-                        "elapsed_seconds": self._job_elapsed(job_id),
-                    },
-                    expected_status="running",
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                chunk_index = 0
-                from haute.chunking import ChunkRunnerRequest, iter_chunked_frames
-                from haute.executor import _compile_preamble
-
-                preamble_ns = (
-                    _compile_preamble(
-                        body.graph.preamble or "",
-                        pipeline_dir=_pipeline_dir(body.graph),
-                        execution_fingerprint=pinned,
-                    )
-                    or None
-                )
-                chunk_batches = iter_chunked_frames(
-                    ChunkRunnerRequest(
-                        graph=body.graph,
-                        plan=streaming_plan.chunk_plan,
-                        build_node_fn=_build_node_fn,
-                        preamble_ns=preamble_ns,
+                if validated_constraints != constraint_cols:
+                    raise ValueError("Streaming auto-range constraint columns changed.")
+                with execution_context.stage(
+                    "frontier_stream_score_collect",
+                    node_id=streaming_plan.scenario_node_id,
+                ):
+                    batch = streaming_collect(
+                        scored_lf.select(_frontier_range_batch_columns(qid_col, constraint_cols)),
                         execution_context=execution_context,
-                        start_frame=(
-                            base_lf if isinstance(base_lf, pl.LazyFrame) else base_lf.lazy()
-                        ),
                     )
-                )
-                for chunk in chunk_batches:
-                    self._raise_if_frontier_auto_range_stopped(job_id)
-                    validated_constraints, scored_lf = self._validate_and_project_auto_range(
-                        chunk.frame.lazy(),
-                        config,
+                yield batch
+                if chunk_index % 10 == 0:
+                    self._store.atomic_update(
                         job_id,
-                        execution_context=execution_context,
+                        {
+                            "message": f"Streaming scenario chunks ({chunk_index})",
+                            "progress": 0.30,
+                            "elapsed_seconds": self._job_elapsed(job_id),
+                        },
+                        expected_status="running",
                     )
-                    self._raise_if_frontier_auto_range_stopped(job_id)
-                    if validated_constraints != constraint_cols:
-                        raise ValueError("Streaming auto-range constraint columns changed.")
-                    with execution_context.stage(
-                        "frontier_stream_score_collect",
-                        node_id=streaming_plan.scenario_node_id,
-                    ):
-                        batch = streaming_collect(
-                            scored_lf.select(
-                                [
-                                    pl.col(qid_col).cast(pl.String).alias(qid_col),
-                                    *[pl.col(cname) for cname in constraint_cols],
-                                ]
-                            ),
-                            execution_context=execution_context,
-                        )
-                    self._raise_if_frontier_auto_range_stopped(job_id)
-                    _add_frontier_range_batch(
-                        accumulator,
-                        batch,
-                        batch_index=chunk_index,
-                        execution_context=execution_context,
-                    )
-                    chunk_index += 1
-                    if chunk_index % 10 == 0:
-                        self._store.atomic_update(
-                            job_id,
-                            {
-                                "message": f"Streaming scenario chunks ({chunk_index})",
-                                "progress": 0.30,
-                                "elapsed_seconds": self._job_elapsed(job_id),
-                            },
-                            expected_status="running",
-                        )
-
-                self._store.atomic_update(
-                    job_id,
-                    {
-                        "message": "Combining scenario envelope",
-                        "progress": 0.85,
-                        "elapsed_seconds": self._job_elapsed(job_id),
-                    },
-                    expected_status="running",
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                ranges = accumulator.finish(
-                    check_cancelled=lambda: self._raise_if_frontier_auto_range_stopped(job_id),
-                    execution_context=execution_context,
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                response_ranges = {
-                    name: OptimiserFrontierRange(min=value["min"], max=value["max"])
-                    for name, value in ranges.items()
-                }
-                response = OptimiserFrontierAutoRangeResponse(
-                    status="ok",
-                    ranges=response_ranges,
-                    warning=None,
-                )
-                self._lifecycle.transition(
-                    job_id,
-                    to="completed",
-                    message="Completed",
-                    fields={
-                        "progress": 1.0,
-                        "elapsed_seconds": self._job_elapsed(job_id),
-                        "result": response.model_dump(),
-                        "execution_metrics": execution_context.metrics_payload(status="completed"),
-                    },
-                )
-                return response
-        except BackgroundJobStoppedError:
-            raise
-        except ExecutionCancelledError as exc:
-            reason = self._jobs.cancellation_reason(job_id) or "cancelled"
-            raise BackgroundJobStoppedError(job_id, reason) from exc
-        except ExecutionMemoryLimitExceededError as exc:
-            http_exc = _memory_limit_http_exception(exc)
-            self._lifecycle.transition(
+            self._store.atomic_update(
                 job_id,
-                to="memory_limited",
-                fields=_memory_limit_job_update(
-                    detail=http_exc.detail,
-                    elapsed_seconds=self._job_elapsed(job_id),
-                    execution_context=execution_context,
-                ),
-            )
-            raise http_exc from None
-        except HTTPException as exc:
-            if _is_memory_limit_http_exception(exc):
-                self._lifecycle.transition(
-                    job_id,
-                    to="memory_limited",
-                    fields=_memory_limit_job_update(
-                        detail=exc.detail,
-                        elapsed_seconds=self._job_elapsed(job_id),
-                        execution_context=execution_context,
-                    ),
-                )
-                raise
-            terminal_reason: TerminalReason = (
-                "contract_error" if exc.status_code in (400, 422) else "error"
-            )
-            self._lifecycle.transition(
-                job_id,
-                to=terminal_reason,
-                fields=_http_exception_job_update(
-                    exc=exc,
-                    elapsed_seconds=self._job_elapsed(job_id),
-                    execution_context=execution_context,
-                    terminal_reason=terminal_reason,
-                ),
-            )
-            raise
-        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-            elapsed_seconds = self._job_elapsed(job_id)
-            contract_reason = contract_error_terminal_reason(exc)
-            fields = contract_error_job_fields(exc)
-            fields["elapsed_seconds"] = elapsed_seconds
-            fields["execution_metrics"] = execution_context.metrics_payload(
-                status=contract_reason,
-                terminal_reason=contract_reason,
-            )
-            self._lifecycle.transition(job_id, to=contract_reason, fields=fields)
-            raise contract_error_http_exception(exc) from None
-        except BoundedMemoryUnsupportedError as exc:
-            detail = f"Frontier auto range cannot run in bounded streaming mode: {exc}"
-            logger.warning(
-                "frontier_auto_range_streaming_bounded_streaming_unsupported",
-                error=str(exc),
-                node_id=body.node_id,
-                job_id=job_id,
-            )
-            self._lifecycle.transition(
-                job_id,
-                to="contract_error",
-                fields=_http_error_job_update(
-                    status_code=422,
-                    detail=detail,
-                    elapsed_seconds=self._job_elapsed(job_id),
-                    execution_context=execution_context,
-                    terminal_reason="contract_error",
-                ),
-            )
-            raise HTTPException(status_code=422, detail=detail) from exc
-        except ValueError as exc:
-            detail = str(exc)
-            self._lifecycle.transition(
-                job_id,
-                to="contract_error",
-                fields=_http_error_job_update(
-                    status_code=400,
-                    detail=detail,
-                    elapsed_seconds=self._job_elapsed(job_id),
-                    execution_context=execution_context,
-                    terminal_reason="contract_error",
-                ),
-            )
-            raise HTTPException(status_code=400, detail=detail) from exc
-        except Exception as exc:
-            logger.error(
-                "frontier_auto_range_streaming_failed",
-                error=str(exc),
-                node_id=body.node_id,
-                exc_info=True,
-            )
-            self._lifecycle.transition(
-                job_id,
-                to="error",
-                fields={
-                    "message": f"Streaming frontier auto range failed: {exc}",
+                {
+                    "message": "Combining scenario envelope",
+                    "progress": 0.85,
                     "elapsed_seconds": self._job_elapsed(job_id),
-                    "execution_metrics": execution_context.metrics_payload(status="error"),
                 },
+                expected_status="running",
             )
-            raise HTTPException(
-                status_code=500,
-                detail="Frontier auto range failed. Check the server logs for details.",
-            ) from exc
+            self._raise_if_frontier_auto_range_stopped(job_id)
+
+        return _reduce_frontier_range_batches(
+            scored_chunk_batches(),
+            quote_id_col=qid_col,
+            constraint_cols=constraint_cols,
+            partition_count=partition_count,
+            check_cancelled=lambda: self._raise_if_frontier_auto_range_stopped(job_id),
+            execution_context=execution_context,
+        )
+
+    def _frontier_ranges_in_worker(
+        self,
+        body: OptimiserFrontierAutoRangeRequest,
+        job_id: str,
+        resources: contextlib.ExitStack,
+        *,
+        streaming_plan: _StreamingAutoRangePlan | None,
+        required_columns_by_node: Mapping[str, Iterable[str]],
+        timeout: int,
+        execution_context: ExecutionContext,
+    ) -> tuple[dict[str, dict[str, float]], Mapping[str, Any] | None]:
+        """Supervise one hard-capped worker that computes the auto-range totals.
+
+        The seed plan the worker's execution adopts is opened here: at the
+        streaming base for a chunked job, at the data input otherwise. The
+        job's remaining timeout bounds the worker. Returns the totals and the
+        worker's execution metrics.
+        """
+        self._store.atomic_update(
+            job_id,
+            {
+                "message": "Estimating frontier range",
+                "progress": 0.05,
+                "elapsed_seconds": self._job_elapsed(job_id),
+            },
+            expected_status="running",
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        if streaming_plan is not None:
+            handoff = self._open_setup_seed_plan(
+                body,
+                job_id,
+                resources,
+                required_columns_by_node=_chunked_base_required_columns(streaming_plan),
+                target_node_id=streaming_plan.base_node_id,
+                execution_context=execution_context,
+            )
+        else:
+            handoff = self._open_setup_seed_plan(
+                body,
+                job_id,
+                resources,
+                required_columns_by_node=required_columns_by_node,
+                execution_context=execution_context,
+            )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        remaining = timeout - self._job_elapsed(job_id)
+        if remaining <= 0:
+            raise self._time_out_frontier_auto_range(job_id, timeout)
+        with worker_scratch_directory() as scratch_dir:
+            outcome = self._run_optimiser_worker(
+                frontier_auto_range_worker,
+                FrontierAutoRangeWorkerRequest(
+                    body=body,
+                    project_root=str(_get_project_root()),
+                    seed_plan=handoff,
+                    chunked=streaming_plan is not None,
+                    scratch_dir=scratch_dir,
+                ),
+                job_id=job_id,
+                node_id=body.node_id,
+                execution_context=execution_context,
+                timeout_seconds=remaining,
+                process_name="haute-optimiser-auto-range",
+                on_timeout=lambda: self._time_out_frontier_auto_range(job_id, timeout),
+            )
+        if not isinstance(outcome, FrontierAutoRangeWorkerOutcome):
+            raise RuntimeError(f"Auto-range worker returned {type(outcome).__name__}")
+        if outcome.failure is not None:
+            raise OptimiserWorkerFailureError(outcome.failure)
+        if outcome.ranges is None:
+            raise RuntimeError("Auto-range worker returned neither ranges nor a failure")
+        return outcome.ranges, outcome.execution_metrics
+
+    def _time_out_frontier_auto_range(
+        self,
+        job_id: str,
+        timeout: int | float,
+    ) -> BackgroundJobStoppedError:
+        """Publish an auto-range timeout and return the stop that ends its worker."""
+        self._jobs.cancel(job_id, reason="timed_out")
+        self._lifecycle.transition(
+            job_id,
+            to="timed_out",
+            message=(
+                f"Auto range timed out after {timeout}s. "
+                "Reduce the input size or increase HAUTE_AUTO_RANGE_TIMEOUT."
+            ),
+            elapsed_seconds=_job_elapsed_seconds(self._store.require_job(job_id)),
+        )
+        return BackgroundJobStoppedError(job_id, "timed_out")
 
     def _launch_frontier_auto_range_background(
         self,
@@ -4636,6 +4115,109 @@ class OptimiserSolveService:
                 detail="An optimisation job is already running. Please wait for it to finish.",
             )
 
+    @staticmethod
+    def _setup_execution_scope(
+        body: OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest,
+        target_node_id: str | None,
+    ) -> tuple[str, frozenset[str], tuple[str, ...]]:
+        """Return setup's execution target, preserved side inputs and consumed nodes.
+
+        Consumed are every node setup reads afterwards: an explicit target alone;
+        otherwise the resolved execution target (an Optimiser resolves to its data
+        input) and each banding side input from its own edges that the run
+        executes, API inputs included.
+        """
+        execution_target_node_id = target_node_id or _setup_execution_target_node_id(
+            body.graph, body.node_id
+        )
+        preserved_node_ids = _optimiser_side_input_ids(body.graph, body.node_id)
+        consumed_node_ids: tuple[str, ...] = (execution_target_node_id,)
+        if target_node_id is None:
+            target_lineage = set(upstream_node_ids(execution_target_node_id, body.graph.parents_of))
+            consumed_node_ids += tuple(sorted(preserved_node_ids & target_lineage))
+        return execution_target_node_id, preserved_node_ids, consumed_node_ids
+
+    def _setup_seed_plan_request(
+        self,
+        body: OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest,
+        *,
+        required_columns_by_node: Mapping[str, Iterable[str]] | None,
+        target_node_id: str | None,
+        execution_context: ExecutionContext | None,
+    ) -> SeedPlanRequest:
+        """The seed plan one setup execution runs under.
+
+        The plan decides separately which consumed nodes it can capture.
+        Auto-range captures, at whichever nodes it captures, the columns the
+        following solve reads there — the data input, or the streaming base
+        below the scenario expander — so the solve seeds instead of
+        recomputing. A column a node does not produce is simply not captured.
+        """
+        from haute.executor import _resolve_batch_scenario
+
+        # Resolve scenario: optimiser runs on batch data, not live.
+        scenario = _resolve_batch_scenario(body.graph) or "batch"
+        execution_target_node_id, _preserved, consumed_node_ids = self._setup_execution_scope(
+            body, target_node_id
+        )
+        capture_columns_by_node: Mapping[str, frozenset[str]] = {}
+        if (
+            execution_context is not None
+            and execution_context.profile == ExecutionProfile.AUTO_RANGE
+        ):
+            optimiser_node = _find_optimiser_node(body.graph, body.node_id)
+            if str(optimiser_node.data.config.get("mode", "online")) in {"online", "ratebook"}:
+                capture_columns_by_node = _solve_columns_by_node(
+                    body.graph,
+                    body.node_id,
+                    optimiser_node.data.config,
+                    source=scenario,
+                )
+        return SeedPlanRequest(
+            graph=body.graph,
+            target_node_id=execution_target_node_id,
+            source=scenario,
+            profile=(
+                execution_context.profile
+                if execution_context is not None
+                else ExecutionProfile.LAZY_SINK
+            ),
+            consumed_node_ids=consumed_node_ids,
+            required_columns_by_node=required_columns_by_node,
+            capture_columns_by_node=capture_columns_by_node,
+        )
+
+    def _open_setup_seed_plan(
+        self,
+        body: OptimiserSolveRequest | OptimiserFrontierAutoRangeRequest,
+        job_id: str,
+        resources: contextlib.ExitStack,
+        *,
+        required_columns_by_node: Mapping[str, Iterable[str]] | None = None,
+        target_node_id: str | None = None,
+        execution_context: ExecutionContext,
+    ) -> SeedPlanHandoff:
+        """Open, on *resources*, the seed plan a setup worker adopts, and return its handoff.
+
+        Input preparation runs here, under the parent's admitted context,
+        because a node's signature signs its prepared inputs; the plan's seed
+        leases and capture staging are held until the worker has exited.
+        """
+        flattened = _with_flattened_optimiser_graph(body)
+        with self._setup_execution_failures(flattened, job_id, execution_context):
+            plan = resources.enter_context(
+                open_seed_plan(
+                    self._setup_seed_plan_request(
+                        flattened,
+                        required_columns_by_node=required_columns_by_node,
+                        target_node_id=target_node_id,
+                        execution_context=execution_context,
+                    ),
+                    execution_context=execution_context,
+                )
+            )
+            return plan.handoff()
+
     def _execute_pipeline(
         self,
         body: OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest,
@@ -4646,15 +4228,17 @@ class OptimiserSolveService:
         target_node_id: str | None = None,
         execution_context: ExecutionContext | None = None,
         preamble_fingerprint: str | None = None,
+        seed_plan: SeedPlanHandoff | None = None,
     ) -> dict[str, Any]:
         """Execute the pipeline lazily up to the optimiser node, under a seed plan.
 
         The plan is entered on the caller's *resources* stack, so its seed
         leases and captures stay held until the caller has finished reading
-        the returned frames.
+        the returned frames. A setup worker passes the *seed_plan* handoff its
+        supervising parent opened and adopts it instead of opening its own.
         """
         body = _with_flattened_optimiser_graph(body)
-        try:
+        with self._setup_execution_failures(body, job_id, execution_context):
             from haute._cache import preamble_execution_fingerprint
             from haute.executor import (
                 _build_node_fn,
@@ -4663,9 +4247,7 @@ class OptimiserSolveService:
                 _resolve_batch_scenario,
             )
 
-            # Resolve scenario: optimiser runs on batch data, not live.
             scenario = _resolve_batch_scenario(body.graph) or "batch"
-
             pinned = (
                 preamble_fingerprint
                 if preamble_fingerprint is not None
@@ -4684,60 +4266,23 @@ class OptimiserSolveService:
                 or None
             )
 
-            execution_target_node_id = target_node_id or _setup_execution_target_node_id(
-                body.graph, body.node_id
+            execution_target_node_id, preserved_node_ids, _consumed = self._setup_execution_scope(
+                body, target_node_id
             )
-            preserved_node_ids = _optimiser_side_input_ids(body.graph, body.node_id)
-            # Every node setup reads afterwards: an explicit target alone;
-            # otherwise the resolved execution target (an Optimiser resolves
-            # to its data input) and each banding side input from its own
-            # edges that the run executes, API inputs included. The plan
-            # decides separately which of them it can capture.
-            consumed_node_ids: tuple[str, ...] = (execution_target_node_id,)
-            if target_node_id is None:
-                target_lineage = set(
-                    upstream_node_ids(execution_target_node_id, body.graph.parents_of)
-                )
-                consumed_node_ids += tuple(sorted(preserved_node_ids & target_lineage))
-            # Auto-range captures, at whichever nodes it captures, the
-            # columns the following solve reads there — the data input, or
-            # the streaming base below the scenario expander — so the solve
-            # seeds instead of recomputing. A column a node does not produce
-            # is simply not captured.
-            capture_columns_by_node: Mapping[str, frozenset[str]] = {}
-            if (
-                execution_context is not None
-                and execution_context.profile == ExecutionProfile.AUTO_RANGE
-            ):
-                optimiser_node = _find_optimiser_node(body.graph, body.node_id)
-                if str(optimiser_node.data.config.get("mode", "online")) in {
-                    "online",
-                    "ratebook",
-                }:
-                    capture_columns_by_node = _solve_columns_by_node(
-                        body.graph,
-                        body.node_id,
-                        optimiser_node.data.config,
-                        source=scenario,
-                    )
-            plan = resources.enter_context(
-                open_seed_plan(
-                    SeedPlanRequest(
-                        graph=body.graph,
-                        target_node_id=execution_target_node_id,
-                        source=scenario,
-                        profile=(
-                            execution_context.profile
-                            if execution_context is not None
-                            else ExecutionProfile.LAZY_SINK
+            if seed_plan is not None:
+                plan = resources.enter_context(SeedPlan.adopt(seed_plan))
+            else:
+                plan = resources.enter_context(
+                    open_seed_plan(
+                        self._setup_seed_plan_request(
+                            body,
+                            required_columns_by_node=required_columns_by_node,
+                            target_node_id=target_node_id,
+                            execution_context=execution_context,
                         ),
-                        consumed_node_ids=consumed_node_ids,
-                        required_columns_by_node=required_columns_by_node,
-                        capture_columns_by_node=capture_columns_by_node,
-                    ),
-                    execution_context=execution_context,
+                        execution_context=execution_context,
+                    )
                 )
-            )
             lazy_outputs, *_ = execute_lazy_graph(
                 body.graph,
                 _build_node_fn,
@@ -4752,6 +4297,17 @@ class OptimiserSolveService:
                 snapshot_plan=plan,
             )
             return lazy_outputs
+
+    @contextlib.contextmanager
+    def _setup_execution_failures(
+        self,
+        body: OptimiserSolveRequest | OptimiserEstimateRequest | OptimiserFrontierAutoRangeRequest,
+        job_id: str,
+        execution_context: ExecutionContext | None,
+    ) -> Iterator[None]:
+        """Record and translate a failure while opening or executing setup's pipeline."""
+        try:
+            yield
         except HTTPException:
             raise
         except PUBLIC_CONTRACT_ERROR_TYPES as exc:
@@ -4811,7 +4367,7 @@ class OptimiserSolveService:
             raise HTTPException(
                 status_code=500,
                 detail="Pipeline execution failed. Check the server logs for details.",
-            )
+            ) from exc
         finally:
             if execution_context is not None:
                 self._record_execution_metrics(job_id, execution_context)
@@ -5114,6 +4670,7 @@ class OptimiserSolveService:
         mode: str,
         *,
         execution_context: ExecutionContext | None = None,
+        artifact_dir: str | None = None,
     ) -> Any:
         """Extract ratebook factors DataFrame (None for online mode)."""
         import polars as pl
@@ -5187,11 +4744,12 @@ class OptimiserSolveService:
             ordered_cols = list(dict.fromkeys([qid_col, *factor_cols]))
             projected = factors_lf.select([pl.col(column) for column in ordered_cols])
 
-            handle = _persist_ratebook_factors_lazy_artifact(
+            handle = _optimiser_artifacts._persist_ratebook_factors_lazy_artifact(
                 projected,
+                artifact_dir=Path(artifact_dir) if artifact_dir is not None else None,
             )
             if int(handle["row_count"]) == 0:
-                _cleanup_orphan_apply_result_artifact(
+                _optimiser_artifacts._cleanup_orphan_apply_result_artifact(
                     handle,
                     job_id="<setup>",
                     event="empty_ratebook_factor_artifact_cleanup_failed",
@@ -5209,13 +4767,38 @@ class OptimiserSolveService:
                         node_id=node_id,
                     )
                 except BaseException:
-                    _cleanup_orphan_apply_result_artifact(
+                    _optimiser_artifacts._cleanup_orphan_apply_result_artifact(
                         handle,
                         job_id="<setup>",
                         event="extract_factors_post_sink_checkpoint_cleanup_failed",
                     )
                     raise
             return handle
+
+    def _write_solver_input(
+        self,
+        scored_lf: Any,
+        output_path: str,
+        node_id: str,
+        job_id: str,
+        *,
+        execution_context: ExecutionContext | None = None,
+        allow_borrow: bool = True,
+    ) -> str:
+        """Write the projected solver input to *output_path*, or borrow its snapshot.
+
+        With *allow_borrow*, an unchanged single-file parquet scan (read under
+        the caller's still-open seed-plan lease) is returned instead of copied.
+        """
+        with (
+            self._grid_construction_failures(node_id, job_id, execution_context),
+            _execution_stage(execution_context, "optimiser_write_solver_input", node_id=node_id),
+        ):
+            borrowed_path = _projected_parquet_input_path(scored_lf) if allow_borrow else None
+            if borrowed_path is not None:
+                return str(borrowed_path)
+            bounded_sink(scored_lf, output_path)
+            return output_path
 
     def _build_grid(
         self,
@@ -5228,6 +4811,38 @@ class OptimiserSolveService:
         execution_context: ExecutionContext | None = None,
     ) -> QuoteGrid:
         """Sink scored data to parquet and build the QuoteGrid."""
+        tmp_path = _optimiser_artifacts._new_solver_input_path()
+        try:
+            input_path = self._write_solver_input(
+                scored_lf,
+                tmp_path,
+                node_id,
+                job_id,
+                execution_context=execution_context,
+            )
+            del scored_lf
+            return self._build_grid_from_parquet(
+                input_path,
+                constraint_cols,
+                config,
+                node_id,
+                job_id,
+                execution_context=execution_context,
+            )
+        finally:
+            _optimiser_artifacts._remove_solver_input(tmp_path)
+
+    def _build_grid_from_parquet(
+        self,
+        input_path: str,
+        constraint_cols: list[str],
+        config: dict[str, Any],
+        node_id: str,
+        job_id: str,
+        *,
+        execution_context: ExecutionContext | None = None,
+    ) -> QuoteGrid:
+        """Build the solver's QuoteGrid from a written or borrowed solver-input parquet."""
         from price_contour import build_grid_from_parquet_chunked
 
         objective = config["objective"]
@@ -5235,66 +4850,57 @@ class OptimiserSolveService:
         mult_col = config.get("scenario_value", "scenario_value")
         step_col = config.get("scenario_index", "scenario_index")
 
-        borrowed_path: Path | None = None
-        tmp_path: str | None = None
-        try:
-            borrowed_path = _projected_parquet_input_path(scored_lf)
-            if borrowed_path is None:
-                tmp_fd, tmp_path = tempfile.mkstemp(suffix=".parquet")
-                os.close(tmp_fd)
-            else:
-                tmp_path = str(borrowed_path)
-            with _execution_stage(
+        with (
+            self._grid_construction_failures(node_id, job_id, execution_context),
+            _execution_stage(execution_context, "optimiser_build_grid", node_id=node_id),
+        ):
+            try:
+                chunk_decision = _chunk_size_decision_for_parquet(
+                    config,
+                    Path(input_path),
+                    source="optimiser_grid",
+                )
+            except ValueError as exc:
+                detail = f"Grid construction failed: {exc}"
+                self._record_http_setup_failure(
+                    job_id,
+                    status_code=400,
+                    detail=detail,
+                    execution_context=execution_context,
+                )
+                raise HTTPException(status_code=400, detail=detail) from exc
+            chunk_size = chunk_decision.chunk_size
+            self._record_setup_chunking(job_id, "optimiser_grid", chunk_decision.provenance)
+
+            _admit_resident_grid(
+                Path(input_path),
+                [qid_col, step_col, mult_col, objective, *constraint_cols],
+                qid_col,
+                len(constraint_cols),
+                chunk_size,
                 execution_context,
-                "optimiser_build_grid",
-                node_id=node_id,
-            ):
-                if borrowed_path is None:
-                    bounded_sink(
-                        scored_lf,
-                        tmp_path,
-                    )
-                del scored_lf
+            )
 
-                try:
-                    chunk_decision = _chunk_size_decision_for_parquet(
-                        config,
-                        Path(tmp_path),
-                        source="optimiser_grid",
-                    )
-                except ValueError as exc:
-                    detail = f"Grid construction failed: {exc}"
-                    self._record_http_setup_failure(
-                        job_id,
-                        status_code=400,
-                        detail=detail,
-                        execution_context=execution_context,
-                    )
-                    raise HTTPException(status_code=400, detail=detail) from exc
-                chunk_size = chunk_decision.chunk_size
-                self._record_setup_chunking(job_id, "optimiser_grid", chunk_decision.provenance)
+            return build_grid_from_parquet_chunked(
+                input_path,
+                constraint_cols,
+                chunk_size,
+                quote_id=qid_col,
+                scenario_index=step_col,
+                scenario_value=mult_col,
+                objective=objective,
+            )
 
-                _admit_resident_grid(
-                    Path(tmp_path),
-                    [qid_col, step_col, mult_col, objective, *constraint_cols],
-                    qid_col,
-                    len(constraint_cols),
-                    chunk_size,
-                    execution_context,
-                )
-
-                build_kwargs = {
-                    "quote_id": qid_col,
-                    "scenario_index": step_col,
-                    "scenario_value": mult_col,
-                    "objective": objective,
-                }
-                quote_grid = build_grid_from_parquet_chunked(
-                    tmp_path,
-                    constraint_cols,
-                    chunk_size,
-                    **build_kwargs,
-                )
+    @contextlib.contextmanager
+    def _grid_construction_failures(
+        self,
+        node_id: str,
+        job_id: str,
+        execution_context: ExecutionContext | None,
+    ) -> Iterator[None]:
+        """Record and translate a failure while writing the solver input or building its grid."""
+        try:
+            yield
         except HTTPException:
             raise
         except (
@@ -5337,19 +4943,6 @@ class OptimiserSolveService:
                 execution_context=execution_context,
             )
             raise HTTPException(status_code=500, detail=detail) from exc
-        finally:
-            if borrowed_path is None and tmp_path is not None and Path(tmp_path).exists():
-                try:
-                    os.unlink(tmp_path)
-                except Exception as cleanup_exc:
-                    logger.warning(
-                        "optimiser_grid_temp_cleanup_failed",
-                        path=tmp_path,
-                        error=str(cleanup_exc),
-                        exc_info=True,
-                    )
-
-        return quote_grid
 
     def _record_setup_chunking(
         self,
@@ -5561,18 +5154,21 @@ class OptimiserSolveService:
                 if (
                     mode == "ratebook"
                     and isinstance(ratebook_factors_handle, dict)
-                    and ratebook_factors_handle.get("kind") == _RATEBOOK_FACTORS_HANDLE_KIND
+                    and ratebook_factors_handle.get("kind")
+                    == _optimiser_artifacts._RATEBOOK_FACTORS_HANDLE_KIND
                 ):
                     current = self._store.get_job(job_id)
                     handles = current.get("artifact_handles") if current is not None else None
                     attached = (
                         isinstance(handles, dict)
-                        and isinstance(handles.get(_RATEBOOK_FACTORS_HANDLE_KEY), dict)
-                        and handles[_RATEBOOK_FACTORS_HANDLE_KEY].get("path")
+                        and isinstance(
+                            handles.get(_optimiser_artifacts._RATEBOOK_FACTORS_HANDLE_KEY), dict
+                        )
+                        and handles[_optimiser_artifacts._RATEBOOK_FACTORS_HANDLE_KEY].get("path")
                         == ratebook_factors_handle.get("path")
                     )
                     if not attached:
-                        _cleanup_orphan_apply_result_artifact(
+                        _optimiser_artifacts._cleanup_orphan_apply_result_artifact(
                             ratebook_factors_handle,
                             job_id=job_id,
                             event="solve_worker_orphan_ratebook_factors_cleanup_failed",
@@ -5611,9 +5207,10 @@ class OptimiserSolveService:
             if (
                 mode == "ratebook"
                 and isinstance(ratebook_factors_handle, dict)
-                and ratebook_factors_handle.get("kind") == _RATEBOOK_FACTORS_HANDLE_KIND
+                and ratebook_factors_handle.get("kind")
+                == _optimiser_artifacts._RATEBOOK_FACTORS_HANDLE_KIND
             ):
-                _cleanup_orphan_apply_result_artifact(
+                _optimiser_artifacts._cleanup_orphan_apply_result_artifact(
                     ratebook_factors_handle,
                     job_id=job_id,
                     event="solve_worker_start_orphan_ratebook_factors_cleanup_failed",

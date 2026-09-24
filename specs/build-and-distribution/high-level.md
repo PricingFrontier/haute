@@ -75,6 +75,14 @@ Out of scope:
   authoring/example resources are explicit Hatch artifacts, so installed
   distributions carry both the browser client and the complete discoverable
   assistant bundle portfolio.
+- The published node reference (`docs/building-models/nodes/`) has exactly one
+  page for every node type a user can add; a submodel port, created with its
+  submodel, is documented on the submodel page. The navigation lists those pages
+  and the feature pages (the index and Instances) and nothing else, a page's
+  config table names only keys the config validator accepts for its node type,
+  and no published page uses the vocabulary of a removed node type. A test
+  enforces all four, so adding a node type without a page, or keeping a page for
+  a removed type or key, fails CI.
 - A push to `main` that changes any `docs/**` path or `mkdocs.yml` builds MkDocs
   in strict mode and deploys the resulting `site/` artifact to GitHub Pages.
   The internal engineering documents named in `exclude_docs` (engineering

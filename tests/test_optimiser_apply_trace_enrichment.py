@@ -473,6 +473,56 @@ def test_ratebook_execute_trace_explains_configured_input_factor_ladder(tmp_path
     assert ladder[1]["running_product_after"] == pytest.approx(0.98 * 1.10)
 
 
+def test_ratebook_trace_encodes_non_finite_values_with_the_tagged_sentinel(tmp_path):
+    # The explanation used to render NaN and infinity as ``null``, which the
+    # browser cannot tell apart from a missing value. It now shares the one
+    # tagged encoding every other payload uses.
+    artifact = _ratebook_artifact()
+    artifact["factor_tables"]["region"][1].update(
+        {"expected_income": float("nan"), "volume_ratio": float("inf"), "floor": float("-inf")}
+    )
+    artifact_path = _write_json(tmp_path / "ratebook.json", artifact)
+    banded_path = tmp_path / "banded.parquet"
+    pl.DataFrame(
+        {
+            "quote_id": ["q1"],
+            "region": ["Manchester"],
+            "age_band": ["young"],
+            "base_price": [float("nan")],
+        }
+    ).write_parquet(banded_path)
+    graph = _g(
+        {
+            "nodes": [
+                _source_node("banded", str(banded_path)),
+                _optimiser_apply_node(
+                    {
+                        "sourceType": "file",
+                        "artifact_path": artifact_path,
+                        "ratebook_input": "banded",
+                        "optimised_value_column": "selected_factor",
+                    }
+                ),
+            ],
+            "edges": [_edge("banded", "apply")],
+        }
+    )
+
+    result = execute_trace(graph, row_index=0, target_node_id="apply", column="selected_factor")
+
+    detail = _step_by_id(result, "apply").node_detail
+    assert detail is not None
+    assert detail["status"] == "ok", detail
+    matched = detail["factor_ladder"][0]["matched_entry"]
+    assert matched["expected_income"] == {"__haute_type__": "non_finite_float", "value": "nan"}
+    assert matched["volume_ratio"] == {"__haute_type__": "non_finite_float", "value": "inf"}
+    assert matched["floor"] == {"__haute_type__": "non_finite_float", "value": "-inf"}
+    assert detail["input_row"]["base_price"] == {
+        "__haute_type__": "non_finite_float",
+        "value": "nan",
+    }
+
+
 def test_ratebook_trace_uses_exact_multi_frame_api_input_name(tmp_path, monkeypatch):
     """Trace enrichment must select the same physical API frame as runtime apply."""
     import haute.execution as execution_facade

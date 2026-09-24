@@ -12,6 +12,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as metadata_version
 from pathlib import Path
 
+from haute._git_core import _run_git_ok, git_binary_available
 from haute._logging import get_logger
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._mlflow import DeployResult
@@ -1044,18 +1045,11 @@ def _docker_push(image_tag: str) -> None:
 
 
 def _git_sha_short() -> str:
-    """Get the short git SHA of HEAD, or 'local' if not in a repo."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=True,
-        )
-        return result.stdout.strip()
-    except (FileNotFoundError, subprocess.CalledProcessError):
+    """Get the short git SHA of HEAD, or 'local' without git or outside a repo."""
+    if not git_binary_available():
         return "local"
+    ok, sha = _run_git_ok("rev-parse", "--short", "HEAD")
+    return sha if ok else "local"
 
 
 def _next_version() -> int:

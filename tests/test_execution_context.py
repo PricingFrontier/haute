@@ -3387,8 +3387,6 @@ async def test_trace_route_maps_target_not_found_and_unknown_value_errors(
     expected_status: int,
     expected_detail: str,
 ) -> None:
-    from fastapi import HTTPException
-
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import TraceRequest
 
@@ -3413,13 +3411,11 @@ async def test_trace_route_maps_target_not_found_and_unknown_value_errors(
 
     monkeypatch.setattr(pipeline_route, "execute_trace", raise_value_error)
 
-    with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.trace_row(
-            TraceRequest(seed_plan=[], graph=graph, row_index=0, target_node_id="source")
-        )
+    request = TraceRequest(seed_plan=[], graph=graph, row_index=0, target_node_id="source")
+    response = _app_client().post("/api/pipeline/trace", json=request.model_dump(mode="json"))
 
-    assert exc_info.value.status_code == expected_status
-    assert exc_info.value.detail == expected_detail
+    assert response.status_code == expected_status
+    assert response.json()["detail"] == expected_detail
 
 
 @pytest.mark.asyncio
@@ -3463,10 +3459,7 @@ async def test_read_json_file_maps_unexpected_read_failure_to_internal_error(
     monkeypatch,
     tmp_path,
 ) -> None:
-    from fastapi import HTTPException
-
     from haute.routes import pipeline as pipeline_route
-    from haute.schemas import ReadJsonRequest
 
     payload = tmp_path / "payload.json"
     payload.write_text("{}", encoding="utf-8")
@@ -3477,11 +3470,10 @@ async def test_read_json_file_maps_unexpected_read_failure_to_internal_error(
         lambda _path: (_ for _ in ()).throw(OSError("disk unavailable")),
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.read_json_file(ReadJsonRequest(path="payload.json"))
+    response = _app_client().post("/api/pipeline/read-json", json={"path": "payload.json"})
 
-    assert exc_info.value.status_code == 500
-    assert exc_info.value.detail == "Operation failed. Check the server logs for details."
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Operation failed. Check the server logs for details."
 
 
 @pytest.mark.asyncio
@@ -3600,9 +3592,6 @@ async def test_preview_route_admits_when_warm_process_rss_exceeds_operation_budg
 
 @pytest.mark.asyncio
 async def test_preview_route_maps_admission_failure_to_http_507(monkeypatch) -> None:
-    from fastapi import HTTPException
-
-    from haute.routes import pipeline as pipeline_route
     from haute.schemas import PreviewNodeRequest
 
     monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "64")
@@ -3627,13 +3616,14 @@ async def test_preview_route_maps_admission_failure_to_http_507(monkeypatch) -> 
         }
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+    request = PreviewNodeRequest(graph=graph, node_id="source")
+    response = _app_client().post("/api/pipeline/preview", json=request.model_dump(mode="json"))
 
-    assert exc_info.value.status_code == 507
-    assert exc_info.value.detail["error_code"] == "memory_limit"
-    assert exc_info.value.detail["profile"] == "preview_eager"
-    assert exc_info.value.detail["reason"] == "process_rss_limit_exceeded"
+    assert response.status_code == 507
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "memory_limit"
+    assert detail["profile"] == "preview_eager"
+    assert detail["reason"] == "process_rss_limit_exceeded"
 
 
 @pytest.mark.asyncio
@@ -3921,9 +3911,6 @@ async def test_preview_route_returns_error_response_for_mismatch(monkeypatch, er
 
 @pytest.mark.asyncio
 async def test_sink_route_maps_admission_failure_to_http_507(monkeypatch, tmp_path) -> None:
-    from fastapi import HTTPException
-
-    from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
     monkeypatch.chdir(tmp_path)
@@ -3950,15 +3937,16 @@ async def test_sink_route_maps_admission_failure_to_http_507(monkeypatch, tmp_pa
         }
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.write_output_node(
-            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
-        )
+    request = WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+    response = _app_client().post(
+        "/api/pipeline/write-output", json=request.model_dump(mode="json")
+    )
 
-    assert exc_info.value.status_code == 507
-    assert exc_info.value.detail["error_code"] == "memory_limit"
-    assert exc_info.value.detail["profile"] == "lazy_sink"
-    assert exc_info.value.detail["reason"] == "process_rss_limit_exceeded"
+    assert response.status_code == 507
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "memory_limit"
+    assert detail["profile"] == "lazy_sink"
+    assert detail["reason"] == "process_rss_limit_exceeded"
 
 
 @pytest.mark.asyncio
@@ -3966,8 +3954,6 @@ async def test_sink_route_maps_execution_memory_budget_failure_to_http_507(
     monkeypatch,
     tmp_path,
 ) -> None:
-    from fastapi import HTTPException
-
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import WriteOutputRequest
 
@@ -4002,15 +3988,16 @@ async def test_sink_route_maps_execution_memory_budget_failure_to_http_507(
 
     monkeypatch.setattr(pipeline_route, "_output_write_transaction", raise_memory_budget)
 
-    with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.write_output_node(
-            WriteOutputRequest(graph=graph, node_id="sink", source="batch")
-        )
+    request = WriteOutputRequest(graph=graph, node_id="sink", source="batch")
+    response = _app_client().post(
+        "/api/pipeline/write-output", json=request.model_dump(mode="json")
+    )
 
-    assert exc_info.value.status_code == 507
-    assert exc_info.value.detail["error_code"] == "memory_limit"
-    assert exc_info.value.detail["operation"] == "pipeline_write_output"
-    assert exc_info.value.detail["reason"] == "process_rss_limit_exceeded"
+    assert response.status_code == 507
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "memory_limit"
+    assert detail["operation"] == "pipeline_write_output"
+    assert detail["reason"] == "process_rss_limit_exceeded"
 
 
 @pytest.mark.asyncio
@@ -4068,8 +4055,6 @@ async def test_sink_route_maps_bounded_streaming_failure_to_http_422(
 async def test_preview_route_maps_execution_memory_budget_failure_to_http_507(
     monkeypatch,
 ) -> None:
-    from fastapi import HTTPException
-
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import PreviewNodeRequest
 
@@ -4102,13 +4087,14 @@ async def test_preview_route_maps_execution_memory_budget_failure_to_http_507(
 
     monkeypatch.setattr(pipeline_route, "execute_graph", raise_memory_budget)
 
-    with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+    request = PreviewNodeRequest(graph=graph, node_id="source")
+    response = _app_client().post("/api/pipeline/preview", json=request.model_dump(mode="json"))
 
-    assert exc_info.value.status_code == 507
-    assert exc_info.value.detail["error_code"] == "memory_limit"
-    assert exc_info.value.detail["operation"] == "pipeline_preview"
-    assert exc_info.value.detail["reason"] == "process_rss_limit_exceeded"
+    assert response.status_code == 507
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "memory_limit"
+    assert detail["operation"] == "pipeline_preview"
+    assert detail["reason"] == "process_rss_limit_exceeded"
 
 
 @pytest.mark.asyncio
@@ -5927,3 +5913,12 @@ def test_adopted_worker_input_preparation_is_copied_into_parent_evidence() -> No
     evidence = parent.worker_evidence()
     assert evidence["input_preparation"][0]["node_id"] == "source"
     assert parent.metrics_payload()["input_preparation"][0]["node_id"] == "source"
+
+
+def _app_client():
+    """A client for the application, so its exception handlers answer."""
+    from fastapi.testclient import TestClient
+
+    from haute.server import app
+
+    return TestClient(app, raise_server_exceptions=False)

@@ -248,8 +248,6 @@ async def get_schema(path: str) -> SchemaResponse:
 
     try:
         return await run_in_threadpool(_read_schema_blocking, path, target)
-    except HTTPException:
-        raise
     except UnsupportedSourceFormatError as exc:
         logger.info(
             "schema_unsupported_source_format",
@@ -306,20 +304,3 @@ async def get_schema(path: str) -> SchemaResponse:
             exc_info=True,
         )
         raise HTTPException(status_code=400, detail=_INTERNAL_ERROR_DETAIL) from None
-    except Exception as exc:  # noqa: BLE001
-        # Fail loudly server-side: structured log with the full stack
-        # trace via ``exc_info=True`` so ops can diagnose the real
-        # error.  Respond with a sanitized 500 — OS errors, polars
-        # decoder crashes, and platform paths must never leak through
-        # ``str(exc)``.  The broad except is deliberate:
-        # every exception class needs the same treatment here, and we
-        # do NOT swallow silently — the structured log always fires
-        # with explicit ``error_class`` / ``error_message`` keys.
-        logger.error(
-            "schema_read_failed",
-            path=path,
-            error_class=type(exc).__name__,
-            error_message=str(exc),
-            exc_info=True,
-        )
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None

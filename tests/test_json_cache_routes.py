@@ -828,12 +828,7 @@ class TestBuildJsonCache:
 
         assert response.status_code == expected_status
         if expected_status == 500:
-            expected_detail = (
-                "Internal server error"
-                if failure_kind == "unknown_envelope"
-                else _INTERNAL_ERROR_DETAIL
-            )
-            assert response.json()["detail"] == expected_detail
+            assert response.json()["detail"] == _INTERNAL_ERROR_DETAIL
             assert "private" not in response.text
 
     def test_success_without_an_admission_handle_skips_release(

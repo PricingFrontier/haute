@@ -2502,6 +2502,16 @@ class TestJobStoreFactoryAllowList:
         finally:
             get_job_store.cache_clear()
 
+    def test_optimiser_worker_prefix_returns_distinct_store(self) -> None:
+        get_job_store.cache_clear()
+        try:
+            worker = get_job_store("optimiser_worker")
+
+            assert worker is get_job_store("optimiser_worker")
+            assert worker is not get_job_store("optimiser")
+        finally:
+            get_job_store.cache_clear()
+
     def test_unknown_prefix_fails_loudly(self) -> None:
         with pytest.raises(ValueError, match="Unknown JobStore prefix 'pipeline'"):
             get_job_store("pipeline")
