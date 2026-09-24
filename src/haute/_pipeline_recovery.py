@@ -1419,7 +1419,14 @@ def _recover_registered_submodels(
                 captures=captures,
                 code=code,
                 message=_exception_message(exc),
-                remediation=("Open the submodel source and correct the diagnosed definition."),
+                remediation=(
+                    exc.context.get(
+                        "remediation",
+                        "Open the submodel source and correct the diagnosed definition.",
+                    )
+                    if isinstance(exc, HauteError)
+                    else "Open the submodel source and correct the diagnosed definition."
+                ),
             )
             continue
         except Exception:  # noqa: BLE001 - named submodel recovery isolation boundary

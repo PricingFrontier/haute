@@ -57,6 +57,37 @@ def _broken_constant(root: Path, *, prefix: str = "") -> Path:
     return parent
 
 
+def _canonical_demo(root: Path, *, legacy_port: bool = False) -> Path:
+    """A current-form submodel whose consumer names its input after the old port id."""
+    (root / "haute.toml").write_text('[project]\nname = "demo"\n')
+    child = root / "modules" / "Inputs.py"
+    child.parent.mkdir()
+    port = (
+        '{"portId": "output_1", "label": "live_switch", '
+        if legacy_port
+        else '{"name": "output_1", '
+    )
+    child.write_text(
+        "import haute\nimport polars as pl\n\n"
+        'submodel = haute.Submodel("Inputs", definition_id="Inputs", input_ports=[], '
+        f'output_ports=[{port}"source": {{"nodeId": "live_switch", "handleId": None}}}}])\n\n'
+        "@submodel.polars\ndef live_switch():\n"
+        '    df = pl.LazyFrame({"premium": [1]})\n    return df\n',
+        encoding="utf-8",
+    )
+    parent = root / "main.py"
+    parent.write_text(
+        'import haute\nimport polars as pl\n\npipeline = haute.Pipeline("demo")\n\n'
+        '@pipeline.polars(contract="opaque")\n'
+        "def Polars_3(Inputs__output_1: pl.LazyFrame) -> pl.LazyFrame:\n"
+        "    df: pl.LazyFrame\n    df = live_switch\n    return df\n\n"
+        'pipeline.submodel("modules/Inputs.py", "Inputs")\n'
+        'pipeline.connect("Inputs", "Polars_3", source_port="output_1")\n',
+        encoding="utf-8",
+    )
+    return parent
+
+
 def _request(root: Path, target_id: str, action: str):
     from haute.schemas import PipelineRepairRecoverRequest
 
@@ -105,6 +136,46 @@ def test_legacy_registration_retains_submodel_position_connection_and_revision(t
     changed = load_pipeline_editor_document(parent, project_root=tmp_path)
     assert changed.source_revision != document.source_revision
     assert parent.read_bytes() == original
+
+
+def test_a_legacy_child_port_reports_the_parsers_remediation(tmp_path):
+    parent = _canonical_demo(tmp_path, legacy_port=True)
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+
+    diagnostic = next(
+        diagnostic
+        for diagnostic in document.diagnostics
+        if diagnostic.code == "submodel_definition_invalid"
+    )
+    assert "replace 'portId' and 'label' with 'name'" in diagnostic.message
+    assert diagnostic.remediation == (
+        "Declare each public port as "
+        "{'name': ..., 'targets': [...]} or {'name': ..., 'source': {...}}."
+    )
+
+
+def test_reset_rebinds_a_consumer_of_a_submodel_port(tmp_path):
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
+
+    parent = _canonical_demo(tmp_path)
+    child_before = (tmp_path / "modules/Inputs.py").read_bytes()
+    document = load_pipeline_editor_document(parent, project_root=tmp_path)
+    nodes = {node.authored_id: node for node in document.nodes}
+    assert nodes["Inputs"].availability == "ready"
+    assert nodes["Polars_3"].availability == "unavailable"
+
+    reset = _request(tmp_path, "Polars_3", "reset")
+    plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=reset)
+    assert plan.response.repair_kind == "reset_node"
+    result = _apply(tmp_path, reset)
+
+    assert result.document.load_status == "ready"
+    source = parent.read_text()
+    assert "def Polars_3(output_1: pl.LazyFrame)" in source
+    assert "df = live_switch" not in source
+    assert 'pipeline.connect("Inputs", "Polars_3", source_port="output_1")' in source
+    assert "raise " in source  # the incomplete Polars template, never a silent passthrough
+    assert (tmp_path / "modules/Inputs.py").read_bytes() == child_before
 
 
 def test_a_legacy_submodel_registration_has_no_migration_action(tmp_path, client, monkeypatch):
