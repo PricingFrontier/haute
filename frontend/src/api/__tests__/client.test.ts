@@ -1662,10 +1662,11 @@ describe("no request carries streaming_chunk_size", () => {
 
   it("uses the exact input-cache V1 paths, methods, and request bodies", async () => {
     const source = { schema_version: 1 as const, config: { path: "data.csv" } }
-    mockFetch.mockReturnValueOnce(jsonResponse({ schema_version: 1, job_id: "job / 1", identity_digest: "digest", status: "running", joined: false }))
-    await buildInputCache({ ...source, refresh: true, profile: "preview_eager" })
+    mockFetch.mockReturnValueOnce(jsonResponse({ schema_version: 1, job_id: "job / 1", identity_digest: "digest", status: "running", joined: false, build_class: "admitted_eager" }))
+    const started = await buildInputCache({ ...source, refresh: true })
+    expect(started.build_class).toBe("admitted_eager")
     expect(mockFetch.mock.calls[0][0]).toBe("/api/input-cache/build")
-    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ ...source, refresh: true, profile: "preview_eager" })
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ ...source, refresh: true })
 
     mockFetch.mockReturnValueOnce(jsonResponse({ schema_version: 1, job_id: "job / 1", identity_digest: "digest", status: "running", terminal_reason: null, message: "", refresh: false, build_class: "bounded", progress: { phase: "queued", rows: 0, batches: 0, bytes: 0, elapsed_seconds: 0 }, snapshot: null, error_code: null }))
     await getInputCacheJob("job / 1")

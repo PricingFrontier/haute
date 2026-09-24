@@ -1123,8 +1123,9 @@ class InputCacheSourceRequest(_StrictInputCacheModel):
 
 
 class InputCacheBuildRequest(InputCacheSourceRequest):
+    """Start or join a snapshot build; the server chooses how it is built."""
+
     refresh: bool = False
-    profile: Literal["preview_eager", "lazy_sink"] = "lazy_sink"
 
 
 class InputCacheBuildResponse(_StrictInputCacheModel):
@@ -1133,6 +1134,9 @@ class InputCacheBuildResponse(_StrictInputCacheModel):
     identity_digest: str
     status: Literal["running"]
     joined: bool
+    # How the server builds it: ``bounded`` streams in a lazy sink,
+    # ``admitted_eager`` reads eagerly inside a hard-capped worker.
+    build_class: Literal["bounded", "admitted_eager"]
 
 
 class InputCacheProgress(_StrictInputCacheModel):

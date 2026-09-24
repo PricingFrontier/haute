@@ -346,7 +346,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §1.8 Permissive dtype names; dtype mapping ×7 | `IO-R01` (IO layer, delivered; its roadmap file is retired) |
 | §1.8 Fixed-name atomic write; lock wrappers | `IO-R02` (IO layer, delivered; its roadmap file is retired) |
 | §1.8 Path containment ×5 | `SBX-R01` ([sandbox security](sandbox-security.md)) |
-| §1.8 Client picks the build profile from error text | `CACHE-S27` ([caching](caching.md)) |
+| §1.8 Client picks the build profile from error text | `CACHE-S27` (caching, delivered) |
 | §2.1 Dead dataframe execution cache | `CACHE-S23` ([caching](caching.md)) |
 | §2.2 Chunked runner and streaming auto-range | `OPT-P15` ([optimiser](optimiser.md)), then `EXEC-R03` ([execution engine](execution-engine.md)) if the measurement removes the runner's consumer |
 | §2.3 Unreferenced and test-only code | `ENGQ-R01` ([engineering quality](engineering-quality.md)); the preview-reader protocol is `TRACE-R02` ([tracing](tracing.md)) |

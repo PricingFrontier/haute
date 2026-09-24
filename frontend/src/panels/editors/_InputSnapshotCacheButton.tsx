@@ -55,13 +55,11 @@ const BUILD_POLL_INTERVAL_MS = 800
 
 export default function InputSnapshotCacheButton({
   config,
-  admittedEager,
   requiredReady,
   nodeType = "dataInput",
   disabledReason = "Complete the required source fields to cache as Parquet.",
 }: {
   config: Record<string, unknown>
-  admittedEager: boolean
   requiredReady: boolean
   /** A structured API Input caches every emitting table of the node together. */
   nodeType?: "dataInput" | "apiInput"
@@ -112,11 +110,7 @@ export default function InputSnapshotCacheButton({
           const refresh =
             cachedRef.current.resourceKey === resourceKey &&
             cachedRef.current.cached
-          const started = await buildInputCache({
-            ...payload,
-            refresh,
-            profile: admittedEager ? "preview_eager" : "lazy_sink",
-          })
+          const started = await buildInputCache({ ...payload, refresh })
           const activeJob = { resourceKey, jobId: started.job_id }
           activeJobRef.current = activeJob
           let job: InputCacheJobStatusResponse

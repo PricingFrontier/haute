@@ -230,7 +230,7 @@ when a path/query/body fails model validation):
 | `GET /api/files` | Query `dir="."`, `extensions=null`; omission derives readable extensions from the I/O registry | `BrowseFilesResponse {dir, items:[{name,path,type,size?}]}`; files have numeric byte size, directories serialize `size: null` |
 | `GET /api/io-capabilities` | No body | Versioned provider groups, format capabilities, modes, accepted arguments, optional engines, cache modes, and materialisation diagnostics |
 | `GET /api/schema` | Required query `path`; XML uses the structured API-input decoder | `SchemaResponse {path, columns, row_count?, row_count_estimated=false, column_count, preview=[]}`; invalid/unsafe XML is 400 |
-| `POST /api/input-cache/build` | Canonical `dataInput` config and source identity | Starts or coalesces a cache-generation build and returns its job identity |
+| `POST /api/input-cache/build` | Canonical `dataInput` config and source identity (no build profile: the server chooses) | Starts or coalesces a cache-generation build and returns its job identity and `build_class` |
 | `POST /api/input-cache/status` | Canonical `dataInput` config | Current published-generation readiness, freshness, metadata, and active job |
 | `POST /api/input-cache/clear` | Canonical `dataInput` config | Clears published cache generations when no active lease prevents deletion |
 | `GET /api/input-cache/jobs/{job_id}` / `DELETE /api/input-cache/jobs/{job_id}` | Job id | Polls or requests cancellation of a cache build |

@@ -114,9 +114,11 @@ reads â€” none above a shared snapshot it seeds from, none outside its lineage â
 checks each of those snapshot-backed Data Inputs through the existing status endpoint. A missing,
 corrupt, failed, or already-building snapshot starts or joins the existing
 visible job, waits for completion, and only then sends the preview. The
-orchestrator tries the lazy-sink build profile first and retries once with the
-admitted eager profile only when the server reports
-`snapshot_build_unsupported`. A ready but stale snapshot is refreshed by the execution's
+server chooses how each snapshot is built, and the orchestrator makes one call that starts
+or joins that build: a format the IO registry reads in bounded slices streams through a
+lazy sink, and one that needs an eager read is admitted eagerly inside the hard-capped
+worker. The build response names the class it chose (`build_class`); the browser never
+chooses a profile or reads error text to find one. A ready but stale snapshot is refreshed by the execution's
 automatic preparation before it runs, warned beforehand and recorded in the terminal
 diagnostics. A missing, corrupt, failed, or building snapshot is built (or its running
 build joined) before the run, announced by an info toast rather than a prompt, and the

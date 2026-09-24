@@ -595,9 +595,9 @@ export interface InputCacheSourceRequest {
   config: Record<string, unknown>
 }
 
+/** Start or join a snapshot build; the server chooses how it is built. */
 export interface InputCacheBuildRequest extends InputCacheSourceRequest {
   refresh: boolean
-  profile: "preview_eager" | "lazy_sink"
 }
 
 export interface InputCacheBuildResponse {
@@ -606,6 +606,8 @@ export interface InputCacheBuildResponse {
   identity_digest: string
   status: "running"
   joined: boolean
+  /** How the server builds it: a bounded lazy sink, or an eager read in a capped worker. */
+  build_class: "bounded" | "admitted_eager"
 }
 
 export interface InputCacheProgress {

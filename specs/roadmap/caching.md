@@ -71,7 +71,6 @@ or where it will not hold at scale.
 | CACHE-S24 | Planned | P3 | The assistant's two hand-rolled LRUs move onto the shared cache primitive. |
 | CACHE-S25 | Planned | P3 | Cache identity hashes the whole canonical node config instead of classifying every field. |
 | CACHE-S26 | Decision | P3 | Stored snapshots and node outputs have a retention policy, or the absence of one is a stated product choice. |
-| CACHE-S27 | Planned | P2 | The server, not the browser, chooses how an input snapshot is built. |
 
 ## Planned improvements
 
@@ -83,7 +82,7 @@ whose refusals it would have shown are removed, and a failed build already
 reports its error through the shared job poller. `CACHE-S13` moved down on 20-Sep-2026 because measurement showed
 no preview near its timeout. The packages from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md)
-(`CACHE-S24` to `CACHE-S27`) sit outside that order: `CACHE-S24` goes first; `CACHE-S25` follows the
+(`CACHE-S24` to `CACHE-S26`) sit outside that order: `CACHE-S24` goes first; `CACHE-S25` follows the
 pipeline-config package `PCFG-R08`. Every full-frame write is now bounded, so what
 is left is measured against cost rather than shape. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
@@ -570,31 +569,3 @@ opening the cache inventory.
 
 **Evidence:** `src/haute/_source_cache.py`; `src/haute/_node_snapshots.py`;
 `src/haute/routes/cache.py`.
-
-### CACHE-S27 — The server chooses the snapshot build profile
-**Why:** Before a preview, the browser checks each snapshot-backed input,
-starts a build with the `lazy_sink` profile, and if the server answers 400
-with a detail string starting `snapshot_build_unsupported`, retries with
-`preview_eager`. The client chooses an execution profile by matching error
-text. Bounded executions already prepare their inputs automatically on the
-server, so the orchestration exists twice.
-
-**Plan:** Let the build endpoint choose the build profile itself, and return a
-typed outcome rather than an error to be string-matched. Decide whether the
-browser pre-build is still needed once the server prepares inputs for
-previews; if it is, keep it as a single call that starts or joins the server's
-choice of build.
-
-**Acceptance:** No frontend code inspects error-detail prefixes to choose a
-profile; the build endpoint's choice is covered by a backend test for each
-input format; preview preparation behaves as before.
-
-**Dependencies:** None.
-
-**Owning specifications:** [caching](../caching/high-level.md);
-[frontend shared](../frontend-shared/low-level.md).
-
-**Evidence:** `frontend/src/hooks/ensureInputSnapshots.ts::startBuild`;
-`frontend/src/hooks/ensureInputSnapshots.ts::ensureInputSnapshots`;
-`src/haute/_input_preparation.py::prepare_input_snapshots`;
-`src/haute/routes/input_cache.py`.
