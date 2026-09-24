@@ -60,10 +60,6 @@ import {
   createUtilityFile,
   updateUtilityFile,
   deleteUtilityFile,
-  buildJsonCache,
-  getJsonCacheProgress,
-  getJsonCacheStatus,
-  deleteJsonCache,
   dryRunRemoveUnavailableNode,
   applyRemoveUnavailableNode,
   getExecutionSettings,
@@ -334,29 +330,6 @@ function makeWorkingBranchResponse(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function makeJsonCacheBuildResponse(overrides: Record<string, unknown> = {}) {
-  return {
-    path: "/data/input.json",
-    data_path: "/data/input.parquet",
-    row_count: 10,
-    column_count: 2,
-    columns: { x: "Int64" },
-    size_bytes: 128,
-    cached_at: 123,
-    cache_seconds: 0.5,
-    ...overrides,
-  }
-}
-
-function makeJsonCacheProgressResponse(overrides: Record<string, unknown> = {}) {
-  return {
-    active: true,
-    rows: 10,
-    elapsed: 0.5,
-    phase: "scan",
-    ...overrides,
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Setup / Teardown
@@ -1409,72 +1382,6 @@ describe("utility endpoints", () => {
     const result = await deleteUtilityFile("old-util")
     const [url, opts] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/utility/old-util")
-    expect(opts.method).toBe("DELETE")
-    expect(result).toEqual(data)
-  })
-})
-
-// ═══════════════════════════════════════════════════════════════════════════
-// JSON cache endpoints
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("json cache endpoints", () => {
-  beforeEach(() => {
-    mockFetch.mockReturnValue(jsonResponse({}))
-  })
-
-  it("buildJsonCache POSTs to /api/json-cache/build with 1800s timeout", async () => {
-    const data = makeJsonCacheBuildResponse()
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await buildJsonCache({ path: "/data/input.json" })
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/json-cache/build")
-    expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body)).toEqual({ path: "/data/input.json" })
-    expect(result).toEqual({
-      ...data,
-      skipped_records: 0,
-      skipped_rows: {},
-    })
-  })
-
-  it("buildJsonCache allows timeout override", async () => {
-    mockFetch.mockReturnValue(jsonResponse(makeJsonCacheBuildResponse()))
-    await buildJsonCache({ path: "x.json" }, { timeout: 5000 })
-    expect(mockFetch).toHaveBeenCalledTimes(1)
-  })
-
-  it("getJsonCacheProgress GETs /api/json-cache/progress with encoded path", async () => {
-    const data = makeJsonCacheProgressResponse()
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await getJsonCacheProgress("my file.json")
-    const [url] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/json-cache/progress?path=my%20file.json")
-    expect(result).toEqual(data)
-  })
-
-  it("getJsonCacheStatus GETs /api/json-cache/status with encoded path", async () => {
-    const data = {
-      cached: true,
-      skipped_records: 2,
-      skipped_rows: { drivers: 3 },
-    }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await getJsonCacheStatus("data/file.json")
-    const [url] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/json-cache/status?path=data%2Ffile.json")
-    expect(result.cached).toBe(true)
-    expect(result.data_path).toBe("")
-    expect(result.skipped_records).toBe(2)
-    expect(result.skipped_rows).toEqual({ drivers: 3 })
-  })
-
-  it("deleteJsonCache DELETEs /api/json-cache with encoded path", async () => {
-    const data = { cached: false, data_path: "file.json" }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await deleteJsonCache("file.json")
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/json-cache?path=file.json")
     expect(opts.method).toBe("DELETE")
     expect(result).toEqual(data)
   })

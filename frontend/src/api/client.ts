@@ -60,9 +60,7 @@ import type {
   InputCacheJobStatusResponse,
   ExecutionSettings,
   InputCacheSnapshotResponse,
-  JsonCacheBuildResponse,
-  JsonCacheProgressResponse,
-  JsonCacheStatusResponse,
+  InputCacheSourceRequest,
   MlflowDestinationKey,
   MlflowDestinationsResponse,
   MlflowSettingsResponse,
@@ -165,11 +163,7 @@ import {
   parseInputCacheCancelResponse,
   parseInputCacheJobStatusResponse,
   parseInputCacheSnapshotResponse,
-  parseJsonCacheBuildResponse,
-  parseJsonCacheDeleteResponse,
-  parseJsonCacheProgressResponse,
   parseJsonCacheSchemaInferenceResponse,
-  parseJsonCacheStatusResponse,
   parseMlflowDestinationsResponse,
   parseExecutionSettings,
   parseMlflowSettingsResponse,
@@ -1226,14 +1220,14 @@ export function cancelInputCacheJob(
 }
 
 export function getInputCacheStatus(
-  payload: { schema_version: 1; config: Record<string, unknown> },
+  payload: InputCacheSourceRequest,
   options?: { signal?: AbortSignal },
 ): Promise<InputCacheSnapshotResponse> {
   return post<unknown>("/api/input-cache/status", payload, options).then(parseInputCacheSnapshotResponse)
 }
 
 export function clearInputCache(
-  payload: { schema_version: 1; config: Record<string, unknown> },
+  payload: InputCacheSourceRequest,
   options?: { signal?: AbortSignal },
 ): Promise<InputCacheSnapshotResponse> {
   return post<unknown>("/api/input-cache/clear", payload, options).then(parseInputCacheSnapshotResponse)
@@ -1688,50 +1682,15 @@ export function getTables(
 }
 
 // ---------------------------------------------------------------------------
-// JSON cache endpoints
+// JSON schema inference
 // ---------------------------------------------------------------------------
-
-export function buildJsonCache(
-  payload: { path: string; config_path?: string; volatile_schema?: Record<string, unknown> },
-  options?: { signal?: AbortSignal; timeout?: number },
-): Promise<JsonCacheBuildResponse> {
-  return post<unknown>("/api/json-cache/build", payload, { timeout: 1_800_000, ...options }).then(parseJsonCacheBuildResponse)
-}
-
-export function getJsonCacheProgress(
-  path: string,
-  options?: { signal?: AbortSignal },
-): Promise<JsonCacheProgressResponse> {
-  return request<unknown>(`/api/json-cache/progress?path=${encodeURIComponent(path)}`, options).then(parseJsonCacheProgressResponse)
-}
-
-export function getJsonCacheStatus(
-  path: string,
-  options?: { signal?: AbortSignal },
-): Promise<JsonCacheStatusResponse> {
-  return request<unknown>(`/api/json-cache/status?path=${encodeURIComponent(path)}`, options).then(parseJsonCacheStatusResponse)
-}
-
-export function getJsonCacheStatusForSchema(
-  payload: { path: string; config_path?: string; volatile_schema?: Record<string, unknown> },
-  options?: { signal?: AbortSignal },
-): Promise<JsonCacheStatusResponse> {
-  return post<unknown>("/api/json-cache/status", payload, options).then(parseJsonCacheStatusResponse)
-}
-
-export function deleteJsonCache(
-  path: string,
-  options?: { signal?: AbortSignal },
-): Promise<{ cached: boolean; data_path: string }> {
-  return del<unknown>(`/api/json-cache?path=${encodeURIComponent(path)}`, options).then(parseJsonCacheDeleteResponse)
-}
 
 /**
  * Request budget for complete *Infer Tables* schema discovery.
  *
  * The shared client timeout is 30 seconds, but a multi-GB structured input can
  * legitimately take minutes to scan. We keep inference complete by default
- * and give it the same budget as cache construction. A hidden head sample is
+ * and give it the same budget as a table snapshot build. A hidden head sample is
  * unsafe: a wholly new field appearing after the sample is ignored by build,
  * not rejected as a type widening, so it would disappear without warning.
  */

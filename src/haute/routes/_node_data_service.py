@@ -23,6 +23,7 @@ from haute._analysis_results import AnalysisKey, AnalysisResultStore
 from haute._data_points import (
     CacheRequiredError,
     ConsumerPoint,
+    DataPoint,
     DataPointResolver,
     NodeDataPointInvalidError,
     PointColumnsMissingError,
@@ -107,8 +108,6 @@ logger = get_logger(component="server.node_data")
 
 _INPUT_CACHE_BUILD_ENDPOINT = "/api/input-cache/build"
 _INPUT_CACHE_CLEAR_ENDPOINT = "/api/input-cache/clear"
-_JSON_CACHE_BUILD_ENDPOINT = "/api/json-cache/build"
-_JSON_CACHE_CLEAR_ENDPOINT = "/api/json-cache"
 
 
 class _NodeDataRunningJob(RunningJobFields):
@@ -596,9 +595,9 @@ class NodeDataService:
             from haute.routes.input_cache import input_snapshot_build_running
 
             return input_snapshot_build_running(key)
-        from haute.routes.json_cache import json_cache_build_running
+        from haute.routes.input_cache import api_input_table_build_running
 
-        return json_cache_build_running(key)
+        return api_input_table_build_running(key)
 
     def _resolver(self, body: NodeDataRequest) -> tuple[ConsumerPoint, DataPointResolver]:
         try:
@@ -621,13 +620,15 @@ class NodeDataService:
 
     def points_for_graph(
         self, graph: PipelineGraph, source: str, store: NodeSnapshotStore | None = None
-    ) -> list[tuple[str, NodeDataPointResponse | None, str | None, str | None]]:
-        """Resolve every node's point once, as ``(node id, point, reason, input digest)``.
+    ) -> list[tuple[str, NodeDataPointResponse | None, str | None, tuple[str, ...]]]:
+        """Resolve every node's point once, as ``(node id, point, reason, input digests)``.
 
-        The fourth element is the identity digest of the snapshot behind a
-        snapshot-backed input, so a caller can tell which of the store's input
-        snapshots this node is the reader of. It is ``None`` for every other
-        kind, and for a Data Input read straight from Parquet.
+        The fourth element names the input snapshots behind the node: the one
+        a snapshot-backed input or an API-input table point reads, or every
+        emitting table of a structured API Input node itself. A caller can tell
+        which of the store's input snapshots this node is the reader of. It is
+        empty for every other kind, and for a Data Input read straight from
+        Parquet.
 
         One resolver and one store for the whole graph, because the per-node
         cost is the resolution itself and a caller asking about every node
@@ -644,7 +645,7 @@ class NodeDataService:
             store=store if store is not None else NodeSnapshotStore(node_data_project_root()),
             building=self._building,
         )
-        resolved: list[tuple[str, NodeDataPointResponse | None, str | None, str | None]] = []
+        resolved: list[tuple[str, NodeDataPointResponse | None, str | None, tuple[str, ...]]] = []
         seen: set[str] = set()
         for node in graph.nodes:
             # A posted graph is not guaranteed unique ids, and a duplicate would
@@ -654,6 +655,18 @@ class NodeDataService:
             seen.add(node.id)
             try:
                 consumer = consumer_point(graph, node.id)
+                labels = resolver.api_input_table_labels(node.id)
+                if labels:
+                    # A structured API Input's own row is its tables together.
+                    resolved.append(
+                        (
+                            node.id,
+                            self._api_input_row(node.id, labels, resolver),
+                            None,
+                            resolver.api_input_table_digests(node.id),
+                        )
+                    )
+                    continue
                 resolution = self._resolve(consumer, resolver)
                 identity = resolution.input_identity
                 resolved.append(
@@ -661,15 +674,15 @@ class NodeDataService:
                         node.id,
                         self._response_for(consumer, resolver, resolution),
                         None,
-                        identity.digest if identity is not None else None,
+                        (identity.digest,) if identity is not None else (),
                     )
                 )
             except NodeDataPointInvalidError as exc:
-                resolved.append((node.id, None, str(exc), None))
+                resolved.append((node.id, None, str(exc), ()))
             except HTTPException as exc:
                 # `_resolve` reports an invalid point this way; one node's bad
                 # wiring is a row in the report, not a failed request.
-                resolved.append((node.id, None, str(exc.detail), None))
+                resolved.append((node.id, None, str(exc.detail), ()))
             except SourceCacheCorruptError as exc:
                 # The node's data exists and is damaged, which is a state the
                 # surfaces already have a remedy for — not something the report
@@ -681,7 +694,7 @@ class NodeDataService:
                         node.id,
                         self._corrupt_response(consumer, resolver),
                         None,
-                        None,
+                        (),
                     )
                 )
                 logger.info("cache_report_corrupt_point", node_id=node.id, detail=str(exc))
@@ -693,7 +706,7 @@ class NodeDataService:
                 # error still surfaces as a 500 instead of quietly becoming a
                 # row reason. A report about every node is worth least
                 # precisely when one node is half-configured.
-                resolved.append((node.id, None, str(exc), None))
+                resolved.append((node.id, None, str(exc), ()))
         return resolved
 
     def point_for(
@@ -738,6 +751,41 @@ class NodeDataService:
             demand=_columns_payload(consumer.demand),
         )
 
+    def _api_input_row(
+        self, node_id: str, labels: tuple[str, ...], resolver: DataPointResolver
+    ) -> NodeDataPointResponse:
+        """One row for a structured API Input: its emitting tables summarised.
+
+        The row is current only when every table is; otherwise it takes the
+        state that most needs attention. Row count and size sum the tables.
+        """
+        responses = [
+            self._response_for(consumer, resolver, self._resolve(consumer, resolver))
+            for consumer in (
+                ConsumerPoint(node_id, DataPoint(node_id, label), NodeSnapshotColumns.all())
+                for label in labels
+            )
+        ]
+        states = {response.state for response in responses}
+        state = next(
+            (
+                candidate
+                for candidate in ("corrupt", "building", "missing", "stale", "partial")
+                if candidate in states
+            ),
+            "current",
+        )
+        counted = [response for response in responses if response.row_count is not None]
+        return responses[0].model_copy(
+            update={
+                "point": NodeDataPointRef(producer_node_id=node_id, port_label=None),
+                "state": state,
+                "data_version": None,
+                "row_count": sum(r.row_count or 0 for r in counted) if counted else None,
+                "size_bytes": (sum(r.size_bytes or 0 for r in counted) if counted else None),
+            }
+        )
+
     def _response_for(
         self,
         consumer: ConsumerPoint,
@@ -764,13 +812,6 @@ class NodeDataService:
         )
         if resolution.kind == "node_output":
             return self._node_output_details(response, resolution)
-        if resolution.kind == "api_input_table":
-            return response.model_copy(
-                update={
-                    "build_endpoint": _JSON_CACHE_BUILD_ENDPOINT,
-                    "clear_endpoint": _JSON_CACHE_CLEAR_ENDPOINT,
-                }
-            )
         if resolution.input_identity is None:
             return response.model_copy(update={"reads_directly": True})
         details: dict[str, Any] = {

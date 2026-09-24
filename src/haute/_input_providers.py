@@ -328,16 +328,34 @@ def resolve_data_input(
         return read_polars_input(anchored, profile=profile)
 
     cache_store = store or SourceCacheStore(_cache_root())
-    identity = source_cache_identity(validated, base_dir=base_dir)
-    lease = cache_store.lease(identity)
-    try:
-        generation = lease.__enter__()
-    except FileNotFoundError:
-        raise PolarsIoConfigError(
+    return lease_input_generation(
+        cache_store,
+        source_cache_identity(validated, base_dir=base_dir),
+        missing_message=(
             "input_snapshot_missing: This Data Input runs from a snapshot "
             "that has not been built yet. Build the snapshot (or run a "
             "preview, which builds it automatically) and try again."
-        ) from None
+        ),
+    )
+
+
+def lease_input_generation(
+    store: SourceCacheStore,
+    identity: SourceCacheIdentity,
+    *,
+    missing_message: str,
+) -> pl.LazyFrame:
+    """Scan the current generation of *identity*, leased until execution cleanup.
+
+    Inside an execution context the lease is released by the context's
+    cleanup, after collection; outside one, the returned plan owns it. A
+    missing generation raises ``PolarsIoConfigError`` with *missing_message*.
+    """
+    lease = store.lease(identity)
+    try:
+        generation = lease.__enter__()
+    except FileNotFoundError:
+        raise PolarsIoConfigError(missing_message) from None
     release_lock = threading.Lock()
     released = False
 

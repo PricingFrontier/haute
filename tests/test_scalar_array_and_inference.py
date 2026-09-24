@@ -26,19 +26,37 @@ import pytest
 
 from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred import _inference, _inference_filter
-from haute._json_shred._cache import (
-    build_per_port_cache,
-    load_per_port_cache,
-    read_per_port_cache_meta,
-)
+from haute._json_shred._cache import load_v2_api_source
 from haute._json_shred._inference import infer_v2_schema_from_data
 from haute._json_shred._inference_filter import InferenceFilter
+from haute._sandbox import set_project_root
+from tests.conftest import build_test_api_input_snapshots
 
 
 def _write(tmp_path: Path, records: list[dict[str, Any]]) -> Path:
     p = tmp_path / "data.json"
     p.write_text(json.dumps(records), encoding="utf-8")
     return p
+
+
+def _config(p: Path, schema: dict[str, Any]) -> dict[str, Any]:
+    return {"path": str(p), "contract": "opaque", **schema}
+
+
+def _build(p: Path, schema: dict[str, Any]) -> dict[str, Any]:
+    """Build every emitting table's input snapshot for *schema* against *p*."""
+    set_project_root(p.parent)
+    return build_test_api_input_snapshots(p, _config(p, schema))
+
+
+def _load(p: Path, schema: dict[str, Any]) -> dict[str, Any]:
+    """Load the tables of *schema* back through the leased-snapshot path."""
+    return load_v2_api_source(str(p), _config(p, schema), read_snapshots=True)
+
+
+def _build_and_load(p: Path, schema: dict[str, Any]) -> dict[str, Any]:
+    _build(p, schema)
+    return _load(p, schema)
 
 
 def _table(schema: dict[str, Any], path: str) -> dict[str, Any] | None:
@@ -186,13 +204,9 @@ def test_infer_then_build_scalar_array_no_crash(tmp_path: Path) -> None:
     p = _write(tmp_path, data)
     schema = _enable_all(infer_v2_schema_from_data(p))
 
-    summary = build_per_port_cache(p, schema, tmp_path / "cache")
-    by_label = {t["label"]: t for t in summary["tables"]}
-    assert "tags" in by_label
-    assert by_label["tags"]["row_count"] == 3  # motor, fleet, home
-
-    frames = load_per_port_cache(tmp_path / "cache", schema)
+    frames = _build_and_load(p, schema)
     tags = frames["tags"].collect()
+    assert tags.height == 3  # motor, fleet, home
     assert tags["value"].to_list() == ["motor", "fleet", "home"]
 
 
@@ -204,8 +218,7 @@ def test_scalar_array_mixed_types_widen_to_str(tmp_path: Path) -> None:
     assert child is not None
     assert child["columns"][0]["type"] == "str"
 
-    build_per_port_cache(p, _enable_all(schema), tmp_path / "cache")
-    frames = load_per_port_cache(tmp_path / "cache", schema)
+    frames = _build_and_load(p, _enable_all(schema))
     assert frames["vals"].collect()["value"].to_list() == ["1", "x", "2.5"]
 
 
@@ -217,8 +230,7 @@ def test_scalar_array_numeric_widens_to_float(tmp_path: Path) -> None:
     assert child is not None
     assert child["columns"][0]["type"] == "float"
 
-    build_per_port_cache(p, _enable_all(schema), tmp_path / "cache")
-    frames = load_per_port_cache(tmp_path / "cache", schema)
+    frames = _build_and_load(p, _enable_all(schema))
     assert frames["amts"].collect()["value"].to_list() == [1.0, 2.0, 2.5]
 
 
@@ -230,8 +242,7 @@ def test_scalar_array_of_bools(tmp_path: Path) -> None:
     assert child is not None
     assert child["columns"][0]["type"] == "bool"
 
-    build_per_port_cache(p, _enable_all(schema), tmp_path / "cache")
-    frames = load_per_port_cache(tmp_path / "cache", schema)
+    frames = _build_and_load(p, _enable_all(schema))
     assert frames["flags"].collect()["value"].to_list() == [True, False, True]
 
 
@@ -251,7 +262,7 @@ def test_empty_then_struct_array_is_object_table(tmp_path: Path) -> None:
     assert "drivers" not in {c["name"] for c in root["columns"]}
 
     # Must build without crashing (drivers has one struct row).
-    build_per_port_cache(p, _enable_all(schema), tmp_path / "cache")
+    _build(p, _enable_all(schema))
 
 
 def test_inference_widens_type_past_first_records(tmp_path: Path) -> None:
@@ -264,7 +275,7 @@ def test_inference_widens_type_past_first_records(tmp_path: Path) -> None:
     amount = next(c for c in root["columns"] if c["name"] == "amount")
     assert amount["type"] == "float"
 
-    build_per_port_cache(p, schema, tmp_path / "cache")  # no crash on row 151
+    _build(p, schema)  # no crash on row 151
 
 
 # ---------------------------------------------------------------------------
@@ -795,7 +806,7 @@ def test_build_type_mismatch_raises_structured_error(tmp_path: Path) -> None:
         ]
     }
     with pytest.raises(ApiInputSchemaError) as ei:
-        build_per_port_cache(_write(tmp_path, data), schema, tmp_path / "cache")
+        _build(_write(tmp_path, data), schema)
     # The error must name the offending column so the user can act.
     assert "age" in str(ei.value)
 
@@ -837,8 +848,7 @@ def test_dotted_leaf_column_resolves_nested_field(tmp_path: Path) -> None:
         ]
     }
     p = _write(tmp_path, data)
-    build_per_port_cache(p, schema, tmp_path / "cache")
-    frames = load_per_port_cache(tmp_path / "cache", schema)
+    frames = _build_and_load(p, schema)
     assert frames["root"].collect()["age"].to_list() == [30]
 
 
@@ -874,15 +884,16 @@ def test_dotted_leaf_through_list_fails_loud(tmp_path: Path) -> None:
     }
     p = _write(tmp_path, data)
     with pytest.raises(ApiInputSchemaError, match=r"items\.name"):
-        build_per_port_cache(p, schema, tmp_path / "cache")
+        _build(p, schema)
 
 
 def test_jsonl_input_is_shredded(tmp_path: Path) -> None:
     p = tmp_path / "data.jsonl"
     p.write_text('{"id": 1}\n\n{"id": 2}\n', encoding="utf-8")  # blank line tolerated
     schema = _enable_all(infer_v2_schema_from_data(p))
-    summary = build_per_port_cache(p, schema, tmp_path / "cache")
-    assert summary["tables"][0]["row_count"] == 2
+    frames = _build_and_load(p, schema)
+    (frame,) = frames.values()
+    assert frame.collect().height == 2
 
 
 def test_empty_array_only_produces_empty_child_table(tmp_path: Path) -> None:
@@ -892,16 +903,8 @@ def test_empty_array_only_produces_empty_child_table(tmp_path: Path) -> None:
     child = _table(schema, "$[:].tags[:]")
     assert child is not None  # a scalar child table even though always empty
     assert child["columns"][0]["type"] == "str"
-    summary = build_per_port_cache(p, _enable_all(schema), tmp_path / "cache")
-    by_label = {t["label"]: t for t in summary["tables"]}
-    assert by_label["tags"]["row_count"] == 0
-
-
-def test_read_meta_returns_none_on_corrupt_meta(tmp_path: Path) -> None:
-    cache = tmp_path / "cache"
-    cache.mkdir()
-    (cache / "meta.json").write_bytes(b"{ not valid json")
-    assert read_per_port_cache_meta(cache) is None
+    frames = _build_and_load(p, _enable_all(schema))
+    assert frames["tags"].collect().height == 0
 
 
 def test_scalar_array_with_nulls_preserves_row_count(tmp_path: Path) -> None:
@@ -909,11 +912,10 @@ def test_scalar_array_with_nulls_preserves_row_count(tmp_path: Path) -> None:
     data = [{"id": 1, "tags": ["a", None, "b"]}]
     p = _write(tmp_path, data)
     schema = _enable_all(infer_v2_schema_from_data(p))
-    summary = build_per_port_cache(p, schema, tmp_path / "cache")
-    by_label = {t["label"]: t for t in summary["tables"]}
-    assert by_label["tags"]["row_count"] == 3  # a, null, b — count preserved
-    frames = load_per_port_cache(tmp_path / "cache", schema)
-    assert frames["tags"].collect()["value"].to_list() == ["a", None, "b"]
+    frames = _build_and_load(p, schema)
+    tags = frames["tags"].collect()
+    assert tags.height == 3  # a, null, b — count preserved
+    assert tags["value"].to_list() == ["a", None, "b"]
 
 
 def test_build_bool_in_numeric_column_fails_loud(tmp_path: Path) -> None:
@@ -941,7 +943,7 @@ def test_build_bool_in_numeric_column_fails_loud(tmp_path: Path) -> None:
         ]
     }
     with pytest.raises(ApiInputSchemaError) as ei:
-        build_per_port_cache(_write(tmp_path, data), schema, tmp_path / "cache")
+        _build(_write(tmp_path, data), schema)
     assert "flag" in str(ei.value)
     assert "boolean" in str(ei.value).lower()
 
@@ -979,8 +981,7 @@ def test_bounded_inference_explicitly_owns_late_field_omission(tmp_path: Path) -
     schema = _enable_all(infer_v2_schema_from_data(p, sample_size=2))
     assert _leaf_types(schema) == {"$[:].id": "int"}
 
-    build_per_port_cache(p, schema, tmp_path / "cache")
-    frame = next(iter(load_per_port_cache(tmp_path / "cache", schema).values()))
+    frame = next(iter(_build_and_load(p, schema).values()))
     assert frame.collect().columns == ["id"]
 
 
@@ -1012,8 +1013,7 @@ def test_build_accepts_a_nullable_object_using_the_inferred_schema(tmp_path: Pat
     data = [{"addr": {"city": "Hull"}}, {"addr": None}, {"addr": {"city": "Leeds"}}]
     p = _write(tmp_path, data)
     schema = _enable_all(infer_v2_schema_from_data(p))
-    build_per_port_cache(p, schema, tmp_path / "cache")
-    frames = load_per_port_cache(tmp_path / "cache", schema)
+    frames = _build_and_load(p, schema)
     (frame,) = frames.values()
     (column,) = [c for t in schema["tables"] for c in t["columns"]]
     assert column["path"] == "$[:].addr.city"

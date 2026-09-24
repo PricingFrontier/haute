@@ -8,7 +8,7 @@
 | `src/haute/_cache.py` | Canonical JSON, checked cache-input/config contracts, graph/preamble fingerprints, lineage-key factory, and utility-file hash memo/cache. |
 | `src/haute/_lru_cache.py` | Thread-safe entry/TTL/byte bounded LRU with pinning. |
 | `src/haute/_stat_gated_cache.py` | Bounded LRU, per-key single-flight cache gated by backing-file metadata. |
-| `src/haute/routes/json_cache.py` | Structured API-input (JSON/JSONL/NDJSON/XML) cache infer/build/progress/status/delete HTTP surface. |
+| `src/haute/routes/json_cache.py` | Structured API-input (JSON/JSONL/NDJSON/XML) schema inference HTTP surface. |
 | `src/haute/_data_points.py` | Consumer-to-data-point mapping, point kinds and states, data versions, point identity digests, and leased point reads. |
 | `src/haute/_seed_plans.py` | Seed plans for bounded executions: which node outputs a run reads from shared snapshots and which it captures, column negotiation, ancestry agreement, the plan fingerprint, and leased plans with their worker handoff. |
 | `src/haute/_analysis_results.py` | Analysis documents keyed by data version under `.haute_cache/analyses`, and the in-process memo of synchronous analyses. |
@@ -54,7 +54,7 @@ missing and unknown names before hashing:
 | `graph_structure` | 2 | `nodes`, `edges` |
 | `graph_execution` | 8 | `base_fingerprint`, `preamble_fingerprint`, `source_file`, `extra_keys` |
 | `preview_trace` | 3 | `preamble`, `source_file`, `nodes`, `edges`, `target_node_id`, `source`, `requested_columns`, `initial_column_limit`, `row_limit`, `port_label`, `contract_fingerprint`, `selected_live_switch_path`, `runtime_input_fingerprint`, `execution_semantics_version` |
-| `runtime_graph_input` | 3 | `source`, `sources`, `json_cache_signature`, `preamble_fingerprint`, `extra` |
+| `runtime_graph_input` | 4 | `source`, `sources`, `preamble_fingerprint`, `extra` |
 | `deploy_schema` | 1 | `graph_fingerprint`, `runtime_input_fingerprint`, `artifact_fingerprint`, `output_node_id`, `input_node_ids`, `source`, `row_limit`, `execution_policy` |
 | `model_contract` | 1 | `feature_names`, `categorical_features`, `offset_column` |
 | `input_snapshot` | 1 | `schema_version`, `provider`, `descriptor` |
@@ -110,25 +110,38 @@ fingerprints (`src/haute/execution.py`), deploy scorer models
 (`src/haute/deploy/_scorer.py`), and modelling feature contracts
 (`src/haute/modelling/_feature_contract.py`).
 
-### Structured API-input cache
+### Structured API-input tables
 
-1. Path containment is checked.
-2. The source extension is routed through the structured decoder
-   (`.json`, `.jsonl`, `.ndjson`, or `.xml`), and volatile or persisted schema is
-   selected and validated.
-3. Missing schema returns 422; only then does a missing data file return 404.
-4. The library path shreds in-process with a response timeout and process-local
-   progress; the HTTP route delegates to a one-shot child process that prepares the
-   staging directory while the parent, holding the cross-process build lock, owns
-   validation, cancellation, publication, and cleanup (the owning contract is the
-   server-api JSON cache build transaction).
-5. Successful builds mark the working cache consulted so save-time promotion can occur.
-6. Status validates the same schema and storage metadata; delete removes the
-   `working/` layer only and leaves `committed/` intact.
+Each emitting table of a structured (JSON, JSONL, NDJSON, XML) API Input is one
+input snapshot in the shared store (provider `api_input`; identity, freshness and
+build in the [JSON shredding](../json-shredding/low-level.md) specification).
+`routes/input_cache.py` (owned by the [server API](../server-api/low-level.md)) serves them through the same endpoints as a Data Input's
+snapshot, selected by `node_type: "apiInput"` on the request:
 
-There is no separate GUI cancel endpoint; the build is cancelled cooperatively
-by request cancellation through the isolated-worker cancellation gate, which
-stops the worker and discards staging.
+1. The config must have a structured path and a v2 `tables` list, validate, and
+   emit at least one table; otherwise 400 `invalid_input_config`. The path is
+   resolved with project-root containment exactly as execution resolves it (403
+   outside the project).
+2. `status` returns `InputCacheSnapshotStatusResponse` with `identity_digest` naming
+   the node's set of tables (`group_digest`), `generation` `None`, and `tables`
+   listing each table's label, identity digest, state, freshness and generation. The
+   summary state is `building` while the node's build runs (tables not yet ready
+   report `building` too), else `corrupt` if any table is, `ready` when every table
+   is, and `missing` otherwise; freshness is `stale` when any ready table is,
+   `fresh` when every table is ready and fresh, and `unknown` otherwise.
+3. `build` starts or joins one job per node (single flight keyed by the group
+   digest). The job runs in a hard-capped spawned worker admitted from the server's
+   budget (`run_supervised_api_input_build`), writing every missing or stale table —
+   every table on `refresh` — from one shred of the source; a node whose tables are
+   all ready and fresh completes without a worker. The completed job carries the
+   node's status; a table left unpublished fails the job. Worker failures map onto
+   the job lifecycle exactly as an admitted-eager Data Input build's do.
+4. `clear` removes every table of the node, and answers 409 while the node's build
+   runs.
+
+`api_input_table_build_running(table digest)` reports whether a running build
+writes a table, for the data-point `building` probe. Schema inference stays on
+`POST /api/json-cache/infer`.
 
 ### Data points
 
@@ -147,9 +160,13 @@ stops the worker and discards staging.
   (`node_data_point_invalid`).
 - `point_kind(graph, point)` returns `api_input_table` for an `apiInput` port, `data_input`
   for a Data Input with blank `code`, and `node_output` otherwise.
+- `api_input_table_labels(node_id)` and `api_input_table_digests(node_id)` name a
+  structured API Input's emitting tables and their distinct identities (empty for any
+  other node, or for a schema the node builder would reject).
 - `DataPointResolver(graph, source, store=NodeSnapshotStore, building=probe)` canonicalises
   the graph once. `building(kind, key)` reports a running build keyed by the input-snapshot
-  identity digest, the working JSON cache directory, or the node-output identity digest.
+  identity digest (a Data Input's, or an API-input table's own) or the node-output identity
+  digest.
   `resolve(point, demand)` returns a `PointResolution` (kind, state, demand, data version,
   build key, and the node-output identity/generation or input identity/generation id):
   - `data_input`, direct Parquet: `current`; the version hashes the resolved path, its size
@@ -157,13 +174,10 @@ stops the worker and discards staging.
   - `data_input`, snapshot-backed: `SourceCacheStore.status(identity, source_signature)`;
     `ready` with `stale` freshness is `stale`, other `ready` is `current`, `corrupt` is
     `corrupt`, anything else `missing`; the version hashes the generation id and lineage.
-  - `api_input_table`: the port must name a configured table; the working then committed
-    cache directory is checked with `is_per_port_cache_valid` for the full config, and a
-    serving layer makes the point `current` with a version hashing that layer's metadata,
-    the port, and the lineage; a layer with unusable metadata makes it `stale`, none
-    `missing`. Each layer's lock is waited for at most half a second: a reader holds it
-    briefly, so a layer still locked is being built and, with no serving layer, the point
-    is `building`; a status probe never waits behind a build.
+  - `api_input_table`: the port must name a configured, emitting table; its identity is
+    that table's input snapshot, whose status against the source signature maps to states
+    exactly as a snapshot-backed Data Input's does; the version hashes the generation id,
+    the port, and the lineage.
   - `node_output`: `NodeSnapshotStore.slot_status` for the slot (resolved pipeline file,
     node, source, `bounded`) and the `enforce_contracts=True` signature; a `current`
     generation whose columns do not cover the demand is `partial`; the version is the
@@ -179,18 +193,17 @@ stops the worker and discards staging.
   always the version of the data the scan reads:
   - `node_output`: leases the resolved generation with `lease_generation`; a generation
     retired in between re-resolves and raises `cache_required` with the new state.
-  - `data_input` and `api_input_table`: lease the resolved input-snapshot generation when
-    there is one, then execute the single source node alone (`execute_lazy_graph` over a
-    one-node graph, `enforce_contracts=True`, `prepare_inputs=False`) inside
-    `api_input_cache_only()`, selecting the port frame for a table. A table's version is
-    computed from the metadata the loader records for the layer it actually served, so a
-    cache rebuilt after resolution is versioned as the new generation. A cache-only load
-    that finds no serving layer, or a snapshot pointer that moved past the resolved
-    generation, re-resolves and raises `cache_required`.
+  - `api_input_table`: leases exactly the resolved table generation with
+    `lease_generation` and scans it — the table is the data, with no post-load code; a
+    generation retired in between re-resolves and raises `cache_required`.
+  - `data_input`: leases the resolved input-snapshot generation when there is one, then
+    executes the single source node alone (`execute_lazy_graph` over a one-node graph,
+    `enforce_contracts=True`, `prepare_inputs=False`). A snapshot pointer that moved past
+    the resolved generation re-resolves and raises `cache_required`.
 - `lease_resolved(resolution, exact=False, execution_context=None)` is the same lease over
   an already-resolved point, so a spawned worker reads exactly what its parent resolved and
   leased. With `exact`, data whose version moved between resolution and read — a rewritten
-  direct file, or an API-input cache rebuilt under the load — raises
+  direct file — raises
   `PointDataChangedError` (`node_data_changed`) instead of being read under a new version.
   `lease_frame` is `resolve` followed by a non-exact `lease_resolved`.
 - `point_digest(point)` is the consumer-independent identity of a data point: the SHA-256 of
@@ -314,12 +327,13 @@ resulting plan.
   `decision.executed_node_ids` it has not prepared yet, and opens it again — preparation may move
   a pointer and with it every signature below — until a plan executes no unprepared input. After
   three rounds (`_PREVIEW_PREPARATION_ROUNDS`) it prepares every readable input, so the next plan
-  terminates the loop. It never builds a structured API-input cache.
+  terminates the loop. Structured API Inputs are snapshot-backed inputs here too: their
+  tables are prepared the same way.
 - **Admission.** `preview_lineage_admitted(graph, target, source=)` decides per source of the
   target's lineage (instance nodes resolved), before any preparation: a Data Input is admitted,
   since it executes from a Parquet scan or its prepared snapshot; so is a structured (JSON,
-  NDJSON, XML) API Input, which reads its Parquet cache or shreds its file exactly as a bounded
-  run does; a flat-file API Input is admitted when `resolve_api_input_from_config` under
+  NDJSON, XML) API Input, which reads its prepared table snapshots exactly as a bounded run
+  does; a flat-file API Input is admitted when `resolve_api_input_from_config` under
   `LAZY_SINK` followed by `collect_schema()` succeeds — for a CSV, a header read that needs
   declared dtypes. `BoundedMemoryUnsupportedError` means not admitted. Any other failure of that
   read (a missing file, a bad path) is logged and also means not admitted: it is the preview's
@@ -402,11 +416,8 @@ and tested by the [IO layer](../io-layer/low-level.md).
 - LRU oversized rejection retains a previous same-key entry.
 - Stat-gated caches never exceed `max_entries` after a completed insertion.
 - Loader failure never stores a value or strands an idle load gate.
-- JSON build/status use the same v2 schema validation.
-- Structured-input **status resolves `working/` then `committed/`** — the same
-  order `load_v2_api_source` uses at run time, because the badge answers "will a
-  run read from cache?". A valid `working/` wins since that is what the next run
-  reads, and `cached=False` requires both layers to be invalid.
+- An API Input's status, build and clear validate the same v2 schema as execution, and
+  its status is ready only when every emitting table's snapshot is.
 - A seed plan never seeds a stale generation, never reads metadata above a seed, never seeds
   an explicit build's own node, and seeds nothing on a refresh.
 - A pass-through node is never captured; the producer its selected edge names is.
@@ -527,9 +538,11 @@ cache lifecycle changes.
   concurrency.
 - `tests/test_stat_gated_cache.py` covers hit/reload, LRU bounds, single flight, moving
   gates, exceptions, clear, and load-gate reclamation.
-- `tests/test_json_cache_routes.py`, `tests/test_json_cache_integrity.py`,
-  `tests/test_json_cache_corrupt_and_errors.py`, and `tests/test_json_cache_mut_witnesses.py`
-  cover schema precedence, progress, build/status, promotion, corruption, path errors, and
-  deletion.
+- `tests/test_input_cache_route.py` covers an API Input's status before and after a build,
+  the capped worker build and its refresh, stale tables after a source change, clearing
+  (and its refusal while building), the per-table building probe, worker failure, and
+  config validation; `tests/test_json_cache_corrupt_and_errors.py`,
+  `tests/test_json_cache_coverage_uplift.py`, and `tests/test_json_cache_mut_witnesses.py`
+  cover the inference route's errors and path confinement.
 - `tests/performance/test_cache_identity_perf.py` records bounded LRU/stat-gate and lineage
   key performance evidence.

@@ -222,7 +222,7 @@ Consumers (own their route-specific job semantics on top of this component):
 - [server-api input cache](../server-api/high-level.md) — owns the `input_cache`
   store/lifecycle/registry and a `SingleFlightCoordinator` per source-identity digest;
   joins an active same-identity build and repairs stale ownership before starting.
-- [pipeline, json-cache, and output-assemble routes](../server-api/high-level.md)
+- [pipeline, input-cache, and output-assemble routes](../server-api/high-level.md)
   — use admitted killable workers for heavy execution; bounded I/O-only helpers may still use
   `_timeouts.py`. Explore uses the job store with a parent supervisor and isolated child.
 

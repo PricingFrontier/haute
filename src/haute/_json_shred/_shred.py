@@ -3,7 +3,6 @@ root-conservation accounting, and parallel chunk execution primitives."""
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -81,78 +80,15 @@ def _coerce_scalar(value: Any, type_token: str) -> Any:
     return value
 
 
-def _v2_fingerprint(config: dict[str, Any]) -> str:
-    """Stable content hash over the v2 schema's shred-relevant fields.
-
-    Two equivalent v2 configs hash identically; any change to the tables
-    or their columns moves the fingerprint. Excludes fields that don't
-    affect the shred output (the apiInput's ``path``, ``contract``).
-    """
-    tables = config.get("tables", [])
-    if not isinstance(tables, list):
-        raise ApiInputSchemaError("v2 tables must be a list")
-    canonical: list[dict[str, Any]] = []
-    for ti, table in enumerate(tables):
-        if not isinstance(table, dict):
-            # Fail LOUD rather than silently dropping a malformed table: a
-            # skipped entry would let two structurally-different on-disk
-            # configs collapse to the SAME fingerprint, so a schema change
-            # from one broken shape to another would not invalidate a stale
-            # cache. Distinct configs must hash distinctly (W1).
-            raise ApiInputSchemaError(f"v2 tables[{ti}] is not a dict")
-        columns = table.get("columns", [])
-        if not isinstance(columns, list):
-            raise ApiInputSchemaError(f"v2 tables[{ti}].columns must be a list")
-        cols_canon: list[dict[str, Any]] = []
-        for ci, col in enumerate(columns):
-            if not isinstance(col, dict):
-                raise ApiInputSchemaError(
-                    f"v2 tables[{ti}].columns[{ci}] is not a dict",
-                )
-            cols_canon.append(
-                {
-                    "name": col.get("name"),
-                    "path": col.get("path"),
-                    "type": col.get("type"),
-                    "selected": bool(col.get("selected")),
-                    "levels": col.get("levels"),
-                },
-            )
-        # Sort columns by path for canonical ordering — independent of
-        # the user's row-order in the editor.
-        cols_canon.sort(key=lambda c: (c.get("path") or "", c.get("name") or ""))
-        canonical.append(
-            {
-                "path": table.get("path"),
-                "label": table.get("label"),
-                "emit": bool(table.get("emit")),
-                "row_id_column": table.get("row_id_column"),
-                "columns": cols_canon,
-            },
-        )
-    canonical.sort(key=lambda t: t.get("path") or "")
-    payload = orjson.dumps(canonical, option=orjson.OPT_SORT_KEYS)
-    return hashlib.sha256(payload).hexdigest()
-
-
-# ---------------------------------------------------------------------------
-# Shared emitting predicate (W2 item 2.5)
-# ---------------------------------------------------------------------------
-
-
 def table_is_emitting(table: Any) -> bool:
     """THE single definition of "this table contributes a data frame".
 
-    ``emitting = emit AND at least one selected column``. Build, validity
-    and load all route through this predicate; before W2 they each
-    re-derived their own variant, and the disagreement (build skipped the
-    parquet for an emit-true zero-selected-column table while validity
-    demanded it) wedged the cache permanently — re-clicking "Cache as
-    Parquet" could never repair it.
+    ``emitting = emit AND at least one selected column``. Table identities,
+    builds and loads all route through this predicate, so they can never
+    disagree about which tables exist.
 
-    Tolerates non-dict tables/columns (returns ``False``) because validity
-    runs against arbitrary on-disk configs, mirroring the defensive
-    iteration in :func:`_v2_fingerprint`.
+    Tolerates non-dict tables/columns (returns ``False``) because it runs
+    against arbitrary on-disk configs.
     """
     if not isinstance(table, dict):
         return False

@@ -608,22 +608,17 @@ state = "covered"
 entry_point = "http"
 tier = "process"
 lane = "backend"
-real = ["cross-process-lock", "filesystem", "isolated-worker"]
+real = ["filesystem", "isolated-worker"]
 stubbed = []
 tests = [
-  "tests/test_json_cache_cross_process.py::test_http_build_cancellation_terminates_the_child_and_cleans_staging_before_releasing_the_lock",
-  "tests/test_json_cache_cross_process.py::test_http_build_timeout_terminates_the_child_and_cleans_staging_before_releasing_the_lock",
-  "tests/test_json_cache_cross_process.py::test_cache_build_lock_serializes_independent_processes",
-  "tests/test_json_cache_routes.py::TestBuildJsonCache::test_transaction_does_not_publish_after_request_cancellation",
-  "tests/test_json_cache_routes.py::TestBuildJsonCache::test_transaction_rejects_pre_dispatch_cancellation_and_surfaces_cleanup_failure",
-  "tests/test_json_cache_routes.py::TestJsonCacheProgress::test_progress_is_inactive_when_504_returns_after_worker_join",
+  "tests/test_input_cache_route.py::test_a_stopped_api_input_build_kills_its_worker_and_discards_its_staging",
 ]
-invariant = "Cancellation or timeout of an HTTP JSON cache build terminates the live child and discards the staging generation before the cross-process publication lock is released; a second process is blocked on that lock throughout, and the route releases admission only after the worker join."
+invariant = "Cancellation or the deadline of an HTTP API Input table build terminates the live capped worker, settles every generation the parent chose for it, removes its shred scratch and store staging, and publishes nothing; the job reports the stop as cancelled or timed_out."
 
 [scenarios.evidence]
-commit = "2073df1c"
-command = 'uv run pytest "tests/test_json_cache_cross_process.py::test_http_build_cancellation_terminates_the_child_and_cleans_staging_before_releasing_the_lock" "tests/test_json_cache_cross_process.py::test_http_build_timeout_terminates_the_child_and_cleans_staging_before_releasing_the_lock" "tests/test_json_cache_cross_process.py::test_cache_build_lock_serializes_independent_processes" "tests/test_json_cache_routes.py::TestBuildJsonCache::test_transaction_does_not_publish_after_request_cancellation" "tests/test_json_cache_routes.py::TestBuildJsonCache::test_transaction_rejects_pre_dispatch_cancellation_and_surfaces_cleanup_failure" "tests/test_json_cache_routes.py::TestJsonCacheProgress::test_progress_is_inactive_when_504_returns_after_worker_join" -q -p no:warnings'
-result = "6 passed in 9.36s"
+commit = "11bf870a"
+command = 'uv run pytest "tests/test_input_cache_route.py::test_a_stopped_api_input_build_kills_its_worker_and_discards_its_staging" -q -p no:warnings'
+result = "2 passed in 10.68s"
 
 [[scenarios]]
 id = "W05-S02"

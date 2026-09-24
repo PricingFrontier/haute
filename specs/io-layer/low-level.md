@@ -124,8 +124,11 @@ an in-place or non-atomic fallback.
    `scan_parquet` lazy scan without creating or consulting a source snapshot.
 5. Snapshot creation calls `build_input_snapshot()`, selects a provider builder, creates a
    `SourceCacheBuildContext`, and calls `SourceCacheStore.build()`.
-6. Snapshot execution calls `resolve_data_input()`, opens a lease, creates a Parquet scan,
-   and attaches lease release to execution cleanup or an explicit callable scan-plan token.
+6. Snapshot execution calls `resolve_data_input()`, which leases the current generation
+   through `lease_input_generation(store, identity, missing_message=...)`: it opens a lease,
+   creates a Parquet scan, and attaches lease release to execution cleanup or an explicit
+   callable scan-plan token. A structured API Input's tables are read through the same
+   helper (see [JSON shredding](../json-shredding/low-level.md)).
 7. `resolve_data_input_from_config()` is the generated-code sidecar entry point.
 
 ### Automatic preparation
@@ -195,6 +198,20 @@ an in-place or non-atomic fallback.
    generation published meanwhile by another process is recorded as `reused` and the
    execution proceeds; only a still-missing or still-stale generation raises the
    classified `InputPreparationError`.
+9. A structured (JSON, JSONL, NDJSON, XML) API Input in the lineage is prepared as a unit,
+   one record per emitting table (provider `api_input`, one identity per table — see
+   [JSON shredding](../json-shredding/low-level.md)). Every emitting table's status is read
+   against the source signature. A `corrupt` table raises `SourceCacheCorruptError`. A
+   missing source reuses every table when all are published (`source_unavailable`) and is
+   refused as `build_failed` otherwise. When every table is `ready` and `fresh`/`unknown`
+   they are all `reused`; otherwise one build shreds the source once and writes every
+   missing or stale table (tables already fresh are recorded `reused`, the others `built`
+   or `refreshed`). Single flight, the cap gate, the in-process/worker choice, the
+   deadline, cancellation, cap-unavailable stale reuse, failure classification and the
+   successor re-read follow steps 4–8, keyed by the node's group digest; a spawned build
+   uses `run_supervised_api_input_build`, which chooses and reconciles every table's
+   generation and staging and removes the build's scratch directory. Remediation text
+   names the API Input panel.
 
 ### Snapshot publication
 
@@ -261,7 +278,10 @@ retired directories.
 metadata names, returning a `CacheInventory` of `CacheOwnerUsage` values. A generation's
 `meta.json` records the whole identity payload, so a node output names its node and source
 and an input snapshot names its provider and descriptor: no graph is needed to say whose
-data this is, which is what lets a report name a node that no longer exists. A node output groups by node and source; an input
+data this is, which is what lets a report name a node that no longer exists. An input
+owner is labelled by its descriptor's `path` (or `table`, or `name`); an API-input table
+(provider `api_input`) is labelled by its source file and table path together, since one
+file holds several tables. A node output groups by node and source; an input
 snapshot groups by **identity**, never by its descriptor's label, because the same file read
 with different arguments is a different identity with the same path and merging them would
 report one owner's bytes for both. Each owner carries the identity digests it covers, so a

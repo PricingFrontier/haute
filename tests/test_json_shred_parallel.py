@@ -23,9 +23,8 @@ import orjson
 import polars as pl
 import pytest
 
-from haute._api_input_schema import ApiInputSchemaError
+from haute._api_input_schema import ApiInputSchemaError, sanitise_label_for_filesystem
 from haute._json_shred import _inference, _records, _shred, _writer
-from haute._json_shred._cache import build_per_port_cache, load_per_port_cache
 from haute._json_shred._inference import (
     _assemble_inference_schema,
     _InferenceState,
@@ -740,13 +739,42 @@ def test_parallel_inference_runs_off_the_main_thread(
 # ---------------------------------------------------------------------------
 
 
-def _build(path: Path, cache: Path) -> tuple[dict[str, Any], dict[str, pl.DataFrame]]:
+def _shred_build(
+    path: Path, schema: dict[str, Any], cache: Path
+) -> tuple[ShredSkipStats, dict[str, pl.DataFrame]]:
+    """Shred *path* under *schema* into bounded parquets in *cache*.
+
+    Exercises the writer functions directly (the same ones a snapshot build
+    calls internally) so both the skip accounting and the resulting frames
+    are directly comparable between the serial and parallel paths — the
+    published-generation store has no skip-accounting surface to assert on.
+    """
+    config = {"path": str(path), "contract": "opaque", **schema}
+    table_specs = _shred._emitting_table_specs(config)
+    cache.mkdir(parents=True, exist_ok=True)
+    ranges = (
+        _records._jsonl_byte_ranges(path, _records._PARALLEL_CHUNK_BYTES)
+        if _records._should_shred_in_parallel(path)
+        else []
+    )
+    if len(ranges) > 1:
+        skip_stats = _writer._write_tables_in_parallel(path, config, table_specs, cache, ranges)
+    else:
+        skip_stats = _writer._write_tables_streaming(path, config, table_specs, cache)
+    frames = {
+        spec.label: pl.scan_parquet(
+            cache / f"{sanitise_label_for_filesystem(spec.label)}.parquet"
+        ).collect()
+        for spec in table_specs
+    }
+    return skip_stats, frames
+
+
+def _build(path: Path, cache: Path) -> tuple[ShredSkipStats, dict[str, pl.DataFrame]]:
     schema = infer_v2_schema_from_data(path)
     for table in schema["tables"]:
         table["emit"] = True
-    summary = build_per_port_cache(path, schema, cache)
-    frames = {label: lf.collect() for label, lf in load_per_port_cache(cache, schema).items()}
-    return summary, frames
+    return _shred_build(path, schema, cache)
 
 
 def test_parallel_build_matches_serial_build_exactly(
@@ -762,8 +790,8 @@ def test_parallel_build_matches_serial_build_exactly(
     records[13]["claims"] = [{"amt": 130}, "stray", {"amt": 131}]
     records[257]["claims"] = [{"amt": 2570}, None]
     serial_src = _write_jsonl(tmp_path / "serial.jsonl", records)
-    serial_summary, serial_frames = _build(serial_src, tmp_path / "serial_cache")
-    assert serial_summary["skipped"]["rows_by_table"] == {"claims": 2}, (
+    serial_skip, serial_frames = _build(serial_src, tmp_path / "serial_cache")
+    assert serial_skip.skipped_rows_by_table == {"claims": 2}, (
         "fixture regressed: the equivalence contract must cover row-skip accounting"
     )
 
@@ -776,19 +804,19 @@ def test_parallel_build_matches_serial_build_exactly(
     # witness distinguishes a dispatch regression from a working parallel path.
     monkeypatch.setattr(_writer, "_write_tables_streaming", reject_serial_shred)
     parallel_src = _write_jsonl(tmp_path / "parallel.jsonl", records)
-    parallel_summary, parallel_frames = _build(parallel_src, tmp_path / "parallel_cache")
+    parallel_skip, parallel_frames = _build(parallel_src, tmp_path / "parallel_cache")
 
     assert set(parallel_frames) == set(serial_frames)
     for label, serial_frame in serial_frames.items():
         assert parallel_frames[label].equals(serial_frame), f"{label} differs"
 
-    assert parallel_summary["skipped"] == serial_summary["skipped"]
-    serial_tables = {t["label"]: t for t in serial_summary["tables"]}
-    for entry in parallel_summary["tables"]:
-        counterpart = serial_tables[entry["label"]]
-        assert entry["row_count"] == counterpart["row_count"]
-        assert entry["column_count"] == counterpart["column_count"]
-        assert entry["columns"] == counterpart["columns"]
+    assert parallel_skip.skipped_records == serial_skip.skipped_records
+    assert parallel_skip.skipped_rows_by_table == serial_skip.skipped_rows_by_table
+    for label, parallel_frame in parallel_frames.items():
+        serial_frame = serial_frames[label]
+        assert parallel_frame.height == serial_frame.height
+        assert parallel_frame.columns == serial_frame.columns
+        assert parallel_frame.schema == serial_frame.schema
 
 
 def test_parallel_build_counts_skipped_records_like_serial(
@@ -803,13 +831,14 @@ def test_parallel_build_counts_skipped_records_like_serial(
     src = tmp_path / "mixed.jsonl"
     src.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    serial_summary, serial_frames = _build(src, tmp_path / "serial_cache")
-    assert serial_summary["skipped"]["records"] == 120
+    serial_skip, serial_frames = _build(src, tmp_path / "serial_cache")
+    assert serial_skip.skipped_records == 120
 
     _force_parallel(monkeypatch)
-    parallel_summary, parallel_frames = _build(src, tmp_path / "parallel_cache")
+    parallel_skip, parallel_frames = _build(src, tmp_path / "parallel_cache")
 
-    assert parallel_summary["skipped"] == serial_summary["skipped"]
+    assert parallel_skip.skipped_records == serial_skip.skipped_records
+    assert parallel_skip.skipped_rows_by_table == serial_skip.skipped_rows_by_table
     for label, serial_frame in serial_frames.items():
         assert parallel_frames[label].equals(serial_frame)
 
@@ -825,13 +854,14 @@ def test_parallel_build_handles_blank_lines(
     src = tmp_path / "blanks.jsonl"
     src.write_text(body + "\n", encoding="utf-8")
 
-    serial_summary, serial_frames = _build(src, tmp_path / "serial_cache")
+    serial_skip, serial_frames = _build(src, tmp_path / "serial_cache")
 
     _force_parallel(monkeypatch)
-    parallel_summary, parallel_frames = _build(src, tmp_path / "parallel_cache")
+    parallel_skip, parallel_frames = _build(src, tmp_path / "parallel_cache")
 
-    assert parallel_summary["skipped"]["records"] == 0
-    assert parallel_summary["skipped"] == serial_summary["skipped"]
+    assert parallel_skip.skipped_records == 0
+    assert parallel_skip.skipped_records == serial_skip.skipped_records
+    assert parallel_skip.skipped_rows_by_table == serial_skip.skipped_rows_by_table
     for label, serial_frame in serial_frames.items():
         assert parallel_frames[label].equals(serial_frame)
 
@@ -846,18 +876,18 @@ def test_parallel_build_handles_a_missing_trailing_newline(
     body = "\n".join(json.dumps(r) for r in records)  # deliberately no final \n
     serial_src = tmp_path / "serial.jsonl"
     serial_src.write_text(body, encoding="utf-8")
-    serial_summary, serial_frames = _build(serial_src, tmp_path / "serial_cache")
+    serial_skip, serial_frames = _build(serial_src, tmp_path / "serial_cache")
 
     _force_parallel(monkeypatch)
     parallel_src = tmp_path / "parallel.jsonl"
     parallel_src.write_text(body, encoding="utf-8")
-    parallel_summary, parallel_frames = _build(parallel_src, tmp_path / "parallel_cache")
+    parallel_skip, parallel_frames = _build(parallel_src, tmp_path / "parallel_cache")
 
-    assert parallel_summary["skipped"] == serial_summary["skipped"]
+    assert parallel_skip.skipped_records == serial_skip.skipped_records
+    assert parallel_skip.skipped_rows_by_table == serial_skip.skipped_rows_by_table
     for label, serial_frame in serial_frames.items():
         assert parallel_frames[label].equals(serial_frame), f"{label} differs"
-    root_rows = {t["label"]: t["row_count"] for t in parallel_summary["tables"]}
-    assert root_rows["quote_info"] == 120
+    assert parallel_frames["quote_info"].height == 120
 
 
 def test_single_range_build_stays_serial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -880,11 +910,10 @@ def test_single_range_build_stays_serial(tmp_path: Path, monkeypatch: pytest.Mon
 
     monkeypatch.setattr(_writer, "_write_tables_in_parallel", reject_parallel_dispatch)
 
-    summary = build_per_port_cache(src, schema, tmp_path / "cache")
+    _skip, frames = _shred_build(src, schema, tmp_path / "cache")
 
-    row_counts = {t["label"]: t["row_count"] for t in summary["tables"]}
     root_label = next(t["label"] for t in schema["tables"] if t["path"] == "$[:]")
-    assert row_counts[root_label] == 3
+    assert frames[root_label].height == 3
 
 
 def test_parallel_worker_type_mismatch_raises_with_the_column_named(
@@ -918,11 +947,11 @@ def test_parallel_worker_type_mismatch_raises_with_the_column_named(
     }
 
     with pytest.raises(ApiInputSchemaError) as serial_exc:
-        build_per_port_cache(src, schema, tmp_path / "serial_cache")
+        _shred_build(src, schema, tmp_path / "serial_cache")
 
     _force_parallel(monkeypatch)
     with pytest.raises(ApiInputSchemaError) as parallel_exc:
-        build_per_port_cache(src, schema, tmp_path / "parallel_cache")
+        _shred_build(src, schema, tmp_path / "parallel_cache")
 
     assert parallel_exc.value.message == serial_exc.value.message
     assert parallel_exc.value.context == serial_exc.value.context
@@ -960,11 +989,11 @@ def test_parallel_json_decode_error_matches_serial_exactly(
     }
 
     with pytest.raises(orjson.JSONDecodeError) as serial_exc:
-        build_per_port_cache(src, schema, tmp_path / "serial_cache")
+        _shred_build(src, schema, tmp_path / "serial_cache")
 
     _force_parallel(monkeypatch)
     with pytest.raises(orjson.JSONDecodeError) as parallel_exc:
-        build_per_port_cache(src, schema, tmp_path / "parallel_cache")
+        _shred_build(src, schema, tmp_path / "parallel_cache")
 
     assert parallel_exc.value.msg == serial_exc.value.msg
     assert parallel_exc.value.doc == serial_exc.value.doc
@@ -1359,14 +1388,18 @@ def test_failed_parallel_build_leaves_no_staging_directory(
             }
         ]
     }
-    cache = tmp_path / "cache"
+    from haute._sandbox import set_project_root
+    from tests.conftest import build_test_api_input_snapshots
+
+    set_project_root(tmp_path)
+    config = {"path": str(src), "contract": "opaque", **schema}
 
     _force_parallel(monkeypatch)
     with pytest.raises(ApiInputSchemaError):
-        build_per_port_cache(src, schema, cache)
+        build_test_api_input_snapshots(src, config)
 
+    assert list(tmp_path.glob("**/.staging-*")) == []
     assert list(tmp_path.glob("**/*.arrow")) == []
-    assert list(tmp_path.glob("**/*build-tmp*")) == []
 
 
 def test_parallel_build_runs_off_the_main_thread(
@@ -1385,11 +1418,10 @@ def test_parallel_build_runs_off_the_main_thread(
 
     _force_parallel(monkeypatch)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        summary = pool.submit(build_per_port_cache, src, schema, tmp_path / "cache").result()
+        _skip, frames = pool.submit(_shred_build, src, schema, tmp_path / "cache").result()
 
     root_label = next(t["label"] for t in schema["tables"] if t["path"] == "$[:]")
-    row_counts = {t["label"]: t["row_count"] for t in summary["tables"]}
-    assert row_counts[root_label] == 300
+    assert frames[root_label].height == 300
 
 
 def test_failure_transport_preserves_schema_and_decode_evidence() -> None:

@@ -57,7 +57,9 @@ _DEFAULT_RETIRE_GRACE_SECONDS = 30 * 60
 NODE_OUTPUT_PROVIDER: Final = "node_output"
 CacheBucket = Literal["node_output", "input"]
 IdentityClassification = Literal["node_output", "input", "unknown"]
-KNOWN_INPUT_PROVIDERS = frozenset({"file", "lakehouse", "database", "databricks", "inline"})
+KNOWN_INPUT_PROVIDERS = frozenset(
+    {"file", "lakehouse", "database", "databricks", "inline", "api_input"}
+)
 _LEASE_PREFIX = ".lease-"
 _TOKEN_LENGTH = 12
 

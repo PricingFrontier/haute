@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -951,3 +953,417 @@ def test_build_identity_names_the_file_execution_opens(
         built_config,
         base_dir=input_cache._pipeline_base_dir(),
     ) == source_signature(executed_config, base_dir=execution_base_dir)
+
+
+# --------------------------------------------------------------------------
+# Structured API Inputs: one snapshot per emitting table, acted on together
+# --------------------------------------------------------------------------
+
+
+def _api_input_config(path: str = "quotes.jsonl") -> dict[str, Any]:
+    return {
+        "path": path,
+        "tables": [
+            {
+                "label": "quotes",
+                "path": "$[:]",
+                "emit": True,
+                "columns": [{"name": "id", "path": "$[:].id", "type": "int", "selected": True}],
+            },
+            {
+                "label": "drivers",
+                "path": "$[:].drivers[:]",
+                "emit": True,
+                "columns": [
+                    {"name": "age", "path": "$[:].drivers[:].age", "type": "int", "selected": True}
+                ],
+            },
+        ],
+    }
+
+
+def _api_input_body(config: dict[str, Any] | None = None, **extra: Any) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "node_type": "apiInput",
+        "config": config or _api_input_config(),
+        **extra,
+    }
+
+
+def _write_quotes(tmp_path: Path, count: int = 2) -> Path:
+    path = tmp_path / "quotes.jsonl"
+    path.write_text(
+        "\n".join(
+            f'{{"id": {index}, "drivers": [{{"age": {30 + index}}}, {{"age": {40 + index}}}]}}'
+            for index in range(count)
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+class _ApiInputWorker:
+    """Runs the capped API-input build worker in-process and records the call."""
+
+    def __init__(self, *, gate: threading.Event | None = None, failure: Exception | None = None):
+        self.gate = gate
+        self.failure = failure
+        self.calls: list[dict[str, Any]] = []
+        self.released = 0
+
+    def install(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        import haute._execution_admission as admission
+        from haute._execution_admission import IsolatedExecutionBudget
+        from haute._execution_context import ExecutionProfile
+        from haute._sandbox import set_project_root
+        from haute.routes import input_cache
+
+        set_project_root(tmp_path)
+        worker = self
+        budget = IsolatedExecutionBudget(
+            operation="input_snapshot_build",
+            profile=ExecutionProfile.LAZY_SINK,
+            memory_limit_bytes=64 * 1024 * 1024,
+            config_key="test-config-key",
+            budget_policy="test",
+        )
+
+        class Context:
+            def release_admission(self, **_kwargs: Any) -> None:
+                worker.released += 1
+
+            def checkpoint(self, *, label: str) -> None:
+                del label
+
+            def stage(self, name: str) -> Any:
+                import contextlib
+
+                del name
+                return contextlib.nullcontext()
+
+        def spawn(function: Any, request: Any, budget: Any, *, config: Any) -> Any:
+            worker.calls.append({"request": request, "budget": budget, "config": config})
+            if worker.gate is not None:
+                assert worker.gate.wait(5)
+            if worker.failure is not None:
+                raise worker.failure
+            return function(request, budget)
+
+        monkeypatch.setattr(input_cache, "create_admitted_execution_context", lambda **_: Context())
+        monkeypatch.setattr(input_cache, "isolated_execution_budget", lambda _ctx: budget)
+        monkeypatch.setattr(input_cache, "run_isolated_worker", spawn)
+        monkeypatch.setattr(admission, "create_isolated_execution_context", lambda _b: Context())
+
+
+def test_api_input_status_lists_each_table_before_any_build(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    _write_quotes(tmp_path)
+
+    response = client.post("/api/input-cache/status", json=_api_input_body())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["state"] == "missing"
+    assert payload["freshness"] == "unknown"
+    assert payload["generation"] is None
+    assert [table["label"] for table in payload["tables"]] == ["quotes", "drivers"]
+    assert {table["state"] for table in payload["tables"]} == {"missing"}
+    assert len({table["identity_digest"] for table in payload["tables"]}) == 2
+    assert payload["identity_digest"] not in {
+        table["identity_digest"] for table in payload["tables"]
+    }
+
+
+def test_api_input_build_publishes_every_table_in_a_capped_worker(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_quotes(tmp_path)
+    worker = _ApiInputWorker()
+    worker.install(monkeypatch, tmp_path)
+
+    started = client.post("/api/input-cache/build", json=_api_input_body())
+    assert started.status_code == 202
+    terminal = _wait_for_terminal(client, started.json()["job_id"])
+
+    assert terminal["status"] == "completed", terminal
+    assert terminal["build_class"] == "bounded"
+    assert terminal["identity_digest"] == started.json()["identity_digest"]
+    snapshot = terminal["snapshot"]
+    assert snapshot["state"] == "ready"
+    assert snapshot["freshness"] == "fresh"
+    assert [table["generation"]["row_count"] for table in snapshot["tables"]] == [2, 4]
+    assert terminal["progress"]["rows"] == 6
+    assert terminal["progress"]["batches"] == 2
+    [call] = worker.calls
+    assert call["request"].labels == ("quotes", "drivers")
+    assert call["config"].require_memory_limit is True
+    assert worker.released == 2  # the worker's own context, then the job's admission
+
+    status = client.post("/api/input-cache/status", json=_api_input_body()).json()
+    assert status["state"] == "ready"
+    assert status["identity_digest"] == started.json()["identity_digest"]
+
+    # Everything is fresh, so a second build writes nothing.
+    again = client.post("/api/input-cache/build", json=_api_input_body())
+    assert _wait_for_terminal(client, again.json()["job_id"])["status"] == "completed"
+    assert len(worker.calls) == 1
+
+    # A refresh rebuilds every table.
+    refresh = client.post("/api/input-cache/build", json=_api_input_body(refresh=True))
+    assert _wait_for_terminal(client, refresh.json()["job_id"])["status"] == "completed"
+    assert worker.calls[-1]["request"].labels == ("quotes", "drivers")
+
+
+def test_api_input_status_turns_stale_when_the_source_changes(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_quotes(tmp_path)
+    worker = _ApiInputWorker()
+    worker.install(monkeypatch, tmp_path)
+    started = client.post("/api/input-cache/build", json=_api_input_body())
+    _wait_for_terminal(client, started.json()["job_id"])
+
+    _write_quotes(tmp_path, count=3)
+    status = client.post("/api/input-cache/status", json=_api_input_body()).json()
+
+    assert status["state"] == "ready"
+    assert status["freshness"] == "stale"
+    assert {table["freshness"] for table in status["tables"]} == {"stale"}
+
+    # Only the stale tables are rebuilt, without a refresh.
+    rebuilt = client.post("/api/input-cache/build", json=_api_input_body())
+    _wait_for_terminal(client, rebuilt.json()["job_id"])
+    assert worker.calls[-1]["request"].labels == ("quotes", "drivers")
+    after = client.post("/api/input-cache/status", json=_api_input_body()).json()
+    assert after["freshness"] == "fresh"
+
+
+def test_api_input_status_keeps_published_tables_when_the_source_is_removed(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_quotes(tmp_path)
+    worker = _ApiInputWorker()
+    worker.install(monkeypatch, tmp_path)
+    started = client.post("/api/input-cache/build", json=_api_input_body())
+    _wait_for_terminal(client, started.json()["job_id"])
+
+    source.unlink()
+    status = client.post("/api/input-cache/status", json=_api_input_body()).json()
+
+    # A missing source proves nothing about the published tables: they stay
+    # ready with unknown freshness, so the browser serves them unbuilt.
+    assert (status["state"], status["freshness"]) == ("ready", "unknown")
+    assert {(table["state"], table["freshness"]) for table in status["tables"]} == {
+        ("ready", "unknown")
+    }
+
+
+def test_api_input_clear_removes_every_table_but_not_while_building(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute.routes import input_cache
+
+    _write_quotes(tmp_path)
+    gate = threading.Event()
+    worker = _ApiInputWorker(gate=gate)
+    worker.install(monkeypatch, tmp_path)
+
+    started = client.post("/api/input-cache/build", json=_api_input_body())
+    job_id = started.json()["job_id"]
+    deadline = time.monotonic() + 5
+    while not worker.calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+    status = client.post("/api/input-cache/status", json=_api_input_body()).json()
+    assert status["state"] == "building"
+    assert {table["state"] for table in status["tables"]} == {"building"}
+    assert all(
+        input_cache.api_input_table_build_running(table["identity_digest"])
+        for table in status["tables"]
+    )
+    joined = client.post("/api/input-cache/build", json=_api_input_body())
+    assert joined.json()["joined"] is True
+    assert joined.json()["job_id"] == job_id
+
+    refused = client.post("/api/input-cache/clear", json=_api_input_body())
+    assert refused.status_code == 409
+
+    gate.set()
+    assert _wait_for_terminal(client, job_id)["status"] == "completed"
+    assert not any(
+        input_cache.api_input_table_build_running(table["identity_digest"])
+        for table in status["tables"]
+    )
+
+    cleared = client.post("/api/input-cache/clear", json=_api_input_body())
+    assert cleared.status_code == 200
+    assert cleared.json()["state"] == "missing"
+    assert {table["state"] for table in cleared.json()["tables"]} == {"missing"}
+
+
+def test_api_input_worker_failure_is_a_failed_job(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_quotes(tmp_path)
+    worker = _ApiInputWorker(failure=RuntimeError("worker lost"))
+    worker.install(monkeypatch, tmp_path)
+
+    started = client.post("/api/input-cache/build", json=_api_input_body())
+    terminal = _wait_for_terminal(client, started.json()["job_id"])
+
+    assert terminal["status"] == "error"
+    assert terminal["error_code"] == "build_failed"
+    assert "worker lost" not in terminal["message"]
+    status = client.post("/api/input-cache/status", json=_api_input_body()).json()
+    assert status["state"] == "missing"
+
+
+def _blocking_table_worker(request: Any, budget: Any) -> Any:
+    """Stand-in capped worker: stage partial output where a real build would, then hang.
+
+    It writes the shred scratch directory and each table's parent-chosen store
+    staging directory, reports its pid beside the source, and waits to be
+    killed, so the parent's stop and settlement are observed on a live child.
+    """
+    del budget
+    inputs = Path(request.cache_root) / ".haute_cache" / "inputs"
+    staged = [inputs / ".shred" / f".staging-{request.scratch_token}"]
+    staged.extend(
+        inputs / digest / f".staging-{plan.staging_token}" for digest, plan in request.plans.items()
+    )
+    for directory in staged:
+        directory.mkdir(parents=True)
+    Path(f"{request.data_path}.pid").write_text(str(os.getpid()), encoding="utf-8")
+    time.sleep(120)
+    raise AssertionError("the worker outlived its parent's cancellation or timeout")
+
+
+def _pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) != 0  # WAIT_OBJECT_0 == exited
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _poll(predicate: Any, *, seconds: float, message: str) -> Any:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(0.05)
+    raise AssertionError(message)
+
+
+@pytest.mark.parametrize("stop", ["cancelled", "timed_out"])
+def test_a_stopped_api_input_build_kills_its_worker_and_discards_its_staging(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stop: str,
+) -> None:
+    """A real capped worker, stopped by cancellation or its deadline, publishes nothing."""
+    from haute._json_shred import _snapshots
+    from haute._sandbox import set_project_root
+    from haute._worker_isolation import process_memory_caps_supported
+
+    if not process_memory_caps_supported():
+        # Without a native cap the required policy refuses the spawn before a
+        # child exists; termination and settlement do not depend on the cap.
+        monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+    if stop == "timed_out":
+        monkeypatch.setenv("HAUTE_BUILD_TIMEOUT", "6")
+    set_project_root(tmp_path)
+    source = _write_quotes(tmp_path)
+    monkeypatch.setattr(_snapshots, "build_api_input_tables_worker", _blocking_table_worker)
+    inputs = tmp_path / ".haute_cache" / "inputs"
+
+    started = client.post("/api/input-cache/build", json=_api_input_body())
+    assert started.status_code == 202
+    job_id = started.json()["job_id"]
+    pid_file = Path(f"{source}.pid")
+    child_pid = int(
+        _poll(
+            lambda: pid_file.is_file() and pid_file.read_text(encoding="utf-8").strip(),
+            seconds=60,
+            message="the capped worker did not report its start",
+        )
+    )
+    assert _pid_alive(child_pid)
+    assert len(list(inputs.glob("*/.staging-*"))) == 3  # the scratch and both tables
+
+    if stop == "cancelled":
+        assert client.delete(f"/api/input-cache/jobs/{job_id}").status_code == 202
+    terminal = _poll(
+        lambda: (
+            (payload := client.get(f"/api/input-cache/jobs/{job_id}").json())["status"] != "running"
+            and payload
+        ),
+        seconds=60,
+        message=f"input-cache job {job_id!r} did not finish",
+    )
+
+    assert terminal["status"] == stop
+    _poll(lambda: not _pid_alive(child_pid), seconds=10, message="the worker survived")
+    assert list(inputs.glob("*/.staging-*")) == []
+    status = client.post("/api/input-cache/status", json=_api_input_body()).json()
+    assert status["state"] == "missing"
+    assert {table["state"] for table in status["tables"]} == {"missing"}
+
+
+@pytest.mark.parametrize(
+    ("config", "status_code", "detail"),
+    [
+        ({"path": "rows.csv", "tables": []}, 400, "invalid_input_config"),
+        ({"path": "quotes.jsonl"}, 400, "invalid_input_config"),
+        ({"path": "quotes.jsonl", "tables": [{"label": ""}]}, 400, "invalid_input_config"),
+        (
+            {
+                **_api_input_config(),
+                "tables": [{**_api_input_config()["tables"][0], "emit": False}],
+            },
+            400,
+            "emits no table",
+        ),
+        (_api_input_config("../outside.jsonl"), 403, "outside the project root"),
+    ],
+)
+def test_api_input_requests_validate_the_config(
+    client: TestClient,
+    tmp_path: Path,
+    config: dict[str, Any],
+    status_code: int,
+    detail: str,
+) -> None:
+    _write_quotes(tmp_path)
+
+    for route in ("status", "clear", "build"):
+        response = client.post(f"/api/input-cache/{route}", json=_api_input_body(config))
+        assert response.status_code == status_code, (route, response.text)
+        assert detail in response.json()["detail"]

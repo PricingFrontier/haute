@@ -104,8 +104,14 @@ def resolve_api_input_from_config(
     profile: str | None = None,
     columns: frozenset[str] | set[str] | None = None,
     port_columns: Mapping[str, frozenset[str] | set[str] | None] | None = None,
+    read_snapshots: bool = False,
 ) -> _Frame | dict[str, _Frame]:
-    """Load an API input from its current inline config or JSON sidecar."""
+    """Load an API input from its current inline config or JSON sidecar.
+
+    ``read_snapshots`` makes a structured source read its tables' published
+    input snapshots (canvas execution) instead of shredding the file in-process
+    (generated standalone code).
+    """
     config = _resolve_node_config(config_or_path, base_dir)
     path = _anchored_required_path(config, base_dir)
 
@@ -124,7 +130,9 @@ def resolve_api_input_from_config(
         from haute._json_shred._cache import load_v2_api_source
 
         validate_v2_schema(config)
-        return load_v2_api_source(path, config, port_columns=port_columns)
+        return load_v2_api_source(
+            path, config, port_columns=port_columns, read_snapshots=read_snapshots
+        )
 
     from haute._io import read_data_source
 

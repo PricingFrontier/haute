@@ -208,7 +208,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   before a proven row-local suffix is chunked. Missing admission and excess headroom
   remain distinct typed failures. An unavailable estimate has exactly two outcomes.
   When the planner runs inside a worker whose native memory cap is active, which is
-  how Data Output writes, preview and trace, Explore, JSON cache builds, training
+  how Data Output writes, preview and trace, Explore, API Input table builds, training
   preparation, and multi-row deploy scoring execute,
   the group-by still runs once as a materialisation boundary but under the run's
   full admitted envelope, `min(memory_limit_bytes, headroom_bytes)`, the same number
@@ -381,10 +381,10 @@ running heavy work in a child process the parent can kill on timeout or memory l
   collections in fresh processes over the same generated wide artifact, checks
   semantic equality and exact selected width, and gates their incremental RSS
   ratio. The end-to-end training scenario derives its demand from the same target,
-  metadata, and feature-menu exclusions used by the modelling service. Per-port
-  cached API input and direct JSONL fallback scenarios retain structured width,
-  checkpoint, row-count, output-size, restart/cache-proof, telemetry-privacy,
-  and snapshot-lifecycle evidence. The ordinary pull-request suite keeps the
+  metadata, and feature-menu exclusions used by the modelling service. Published
+  API Input table and direct JSONL fallback scenarios retain structured width,
+  checkpoint, row-count, output-size, restart, telemetry-privacy,
+  and build-settlement evidence. The ordinary pull-request suite keeps the
   bounded CI scale; scheduled certification runs the one-million-row scenario
   weekly and the ten-million-row stress scenario monthly, with both larger
   scales also available through explicit workflow dispatch.
@@ -524,18 +524,16 @@ keep reporting the failing line so the editor can name the failing step.
   strategy for both would either make preview too slow (rebuild the whole plan per
   click) or make batch runs memory-unsafe (materialise everything eagerly).
   A JSON source's SHA-256 content proof is likewise the sole raw-file content proof
-  consumed by preview/trace identity, preview planning, source loading, and later
+  consumed by preview/trace identity, table-freshness checks, and later
   requests while the JSON-shredding component's strong native revision remains
   unchanged. Runtime identity must not perform a second full-file hash with a different
   algorithm. This removes duplicate and repeat multi-gigabyte source reads without
   weakening same-size/same-mtime rewrite detection; non-JSON runtime files retain their
   separately versioned runtime-file identity contract.
-  A cache build persists the strong revision that surrounded its complete source hash,
-  allowing a fresh server process to reuse that proof on an exact native-revision match;
-  missing, conflicting, or unsupported proof records force the full read.
-  Cached JSON Parquet generations use the same principle at their file-backed boundary:
-  one completely verified private snapshot can serve later cache misses only behind an
-  unchanged strong artifact revision and strict process entry/byte bounds.
+  The proof lives in process memory: a published API Input table records the source's
+  content signature, not its native revision, so a fresh server process proves each
+  JSON source once, as it does a Data Input source. Planning and loading read the
+  published table generations, never the source.
   A full preview-cache hit also reuses the immutable strategy result that produced the
   cached frame, so it retains projection warnings and provenance without repeating
   footer estimation. Any miss or cache extension plans afresh before materialisation.
@@ -616,7 +614,7 @@ keep reporting the failing line so the editor can name the failing step.
   ran a 1,000-row sample through the pipeline before training; inner joins with no key
   overlap in a small sample produced zero rows and broke the estimate. Reading
   parquet footer metadata (row/column counts, per-column uncompressed size) is
-  immediate when a valid local Parquet source or per-port API-input cache exists, at the
+  immediate when a valid local Parquet source or a published API Input table exists, at the
   cost of being an estimate rather than an exact
   measurement — hence a 3× empirical overhead multiplier and a configurable safety
   factor rather than a computed exact figure.

@@ -261,9 +261,7 @@ def test_file_lock_windows_propagates_unexpected_error(monkeypatch: pytest.Monke
         )
 
 
-def test_cache_ancestors_reparse_and_recovery_generation_selection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cache_ancestors_and_reparse_points(tmp_path: Path) -> None:
     assert _publication._is_reparse_point(SimpleNamespace(st_file_attributes=0x400))
     assert not _publication._is_reparse_point(SimpleNamespace(st_file_attributes=0x200))
     assert not _publication._is_reparse_point(SimpleNamespace())
@@ -276,44 +274,6 @@ def test_cache_ancestors_reparse_and_recovery_generation_selection(
         _publication._assert_cache_path_ancestors_plain(non_directory / "lock")
     missing = cache_root / "missing" / "lock"
     _publication._assert_cache_path_ancestors_plain(missing)
-
-    cache_dir = tmp_path / "cache"
-    older = tmp_path / "cache.build-old-old"
-    newest = tmp_path / "cache.build-old-new"
-    staged = tmp_path / "cache.build-tmp-crash"
-    for directory in (older, newest, staged):
-        directory.mkdir()
-    monkeypatch.setattr(
-        _publication,
-        "_publication_siblings",
-        lambda _cache_dir, kind: (
-            [(older, SimpleNamespace(st_mtime_ns=1)), (newest, SimpleNamespace(st_mtime_ns=2))]
-            if kind == "old"
-            else [(staged, SimpleNamespace(st_mtime_ns=3))]
-        ),
-    )
-    _publication._recover_cache_publication(cache_dir)
-    assert cache_dir.is_dir()
-    assert not older.exists() and not newest.exists() and not staged.exists()
-
-    failed_cache = tmp_path / "failed"
-    failed_old = tmp_path / "failed.build-old-only"
-    failed_old.mkdir()
-    monkeypatch.setattr(
-        _publication,
-        "_publication_siblings",
-        lambda _cache_dir, kind: (
-            [(failed_old, SimpleNamespace(st_mtime_ns=1))] if kind == "old" else []
-        ),
-    )
-    monkeypatch.setattr(
-        _publication,
-        "_rename_dir_with_retry",
-        lambda *_args: (_ for _ in ()).throw(PermissionError("rename")),
-    )
-    with pytest.raises(PermissionError, match="rename"):
-        _publication._recover_cache_publication(failed_cache)
-    assert failed_old.is_dir()
 
 
 def test_cache_ancestor_validation_visits_only_the_cache_boundary(
@@ -353,144 +313,6 @@ def test_reparse_point_mask_boundaries(attributes: int, expected: bool) -> None:
     )
 
 
-def test_recovery_existing_cache_removes_all_superseded_siblings_and_logs_counts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    cache, old, staged = tmp_path / "cache", tmp_path / "old", tmp_path / "staged"
-    cache.mkdir()
-    old.mkdir()
-    staged.mkdir()
-    actions: list[tuple[str, Path]] = []
-    logs: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-    monkeypatch.setattr(
-        _publication,
-        "_publication_siblings",
-        lambda _cache, kind: (
-            [(old, SimpleNamespace(st_mtime_ns=1))]
-            if kind == "old"
-            else [(staged, SimpleNamespace(st_mtime_ns=2))]
-        ),
-    )
-    monkeypatch.setattr(
-        _publication, "_remove_plain_cache_directory", lambda path: actions.append(("remove", path))
-    )
-    monkeypatch.setattr(
-        _publication.logger, "info", lambda *args, **kwargs: logs.append((args, kwargs))
-    )
-
-    _publication._recover_cache_publication(cache)
-    assert actions == [("remove", old), ("remove", staged)]
-    assert logs == [
-        (
-            ("json_cache_publication_recovered",),
-            {
-                "cache_dir": str(cache),
-                "action": "removed_superseded_siblings",
-                "old_count": 1,
-                "staged_count": 1,
-            },
-        )
-    ]
-
-
-def test_recovery_stage_only_cleanup_is_unlogged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    cache, staged = tmp_path / "cache", tmp_path / "staged"
-    staged.mkdir()
-    actions: list[Path] = []
-    logs: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-    monkeypatch.setattr(
-        _publication,
-        "_publication_siblings",
-        lambda _cache, kind: [] if kind == "old" else [(staged, SimpleNamespace(st_mtime_ns=2))],
-    )
-    monkeypatch.setattr(_publication, "_remove_plain_cache_directory", actions.append)
-    monkeypatch.setattr(
-        _publication.logger, "info", lambda *args, **kwargs: logs.append((args, kwargs))
-    )
-
-    _publication._recover_cache_publication(cache)
-    assert actions == [staged]
-    assert logs == []
-
-
-def test_recovery_rejects_ambiguous_newest_backup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    cache, first, second = tmp_path / "cache", tmp_path / "old-a", tmp_path / "old-b"
-    first.mkdir()
-    second.mkdir()
-    monkeypatch.setattr(
-        _publication,
-        "_publication_siblings",
-        lambda _cache, kind: (
-            [(first, SimpleNamespace(st_mtime_ns=2)), (second, SimpleNamespace(st_mtime_ns=2))]
-            if kind == "old"
-            else []
-        ),
-    )
-
-    with pytest.raises(_publication.JsonCacheRecoveryError, match="ambiguous"):
-        _publication._recover_cache_publication(cache)
-
-
-def test_recovery_restores_newest_of_three_backups_and_logs_discards(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    cache = tmp_path / "cache"
-    oldest, newest, middle = (tmp_path / name for name in ("oldest", "newest", "middle"))
-    for path in (oldest, newest, middle):
-        path.mkdir()
-    actions: list[tuple[str, Path, Path | None]] = []
-    logs: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-    monkeypatch.setattr(
-        _publication,
-        "_publication_siblings",
-        lambda _cache, kind: (
-            [
-                (oldest, SimpleNamespace(st_mtime_ns=1)),
-                (newest, SimpleNamespace(st_mtime_ns=3)),
-                (middle, SimpleNamespace(st_mtime_ns=2)),
-            ]
-            if kind == "old"
-            else []
-        ),
-    )
-    monkeypatch.setattr(
-        _publication,
-        "_rename_dir_with_retry",
-        lambda source, destination: actions.append(("rename", source, destination)),
-    )
-    monkeypatch.setattr(
-        _publication,
-        "_remove_plain_cache_directory",
-        lambda path: actions.append(("remove", path, None)),
-    )
-    monkeypatch.setattr(
-        _publication.logger, "info", lambda *args, **kwargs: logs.append((args, kwargs))
-    )
-
-    _publication._recover_cache_publication(cache)
-    assert actions == [
-        ("rename", newest, cache),
-        ("remove", oldest, None),
-        ("remove", middle, None),
-    ]
-    assert logs == [
-        (
-            ("json_cache_publication_recovered",),
-            {
-                "cache_dir": str(cache),
-                "action": "restored_backup_generation",
-                "restored": str(newest),
-                "discarded_old_count": 2,
-                "discarded_staged_count": 0,
-            },
-        )
-    ]
-
-
 def test_cache_build_lock_tracks_owner_depth_and_remaining_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -499,7 +321,6 @@ def test_cache_build_lock_tracks_owner_depth_and_remaining_deadline(
     observed: list[dict[str, Any]] = []
     monkeypatch.setattr(_publication, "_assert_cache_path_ancestors_plain", lambda _path: None)
     monkeypatch.setattr(_publication, "_open_cache_lock_file", lambda _path: handle)
-    monkeypatch.setattr(_publication, "_recover_cache_publication", lambda _path: None)
     monkeypatch.setattr(_publication, "_release_file_lock", lambda _handle: None)
     monkeypatch.setattr(
         _publication,
@@ -583,7 +404,6 @@ def test_cache_build_lock_initialises_only_empty_lock_files(
     monkeypatch.setattr(_publication, "_assert_cache_path_ancestors_plain", lambda _path: None)
     monkeypatch.setattr(_publication, "_open_cache_lock_file", lambda _path: handle)
     monkeypatch.setattr(_publication, "_acquire_file_lock", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(_publication, "_recover_cache_publication", lambda _path: None)
     monkeypatch.setattr(_publication, "_release_file_lock", lambda _handle: None)
 
     assert lock.acquire()
@@ -592,7 +412,7 @@ def test_cache_build_lock_initialises_only_empty_lock_files(
     lock.release()
 
 
-def test_cache_build_lock_process_contention_and_recovery_failure_release_everything(
+def test_cache_build_lock_process_contention_releases_everything(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class Handle:
@@ -619,22 +439,5 @@ def test_cache_build_lock_process_contention_and_recovery_failure_release_everyt
     assert lock.acquire(blocking=False) is False
     assert released == []
     assert contention_handle.closed
-    assert lock._thread_lock.acquire(blocking=False)
-    lock._thread_lock.release()
-
-    lock = _publication._CacheBuildLock(tmp_path / "recovery")
-    recovery_handle = Handle()
-    released.clear()
-    monkeypatch.setattr(_publication, "_open_cache_lock_file", lambda _path: recovery_handle)
-    monkeypatch.setattr(_publication, "_acquire_file_lock", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(
-        _publication,
-        "_recover_cache_publication",
-        lambda _path: (_ for _ in ()).throw(ValueError("recovery")),
-    )
-    with pytest.raises(ValueError, match="recovery"):
-        lock.acquire()
-    assert released == [recovery_handle]
-    assert recovery_handle.closed
     assert lock._thread_lock.acquire(blocking=False)
     lock._thread_lock.release()

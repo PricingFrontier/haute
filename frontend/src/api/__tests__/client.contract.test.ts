@@ -13,9 +13,7 @@ import {
   createUtilityFile,
   deleteUtilityFile,
   dissolveSubmodel,
-  buildJsonCache,
   checkHauteSession,
-  deleteJsonCache,
   estimateOptimiserSolve,
   estimateTrainingRam,
   commitMilestone,
@@ -884,13 +882,6 @@ describe("client runtime contracts", () => {
     await expect(getGitPrefs()).resolves.toEqual({ skip_switch_confirm: false })
   })
 
-  it("buildJsonCache rejects incomplete cache-build payloads", async () => {
-    const fixture = loadUiContractFixture<Record<string, unknown>>("json_cache_build_response")
-    mockFetch.mockReturnValue(jsonResponse({ ...fixture, data_path: undefined }))
-
-    await expect(buildJsonCache({ path: "/data/input.json" })).rejects.toThrow(/parseJsonCacheBuildResponse/i)
-  })
-
 })
 
 describe("next-wave client runtime contracts", () => {
@@ -1145,7 +1136,6 @@ describe("shared client trust-boundary endpoints", () => {
   }> = [
     { name: "checkHauteSession", body: { ok: true }, call: () => checkHauteSession(), url: "/api/session", malformed: { ok: "yes" } },
     { name: "outputAssembleDryRun", body: { status: "ok", document: [], row_count: 0, error: null }, call: () => outputAssembleDryRun({ graph: dummyGraph, nodeId: "out", outputMapping: [] }), url: "/api/output-assemble/dry-run", method: "POST", malformed: { status: "ok", document: [], row_count: "1" } },
-    { name: "deleteJsonCache", body: { cached: false, data_path: "cache/data" }, call: () => deleteJsonCache("/data/input.json"), url: "/api/json-cache?path=%2Fdata%2Finput.json", method: "DELETE", malformed: { cached: false } },
     { name: "inferJsonCacheSchema", body: { tables: [{ name: "drivers" }] }, call: () => inferJsonCacheSchema({ path: "/data/input.json" }), url: "/api/json-cache/infer", method: "POST", malformed: { tables: ["bad"] } },
     { name: "getExperiments", body: [{ experiment_id: "1", name: "pricing" }], call: () => getExperiments(""), url: "/api/mlflow/experiments", malformed: [{ experiment_id: "1" }] },
     { name: "getRuns", body: [{ run_id: "r", run_name: "baseline", metrics: { auc: 0.9 }, artifacts: [] }], call: () => getRuns("exp", "model", ""), url: "/api/mlflow/runs?experiment_id=exp&artifact_filter=model", malformed: [{ run_id: "r", run_name: "baseline", metrics: {}, artifacts: [1] }] },

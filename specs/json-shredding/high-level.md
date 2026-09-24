@@ -8,9 +8,9 @@ are grouped here:
 
 1. **Structured API-input shredding** — a JSON/JSONL document (arbitrarily nested
    objects and arrays) or a supported XML document is normalised and "shredded"
-   into one or more flat, typed tables (Polars frames), using a valid parquet
-   cache as a fast path when present and otherwise parsing the source directly
-   for that execution.
+   into one or more flat, typed tables (Polars frames). Each table is a shared
+   input snapshot that canvas execution reads; generated standalone code parses
+   the source directly.
 2. **JSON output assembly** — flat frames plus output-path mappings can be
    structurally validated and are re-nested into one deterministic array-outer
    response document without cross-multiplying independent sibling arrays.
@@ -23,8 +23,10 @@ JSON-safe value encoder used whenever pipeline data crosses an HTTP boundary.
 
 In scope:
 
-- Shredding a JSON/JSONL/XML API input into per-table parquet caches, schema inference
-  from sample data, and the dual-layer (working/committed) cache lifecycle around it.
+- Shredding a JSON/JSONL/XML API input into per-table Parquet, schema inference
+  from sample data, and each emitting table's identity, freshness and build as a
+  shared input snapshot (the store itself is owned by the
+  [IO layer](../io-layer/high-level.md)).
 - The v2 apiInput schema codec: shape recognition, shared table/column path
   parsing, canonical path writing, structural validation, and filesystem-safe
   table labels.
@@ -44,7 +46,8 @@ Out of scope (owned elsewhere):
   the shared edge-join demand-narrowing rule that planner consumes.
 - Submodel definition, boundary rewiring, and expansion into an executable graph —
   see [submodels](../submodels/high-level.md).
-- The HTTP routes that drive JSON-cache build/status/delete
+- The HTTP routes that build, report and clear input snapshots
+  (`src/haute/routes/input_cache.py`) and the schema-inference route
   (`src/haute/routes/json_cache.py`) — see [caching](../caching/high-level.md).
 
 ## Behaviour
@@ -57,31 +60,20 @@ column. Relational depth is defined purely by array (`[:]`) nesting — a 1-1 ne
 object never starts a new table, its scalar leaves fold into the enclosing table as
 dotted columns; only an array (of objects, or of scalars) starts a child table. A
 scalar array produces a one-column child table (`value`) with one row per element.
-Building the cache writes one parquet per emitting table plus a `meta.json`
-manifest; the manifest carries a content fingerprint of the schema and a signature
-of the source data file. Every table entry also records the size and SHA-256 of its
-derived parquet, so payload corruption is rejected before the footer-only schema
-probe can accept it. Caching is an optional performance prewarm: runtime first
-tries signed, readable, exact-schema `working/` then `committed/` parquets; when
-neither can serve, it applies the same parsed table specs, shredding, type checks,
-skip accounting, and conservation guards through private spill-backed lazy frames
-without creating or refreshing cache files. Execution may supply a proven per-port column demand: the
-loader still validates the complete v2 config and cache manifest, but opens only
-the requested port payloads, validates each loaded payload against its complete
-declared schema, and projects it to the requested columns. Cache payloads remain
-file-backed: runtime pins each requested artifact into a private process-owned
-snapshot, verifies its signature in bounded chunks, and gives Polars that stable
-path so Parquet projection can read only the selected column data. Haute never
-retains the complete compressed Parquet payload as a Python byte buffer. The
-snapshot normally uses a same-filesystem hard link (with a bounded streaming-copy
-fallback where links are unavailable), reuses a verified snapshot for repeated
-access to the same artifact generation, and is leased for the managed execution
-lifetime so an already-returned lazy plan survives a cache rebuild or clear.
-Independent mutable artifacts remain separate even when their current bytes are
-identical. A direct caller outside a managed execution retains its snapshot until
-process exit because Haute cannot observe the lifetime of every derived Polars
-plan. A cache miss shreds only the requested tables and columns. Calls without a
-proven demand retain the complete bundle. Schema inference can sniff a v2 config from a data file
+Each emitting table is one input snapshot in the shared store, identified by the
+resolved source file, that table's own specification (path, selected columns and
+their types) and a shred-semantics version — not by its label or its sibling
+tables, so editing one table leaves the others' generations current. A table
+generation records the source file's content signature, so a changed source makes
+every table of the node stale. A build shreds the source once and publishes every
+table it was asked for; tables already fresh are skipped, but the source is still
+parsed in full. Automatic preparation builds the missing and stale tables before an
+admitted execution reads them, and canvas execution reads only the published
+generations, projected to the columns it demands, never the raw source. Generated
+standalone code runs without a project store and shreds its source in-process
+through the same parsed table specs, type checks, skip accounting and conservation
+guards, into private spill-backed lazy frames.
+Schema inference can sniff a v2 config from a data file
 directly, sampling optionally, widening column types across every record seen and
 naming collision-free bare leaf keys as their own column names. Complete inference
 learns a structural filter from an initial 10,000 records and checks the remaining
@@ -102,12 +94,12 @@ sharing a key name qualify symmetrically (`a_items`/`b_items`) — never raw pat
 strings, so an inferred schema is immediately valid under the label rule below
 and its labels read as the argument names they will become.
 
-Runtime fallback and persistent cache construction use the same aggregate
-byte/row-bounded Parquet row-group writer. JSON arrays are tokenised one top-level
-value at a time, JSONL is decoded one non-empty line at a time, and repeated XML
-record containers are parsed and released one direct child at a time. Returned
-LazyFrames scan leased runtime files; cache builds publish the corresponding staged
-files only after every writer and the manifest have completed.
+The standalone shred and table builds use the same aggregate byte/row-bounded
+Parquet row-group writer. JSON arrays are tokenised one top-level value at a time,
+JSONL is decoded one non-empty line at a time, and repeated XML record containers
+are parsed and released one direct child at a time. Standalone LazyFrames scan
+leased runtime files; a build publishes a table only after its whole shred has
+completed and the source is proven unchanged.
 
 The configured structured-input record limit is a hard bound, not merely a flush
 hint. A JSON root object, JSONL line, JSON array element, repeated XML child, or XML
@@ -116,13 +108,13 @@ document whose semantics make the complete root one logical record must fit with
 record fails with `ApiInputSchemaError` before it can make memory grow with the input
 file. Parser read-ahead is limited to one fixed-size chunk. Subject to that explicit
 single-record bound, peak Python memory is independent of source-file length and
-emitted-table row count for runtime loads and persistent cache builds alike.
+emitted-table row count for standalone loads and table builds alike.
 
-Cache publication and runtime storage are coordinated across server processes.
-Readers, builders, and promotion share an OS file lock per cache identity; a reader
-never sees the rename gap. Runtime snapshots and direct spills share a project-wide
-disk budget, process-owner metadata, orderly cleanup, and stale-owner recovery.
-Exhaustion fails loudly before serving an unverified or partial generation.
+Table generations are published, leased and retired by the shared input-snapshot
+store, which validates every part (digest, footer, schema) before a reader sees it
+and keeps a leased generation until its reader finishes. Standalone spills share a
+project-wide disk budget, process-owner metadata, orderly cleanup, and stale-owner
+recovery; exhaustion fails loudly before serving a partial spill.
 
 XML is converted to the same object/list/scalar record shape before inference or
 shredding. Element namespaces are removed from field names; attributes become
@@ -214,86 +206,29 @@ columns keeps the shredded schema close to what a user actually wants to query.
 
 **Every dropped element is counted, never silently discarded.** Every array element resolves
 cleanly, fails loud (a genuine structural mismatch, e.g. a dotted leaf crossing a
-non-empty array), or is counted as a skip so a build's summary can report exactly how
-many records/rows were dropped and why. The cache build additionally runs a
+non-empty array), or is counted as a skip so a build can log exactly how many
+records/rows were dropped and why. Every shred additionally runs a
 conservation assertion at the root level — emitted-plus-skipped
 must equal records-read — and raises `RuntimeError` if it doesn't, treating an
 unaccounted discrepancy as a shred bug, not something to serve silently.
 
-**Cache freshness and integrity are proven by content hashes.** A build records the
-data file's size, mtime, and full SHA-256, plus each emitted parquet's size and full
-SHA-256 after writing it. Public validity compares the source's content identity and
-proves every candidate artifact: a readable footer does not prove its data pages are
-intact. The first observation of an artifact generation is pinned and completely
-hashed. Haute may retain that verified private snapshot in a process-local cache with
-strict entry and logical-byte bounds; a later operation may reuse it only when the
-visible artifact has the same strong native file identity and change revision and the
-private snapshot still exists. Revision movement, replacement, eviction, a fork, or
-native-revision unavailability forces a new pin and full hash, so visible corruption
-cannot be hidden by an older snapshot. The source SHA-256 may be reused across
-operations only while a strong, OS-native revision token proves that the same file
-generation is unchanged. A successful cache build stores the exact native revision
-that surrounded its full source hash beside that hash, with a digest binding those
-fields against accidental manifest drift. After a restart, Haute may seed its
-bounded process memo from working/committed metadata only when the current revision
-matches that persisted revision exactly and every matching candidate agrees on the
-signature. Metadata recorded for an earlier source generation, conflicting proofs, a
-revision change, or a platform or filesystem that cannot provide a strong token forces
-a complete source hash. After that complete hash, Haute atomically rebinds each live
-manifest whose recorded size and SHA-256 match the freshly observed source but whose
-recorded proof differs (a cache built on another volume, or before this host could
-observe a revision) to the current revision-bound proof, so later processes on this
-host reuse the proof without re-hashing the source. A layer that a build or another reader
-has locked is skipped, never waited for. A failed rebind is logged and
-leaves serving on the already-safe full-hash path; it never turns a metadata write
-into a weaker validity decision.
-Runtime goes further to close the hash-then-reopen race: it atomically pins each requested
-artifact to a private file-backed snapshot, verifies size/SHA-256 from that exact
-snapshot in bounded chunks, and gives its stable path to Polars. A rewrite that
-preserves size and mtime, or a damaged data page beneath an unchanged footer, is
-therefore never served, while the complete payload is never retained in memory.
+**Table freshness is proven by content hashes.** The source file's full SHA-256 is
+memoised by canonical path in a bounded, single-flight process cache, and a hit
+requires the same strong native file identity, length, last-write value and change
+token that surrounded the original complete hash pass. This shares one content
+proof between status checks, preparation, builds and later previews without
+trusting size/mtime alone. Nothing is persisted, so a new server process hashes
+each source once. A changed token, an atomic replacement, or a file that changes
+during hashing cannot reuse the proof; native-token failure disables reuse for
+that observation rather than weakening the freshness contract. A build that
+observes a different signature after its shred publishes nothing.
 
-The private file snapshot also pins a returned LazyFrame (including derived plans)
-to the generation it selected, even if the visible cache generation is later
-rebuilt, mirrored, or explicitly cleared. Parquet decode and projection remain lazy,
-so collection reads only demanded column chunks. Same-filesystem hard links avoid
-duplicating current-generation disk blocks. A managed execution releases its lease
-when execution cleanup finishes; a bounded verification-cache pin may keep an idle
-snapshot available until LRU eviction, explicit cleanup, fork reset, or process exit.
-Active leases survive cache eviction. Replaced generations and the bounded-copy
-fallback occupy temporary disk while any such pin remains. For an unmanaged direct
-caller they remain until orderly process exit because arbitrary derived plans can
-outlive their original Python LazyFrame reference.
-
-Save-time promotion first requires a well-formed v2 mode/schema fingerprint, a
-recorded source signature that still matches the data file, and intact signed working
-artifacts. It then validates the staged metadata and artifact bytes again before
-publish. Both signed layers are verified before declaring a no-op, so invalid, stale,
-or concurrently changed working state cannot replace a healthy committed cache and
-damaged committed bytes are repaired from healthy working state.
-
-**Cache writes are fully staged, bounded, and same-cache builds cannot interleave.**
-A build feeds emitted rows through the same aggregate-bounded row-group writer used
-by runtime spills and writes every parquet and its manifest into a unique sibling
-staging directory before replacing the live directory. Parallel JSONL workers use
-that writer for bounded parts; the parent consumes one bounded row group at a time
-through the same writer when assembling the final artifacts. Replacement attempts
-to restore the prior directory if publication fails. Builds for different cache
-directories remain independent, and the same staged-replacement behavior governs
-both a new shred and working-to-committed promotion. Cache paths are rooted from
-the process working directory selected for the project; callers must not assume
-they are relative to the source file. The reader-visibility limitation of this
-replacement is documented in the low-level specification.
-
-Source signatures are memoised by canonical path in a bounded, single-flight process
-cache. A memory or persisted-metadata hit requires the same strong native file
-identity, length, last-write value, and change token that surrounded the original
-complete SHA-256 pass. This shares one content proof between cache construction,
-runtime cache identity, planning, loading, later previews, and fresh server processes
-without trusting size/mtime alone. A changed token, an atomic replacement, conflicting
-metadata, or a file that changes during hashing cannot reuse the proof; native-token
-failure disables reuse for that observation rather than weakening the freshness
-contract.
+**Table builds are staged, bounded, and never expose a partial table.** A build
+feeds emitted rows through the same aggregate-bounded row-group writer used by
+standalone spills into a private scratch directory; parallel JSONL workers use that
+writer for bounded parts, and the parent consumes one bounded row group at a time
+when assembling each table. Every table is then published through the store's
+staged generation publication, so a reader sees a complete generation or none.
 
 **Silent numeric/date coercion is rejected even though the underlying columnar
 library would allow it.** Polars will silently coerce a Python `bool` into a numeric
@@ -304,20 +239,21 @@ strict build and raises a specific, column-named error instead.
 
 ## Interactions
 
-- Owns the v2 apiInput type/path boundary; the shred, cache route, executor,
+- Owns the v2 apiInput type/path boundary; the shred, table snapshots, executor,
   and editor consume that one validation contract.
-- The eager executor and generated/deploy code consume the same runtime loader,
-  so both paths share identical cache-fast-path and direct-shred behaviour — see
-  [execution-engine](../execution-engine/high-level.md) and
-  [codegen](../codegen/high-level.md).
+- The eager executor and generated/deploy code consume the same runtime loader:
+  canvas execution reads the published table snapshots, generated standalone code
+  shreds in-process — see [execution-engine](../execution-engine/high-level.md)
+  and [codegen](../codegen/high-level.md).
 - Demand-scoped execution is an optional argument to that shared loader, not a
   second executor-only codec. Generated/deploy code that does not pass a demand
   continues to validate and return every emitting frame.
 - The execution engine's projection planner consumes the same edge-join
   demand-narrowing rule as runtime join construction —
   see [execution-engine](../execution-engine/high-level.md).
-- The JSON-cache build/status/delete HTTP routes owned by
-  [caching](../caching/high-level.md) drive this component's build and cache lifecycle.
+- Automatic input preparation and the input-cache routes owned by
+  [caching](../caching/high-level.md) and the [IO layer](../io-layer/high-level.md)
+  drive this component's table builds.
 - The shared path grammar is used by both the INPUT codec and
   this component's OUTPUT-mapping assembler, so both addressing directions stay
   single-sourced.
@@ -348,36 +284,33 @@ strict build and raises a specific, column-named error instead.
   value.
 - A hand-edited config that mixes the scalar-array sentinel column with a real
   sibling column on the same table is rejected at shred time, not allowed to build a
-  cache whose rows would all silently vanish as shape mismatches.
+  table whose rows would all silently vanish as shape mismatches.
 - A value that doesn't fit its declared column type — including the silent-coercion
   shapes Polars would otherwise accept — fails the build with an error naming the
   offending column and declared type.
 - A root-level conservation violation (rows lost or duplicated without accounting)
-  aborts the build with `RuntimeError` rather than writing a cache with unaccounted
-  data loss.
-- If the underlying structured data file changes while its cache is being built, the build
-  aborts with `SourceChangedDuringCacheBuildError` (`RuntimeError`); the JSON cache route
-  surfaces this as HTTP 409 Conflict.
+  aborts the build with `RuntimeError` rather than publishing a table with
+  unaccounted data loss.
+- If the underlying structured data file changes while its tables are being built,
+  the build aborts with `SourceChangedDuringCacheBuildError` (`RuntimeError`) and
+  publishes nothing.
 - Before Studio previews a ready pipeline using a structured Quote Input
-  (JSON/JSONL/NDJSON/XML), it checks the cache against the current in-memory
-  schema. A missing or invalid cache is built in full before preview executes,
-  with visible cache-building progress. A matching cache is reused. Build
-  failures stop the preview and surface their error; cancelling or superseding
-  the preview cannot launch a late preview or display stale progress. Runtime
-  execution outside Studio retains the direct-source path described below.
+  (JSON/JSONL/NDJSON/XML), it checks the node's tables against the current
+  in-memory schema. Missing or stale tables are built before the preview executes,
+  with visible building progress; ready, fresh tables are reused. Build failures
+  stop the preview and surface their error; cancelling or superseding the preview
+  cannot launch a late preview or display stale progress.
 - At runtime, a v2 apiInput with no emit-true tables, or emit-true tables with no
   selected columns, raises `RuntimeError` with a message telling the user to tick
-  `emit` or select a column. A stale, missing, corrupt, or schema-mismatched cache
-  is not a runtime error: the loader tries the next layer, then shreds the raw
-  source directly. Raw-file decode, missing-file, and declared-type failures stay
-  loud and specific; the direct path never replaces them with a cache prompt.
-- Inside `api_input_cache_only()` the loader never shreds: when neither layer serves the
-  current schema and source it raises `ApiInputCacheRequiredError` (`cache_required`), and
-  it records the `meta.json` of the layer that served each loaded data path.
-  Data-point reads use this mode so a whole-dataset read never parses the raw source and is
-  versioned by the cache generation it read.
+  `emit` or select a column. Canvas execution of a table with no published
+  generation raises `input_snapshot_missing` (automatic preparation normally
+  builds it first); it never falls back to shredding the source. In generated
+  standalone code, raw-file decode, missing-file, and declared-type failures stay
+  loud and specific.
+- A source that disappears after its tables were published keeps serving them,
+  reported as `source_unavailable`; a table without a generation then cannot run.
 - A demand naming a non-emitting/unknown port, an empty column set, or a column
-  outside that port's declared selected schema is rejected before cache access.
+  outside that port's declared selected schema is rejected before any read.
   Planner uncertainty is represented by a full-width demand, never by dropping an
   unproven column.
 - `edgeJoin` node misconfiguration (ambiguous/missing base or join role, unsupported

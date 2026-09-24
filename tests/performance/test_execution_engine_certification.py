@@ -18,12 +18,12 @@ import polars as pl
 import pytest
 
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
-from haute._json_flatten import _json_cache_dir
-from haute._json_shred._cache import build_per_port_cache, load_v2_api_source
+from haute._json_shred._cache import load_v2_api_source
 from haute._native_memory_limit import native_memory_backend_scope
 from haute._polars_operations import OperationPolicy, OperationReceiver, operation
 from haute._polars_utils import execution_collect
 from haute._ram_estimate import estimate_materialisation_boundaries
+from haute._source_cache import SourceCacheStore
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import GroupByExecutionUnsupportedError
 from haute.execution import MANY_TO_MANY_JOIN_DETAIL, plan_prepared_execution_strategy
@@ -49,9 +49,6 @@ _DIRECT_JSONL_UNUSED_COLUMNS = 63
 _SIGNATURE_SOURCE_BYTES = 32 * 1024 * 1024
 _SIGNATURE_WARM_SAMPLES = 9
 _MAX_SIGNATURE_WARM_FRACTION = 0.05
-_ARTIFACT_PROOF_BYTES = 32 * 1024 * 1024
-_ARTIFACT_WARM_SAMPLES = 9
-_MAX_ARTIFACT_WARM_FRACTION = 0.05
 _PREVIEW_HIT_WARM_SAMPLES = 9
 _MAX_PREVIEW_HIT_WARM_FRACTION = 0.50
 _OPTIMISATION_MATERIALITY_FRACTION = 0.20
@@ -235,7 +232,7 @@ def test_fresh_process_execution_resilience_certificate(
         <= soak["plateau"]["after_close_resource_delta_limit"]
     )
     assert evidence["cache"]["enospc_preserved_old"] is True
-    assert len(evidence["cache"]["phases"]) == 5
+    assert len(evidence["cache"]["phases"]) == 3
     request.node.user_properties.append(
         ("haute_perf_evidence", {"scenario": "execution_resilience_certificate", **evidence})
     )
@@ -438,6 +435,16 @@ def _table(path: str, label: str, columns: list[dict[str, Any]]) -> dict[str, An
     }
 
 
+def _build_snapshots(source_path: Path, config: dict[str, Any], project_root: Path) -> Any:
+    """Build every emitting table's input snapshot for *config* against *source_path*."""
+    from haute._sandbox import set_project_root
+    from tests.conftest import build_test_api_input_snapshots
+
+    set_project_root(project_root)
+    full_config = {"path": str(source_path), "contract": "opaque", **config}
+    return build_test_api_input_snapshots(source_path, full_config)
+
+
 def _write_cached_api_fixture(path: Path) -> dict[str, Any]:
     root_columns = [_column("quote_id", "$[:].quote_id")]
     root_columns.extend(
@@ -500,14 +507,10 @@ def _write_direct_jsonl_fixture(path: Path) -> dict[str, Any]:
     return {"tables": [_table("$[:]", "rows", columns)]}
 
 
-def _snapshot_parquets(root: Path) -> list[Path]:
-    return sorted(path for path in root.rglob("*.parquet") if ".runtime-snapshots" in path.parts)
-
-
-def _cached_generation_digest(cache_dir: Path) -> str:
+def _cached_generation_digest(paths: list[Path]) -> str:
     digest = hashlib.sha256()
-    for artifact in sorted(path for path in cache_dir.rglob("*") if path.is_file()):
-        digest.update(artifact.relative_to(cache_dir).as_posix().encode())
+    for artifact in sorted(paths):
+        digest.update(artifact.name.encode())
         digest.update(artifact.read_bytes())
     return digest.hexdigest()
 
@@ -563,12 +566,16 @@ def _string_leaves(value: object) -> set[str]:
     return set()
 
 
-def test_fresh_process_restart_reuses_cache_proof_and_safe_telemetry(
+def test_fresh_process_restart_reads_published_tables_and_safe_telemetry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
 ) -> None:
-    """Certify a committed cached port survives independent interpreter restarts."""
+    """Certify a published API Input table serves independent interpreter restarts.
+
+    The source is removed before either restart, so each fresh process can only
+    have read the published generation, projected to the demanded columns.
+    """
     monkeypatch.chdir(tmp_path)
     source_path = tmp_path / "restart-source.jsonl"
     records = [
@@ -592,41 +599,34 @@ def test_fresh_process_restart_reuses_cache_proof_and_safe_telemetry(
     }
     config_path = tmp_path / "restart-config.json"
     config_path.write_bytes(orjson.dumps(config))
-    cache_dir = _json_cache_dir(source_path, "committed")
-    build_per_port_cache(source_path, config, cache_dir)
-    assert not _json_cache_dir(source_path, "working").exists()
-    generation_before = _cached_generation_digest(cache_dir)
-    cache_artifact_bytes = sum(path.stat().st_size for path in cache_dir.glob("*.parquet"))
+    from haute._sandbox import set_project_root
+    from tests.conftest import build_test_api_input_snapshots
+
+    set_project_root(tmp_path)
+    generations = build_test_api_input_snapshots(source_path, {**config, "path": str(source_path)})
+    generation_parts = [
+        Path(part) for generation in generations.values() for part in generation.data_paths
+    ]
+    generation_before = _cached_generation_digest(generation_parts)
+    cache_artifact_bytes = sum(path.stat().st_size for path in generation_parts)
+    source_bytes = source_path.stat().st_size
+    source_path.unlink()
 
     first = _run_restart_cache_probe(
         tmp_path, source_path, config_path, tmp_path / "restart-first.json"
     )
-    assert _cached_generation_digest(cache_dir) == generation_before
-    assert not list(tmp_path.rglob(".runtime-snapshots/*/.owner.json"))
+    assert _cached_generation_digest(generation_parts) == generation_before
     second = _run_restart_cache_probe(
         tmp_path, source_path, config_path, tmp_path / "restart-second.json"
     )
-    assert _cached_generation_digest(cache_dir) == generation_before
-    assert not list(tmp_path.rglob(".runtime-snapshots/*/.owner.json"))
+    assert _cached_generation_digest(generation_parts) == generation_before
 
     expected_rows = [{"id": row["id"], "amount": row["amount"]} for row in records]
     assert first["rows"] == second["rows"] == expected_rows
     for result in (first, second):
-        assert result["cache_proof"] == {
-            "hits": 1,
-            "misses": 1,
-            "direct_fallbacks": 0,
-            "miss_reason_counts": {
-                "artifact_integrity_schema_failure": 0,
-                "metadata_source_mismatch": 0,
-                "proof_unavailable": 1,
-                "unreadable_artifact": 0,
-            },
-        }
+        assert result["cache_proof"]["direct_fallbacks"] == 0
         assert len(result["telemetry"]) == 1
         terminal = result["telemetry"][0]
-        assert terminal["cache_proof_hits"] == 1
-        assert terminal["cache_proof_misses"] == 1
         assert terminal["cache_direct_fallbacks"] == 0
         assert terminal["requested_column_width_total"] in (None, 2)
         assert terminal["physically_scanned_column_width_total"] in (None, 2)
@@ -638,12 +638,10 @@ def test_fresh_process_restart_reuses_cache_proof_and_safe_telemetry(
         (
             "haute_perf_evidence",
             {
-                "scenario": "execution_engine_restart_cache_proof_telemetry",
+                "scenario": "execution_engine_restart_published_table_telemetry",
                 "scale": "ci-restart",
-                "input": {"rows": len(records), "source_bytes": source_path.stat().st_size},
+                "input": {"rows": len(records), "source_bytes": source_bytes},
                 "product_metrics": {
-                    "cache_proof_hits": first["cache_proof"]["hits"],
-                    "cache_proof_misses": first["cache_proof"]["misses"],
                     "cache_direct_fallbacks": first["cache_proof"]["direct_fallbacks"],
                     "cache_artifact_bytes": cache_artifact_bytes,
                 },
@@ -726,107 +724,6 @@ def test_unchanged_source_signature_reuses_one_complete_content_proof(
     )
 
 
-def test_unchanged_cached_artifact_reuses_one_complete_content_proof(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    request: pytest.FixtureRequest,
-) -> None:
-    """Certify bounded verified-snapshot reuse against a full-hash control."""
-
-    from haute._json_shred import _runtime_storage, _source_proof
-
-    cache_dir = tmp_path / "cache"
-    artifact_path = tmp_path / "artifact.parquet"
-    block = bytes(range(256)) * 4_096
-    expected_digest = hashlib.sha256()
-    with artifact_path.open("wb") as stream:
-        for _ in range(_ARTIFACT_PROOF_BYTES // len(block)):
-            stream.write(block)
-            expected_digest.update(block)
-    recorded_signature = {
-        "size": _ARTIFACT_PROOF_BYTES,
-        "sha256": expected_digest.hexdigest(),
-    }
-    assert artifact_path.stat().st_size == _ARTIFACT_PROOF_BYTES
-    assert _source_proof._strong_file_revision(artifact_path) is not None
-
-    _runtime_storage._cleanup_runtime_snapshot_dirs()
-    real_signature = _source_proof._file_content_signature
-    artifact_hashes = 0
-
-    def counting_signature(path: Path) -> dict[str, Any]:
-        nonlocal artifact_hashes
-        artifact_hashes += 1
-        return real_signature(path)
-
-    monkeypatch.setattr(_source_proof, "_file_content_signature", counting_signature)
-    cold_started = time.perf_counter_ns()
-    cold_snapshot = _runtime_storage._snapshot_cache_artifact(
-        cache_dir,
-        artifact_path,
-        recorded_signature,
-    )
-    cold_ns = time.perf_counter_ns() - cold_started
-    assert cold_snapshot is not None
-    _runtime_storage._release_runtime_snapshot(cold_snapshot)
-
-    warm_ns: list[int] = []
-    for _ in range(_ARTIFACT_WARM_SAMPLES):
-        started = time.perf_counter_ns()
-        warm_snapshot = _runtime_storage._snapshot_cache_artifact(
-            cache_dir,
-            artifact_path,
-            recorded_signature,
-        )
-        warm_ns.append(time.perf_counter_ns() - started)
-        assert warm_snapshot == cold_snapshot
-        _runtime_storage._release_runtime_snapshot(warm_snapshot)
-
-    warm_median_ns = int(statistics.median(warm_ns))
-    cache_stats = _runtime_storage._VERIFIED_RUNTIME_SNAPSHOT_CACHE.stats()
-    assert artifact_hashes == 1
-    assert cache_stats == {
-        "entries": 1,
-        "bytes": _ARTIFACT_PROOF_BYTES,
-        "inflight": 0,
-    }
-    assert warm_median_ns <= cold_ns * _MAX_ARTIFACT_WARM_FRACTION
-    assert cold_snapshot.exists()
-    _runtime_storage._cleanup_runtime_snapshot_dirs()
-    assert not cold_snapshot.exists()
-
-    request.node.user_properties.append(
-        (
-            "haute_perf_evidence",
-            {
-                "scenario": "execution_engine_cached_artifact_proof_reuse",
-                "scale": "ci-32mib-artifact",
-                "execution_profiles": [ExecutionProfile.PREVIEW_EAGER.value],
-                "input": {
-                    "artifact_bytes": _ARTIFACT_PROOF_BYTES,
-                    "warm_samples": _ARTIFACT_WARM_SAMPLES,
-                },
-                "cold_full_hash_ns": cold_ns,
-                "warm_revision_hit_median_ns": warm_median_ns,
-                "speedup": cold_ns / warm_median_ns if warm_median_ns else None,
-                "warm_fraction": warm_median_ns / cold_ns if cold_ns else None,
-                "warm_fraction_contract": _MAX_ARTIFACT_WARM_FRACTION,
-                "verified_snapshot_cache": cache_stats,
-                "product_metrics": {
-                    "artifact_hashes": artifact_hashes,
-                    "n_collects": 0,
-                    "n_checkpoints": 0,
-                    "chunk_count": 0,
-                    "output_bytes": 0,
-                    "temp_disk_peak_bytes": _ARTIFACT_PROOF_BYTES,
-                },
-                "admission": {"state": "not_required", "detail": None},
-                "payload_bytes": 0,
-            },
-        )
-    )
-
-
 def test_cached_json_target_preview_uses_one_authoritative_source_proof(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -857,7 +754,7 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
             )
         ]
     }
-    build_per_port_cache(source_path, config, _json_cache_dir(source_path, "working"))
+    _build_snapshots(source_path, config, tmp_path)
     graph = PipelineGraph(
         nodes=[
             GraphNode(
@@ -965,7 +862,11 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
         {"amount": 10, "premium_total": 10},
         {"amount": 20, "premium_total": 16},
     ]
-    assert source_hashes == 0
+    # A published table records the source's content signature, not its
+    # native revision, so a process with no proof in memory (the cleared memo
+    # above) proves the source once for the freshness check, as a Data Input
+    # does. Planning, preview identity, and loading then share that proof.
+    assert source_hashes == 1
     assert generic_hashes == 0
     # Admission, the seed plan's resolution, the post-capture key, and
     # execution each prepare the graph. The seed plan is the fourth: a
@@ -992,7 +893,7 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
                 },
                 "elapsed_ns": elapsed_ns,
                 "source_sha256_hashes": source_hashes,
-                "persisted_cache_build_source_proof_reused": True,
+                "persisted_cache_build_source_proof_reused": False,
                 "generic_runtime_xxhash_calls": generic_hashes,
                 "execution_profile": ExecutionProfile.PREVIEW_EAGER.value,
                 "request_local_graph_preparation": {
@@ -1039,7 +940,7 @@ def test_preview_cache_hit_reuses_strategy_without_planning_or_execution(
             )
         ]
     }
-    build_per_port_cache(source_path, config, _json_cache_dir(source_path, "working"))
+    generations = _build_snapshots(source_path, config, tmp_path)
     graph = PipelineGraph(
         nodes=[
             GraphNode(
@@ -1139,8 +1040,9 @@ def test_preview_cache_hit_reuses_strategy_without_planning_or_execution(
                     "chunk_count": cold_metrics["chunk_count"],
                     "output_bytes": 0,
                     "temp_disk_peak_bytes": sum(
-                        path.stat().st_size
-                        for path in _json_cache_dir(source_path, "working").glob("*.parquet")
+                        Path(part).stat().st_size
+                        for generation in generations.values()
+                        for part in generation.data_paths
                     ),
                 },
                 "admission": {"state": "direct_context", "detail": None},
@@ -1219,8 +1121,12 @@ def test_cached_api_port_projection_is_physical_and_snapshot_bounded(
     monkeypatch.chdir(tmp_path)
     source_path = tmp_path / "wide-api.jsonl"
     config = _write_cached_api_fixture(source_path)
-    cache_dir = _json_cache_dir(source_path, "working")
-    cache_summary = build_per_port_cache(source_path, config, cache_dir)
+    generations = _build_snapshots(source_path, config, tmp_path)
+    generation_parts = [
+        Path(part) for generation in generations.values() for part in generation.data_paths
+    ]
+    generation_before = _cached_generation_digest(generation_parts)
+    parquet_files_before = sorted(tmp_path.rglob("*.parquet"))
     complete_claim_width = len(config["tables"][1]["columns"])
     context = ExecutionContext(
         operation="perf_cached_api_projection",
@@ -1232,23 +1138,21 @@ def test_cached_api_port_projection_is_physical_and_snapshot_bounded(
             str(source_path),
             config,
             port_columns={"claims": frozenset({"quote_id", "amount_paid"})},
+            read_snapshots=True,
+            store=SourceCacheStore(tmp_path),
         )
         assert list(frames) == ["claims"]
         frame = frames["claims"]
         assert frame.collect_schema().names() == ["quote_id", "amount_paid"]
         explain = frame.explain(optimized=True)
         result = execution_collect(frame, execution_context=context, engine="streaming")
-    snapshots = _snapshot_parquets(tmp_path)
-    assert len(snapshots) == 1
     assert f"PROJECT 2/{complete_claim_width} COLUMNS" in explain
     assert result.shape == (_API_ROWS, 2)
     metrics = context.metrics_payload(status="completed")
     context.release_admission()
-    assert snapshots[0].exists()
-    from haute._json_shred import _runtime_storage
-
-    _runtime_storage._cleanup_runtime_snapshot_dirs()
-    assert not snapshots[0].exists()
+    # The published generation is scanned in place: no private copy, no rewrite.
+    assert sorted(tmp_path.rglob("*.parquet")) == parquet_files_before
+    assert _cached_generation_digest(generation_parts) == generation_before
 
     request.node.user_properties.append(
         (
@@ -1264,19 +1168,15 @@ def test_cached_api_port_projection_is_physical_and_snapshot_bounded(
                     "selected_claim_width": result.width,
                     "total_bytes": source_path.stat().st_size,
                 },
-                "cache_tables": cache_summary["tables"],
+                "cache_table_count": len(generations),
                 "optimized_plan": explain,
-                "snapshot_count_before_release": len(snapshots),
-                "snapshot_retained_by_bounded_verification_cache": True,
-                "snapshot_released_on_cache_cleanup": not snapshots[0].exists(),
+                "published_generation_scanned_in_place": True,
                 "product_metrics": {
                     "n_collects": metrics["n_collects"],
                     "n_checkpoints": metrics["n_checkpoints"],
                     "chunk_count": metrics["chunk_count"],
                     "output_bytes": result.estimated_size(),
-                    "temp_disk_peak_bytes": sum(
-                        path.stat().st_size for path in cache_dir.glob("*.parquet")
-                    ),
+                    "temp_disk_peak_bytes": sum(path.stat().st_size for path in generation_parts),
                 },
                 "admission": {"state": "direct_context", "detail": None},
                 "payload_bytes": len(orjson.dumps(result.head(1).to_dicts())),
@@ -1311,7 +1211,8 @@ def test_direct_jsonl_projection_has_bounded_checkpoint_distance(
 
     assert result.shape == (_DIRECT_JSONL_ROWS, len(requested))
     assert result.columns == ["id", "value_000"]
-    assert not _json_cache_dir(source_path, "working").exists()
+    # A standalone read spills privately and never publishes an input snapshot.
+    assert not (tmp_path / ".haute_cache" / "inputs").exists()
     minimum_checkpoints = _DIRECT_JSONL_ROWS // 1_024
     assert metrics["n_checkpoints"] >= minimum_checkpoints
 

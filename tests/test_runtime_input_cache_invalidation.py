@@ -1,8 +1,8 @@
 """C4 — preview/trace cache keys must cover runtime file inputs.
 
 Re-exporting a direct dataInput Parquet, replacing an external file or a model
-artifact, and rebuilding the apiInput JSON cache all happen out-of-band
-(there is no in-GUI upload), so the graph JSON — and therefore the
+artifact, and rebuilding an apiInput table's input snapshot all happen
+out-of-band (there is no in-GUI upload), so the graph JSON — and therefore the
 structural fingerprint — does not change.  Before the fix the preview
 and trace caches kept serving months-stale frames with zero indication.
 
@@ -14,8 +14,9 @@ These tests pin:
 * a vanished dataInput file surfaces the execution error instead of a
   stale ok frame;
 * trace recomputes after a dataInput edit, a raw JSON apiInput edit before
-  any cache rebuild, and a JSON-cache rebuild (the trace key previously
-  omitted the JSON-cache state signature entirely);
+  any snapshot rebuild, and a snapshot rebuild that moves the table's
+  generation pointer (the trace key must track that pointer, not just the
+  raw source file);
 * the stat-gated memo: unchanged files are content-hashed exactly once
   across previews (call-count pin, not timing), edited files re-hash;
 * the deliberate stat-gate semantics: an mtime bump with identical
@@ -35,7 +36,6 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from haute._json_flatten import _json_cache_dir
 from haute._types import GraphEdge
 from haute.executor import _preview_cache, execute_graph
 from haute.trace import _cache as _trace_cache
@@ -175,11 +175,12 @@ _V2_AMOUNT_TABLES = {
 
 
 def _export_and_cache_amount(data: Path, amount: int) -> None:
-    """Write data.json with one record and (re)build its working-layer cache."""
-    from haute._json_shred._cache import build_per_port_cache
+    """Write data.json with one record and (re)build its table's input snapshot."""
+    from tests.conftest import build_test_api_input_snapshots
 
     data.write_text(json.dumps([{"amount": amount}]), encoding="utf-8")
-    build_per_port_cache(str(data), _V2_AMOUNT_TABLES, _json_cache_dir(str(data), "working"))
+    config = {"path": str(data), "contract": "opaque", **_V2_AMOUNT_TABLES}
+    build_test_api_input_snapshots(str(data), config)
 
 
 def _json_api_input_graph(data: Path):
@@ -383,7 +384,7 @@ class TestPreviewRuntimeFileInvalidation:
     def test_flat_file_api_input_reexport_recomputes_preview(self, tmp_path):
         """A non-JSON apiInput reads the raw flat file at preview (no JSON
         cache layer exists for it), so a re-export must invalidate exactly
-        like a dataInput file — the json_cache= extra alone is a constant
+        like a dataInput file — the input-snapshot signature alone is a constant
         ``<path-hash>:0:0`` for this shape and catches nothing."""
         p = tmp_path / "quotes.csv"
         _write_csv(p, [1, 2])
@@ -502,26 +503,49 @@ class TestTraceRuntimeInputInvalidation:
         result2 = execute_trace(graph, row_index=0, target_node_id="t", column="y")
         assert result2.output_value == 100
 
-    def test_trace_recomputes_after_json_cache_rebuild(self, tmp_path, monkeypatch):
-        """Rebuilding the apiInput JSON cache must invalidate the trace cache.
+    def test_trace_recomputes_after_input_snapshot_rebuild(self, tmp_path, monkeypatch):
+        """Publishing a new generation of the apiInput's table must invalidate the trace cache.
 
-        The trace key previously omitted the JSON-cache state signature,
-        so a rebuild with fresh data kept serving the old trace.
+        The trace key must track the table's generation pointer, not just the
+        raw source file: the source here is left byte- and stat-identical, and
+        only the generation the table leases moves.
         """
+        from haute._execution_context import ExecutionProfile
+        from haute._json_shred._snapshots import (
+            api_input_snapshot_source,
+            api_input_source_signature,
+        )
+        from haute._sandbox import _get_project_root
+        from haute._source_cache import SourceCacheBuildContext, SourceCacheStore
+
         monkeypatch.chdir(tmp_path)  # .haute_cache/ lives under cwd
 
         data = tmp_path / "data.json"
         _export_and_cache_amount(data, 10)
         graph = _json_api_input_graph(data)
+        source_before = (data.read_bytes(), data.stat().st_mtime_ns, data.stat().st_size)
 
         result1 = execute_trace(graph, row_index=0, target_node_id="t", column="y")
         assert result1.output_value == 20
 
-        _export_and_cache_amount(data, 50)
-        # ms-precision meta.json mtimes are the signature's clock; advance it
-        # deterministically (a rebuild within the same ms granule would tie).
-        meta = _json_cache_dir(str(data), "working") / "meta.json"
-        _bump_mtime(meta)
+        class _Frame:
+            def build(self, context: SourceCacheBuildContext) -> pl.LazyFrame:
+                return pl.LazyFrame({"amount": [50]})
+
+        table = api_input_snapshot_source({"path": str(data), **_V2_AMOUNT_TABLES}, data).tables[0]
+        store = SourceCacheStore(_get_project_root())
+        before = store.open_generation(table.identity)
+        after = store.build(
+            table.identity,
+            _Frame(),
+            context=SourceCacheBuildContext(
+                profile=ExecutionProfile.LAZY_SINK, build_class="bounded"
+            ),
+            source_signature=api_input_source_signature(data),
+            refresh=True,
+        )
+        assert after.generation_id != before.generation_id
+        assert (data.read_bytes(), data.stat().st_mtime_ns, data.stat().st_size) == source_before
 
         result2 = execute_trace(graph, row_index=0, target_node_id="t", column="y")
         assert result2.output_value == 100
@@ -563,7 +587,7 @@ class TestTraceRuntimeInputInvalidation:
 
     def test_trace_reuses_preview_entry_for_json_api_input_graph(self, tmp_path, monkeypatch):
         """Hit-side pin for apiInput graphs: trace's preview-key
-        reconstruction includes the json_cache= extra, so a trace right
+        reconstruction includes the input-snapshot signature, so a trace right
         after a preview reuses the materialised frames.  Before the C4
         wiring the reconstruction omitted the signature and apiInput-graph
         traces always re-executed the DAG."""
@@ -654,12 +678,15 @@ class TestStatGatedFingerprintMemo:
         dataframe_graph_input_fingerprint(graph, target_node_id=None, source="test")
         assert hash_calls.get(key) == 1
 
-    def test_json_preview_uses_one_authoritative_source_content_proof(
+    def test_json_preview_hashes_the_source_at_most_once(
         self,
         tmp_path,
         monkeypatch,
     ):
-        """Planning, identity, and loading must reuse the cache-build SHA-256 proof."""
+        """Planning, identity, and loading share one in-process memoised SHA-256
+        proof of the source file — persisted proofs are gone, so the first
+        admitted preparation after a memo reset legitimately hashes once, but
+        no *further* stage of the same preview rehashes it."""
         import haute.execution as execution_mod
         from haute._json_shred import _source_proof
 
@@ -694,7 +721,7 @@ class TestStatGatedFingerprintMemo:
         result = execute_graph(graph, target_node_id="aggregate")
 
         assert result["aggregate"].preview == [{"amount": 10, "rows": 1}]
-        assert source_hashes == 0
+        assert source_hashes == 1
         assert generic_hashes == 0
 
     def test_json_same_stat_byte_rewrite_invalidates_preview_identity(

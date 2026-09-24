@@ -26,6 +26,19 @@ type SnapshotButtonStatus = {
 }
 
 function toButtonStatus(snapshot: InputCacheSnapshotResponse): SnapshotButtonStatus {
+  const tables = snapshot.tables
+  if (tables) {
+    // A structured API Input: its emitting tables together, as one control.
+    const generations = tables.flatMap((table) => (table.generation ? [table.generation] : []))
+    return {
+      cached: snapshot.state === "ready",
+      row_count: generations.reduce((total, generation) => total + generation.row_count, 0),
+      column_count: generations.reduce((total, generation) => total + generation.column_count, 0),
+      size_bytes: generations.reduce((total, generation) => total + generation.size_bytes, 0),
+      created_at: generations.reduce((latest, generation) => Math.max(latest, generation.created_at), 0),
+      freshness: snapshot.freshness,
+    }
+  }
   const generation = snapshot.generation
   return {
     cached: snapshot.state === "ready",
@@ -49,10 +62,15 @@ export default function InputSnapshotCacheButton({
   config,
   admittedEager,
   requiredReady,
+  nodeType = "dataInput",
+  disabledReason = "Complete the required source fields to cache as Parquet.",
 }: {
   config: Record<string, unknown>
   admittedEager: boolean
   requiredReady: boolean
+  /** A structured API Input caches every emitting table of the node together. */
+  nodeType?: "dataInput" | "apiInput"
+  disabledReason?: string
 }) {
   const resourceKey = requiredReady ? JSON.stringify(config) : ""
   const activeJobRef = useRef<{
@@ -65,7 +83,10 @@ export default function InputSnapshotCacheButton({
     cached: boolean
     freshness: SnapshotButtonStatus["freshness"]
   }>({ resourceKey, cached: false, freshness: "unknown" })
-  const payload = { schema_version: 1 as const, config }
+  const payload =
+    nodeType === "apiInput"
+      ? { schema_version: 1 as const, node_type: nodeType, config }
+      : { schema_version: 1 as const, config }
   const activeStatus =
     trackedStatus.resourceKey === resourceKey
       ? trackedStatus
@@ -139,7 +160,7 @@ export default function InputSnapshotCacheButton({
           notCachedHint: "No cache yet - the first run creates it automatically",
         }}
         disabled={!requiredReady}
-        disabledReason="Complete the required source fields to cache as Parquet."
+        disabledReason={disabledReason}
       />
       {activeStatus.cached &&
         activeStatus.freshness === "stale" && (

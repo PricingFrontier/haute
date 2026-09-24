@@ -10,20 +10,10 @@ import {
   apiInputLabelIssue,
   apiInputLabelIssueMessage,
 } from "../../utils/apiInputPorts"
-import {
-  CacheFetchButton,
-  PARQUET_CACHE_LABELS,
-} from "../../components/CacheFetchButton"
 import { FrameTableActions } from "./FrameTableActions"
 import PathPickerField from "./shared/PathPickerField"
-import {
-  buildJsonCache,
-  getJsonCacheProgress,
-  getJsonCacheStatus,
-  getJsonCacheStatusForSchema,
-  deleteJsonCache,
-  inferJsonCacheSchema,
-} from "../../api/client"
+import { inferJsonCacheSchema } from "../../api/client"
+import InputSnapshotCacheButton from "./_InputSnapshotCacheButton"
 import {
   classifyConfig,
   emptyV2,
@@ -61,87 +51,6 @@ import Tooltip from "../../components/Tooltip"
 // non-confirmed ones go, fresh ones append (fresh side de-dup-suffixed), new
 // frames arrive with the user's cascaded keys prepended.
 
-// ─── JsonCacheButton ──────────────────────────────────────────────
-//
-// Wraps the shared cache-button. Sends the editor's in-memory v2 as
-// `volatile_schema` on every cache POST so the build uses what the user
-// is looking at, regardless of whether the on-disk config matches yet
-// (working principle 4: volatile vs persistent at the schema plane
-// mirrors PR13's data plane). When the editor has nothing to cache
-// (no schema source, or no emit:true tables) the button is rendered
-// `disabled` rather than firing a no-op POST.
-
-type JsonCacheStatus = {
-  cached: boolean
-  path?: string
-  data_path: string
-  row_count: number
-  column_count: number
-  size_bytes: number
-  cached_at: number
-}
-
-function JsonCacheButton({
-  dataPath,
-  configPath,
-  volatileSchema,
-  disabled,
-  disabledReason,
-}: {
-  dataPath: string
-  configPath?: string
-  /** The editor's in-memory v2 (`writeV2(v2)` of the live state). When
-   * defined, becomes `volatile_schema` on the cache POST so the backend
-   * builds from the user's unsaved edits. */
-  volatileSchema?: Record<string, unknown>
-  disabled?: boolean
-  disabledReason?: string
-}) {
-  // `volatileSchema` comes from the canonical `writeV2` writer, so its JSON
-  // representation is a stable value identity. Array encoding also avoids the
-  // delimiter collisions of a hand-built composite key. CacheFetchButton uses
-  // this key only to reset/refetch status; the API callbacks below intentionally
-  // continue to send the original path/schema payloads.
-  const resourceKey = JSON.stringify([
-    dataPath,
-    configPath ?? null,
-    volatileSchema ?? null,
-  ])
-
-  return (
-    <CacheFetchButton<JsonCacheStatus>
-      resourceKey={resourceKey}
-      getStatus={(_key) =>
-        configPath
-          ? getJsonCacheStatusForSchema({
-              path: dataPath,
-              config_path: configPath,
-              volatile_schema: volatileSchema,
-            })
-          : getJsonCacheStatus(dataPath)
-      }
-      startFetch={(_key) =>
-        buildJsonCache({
-          path: dataPath,
-          config_path: configPath,
-          volatile_schema: volatileSchema,
-        }).then(
-          (data) => ({ cached: true, ...data }) as JsonCacheStatus,
-        )
-      }
-      getProgress={(_key) => getJsonCacheProgress(dataPath)}
-      deleteCache={(_key) => deleteJsonCache(dataPath) as Promise<JsonCacheStatus>}
-      timestampField="cached_at"
-      labels={{
-        ...PARQUET_CACHE_LABELS,
-        notCachedHint: "Preview automatically caches this input as Parquet before running",
-      }}
-      disabled={disabled}
-      disabledReason={disabledReason}
-    />
-  )
-}
-
 // ─── ApiInputEditor ───────────────────────────────────────────────
 
 const COLUMN_TYPES: ColumnType[] = ["int", "float", "str", "bool", "date"]
@@ -150,15 +59,11 @@ export default function ApiInputEditor({
   config,
   onUpdate,
   accentColor,
-  configPath,
   reservedFrameLabels,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   accentColor: string
-  /** Pipeline-relative path to the on-disk schema mapping file (e.g.
-   * `rating/config/quote_input/quotes.json`). */
-  configPath?: string
   /** Server-advertised frame labels reserved by the executable language. */
   reservedFrameLabels: ReadonlySet<string>
 }) {
@@ -746,12 +651,14 @@ export default function ApiInputEditor({
             : !hasEmittingTable
             ? "Select at least one column in an emitted table before caching."
             : undefined
+          // The editor's in-memory schema, so the tables built and shown are
+          // the ones the user is looking at, saved or not.
           return (
-            <JsonCacheButton
-              dataPath={currentPath!}
-              configPath={configPath}
-              volatileSchema={writeV2(v2)}
-              disabled={cacheDisabled}
+            <InputSnapshotCacheButton
+              config={{ ...writeV2(v2), path: currentPath }}
+              nodeType="apiInput"
+              admittedEager={false}
+              requiredReady={!cacheDisabled}
               disabledReason={cacheReason}
             />
           )

@@ -104,7 +104,7 @@ repository's authoritative default pipeline.
 
 - Sidecar/data filesystem operations propagate errors such as `FileNotFoundError`; the current
   missing quote data surfaces as `FileNotFoundError` when `load_v2_api_source()` opens the resolved
-  source for record iteration (no cache layer can serve the schema). No placeholder frame or default
+  source for record iteration (generated standalone code shreds its source in-process). No placeholder frame or default
   JSON is supplied.
 - `resolve_api_input_from_config()` propagates `ValueError` (`src/haute/_node_apply.py`) for a
   missing or blank data path, `RuntimePathOutsideProjectError` (`src/haute/_path_resolution.py`) if

@@ -115,49 +115,39 @@ test.describe("apiInput persistence", () => {
       ).toEqual([])
     })
 
-    await test.step("3. Preview works before optional Cache as Parquet prewarm", async () => {
-      // Runtime must be usable immediately after schema inference: with no
-      // parquet yet, the backend shreds the JSON directly for this preview.
-      // Request the preview after the inferred schema has been committed to
-      // graph state; the preview that ran when the node was first selected
-      // intentionally predates inference and cannot represent this schema.
+    await test.step("3. Preview prepares the tables, and the cache control rebuilds them", async () => {
+      // Each emitting table is an input snapshot: the preview's preparation
+      // builds any table that is missing before it runs. Request the preview
+      // after the inferred schema has been committed to graph state; the
+      // preview that ran when the node was first selected intentionally
+      // predates inference and cannot represent this schema.
       const previewResponsePromise = page.waitForResponse("**/api/pipeline/preview")
       await page.getByTitle("Refresh preview").click()
       const previewResponse = await previewResponsePromise
-      expect(previewResponse.status(), "uncached preview responds 200").toBe(200)
+      expect(previewResponse.status(), "preview responds 200").toBe(200)
       await expect(
         page.getByTestId("data-preview-table"),
-        "bottom preview renders before any cache build",
+        "bottom preview renders once the tables are prepared",
       ).toBeVisible({ timeout: 10000 })
 
-      const cacheBtn = page.getByRole("button", { name: /cache as parquet/i })
-      await expect(cacheBtn, "optional performance-cache button is visible").toBeVisible({
+      const cacheBtn = page.getByRole("button", { name: /cache as parquet|refresh cache/i })
+      await expect(cacheBtn, "the tables' cache control is visible").toBeVisible({
         timeout: 5000,
       })
-      const cacheResponsePromise = page.waitForResponse((r) =>
-        r.url().includes("/api/json-cache/build"),
+      const buildResponsePromise = page.waitForResponse((r) =>
+        r.url().includes("/api/input-cache/build"),
       )
       await cacheBtn.click()
-      const cacheResponse = await cacheResponsePromise
-      // Capture the response body for diagnosis if it fails.
-      let cacheBody = ""
-      try {
-        cacheBody = await cacheResponse.text()
-      } catch {
-        cacheBody = "<could not read>"
-      }
+      const buildResponse = await buildResponsePromise
+      const buildBody = await buildResponse.text().catch(() => "<could not read>")
       expect(
-        cacheResponse.status(),
-        `cache build responds 200 (actual body: ${cacheBody.slice(0, 500)})`,
-      ).toBe(200)
-
-      // Optional prewarming must not disturb the already-working preview.
+        buildResponse.status(),
+        `table build accepted (actual body: ${buildBody.slice(0, 500)})`,
+      ).toBe(202)
       await expect(
-        page.locator(
-          "text=API Input data hasn't been cached for the current schema",
-        ),
-        "bottom preview remains usable after optional prewarm",
-      ).toHaveCount(0)
+        page.getByRole("button", { name: /refresh cache/i }),
+        "the control reports the tables ready after the build",
+      ).toBeVisible({ timeout: 30000 })
     })
 
     await test.step("4. Canonical table schema persists on disk", async () => {

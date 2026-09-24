@@ -30,7 +30,7 @@
 | `frontend/src/panels/editors/ExploreCodeEditor.tsx` | Explore's "Polars Code" pane: the shared stepped-code pane in `frame` mode with no eligible input names (codegen binds its single input as `df`). |
 | `frontend/src/stores/useOutputWriteStore.ts` | Per-node output-write request identity, pending/terminal lifecycle, and overwrite-confirmation state retained across editor remounts. |
 | `frontend/src/panels/editors/_IoFormatEditor.tsx`, `frontend/src/panels/editors/_ioFormats.ts`, `frontend/src/panels/editors/_DatabricksSelector.tsx`, `frontend/src/panels/editors/_InputSnapshotCacheButton.tsx` | Registry-driven IO arguments, mount-refetched capabilities with concurrent-request coalescing, dedicated Databricks browsing, and the shared-button input-snapshot lifecycle. |
-| `frontend/src/panels/editors/ApiInputEditor.tsx`, `frontend/src/panels/editors/apiInputSchema.ts`, `frontend/src/panels/editors/apiInputInherit.ts`, `frontend/src/panels/editors/FrameTableActions.tsx` | API-input frame/schema editing, JSON/JSONL/NDJSON/XML preview selection and cache action, persisted/inferred schema conversion, reconciliation and row actions. |
+| `frontend/src/panels/editors/ApiInputEditor.tsx`, `frontend/src/panels/editors/apiInputSchema.ts`, `frontend/src/panels/editors/apiInputInherit.ts`, `frontend/src/panels/editors/FrameTableActions.tsx` | API-input frame/schema editing, JSON/JSONL/NDJSON/XML preview selection and the shared input-snapshot control for its tables, persisted/inferred schema conversion, reconciliation and row actions. |
 | `frontend/src/panels/editors/OutputEditor.tsx`, `frontend/src/panels/editors/outputMappingSchema.ts`, `frontend/src/panels/editors/outputPathTools.ts`, `frontend/src/panels/editors/jsonpath.ts`, `frontend/src/panels/editors/JsonPreview.tsx` | Output mappings, JSON-path validation/rewrites and preview. |
 | `frontend/src/panels/editors/ColumnsTab.tsx` | Generic column selection and rename configuration. |
 | `frontend/src/panels/editors/ExploreCodeEditor.tsx`, `frontend/src/panels/editors/ExploreOverviewConfig.tsx`, `frontend/src/panels/editors/ExplorePivotsConfig.tsx`, `frontend/src/panels/editors/ExploreChartsConfig.tsx` | Explore-code, overview-card, pivot-card, and chart-card configuration. The Pivots and Charts editors own their list/configure navigation; chart parsing and identity allocation are also shared with the visualisation pane. |
@@ -249,8 +249,15 @@ node, execution source, and streaming settings. A 409 becomes
 `confirm_overwrite`; only that action retries with `overwrite=true`.
 
 Every snapshot-backed provider renders `InputSnapshotCacheButton`, which adapts
-the same `CacheFetchButton` presentation and Cache-as-Parquet labels used by
-Quote Input to the input-cache API. Missing snapshots offer `Cache as Parquet`
+the shared `CacheFetchButton` presentation and Cache-as-Parquet labels to the
+input-cache API. The API Input editor renders the same control for a structured
+(JSON/JSONL/NDJSON/XML) source with `nodeType="apiInput"`: it sends the editor's
+in-memory schema (`writeV2` plus the selected path) with `node_type: "apiInput"`, so
+the tables built and shown are the ones on screen, saved or not; its status sums the
+emitting tables' rows, columns and bytes and shows the latest build time; Refresh
+rebuilds every table and clear removes every table of the node. It is disabled, with
+the reason shown, until a table exists, one emits, and an emitting table selects a
+column. Missing snapshots offer `Cache as Parquet`
 and a not-cached hint, while ready snapshots offer `Refresh Cache` with
 generation statistics and a clear action. Direct Parquet renders no cache
 control; a stored `read`-mode Parquet input is snapshot-backed and renders

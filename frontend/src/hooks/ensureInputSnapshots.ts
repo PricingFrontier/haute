@@ -3,12 +3,8 @@ import {
   ApiError,
   buildInputCache,
   cancelInputCacheJob,
-  deleteJsonCache,
   getInputCacheJob,
   getInputCacheStatus,
-  buildJsonCache,
-  getJsonCacheStatusForSchema,
-  getJsonCacheProgress,
 } from "../api/client"
 import { TERMINAL_JOB_STATUSES } from "../api/types"
 import { dataInputIsDirect } from "../utils/dataInputMode"
@@ -77,73 +73,6 @@ function quoteInputConfigs(nodes: Node[]): Record<string, unknown>[] {
       typeof value.path === "string" && /\.(json|jsonl|ndjson|xml)$/i.test(value.path)
       ? [value] : []
   })
-}
-
-async function ensureQuoteInputCache(
-  config: Record<string, unknown>,
-  options: EnsureInputSnapshotsOptions,
-  notifyBuildStart: () => void,
-): Promise<void> {
-  if (options.signal?.aborted) throw abortError()
-  const path = config.path as string
-  const payload = { path, volatile_schema: config }
-  const report = (message: string | null) => {
-    if (!options.signal?.aborted) options.onProgress?.(message)
-  }
-  report("Checking Quote Input cache…")
-  try {
-    if (options.force) {
-      // The build endpoint answers a valid working cache with no work at all,
-      // so a forced rebuild removes that layer first. The committed layer of a
-      // saved pipeline is untouched; the working layer is what a read serves.
-      report("Replacing the Quote Input cache…")
-      await deleteJsonCache(path, options.signal ? { signal: options.signal } : undefined)
-      if (options.signal?.aborted) throw abortError()
-    }
-    if (!options.force) {
-      const status = options.signal
-        ? await getJsonCacheStatusForSchema(payload, { signal: options.signal })
-        : await getJsonCacheStatusForSchema(payload)
-      if (options.signal?.aborted) throw abortError()
-      if (status.cached) return
-    }
-    notifyBuildStart()
-    report("Caching Quote Input as Parquet…")
-    const controller = new AbortController()
-    const onAbort = () => controller.abort()
-    options.signal?.addEventListener("abort", onAbort, { once: true })
-    const pollProgress = async () => {
-      try {
-        for (;;) {
-          await waitForNextPoll(controller.signal)
-          const progress = await getJsonCacheProgress(path, { signal: controller.signal })
-          if (!controller.signal.aborted && progress.active) {
-            const rowCount = progress.rows ?? 0
-            const rows = rowCount > 0 ? ` · ${rowCount.toLocaleString()} rows` : ""
-            report(`Caching Quote Input as Parquet…${rows} · ${Math.floor(progress.elapsed ?? 0)}s`)
-          }
-        }
-      } catch (error) {
-        if (!controller.signal.aborted) {
-          // Progress display is presentational; only the build outcome may
-          // decide this preparation. Stop polling and keep the last message.
-          console.warn("Quote Input cache progress polling stopped:", error)
-        }
-      }
-    }
-    try {
-      await Promise.all([
-        buildJsonCache(payload, { signal: controller.signal }).finally(() => controller.abort()),
-        pollProgress(),
-      ])
-      if (options.signal?.aborted) throw abortError()
-    } finally {
-      controller.abort()
-      options.signal?.removeEventListener("abort", onAbort)
-    }
-  } finally {
-    report(null)
-  }
 }
 
 function abortError(): DOMException {
@@ -231,23 +160,32 @@ export async function cancelInputSnapshotBuild(jobId: string): Promise<void> {
   )
 }
 
-async function startBuild(
-  config: Record<string, unknown>,
-  signal?: AbortSignal,
-  refresh = false,
-): Promise<string> {
-  const payload = {
-    schema_version: 1 as const,
-    config,
-    refresh,
-  }
+type SnapshotSource = {
+  schema_version: 1
+  node_type?: "apiInput"
+  config: Record<string, unknown>
+}
+
+function dataInputSource(config: Record<string, unknown>): SnapshotSource {
+  return { schema_version: 1, config }
+}
+
+/** A structured Quote Input: every emitting table of the node, built together. */
+function quoteInputSource(config: Record<string, unknown>): SnapshotSource {
+  return { schema_version: 1, node_type: "apiInput", config }
+}
+
+/**
+ * Start (or join) the build and return its job id.
+ *
+ * The request itself is never aborted: once the server has admitted a job,
+ * only its id can stop it, so an abort that arrives meanwhile is handled by
+ * `waitForJob`, which cancels the job it was handed.
+ */
+async function startBuild(source: SnapshotSource, refresh = false): Promise<string> {
+  const payload = { ...source, refresh }
   try {
-    const request = { ...payload, profile: "lazy_sink" as const }
-    return (
-      signal
-        ? await buildInputCache(request, { signal })
-        : await buildInputCache(request)
-    ).job_id
+    return (await buildInputCache({ ...payload, profile: "lazy_sink" as const })).job_id
   } catch (caught) {
     const detail = caught instanceof ApiError ? caught.detail ?? "" : ""
     if (
@@ -255,12 +193,7 @@ async function startBuild(
       caught.status === 400 &&
       detail.startsWith("snapshot_build_unsupported")
     ) {
-      const request = { ...payload, profile: "preview_eager" as const }
-      return (
-        signal
-          ? await buildInputCache(request, { signal })
-          : await buildInputCache(request)
-      ).job_id
+      return (await buildInputCache({ ...payload, profile: "preview_eager" as const })).job_id
     }
     throw caught
   }
@@ -286,28 +219,50 @@ export async function ensureInputSnapshots(
     options.onBuildStart?.()
   }
 
-  // Structured Quote Inputs use the existing per-frame full-cache builder.
-  // Keep these sequential so each schema owns its progress and publication.
+  const report = (message: string | null) => {
+    if (!options.signal?.aborted) options.onProgress?.(message)
+  }
+  // Structured Quote Inputs build their tables from one shred of the source.
+  // Keep these sequential so each node owns its progress message.
   for (const config of quotes) {
-    await ensureQuoteInputCache(config, options, notifyBuildStart)
+    report("Checking Quote Input cache…")
+    try {
+      await ensureSnapshot(quoteInputSource(config), options, () => {
+        notifyBuildStart()
+        report("Caching Quote Input tables as Parquet…")
+      })
+    } finally {
+      report(null)
+    }
   }
 
   await Promise.all(
-    configs.map(async (config) => {
-      if (!options.force) {
-        const payload = { schema_version: 1 as const, config }
-        const status = options.signal
-          ? await getInputCacheStatus(payload, { signal: options.signal })
-          : await getInputCacheStatus(payload)
-        if (status.state === "ready") return
-      }
-
-      // The build endpoint joins an existing job for "building". Corrupt and
-      // failed snapshots are known-bad and are rebuilt before execution.
-      notifyBuildStart()
-      const jobId = await startBuild(config, options.signal, options.force === true)
-      options.onJobStarted?.(jobId)
-      await waitForJob(jobId, options.signal)
-    }),
+    configs.map((config) => ensureSnapshot(dataInputSource(config), options, notifyBuildStart)),
   )
+}
+
+async function ensureSnapshot(
+  source: SnapshotSource,
+  options: EnsureInputSnapshotsOptions,
+  notifyBuildStart: () => void,
+): Promise<void> {
+  if (options.signal?.aborted) throw abortError()
+  if (!options.force) {
+    const status = options.signal
+      ? await getInputCacheStatus(source, { signal: options.signal })
+      : await getInputCacheStatus(source)
+    // A Quote Input's stale tables are rebuilt here, in the build job, rather
+    // than inside the preview's own time budget; its build writes only the
+    // missing and stale tables.
+    if (status.state === "ready" && !(source.node_type === "apiInput" && status.freshness === "stale")) {
+      return
+    }
+  }
+
+  // The build endpoint joins an existing job for "building". Corrupt and
+  // failed snapshots are known-bad and are rebuilt before execution.
+  notifyBuildStart()
+  const jobId = await startBuild(source, options.force === true)
+  options.onJobStarted?.(jobId)
+  await waitForJob(jobId, options.signal)
 }

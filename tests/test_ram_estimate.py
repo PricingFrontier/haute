@@ -2417,18 +2417,17 @@ def _json_port_config(data_path) -> dict:
 
 @pytest.fixture()
 def json_api_input(tmp_path, monkeypatch):
-    """A JSON apiInput with a real built v2 working-layer cache.
+    """A JSON apiInput with each emitting table's input snapshot already built.
 
     Built through the same reader/writer the engine uses rather than a stub:
-    the point of resolving per port is that a stale or absent cache is
-    rejected here exactly as it is at execution.
+    the point of resolving per port is that an absent snapshot is reported
+    unavailable here exactly as it is at execution.
     """
 
     import json as _json
 
-    from haute._json_flatten import _json_cache_dir
-    from haute._json_shred._cache import build_per_port_cache
     from haute._sandbox import _get_project_root, set_project_root
+    from tests.conftest import build_test_api_input_snapshots
 
     monkeypatch.chdir(tmp_path)
     original_root = _get_project_root()
@@ -2445,11 +2444,9 @@ def json_api_input(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     config = _json_port_config(data_path)
-    cache_dir = _json_cache_dir(data_path, "working")
-    committed_dir = _json_cache_dir(data_path, "committed")
-    build_per_port_cache(data_path, config, cache_dir)
+    build_test_api_input_snapshots(data_path, config)
     try:
-        yield data_path, config, cache_dir, committed_dir
+        yield data_path, config
     finally:
         set_project_root(original_root)
 
@@ -2467,7 +2464,7 @@ class TestJsonApiInputPortMetadata:
         import haute._ram_estimate as ram_estimate_mod
         from haute.execution import _estimate_materialising_boundaries
 
-        _data_path, config, _cache_dir, _committed_dir = json_api_input
+        _data_path, config = json_api_input
         source = _make_source_node(node_id="quote_in", node_type="apiInput", config=config)
         aggregate_code = {"code": "df = df.group_by('policy_id').agg(pl.len().alias('count'))"}
         first = _make_transform_node(node_id="agg1", config=aggregate_code)
@@ -2575,46 +2572,10 @@ class TestJsonApiInputPortMetadata:
         assert estimate.estimated_peak_bytes is not None
         assert estimate.estimated_peak_bytes > 0
 
-    def test_planning_and_loading_share_one_unchanged_source_content_proof(
-        self,
-        json_api_input,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Planner metadata and loading reuse the persisted cache-build source proof."""
-
-        from haute._json_shred import _source_proof
-        from haute._json_shred._cache import load_v2_api_source
-        from haute._ram_estimate import _json_api_input_port_metadata
-
-        data_path, config, _cache_dir, _committed_dir = json_api_input
-        node = _make_source_node(node_type="apiInput", config=config)
-        _source_proof._clear_data_file_signature_memo()
-        real_hash_file = _source_proof._hash_file
-        raw_hashes = 0
-
-        def counting_hash_file(path):
-            nonlocal raw_hashes
-            if Path(path).resolve() == data_path.resolve():
-                raw_hashes += 1
-            return real_hash_file(path)
-
-        monkeypatch.setattr(_source_proof, "_hash_file", counting_hash_file)
-
-        metadata = _json_api_input_port_metadata(node, "policies")
-        frames = load_v2_api_source(
-            str(data_path),
-            config,
-            port_columns={"policies": {"policy_id"}},
-        )
-
-        assert metadata is not None and metadata.row_count == 2
-        assert frames["policies"].collect()["policy_id"].to_list() == [1, 2]
-        assert raw_hashes == 0
-
     def test_each_emitted_table_is_sized_from_its_own_parquet(self, json_api_input) -> None:
         from haute._ram_estimate import _json_api_input_port_metadata
 
-        _data_path, config, _cache_dir, _committed_dir = json_api_input
+        _data_path, config = json_api_input
         node = _make_source_node(node_type="apiInput", config=config)
 
         policies = _json_api_input_port_metadata(node, "policies")
@@ -2625,144 +2586,13 @@ class TestJsonApiInputPortMetadata:
         # Sizing a boundary from the wrong table is the failure this prevents.
         assert policies.row_count != drivers.row_count
 
-    def test_repeated_estimates_reuse_the_verified_artifact_metadata(
-        self,
-        json_api_input,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        import haute._ram_estimate as ram_estimate_mod
-
-        _data_path, config, _cache_dir, _committed_dir = json_api_input
-        node = _make_source_node(node_type="apiInput", config=config)
-        ram_estimate_mod._VERIFIED_PORT_METADATA.clear()
-        reads: list[str] = []
-        real_read = ram_estimate_mod._detailed_parquet_metadata
-
-        def counting_read(path: str):
-            reads.append(path)
-            return real_read(path)
-
-        monkeypatch.setattr(ram_estimate_mod, "_detailed_parquet_metadata", counting_read)
-
-        first = ram_estimate_mod._json_api_input_port_metadata(node, "policies")
-        second = ram_estimate_mod._json_api_input_port_metadata(node, "policies")
-        drivers = ram_estimate_mod._json_api_input_port_metadata(node, "drivers")
-
-        assert first is not None and second is not None and drivers is not None
-        assert (first.row_count, second.row_count, drivers.row_count) == (2, 2, 3)
-        assert second.column_uncompressed_size_bytes == first.column_uncompressed_size_bytes
-        assert len(reads) == 2
-
-    def test_committed_layer_is_used_when_working_holds_no_match(self, json_api_input) -> None:
-        """Layer preference is the reader's, not this module's."""
-
-        import shutil
-
-        from haute._ram_estimate import _json_api_input_port_metadata
-
-        _data_path, config, working_dir, committed_dir = json_api_input
-        committed_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(working_dir, committed_dir, dirs_exist_ok=True)
-        shutil.rmtree(working_dir)
-
-        node = _make_source_node(node_type="apiInput", config=config)
-
-        assert _json_api_input_port_metadata(node, "policies").row_count == 2
-
-    def test_source_proof_is_reused_when_plausible_working_is_stale(
-        self,
-        json_api_input,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        import shutil
-
-        import orjson
-
-        from haute._json_shred import _source_proof
-        from haute._ram_estimate import _json_api_input_port_metadata
-
-        _data_path, config, working_dir, committed_dir = json_api_input
-        committed_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(working_dir, committed_dir, dirs_exist_ok=True)
-        working_meta_path = working_dir / "meta.json"
-        working_meta = orjson.loads(working_meta_path.read_bytes())
-        working_meta["data_file"]["sha256"] = "0" * 64
-        working_meta_path.write_bytes(orjson.dumps(working_meta))
-        node = _make_source_node(node_type="apiInput", config=config)
-        real_source_proof = _source_proof._data_file_signature
-        source_proof_calls = 0
-
-        def counting_source_proof(path):
-            nonlocal source_proof_calls
-            source_proof_calls += 1
-            return real_source_proof(path)
-
-        monkeypatch.setattr(
-            "haute._json_shred._source_proof._data_file_signature",
-            counting_source_proof,
-        )
-
-        metadata = _json_api_input_port_metadata(node, "policies")
-
-        assert metadata is not None and metadata.row_count == 2
-        assert source_proof_calls == 1
-
     def test_a_port_the_cache_never_emitted_is_unavailable(self, json_api_input) -> None:
         from haute._ram_estimate import _json_api_input_port_metadata
 
-        _data_path, config, _cache_dir, _committed_dir = json_api_input
+        _data_path, config = json_api_input
         node = _make_source_node(node_type="apiInput", config=config)
 
         assert _json_api_input_port_metadata(node, "vehicles") is None
-
-    def test_a_stale_cache_is_rejected_rather_than_sized_from(self, json_api_input) -> None:
-        """The signature check is the engine's; a boundary must never be
-        estimated from a cache the run itself would rebuild."""
-
-        from haute._ram_estimate import _json_api_input_port_metadata
-
-        data_path, config, _cache_dir, _committed_dir = json_api_input
-        data_path.write_text('[{"policy_id": 9, "drivers": []}]', encoding="utf-8")
-        node = _make_source_node(node_type="apiInput", config=config)
-
-        assert _json_api_input_port_metadata(node, "policies") is None
-
-    def test_a_tampered_cache_artifact_is_not_used_for_admission(
-        self,
-        json_api_input,
-    ) -> None:
-        """Admission must size the exact generation runtime would accept."""
-
-        from haute._ram_estimate import _json_api_input_port_metadata
-
-        _data_path, config, cache_dir, _committed_dir = json_api_input
-        pl.DataFrame({"policy_id": [999]}).write_parquet(cache_dir / "policies.parquet")
-        node = _make_source_node(node_type="apiInput", config=config)
-
-        assert _json_api_input_port_metadata(node, "policies") is None
-
-    def test_a_snapshot_with_a_different_schema_is_not_used_for_admission(
-        self,
-        json_api_input,
-        tmp_path: Path,
-    ) -> None:
-        from haute._ram_estimate import _json_api_input_port_metadata
-
-        _data_path, config, _cache_dir, _committed_dir = json_api_input
-        incompatible_snapshot = tmp_path / "incompatible.parquet"
-        pl.DataFrame({"unexpected": [1]}).write_parquet(incompatible_snapshot)
-        node = _make_source_node(node_type="apiInput", config=config)
-
-        with (
-            patch(
-                "haute._json_shred._runtime_storage._snapshot_cache_artifact_locked",
-                return_value=incompatible_snapshot,
-            ),
-            patch("haute._json_shred._runtime_storage._release_runtime_snapshot") as release,
-        ):
-            assert _json_api_input_port_metadata(node, "policies") is None
-
-        assert release.call_count == 1
 
     @pytest.mark.parametrize("path_value", ["", None, 17])
     def test_a_node_without_a_usable_path_is_unavailable(self, path_value) -> None:
@@ -2781,25 +2611,26 @@ class TestJsonApiInputPortMetadata:
 
         assert _json_api_input_port_metadata(node, "policies") is None
 
-    def test_absent_cache_metadata_does_not_hash_the_uncached_source(
+    def test_absent_snapshot_metadata_is_unavailable_without_touching_the_source(
         self,
-        json_api_input,
+        tmp_path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Admission must not add a full-file pass before direct execution."""
 
-        import shutil
+        import json as _json
 
         from haute._ram_estimate import _json_api_input_port_metadata
+        from haute._sandbox import set_project_root
 
-        _data_path, config, working_dir, committed_dir = json_api_input
-        shutil.rmtree(working_dir)
-        if committed_dir.exists():
-            shutil.rmtree(committed_dir)
+        set_project_root(tmp_path)
+        data_path = tmp_path / "unbuilt.json"
+        data_path.write_text(_json.dumps([{"policy_id": 1, "drivers": []}]), encoding="utf-8")
+        config = _json_port_config(data_path)  # no snapshot built for this config
         node = _make_source_node(node_type="apiInput", config=config)
 
         def unexpected_source_proof(_path):
-            raise AssertionError("an absent cache must not require a source hash")
+            raise AssertionError("an absent snapshot must not require a source hash")
 
         monkeypatch.setattr(
             "haute._json_shred._source_proof._data_file_signature",
@@ -2808,17 +2639,17 @@ class TestJsonApiInputPortMetadata:
 
         assert _json_api_input_port_metadata(node, "policies") is None
 
-    def test_an_unreadable_cache_warns_and_reports_unavailable(self, json_api_input) -> None:
+    def test_an_unreadable_snapshot_warns_and_reports_unavailable(self, json_api_input) -> None:
         """Estimation degrades to "unknown" rather than raising into a caller
         that would treat the failure as "unlimited"."""
 
         from haute._ram_estimate import _json_api_input_port_metadata
 
-        _data_path, config, _cache_dir, _committed_dir = json_api_input
+        _data_path, config = json_api_input
         node = _make_source_node(node_type="apiInput", config=config)
 
         with patch(
-            "haute._json_shred._source_proof._data_file_signature",
+            "haute._ram_estimate._detailed_parquet_metadata",
             side_effect=OSError("cache device is gone"),
         ):
             with capture_logs() as logs:
@@ -2830,7 +2661,7 @@ class TestJsonApiInputPortMetadata:
         """Sibling branches of one apiInput must not inflate a boundary they
         do not feed — the whole reason the walk carries the arrival handle."""
 
-        _data_path, config, _cache_dir, _committed_dir = json_api_input
+        _data_path, config = json_api_input
         source = _make_source_node(node_id="quote_in", node_type="apiInput", config=config)
         consumer = _make_transform_node(node_id="claims")
         sibling = _make_transform_node(node_id="drivers_only")
@@ -3704,30 +3535,6 @@ def test_edge_join_contract_decides_the_many_to_many_flag(
 
     assert downstream.state is MaterialisationEstimateState.AVAILABLE, downstream.unavailable_reason
     assert downstream.depends_on_many_to_many_join is expected
-
-
-def test_verified_port_metadata_is_keyed_by_artifact_content(tmp_path: Path) -> None:
-    """A rebuilt artifact at the same path carries a new signature and is read afresh."""
-    import hashlib
-
-    import haute._ram_estimate as ram_estimate_mod
-
-    ram_estimate_mod._VERIFIED_PORT_METADATA.clear()
-    artifact = tmp_path / "policies.parquet"
-
-    def signature() -> tuple[int, str]:
-        payload = artifact.read_bytes()
-        return len(payload), hashlib.sha256(payload).hexdigest()
-
-    pl.DataFrame({"policy_id": [1, 2]}).write_parquet(artifact)
-    first_signature = signature()
-    first = ram_estimate_mod._verified_port_metadata(artifact, first_signature)
-    pl.DataFrame({"policy_id": [1, 2, 3]}).write_parquet(artifact)
-    rebuilt = ram_estimate_mod._verified_port_metadata(artifact, signature())
-    repeat = ram_estimate_mod._verified_port_metadata(artifact, first_signature)
-
-    assert (first.row_count, rebuilt.row_count) == (2, 3)
-    assert repeat is first
 
 
 # ---------------------------------------------------------------------------

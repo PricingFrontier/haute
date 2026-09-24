@@ -16,7 +16,7 @@ from haute.schemas import (
     DissolveSubmodelRequest,
     ExportScriptRequest,
     Graph,
-    JsonCacheBuildRequest,
+    JsonCacheInferRequest,
     OptimiserApplyRequest,
     OptimiserFrontierRequest,
     OptimiserFrontierSelectRequest,
@@ -1042,9 +1042,9 @@ class TestRequiredFieldValidation:
         with pytest.raises(ValidationError):
             OptimiserFrontierSelectRequest()
 
-    def test_json_cache_build_requires_path(self):
+    def test_json_cache_infer_requires_path(self):
         with pytest.raises(ValidationError):
-            JsonCacheBuildRequest()
+            JsonCacheInferRequest()
 
     def test_utility_write_requires_content(self):
         with pytest.raises(ValidationError):

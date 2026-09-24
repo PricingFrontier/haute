@@ -382,18 +382,17 @@ CACHE_CONSUMER_CONTRACTS: Mapping[CacheConsumer, CacheConsumerContract] = Mappin
         ),
         CacheConsumer.RUNTIME_GRAPH_INPUT: _consumer_contract(
             CacheConsumer.RUNTIME_GRAPH_INPUT,
-            version=3,
+            version=4,
             fields=(
                 "source",
                 "sources",
-                "json_cache_signature",
                 "preamble_fingerprint",
                 "extra",
             ),
             consumed={
                 CacheInputClass.USER_CODE: ("sources", "preamble_fingerprint"),
                 CacheInputClass.SOURCE_SELECTION: ("source",),
-                CacheInputClass.RUNTIME_FILES: ("sources", "json_cache_signature"),
+                CacheInputClass.RUNTIME_FILES: ("sources",),
                 CacheInputClass.ARTIFACTS: ("sources", "extra"),
                 CacheInputClass.REQUEST_SHAPE: ("extra",),
             },

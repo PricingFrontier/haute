@@ -27,14 +27,10 @@ vi.mock("../../api/client", () => ({
   cancelNodeData: vi.fn(),
   clearNodeData: vi.fn(),
   clearInputCache: vi.fn(),
-  deleteJsonCache: vi.fn(),
   buildInputCache: vi.fn(),
   cancelInputCacheJob: vi.fn(),
   getInputCacheJob: vi.fn(),
   getInputCacheStatus: vi.fn(),
-  buildJsonCache: vi.fn(),
-  getJsonCacheProgress: vi.fn(),
-  getJsonCacheStatusForSchema: vi.fn(),
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
@@ -43,9 +39,7 @@ vi.mock("../../utils/buildGraph", () => ({
 
 import {
   buildInputCache,
-  buildJsonCache,
   cancelInputCacheJob,
-  deleteJsonCache,
   getInputCacheJob,
   getInputCacheStatus,
   getNodeDataPoint,
@@ -58,8 +52,6 @@ const mockBuildInputCache = vi.mocked(buildInputCache)
 const mockCancelInputCacheJob = vi.mocked(cancelInputCacheJob)
 const mockInputCacheJob = vi.mocked(getInputCacheJob)
 const mockInputCacheStatus = vi.mocked(getInputCacheStatus)
-const mockDeleteJsonCache = vi.mocked(deleteJsonCache)
-const mockBuildJsonCache = vi.mocked(buildJsonCache)
 
 const nodes = [
   {
@@ -125,8 +117,6 @@ describe("delegated data-point builds", () => {
       mockCancelInputCacheJob,
       mockInputCacheJob,
       mockInputCacheStatus,
-      mockDeleteJsonCache,
-      mockBuildJsonCache,
     ]) {
       mock.mockReset()
     }
@@ -163,7 +153,6 @@ describe("delegated data-point builds", () => {
     expect(mockInputCacheStatus).not.toHaveBeenCalled()
     expect(mockBuildInputCache).toHaveBeenCalledWith(
       expect.objectContaining({ refresh: true, config: expect.objectContaining({ path: "quotes.csv" }) }),
-      expect.anything(),
     )
   })
 
@@ -395,7 +384,7 @@ describe("delegated data-point builds", () => {
     expect(current?.cancel).toBe(replacement)
   })
 
-  it("replaces a Quote Input cache the build endpoint would otherwise answer with no work", async () => {
+  it("refreshes a Quote Input table through the input-cache build, not a delete-then-build", async () => {
     const quoteNodes = [
       {
         id: "source",
@@ -415,8 +404,8 @@ describe("delegated data-point builds", () => {
       kind: "api_input_table" as const,
       point: { producer_node_id: "source", port_label: "orders" },
       slot_key: "source|orders|live",
-      build_endpoint: "/api/json-cache/build",
-      clear_endpoint: "/api/json-cache",
+      build_endpoint: "/api/input-cache/build",
+      clear_endpoint: "/api/input-cache/clear",
     })
     mockGetPoint.mockImplementation(async () => table("current"))
     mockRun.mockImplementation(async () => ({
@@ -426,14 +415,48 @@ describe("delegated data-point builds", () => {
       message: "Build this table's cache",
       point: table("current"),
     }))
-    let releaseDelete: (() => void) | null = null
-    mockDeleteJsonCache.mockImplementation(
+    mockInputCacheStatus.mockResolvedValue({
+      schema_version: 1,
+      identity_digest: "digest",
+      state: "ready",
+      freshness: "fresh",
+      generation: null,
+      tables: null,
+    })
+    mockBuildInputCache.mockResolvedValue({
+      schema_version: 1,
+      job_id: "job-1",
+      identity_digest: "digest",
+      status: "running",
+      joined: false,
+    })
+    let releaseJob: (() => void) | null = null
+    mockInputCacheJob.mockImplementation(
       () =>
         new Promise((resolve) => {
-          releaseDelete = () => resolve({ cached: false, data_path: "" } as never)
+          releaseJob = () =>
+            resolve({
+              schema_version: 1,
+              job_id: "job-1",
+              identity_digest: "digest",
+              status: "completed",
+              terminal_reason: null,
+              message: "done",
+              refresh: true,
+              build_class: "bounded",
+              progress: { phase: "completed", rows: 0, batches: 0, bytes: 0, elapsed_seconds: 0 },
+              snapshot: {
+                schema_version: 1,
+                identity_digest: "digest",
+                state: "ready",
+                freshness: "fresh",
+                generation: null,
+                tables: null,
+              },
+              error_code: null,
+            })
         }),
     )
-    mockBuildJsonCache.mockResolvedValue({ cached: true } as never)
     const { result } = renderHook(() =>
       useNodeDataCache({
         node: (quoteNodes as unknown as { id: string }[])[1] as never,
@@ -445,19 +468,24 @@ describe("delegated data-point builds", () => {
     await waitFor(() => expect(result.current.point).not.toBeNull())
 
     const refreshing = result.current.refresh()
-    await waitFor(() => expect(releaseDelete).not.toBeNull())
+    await waitFor(() => expect(mockBuildInputCache).toHaveBeenCalled())
 
-    // The build waits for that removal: building first and deleting afterwards
-    // would throw away the cache the build had just produced.
-    expect(mockDeleteJsonCache).toHaveBeenCalledWith("quotes.json", expect.anything())
-    expect(mockBuildJsonCache).not.toHaveBeenCalled()
+    // A force refresh goes straight to the input-cache build; there is no
+    // delete-then-build round trip.
+    expect(mockBuildInputCache).toHaveBeenCalledWith(
+      expect.objectContaining({
+        schema_version: 1,
+        node_type: "apiInput",
+        config: quoteNodes[0].data.config,
+        refresh: true,
+      }),
+    )
 
     await act(async () => {
-      releaseDelete?.()
+      releaseJob?.()
       await refreshing
     })
 
-    expect(mockBuildJsonCache).toHaveBeenCalled()
     // The refreshed table is what the consumer ends up reading.
     await waitFor(() => expect(result.current.availability).toBe("current"))
   })

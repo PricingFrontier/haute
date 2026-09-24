@@ -563,8 +563,9 @@ it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
    polls it once for the whole application. Every terminal outcome — completed, failed, or
    cancelled — clears the build and raises the epoch, so consumers ask what is there now instead
    of showing a cancel control for a build that has stopped. A `delegated` response hands a
-   snapshot-backed Data Input or an API-input table to the existing input-snapshot and
-   JSON-cache orchestration (`hooks/ensureInputSnapshots.ts`), recorded under the slot as a
+   snapshot-backed Data Input or an API-input table to the input-snapshot orchestration
+   (`hooks/ensureInputSnapshots.ts`, which builds a Quote Input's tables through the same
+   input-cache job with `node_type: "apiInput"`), recorded under the slot as a
    delegated build with its progress message, its canceller, and a token that owns it, so every
    consumer of the point sees and can stop it while a callback from an abandoned pass can neither
    report progress for nor clear the build that replaced it. That orchestration leaves data it

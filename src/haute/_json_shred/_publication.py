@@ -1,8 +1,9 @@
-"""Cross-process cache publication: locking, staging, atomic swap, recovery.
+"""Cross-process file locks and plain-path checks for cache directories.
 
-One OS file lock per visible cache generation serialises prepare, validate,
-commit, and read. Acquisition heals crash-left publication siblings, and the
-swap primitive keeps a complete old or new generation visible at all times."""
+A thread-reentrant OS file lock per canonical path serialises independent
+processes (the runtime storage budget uses one), and the path checks refuse a
+cache root or lock file reached through a link or reparse point before either
+is trusted. The shared input-snapshot store opens its lock files here too."""
 
 from __future__ import annotations
 
@@ -11,9 +12,6 @@ import shutil
 import stat as stat_module
 import threading
 import time
-import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal
 from weakref import WeakValueDictionary
@@ -24,13 +22,9 @@ from haute._logging import get_logger
 logger = get_logger(component="json_shred")
 
 
-_META_FILENAME = "meta.json"
-
-
-# One re-entrant lock per canonical cache directory. The thread lock protects
-# same-process callers; the stable sibling file lock protects independent CLI,
-# server, and test processes across a complete generation-selection or publish
-# transaction. Different cache identities retain independent locks.
+# One re-entrant lock per canonical path. The thread lock protects same-process
+# callers; the stable sibling file lock protects independent CLI, server, and
+# test processes. Different paths retain independent locks.
 _BUILD_LOCKS: WeakValueDictionary[str, _CacheBuildLock]
 
 
@@ -40,11 +34,8 @@ _BUILD_LOCKS_GUARD = threading.Lock()
 _BUILD_LOCKS_PROCESS_ID = os.getpid()
 
 
-_RENAME_RETRY_DELAYS_SECONDS = (0.01, 0.025, 0.05, 0.1)  # pragma: no mutate
-
-
 class JsonCacheRecoveryError(RuntimeError):
-    """A crash-left cache publication cannot be recovered unambiguously."""
+    """A cache path or lock file is not a plain entry and cannot be trusted."""
 
 
 def _cache_lock_path(cache_dir: Path) -> Path:
@@ -154,63 +145,6 @@ def _remove_plain_cache_directory(path: Path) -> None:
     shutil.rmtree(path)
 
 
-def _publication_siblings(cache_dir: Path, kind: str) -> list[tuple[Path, os.stat_result]]:
-    prefix = f"{cache_dir.name}.build-{kind}-"
-    try:
-        children = tuple(cache_dir.parent.iterdir())
-    except FileNotFoundError:
-        return []
-    matches: list[tuple[Path, os.stat_result]] = []
-    for child in children:
-        if not child.name.startswith(prefix):
-            continue
-        matches.append((child, _plain_directory_stat(child)))
-    return matches
-
-
-def _recover_cache_publication(cache_dir: Path) -> None:
-    """Restore or remove only verified crash-left publication siblings."""
-    old_generations = _publication_siblings(cache_dir, "old")
-    staged_generations = _publication_siblings(cache_dir, "tmp")
-    if cache_dir.exists() or cache_dir.is_symlink():
-        _plain_directory_stat(cache_dir)
-        for path, _path_stat in (*old_generations, *staged_generations):
-            _remove_plain_cache_directory(path)
-        if old_generations or staged_generations:
-            logger.info(
-                "json_cache_publication_recovered",
-                cache_dir=str(cache_dir),
-                action="removed_superseded_siblings",
-                old_count=len(old_generations),
-                staged_count=len(staged_generations),
-            )
-        return
-
-    for path, _path_stat in staged_generations:
-        _remove_plain_cache_directory(path)
-    if not old_generations:
-        return
-    newest_mtime = max(path_stat.st_mtime_ns for _path, path_stat in old_generations)
-    newest = [path for path, path_stat in old_generations if path_stat.st_mtime_ns == newest_mtime]
-    if len(newest) != 1:
-        raise JsonCacheRecoveryError(
-            f"Cache recovery found ambiguous newest backup generations for {cache_dir}"
-        )
-    restored = newest[0]
-    _rename_dir_with_retry(restored, cache_dir)
-    for path, _path_stat in old_generations:
-        if path != restored:
-            _remove_plain_cache_directory(path)
-    logger.info(
-        "json_cache_publication_recovered",
-        cache_dir=str(cache_dir),
-        action="restored_backup_generation",
-        restored=str(restored),
-        discarded_old_count=len(old_generations) - 1,
-        discarded_staged_count=len(staged_generations),
-    )
-
-
 class _CacheBuildLock:
     """Thread-reentrant wrapper around one cross-process cache file lock."""
 
@@ -228,7 +162,7 @@ class _CacheBuildLock:
         return self
 
     def owned_by_current_thread(self) -> bool:
-        """Return whether this process/thread owns the publication lock."""
+        """Return whether this process/thread owns the lock."""
         return self._depth > 0 and self._owner_thread_id == threading.get_ident()
 
     def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
@@ -268,7 +202,6 @@ class _CacheBuildLock:
                 handle.close()
                 self._thread_lock.release()
                 return False
-            _recover_cache_publication(self._cache_dir)
             self._handle = handle
             self._depth = 1
             self._owner_thread_id = threading.get_ident()
@@ -335,92 +268,3 @@ def _build_lock_for(cache_dir: Path) -> _CacheBuildLock:
     key = os.path.normcase(str(absolute))
     with _BUILD_LOCKS_GUARD:
         return _BUILD_LOCKS.setdefault(key, _CacheBuildLock(absolute))
-
-
-@contextmanager
-def per_port_cache_publication_lock(cache_dir: str | Path) -> Iterator[None]:  # pragma: no mutate
-    """Serialize prepare/validate/commit for one visible cache generation."""
-    with _build_lock_for(Path(cache_dir)):
-        yield
-
-
-def _unique_build_tmp_dir(cache_dir: Path) -> Path:
-    return cache_dir.with_name(f"{cache_dir.name}.build-tmp-{uuid.uuid4().hex}")
-
-
-def new_per_port_cache_staging_dir(cache_dir: str | Path) -> Path:  # pragma: no mutate
-    """Return one parent-owned, validated private generation path."""
-    cd = _normalised_build_path(cache_dir)
-    return _validated_build_staging_dir(cd, _unique_build_tmp_dir(cd))
-
-
-def _unique_build_old_dir(cache_dir: Path) -> Path:
-    return cache_dir.with_name(f"{cache_dir.name}.build-old-{uuid.uuid4().hex}")
-
-
-def _rename_dir_with_retry(source: Path, target: Path) -> None:
-    """Rename a fully-built cache dir, retrying transient Windows handle locks."""
-    delays = iter((*_RENAME_RETRY_DELAYS_SECONDS, None))
-    while True:
-        delay = next(delays)
-        try:
-            source.rename(target)
-            return
-        except PermissionError:
-            if delay is None:
-                raise
-            time.sleep(delay)
-
-
-def _normalised_build_path(path: str | Path) -> Path:  # pragma: no mutate
-    return Path(os.path.abspath(path))
-
-
-def _validated_build_staging_dir(
-    cache_dir: Path,
-    staging_dir: str | Path,  # pragma: no mutate
-) -> Path:
-    staging = _normalised_build_path(staging_dir)
-    expected_prefix = f"{cache_dir.name}.build-tmp-"
-    suffix = staging.name.removeprefix(expected_prefix)
-    if (
-        staging.parent != cache_dir.parent
-        or not staging.name.startswith(expected_prefix)
-        or len(suffix) != 32
-        or any(character not in "0123456789abcdef" for character in suffix)
-    ):
-        raise ValueError("cache staging directory must be an exact private sibling generation")
-    _assert_cache_path_ancestors_plain(staging)
-    return staging
-
-
-def _swap_dir_into_place(tmp_dir: Path, live_dir: Path) -> None:
-    """Atomically replace *live_dir* with the fully-built *tmp_dir*.
-
-    Same rename dance as :func:`haute._json_flatten.mirror_cache_to_committed`:
-    rename the live dir aside, rename the temp dir in, then best-effort
-    remove the old copy. If the second rename fails the old dir is restored
-    before re-raising, so the cache is never left missing.
-    """
-    if live_dir.exists():
-        backup = _unique_build_old_dir(live_dir)
-        try:
-            _rename_dir_with_retry(live_dir, backup)
-        except BaseException:  # pragma: no mutate
-            shutil.rmtree(tmp_dir, ignore_errors=True)  # pragma: no mutate
-            raise
-        try:
-            _rename_dir_with_retry(tmp_dir, live_dir)
-        except BaseException:  # pragma: no mutate
-            try:
-                _rename_dir_with_retry(backup, live_dir)
-            finally:
-                shutil.rmtree(tmp_dir, ignore_errors=True)  # pragma: no mutate
-            raise
-        shutil.rmtree(backup, ignore_errors=True)  # pragma: no mutate
-    else:
-        try:
-            _rename_dir_with_retry(tmp_dir, live_dir)
-        except BaseException:  # pragma: no mutate
-            shutil.rmtree(tmp_dir, ignore_errors=True)  # pragma: no mutate
-            raise

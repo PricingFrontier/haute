@@ -4,10 +4,9 @@ pipeline lives at the project root or in a subdirectory, and regardless of cwd.
 
 THE BUG. The in-process executor's v2 apiInput source builder
 (``_builders._make_api_source_v2``) closed over the RAW relative ``path`` and
-handed it to ``_json_shred._cache.load_v2_api_source``, whose cache-directory hash
-(``_json_flatten._path_hash``) resolves a relative path against ``cwd``
-(``Path(data_path).resolve()``).  The cache-build route
-(``routes.json_cache._resolve_data_path``) and codegen
+handed it to ``_json_shred._cache.load_v2_api_source``, whose table identity resolves a
+relative path against ``cwd`` (``Path(data_path).resolve()``).  The snapshot
+builder and codegen
 (``_codegen_builders._api_input_template`` → ``Path(__file__).parent / rel``)
 instead anchor the relative path to the PIPELINE DIRECTORY.  So with the
 standard ``rating/main.py`` layout and the server run from the project root,
@@ -48,11 +47,10 @@ from typing import Any
 
 import pytest
 
-from haute._json_flatten import _json_cache_dir
-from haute._json_shred._cache import build_per_port_cache
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
+from tests.conftest import build_test_api_input_snapshots
 
 # The canonical multi-port witness: one nested document shredded into four
 # emit-true ports, reassembled by the OUTPUT mapping back into the same
@@ -103,10 +101,9 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     config = _api_input_config(data_path)
     config["path"] = _RELATIVE_DATA_PATH  # relative, overriding the abs helper
 
-    # Build the per-port cache at the pipeline-dir-anchored ABSOLUTE path — the
-    # cache the executor must find. _json_cache_dir is rooted at cwd, so this
-    # lands under <root>/.haute_cache/working/json_<hash of the abs path>.
-    build_per_port_cache(str(data_path), config, _json_cache_dir(str(data_path), "working"))
+    # Build the table's input snapshot at the pipeline-dir-anchored ABSOLUTE
+    # path — the identity the executor must resolve to before it can lease it.
+    build_test_api_input_snapshots(str(data_path), config)
 
     yield config, data_path
 

@@ -1110,7 +1110,15 @@ class _StrictInputCacheModel(BaseModel):
 
 
 class InputCacheSourceRequest(_StrictInputCacheModel):
+    """One input node's source: a Data Input's config, or a structured API Input's.
+
+    A structured API Input (JSON, JSONL, NDJSON, XML with a v2 ``tables``
+    schema) is one snapshot per emitting table; its requests act on every
+    table of the node together.
+    """
+
     schema_version: Literal[1] = 1
+    node_type: Literal["dataInput", "apiInput"] = "dataInput"
     config: dict[str, Any]
 
 
@@ -1145,12 +1153,31 @@ class InputCacheGenerationPayload(_StrictInputCacheModel):
     build_class: Literal["bounded", "admitted_eager", "unsupported"]
 
 
+class InputCacheTableStatus(_StrictInputCacheModel):
+    """One emitting table of a structured API Input and its own snapshot."""
+
+    label: str
+    identity_digest: str
+    state: Literal["missing", "building", "ready", "corrupt", "failed"]
+    freshness: Literal["fresh", "stale", "unknown"]
+    generation: InputCacheGenerationPayload | None = None
+
+
 class InputCacheSnapshotStatusResponse(_StrictInputCacheModel):
+    """A Data Input's snapshot, or a structured API Input's tables together.
+
+    For an API Input, ``identity_digest`` names the node's set of tables,
+    ``state`` and ``freshness`` summarise them (ready only when every table
+    is), ``generation`` is ``None``, and ``tables`` lists each one; a Data
+    Input has no ``tables``.
+    """
+
     schema_version: Literal[1] = 1
     identity_digest: str
     state: Literal["missing", "building", "ready", "corrupt", "failed"]
     freshness: Literal["fresh", "stale", "unknown"]
     generation: InputCacheGenerationPayload | None = None
+    tables: list[InputCacheTableStatus] | None = None
 
 
 class InputCacheJobStatusResponse(_StrictInputCacheModel):
@@ -1799,34 +1826,8 @@ class TableListResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# /api/json-cache/*
+# /api/json-cache/infer
 # ---------------------------------------------------------------------------
-
-
-class JsonCacheBuildRequest(BaseModel):
-    """Request body for ``POST /api/json-cache/{build,status}``.
-
-    Dispatch precedence in the route:
-      1. ``volatile_schema is not None`` — use the in-memory v2 schema
-         (the ApiInputEditor's React state, sent verbatim). This is the
-         "user has unsaved edits open" path; mirrors the dual-cache
-         model at the schema plane (handover working principle 4).
-      2. Otherwise — read ``config_path`` from disk and use that.
-      3. If both are absent, the route returns 422 (no schema source).
-
-    ``volatile_schema`` carries the same shape as the on-disk config
-    (``{tables: [...], path: ..., ...}``). Note ``is not None`` — an
-    empty ``{}`` is distinct from ``None``: ``{}`` means "user provided
-    a malformed payload", which surfaces as a 422 from
-    ``validate_v2_schema``; ``None`` means "use disk".
-    """
-
-    path: str
-    config_path: str | None = None
-    # `Any` (not `dict`) so malformed shapes from the frontend reach
-    # `validate_v2_schema` and surface as our structured 422 rather
-    # than as Pydantic's default 422.
-    volatile_schema: Any = None
 
 
 class JsonCacheInferRequest(BaseModel):
@@ -1854,46 +1855,6 @@ class JsonCacheInferResponse(BaseModel):
     """
 
     tables: list[dict[str, Any]]
-
-
-class JsonCacheBuildResponse(BaseModel):
-    path: str
-    data_path: str
-    row_count: int
-    column_count: int
-    columns: dict[str, str]
-    size_bytes: int
-    cached_at: float
-    cache_seconds: float
-    # W2 item 2.7 — zero silent record loss. ``skipped_records`` counts
-    # top-level inputs that weren't JSON objects (e.g. a JSONL line holding
-    # a bare number); ``skipped_rows`` counts, per frame label, array
-    # elements whose shape mismatched that table (mixed arrays). Both are
-    # zero/empty for clean data.
-    skipped_records: int = 0
-    skipped_rows: dict[str, int] = Field(default_factory=dict)
-
-
-class JsonCacheProgressResponse(BaseModel):
-    active: bool
-    rows: int = 0
-    elapsed: float = 0.0
-    phase: str = ""
-
-
-class JsonCacheStatusResponse(BaseModel):
-    cached: bool
-    path: str | None = None
-    data_path: str = ""
-    row_count: int = 0
-    column_count: int = 0
-    columns: dict[str, str] = Field(default_factory=dict)
-    size_bytes: int = 0
-    cached_at: float = 0
-    # Mirrors JsonCacheBuildResponse (W2 item 2.7): the skip counts the
-    # build recorded into meta.json, echoed on status polls.
-    skipped_records: int = 0
-    skipped_rows: dict[str, int] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

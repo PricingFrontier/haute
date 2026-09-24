@@ -39,7 +39,6 @@ from haute._estimate_calibration import calibrate_materialisation_bytes
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import _sanitize_func_name, upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash, content_hash_bytes
-from haute._json_flatten import cache_state_signature_for_graph
 from haute._native_memory_limit import current_native_memory_backend
 from haute._path_resolution import _infer_project_root, resolve_runtime_file_path
 from haute._polars_selectors import preamble_selector_aliases
@@ -1153,7 +1152,6 @@ def dataframe_graph_input_identity(
         {
             "source": source,
             "sources": source_entries,
-            "json_cache_signature": cache_state_signature_for_graph(scoped_graph),
             "preamble_fingerprint": preamble_execution_fingerprint(
                 scoped_graph.preamble,
                 pipeline_dir=_cache_pipeline_dir(scoped_graph),
@@ -1170,9 +1168,11 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
     gets read, nothing else:
 
     * **apiInput** - signs the configured raw path for both flat files
-      and JSON/JSONL. JSON-shape inputs prefer a valid per-frame parquet
-      cache and otherwise shred that raw file directly; signing it prevents
-      a stale preview from hiding either fresh direct data or a raw-file error.
+      and structured (JSON, JSONL, NDJSON, XML) sources. A structured source
+      executes from its tables' input snapshots, so it also signs each
+      emitting table's generation pointer: a rebuild, refresh, or clear of a
+      table invalidates execution caches, and a rewritten source misses them
+      and reaches automatic preparation.
     * **dataInput** — direct Parquet signs the configured source; snapshot-backed
       inputs sign the active generation pointer, so only an explicit refresh
       invalidates execution caches.
@@ -1187,7 +1187,8 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
     if node_type == NodeType.API_INPUT:
         raw_path = config.get("path")
         if isinstance(raw_path, str) and raw_path:
-            return {"path": _runtime_path_from_graph_config(graph, raw_path)}
+            path = _runtime_path_from_graph_config(graph, raw_path)
+            return {"path": path, **_api_input_table_pointer_paths(config, path)}
         return {}
     if node_type == NodeType.DATA_INPUT:
         from haute._polars_io_registry import data_input_is_direct
@@ -1217,6 +1218,30 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
         if isinstance(raw, str) and raw:
             paths[path_field] = _runtime_path_from_graph_config(graph, raw)
     return paths
+
+
+def _api_input_table_pointer_paths(config: Mapping[str, Any], path: Path) -> dict[str, Path]:
+    """The generation pointer of each emitting table of a structured API input.
+
+    Keyed ``snapshot_pointer:<label>``. A flat-file source, or a schema the
+    node builder will reject, has none.
+    """
+    if not is_json_api_input_path(str(path)) or not isinstance(config.get("tables"), list):
+        return {}
+    from haute._api_input_schema import ApiInputSchemaError
+    from haute._json_shred._snapshots import api_input_snapshot_source
+    from haute._sandbox import _get_project_root
+    from haute._source_cache import SourceCacheStore
+
+    try:
+        source = api_input_snapshot_source(config, path)
+    except (ApiInputSchemaError, TypeError, ValueError):
+        return {}
+    store = SourceCacheStore(_get_project_root())
+    return {
+        f"snapshot_pointer:{table.label}": store.identity_path(table.identity) / "current.json"
+        for table in source.tables
+    }
 
 
 def _lineage_runtime_graph(graph: PipelineGraph, prepared: PreparedGraph) -> PipelineGraph:

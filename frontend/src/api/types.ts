@@ -591,6 +591,8 @@ export interface CacheNodesResponse {
 
 export interface InputCacheSourceRequest {
   schema_version: 1
+  /** A structured API Input acts on every emitting table of the node together. */
+  node_type?: "dataInput" | "apiInput"
   config: Record<string, unknown>
 }
 
@@ -625,12 +627,23 @@ export interface InputCacheGeneration {
   build_class: "bounded" | "admitted_eager" | "unsupported"
 }
 
+/** One emitting table of a structured API Input and its own snapshot. */
+export interface InputCacheTableStatus {
+  label: string
+  identity_digest: string
+  state: "missing" | "building" | "ready" | "corrupt" | "failed"
+  freshness: "fresh" | "stale" | "unknown"
+  generation: InputCacheGeneration | null
+}
+
 export interface InputCacheSnapshotResponse {
   schema_version: 1
   identity_digest: string
   state: "missing" | "building" | "ready" | "corrupt" | "failed"
   freshness: "fresh" | "stale" | "unknown"
   generation: InputCacheGeneration | null
+  /** A structured API Input's tables; absent or null for a Data Input. */
+  tables?: InputCacheTableStatus[] | null
 }
 
 export interface InputCacheJobStatusResponse {
@@ -1803,43 +1816,6 @@ export interface DatabricksSchemasResponse {
 
 export interface DatabricksTablesResponse {
   tables: DatabricksTable[]
-}
-
-// ---------------------------------------------------------------------------
-// JSON cache types
-// ---------------------------------------------------------------------------
-
-export interface JsonCacheProgressResponse {
-  active: boolean
-  rows?: number
-  elapsed?: number
-  phase?: string
-}
-
-export interface JsonCacheBuildResponse {
-  path: string
-  data_path: string
-  row_count: number
-  column_count: number
-  columns: Record<string, string>
-  size_bytes: number
-  cached_at: number
-  cache_seconds: number
-  skipped_records: number
-  skipped_rows: Record<string, number>
-}
-
-export interface JsonCacheStatusResponse {
-  cached: boolean
-  path?: string
-  data_path: string
-  row_count: number
-  column_count: number
-  size_bytes: number
-  cached_at: number
-  columns?: Record<string, string>
-  skipped_records: number
-  skipped_rows: Record<string, number>
 }
 
 // ---------------------------------------------------------------------------

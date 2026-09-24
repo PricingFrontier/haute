@@ -27,14 +27,12 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
-from haute._json_flatten import _json_cache_dir
-from haute._json_shred._cache import build_per_port_cache
 from haute._sandbox import _get_project_root, set_project_root
 from haute._trace_correlation import _correlate_rows_posthoc
 from haute._types import NodeType
 from haute.executor import _preview_cache
 from haute.trace import execute_trace
-from tests.conftest import make_graph
+from tests.conftest import build_test_api_input_snapshots, make_graph
 from tests.test_output_nested_roundtrip import _FIXTURE, _api_input_config, _output_mapping
 
 
@@ -68,11 +66,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     data_path = tmp_path / "data" / "data_model_example.json"
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_text(_FIXTURE.read_text())
-    build_per_port_cache(
-        data_path,
-        _api_input_config(data_path),
-        _json_cache_dir(data_path, "working"),
-    )
+    build_test_api_input_snapshots(data_path, _api_input_config(data_path))
     yield data_path
     set_project_root(original)
     _preview_cache.clear()
@@ -445,7 +439,7 @@ def test_banding_factor_dtypes_scoped_to_consumed_frame(
     config = copy.deepcopy(_api_input_config(project))
     drivers_table = next(t for t in config["tables"] if t["label"] == "drivers")
     next(c for c in drivers_table["columns"] if c["name"] == "policy_id")["type"] = "float"
-    build_per_port_cache(project, config, _json_cache_dir(project, "working"))
+    build_test_api_input_snapshots(project, config)
     _preview_cache.clear()
 
     graph = make_graph(
@@ -498,7 +492,7 @@ def test_rating_factor_dtypes_scoped_to_consumed_frame(
     config = copy.deepcopy(_api_input_config(project))
     drivers_table = next(t for t in config["tables"] if t["label"] == "drivers")
     next(c for c in drivers_table["columns"] if c["name"] == "policy_id")["type"] = "float"
-    build_per_port_cache(project, config, _json_cache_dir(project, "working"))
+    build_test_api_input_snapshots(project, config)
     _preview_cache.clear()
 
     graph = make_graph(

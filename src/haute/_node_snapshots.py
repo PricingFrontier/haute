@@ -160,6 +160,16 @@ _INPUT_LABEL_KEYS = ("path", "table", "name")
 
 
 def _input_label(provider: str, descriptor: Mapping[str, object]) -> str:
+    table = descriptor.get("table")
+    path = descriptor.get("path")
+    if (
+        provider == "api_input"
+        and isinstance(path, str)
+        and isinstance(table, Mapping)
+        and isinstance(table.get("path"), str)
+    ):
+        # One API-input identity is one table of a file: name both.
+        return f"{path} {table['path']}"
     for key in _INPUT_LABEL_KEYS:
         value = descriptor.get(key)
         if isinstance(value, str) and value:

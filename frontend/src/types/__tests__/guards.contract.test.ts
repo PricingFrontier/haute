@@ -31,9 +31,7 @@ import {
   parseGitGraphResponse,
   parseGitPrefs,
   parseHauteSessionResponse,
-  parseJsonCacheDeleteResponse,
-  parseJsonCacheBuildResponse,
-  parseJsonCacheStatusResponse,
+  parseInputCacheSnapshotResponse,
   parseJsonCacheSchemaInferenceResponse,
   parseFileListResponse,
   parseMlflowExperiments,
@@ -3094,43 +3092,94 @@ describe("API response guards", () => {
     ).toThrow(/lambdas/i)
   })
 
-  it("rejects incomplete json cache build payloads", () => {
-    const fixture = loadUiContractFixture<Record<string, unknown>>("json_cache_build_response")
+  it("parses a Data Input input-cache snapshot with tables null", () => {
+    const parsed = parseInputCacheSnapshotResponse({
+      schema_version: 1,
+      identity_digest: "digest-1",
+      state: "ready",
+      freshness: "fresh",
+      generation: null,
+      tables: null,
+    })
 
+    expect(parsed.tables).toBeNull()
+
+    const parsedAbsent = parseInputCacheSnapshotResponse({
+      schema_version: 1,
+      identity_digest: "digest-1",
+      state: "missing",
+      freshness: "unknown",
+      generation: null,
+    })
+
+    expect(parsedAbsent.tables).toBeNull()
+  })
+
+  it("parses an API Input input-cache snapshot with two tables", () => {
+    const parsed = parseInputCacheSnapshotResponse({
+      schema_version: 1,
+      identity_digest: "digest-2",
+      state: "ready",
+      freshness: "fresh",
+      generation: null,
+      tables: [
+        {
+          label: "drivers",
+          identity_digest: "digest-drivers",
+          state: "ready",
+          freshness: "fresh",
+          generation: {
+            generation_id: "gen-1",
+            row_count: 10,
+            column_count: 3,
+            columns: { premium: "Float64" },
+            size_bytes: 2048,
+            created_at: 123,
+            build_class: "bounded",
+          },
+        },
+        {
+          label: "vehicles",
+          identity_digest: "digest-vehicles",
+          state: "ready",
+          freshness: "fresh",
+          generation: {
+            generation_id: "gen-2",
+            row_count: 5,
+            column_count: 2,
+            columns: { make: "Utf8" },
+            size_bytes: 1024,
+            created_at: 456,
+            build_class: "bounded",
+          },
+        },
+      ],
+    })
+
+    expect(parsed.tables).toHaveLength(2)
+    expect(parsed.tables?.[0]?.label).toBe("drivers")
+    expect(parsed.tables?.[1]?.generation?.row_count).toBe(5)
+  })
+
+  it("rejects an input-cache table entry with a bad state", () => {
     expect(() =>
-      parseJsonCacheBuildResponse({
-        ...fixture,
-        data_path: undefined,
+      parseInputCacheSnapshotResponse({
+        schema_version: 1,
+        identity_digest: "digest-3",
+        state: "ready",
+        freshness: "fresh",
+        generation: null,
+        tables: [
+          {
+            label: "drivers",
+            identity_digest: "digest-drivers",
+            state: "not-a-real-state",
+            freshness: "fresh",
+            generation: null,
+          },
+        ],
       }),
-    ).toThrow(/data_path/i)
-  })
-
-  it("preserves json cache build skipped-record metadata", () => {
-    const parsed = parseJsonCacheBuildResponse({
-      ...loadUiContractFixture<Record<string, unknown>>("json_cache_build_response"),
-      skipped_records: 1,
-      skipped_rows: { drivers: 4 },
-    })
-
-    expect(parsed.skipped_records).toBe(1)
-    expect(parsed.skipped_rows).toEqual({ drivers: 4 })
-  })
-
-  it("preserves json cache skipped-record metadata", () => {
-    const parsed = parseJsonCacheStatusResponse({
-      cached: true,
-      data_path: "cache/data.parquet",
-      row_count: 10,
-      column_count: 3,
-      size_bytes: 2048,
-      cached_at: 123,
-      columns: { premium: "Float64" },
-      skipped_records: 2,
-      skipped_rows: { drivers: 3 },
-    })
-
-    expect(parsed.skipped_records).toBe(2)
-    expect(parsed.skipped_rows).toEqual({ drivers: 3 })
+    ).toThrow(/state/i)
   })
 
   it("rejects malformed submodel graph payloads", () => {
@@ -3589,7 +3638,6 @@ describe("API response guards", () => {
   it("parses shared client trust-boundary payloads", () => {
     expect(parseHauteSessionResponse({ ok: true })).toEqual({ ok: true })
     expect(parseOutputAssembleDryRunResponse({ status: "ok", document: [{ premium: 1 }], row_count: 1, error: null })).toMatchObject({ status: "ok", row_count: 1 })
-    expect(parseJsonCacheDeleteResponse({ cached: false, data_path: "cache/data.parquet" })).toEqual({ cached: false, data_path: "cache/data.parquet" })
     expect(parseJsonCacheSchemaInferenceResponse({ tables: [{ name: "drivers" }] }).tables).toEqual([{ name: "drivers" }])
     expect(parseMlflowExperiments([{ experiment_id: "1", name: "pricing" }])[0]?.name).toBe("pricing")
     expect(parseMlflowRuns([{ run_id: "run-1", run_name: "baseline", metrics: { auc: 0.9 }, artifacts: ["model"] }])[0]?.metrics.auc).toBe(0.9)
@@ -3615,7 +3663,6 @@ describe("API response guards", () => {
   it.each([
     ["session boolean", () => parseHauteSessionResponse({ ok: "yes" })],
     ["output document", () => parseOutputAssembleDryRunResponse({ status: "ok", document: {}, row_count: 1 })],
-    ["cache deletion path", () => parseJsonCacheDeleteResponse({ cached: true })],
     ["inferred nested table", () => parseJsonCacheSchemaInferenceResponse({ tables: ["bad"] })],
     ["experiment required name", () => parseMlflowExperiments([{ experiment_id: "1" }])],
     ["run nested metric", () => parseMlflowRuns([{ run_id: "r", run_name: "n", metrics: { auc: "high" }, artifacts: [] }])],

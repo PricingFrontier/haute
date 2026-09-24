@@ -464,7 +464,7 @@ jobs:
           tests/test_interactive_worker_pool.py
           tests/test_interactive_route_isolation.py
           tests/test_json_direct_spill.py
-          tests/test_json_cache_cross_process.py
+          tests/test_api_input_table_snapshots.py
           tests/test_json_runtime_storage.py
           -q
 

@@ -92,7 +92,6 @@ _ACCESSOR_CASES = [
     ("haute.routes.pipeline", "_trace_timeout", "HAUTE_TRACE_TIMEOUT", "5", 5.0, 120.0),
     ("haute.routes.pipeline", "_preview_timeout", "HAUTE_PREVIEW_TIMEOUT", "5", 5.0, 120.0),
     ("haute.routes.pipeline", "_sink_timeout", "HAUTE_SINK_TIMEOUT", "5", 5.0, 300.0),
-    ("haute.routes.json_cache", "_build_timeout", "HAUTE_BUILD_TIMEOUT", "5", 5.0, 1800.0),
     (
         "haute.routes.output_assemble",
         "_dry_run_timeout",
@@ -208,7 +207,6 @@ def test_solver_timeout_optional_semantics(monkeypatch):
 @pytest.mark.parametrize(
     ("module_name", "accessor", "env_var"),
     [
-        ("haute.routes.json_cache", "_build_timeout", "HAUTE_BUILD_TIMEOUT"),
         ("haute.routes.input_cache", "_build_timeout", "HAUTE_BUILD_TIMEOUT"),
     ],
 )
@@ -225,7 +223,6 @@ def test_build_timeout_has_one_positive_finite_policy(
 @pytest.mark.parametrize(
     ("module_name", "accessor"),
     [
-        ("haute.routes.json_cache", "_build_timeout"),
         ("haute.routes.input_cache", "_build_timeout"),
     ],
 )

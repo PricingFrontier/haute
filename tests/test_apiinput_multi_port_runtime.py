@@ -7,7 +7,7 @@ Exercises the v2 apiInput at runtime end-to-end through execute_graph:
   source; downstream edges select it by its required ``sourceHandle``.
 - 2+ emit-true tables → source emits a dict[port_label, LazyFrame]; the
   executor's edge-resolution picks per edge via ``sourceHandle``.
-- Cache absent → shred JSON directly and execute successfully.
+- Input snapshot absent → an admitted preview auto-prepares it and executes.
 - Multi-port edge with null ``sourceHandle`` → executor raises a clear
   diagnostic naming the available ports.
 
@@ -17,7 +17,6 @@ the surface focused on routing, not transform semantics.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -25,11 +24,10 @@ from typing import Any
 import polars as pl
 import pytest
 
-from haute._json_flatten import _json_cache_dir
-from haute._json_shred._cache import build_per_port_cache
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
+from tests.conftest import build_test_api_input_snapshots
 
 
 def _rating_records() -> list[dict[str, Any]]:
@@ -132,10 +130,8 @@ def _api_input_node(node_id: str, config: dict[str, Any]) -> GraphNode:
 
 
 def _build_cache_for(tmp_path: Path, data_path: Path, config: dict[str, Any]) -> None:
-    """Build the v2 per-port cache for *data_path* using *config*. Mirrors
-    what the /api/json-cache/build endpoint does (commit 3)."""
-    cache_dir = _json_cache_dir(data_path, "working")
-    build_per_port_cache(data_path, config, cache_dir)
+    """Build every emitting table of *config* into the project's input snapshot store."""
+    build_test_api_input_snapshots(data_path, config)
 
 
 # ─── 1. zero-emit-true: preview fails loud ────────────────────────
@@ -300,14 +296,14 @@ def test_multi_port_row_limit_caps_each_port(isolated_root) -> None:
     assert results["d_drivers"].row_count == 1  # capped from 3
 
 
-# ─── 4. cache absent: direct runtime shred ─────────────────────────
+# ─── 4. input snapshot absent: admitted preview auto-prepares it ───
 
 
-def test_runtime_shreds_directly_when_cache_missing(isolated_root) -> None:
+def test_runtime_auto_prepares_snapshot_when_missing(isolated_root) -> None:
     data_path = isolated_root / "data.json"
     data_path.write_text(json.dumps(_rating_records()))
     config = _single_port_config(data_path)
-    # Do NOT call _build_cache_for here — cache is absent.
+    # Do NOT call _build_cache_for here — the admitted preview must build it.
 
     graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
     results = execute_graph(graph, target_node_id="api")
@@ -406,77 +402,6 @@ def test_zero_columns_on_emitting_table_distinct_error(isolated_root) -> None:
     # And should name which tables are emit-true so the user knows
     # where to tick a column.
     assert "policies" in error_msg
-
-
-def test_build_noop_when_fingerprint_matches(isolated_root) -> None:
-    """Second build with the same v2 config is a no-op — doesn't
-    re-shred and doesn't bump meta.json mtime, so commit 1's
-    preview-cache invalidation doesn't thrash on repeated cache-button
-    clicks.
-    """
-    from haute._json_flatten import _json_cache_dir
-    from haute._json_shred._cache import build_per_port_cache as _build
-
-    data_path = isolated_root / "data.json"
-    data_path.write_text(json.dumps(_rating_records()))
-    config = _single_port_config(data_path)
-    cache_dir = _json_cache_dir(str(data_path), "working")
-
-    _build(str(data_path), config, cache_dir)
-    meta_path = cache_dir / "meta.json"
-    first_mtime = meta_path.stat().st_mtime
-
-    # Second build with the SAME schema; meta.json mtime should be
-    # unchanged.
-    _build(str(data_path), config, cache_dir)
-    second_mtime = meta_path.stat().st_mtime
-
-    assert first_mtime == second_mtime, (
-        "no-op trapdoor failed: a fingerprint-matching rebuild shouldn't rewrite meta.json"
-    )
-
-
-def test_signature_freshens_on_meta_mtime_change(isolated_root) -> None:
-    """Positive complement to the no-op assertion above: when an
-    apiInput's working ``meta.json`` mtime CHANGES (a build/delete/mirror
-    touched it), ``cache_state_signature_for_graph`` must produce a
-    DIFFERENT string, so the preview-cache fingerprint key changes and
-    the next preview misses → fresh execution.
-
-    Commit 1 promises this unit but only the no-change half was tested;
-    a regression that froze the mtime term would pass every existing
-    unit and only break the slow integration tests.
-    """
-    import os
-
-    from haute._json_flatten import _json_cache_dir, cache_state_signature_for_graph
-
-    data_path = isolated_root / "data.json"
-    data_path.write_text(json.dumps(_rating_records()))
-    config = _single_port_config(data_path)
-
-    # Build the working cache so meta.json exists.
-    _build_cache_for(isolated_root, data_path, config)
-
-    graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
-
-    sig_before = cache_state_signature_for_graph(graph)
-    assert sig_before, "signature should be non-empty once meta.json exists"
-
-    # Synthetically advance the working meta.json mtime (+5s avoids
-    # coarse-fs granularity making the bump a no-op; mirrors the
-    # _bump_mtime pattern at test_runtime_input_cache_invalidation.py:73).
-    meta_path = _json_cache_dir(str(data_path), "working") / "meta.json"
-    st = meta_path.stat()
-    os.utime(meta_path, (st.st_atime + 5, st.st_mtime + 5))
-
-    sig_after = cache_state_signature_for_graph(graph)
-
-    assert sig_after != sig_before, (
-        "freshening invariant failed: a meta.json mtime bump must move the "
-        "cache-state signature so the preview-cache key changes and the next "
-        "preview re-executes"
-    )
 
 
 def test_two_consumers_different_ports_dont_collide_on_column_cache(isolated_root) -> None:
@@ -679,7 +604,6 @@ def test_multi_port_ancestor_not_collected_under_target_preview(isolated_root) -
     the ancestor was unconditionally collected into ``eager_outputs`` as a
     ``dict[label, DataFrame]``.
     """
-    import polars as pl
 
     from haute.executor import _eager_execute
 
@@ -721,7 +645,6 @@ def test_multi_port_target_still_collected_when_it_is_the_target(isolated_root) 
     it stays materialised — ``dict[label, DataFrame]`` in ``eager_outputs``
     exactly as before. The gate only suppresses collection of ANCESTORS.
     """
-    import polars as pl
 
     from haute.executor import _eager_execute
 
@@ -1213,38 +1136,25 @@ def test_multi_port_target_limits_each_collected_frame(isolated_root) -> None:
     }
 
 
-def test_apiinput_preview_invalidates_when_optional_cache_is_built(isolated_root) -> None:
-    """A direct preview must rerun against a newly built optional cache."""
+def test_apiinput_preview_invalidates_when_source_file_changes(isolated_root) -> None:
+    """A preview must rerun once the source file changes underneath its snapshot."""
     data_path = isolated_root / "data.json"
     data_path.write_text(json.dumps(_rating_records()))
     config = _single_port_config(data_path)
 
     graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
 
-    # 1. Preview before any cache build succeeds by shredding JSON directly.
+    # 1. First preview admits, auto-prepares the missing table snapshot, and executes.
     first = execute_graph(graph, target_node_id="api")
     assert first["api"].status == "ok", first["api"].error
     assert first["api"].row_count == 2
 
-    # 2. Build the cache out-of-band, then give its frame a distinct row count
-    # while preserving the exact declared schema. This makes a stale preview
-    # cache hit observable rather than merely asserting the same values twice.
-    _build_cache_for(isolated_root, data_path, config)
-    cache_dir = _json_cache_dir(data_path, "working")
-    pl.DataFrame({"policy_id": [999]}, schema={"policy_id": pl.Int64}).write_parquet(
-        cache_dir / "policies.parquet"
-    )
-    parquet_payload = (cache_dir / "policies.parquet").read_bytes()
-    meta_path = cache_dir / "meta.json"
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    meta["tables"][0]["content_signature"] = {
-        "size": len(parquet_payload),
-        "sha256": hashlib.sha256(parquet_payload).hexdigest(),
-    }
-    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    # 2. The source file changes underneath the built snapshot, giving it a
+    # distinct row count so a stale preview-cache hit is observable.
+    data_path.write_text(json.dumps(_rating_records()[:1]))
 
-    # 3. meta.json appearing changes the preview key, so the next preview uses
-    # the cache fast path instead of reusing the earlier direct result.
+    # 3. The next preview detects the table is stale against the new source
+    # signature, auto-rebuilds it, and the preview-cache key moves with it.
     second = execute_graph(graph, target_node_id="api")
     assert second["api"].status == "ok", second["api"].error
     assert second["api"].row_count == 1

@@ -21,7 +21,7 @@ from haute._env import int_env
 from haute._execution_context import (
     current_execution_context,
 )
-from haute._json_shred import _records, _runtime_storage, _shred, _source_proof
+from haute._json_shred import _records, _runtime_storage, _shred
 from haute._json_shred._records import ShredSkipStats, _ChunkFailure, _ShredExecutionProgress
 from haute._json_shred._shred import _EmittingTableSpec
 from haute._logging import get_logger
@@ -135,7 +135,7 @@ def _raise_chunk_error(result: _ChunkResult) -> NoReturn:
 
 
 class _BoundedParquetRowGroupWriter:
-    """Shared aggregate-bounded writer for cache artifacts and runtime spills."""
+    """Shared aggregate-bounded writer for snapshot builds and runtime spills."""
 
     def __init__(
         self,
@@ -254,19 +254,6 @@ class _BoundedParquetRowGroupWriter:
     def lazy_bundle(self) -> dict[str, pl.LazyFrame]:
         return {spec.label: pl.scan_parquet(self.paths[spec.label]) for spec in self.table_specs}
 
-    def table_summaries(self) -> list[dict[str, Any]]:
-        if self.writers:
-            raise RuntimeError("bounded parquet writers must be closed before summarising")
-        return [
-            _table_summary(
-                spec.label,
-                self.paths[spec.label],
-                self.row_counts[spec.label],
-                self.schema_frames[spec.label],
-            )
-            for spec in self.table_specs
-        ]
-
 
 class _DirectSpillBundle(_BoundedParquetRowGroupWriter):
     """Runtime lifecycle wrapper around the shared bounded row-group writer."""
@@ -354,32 +341,13 @@ def _shred_data_file_to_direct_spill(
         raise
 
 
-def _table_summary(
-    label: str,
-    parquet_path: Path,
-    row_count: int,
-    schema_frame: pl.DataFrame,
-) -> dict[str, Any]:
-    """One ``tables[]`` manifest entry. Column shape comes from an empty frame
-    built through :func:`_buffer_to_frame`, so the serial and parallel paths
-    report identical dtypes by construction rather than by agreement."""
-    return {
-        "label": label,
-        "parquet": parquet_path.name,
-        "row_count": row_count,
-        "column_count": schema_frame.width,
-        "columns": {name: str(dtype) for name, dtype in schema_frame.schema.items()},
-        "content_signature": _source_proof._file_content_signature(parquet_path),
-    }
-
-
 def _write_tables_streaming(
     data_path: Path,
     v2_config: dict[str, Any],
     table_specs: tuple[_EmittingTableSpec, ...],
     tmp_dir: Path,
-) -> tuple[list[dict[str, Any]], ShredSkipStats]:
-    """Stream one source into bounded staged Parquet row groups."""
+) -> ShredSkipStats:
+    """Stream one source into one bounded Parquet file per table in *tmp_dir*."""
     skip_stats = ShredSkipStats()
     emitted_counts: dict[str, int] = {spec.label: 0 for spec in table_specs}
     record_count = 0
@@ -409,7 +377,7 @@ def _write_tables_streaming(
         )
         writer.flush()
         writer.close()
-        return writer.table_summaries(), skip_stats
+        return skip_stats
     except BaseException as exc:
         try:
             writer.close()
@@ -430,13 +398,26 @@ def _merge_chunk_skip_stats(results: Iterable[_ChunkResult]) -> ShredSkipStats:
     return combined
 
 
+def _config_emitting_only(v2_config: dict[str, Any], labels: set[str]) -> dict[str, Any]:
+    """*v2_config* with every emitting table outside *labels* turned off."""
+    tables = v2_config["tables"]
+    if all(not _shred.table_is_emitting(table) or table["label"] in labels for table in tables):
+        return v2_config
+    return {
+        **v2_config,
+        "tables": [
+            table if table.get("label") in labels else {**table, "emit": False} for table in tables
+        ],
+    }
+
+
 def _write_tables_in_parallel(
     data_path: Path,
     v2_config: dict[str, Any],
     table_specs: tuple[_EmittingTableSpec, ...],
     tmp_dir: Path,
     ranges: list[tuple[int, int]],
-) -> tuple[list[dict[str, Any]], ShredSkipStats]:
+) -> ShredSkipStats:
     """Shred *ranges* across worker processes, then assemble one parquet each.
 
     Parts are streamed one row group at a time into the final parquet in chunk
@@ -448,8 +429,12 @@ def _write_tables_in_parallel(
 
     import pyarrow.parquet as pq
 
+    # Workers rebuild their table specs from the config, so the config they
+    # receive emits exactly the tables being written: a build of one edited
+    # table never shreds its fresh siblings.
+    worker_config = _config_emitting_only(v2_config, {spec.label for spec in table_specs})
     tasks = [
-        (str(data_path), start, end, index, v2_config, str(tmp_dir))
+        (str(data_path), start, end, index, worker_config, str(tmp_dir))
         for index, (start, end) in enumerate(ranges)
     ]
     workers = _records._parallel_worker_count(len(tasks))
@@ -516,7 +501,6 @@ def _write_tables_in_parallel(
                     f"worker-reported {expected_rows}"
                 )
         writer.close()
-        summaries = writer.table_summaries()
     except BaseException as exc:
         try:
             writer.close()
@@ -534,4 +518,4 @@ def _write_tables_in_parallel(
             3,  # pragma: no mutate
         ),
     )
-    return summaries, skip_stats
+    return skip_stats

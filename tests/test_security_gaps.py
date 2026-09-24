@@ -359,7 +359,7 @@ class TestPathTraversalNullByteSafePath:
 
 
 class TestPathTraversalJsonCache:
-    """JSON cache endpoints use validate_safe_path to block path traversal.
+    """The JSON schema-inference endpoint blocks path traversal.
     These tests verify the endpoint-level protection via TestClient.
     """
 
@@ -373,40 +373,10 @@ class TestPathTraversalJsonCache:
 
         return TestClient(app, raise_server_exceptions=False)
 
-    def test_build_path_traversal_rejected(self, client):
+    def test_infer_path_traversal_rejected(self, client):
         resp = client.post(
-            "/api/json-cache/build",
+            "/api/json-cache/infer",
             json={"path": "../../etc/passwd"},
-        )
-        assert resp.status_code == 403
-
-    def test_status_path_traversal_rejected(self, client):
-        resp = client.get(
-            "/api/json-cache/status",
-            params={"path": "../../etc/passwd"},
-        )
-        assert resp.status_code == 403
-
-    def test_progress_path_traversal_rejected(self, client):
-        resp = client.get(
-            "/api/json-cache/progress",
-            params={"path": "../../etc/passwd"},
-        )
-        assert resp.status_code == 403
-
-    def test_delete_path_traversal_rejected(self, client):
-        resp = client.delete(
-            "/api/json-cache",
-            params={"path": "../../etc/passwd"},
-        )
-        assert resp.status_code == 403
-
-    def test_build_config_path_traversal_rejected(self, client, tmp_path: Path):
-        valid_data = tmp_path / "data.json"
-        valid_data.write_text('{"key": "value"}')
-        resp = client.post(
-            "/api/json-cache/build",
-            json={"path": "data.json", "config_path": "../../etc/shadow"},
         )
         assert resp.status_code == 403
 
@@ -745,7 +715,7 @@ class TestNullByteHTTPParam:
 
     def test_null_byte_in_json_cache_path(self, client):
         resp = client.post(
-            "/api/json-cache/build",
+            "/api/json-cache/infer",
             json={"path": "file\x00../../etc/passwd"},
         )
         assert resp.status_code == 400
@@ -789,17 +759,13 @@ class TestDoubleEncodedHTTPTraversal:
         assert resp.status_code in (403, 404)
 
     def test_double_encoded_json_cache_rejected(self, client):
-        # Post-commit-5.5: the route returns 422 ApiInputSchemaError when
-        # no schema source is supplied; the security contract is "4xx
-        # rejection" — 422 is just as defensive as the prior 404. A
-        # malicious double-encoded path that bypasses validate_safe_path
-        # would still need a schema source AND a real data file to
-        # exfiltrate anything.
+        # A double-encoded path is a literal (non-existent) name inside the
+        # project, so inference answers 404 rather than reading anything.
         resp = client.post(
-            "/api/json-cache/build",
+            "/api/json-cache/infer",
             json={"path": "%2e%2e/%2e%2e/etc/passwd"},
         )
-        assert resp.status_code in (404, 422)
+        assert resp.status_code == 404
 
 
 # =========================================================================

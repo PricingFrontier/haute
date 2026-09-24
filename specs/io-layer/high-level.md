@@ -30,7 +30,7 @@ In scope:
 The [Databricks IO component](../databricks-io/high-level.md) owns Databricks credential
 resolution, query validation, Arrow fetching, and Unity Catalog browsing. The
 [caching component](../caching/high-level.md) consumes the source-cache identity contract
-and owns execution/dataframe/JSON cache behaviour. HTTP job admission and responses belong
+and owns execution/dataframe cache behaviour. HTTP job admission and responses belong
 to [server API](../server-api/high-level.md).
 
 ## Behaviour

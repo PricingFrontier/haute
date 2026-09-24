@@ -8,7 +8,7 @@ code-to-canvas sync channel (file watcher + WebSocket), the request/response con
 route in the product speaks (Pydantic schemas, the typed error hierarchy, the sanitized-error
 convention), and the two largest route families itself: pipeline CRUD/preview/trace/output and
 file/schema browsing. Every other route module (Databricks, Explore, MLflow, modelling,
-optimiser, submodel, git, JSON cache) is included into the same `FastAPI` app but owned by
+optimiser, submodel, git, JSON schema inference) is included into the same `FastAPI` app but owned by
 its own component; this one is the substrate they all sit on.
 
 It exists so that a pricing analyst editing a pipeline on the canvas gets sub-second preview
@@ -27,7 +27,7 @@ In scope:
   exact local-Origin checks, the HttpOnly-cookie bootstrap, and the per-process
   session token accepted through that cookie. URL/header token transport is unsupported.
 - The shared Pydantic contract layer: `haute.schemas` (the cross-route request/response models;
-  OUTPUT dry-run keeps two route-local models). JSON-cache and output routes consume the
+  OUTPUT dry-run keeps two route-local models). JSON schema-inference and output routes consume the
   v2 input/output schema modules owned by [json-shredding](../json-shredding/high-level.md).
   Explore's shared models include dedicated pivot run/status/cancel and exact-member contracts.
   They distinguish a typed `cache_required` response from started/completed work and expose only
@@ -59,7 +59,7 @@ Interactive preview and trace are dispatched to the execution engine's warm isol
 worker pool. Their HTTP deadline is destructive for the worker, not merely a response
 deadline: after a 504 the timed-out computation no longer consumes CPU or memory.
 Same-key supersession likewise kills obsolete work before the replacement is admitted
-to that affinity slot. OUTPUT dry-runs use the warm pool; JSON-cache builds, output
+to that affinity slot. OUTPUT dry-runs use the warm pool; API Input table builds, output
 writes, and Explore materialisation use killable one-shot workers under the same
 admitted native-memory policy. Irreversible file/cache publication remains
 parent-owned; a transactional database or lakehouse sink necessarily performs its
@@ -240,7 +240,7 @@ start one build; a build publishes under the signature of the inputs it actually
 input snapshots it prepared; a non-refresh run on a point already current
 for every column pins it and completes as cached; `refresh` rebuilds a current point. A
 snapshot-backed Data Input or an API-input table point is never built here: `run` answers
-`delegated` naming the existing input-cache or JSON-cache build route, and a direct-Parquet
+`delegated` naming the input-cache build route, and a direct-Parquet
 Data Input completes as cached because it reads its file directly. `clear` cancels a running
 build of the slot, waits for it to stop, and removes every signature's snapshot and the slot's
 pin, while any
@@ -465,7 +465,7 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   `ContractMismatchError` → 422; trace `ContractMismatchError` → 422; and preview
   `ContractMismatchError` / `SchemaMismatchError` failures are embedded in
   `NodeResult.error` so the canvas can show either mismatch in-situ rather than
-  as a banner. JSON-cache `ApiInputSchemaError` uses a direct 422 body
+  as a banner. JSON schema inference's `ApiInputSchemaError` uses a direct 422 body
   with a `type` discriminator, while preview/write execution uses the stable public-contract
   payload under `detail`; `OutputMappingSchemaError` uses FastAPI's
   `{"detail": <message>}` 422 envelope.

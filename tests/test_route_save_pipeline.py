@@ -1664,18 +1664,33 @@ class TestValidateApiInputsHaveSchemas:
         svc._validate_api_inputs_have_schemas(graph, warnings)
         assert any("Infer Tables" in w for w in warnings)
 
-    def test_mirrors_ndjson_api_input_cache(self, tmp_path: Path) -> None:
-        svc = SavePipelineService(tmp_path)
-        graph = _make_graph(
-            _make_node("api", "api_input", "apiInput", {"path": "input.ndjson"}),
+    def test_save_leaves_cache_state_untouched(self, tmp_path: Path) -> None:
+        """A structured API Input's tables are input snapshots: save writes none."""
+        (tmp_path / "input.ndjson").write_text('{"id": 1}\n', encoding="utf-8")
+        config = {
+            "path": "input.ndjson",
+            "tables": [
+                {
+                    "path": "$[:]",
+                    "label": "quotes",
+                    "emit": True,
+                    "columns": [{"name": "id", "path": "$[:].id", "type": "int", "selected": True}],
+                }
+            ],
+        }
+        graph = _make_graph(_make_node("api", "api_input", "apiInput", config))
+
+        saved = SavePipelineService(tmp_path).save(
+            SavePipelineRequest(
+                graph=graph,
+                name="main",
+                source_file="main.py",
+                base_revision=current_source_revision(tmp_path / "main.py", tmp_path),
+            )
         )
 
-        with patch("haute._json_flatten.mirror_cache_to_committed") as mirror:
-            svc._mirror_api_input_caches(graph)
-
-        mirror.assert_called_once_with(
-            str((tmp_path / "input.ndjson").resolve()), graph.nodes[0].data.config
-        )
+        assert saved.status == "saved"
+        assert not (tmp_path / ".haute_cache").exists()
 
     def test_skips_empty_path(self, tmp_path: Path) -> None:
         svc = SavePipelineService(tmp_path)

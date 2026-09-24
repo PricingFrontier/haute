@@ -2,10 +2,12 @@
 
 Acquisition stays a distinct, contained operation: this module never invents a
 new read path. It checks the store's freshness, decides whether the same
-explicit build (:func:`haute._input_providers.build_input_snapshot`) has to run,
-and then runs it under a hard memory cap — in the current process when that
-process already runs inside an isolated worker, otherwise in a spawned
-hard-capped worker admitted from the execution's own budget.
+explicit build (:func:`haute._input_providers.build_input_snapshot` for a Data
+Input, :func:`haute._json_shred._snapshots.build_api_input_tables` for a
+structured API Input's tables) has to run, and then runs it under a hard memory
+cap — in the current process when that process already runs inside an isolated
+worker, otherwise in a spawned hard-capped worker admitted from the execution's
+own budget.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ from haute._source_cache import (
     SourceCacheBuildError,
     SourceCacheCorruptError,
     SourceCacheGeneration,
+    SourceCacheStatus,
     SourceCacheStore,
     new_staging_token,
 )
@@ -77,6 +80,27 @@ _REMEDIATION_BY_REASON: Mapping[str, str] = {
     "timed_out": (
         "Preparing this Data Input's snapshot exceeded its time budget. Build it "
         "from the Data Input panel, or raise the preparation timeout, and try again."
+    ),
+}
+_API_INPUT_REMEDIATION = (
+    "Build this API Input's tables from the API Input panel, or give the "
+    "execution more memory headroom, and try again."
+)
+_API_INPUT_REMEDIATION_BY_REASON: Mapping[str, str] = {
+    "cap_unavailable": (
+        "This host cannot install the native memory cap an automatic snapshot "
+        "build requires. Build this API Input's tables explicitly from the API "
+        "Input panel, or run on a host that supports the cap."
+    ),
+    "memory_limited": (
+        "Preparing this API Input's tables ran out of memory. Give the execution "
+        "more memory headroom, or build them explicitly from the API Input "
+        "panel, and try again."
+    ),
+    "cancelled": "Preparing this API Input's tables was cancelled. Try again.",
+    "timed_out": (
+        "Preparing this API Input's tables exceeded its time budget. Build them "
+        "from the API Input panel, or raise the preparation timeout, and try again."
     ),
 }
 
@@ -207,17 +231,46 @@ def build_input_snapshot_worker(
             context.release_admission(preserve_primary_error=True)
 
 
-def _snapshot_backed_data_inputs(
+InputKind = Literal["data_input", "api_input"]
+
+
+def _is_structured_api_input(config: Mapping[str, Any]) -> bool:
+    """A JSON, JSONL, NDJSON, or XML API Input with a v2 table schema."""
+    from haute._api_input_schema import is_json_api_input_path
+
+    path = config.get("path")
+    return (
+        isinstance(path, str)
+        and bool(path)
+        and is_json_api_input_path(path)
+        and isinstance(config.get("tables"), list)
+    )
+
+
+def snapshot_backed_inputs(
     order: Iterable[str],
     node_map: Mapping[str, Any],
-) -> list[tuple[str, Mapping[str, Any]]]:
+) -> list[tuple[str, InputKind, Mapping[str, Any]]]:
+    """The inputs in *order* that execute from input snapshots, in execution order.
+
+    Snapshot-backed Data Inputs and structured API Inputs, each with its
+    runtime path resolved through the node builder's project-root guard.
+    """
     from haute._builders import _config_with_resolved_data_path
     from haute.schemas import NodeType
 
-    found: list[tuple[str, Mapping[str, Any]]] = []
+    found: list[tuple[str, InputKind, Mapping[str, Any]]] = []
     for node_id in order:
         node = node_map.get(node_id)
-        if node is None or node.data.nodeType != NodeType.DATA_INPUT:
+        if node is None:
+            continue
+        if node.data.nodeType == NodeType.API_INPUT:
+            if _is_structured_api_input(node.data.config):
+                found.append(
+                    (node_id, "api_input", _config_with_resolved_data_path(node.data.config))
+                )
+            continue
+        if node.data.nodeType != NodeType.DATA_INPUT:
             continue
         config = node.data.config
         if not config.get("inputType"):
@@ -229,7 +282,7 @@ def _snapshot_backed_data_inputs(
         # Resolve the runtime path through the same project-root guard the node
         # builder uses, so a path escape is refused here — with its own error —
         # rather than inside a build the guard never saw.
-        found.append((node_id, _config_with_resolved_data_path(config)))
+        found.append((node_id, "data_input", _config_with_resolved_data_path(config)))
     return found
 
 
@@ -307,14 +360,27 @@ def prepare_input_snapshots(
         source_signature,
     )
 
-    candidates = _snapshot_backed_data_inputs(order, node_map)
+    candidates = snapshot_backed_inputs(order, node_map)
     if not candidates:
         return ()
 
     cache_store = store or SourceCacheStore(_cache_root())
     effective_profile = profile if profile is not None else execution_context.profile
     records: list[InputPreparationRecord] = []
-    for node_id, config in candidates:
+    for node_id, kind, config in candidates:
+        if kind == "api_input":
+            for record in _prepare_api_input(
+                node_id=node_id,
+                config=config,
+                store=cache_store,
+                profile=effective_profile,
+                execution_context=execution_context,
+                spawn=spawn or run_isolated_worker,
+                deadline=deadline,
+            ):
+                records.append(record)
+                execution_context.record_input_preparation(record)
+            continue
         record = _prepare_one(
             node_id=node_id,
             config=config,
@@ -470,14 +536,20 @@ def _failure(
     build_class: str,
     reason_code: str,
     message: str,
+    kind: InputKind = "data_input",
 ) -> InputPreparationError:
+    remediation = (
+        _API_INPUT_REMEDIATION_BY_REASON.get(reason_code, _API_INPUT_REMEDIATION)
+        if kind == "api_input"
+        else _REMEDIATION_BY_REASON.get(reason_code, _REMEDIATION)
+    )
     return InputPreparationError(
         message,
         node_id=node_id,
         identity_digest=digest,
         build_class=build_class,
         reason_code=reason_code,
-        remediation=_REMEDIATION_BY_REASON.get(reason_code, _REMEDIATION),
+        remediation=remediation,
     )
 
 
@@ -489,8 +561,10 @@ def _wait_for_single_flight(
     digest: str,
     build_class: str,
     deadline: float,
+    kind: InputKind = "data_input",
 ) -> None:
     """Wait for another execution's build, staying cancellable and bounded."""
+    noun = "API Input's tables" if kind == "api_input" else "Data Input's snapshot"
     while not event.wait(timeout=0.1):
         if time.monotonic() > deadline:
             raise _failure(
@@ -499,9 +573,10 @@ def _wait_for_single_flight(
                 build_class=build_class,
                 reason_code="timed_out",
                 message=(
-                    "Waiting for another execution's snapshot build of this Data "
-                    "Input exceeded its time budget."
+                    f"Waiting for another execution's build of this {noun} "
+                    "exceeded its time budget."
                 ),
+                kind=kind,
             )
         try:
             execution_context.checkpoint(label="input_snapshot_preparation_wait")
@@ -511,7 +586,8 @@ def _wait_for_single_flight(
                 digest=digest,
                 build_class=build_class,
                 reason_code="cancelled",
-                message="Preparing this Data Input's snapshot was cancelled.",
+                message=f"Preparing this {noun} was cancelled.",
+                kind=kind,
             ) from exc
 
 
@@ -762,3 +838,324 @@ def _run_build(
         generation_id=outcome.generation_id,
         warning_code=warning_code,
     )
+
+
+def _api_input_reused_records(
+    node_id: str,
+    statuses: Iterable[tuple[Any, SourceCacheStatus]],
+    *,
+    started_at: float,
+    warning_code: str | None,
+) -> list[InputPreparationRecord]:
+    records: list[InputPreparationRecord] = []
+    for table, status in statuses:
+        assert status.generation is not None
+        records.append(
+            _reused_record(
+                node_id=node_id,
+                digest=table.identity.digest,
+                build_class="bounded",
+                generation=status.generation,
+                elapsed_seconds=time.monotonic() - started_at,
+                warning_code=warning_code,
+            )
+        )
+    return records
+
+
+def _prepare_api_input(
+    *,
+    node_id: str,
+    config: Mapping[str, Any],
+    store: SourceCacheStore,
+    profile: ExecutionProfile,
+    execution_context: ExecutionContext,
+    spawn: Any,
+    deadline: float | None,
+) -> list[InputPreparationRecord]:
+    """Reuse, build, or refresh every emitting table of one structured API Input.
+
+    Every table the node emits is prepared. When any is missing or stale the
+    source is shredded once and each missing or stale table is written in
+    that pass; fresh tables are left as they are. One record per table.
+    """
+    from haute._json_shred._snapshots import (
+        api_input_snapshot_source,
+        api_input_source_signature,
+        api_input_table_statuses,
+    )
+
+    started_at = time.monotonic()
+    deadline = _build_deadline() if deadline is None else min(_build_deadline(), deadline)
+    source = api_input_snapshot_source(config, str(config["path"]))
+    if not source.tables:
+        # The node builder owns the rejection of an API Input that emits nothing.
+        return []
+    group = source.group_digest
+    while True:
+        signature = api_input_source_signature(source.data_path)
+        statuses = api_input_table_statuses(source, store, source_signature=signature)
+        if any(status.state == "corrupt" for _table, status in statuses):
+            raise SourceCacheCorruptError(
+                "source-cache generation is corrupt; clear and rebuild this API Input's tables"
+            )
+        if signature == "missing":
+            # An absent source refreshes nothing. Published tables stay
+            # authoritative; a table without one has nothing to run from.
+            if all(status.state == "ready" for _table, status in statuses):
+                logger.warning(
+                    "input_snapshot_source_unavailable",
+                    node_id=node_id,
+                    identity_digest=group,
+                )
+                return _api_input_reused_records(
+                    node_id, statuses, started_at=started_at, warning_code="source_unavailable"
+                )
+            raise _failure(
+                node_id=node_id,
+                digest=group,
+                build_class="bounded",
+                reason_code="build_failed",
+                message=(
+                    "This API Input's source is unavailable and not every table has a "
+                    "published snapshot."
+                ),
+                kind="api_input",
+            )
+        to_build = [
+            table.label
+            for table, status in statuses
+            if not (
+                status.state == "ready"
+                and status.freshness in ("fresh", "unknown")
+                and status.generation is not None
+            )
+        ]
+        if not to_build:
+            return _api_input_reused_records(
+                node_id, statuses, started_at=started_at, warning_code=None
+            )
+        waiting = _acquire_single_flight(group)
+        if waiting is None:
+            break
+        # Another execution in this process is building this node's tables;
+        # wait, then read every status again rather than building twice.
+        _wait_for_single_flight(
+            waiting.event,
+            execution_context=execution_context,
+            node_id=node_id,
+            digest=group,
+            build_class="bounded",
+            deadline=deadline,
+            kind="api_input",
+        )
+        owner_error = waiting.error
+        if isinstance(owner_error, InputPreparationError):
+            raise _failure(
+                node_id=node_id,
+                digest=group,
+                build_class="bounded",
+                reason_code=owner_error.reason_code,
+                message=(
+                    f"Another execution's build of this API Input's tables failed: {owner_error}"
+                ),
+                kind="api_input",
+            ) from owner_error
+
+    build_error: BaseException | None = None
+    try:
+        return _run_api_input_build(
+            node_id=node_id,
+            source=source,
+            statuses=statuses,
+            to_build=to_build,
+            signature=signature,
+            store=store,
+            profile=profile,
+            execution_context=execution_context,
+            spawn=spawn,
+            started_at=started_at,
+            deadline=deadline,
+        )
+    except BaseException as exc:
+        build_error = exc
+        raise
+    finally:
+        _release_single_flight(group, build_error)
+
+
+def _run_api_input_build(
+    *,
+    node_id: str,
+    source: Any,
+    statuses: tuple[tuple[Any, SourceCacheStatus], ...],
+    to_build: list[str],
+    signature: str,
+    store: SourceCacheStore,
+    profile: ExecutionProfile,
+    execution_context: ExecutionContext,
+    spawn: Any,
+    started_at: float,
+    deadline: float,
+) -> list[InputPreparationRecord]:
+    from haute._api_input_schema import ApiInputSchemaError
+    from haute._json_shred._snapshots import (
+        api_input_table_statuses,
+        build_api_input_tables,
+        run_supervised_api_input_build,
+    )
+
+    group = source.group_digest
+    building = set(to_build)
+    refreshed = {
+        table.identity.digest
+        for table, status in statuses
+        if table.label in building and status.state == "ready"
+    }
+    in_process = current_native_memory_backend() is not None
+    execution: PreparationExecution = "in_process" if in_process else "worker"
+    budget = None if in_process else isolated_execution_budget(execution_context)
+    memory_limit_bytes = (
+        execution_context.memory_limit_bytes if budget is None else budget.memory_limit_bytes
+    )
+
+    if not in_process and not process_memory_caps_supported():
+        # Without a cap only already-published tables can serve: stale ones
+        # are reused, and a missing one is refused before the source is read.
+        if all(
+            status.generation is not None for table, status in statuses if table.label in building
+        ):
+            logger.warning(
+                "input_snapshot_cap_unavailable_stale_reused",
+                node_id=node_id,
+                identity_digest=group,
+            )
+            return _api_input_reused_records(
+                node_id,
+                statuses,
+                started_at=started_at,
+                warning_code="cap_unavailable_stale_reused",
+            )
+        raise _failure(
+            node_id=node_id,
+            digest=group,
+            build_class="bounded",
+            reason_code="cap_unavailable",
+            message=(
+                "This host cannot install the native memory cap an automatic "
+                "snapshot build requires."
+            ),
+            kind="api_input",
+        )
+
+    logger.warning(
+        "input_snapshot_auto_build",
+        node_id=node_id,
+        identity_digest=group,
+        build_class="bounded",
+        action="refreshed" if refreshed else "built",
+        execution=execution,
+        memory_limit_bytes=memory_limit_bytes,
+        tables=to_build,
+    )
+
+    if in_process:
+        token = execution_context.cancellation_token
+        try:
+            build_api_input_tables(
+                source,
+                to_build,
+                store=store,
+                profile=profile,
+                cancellation=lambda: token.cancelled,
+                deadline=deadline,
+                execution_context=execution_context,
+            )
+        except (SourceCacheCorruptError, PolarsIoConfigError, ApiInputSchemaError):
+            raise
+        except Exception as exc:
+            raise _failure(
+                node_id=node_id,
+                digest=group,
+                build_class="bounded",
+                reason_code=_classify_local_failure(
+                    exc, deadline=deadline, cancelled=token.cancelled
+                ),
+                message="Preparing this API Input's tables failed.",
+                kind="api_input",
+            ) from exc
+    else:
+        if budget is None:
+            raise RuntimeError("a spawned snapshot build requires an admitted budget")
+        cancellation_token = execution_context.cancellation_token
+
+        def stop_reason() -> WorkerTerminalReason | None:
+            return "cancelled" if cancellation_token.cancelled else None
+
+        worker_config = dataclasses.replace(
+            worker_config_for_memory_policy(
+                memory_limit_bytes=budget.memory_limit_bytes,
+                timeout_seconds=max(1.0, deadline - time.monotonic()),
+                stop_reason=stop_reason,
+                process_name="haute-input-prep",
+            ),
+            require_memory_limit=True,
+        )
+        try:
+            run_supervised_api_input_build(
+                source,
+                to_build,
+                store=store,
+                profile=profile,
+                budget=budget,
+                worker_config=worker_config,
+                spawn=spawn,
+            )
+        except Exception as exc:
+            reason_code = _classify_worker_failure(exc)
+            successors = api_input_table_statuses(source, store, source_signature=signature)
+            if all(
+                status.state == "ready"
+                and status.freshness in ("fresh", "unknown")
+                and status.generation is not None
+                for _table, status in successors
+            ):
+                return _api_input_reused_records(
+                    node_id, successors, started_at=started_at, warning_code=None
+                )
+            raise _failure(
+                node_id=node_id,
+                digest=group,
+                build_class="bounded",
+                reason_code=reason_code,
+                message="Preparing this API Input's tables failed.",
+                kind="api_input",
+            ) from exc
+
+    records: list[InputPreparationRecord] = []
+    for table, status in api_input_table_statuses(source, store, source_signature=signature):
+        generation = status.generation
+        if generation is None:
+            raise RuntimeError(f"API Input table {table.label!r} has no generation after its build")
+        action: PreparationAction = (
+            "reused"
+            if table.label not in building
+            else "refreshed"
+            if table.identity.digest in refreshed
+            else "built"
+        )
+        records.append(
+            InputPreparationRecord(
+                node_id=node_id,
+                identity_digest=table.identity.digest,
+                action=action,
+                build_class="bounded",
+                execution="in_process" if action == "reused" else execution,
+                memory_limit_bytes=None if action == "reused" else memory_limit_bytes,
+                elapsed_seconds=time.monotonic() - started_at,
+                row_count=generation.metadata.row_count,
+                size_bytes=generation.metadata.size_bytes,
+                generation_id=generation.generation_id,
+            )
+        )
+    return records

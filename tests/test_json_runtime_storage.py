@@ -9,7 +9,6 @@ from typing import Any
 import orjson
 import pytest
 
-from haute._json_flatten import _json_cache_dir
 from haute._json_shred import _cache, _publication, _runtime_storage
 
 
@@ -17,11 +16,9 @@ from haute._json_shred import _cache, _publication, _runtime_storage
 def _isolated_runtime_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     _runtime_storage._cleanup_direct_spill_dirs()
-    _runtime_storage._cleanup_runtime_snapshot_dirs()
     _runtime_storage._RUNTIME_STORAGE_RECOVERED_ROOTS.clear()
     yield
     _runtime_storage._cleanup_direct_spill_dirs()
-    _runtime_storage._cleanup_runtime_snapshot_dirs()
     _runtime_storage._RUNTIME_STORAGE_RECOVERED_ROOTS.clear()
 
 
@@ -131,7 +128,7 @@ def test_recovery_removes_only_old_dead_owned_directories(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = tmp_path / ".haute_cache"
-    parent = root / "working" / _runtime_storage._RUNTIME_SNAPSHOT_DIRNAME
+    parent = root / _runtime_storage._DIRECT_SPILL_DIRNAME
     dead = _owner(parent, "dead", pid=10, created_at=1.0)
     active = _owner(parent, "active", pid=20, created_at=1.0)
     young = _owner(parent, "young", pid=30, created_at=99.5)
@@ -285,23 +282,6 @@ def test_direct_spill_budget_exhaustion_fails_and_cleans_partial_bundle(
 
     runtime_root = tmp_path / ".haute_cache" / _runtime_storage._DIRECT_SPILL_DIRNAME
     assert not runtime_root.exists() or not list(runtime_root.rglob("*.parquet"))
-
-
-def test_runtime_snapshot_budget_exhaustion_fails_before_returning_lazyframe(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    data = tmp_path / "records.json"
-    data.write_text('[{"id": 1}]', encoding="utf-8")
-    cache_dir = _json_cache_dir(data, "working")
-    _cache.build_per_port_cache(data, _config(), cache_dir)
-    monkeypatch.setenv("HAUTE_JSON_RUNTIME_DISK_BUDGET_BYTES", "1")
-
-    with pytest.raises(_runtime_storage.JsonRuntimeDiskBudgetExceededError):
-        _cache.load_per_port_cache(cache_dir, _config())
-
-    runtime_parent = cache_dir.parent / _runtime_storage._RUNTIME_SNAPSHOT_DIRNAME
-    assert not runtime_parent.exists() or not list(runtime_parent.rglob("*.parquet"))
 
 
 @pytest.mark.parametrize("invalid_now", [True, float("nan"), float("inf"), "later"])

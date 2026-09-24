@@ -7,6 +7,8 @@ store construction may create the cache root and sweep retired directories.
 
 from __future__ import annotations
 
+import dataclasses
+
 from fastapi import APIRouter
 
 from haute._node_snapshots import (
@@ -43,6 +45,26 @@ def _owner_entry(owner: CacheOwnerUsage) -> CacheOwnerEntry:
         newest_created_at=owner.newest_created_at,
         build_seconds=owner.newest_build_seconds,
         identity_digests=sorted(owner.identity_digests),
+    )
+
+
+def _merged_owner(owners: list[CacheOwnerUsage]) -> CacheOwnerUsage:
+    """One row's figures for the several input identities it carries."""
+    if len(owners) == 1:
+        return owners[0]
+    created = [owner.newest_created_at for owner in owners if owner.newest_created_at is not None]
+    newest = max(
+        owners,
+        key=lambda owner: owner.newest_created_at if owner.newest_created_at is not None else -1.0,
+    )
+    return dataclasses.replace(
+        owners[0],
+        generations=sum(owner.generations for owner in owners),
+        size_bytes=sum(owner.size_bytes for owner in owners),
+        newest_row_count=newest.newest_row_count,
+        newest_created_at=max(created) if created else None,
+        newest_build_seconds=newest.newest_build_seconds,
+        identity_digests=frozenset().union(*(owner.identity_digests for owner in owners)),
     )
 
 
@@ -159,22 +181,31 @@ def cache_nodes(body: CacheNodesRequest) -> CacheNodesResponse:
     # to is charged to exactly one of them. The carrier is the smallest node id
     # among the readers, never iteration order: a Refresh, an unrelated edit or
     # a submodel expanding must not move bytes from one row to another.
+    # A structured API Input's row names every table it emits.
     readers: dict[str, list[str]] = {}
-    for node_id, _point, _reason, digest in resolved:
-        if digest is not None and digest in by_digest:
-            readers.setdefault(digest, []).append(node_id)
+    for node_id, _point, _reason, digests in resolved:
+        for digest in digests:
+            if digest in by_digest:
+                readers.setdefault(digest, []).append(node_id)
     carrier = {digest: min(sharers) for digest, sharers in readers.items()}
 
     nodes: list[CacheNodeEntry] = []
     carried: set[str] = set()
-    for node_id, point, reason, digest in resolved:
+    for node_id, point, reason, digests in resolved:
         owner = by_node.get((pipeline, node_id, body.source))
         sharers: list[str] = []
         carries = owner is not None
-        if owner is None and digest is not None:
-            owner = by_digest.get(digest)
-            sharers = sorted(name for name in readers.get(digest, []) if name != node_id)
-            carries = owner is not None and carrier.get(digest) == node_id
+        if owner is None and digests:
+            carried_owners = [
+                by_digest[digest]
+                for digest in digests
+                if digest in by_digest and carrier.get(digest) == node_id
+            ]
+            owner = _merged_owner(carried_owners) if carried_owners else None
+            sharers = sorted(
+                {name for digest in digests for name in readers.get(digest, []) if name != node_id}
+            )
+            carries = owner is not None
         if owner is not None and carries:
             carried |= owner.identity_digests
         nodes.append(_node_entry(node_id, point, reason, owner, carries=carries, sharers=sharers))
