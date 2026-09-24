@@ -9,7 +9,7 @@
 | `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points (and `plan_projection`, the projection half of `plan_execution_strategy`, for a caller that needs another execution's per-node column demand without planning or admitting it), runtime-input fingerprints, `preview_lineage_cache_key`, and `PREVIEW_EXECUTION_SEMANTICS_VERSION`. It is the stable application import boundary, but is not currently a thin re-export module. |
 | `src/haute/_path_resolution.py` | Cross-component dependency owned by [sandbox-security](../sandbox-security/low-level.md); canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
 | `src/haute/_execute_lazy.py` | Node-boundary machinery the graph walker uses: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), `_PlannedCaptures` (seed-plan closures and captures), and `_execute_eager_core`/`EagerResult` (eager materialisation and preview error adaptation). |
-| `src/haute/_graph_walker.py` | The graph walker: `walk_graph(graph, build_node_fn, *, policy: CollectPolicy, ...)` walks a graph once and returns a `WalkResult` (each built node's frame, the prepared order, parents, names, and the join and write recipes and pre-shaping frames it built). `WalkRequest` holds the execution-independent inputs, `CollectPolicy` what the walk collects and how it treats each node's frame (`WalkPurpose.SINK`). The Data Output sink and every lazy execution through the execution facade walk through it. No function in the module exceeds a cyclomatic complexity of 15, held by ruff's C901 rule scoped to this module alone. |
+| `src/haute/_graph_walker.py` | The graph walker: `walk_graph(graph, build_node_fn, *, policy: CollectPolicy, ...)` walks a graph once and returns a `WalkResult` (each built node's frame, the prepared order, parents, names, and the join and write recipes and pre-shaping frames it built). `WalkRequest` holds the execution-independent inputs, `CollectPolicy` what the walk collects, at which row and column limits, whether it records node failures, and its purpose (`WalkPurpose.SINK` hands lazy frames to a sink; `WalkPurpose.DISPLAY` reports schemas and collects for a person). The Data Output sink, every lazy execution through the execution facade, and the preview walk through it. No function in the module exceeds a cyclomatic complexity of 15, held by ruff's C901 rule scoped to this module alone. |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
 | `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, profile-independent projection decisions, fan-in edge demands, materialisation/opaque boundaries, derivation of each code node's recompute facts (`recompute_facts_by_node(...)`), demand-only source-scan projection (a node's configured column selection bounds what may be demanded but is never pushed into or validated against a physical read), and bounded strategy diagnostics. |
@@ -339,7 +339,9 @@ On a partial hit (same graph, new target needs more materialised nodes), calls
 that re-executed successfully clears any stale cached error. On a full miss, executes
 from scratch. `_eager_execute()` compiles the preamble (`_compile_preamble`, tolerant
 of failure — the error is attached only to nodes whose builder actually consumes the
-preamble namespace) and delegates to `_execute_eager_core()`.
+preamble namespace) and runs a display walk (`walk_graph` with
+`CollectPolicy.display(collect=materialize_node_ids, row_limit=..., column_limits_by_node=...,
+record_failures=True)`), returning its collected frames, run order, errors, timings and schemas.
 When the caller omits an execution context, `execute_graph()` creates its admitted
 `PREVIEW_EAGER` context before any preview-cache work. Cache lookup, hit, extension,
 and miss stages therefore always use a concrete context and always record telemetry;
@@ -438,7 +440,8 @@ the same pre-call input contract and simple-join schema checks and the same post
 output contract on both paths. It does not own collection, projection refinement,
 cache/checkpoint decisions, timings, or error adaptation.
 
-**`_execute_eager_core()`** (`_execute_lazy.py`): consumes the shared prepared
+**`_execute_eager_core()`** (`_execute_lazy.py`, the trace's engine until it moves onto
+the walker; the preview's display walk has these semantics): consumes the shared prepared
 execution, computes a backward column-projection plan when required-column seeds are
 supplied, and builds per-node callables via `_build_funcs()`. It then walks `order`
 once: for each node, the shared runner checks input columns against the contract before
@@ -716,6 +719,21 @@ the prepared order. The Data Output sink (`prepare_data_output`) runs through
 `execution.execute_lazy_graph` returns the walk's frames, order, parents and names, and
 copies its join and write recipes and pre-shaping frames into the caller's dictionaries
 once the walk has finished.
+
+A display walk (`CollectPolicy.display(...)`) is the eager execution described under
+`_execute_eager_core()` below, which the trace still runs. Its caller plans the strategy
+and prepares inputs; the walk plans demand from the caller's own required columns (under
+a plan, the negotiated ones), narrows an edge only to a demand the parents' built
+schemas prove, reports every node's schema before and after its own shaping
+(`WalkResult.available_columns`/`output_columns`/`frame_columns`), collects the nodes the
+policy names under its row and column limits (`WalkResult.collected`), keeps every
+node's uncapped plan (`WalkResult.frames`), and records a node's failure against the node
+when the policy says so. Differences from the eager core: under a plan each source is built
+whole (invoked, shaped and contract-checked) before the input check, and a failure there is
+held until the walk reaches the node; a pass-through node's builder is neither built nor
+called, and its boundary is not opened, so it resolves no contract and records no demand
+metric; a multi-frame source's closure is recorded like any node's; and a seed's frame is
+bound before the walk.
 
 **Sink/lazy execution (`execution.execute_lazy_graph` → a sink walk of `walk_graph`).**
 Consumes the same `PreparedExecution` and `NodeBoundaryRunner` as eager execution,

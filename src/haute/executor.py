@@ -78,7 +78,6 @@ from haute.errors import PreambleError
 from haute.graph_utils import (
     NodeType,
     PipelineGraph,
-    _execute_eager_core,
     _prune_live_switch_edges,
     ancestors,
 )
@@ -1752,18 +1751,20 @@ def _eager_execute(
         preamble_ns = {}
         preamble_error = str(exc)
 
-    result = _execute_eager_core(
+    result = walk_graph(
         graph,
         _build_node_fn,
+        policy=CollectPolicy.display(
+            collect=materialize_node_ids,
+            row_limit=row_limit,
+            column_limits_by_node=materialize_column_limits_by_node,
+            record_failures=True,
+        ),
         target_node_id=target_node_id,
-        row_limit=row_limit,
-        swallow_errors=True,
         preamble_ns=preamble_ns or None,
         source=source,
         enforce_contracts=enforce_contracts,
         required_columns_by_node=required_columns_by_node,
-        materialize_node_ids=materialize_node_ids,
-        materialize_column_limits_by_node=materialize_column_limits_by_node,
         execution_context=execution_context,
         snapshot_plan=snapshot_plan,
     )
@@ -1773,13 +1774,13 @@ def _eager_execute(
         # (transforms and live-switch nodes), not data sources / model scores.
         preamble_types = {NodeType.POLARS, NodeType.LIVE_SWITCH}
         node_map = {n.id: n for n in graph.nodes}
-        for nid in result.order:
+        for nid in result.run_order:
             nd = node_map.get(nid)
             if nd and nd.data.nodeType in preamble_types and nid not in errors:
                 errors[nid] = preamble_error
     return (
-        result.outputs,
-        result.order,
+        result.collected,
+        result.run_order,
         errors,
         result.timings,
         result.memory_bytes,

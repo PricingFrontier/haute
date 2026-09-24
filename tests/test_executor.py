@@ -2783,7 +2783,7 @@ class TestRequestedPreviewProjection:
         to be planned for schema, projection, and contract checks, but they
         should stay lazy until the target collect.
         """
-        import haute._execute_lazy as execute_lazy_mod
+        import haute._graph_walker as graph_walker_mod
         from haute.executor import _preview_cache
 
         _preview_cache.clear()
@@ -2807,7 +2807,7 @@ class TestRequestedPreviewProjection:
         )
 
         collect_calls = 0
-        original_streaming_collect = execute_lazy_mod.streaming_collect
+        original_streaming_collect = graph_walker_mod.streaming_collect
 
         def counting_streaming_collect(*args, **kwargs):
             nonlocal collect_calls
@@ -2815,7 +2815,7 @@ class TestRequestedPreviewProjection:
             return original_streaming_collect(*args, **kwargs)
 
         monkeypatch.setattr(
-            execute_lazy_mod,
+            graph_walker_mod,
             "streaming_collect",
             counting_streaming_collect,
         )
@@ -4652,17 +4652,17 @@ class TestSelectorRuntimeProjection:
 
     @staticmethod
     def _preview(graph, monkeypatch):
-        import haute._execute_lazy as execute_lazy
+        import haute._graph_walker as graph_walker
 
         selections: list[list[str]] = []
-        real = execute_lazy.projected_or_carrier_columns
+        real = graph_walker.projected_or_carrier_columns
 
         def recording(schema_names, demand):
             selected = real(schema_names, demand)
             selections.append(list(selected))
             return selected
 
-        monkeypatch.setattr(execute_lazy, "projected_or_carrier_columns", recording)
+        monkeypatch.setattr(graph_walker, "projected_or_carrier_columns", recording)
         context = ExecutionContext(
             operation="preview-test",
             profile=ExecutionProfile.PREVIEW_EAGER,

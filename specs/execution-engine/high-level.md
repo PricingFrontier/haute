@@ -517,10 +517,10 @@ keep reporting the failing line so the editor can name the failing step.
   produces" would otherwise be a permanent trust problem for users.
 - **One graph walker.** `_graph_walker.walk_graph` walks a graph once under a
   `CollectPolicy` that says what the walk collects and how it treats each node's frame.
-  The Data Output sink and every lazy execution (`execution.execute_lazy_graph`: deploy
-  scoring, training, the optimiser, node data, the assistant) run on it; preview and trace
-  still run on the eager core, and the chunked runner on its own loop, until each moves
-  (`EXEC-R05`). Two decisions
+  The Data Output sink, every lazy execution (`execution.execute_lazy_graph`: deploy
+  scoring, training, the optimiser, node data, the assistant) and the preview run on it;
+  the trace still runs on the eager core, and the chunked runner on its own loop, until
+  each moves (`EXEC-R05`). Two decisions
   bound it. Its functions stay at a cyclomatic complexity of 15 or below, held by ruff's
   C901 rule scoped to the walker module only; the rest of the package is not held to
   that limit. And the decorator pipeline's `Pipeline.run`/`score` keeps its own loop over

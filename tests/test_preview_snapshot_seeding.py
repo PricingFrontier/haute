@@ -15,8 +15,8 @@ import pytest
 from polars.testing import assert_frame_equal
 
 from haute._data_points import DataPointResolver
-from haute._execute_lazy import EagerResult, _execute_eager_core
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
+from haute._graph_walker import CollectPolicy, WalkResult, walk_graph
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
 from haute._source_cache import SourceCacheIdentity
@@ -216,14 +216,14 @@ def _context(profile: ExecutionProfile = ExecutionProfile.PREVIEW_EAGER) -> Exec
 
 @dataclass
 class Preview:
-    result: EagerResult
+    result: WalkResult
     metrics: dict[str, Any]
     built: Counter[str]
     called: Counter[str]
     plan: SeedPlan
 
     def rows(self, node_id: str) -> pl.DataFrame:
-        frame = self.result.outputs[node_id]
+        frame = self.result.collected[node_id]
         assert isinstance(frame, pl.DataFrame), (node_id, self.result.errors)
         return frame
 
@@ -300,18 +300,20 @@ def _previewing(
                 )
         built: Counter[str] = Counter()
         called: Counter[str] = Counter()
-        result = _execute_eager_core(
+        result = walk_graph(
             graph,
             _counting_build(built, called),
+            policy=CollectPolicy.display(
+                collect=None if materialize_all else {target},
+                row_limit=row_limit,
+                record_failures=True,
+            ),
             target_node_id=target,
-            row_limit=row_limit,
-            swallow_errors=True,
             preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph))
             or None,
             source=source,
             enforce_contracts=True,
             required_columns_by_node=required,
-            materialize_node_ids=None if materialize_all else {target},
             execution_context=context,
             snapshot_plan=plan,
         )
@@ -377,7 +379,7 @@ def test_eager_seeded_node_reads_its_generation_and_builds_nothing_above(
     assert preview.rows("banding")["band"].to_list() == [14, 16, 18]
     # Nothing at or above the seed is built, let alone run.
     assert set(preview.built) == {"banding"}
-    assert preview.result.order == ["join", "banding"]
+    assert preview.result.run_order == ["join", "banding"]
     assert preview.captures == {}
 
 
@@ -788,16 +790,14 @@ def test_a_capture_writes_the_columns_its_generation_keeps(
     )
     with open_seed_plan(request, store=store, execution_context=context) as plan:
         assert plan.decision.seeds == {}
-        result = _execute_eager_core(
+        result = walk_graph(
             graph,
             _counting_build(Counter(), Counter()),
+            policy=CollectPolicy.display(collect={"banding"}, row_limit=3, record_failures=True),
             target_node_id="banding",
-            row_limit=3,
-            swallow_errors=True,
             preamble_ns=_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph)),
             source="live",
             required_columns_by_node=required,
-            materialize_node_ids={"banding"},
             execution_context=context,
             snapshot_plan=plan,
         )
@@ -809,7 +809,7 @@ def test_a_capture_writes_the_columns_its_generation_keeps(
     assert {"id", "a", "d"} <= widened.columns.names
     assert widened.generation.metadata.row_count == _ROWS
     # And the caller still collects only its own demand.
-    target = result.outputs["banding"]
+    target = result.collected["banding"]
     assert isinstance(target, pl.DataFrame)
     assert target.columns == ["band"]
 
@@ -1843,7 +1843,7 @@ def test_a_preview_below_a_node_that_shapes_its_columns_seeds_it(api: Any, proje
 def test_a_shaping_node_generation_without_its_unshaped_columns_is_computed(
     api: Any, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import haute._execute_lazy as execute_lazy
+    import haute._graph_walker as graph_walker
 
     graph = _renamed_edge_join(project, ["_id", "premium", "segment"])
     graph.nodes.append(
@@ -1852,7 +1852,7 @@ def test_a_shaping_node_generation_without_its_unshaped_columns_is_computed(
     graph.edges.append(GraphEdge(id="e2", source="subject", target="below"))
     # A writer that does not record the pre-shaping columns (as before they were).
     with monkeypatch.context() as scoped:
-        scoped.setattr(execute_lazy, "_shapes_output", lambda node: False)
+        scoped.setattr(graph_walker, "_shapes_output", lambda node: False)
         assert _plan_of(_post_preview(api, graph, "subject")) == [("subject", "captured")]
 
     body = _post_preview(api, graph, "below")

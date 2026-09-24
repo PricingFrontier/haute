@@ -7,7 +7,8 @@ node's incoming edges, invokes the node through the shared
 ``NodeBoundaryRunner``, applies the node's own column shaping and contract
 checks and, under a seed plan, captures the node into the shared snapshot
 store. What differs between executions is the ``CollectPolicy`` the caller
-passes.
+passes: its purpose, which nodes it collects, at which row limits, and
+whether a node's failure is recorded against the node or raised.
 
 No function in this module may exceed a cyclomatic complexity of 15; ruff's
 C901 rule holds that, scoped to this module (``pyproject.toml``).
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import gc
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -26,6 +28,7 @@ import polars as pl
 
 import haute.execution as execution_facade
 import haute.projection as projection_planner
+from haute._builders import _passthrough_fn
 from haute._chunked_writes import (
     JoinRecipe,
     RecipeEquivalenceError,
@@ -43,28 +46,35 @@ from haute._execute_lazy import (
     _build_funcs,
     _check_snapshot_plan,
     _conservative_strategy_passthrough,
+    _declared_api_input_frame_schema_items,
     _edge_join_recipe,
+    _extract_error_line,
+    _is_plain_model_score,
+    _pick_source_frame,
     _PlannedCaptures,
     _prepare_execution,
+    _replanned_target_preview_strategy,
     _runtime_lineage_demands,
     _runtime_projectable_source_ids,
     _schema_pairs,
     _shapes_output,
     _write_recipe,
 )
-from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute._graph_utils import (
-    edge_input_name,
-    resolve_orig_source_names,
-    select_edge_source_output,
+from haute._execution_context import (
+    ExecutionCancelledError,
+    ExecutionContext,
+    ExecutionMemoryLimitExceededError,
+    ExecutionProfile,
 )
+from haute._graph_utils import edge_input_name, resolve_orig_source_names
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._logging import get_logger
 from haute._path_resolution import runtime_project_root_scoped
 from haute._polars_selectors import preamble_selector_aliases
-from haute._polars_utils import _malloc_trim, projected_or_carrier_columns
-from haute._types import GraphEdge, PipelineGraph, _Frame
-from haute.errors import ContractMismatchError
+from haute._polars_utils import _malloc_trim, projected_or_carrier_columns, streaming_collect
+from haute._source_cache import SourceCacheError
+from haute._types import GraphEdge, GraphNode, PipelineGraph, _Frame
+from haute.errors import ContractMismatchError, SchemaMismatchError, is_public_contract_error
 
 if TYPE_CHECKING:
     from haute._node_snapshots import NodeSnapshotArtifact
@@ -73,6 +83,8 @@ if TYPE_CHECKING:
 logger = get_logger(component="execute")
 
 _RequiredColumns = Mapping[str, Iterable[str] | projection_planner.AllExceptColumns]
+_SchemaItems = list[tuple[str, str]]
+_Collected = pl.DataFrame | dict[str, pl.DataFrame] | None
 
 
 class WalkPurpose(StrEnum):
@@ -81,18 +93,65 @@ class WalkPurpose(StrEnum):
     SINK = "sink"
     """Hand each node's lazy frame to a sink: project every edge to its planned
     demand, plan the execution strategy, prepare inputs, build write recipes."""
+    DISPLAY = "display"
+    """Show frames to a person (preview and trace): plan demand only from the
+    caller, report every node's full schema, collect nodes under the policy's
+    limits, and keep every node's plan for the caller."""
 
 
 @dataclass(frozen=True, slots=True)
 class CollectPolicy:
-    """What a walk collects, and how it treats each node's frame."""
+    """What a walk collects, at which row limits, and whether node failures are recorded."""
 
     purpose: WalkPurpose = WalkPurpose.SINK
+    collect: frozenset[str] | None = frozenset()
+    """The nodes collected into DataFrames; ``None`` collects every node the walk builds."""
+    row_limit: int | None = None
+    """Each collection's row limit (SQL ``LIMIT``), and the builders' interactive signal."""
+    row_limits_by_node: Mapping[str, int] = field(default_factory=dict)
+    column_limits_by_node: Mapping[str, int] = field(default_factory=dict)
+    """A cap on the columns a collection keeps; the node's full schema is still reported."""
+    record_failures: bool = False
+    """Record a node's failure against the node and carry on, rather than raise."""
+
+    def __post_init__(self) -> None:
+        for limits in (self.row_limits_by_node, self.column_limits_by_node):
+            for node_id, limit in limits.items():
+                if not isinstance(node_id, str) or not node_id:
+                    raise ValueError("collection limits must be keyed by node id")
+                if type(limit) is not int or limit < 1:
+                    raise ValueError("collection limits must be positive integers")
 
     @classmethod
     def sink(cls) -> CollectPolicy:
         """Collect nothing: the caller sinks or collects the lazy frames itself."""
         return cls(purpose=WalkPurpose.SINK)
+
+    @classmethod
+    def display(
+        cls,
+        *,
+        collect: Iterable[str] | None = None,
+        row_limit: int | None = None,
+        row_limits_by_node: Mapping[str, int] | None = None,
+        column_limits_by_node: Mapping[str, int] | None = None,
+        record_failures: bool = False,
+    ) -> CollectPolicy:
+        """Collect *collect* (every node the walk builds when ``None``) under these limits."""
+        return cls(
+            purpose=WalkPurpose.DISPLAY,
+            collect=None if collect is None else frozenset(collect),
+            row_limit=row_limit,
+            row_limits_by_node=dict(row_limits_by_node or {}),
+            column_limits_by_node=dict(column_limits_by_node or {}),
+            record_failures=record_failures,
+        )
+
+    def collects(self, node_id: str) -> bool:
+        return self.collect is None or node_id in self.collect
+
+    def row_limit_for(self, node_id: str) -> int | None:
+        return self.row_limits_by_node.get(node_id, self.row_limit or None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +175,7 @@ class WalkRequest:
     """The caller reads ``collect_schema()`` and never collects or sinks."""
     runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None
     prepare_inputs: bool = True
+    """A sink walk prepares snapshot-backed inputs; a display walk's caller does."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,10 +184,26 @@ class WalkResult:
 
     frames: dict[str, _Frame]
     """Each built node's frame as its consumers read it (a frame bundle for a
-    multi-frame source); a sink walk drops a frame once its consumers ran."""
+    multi-frame source). A sink walk drops a frame once its consumers ran; a
+    display walk keeps every node's uncapped plan."""
     order: list[str] = field(default_factory=list)
+    """The prepared lineage order."""
+    run_order: list[str] = field(default_factory=list)
+    """What the walk visited: the order, restricted under a plan to its seeds and executed nodes."""
     parents_of: dict[str, list[str]] = field(default_factory=dict)
+    node_map: dict[str, GraphNode] = field(default_factory=dict)
     id_to_name: dict[str, str] = field(default_factory=dict)
+    collected: dict[str, _Collected] = field(default_factory=dict)
+    """Each collected node's DataFrame (per-frame for a bundle); ``None`` for a failed node."""
+    errors: dict[str, str] = field(default_factory=dict)
+    error_lines: dict[str, int] = field(default_factory=dict)
+    timings: dict[str, float] = field(default_factory=dict)
+    memory_bytes: dict[str, int] = field(default_factory=dict)
+    available_columns: dict[str, _SchemaItems] = field(default_factory=dict)
+    """A display walk's node schemas before the node's own selection and renames."""
+    output_columns: dict[str, _SchemaItems] = field(default_factory=dict)
+    frame_columns: dict[tuple[str, str], _SchemaItems] = field(default_factory=dict)
+    """Per-frame schemas of a multi-frame producer, collected or not."""
     join_recipes: dict[str, JoinRecipe] = field(default_factory=dict)
     write_recipes: dict[str, WriteRecipe] = field(default_factory=dict)
     unshaped_frames: dict[str, pl.LazyFrame] = field(default_factory=dict)
@@ -139,22 +215,37 @@ class _WalkProjection:
 
     needed_by_node: Mapping[str, frozenset[str] | None]
     edge_demands: Mapping[projection_planner.ProjectionEdgeKey, frozenset[str] | None]
-    runtime_plan: projection_planner.ProjectionPlan
+    projects_edges: bool
+    """A sink walk narrows every edge to its planned demand; a display walk
+    narrows an edge only to a demand its runtime schema proves."""
+    runtime_plan: projection_planner.ProjectionPlan | None
     """Demand of the run itself, narrower than the plan's when a seed plan
     negotiated a broader capture demand."""
+    collect_needed: Mapping[str, frozenset[str] | None]
+    """The caller's own demand, which a display walk collects."""
     builder_needed: Mapping[str, frozenset[str] | None]
     api_port_columns: Mapping[str, Mapping[str, frozenset[str] | None]]
     strategy_required: Mapping[str, set[str] | projection_planner.AllExceptColumns]
     boundary_operators: Mapping[str, str]
-    broadened: bool
 
 
 @dataclass(slots=True)
 class _NodeFrame:
     """A node's frame before any capture, with what the walk learnt building it."""
 
-    frame: _Frame
+    frame: Any
+    """A lazy frame, a display walk's collected DataFrame, or a multi-frame bundle."""
     boundary: NodeBoundary
+    seeded: bool = False
+    pass_through: bool = False
+    output_names: list[str] | None = None
+    """A display walk's output column names, after the node's own shaping."""
+    scored: NodeSnapshotArtifact | None = None
+    scored_write: tuple[bool, str | None] = (False, None)
+
+
+class _UpstreamFailedError(Exception):
+    """A node's input failed, and the walk recorded that against the node."""
 
 
 @runtime_project_root_scoped
@@ -209,6 +300,7 @@ class _Walk:
     def __init__(self, request: WalkRequest, policy: CollectPolicy) -> None:
         self.request = request
         self.policy = policy
+        self.display = policy.purpose is WalkPurpose.DISPLAY
         self.context = request.execution_context
         self.plan = request.snapshot_plan
         self.decision: SeedPlanDecision | None = (
@@ -234,33 +326,68 @@ class _Walk:
             target: list(edges)
             for target, edges in self.prepared.all_incoming_edges_by_target.items()
         }
-        self.profile = (
-            self.context.profile if self.context is not None else ExecutionProfile.LAZY_SINK
+        self.profile = self._default_profile()
+        self.run_order = self._run_order()
+        self.preserved = request.preserve_node_ids | frozenset(
+            self.decision.consumed_node_ids if self.decision is not None else ()
         )
-        self.frames: dict[str, _Frame] = {}
+        self.strategy: projection_planner.ExecutionStrategyResult | None = None
+        self._init_walk_state()
+
+    def _default_profile(self) -> ExecutionProfile:
+        if self.context is not None:
+            return self.context.profile
+        return ExecutionProfile.PREVIEW_EAGER if self.display else ExecutionProfile.LAZY_SINK
+
+    def _init_walk_state(self) -> None:
+        # Each node's frame as its consumers read it (lazy, collected, or a bundle).
+        self.frames: dict[str, Any] = {}
         self.seed_frames: dict[str, _Frame] = {}
+        self.prebuilt: dict[str, _NodeFrame | Exception] = {}
         self.column_cache: dict[tuple[str, str | None], frozenset[str]] = {}
         self.file_backed: set[str] = set()
         self.remaining = dict(self.prepared.children_count)
         self.join_recipes: dict[str, JoinRecipe] = {}
         self.write_recipes: dict[str, WriteRecipe] = {}
         self.unshaped_frames: dict[str, pl.LazyFrame] = {}
-        self.prebuilt: dict[str, _NodeFrame] = {}
         self.materialisations_since_gc = 0
-        self.preserved = request.preserve_node_ids | frozenset(
-            self.decision.consumed_node_ids if self.decision is not None else ()
-        )
-        self.run_order = self._run_order()
+        self.store_failures: list[BaseException] = []
+        # What a display walk reports.
+        self.failed: set[str] = set()
+        self.collected: dict[str, _Collected] = {}
+        self.errors: dict[str, str] = {}
+        self.error_lines: dict[str, int] = {}
+        self.timings: dict[str, float] = {}
+        self.memory_bytes: dict[str, int] = {}
+        self.available_columns: dict[str, _SchemaItems] = {}
+        self.output_columns: dict[str, _SchemaItems] = {}
+        self.frame_columns: dict[tuple[str, str], _SchemaItems] = {}
+        self.shared_inputs: dict[tuple[str, str | None], pl.LazyFrame] = {}
+        self.fanout = self._fanout_counts() if self.display else {}
+        self.runtime_demands: dict[projection_planner.ProjectionEdgeKey, frozenset[str]] = {}
+        self.runtime_resolved: set[str] = set()
+
+    def _fanout_counts(self) -> dict[tuple[str, str | None], int]:
+        """How many edges read each producer frame, counted by the selected source frame."""
+        counts: dict[tuple[str, str | None], int] = {}
+        for edge in self.graph_plan.relevant_edges:
+            if edge.source in self.node_map and edge.target in self.node_map:
+                key = (edge.source, edge.sourceHandle)
+                counts[key] = counts.get(key, 0) + 1
+        return counts
 
     # ------------------------------------------------------------------ run
 
     def run(self) -> WalkResult:
         self._check_plan()
-        if self.context is not None:
-            self.context.checkpoint(label="lazy_start")
-        self._prepare_inputs()
+        if not self.display:
+            if self.context is not None:
+                self.context.checkpoint(label="lazy_start")
+            self._prepare_inputs()
         self._read_seeds()
-        self.projection = self._plan_projection()
+        self.projection = (
+            self._plan_display_projection() if self.display else self._plan_sink_projection()
+        )
         self.boundaries = self._build_boundaries()
         self.captures = _PlannedCaptures(
             self.plan,
@@ -271,11 +398,31 @@ class _Walk:
         self._bind_plan_sources()
         for node_id in self.run_order:
             self._walk_node(node_id)
+        if self.display:
+            self._replan_target_preview()
+        return self._result()
+
+    def _result(self) -> WalkResult:
+        frames = (
+            {node_id: _plan_of(frame) for node_id, frame in self.frames.items()}
+            if self.display
+            else self.frames
+        )
         return WalkResult(
-            frames=self.frames,
+            frames=frames,
             order=self.order,
+            run_order=self.run_order,
             parents_of=self.parents_of,
+            node_map=self.node_map,
             id_to_name=self.graph_plan.id_to_name,
+            collected=self.collected,
+            errors=self.errors,
+            error_lines=self.error_lines,
+            timings=self.timings,
+            memory_bytes=self.memory_bytes,
+            available_columns=self.available_columns,
+            output_columns=self.output_columns,
+            frame_columns=self.frame_columns,
             join_recipes=self.join_recipes,
             write_recipes=self.write_recipes,
             unshaped_frames=self.unshaped_frames,
@@ -356,7 +503,20 @@ class _Walk:
             for node_id, demand in self.decision.planning_required_columns.items()
         }
 
-    def _plan_projection(self) -> _WalkProjection:
+    def _prepared_plan(
+        self, required: Mapping[str, set[str] | projection_planner.AllExceptColumns]
+    ) -> projection_planner.ProjectionPlan:
+        return projection_planner.compute_prepared_plan(
+            self.order,
+            self.prepared.children_of,
+            self.node_map,
+            required,
+            relevant_edges=self.graph_plan.relevant_edges,
+            submodels=self.graph.submodels,
+            selector_aliases=self.selector_aliases,
+        )
+
+    def _plan_sink_projection(self) -> _WalkProjection:
         """Plan the execution strategy and the column demand of every edge and builder."""
         planning_required = self._planning_required_columns()
         planned_ids = self.decision.executed_node_ids if self.decision is not None else None
@@ -370,35 +530,70 @@ class _Walk:
             ).items()
             if planned_ids is None or node_id in planned_ids
         }
-        strategy = self._plan_strategy(planning_required, planned_ids, operators)
-        self.strategy = strategy
-        plan = strategy.projection_plan
+        self.strategy = self._plan_strategy(planning_required, planned_ids, operators)
+        plan = self.strategy.projection_plan
         normalised = self.prepared.normalised_required_columns
         broadened = planning_required != normalised
-        runtime_plan = (
-            projection_planner.compute_prepared_plan(
-                self.order,
-                self.prepared.children_of,
-                self.node_map,
-                normalised,
-                relevant_edges=self.graph_plan.relevant_edges,
-                submodels=self.graph.submodels,
-                selector_aliases=self.selector_aliases,
-            )
-            if broadened
-            else plan
-        )
         return _WalkProjection(
             needed_by_node=plan.needed_by_node,
             edge_demands=plan.edge_demands,
-            runtime_plan=runtime_plan,
+            projects_edges=True,
+            runtime_plan=self._prepared_plan(normalised) if broadened else plan,
+            collect_needed={},
             builder_needed=self._builder_demand(plan.needed_by_node, broadened=broadened),
             api_port_columns=projection_planner.api_input_port_columns_by_node(
                 self.node_map, self.graph_plan.relevant_edges, plan
             ),
             strategy_required=planning_required,
             boundary_operators=operators,
-            broadened=broadened,
+        )
+
+    def _plan_display_projection(self) -> _WalkProjection:
+        """Plan demand from the caller only; the caller already planned the strategy.
+
+        Under a plan the negotiated demand is what the walk reads, builds and
+        captures; what a collected node collects is still the caller's own.
+        """
+        planning_required = self._planning_required_columns()
+        normalised = self.prepared.normalised_required_columns
+        plan = self._prepared_plan(planning_required) if planning_required else None
+        needed = plan.needed_by_node if plan is not None else {}
+        collect_needed: Mapping[str, frozenset[str] | None] = needed
+        if planning_required != normalised:
+            collect_needed = self._prepared_plan(normalised).needed_by_node if normalised else {}
+        strategy = self.context.projection_plan if self.context is not None else None
+        if isinstance(strategy, projection_planner.ExecutionStrategyResult):
+            self.strategy = strategy
+        # The caller's strategy proves API-port demand only for the caller's
+        # own request; under a plan the ports load the negotiated demand.
+        port_plan = (
+            self.strategy.projection_plan
+            if self.decision is None and self.strategy is not None
+            else plan
+        )
+        return _WalkProjection(
+            needed_by_node=needed,
+            edge_demands=plan.edge_demands if plan is not None else {},
+            projects_edges=False,
+            runtime_plan=None,
+            collect_needed=collect_needed,
+            builder_needed=projection_planner.builder_required_output_columns_by_node(
+                self.node_map, needed, preserve_eager_model_score_inputs=True
+            ),
+            api_port_columns=(
+                projection_planner.api_input_port_columns_by_node(
+                    self.node_map, self.graph_plan.relevant_edges, port_plan
+                )
+                if port_plan is not None
+                else {}
+            ),
+            strategy_required=normalised,
+            boundary_operators=projection_planner.materialising_operators_by_node(
+                self.order,
+                self.node_map,
+                relevant_edges=self.graph_plan.relevant_edges,
+                submodels=self.graph.submodels,
+            ),
         )
 
     def _plan_strategy(
@@ -471,7 +666,7 @@ class _Walk:
             if node_id not in self.seed_frames and node_id not in pass_through
         ]
         request = self.request
-        with self._stage("lazy_build_functions"):
+        with self._stage(None if self.display else "lazy_build_functions"):
             funcs = _build_funcs(
                 build_order,
                 self.node_map,
@@ -481,7 +676,7 @@ class _Walk:
                 incoming_edges_by_target=self.prepared.incoming_edges_by_target,
                 all_incoming_edges_by_target=self.prepared.all_incoming_edges_by_target,
                 all_node_map=self.graph.node_map,
-                row_limit=None,
+                row_limit=self.policy.row_limit,
                 preamble_ns=request.preamble_ns,
                 source=request.source,
                 source_by_node=request.source_by_node,
@@ -503,9 +698,9 @@ class _Walk:
     # ------------------------------------------------------------- walking
 
     def _stage(
-        self, name: str, node_id: str | None = None
+        self, name: str | None, node_id: str | None = None
     ) -> contextlib.AbstractContextManager[Any]:
-        if self.context is None:
+        if self.context is None or name is None:
             return contextlib.nullcontext()
         return self.context.stage(name, node_id=node_id)
 
@@ -513,7 +708,9 @@ class _Walk:
         """Under a plan, build every source, then prove the inputs are the planned ones.
 
         Nothing is collected or captured before the runtime inputs are
-        checked against the fingerprint the plan was resolved with.
+        checked against the fingerprint the plan was resolved with. A display
+        walk holds a source's failure until the walk reaches the node, where
+        it is recorded like any other.
         """
         if self.decision is None:
             return
@@ -525,40 +722,88 @@ class _Walk:
                 or self.parents_of.get(node_id)
             ):
                 continue
-            self.prebuilt[node_id] = self._build_node(node_id, self.boundaries.open(node_id))
+            try:
+                self.prebuilt[node_id] = self._build_node(node_id, self.boundaries.open(node_id))
+            except Exception as exc:
+                if not self.display:
+                    raise
+                self.prebuilt[node_id] = exc
         self.captures.verify_inputs()
 
     def _walk_node(self, node_id: str) -> None:
+        started = time.perf_counter()
+        if not self.policy.record_failures:
+            self._visit(node_id)
+        else:
+            try:
+                self._visit(node_id)
+            except _UpstreamFailedError:
+                return
+            except Exception as exc:
+                if not self._recordable(exc):
+                    raise
+                self._record_failure(node_id, exc)
+        if self.display:
+            self.timings[node_id] = round((time.perf_counter() - started) * 1000, 1)
+
+    def _visit(self, node_id: str) -> None:
+        built = self._node_frame(node_id)
+        captured = False
+        frame = built.frame
+        if self.decision is not None and not built.seeded:
+            frame, captured = self._capture(node_id, built)
+        if isinstance(frame, dict):
+            self._finish_bundle(node_id, built)
+        elif self.display:
+            self._collect(node_id, built, frame)
+        else:
+            self.frames[node_id] = frame
+            if captured or built.pass_through:
+                self._release_consumed_parents(node_id)
+
+    def _node_frame(self, node_id: str) -> _NodeFrame:
+        """The node's frame before any capture: passed through, seeded, or built."""
         if self.decision is not None and node_id in self.decision.pass_through_edges:
-            self._pass_through(node_id, self.decision.pass_through_edges[node_id])
-            return
+            return self._pass_through(node_id, self.decision.pass_through_edges[node_id])
         seed = self.seed_frames.get(node_id)
         if seed is not None:
-            self._read_seed(node_id, seed)
-            return
-        built = self.prebuilt.pop(node_id, None)
-        scored: NodeSnapshotArtifact | None = None
-        scored_write: tuple[bool, str | None] = (False, None)
-        if built is None:
-            boundary = self.boundaries.open(node_id)
-            scored = self._stage_scored_capture(node_id)
-            built, scored_write = self._build_scored_node(node_id, boundary, scored)
-        frame = built.frame
-        if self.decision is not None:
-            frame = self._capture(node_id, frame, scored, scored_write)
-        self.frames[node_id] = frame
+            return self._read_seed(node_id, seed)
+        prebuilt = self.prebuilt.pop(node_id, None)
+        if isinstance(prebuilt, Exception):
+            raise prebuilt
+        if prebuilt is not None:
+            return prebuilt
+        boundary = self.boundaries.open(node_id)
+        return self._build_scored_node(node_id, boundary, self._stage_scored_capture(node_id))
 
-    def _read_seed(self, node_id: str, seed: _Frame) -> None:
+    def _read_seed(self, node_id: str, seed: _Frame) -> _NodeFrame:
         """A seed's frame is its leased generation: nothing is built or checked for it."""
-        self.frames[node_id] = seed
         self.column_cache[(node_id, None)] = _columns_of(seed)
-        logger.info("lazy_seed_hit", node_id=node_id)
-        if self.context is not None:
-            self.context.checkpoint(label="lazy_seed_hit", node_id=node_id)
+        if not self.display:
+            logger.info("lazy_seed_hit", node_id=node_id)
+            if self.context is not None:
+                self.context.checkpoint(label="lazy_seed_hit", node_id=node_id)
+        node = self.node_map[node_id]
+        boundary = NodeBoundary(
+            node_id=node_id,
+            node=node,
+            fn=_passthrough_fn,
+            is_source=True,
+            parent_ids=(),
+            incoming_edges=(),
+            contract=None,
+            check_contract=False,
+            is_passthrough_runtime=False,
+        )
+        names = self._describe(node_id, node, seed, seed, seeded=True) if self.display else None
+        return _NodeFrame(frame=seed, boundary=boundary, seeded=True, output_names=names)
 
     def _stage_scored_capture(self, node_id: str) -> NodeSnapshotArtifact | None:
-        """A batch Model Score whose output is its scored file writes it into its capture."""
-        if self.decision is None:
+        """A batch Model Score whose output is its scored file writes it into its capture.
+
+        Only a sink walk: a display walk's Model Score scores the rows it collects.
+        """
+        if self.decision is None or self.display:
             return None
         scenario = self.request.source_by_node.get(node_id, self.request.source or "live")
         return self.captures.stage_scored_output(node_id, self.node_map[node_id], scenario=scenario)
@@ -568,9 +813,9 @@ class _Walk:
         node_id: str,
         boundary: NodeBoundary,
         scored: NodeSnapshotArtifact | None,
-    ) -> tuple[_NodeFrame, tuple[bool, str | None]]:
+    ) -> _NodeFrame:
         if scored is None:
-            return self._build_node(node_id, boundary), (False, None)
+            return self._build_node(node_id, boundary)
         from haute._model_scorer import model_score_output_destination
 
         try:
@@ -579,27 +824,55 @@ class _Walk:
         except BaseException:
             scored.close()
             raise
-        return built, (destination.used, destination.digest)
+        built.scored = scored
+        built.scored_write = (destination.used, destination.digest)
+        return built
 
     def _build_node(self, node_id: str, boundary: NodeBoundary) -> _NodeFrame:
-        """Invoke one node and shape and check its output, inside its build stage."""
-        with self._stage("lazy_build", node_id):
+        """Invoke one node and shape and check its output, inside a sink walk's build stage."""
+        with self._stage(None if self.display else "lazy_build", node_id):
             if boundary.is_source:
                 frame = self.boundaries.invoke(boundary)
             else:
                 frame = self.boundaries.invoke(boundary, self._node_inputs(boundary))
-            return _NodeFrame(frame=self._shape_output(boundary, frame), boundary=boundary)
+            return self._shape_output(boundary, frame)
+
+    def _check_parents(self, boundary: NodeBoundary) -> None:
+        failed = [parent for parent in boundary.parent_ids if parent in self.failed]
+        if failed:
+            self._record_upstream_failure(boundary.node_id, failed)
+            raise _UpstreamFailedError(boundary.node_id)
+        missing = [parent for parent in boundary.parent_ids if parent not in self.frames]
+        if missing:
+            raise ValueError(
+                f"Node '{boundary.node_id}' is missing input(s) from: {missing}. "
+                "Upstream node(s) may have failed or not been registered."
+            )
+
+    def _input_frame(self, edge: GraphEdge) -> _Frame:
+        """The frame *edge* delivers: its source frame, picked by port.
+
+        A display walk reads a producer frame that feeds several edges
+        through one ``cache()`` node, so separate collections below it share
+        one computation of it.
+        """
+        picked = _pick_source_frame(self.frames[edge.source], edge)
+        if not self.display:
+            return picked
+        key = (edge.source, edge.sourceHandle)
+        if isinstance(picked, pl.LazyFrame) and self.fanout.get(key, 0) > 1:
+            shared = self.shared_inputs.get(key)
+            if shared is None:
+                shared = picked.cache()
+                self.shared_inputs[key] = shared
+            return shared
+        return _lazy(picked)
 
     def _node_inputs(self, boundary: NodeBoundary) -> list[_Frame]:
         """Route, project and contract-check the frames a node receives."""
         node_id = boundary.node_id
-        missing = [parent for parent in boundary.parent_ids if parent not in self.frames]
-        if missing:
-            raise ValueError(
-                f"Node '{node_id}' is missing input(s) from: {missing}. "
-                "Upstream node(s) may have failed or not been registered."
-            )
-        inputs = self.boundaries.input_frames(boundary, self.frames)
+        self._check_parents(boundary)
+        inputs = [self._input_frame(edge) for edge in boundary.incoming_edges]
         if not inputs:
             raise ValueError(f"No input data available for node '{node_id}'")
         runtime_demands = self._runtime_demands(boundary, inputs)
@@ -657,20 +930,24 @@ class _Walk:
             self.graph.submodels,
             self.selector_aliases,
         )
-        if demands and self.context is not None:
-            self._refine_strategy(demands)
+        if demands and self.context is not None and self.strategy is not None:
+            self._refine_strategy(self.strategy, demands)
         return demands
 
     def _refine_strategy(
-        self, demands: Mapping[projection_planner.ProjectionEdgeKey, set[str]]
+        self,
+        previous: projection_planner.ExecutionStrategyResult,
+        demands: Mapping[projection_planner.ProjectionEdgeKey, set[str]],
     ) -> None:
         """Record runtime-proven edge demands on the execution's strategy diagnostic."""
         assert self.context is not None
-        previous = self.strategy
+        resolved = _runtime_projectable_source_ids(demands, self.node_map)
+        self.runtime_demands.update((key, frozenset(columns)) for key, columns in demands.items())
+        self.runtime_resolved.update(resolved)
         refined_plan = projection_planner.with_runtime_inferred_streaming_edges(
             previous.projection_plan,
             demands_by_edge=demands,
-            resolved_parent_ids=_runtime_projectable_source_ids(demands, self.node_map),
+            resolved_parent_ids=resolved,
             relevant_edges=self.graph_plan.relevant_edges,
         )
         diagnostic = previous.diagnostic
@@ -704,7 +981,7 @@ class _Walk:
     ) -> tuple[_Frame, frozenset[str] | None]:
         """Narrow an input to its edge's demand; ``None`` columns when left whole."""
         demand: set[str] | frozenset[str] | None = runtime_demand
-        if demand is None:
+        if demand is None and self.projection.projects_edges:
             demand = self.projection.edge_demands.get(
                 projection_planner.ProjectionEdgeKey.from_edge(edge)
             )
@@ -713,11 +990,7 @@ class _Walk:
         lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
         schema_columns = lazy_frame.collect_schema().names()
         missing = set(demand) - set(schema_columns)
-        required = (
-            set(demand)
-            if runtime_demand is not None
-            else set(self.projection.runtime_plan.demand_for_edge(edge) or ())
-        )
+        required = set(demand) if runtime_demand is not None else self._run_demand(edge)
         if missing & required:
             raise ContractMismatchError(
                 "Columns required by a projection contract are missing from the parent frame.",
@@ -741,12 +1014,20 @@ class _Walk:
         ordered = projected_or_carrier_columns(schema_columns, demand)
         return lazy_frame.select(ordered), frozenset(ordered)
 
+    def _run_demand(self, edge: GraphEdge) -> set[str]:
+        """The columns the run itself reads over *edge*, as opposed to a capture's."""
+        runtime_plan = self.projection.runtime_plan
+        assert runtime_plan is not None
+        return set(runtime_plan.demand_for_edge(edge) or ())
+
     def _record_recipes(self, boundary: NodeBoundary, inputs: Sequence[_Frame]) -> None:
         """The recipes a full write of this node can be chunked by."""
         node = boundary.node
         join = _edge_join_recipe(boundary.fn, node, inputs)
         if join is not None:
             self.join_recipes[boundary.node_id] = join
+        if self.display:
+            return
         write = _write_recipe(
             boundary.fn,
             node,
@@ -774,51 +1055,86 @@ class _Walk:
                 pass
         return names
 
-    def _shape_output(self, boundary: NodeBoundary, frame: Any) -> _Frame:
+    def _shape_output(
+        self, boundary: NodeBoundary, result: Any, *, pass_through: bool = False
+    ) -> _NodeFrame:
         """Apply the node's own column selection and renames, then its output contract."""
         node_id = boundary.node_id
-        if isinstance(frame, pl.DataFrame):
-            if self.context is not None:
-                self.context.record_column_widths(node_id=node_id, output_width=frame.width)
-            frame = frame.lazy()
+        frame = self._as_frame(node_id, result)
         if isinstance(frame, dict):
             # A multi-frame source's bundle: consumers pick a frame per edge,
             # so the per-frame shaping and checks apply to what they pick.
-            for port, port_frame in frame.items():
-                self.column_cache[(node_id, port)] = _columns_of(port_frame)
-            return frame  # type: ignore[return-value]
-        config = boundary.node.data.config
-        if _shapes_output(boundary.node):
+            if not self.display:
+                for port, port_frame in frame.items():
+                    self.column_cache[(node_id, port)] = _columns_of(port_frame)
+            return _NodeFrame(frame=frame, boundary=boundary)
+        if _shapes_output(boundary.node) and not pass_through:
             # Its columns before its own selection and renames, which a
             # snapshot records so a seeded preview can still report them.
             self.unshaped_frames[node_id] = frame
+        config = boundary.node.data.config
         shaped = _lazy(_apply_column_renames(_lazy(_apply_selected_columns(frame, config)), config))
+        names = self._describe(node_id, boundary.node, frame, shaped) if self.display else None
+        self._check_output(boundary, shaped, names)
+        return _NodeFrame(frame=shaped, boundary=boundary, output_names=names)
+
+    def _as_frame(self, node_id: str, result: Any) -> Any:
+        """A node's result as a lazy frame, or a multi-frame source's bundle as returned."""
+        if isinstance(result, pl.DataFrame):
+            if self.context is not None and not self.display:
+                self.context.record_column_widths(node_id=node_id, output_width=result.width)
+            return result.lazy()
+        if isinstance(result, pl.LazyFrame | dict) or not self.display:
+            return result
+        raise TypeError(
+            f"Node '{node_id}' returned {type(result).__name__}; expected a Polars frame."
+        )
+
+    def _check_output(
+        self, boundary: NodeBoundary, shaped: pl.LazyFrame, names: list[str] | None
+    ) -> None:
         contract = boundary.contract
         if (
-            boundary.check_contract
-            and contract is not None
-            and contract.outputs is not None
-            and not boundary.is_passthrough_runtime
+            not boundary.check_contract
+            or contract is None
+            or contract.outputs is None
+            or boundary.is_passthrough_runtime
         ):
+            return
+        if names is not None:
+            columns = frozenset(names)
+        else:
             columns = _columns_of(shaped)
-            self.column_cache[(node_id, None)] = columns
+            self.column_cache[(boundary.node_id, None)] = columns
             if self.context is not None:
-                self.context.record_column_widths(node_id=node_id, output_width=len(columns))
-            self.boundaries.assert_outputs(boundary, columns)
-        return shaped
+                self.context.record_column_widths(
+                    node_id=boundary.node_id, output_width=len(columns)
+                )
+        self.boundaries.assert_outputs(boundary, columns)
 
-    def _pass_through(self, node_id: str, edge: GraphEdge) -> None:
+    def _pass_through(self, node_id: str, edge: GraphEdge) -> _NodeFrame:
         """A pass-through node is its selected input: its builder is never called."""
         if self.context is not None:
             self.context.checkpoint(label="before_node", node_id=node_id)
-        selected = select_edge_source_output(self.frames[edge.source], edge)
-        self._pass_through_recipe(node_id, edge, selected)
-        config = self.node_map[node_id].data.config
+        boundary = NodeBoundary(
+            node_id=node_id,
+            node=self.node_map[node_id],
+            fn=_passthrough_fn,
+            is_source=False,
+            parent_ids=(edge.source,),
+            incoming_edges=(edge,),
+            contract=None,
+            check_contract=False,
+            is_passthrough_runtime=True,
+        )
+        self._check_parents(boundary)
+        selected = self._input_frame(edge)
+        if not self.display:
+            self._pass_through_recipe(node_id, edge, selected)
         projected, _columns = self._project_edge(edge, selected)
-        shaped = _apply_column_renames(_apply_selected_columns(projected, config), config)
-        self.frames[node_id] = _lazy(shaped)
-        self.captures.record_closure(node_id)
-        self._release_consumed_parents(node_id)
+        built = self._shape_output(boundary, projected, pass_through=True)
+        built.pass_through = True
+        return built
 
     def _pass_through_recipe(self, node_id: str, edge: GraphEdge, selected: _Frame) -> None:
         """Compose a pass-through's write recipe forward from its parent's."""
@@ -850,11 +1166,11 @@ class _Walk:
     ) -> bool:
         """Whether the parent's recipe still describes the frame the pass-through selected.
 
-        The identity test is the multi-frame guard: ``select_edge_source_output``
-        returns the parent's own object for a single-frame parent and a
-        different one for a sub-frame the parent's recipe does not describe.
-        The second is the replacement test: every site that replaces a
-        parent's frame after a capture or a seed records it as file-backed.
+        The identity test is the multi-frame guard: the source pick returns
+        the parent's own object for a single-frame parent and a different one
+        for a sub-frame the parent's recipe does not describe. The second is
+        the replacement test: every site that replaces a parent's frame after
+        a capture or a seed records it as file-backed.
         """
         if selected is self.frames[edge.source] and edge.source not in self.file_backed:
             return True
@@ -864,40 +1180,46 @@ class _Walk:
             return False
         return True
 
-    def _capture(
-        self,
-        node_id: str,
-        frame: _Frame,
-        scored: NodeSnapshotArtifact | None,
-        scored_write: tuple[bool, str | None],
-    ) -> _Frame:
-        """Record the node's closure and, at a capture point, sink it and continue from it."""
+    def _capture(self, node_id: str, built: _NodeFrame) -> tuple[_Frame, bool]:
+        """Record the node's closure and, at a capture point, sink it and continue from it.
+
+        A capture's storage failure is the store's, never the node's: it
+        propagates even from a walk that records node failures.
+        """
         assert self.decision is not None
         closure = self.captures.record_closure(node_id)
         if node_id not in self.decision.captures:
-            return frame
-        prewritten, digest = scored_write
+            return built.frame, False
+        prewritten, digest = built.scored_write
         unshaped = self.unshaped_frames.get(node_id)
-        captured = self.captures.capture(
-            node_id,
-            frame,
-            closure,
-            artifact=scored,
-            prewritten=prewritten,
-            prewritten_digest=digest,
-            join=self.join_recipes.get(node_id),
-            recipe=self.write_recipes.get(node_id),
-            unshaped_columns=_schema_pairs(unshaped) if unshaped is not None else None,
-        )
+        try:
+            captured = self.captures.capture(
+                node_id,
+                built.frame,
+                closure,
+                artifact=built.scored,
+                prewritten=prewritten,
+                prewritten_digest=digest,
+                join=self.join_recipes.get(node_id),
+                recipe=self.write_recipes.get(node_id),
+                unshaped_columns=_schema_pairs(unshaped) if unshaped is not None else None,
+            )
+        except (SourceCacheError, OSError) as exc:
+            self.store_failures.append(exc)
+            raise
+        if not self.display:
+            self._after_sink_capture(node_id, captured)
+        return captured, True
+
+    def _after_sink_capture(self, node_id: str, captured: pl.LazyFrame) -> None:
+        """A captured frame is a scan of the published file; free memory every few captures."""
         self.file_backed.add(node_id)
         self.column_cache[(node_id, None)] = _columns_of(captured)
-        self._release_consumed_parents(node_id)
         self.materialisations_since_gc += 1
         if self.materialisations_since_gc >= _GC_BATCH_INTERVAL:
             gc.collect()
             _malloc_trim()
             self.materialisations_since_gc = 0
-        return captured
 
     def _release_consumed_parents(self, node_id: str) -> None:
         """Drop parent frames no consumer still needs, so Polars can free their buffers.
@@ -917,14 +1239,337 @@ class _Walk:
             ):
                 del self.frames[parent_id]
 
+    # -------------------------------------------------------- display walk
+
+    def _describe(
+        self,
+        node_id: str,
+        node: GraphNode,
+        unshaped: pl.LazyFrame,
+        shaped: pl.LazyFrame,
+        *,
+        seeded: bool = False,
+    ) -> list[str]:
+        """Report a node's schema before and after its own shaping; return its output names.
+
+        A seed is its shaped output, so its columns before shaping come from
+        what its generation recorded.
+        """
+        available = _schema_items(unshaped)
+        if seeded and self.plan is not None:
+            recorded = self.plan.seed_unshaped_columns(node_id)
+            if recorded is not None:
+                available = list(recorded)
+        output = self._full_model_score_schema(node_id, node, _schema_items(shaped))
+        if _is_plain_model_score(node):
+            available = output
+        self.available_columns[node_id] = available
+        self.output_columns[node_id] = output
+        if self.context is not None:
+            self.context.record_column_widths(node_id=node_id, output_width=len(output))
+        return [name for name, _dtype in output]
+
+    def _full_model_score_schema(
+        self, node_id: str, node: GraphNode, actual: _SchemaItems
+    ) -> _SchemaItems:
+        """A plain Model Score reports its parent's columns plus what it generates.
+
+        Its collection may carry only the columns the preview asked for, but
+        its schema is the whole scored frame.
+        """
+        parent_ids = self.parents_of.get(node_id, [])
+        parent_columns = self.output_columns.get(parent_ids[0]) if parent_ids else None
+        if not _is_plain_model_score(node) or parent_columns is None:
+            return actual
+        actual_by_name = dict(actual)
+        generated = [str(node.data.config.get("output_column") or "prediction")]
+        if f"{generated[0]}_proba" in actual_by_name:
+            generated.append(f"{generated[0]}_proba")
+        full = [(name, actual_by_name.get(name, dtype)) for name, dtype in parent_columns]
+        seen = {name for name, _dtype in full}
+        full.extend(
+            (name, actual_by_name[name])
+            for name in generated
+            if name not in seen and name in actual_by_name
+        )
+        return full
+
+    def _collect(self, node_id: str, built: _NodeFrame, frame: pl.LazyFrame) -> None:
+        """Collect a node the policy names, under its limits; keep its plan either way.
+
+        Consumers read the collection only when it holds every row and every
+        column they need; a limited or narrowed collection never feeds them.
+        """
+        names = built.output_names or []
+        projected = self._collect_projection(node_id, built.boundary.node, names)
+        self.column_cache[(node_id, None)] = frozenset(names)
+        if not self.policy.collects(node_id):
+            self.frames[node_id] = frame
+            return
+        collect_frame = self._collect_frame(node_id, frame, names, projected)
+        row_limit = self.policy.row_limit_for(node_id)
+        if row_limit:
+            collect_frame = collect_frame.head(row_limit)
+        df = self._run_collect(node_id, collect_frame)
+        self.collected[node_id] = df
+        consumer_columns = self.projection.needed_by_node.get(node_id)
+        covers = (
+            consumer_columns <= set(df.columns)
+            if consumer_columns is not None
+            else df.width == len(names)
+        )
+        self.frames[node_id] = df if not row_limit and covers else frame
+        self.memory_bytes[node_id] = int(df.estimated_size("b"))
+
+    def _collect_projection(
+        self, node_id: str, node: GraphNode, names: list[str]
+    ) -> list[str] | None:
+        """The columns a collection keeps when the caller named fewer than the node has."""
+        projection = self.projection.collect_needed.get(node_id)
+        if projection is None:
+            return None
+        missing = projection - set(names)
+        if missing and node_id not in self.prepared.normalised_required_columns:
+            raise ContractMismatchError(
+                "Eager projection references columns missing from the node output schema.",
+                node_id=node_id,
+                node_type=node.data.nodeType.value,
+                missing=sorted(missing),
+                required_columns=sorted(projection),
+                output_columns=sorted(names),
+            )
+        kept = [name for name in names if name in projection]
+        return kept if len(kept) < len(names) else None
+
+    def _collect_frame(
+        self,
+        node_id: str,
+        frame: pl.LazyFrame,
+        names: list[str],
+        projected: list[str] | None,
+    ) -> pl.LazyFrame:
+        collect_frame = frame
+        if projected is not None:
+            logger.info(
+                "eager_projection",
+                node_id=node_id,
+                total_cols=len(names),
+                projected_cols=len(projected),
+            )
+            collect_frame = frame.select(projected)
+        column_limit = self.policy.column_limits_by_node.get(node_id)
+        if (
+            column_limit is not None
+            and self.projection.collect_needed.get(node_id) is None
+            and len(names) > column_limit
+        ):
+            collect_frame = frame.select(names[:column_limit])
+        return collect_frame
+
+    def _run_collect(self, node_id: str, frame: pl.LazyFrame) -> pl.DataFrame:
+        if self.context is None:
+            return streaming_collect(frame)
+        self.context.checkpoint(label="before_collect", node_id=node_id)
+        with self.context.stage("eager_collect", node_id=node_id):
+            df = streaming_collect(frame, execution_context=self.context)
+        self.context.checkpoint(label="after_collect", node_id=node_id)
+        return df
+
+    def _finish_bundle(self, node_id: str, built: _NodeFrame) -> None:
+        """A multi-frame source's bundle: stored as returned, or reported frame by frame."""
+        bundle = built.frame
+        assert isinstance(bundle, dict)
+        if not self.display:
+            self.frames[node_id] = bundle
+            return
+        node = built.boundary.node
+        declared = _declared_api_input_frame_schema_items(node)
+        multi = len(declared) > 1 if declared else len(bundle) > 1
+        if multi and declared:
+            # Loading is demand-scoped, but a port's schema is a config
+            # contract: every declared port is reported without opening it.
+            for label, items in declared.items():
+                self.frame_columns[(node_id, label)] = items
+        plans = _bundle_plans(node_id, bundle)
+        if self.policy.collects(node_id):
+            self._collect_bundle(node_id, bundle, plans, multi=multi, declared=declared)
+        else:
+            self._describe_bundle(node_id, plans, multi=multi, declared=declared)
+        self.available_columns.setdefault(node_id, [])
+        self.output_columns.setdefault(node_id, [])
+        if self.context is not None:
+            self.context.checkpoint(label="after_node", node_id=node_id)
+
+    def _collect_bundle(
+        self,
+        node_id: str,
+        bundle: Mapping[str, pl.LazyFrame | pl.DataFrame],
+        plans: dict[str, pl.LazyFrame],
+        *,
+        multi: bool,
+        declared: Mapping[str, _SchemaItems],
+    ) -> None:
+        """Collect each frame of a bundle to the node's limit; consumers read the plans."""
+        limit = self.policy.row_limit_for(node_id)
+        collected: dict[str, pl.DataFrame] = {}
+        for label, port_frame in bundle.items():
+            capped = port_frame.head(limit) if limit else port_frame
+            collected[label] = (
+                streaming_collect(capped, execution_context=self.context)
+                if isinstance(capped, pl.LazyFrame)
+                else capped
+            )
+        self.frames[node_id] = plans if limit else collected
+        for label, df in collected.items():
+            self.column_cache[(node_id, label)] = frozenset(df.columns)
+            if multi and not declared:
+                self.frame_columns[(node_id, label)] = _schema_items(df.lazy())
+        if self.context is not None:
+            self.context.record_column_widths(
+                node_id=node_id, output_width=sum(df.width for df in collected.values())
+            )
+        self.collected[node_id] = collected
+        if not multi and len(collected) == 1:
+            port, df = next(iter(collected.items()))
+            self._report_single_port(node_id, declared.get(port) or _schema_items(df.lazy()))
+
+    def _describe_bundle(
+        self,
+        node_id: str,
+        plans: dict[str, pl.LazyFrame],
+        *,
+        multi: bool,
+        declared: Mapping[str, _SchemaItems],
+    ) -> None:
+        """An uncollected bundle keeps its per-frame plans; schemas come without collecting."""
+        for label, plan in plans.items():
+            self.column_cache[(node_id, label)] = frozenset(plan.collect_schema().names())
+            if multi and not declared:
+                self.frame_columns[(node_id, label)] = _schema_items(plan)
+        self.frames[node_id] = plans
+        if not multi and len(plans) == 1:
+            port, plan = next(iter(plans.items()))
+            self._report_single_port(node_id, declared.get(port) or _schema_items(plan))
+
+    def _report_single_port(self, node_id: str, schema: _SchemaItems) -> None:
+        """A one-frame bundle's schema is the node's ordinary schema."""
+        self.available_columns[node_id] = schema
+        self.output_columns[node_id] = schema
+
+    def _recordable(self, exc: Exception) -> bool:
+        """Whether a failure is the node's own, recorded rather than raised.
+
+        Contract and schema mismatches, public contract errors, execution
+        control signals and a capture's storage failure are run-level and
+        always propagate.
+        """
+        if isinstance(
+            exc,
+            (
+                ContractMismatchError,
+                SchemaMismatchError,
+                ExecutionCancelledError,
+                ExecutionMemoryLimitExceededError,
+            ),
+        ):
+            return False
+        if is_public_contract_error(exc):
+            return False
+        return not any(exc is failure for failure in self.store_failures)
+
+    def _record_failure(self, node_id: str, exc: Exception) -> None:
+        logger.error("node_failed", node_id=node_id, error=str(exc))
+        self.failed.add(node_id)
+        self.frames.pop(node_id, None)
+        self.collected[node_id] = None
+        self.errors[node_id] = str(exc)
+        error_line = _extract_error_line(exc)
+        if error_line is not None:
+            self.error_lines[node_id] = error_line
+
+    def _record_upstream_failure(self, node_id: str, failed: Sequence[str]) -> None:
+        self.failed.add(node_id)
+        self.collected[node_id] = None
+        self.errors[node_id] = "Upstream node(s) failed: " + "; ".join(
+            f"{parent}: {self.errors[parent]}" if parent in self.errors else f"{parent}: failed"
+            for parent in failed
+        )
+        for parent in failed:
+            if parent in self.error_lines:
+                self.error_lines[node_id] = self.error_lines[parent]
+                break
+
+    def _replan_target_preview(self) -> None:
+        """Re-plan a target-only preview's diagnostic from the frames it built.
+
+        Before execution an edge join cannot route demand to a parent whose
+        schema is known only once built, so the executed strategy is planned
+        again from the built schemas and the runtime-proven demands.
+        """
+        context = self.context
+        target = self.request.target_node_id
+        if (
+            context is None
+            or context.profile is not ExecutionProfile.PREVIEW_EAGER
+            or target is None
+            or self.policy.collect != frozenset({target})
+            or not isinstance(context.projection_plan, projection_planner.ExecutionStrategyResult)
+        ):
+            return
+        required = dict(self.prepared.normalised_required_columns)
+        target_output = self.collected.get(target)
+        if target not in required and isinstance(target_output, pl.DataFrame):
+            # A preview that named no columns demands exactly what it collected.
+            required[target] = set(target_output.columns)
+        context.projection_plan = _replanned_target_preview_strategy(
+            context.projection_plan,
+            order=self.run_order,
+            node_map=self.node_map,
+            required_columns_by_node=required,
+            relevant_edges=self.graph_plan.relevant_edges,
+            graph=self.graph,
+            known_output_columns={
+                key: columns
+                for key, columns in self.column_cache.items()
+                if key[0] not in self.errors
+            },
+            runtime_edge_demands=self.runtime_demands,
+            runtime_resolved_parent_ids=self.runtime_resolved,
+            profile=context.profile,
+            seeded_node_ids=frozenset(self.seed_frames),
+        )
+
 
 def _lazy(frame: pl.LazyFrame | pl.DataFrame) -> pl.LazyFrame:
     return frame.lazy() if isinstance(frame, pl.DataFrame) else frame
 
 
 def _columns_of(frame: pl.LazyFrame | pl.DataFrame) -> frozenset[str]:
-    lazy_frame = frame if isinstance(frame, pl.LazyFrame) else frame.lazy()
-    return frozenset(lazy_frame.collect_schema().names())
+    return frozenset(_lazy(frame).collect_schema().names())
+
+
+def _schema_items(frame: pl.LazyFrame) -> _SchemaItems:
+    schema = frame.collect_schema()
+    return [(name, str(schema[name])) for name in schema.names()]
+
+
+def _plan_of(frame: Any) -> Any:
+    """A frame's uncapped plan, or a bundle's per-frame plans."""
+    if isinstance(frame, dict):
+        return {port: _lazy(port_frame) for port, port_frame in frame.items()}
+    return _lazy(frame)
+
+
+def _bundle_plans(node_id: str, bundle: Mapping[str, Any]) -> dict[str, pl.LazyFrame]:
+    plans: dict[str, pl.LazyFrame] = {}
+    for label, port_frame in bundle.items():
+        if not isinstance(port_frame, pl.LazyFrame | pl.DataFrame):
+            raise TypeError(
+                f"Node '{node_id}' multi-frame output for frame {label!r} is not a Polars "
+                f"frame (got {type(port_frame).__name__})."
+            )
+        plans[label] = _lazy(port_frame)
+    return plans
 
 
 __all__ = [

@@ -243,3 +243,99 @@ def test_a_planned_walk_refuses_changed_inputs_before_capturing_a_source(
     assert context.metrics_payload()["shared_snapshot_captures"] == []
     assert store.latest_generation(_identity(store, graph, "src")) is None
     assert not _staging_dirs(store)
+
+
+# ---------------------------------------------------------------------------
+# Display walks: preview and trace
+# ---------------------------------------------------------------------------
+
+
+def _chain_graph(root: Path) -> PipelineGraph:
+    return PipelineGraph(
+        nodes=[
+            _source(root, "src", pl.DataFrame({"x": list(range(10))})),
+            _node("double", NodeType.POLARS, code="df = src.with_columns(y=pl.col('x') * 2)"),
+            _node(
+                "shaped",
+                NodeType.POLARS,
+                code="df = double.with_columns(z=pl.col('y') + 1)",
+                selected_columns=["x", "z"],
+            ),
+        ],
+        edges=[_edge("src", "double"), _edge("double", "shaped")],
+    )
+
+
+def test_a_display_walk_collects_each_node_to_its_limit_and_keeps_uncapped_plans(
+    haute_scratch: Path,
+) -> None:
+    walked = walk_graph(
+        _chain_graph(haute_scratch),
+        _build_node_fn,
+        policy=CollectPolicy.display(row_limit=4, row_limits_by_node={"double": 2}),
+    )
+
+    assert walked.run_order == ["src", "double", "shaped"]
+    assert {node_id: frame.height for node_id, frame in walked.collected.items()} == {
+        "src": 4,
+        "double": 2,
+        "shaped": 4,
+    }
+    # Consumers never read a limited collection: every plan is the whole output.
+    assert walked.frames["shaped"].collect().height == 10
+    assert walked.available_columns["shaped"] == [
+        ("x", "Int64"),
+        ("y", "Int64"),
+        ("z", "Int64"),
+    ]
+    assert walked.output_columns["shaped"] == [("x", "Int64"), ("z", "Int64")]
+    assert set(walked.timings) == {"src", "double", "shaped"}
+
+
+def test_a_display_walk_collects_only_the_named_nodes(haute_scratch: Path) -> None:
+    walked = walk_graph(
+        _chain_graph(haute_scratch),
+        _build_node_fn,
+        policy=CollectPolicy.display(collect={"shaped"}, row_limit=3),
+    )
+
+    assert set(walked.collected) == {"shaped"}
+    assert walked.collected["shaped"].columns == ["x", "z"]
+    # An uncollected ancestor still reports its full schema.
+    assert walked.output_columns["double"] == [("x", "Int64"), ("y", "Int64")]
+
+
+def test_a_display_walk_records_node_failures_when_the_policy_says_so(
+    haute_scratch: Path,
+) -> None:
+    graph = _chain_graph(haute_scratch)
+    graph.nodes[1] = _node("double", NodeType.POLARS, code="df = src.with_columns(y=undefined)")
+
+    walked = walk_graph(graph, _build_node_fn, policy=CollectPolicy.display(record_failures=True))
+
+    assert walked.collected["double"] is None
+    assert "undefined" in walked.errors["double"]
+    assert walked.errors["shaped"].startswith("Upstream node(s) failed: double: ")
+    # The failing node was timed; the node below it never ran.
+    assert "double" in walked.timings and "shaped" not in walked.timings
+    assert set(walked.frames) == {"src"}
+
+    with pytest.raises(NameError, match="undefined"):
+        walk_graph(graph, _build_node_fn, policy=CollectPolicy.display())
+
+
+@pytest.mark.parametrize(
+    ("limits", "message"),
+    [
+        ({"": 1}, "keyed by node id"),
+        ({"node": 0}, "positive integers"),
+        ({"node": True}, "positive integers"),
+    ],
+)
+def test_collection_limits_are_positive_integers_keyed_by_node(
+    limits: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        CollectPolicy.display(row_limits_by_node=limits)
+    with pytest.raises(ValueError, match=message):
+        CollectPolicy.display(column_limits_by_node=limits)
