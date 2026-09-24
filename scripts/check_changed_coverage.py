@@ -1,9 +1,17 @@
-"""Fail closed when changed executable code lacks Coverage.py evidence."""
+"""Changed-line coverage: gate the safety-critical modules, report the rest.
+
+Every changed Python file under ``report_paths`` gets its changed statements
+and branches checked against Coverage.py evidence. Files listed in ``paths``
+(the safety-critical modules) fail the run below the configured minimums;
+every other file is reported, on standard output and in the GitHub job summary,
+without failing it.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import posixpath
 import re
 import subprocess
@@ -25,9 +33,21 @@ class ChangedCoverageError(Exception):
 @dataclass(frozen=True)
 class ChangedCoverageConfig:
     coverage_json: Path
+    # Gated: changed code in these files must meet the minimums.
     paths: tuple[str, ...]
+    # Reported only: changed Python files under these files or directories.
+    report_paths: tuple[str, ...]
     min_statement_coverage: float
     min_branch_coverage: float
+
+    def gates(self, path: str) -> bool:
+        return path in self.paths
+
+    def in_scope(self, path: str) -> bool:
+        roots = (*self.paths, *self.report_paths)
+        return path.endswith(".py") and any(
+            path == root or path.startswith(f"{root}/") for root in roots
+        )
 
 
 @dataclass(frozen=True)
@@ -77,6 +97,23 @@ def _percent(value: Any, name: str) -> float:
     return result
 
 
+def _path_list(section: dict[str, Any], key: str) -> tuple[str, ...]:
+    raw_paths = section.get(key)
+    if not isinstance(raw_paths, list) or not raw_paths:
+        raise ChangedCoverageError(f"tool.haute.changed_coverage.{key} must be a non-empty list.")
+    paths: list[str] = []
+    for raw_path in raw_paths:
+        if not isinstance(raw_path, str):
+            raise ChangedCoverageError(
+                f"tool.haute.changed_coverage.{key} entries must be strings."
+            )
+        normalized = _path(raw_path)
+        if normalized in paths:
+            raise ChangedCoverageError(f"Duplicate changed coverage path: {normalized}")
+        paths.append(normalized)
+    return tuple(paths)
+
+
 def _load_config(config_path: Path) -> ChangedCoverageConfig:
     try:
         data = tomllib.loads(config_path.read_text(encoding="utf-8"))
@@ -93,20 +130,10 @@ def _load_config(config_path: Path) -> ChangedCoverageConfig:
     coverage_json = Path(raw_json)
     if not coverage_json.is_absolute():
         coverage_json = config_path.parent / coverage_json
-    raw_paths = section.get("paths")
-    if not isinstance(raw_paths, list) or not raw_paths:
-        raise ChangedCoverageError("tool.haute.changed_coverage.paths must be a non-empty list.")
-    paths: list[str] = []
-    for raw_path in raw_paths:
-        if not isinstance(raw_path, str):
-            raise ChangedCoverageError("tool.haute.changed_coverage.paths entries must be strings.")
-        normalized = _path(raw_path)
-        if normalized in paths:
-            raise ChangedCoverageError(f"Duplicate changed coverage path: {normalized}")
-        paths.append(normalized)
     return ChangedCoverageConfig(
         coverage_json=coverage_json,
-        paths=tuple(paths),
+        paths=_path_list(section, "paths"),
+        report_paths=_path_list(section, "report_paths"),
         min_statement_coverage=_percent(
             section.get("min_statement_coverage"), "min_statement_coverage"
         ),
@@ -241,25 +268,26 @@ def _git(repo: Path, args: Sequence[str]) -> str:
 def collect_changed_lines(
     config: ChangedCoverageConfig, repo: Path, base_ref: str | None
 ) -> tuple[dict[str, set[int]], set[str]]:
-    """Collect tracked changed lines and configured untracked files."""
+    """Collect tracked changed lines and untracked files in the checked scope."""
+    scope = [*config.paths, *config.report_paths]
     common = ["diff", "--unified=0", "--no-ext-diff", "--find-renames"]
     outputs: list[str] = []
     if base_ref is not None:
-        outputs.append(_git(repo, [*common, f"{base_ref}...HEAD", "--", *config.paths]))
-    outputs.append(_git(repo, [*common, "HEAD", "--", *config.paths]))
+        outputs.append(_git(repo, [*common, f"{base_ref}...HEAD", "--", *scope]))
+    outputs.append(_git(repo, [*common, "HEAD", "--", *scope]))
     changed: dict[str, set[int]] = {}
     for output in outputs:
         for path, lines in parse_unified_zero_diff(output).items():
-            if path in config.paths:
+            if config.in_scope(path):
                 changed.setdefault(path, set()).update(lines)
     untracked = {
         _path(line)
         for line in _git(
-            repo, ["ls-files", "--others", "--exclude-standard", "--", *config.paths]
+            repo, ["ls-files", "--others", "--exclude-standard", "--", *scope]
         ).splitlines()
         if line.strip()
     }
-    return changed, untracked & set(config.paths)
+    return changed, {path for path in untracked if config.in_scope(path)}
 
 
 def evaluate_changed_coverage(
@@ -268,14 +296,21 @@ def evaluate_changed_coverage(
     changed: dict[str, set[int]],
     untracked: Iterable[str] = (),
 ) -> dict[str, CoverageResult]:
+    """Changed-line coverage of every changed file Coverage.py measures.
+
+    A gated file must be in the artifact. A reported-only file the artifact
+    does not measure (an omitted resource tree) is left out.
+    """
     results: dict[str, CoverageResult] = {}
     untracked_paths = set(untracked)
     all_changed = set(changed) | untracked_paths
     for path in sorted(all_changed):
         file = coverage.get(path)
         if file is None:
+            if not config.gates(path):
+                continue
             raise ChangedCoverageError(
-                f"Changed configured file is missing from coverage artifact: {path}"
+                f"Changed safety-critical file is missing from coverage artifact: {path}"
             )
         arcs = file.executed_branches | file.missing_branches
         executable = file.executed_lines | file.missing_lines
@@ -310,10 +345,82 @@ def _percent_covered(total: int, missing: int) -> float | None:
     return None if total == 0 else 100 * (total - missing) / total
 
 
+def _format_percent(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.2f}%"
+
+
+def _missing(result: CoverageResult) -> str:
+    parts = []
+    if result.missing_lines:
+        parts.append("lines " + ", ".join(map(str, result.missing_lines)))
+    if result.missing_branches:
+        parts.append(
+            "branches "
+            + ", ".join(f"{first}->{second}" for first, second in result.missing_branches)
+        )
+    return "; ".join(parts) or "none"
+
+
+def _with_targets(results: dict[str, CoverageResult]) -> dict[str, CoverageResult]:
+    return {
+        path: result
+        for path, result in results.items()
+        if result.statement_targets or result.branch_targets
+    }
+
+
+def summary_markdown(config: ChangedCoverageConfig, results: dict[str, CoverageResult]) -> str:
+    """The job-summary table of changed-line coverage for every file with changed code."""
+    results = _with_targets(results)
+    lines = [
+        "### Changed-code coverage",
+        "",
+        "Safety-critical files fail the build below "
+        f"{config.min_statement_coverage:.0f}% statement and "
+        f"{config.min_branch_coverage:.0f}% branch coverage of changed code; "
+        "other files are reported for review.",
+        "",
+    ]
+    if not results:
+        return "\n".join([*lines, "No changed executable code.", ""])
+    lines += [
+        "| File | Gate | Statements | Branches | Missing |",
+        "|---|---|---:|---:|---|",
+    ]
+    for path, result in results.items():
+        statement = _percent_covered(result.statement_targets, len(result.missing_lines))
+        branch = _percent_covered(result.branch_targets, len(result.missing_branches))
+        gate = "safety-critical" if config.gates(path) else "report only"
+        lines.append(
+            f"| `{path}` | {gate} | {_format_percent(statement)} | "
+            f"{_format_percent(branch)} | {_missing(result)} |"
+        )
+    return "\n".join([*lines, ""])
+
+
+def _print_advisory(config: ChangedCoverageConfig, results: dict[str, CoverageResult]) -> None:
+    reported = {
+        path: result for path, result in _with_targets(results).items() if not config.gates(path)
+    }
+    if not reported:
+        return
+    print("Changed code outside the safety-critical modules (reported, not gated):")
+    for path, result in reported.items():
+        statement = _percent_covered(result.statement_targets, len(result.missing_lines))
+        branch = _percent_covered(result.branch_targets, len(result.missing_branches))
+        print(
+            f"- {path}: statements {_format_percent(statement)}, "
+            f"branches {_format_percent(branch)}; missing {_missing(result)}"
+        )
+
+
 def _print_results(config: ChangedCoverageConfig, results: dict[str, CoverageResult]) -> int:
+    _print_advisory(config, results)
     violations: list[str] = []
     statement_total = branch_total = 0
     for path, result in results.items():
+        if not config.gates(path):
+            continue
         statement_total += result.statement_targets
         branch_total += result.branch_targets
         statement = _percent_covered(result.statement_targets, len(result.missing_lines))
@@ -340,7 +447,7 @@ def _print_results(config: ChangedCoverageConfig, results: dict[str, CoverageRes
             print(f"- {violation}", file=sys.stderr)
         return 1
     if statement_total == 0 and branch_total == 0:
-        print("Changed coverage gate passed: no changed executable targets.")
+        print("Changed coverage gate passed: no changed safety-critical targets.")
     else:
         print(
             "Changed coverage gate passed: "
@@ -355,9 +462,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = _load_config(args.config)
         coverage = _load_coverage_artifact(args.coverage_json or config.coverage_json)
         changed, untracked = collect_changed_lines(config, args.config.parent, args.base_ref)
-        return _print_results(
-            config, evaluate_changed_coverage(config, coverage, changed, untracked)
-        )
+        results = evaluate_changed_coverage(config, coverage, changed, untracked)
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary:
+            with open(summary, "a", encoding="utf-8") as handle:
+                handle.write(summary_markdown(config, results))
+        return _print_results(config, results)
     except ChangedCoverageError as exc:
         print(str(exc), file=sys.stderr)
         return 2

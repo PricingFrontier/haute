@@ -285,298 +285,60 @@ exclude_lines = [
 coverage_json = ".cache/coverage/backend.json"
 min_statement_coverage = 100.0
 min_branch_coverage = 100.0
+# The safety-critical modules (specs/engineering-quality/high-level.md): changed
+# code in them must be fully covered. Changed code elsewhere under report_paths
+# is reported in the job summary without failing the build.
 paths = [
-    "src/haute/_builders.py",
-    "src/haute/_cardinality.py",
-    "src/haute/_column_lineage.py",
-    "src/haute/_dataframe_execution_cache.py",
-    "src/haute/_edge_join.py",
-    "src/haute/_estimate_calibration.py",
-    "src/haute/_execute_lazy.py",
-    "src/haute/_execution_admission.py",
-    "src/haute/_execution_context.py",
-    "src/haute/_explore_cache.py",
-    "src/haute/_graph_walker.py",
+    # Rating
+    "src/haute/_rating.py",
+    "src/haute/_rating_step_config.py",
+    "src/haute/_banding_config.py",
+    # Deploy scoring
+    "src/haute/deploy/_scorer.py",
+    "src/haute/deploy/_batch_scoring.py",
+    "src/haute/deploy/_model_code.py",
+    "src/haute/deploy/_pruner.py",
+    "src/haute/deploy/_schema.py",
+    "src/haute/_model_scorer.py",
+    "src/haute/_output_assembler.py",
+    "src/haute/_jsonpath.py",
+    "src/haute/modelling/_native_pyfunc.py",
+    # Feature contracts
+    "src/haute/modelling/_feature_contract.py",
+    "src/haute/modelling/_native_encoding.py",
+    "src/haute/modelling/_signature.py",
+    # Cache identity
+    "src/haute/_cache.py",
+    "src/haute/_stat_gated_cache.py",
+    "src/haute/_hashing.py",
+    # Snapshot publication
+    "src/haute/_source_cache.py",
+    "src/haute/_node_snapshots.py",
     "src/haute/_file_lock.py",
-    "src/haute/_interactive_workers.py",
-    "src/haute/_io.py",
-    "src/haute/_json_shred/_cache.py",
-    "src/haute/_json_shred/_inference.py",
+    "src/haute/_json_shred/_snapshots.py",
+    "src/haute/_json_shred/_writer.py",
+    "src/haute/_json_shred/_shred.py",
     "src/haute/_json_shred/_records.py",
     "src/haute/_json_shred/_runtime_storage.py",
-    "src/haute/_json_shred/_shred.py",
-    "src/haute/_json_shred/_snapshots.py",
+    "src/haute/_json_shred/_inference.py",
+    "src/haute/_json_shred/_inference_filter.py",
+    "src/haute/_json_shred/_cache.py",
+    # Cache identity
     "src/haute/_json_shred/_source_proof.py",
-    "src/haute/_json_shred/_writer.py",
-    "src/haute/_node_apply.py",
-    "src/haute/_native_memory_limit.py",
-    "src/haute/_output_assembler.py",
-    "src/haute/_polars_utils.py",
-    "src/haute/_process_memory.py",
-    "src/haute/_ram_estimate.py",
-    "src/haute/_worker_isolation.py",
-    "src/haute/_worker_protocol.py",
-    "src/haute/chunking.py",
-    "src/haute/deploy/_model_code.py",
-    "src/haute/deploy/_scorer.py",
-    "src/haute/execution.py",
-    "src/haute/executor.py",
-    "src/haute/projection.py",
-    "src/haute/routes/_explore_service.py",
-    "src/haute/routes/_isolated_worker_async.py",
-    "src/haute/routes/json_cache.py",
-    "src/haute/routes/output_assemble.py",
-    "src/haute/routes/pipeline.py",
-    "src/haute/schemas.py",
-    "src/haute/server.py",
+    "src/haute/_json_shred/_inference_cache.py",
 ]
+report_paths = ["src/haute"]
 
 [tool.haute.critical_coverage]
 coverage_json = ".cache/coverage/backend.json"
+# Per-file floors for the safety-critical modules only (the same set as
+# [tool.haute.changed_coverage].paths).
 
 [[tool.haute.critical_coverage.files]]
-path = "src/haute/_json_shred/_records.py"
-min_statement_coverage = 90.0
-min_branch_coverage = 85.0
-rationale = "Streaming JSON/JSONL/XML record decoding bounds every structured-input read. (Split from the former single-module gate; same thresholds pending a remeasure.)"
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_json_shred/_shred.py"
-min_statement_coverage = 90.0
-min_branch_coverage = 85.0
-rationale = "The single-pass v2 shred walk emits every cached pricing row. (Split from the former single-module gate; same thresholds pending a remeasure.)"
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_json_shred/_writer.py"
-min_statement_coverage = 90.0
-min_branch_coverage = 85.0
-rationale = "Bounded Parquet emission is the memory boundary for table-snapshot builds and spills. (Split from the former single-module gate; same thresholds pending a remeasure.)"
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_file_lock.py"
-min_statement_coverage = 90.0
-min_branch_coverage = 85.0
-rationale = "The one cross-process file-lock helper and its plain-path checks guard the project mutation lock, the input-snapshot store's lease and publication locks, and the runtime storage budget."
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_json_shred/_source_proof.py"
-min_statement_coverage = 90.0
-min_branch_coverage = 85.0
-rationale = "Source content proofs decide API-input table freshness. (Split from the former single-module gate; same thresholds pending a remeasure.)"
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_json_shred/_runtime_storage.py"
-min_statement_coverage = 90.0
-min_branch_coverage = 85.0
-rationale = "Standalone spills and the disk budget own process-local storage safety. (Split from the former single-module gate; same thresholds pending a remeasure.)"
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_json_shred/_inference.py"
-min_statement_coverage = 90.0
-min_branch_coverage = 85.0
-rationale = "Schema inference from data seeds the v2 apiInput configuration. (Split from the former single-module gate; same thresholds pending a remeasure.)"
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_json_shred/_cache.py"
-min_statement_coverage = 90.0
-min_branch_coverage = 85.0
-rationale = "The apiInput loader serves every structured source, from table snapshots or a standalone shred. (Split from the former single-module gate; same thresholds pending a remeasure.)"
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_json_shred/_snapshots.py"
-min_statement_coverage = 90.0
-min_branch_coverage = 85.0
-rationale = "Each API-input table's identity, freshness, one-shred build and supervised settlement decide what every structured source serves."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_model_scorer.py"
-min_statement_coverage = 97.0
-min_branch_coverage = 95.0
-rationale = "Model scoring is a shared pricing-path primitive."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_parser_submodels.py"
-min_statement_coverage = 95.0
+path = "src/haute/_rating.py"
+min_statement_coverage = 92.0
 min_branch_coverage = 88.0
-rationale = "Submodel parsing controls nested pricing graph behaviour."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_path_resolution.py"
-min_statement_coverage = 100.0
-min_branch_coverage = 100.0
-rationale = "Path resolution is a security and portability boundary."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_polars_dtypes.py"
-min_statement_coverage = 84.0
-min_branch_coverage = 77.0
-rationale = "Struct-capable dtype codec decodes user-supplied schema declarations for dataInput/dataOutput configs."
-# Seeded from PR #68 landing measurement (87.2% stmt / 80.3% branch); ratchet as coverage grows.
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_polars_io_registry.py"
-min_statement_coverage = 73.0
-min_branch_coverage = 64.0
-rationale = "Format registry defines the dataInput/dataOutput argument surface and enforces the bounded-memory and path-security posture per format."
-# Seeded from PR #68 landing measurement (75.7% stmt / 67.4% branch); engine-gated
-# formats (Excel/ODS/database/Delta/Iceberg) skip without their optional engines,
-# which caps measurable coverage. Ratchet if engines join CI.
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_host_memory.py"
-min_statement_coverage = 98.0
-min_branch_coverage = 94.0
-rationale = "Host memory observation decides how much work admission will accept."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_ram_estimate.py"
-min_statement_coverage = 98.0
-min_branch_coverage = 94.0
-rationale = "RAM estimates protect users from oversized runtime jobs."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_registry.py"
-min_statement_coverage = 97.0
-min_branch_coverage = 90.0
-rationale = "Registry contracts decide how persisted pipeline objects are discovered and loaded."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/executor.py"
-min_statement_coverage = 95.0
-min_branch_coverage = 90.0
-rationale = "Execution runs generated user pricing logic."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/parser.py"
-min_statement_coverage = 97.0
-min_branch_coverage = 93.0
-rationale = "Parser output defines the backend contract for user pipelines."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/schemas.py"
-min_statement_coverage = 100.0
-min_branch_coverage = 100.0
-rationale = "API schemas are the backend/frontend contract for every workflow."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/server.py"
-min_statement_coverage = 91.0
-min_branch_coverage = 75.0
-rationale = "Server wiring controls route registration, static assets, and app startup behaviour."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/routes/_helpers.py"
-min_statement_coverage = 94.0
-min_branch_coverage = 90.0
-rationale = "Route helpers validate user files, pipeline payloads, and shared API failure paths."
-# Recalibrated stmt 95->94 at the multi-frame merge (measured 94.68%): multi-frame
-# added request-validation paths not yet covered by the VC tests. TODO: ratchet to 95.
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/routes/_job_store.py"
-min_statement_coverage = 96.0
-min_branch_coverage = 90.0
-rationale = "Job storage drives async training and optimiser state."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_source_cache.py"
-min_statement_coverage = 84.0
-min_branch_coverage = 70.0
-rationale = "Shared input generations own metadata, integrity, cross-process leases and publication; retains the former Explore-cache floor."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_node_snapshots.py"
-min_statement_coverage = 84.0
-min_branch_coverage = 70.0
-rationale = "Shared node generations replace the retired Explore cache's durable publication, retention and lease boundary; retains its floor."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_analysis_results.py"
-min_statement_coverage = 84.0
-min_branch_coverage = 70.0
-rationale = "Analysis results retain the exact data-generation identity through profile and Pivot reuse; retains the former Explore-cache floor."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/routes/_node_data_service.py"
-min_statement_coverage = 94.0
-min_branch_coverage = 86.0
-rationale = "Node-data orchestration replaces Explore-only builds and owns source identity, worker lifecycle and profile publication; retains the former Explore-service floor."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_frame_profile.py"
-min_statement_coverage = 94.0
-min_branch_coverage = 86.0
-rationale = "Frame profiling now owns the exact statistics formerly calculated by the Explore service; retains its floor."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/routes/_pivot_service.py"
-min_statement_coverage = 94.0
-min_branch_coverage = 87.0
-rationale = "Pivot execution enforces typed member semantics and hard cardinality bounds over materialised Explore datasets."
-# Seeded from the focused Explore/Pivot suite measurement (94.46% stmt / 87.16% branch).
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/routes/json_cache.py"
-min_statement_coverage = 97.0
-min_branch_coverage = 90.0
-rationale = "The JSON schema-inference route reads uploaded structured data files under project-root confinement."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/routes/modelling.py"
-min_statement_coverage = 96.0
-min_branch_coverage = 75.0
-rationale = "Modelling routes expose training and scoring workflows."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/routes/optimiser.py"
-min_statement_coverage = 95.0
-min_branch_coverage = 88.0
-rationale = """
-Optimiser routes execute high-impact pricing optimisation requests.
-Recalibrated when the module grew ~4x to support absolute frontier ranges,
-ratebook materialisation, frontier auto-range, and per-point apply/save/log.
-TODO: ratchet back to 97/95 by adding tests for the deeply-nested error paths
-in run_frontier, _materialise_frontier_point_apply, save_result, mlflow_log.
-"""
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/routes/pipeline.py"
-min_statement_coverage = 90.0
-min_branch_coverage = 90.0
-rationale = "Pipeline routes persist, validate, preview, and execute user pricing workflows."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_sandbox.py"
-min_statement_coverage = 98.0
-min_branch_coverage = 95.0
-rationale = "Restricted unpickler is the deserialization RCE-prevention boundary; the allowlist accept arms and the joblib ImportError fallback are now exercised, not just the deny path."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_git.py"
-min_statement_coverage = 89.0
-min_branch_coverage = 76.0
-rationale = "Version-control ref-moving engine; locks in the crash-rollback safety nets (fork/branch-away/atomic-push/fast-forward) whose untested failure would leave a half-forked or stranded-aside pair — silent history corruption."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/_git_state.py"
-min_statement_coverage = 98.0
-min_branch_coverage = 95.0
-rationale = "Per-clone VC ledger (working-branch / fork-map / pushed-tips); corrupt-JSON downgrade-to-defaults fallbacks feed rewrite detection and must not propagate a bad shape."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/routes/_optimiser_service.py"
-min_statement_coverage = 90.0
-min_branch_coverage = 78.0
-rationale = "Pricing-optimisation orchestration engine behind the thin (gated) optimiser route; covers the apply-artifact path-traversal guard and persist/cleanup-on-failure paths. The gate now follows the logic, not the adapter."
-# Recalibrated 92/80 -> 90/78 at the multi-frame merge (measured 90.21%/78.77%):
-# multi-frame's ~5k-line optimiser engine grew many error/cleanup arms the VC tests
-# do not reach; this is multi-frame's code. TODO: ratchet back to 92/80 by covering
-# those arms in the modelling/optimiser workstream.
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/routes/_optimiser_artifacts.py"
-min_statement_coverage = 90.0
-min_branch_coverage = 78.0
-rationale = "Owned optimiser artifact lifecycle extracted from the gated service (OPT-P11): handle path-traversal validation, persistence, cleanup-on-failure and stale-startup reaping keep the service's floors."
-
-[[tool.haute.critical_coverage.files]]
-path = "src/haute/routes/_optimiser_input.py"
-min_statement_coverage = 90.0
-min_branch_coverage = 78.0
-rationale = "Optimiser solve-input planning extracted from the gated service (OPT-P13): projection demand, data-input resolution, value-contract checks and grid sizing/admission keep the service's floors."
+rationale = "Rating: Rating-table lookups and banding turn factors into the price. Seeded 2 points below the 24 September 2026 CI measurement."
 
 [[tool.haute.critical_coverage.files]]
 path = "src/haute/_rating_step_config.py"
@@ -595,28 +357,168 @@ path = "src/haute/deploy/_scorer.py"
 min_statement_coverage = 97.0
 min_branch_coverage = 87.0
 rationale = "Deployed model scoring + runtime contract-drift detection; the dtype canonicalisation that feeds contract checks must not silently pass or mask drift."
-# Recalibrated stmt 98->97 at the multi-frame merge (measured 97.96%, a rounding hair).
-# TODO: ratchet to 98.
 
 [[tool.haute.critical_coverage.files]]
-path = "src/haute/routes/_train_service.py"
+path = "src/haute/deploy/_batch_scoring.py"
+min_statement_coverage = 91.0
+min_branch_coverage = 86.0
+rationale = "Deploy scoring: Multi-row deployed scoring returns every batch price. Seeded 2 points below the 24 September 2026 CI measurement."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/deploy/_model_code.py"
 min_statement_coverage = 98.0
-min_branch_coverage = 89.0
-rationale = "Model-training service engine behind the thin (gated) modelling route; error/cleanup branches must not strand a training job in a wrong state."
+min_branch_coverage = 98.0
+rationale = "Deploy scoring: The MLflow models-from-code entrypoint is what a deployed endpoint loads. Seeded 2 points below the 24 September 2026 CI measurement."
 
 [[tool.haute.critical_coverage.files]]
-path = "src/haute/_code_extraction.py"
-min_statement_coverage = 95.0
-min_branch_coverage = 90.0
-rationale = "Pre-execution user-code extraction/rewrite via libcst+ast; the SyntaxError parse choke-point for all user code must fail loud."
+path = "src/haute/deploy/_pruner.py"
+min_statement_coverage = 91.0
+min_branch_coverage = 87.0
+rationale = "Deploy scoring: Pruning decides which nodes a deployed pipeline runs. Seeded 2 points below the 24 September 2026 CI measurement."
 
 [[tool.haute.critical_coverage.files]]
-path = "src/haute/_execute_lazy.py"
-min_statement_coverage = 94.0
+path = "src/haute/deploy/_schema.py"
+min_statement_coverage = 91.0
+min_branch_coverage = 85.0
+rationale = "Deploy scoring: The inferred input and output schemas validate every deployed request and response. Seeded 2 points below the 24 September 2026 CI measurement."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_model_scorer.py"
+min_statement_coverage = 97.0
+min_branch_coverage = 95.0
+rationale = "Model scoring is a shared pricing-path primitive."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_output_assembler.py"
+min_statement_coverage = 97.0
+min_branch_coverage = 97.0
+rationale = "Deploy scoring: The OUTPUT assembler builds the JSON document a deployed endpoint returns. Seeded 2 points below the 24 September 2026 CI measurement."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_jsonpath.py"
+min_statement_coverage = 98.0
+min_branch_coverage = 94.0
+rationale = "Deploy scoring: The path grammar maps every structured input and output field. Seeded 2 points below the 24 September 2026 CI measurement."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/modelling/_native_pyfunc.py"
+min_statement_coverage = 93.0
+min_branch_coverage = 64.0
+rationale = "Deploy scoring: The MLflow pyfunc serves every native model Haute trains. Seeded 2 points below the 24 September 2026 CI measurement."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/modelling/_feature_contract.py"
+min_statement_coverage = 92.0
+min_branch_coverage = 85.0
+rationale = "Feature contracts: The train-to-deploy feature contract fixes the columns, types and levels a model scores. Seeded 2 points below the 24 September 2026 CI measurement."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/modelling/_native_encoding.py"
+min_statement_coverage = 92.0
 min_branch_coverage = 89.0
-rationale = "Lazy execution-path contract enforcement used by sink/score; the input/output contract-violation raises must fire on a mismatch."
-# Recalibrated branch 91->89 at the multi-frame merge (measured 89.81%): multi-frame
-# added execution-path branches not yet covered by the VC tests. TODO: ratchet to 91.
+rationale = "Feature contracts: Categorical encoding must match between training and scoring. Seeded 2 points below the 24 September 2026 CI measurement."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/modelling/_signature.py"
+min_statement_coverage = 98.0
+min_branch_coverage = 98.0
+rationale = "Feature contracts: The MLflow signature is the logged model's input contract. Seeded 2 points below the 24 September 2026 CI measurement."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_cache.py"
+min_statement_coverage = 88.0
+min_branch_coverage = 78.0
+rationale = "Cache identity: Graph fingerprints decide when a cached result may be reused. Seeded 2 points below the 24 September 2026 CI measurement."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_stat_gated_cache.py"
+min_statement_coverage = 98.0
+min_branch_coverage = 98.0
+rationale = "Cache identity: Artifact reuse is gated on the backing file's freshness token. Seeded 2 points below the 24 September 2026 CI measurement."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_hashing.py"
+min_statement_coverage = 86.0
+min_branch_coverage = 98.0
+rationale = "Cache identity: Content hashes key cached artifacts and scoring models. Seeded 2 points below the 24 September 2026 CI measurement."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_source_cache.py"
+min_statement_coverage = 84.0
+min_branch_coverage = 70.0
+rationale = "Shared input generations own metadata, integrity, cross-process leases and publication; retains the former Explore-cache floor."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_node_snapshots.py"
+min_statement_coverage = 84.0
+min_branch_coverage = 70.0
+rationale = "Shared node generations replace the retired Explore cache's durable publication, retention and lease boundary; retains its floor."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_file_lock.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "The one cross-process file-lock helper and its plain-path checks guard the project mutation lock, the input-snapshot store's lease and publication locks, and the runtime storage budget."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_snapshots.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "Each API-input table's identity, freshness, one-shred build and supervised settlement decide what every structured source serves."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_writer.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "Bounded Parquet emission is the memory boundary for table-snapshot builds and spills. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_shred.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "The single-pass v2 shred walk emits every cached pricing row. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_records.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "Streaming JSON/JSONL/XML record decoding bounds every structured-input read. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_runtime_storage.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "Standalone spills and the disk budget own process-local storage safety. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_inference.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "Schema inference from data seeds the v2 apiInput configuration. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_inference_filter.py"
+min_statement_coverage = 97.0
+min_branch_coverage = 96.0
+rationale = "Snapshot publication: Shape filters decide which records schema inference learns from. Seeded 2 points below the 24 September 2026 CI measurement."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_cache.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "The apiInput loader serves every structured source, from table snapshots or a standalone shred. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_source_proof.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "Source content proofs decide API-input table freshness. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_inference_cache.py"
+min_statement_coverage = 98.0
+min_branch_coverage = 98.0
+rationale = "Cache identity: Schema reuse is proven against unchanged source freshness tokens. Seeded 2 points below the 24 September 2026 CI measurement."
 
 [tool.mypy]
 python_version = "3.11"

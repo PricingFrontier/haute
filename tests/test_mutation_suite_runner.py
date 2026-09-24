@@ -38,22 +38,14 @@ def test_threshold_config_owns_all_default_mutation_targets() -> None:
     `output-assembler`, `jsonpath`, the `json-shred` v2 codec that replaces the
     former `json-per-port-shred` backlog item, the `json-cache` route over it,
     and the `executor` graph engine; ENG-T12 added `parser-conservation`, the
-    F3 structural acceptance gate. Adding or removing a target must update
-    this contract deliberately.
+    F3 structural acceptance gate. ENGQ-R04 narrowed the set to the
+    safety-critical modules (deploy scoring and API-input snapshot
+    publication). Adding or removing a target must update this contract
+    deliberately.
     """
     targets = _targets()
 
-    assert {target.name for target in targets} == {
-        "job-store",
-        "path-resolution",
-        "registry",
-        "output-assembler",
-        "jsonpath",
-        "json-shred",
-        "json-cache",
-        "executor",
-        "parser-conservation",
-    }
+    assert {target.name for target in targets} == {"output-assembler", "jsonpath", "json-shred"}
     assert all(target.config_path.exists() for target in targets)
     assert all(target.module_path.exists() for target in targets)
     assert all(target.test_paths for target in targets)
@@ -66,26 +58,14 @@ def test_threshold_config_owns_all_default_mutation_targets() -> None:
     ]
     assert missing == []
     assert {target.name: target.fail_over for target in targets} == {
-        "job-store": 6.0,
-        "path-resolution": 5.0,
-        "registry": 0.0,
         "output-assembler": 10.0,
         "jsonpath": 4.0,
         "json-shred": 5.0,
-        "json-cache": 11.0,
-        "executor": 15.0,
-        "parser-conservation": 3.0,
     }
     assert {target.name: target.max_pending_per_shard for target in targets} == {
-        "job-store": 80,
-        "path-resolution": 80,
-        "registry": 80,
         "output-assembler": 80,
         "jsonpath": 80,
         "json-shred": 20,
-        "json-cache": 80,
-        "executor": 20,
-        "parser-conservation": 80,
     }
     for target in targets:
         config = tomllib.loads(target.config_path.read_text(encoding="utf-8"))["cosmic-ray"]
@@ -94,10 +74,6 @@ def test_threshold_config_owns_all_default_mutation_targets() -> None:
     assert REPO_ROOT / "tests" / "mutation" / "json_shred_targets.txt" in json_shred.test_paths
     assert REPO_ROOT / "tests" / "test_json_shred_parallel.py" in json_shred.test_paths
     assert REPO_ROOT / "tests" / "test_api_input_table_snapshots.py" in json_shred.test_paths
-    json_cache = next(target for target in targets if target.name == "json-cache")
-    assert REPO_ROOT / "tests" / "mutation" / "json_cache_targets.txt" in json_cache.test_paths
-    assert REPO_ROOT / "tests" / "test_json_cache_coverage_uplift.py" in json_cache.test_paths
-    assert REPO_ROOT / "tests" / "test_json_cache_corrupt_and_errors.py" in json_cache.test_paths
 
 
 def test_test_target_manifest_validation_fails_closed(
@@ -186,10 +162,10 @@ def test_mutation_target_config_rejects_malformed_entries(tmp_path: Path) -> Non
 def test_changed_file_selection_limits_pr_smoke_to_owned_target() -> None:
     selected = _select_targets_for_changed_files(
         _targets(),
-        ["src/haute/_path_resolution.py"],
+        ["src/haute/_output_assembler.py"],
     )
 
-    assert [target.name for target in selected] == ["path-resolution"]
+    assert [target.name for target in selected] == ["output-assembler"]
 
 
 def test_changed_manifest_selected_test_file_selects_json_shred_target() -> None:
@@ -240,15 +216,9 @@ def test_mutation_runner_dry_run_writes_manifest_without_cosmic_ray(tmp_path) ->
         target["name"]: target["max_pending_per_shard"] for target in manifest["selected_targets"]
     }["json-shred"] == 20
     assert {target["name"] for target in manifest["selected_targets"]} == {
-        "job-store",
-        "path-resolution",
-        "registry",
         "output-assembler",
         "jsonpath",
         "json-shred",
-        "json-cache",
-        "executor",
-        "parser-conservation",
     }
 
 

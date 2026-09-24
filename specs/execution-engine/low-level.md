@@ -2606,8 +2606,8 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   rejection now quotes them back to the analyst. The boundary operator's
   `materialisation_factor_basis_points` is proved applied to the estimate and
   recorded in the assumptions alongside `boundary_operator`, and a join boundary
-  is proved to sum both ports' widths. This module is under a
-  critical coverage gate: estimates protect users from oversized runtime jobs,
+  is proved to sum both ports' widths. These tests matter because
+  estimates protect users from oversized runtime jobs,
   and an untested estimator is how a wrong number reaches a caller that treats
   "unknown" as "unlimited". Path agreement with the executor is pinned for a
   project whose pipeline sits below the root: a root-relative `dataInput` or

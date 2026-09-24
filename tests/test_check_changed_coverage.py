@@ -10,7 +10,11 @@ import pytest
 from scripts import check_changed_coverage as checker
 
 
-def _config(tmp_path: Path, paths: str = '["src/haute/a.py"]') -> Path:
+def _config(
+    tmp_path: Path,
+    paths: str = '["src/haute/a.py"]',
+    report_paths: str = '["src/haute"]',
+) -> Path:
     path = tmp_path / "pyproject.toml"
     path.write_text(
         textwrap.dedent(
@@ -18,6 +22,7 @@ def _config(tmp_path: Path, paths: str = '["src/haute/a.py"]') -> Path:
             [tool.haute.changed_coverage]
             coverage_json = "coverage.json"
             paths = {paths}
+            report_paths = {report_paths}
             min_statement_coverage = 100
             min_branch_coverage = 100
             """
@@ -25,6 +30,12 @@ def _config(tmp_path: Path, paths: str = '["src/haute/a.py"]') -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def _gated() -> checker.ChangedCoverageConfig:
+    return checker.ChangedCoverageConfig(
+        Path("coverage.json"), ("src/haute/a.py",), ("src/haute",), 100, 100
+    )
 
 
 def _coverage(tmp_path: Path, files: dict[str, object] | None = None) -> Path:
@@ -103,7 +114,7 @@ def test_diff_parser_handles_quoted_rename_and_rejects_bad_association() -> None
 
 
 def test_evaluation_reports_statement_and_branch_misses() -> None:
-    config = checker.ChangedCoverageConfig(Path("coverage.json"), ("src/haute/a.py",), 100, 100)
+    config = _gated()
     coverage = {
         "src/haute/a.py": checker.FileCoverage(
             "src/haute/a.py", frozenset({1}), frozenset({2}), frozenset(), frozenset({(2, 3)})
@@ -115,7 +126,7 @@ def test_evaluation_reports_statement_and_branch_misses() -> None:
 
 
 def test_branch_is_targeted_when_its_positive_destination_changed() -> None:
-    config = checker.ChangedCoverageConfig(Path("coverage.json"), ("src/haute/a.py",), 100, 100)
+    config = _gated()
     coverage = {
         "src/haute/a.py": checker.FileCoverage(
             "src/haute/a.py", frozenset({4}), frozenset(), frozenset(), frozenset({(-1, 4)})
@@ -127,7 +138,7 @@ def test_branch_is_targeted_when_its_positive_destination_changed() -> None:
 
 
 def test_branch_endpoint_need_not_also_be_a_statement_target() -> None:
-    config = checker.ChangedCoverageConfig(Path("coverage.json"), ("src/haute/a.py",), 100, 100)
+    config = _gated()
     coverage = {
         "src/haute/a.py": checker.FileCoverage(
             "src/haute/a.py", frozenset({1}), frozenset(), frozenset(), frozenset({(1, 4)})
@@ -139,7 +150,7 @@ def test_branch_endpoint_need_not_also_be_a_statement_target() -> None:
 
 
 def test_no_target_and_missing_artifact_file() -> None:
-    config = checker.ChangedCoverageConfig(Path("coverage.json"), ("src/haute/a.py",), 100, 100)
+    config = _gated()
     coverage = {
         "src/haute/a.py": checker.FileCoverage(
             "src/haute/a.py", frozenset({4}), frozenset(), frozenset(), frozenset()
@@ -151,12 +162,14 @@ def test_no_target_and_missing_artifact_file() -> None:
         ].statement_targets
         == 0
     )
-    with pytest.raises(checker.ChangedCoverageError, match="missing from coverage"):
+    with pytest.raises(checker.ChangedCoverageError, match="safety-critical file is missing"):
         checker.evaluate_changed_coverage(config, {}, {"src/haute/a.py": {3}})
+    # A reported-only file Coverage.py does not measure is left out.
+    assert checker.evaluate_changed_coverage(config, {}, {"src/haute/assets/x.py": {3}}) == {}
 
 
 def test_untracked_file_targets_all_executable_evidence() -> None:
-    config = checker.ChangedCoverageConfig(Path("coverage.json"), ("src/haute/a.py",), 100, 100)
+    config = _gated()
     coverage = {
         "src/haute/a.py": checker.FileCoverage(
             "src/haute/a.py", frozenset({1}), frozenset({2}), frozenset(), frozenset()
@@ -170,7 +183,7 @@ def test_untracked_file_targets_all_executable_evidence() -> None:
 def test_collect_uses_base_and_worktree_and_fails_git(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    config = checker.ChangedCoverageConfig(Path("coverage.json"), ("src/haute/a.py",), 100, 100)
+    config = _gated()
     calls: list[list[str]] = []
 
     def run(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
@@ -207,3 +220,99 @@ def test_cli_exit_taxonomy(
     )
     assert checker.main(["--config", str(config), "--coverage-json", str(coverage)]) == 0
     assert checker.main(["--config", str(tmp_path / "missing.toml")]) == 2
+
+
+def test_config_requires_the_reported_scope(tmp_path: Path) -> None:
+    with pytest.raises(checker.ChangedCoverageError, match="report_paths must be a non-empty"):
+        checker._load_config(_config(tmp_path, report_paths="[]"))
+
+
+def test_collect_keeps_changed_python_files_in_scope(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    diff = "".join(
+        f"+++ b/{path}\n@@ -1 +1 @@\n-x\n+y\n"
+        for path in ("src/haute/b.py", "src/haute/b.md", "scripts/c.py", "src/haute/a.py")
+    )
+
+    def run(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        output = diff if args[1] == "diff" else "src/haute/new.py\nsrc/haute/new.json\n"
+        return subprocess.CompletedProcess(args, 0, output)
+
+    monkeypatch.setattr(checker.subprocess, "run", run)
+    changed, untracked = checker.collect_changed_lines(_gated(), tmp_path, None)
+
+    assert changed == {"src/haute/a.py": {1}, "src/haute/b.py": {1}}
+    assert untracked == {"src/haute/new.py"}
+
+
+def test_only_safety_critical_files_fail_the_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    uncovered = {
+        "executed_lines": [1],
+        "missing_lines": [2],
+        "executed_branches": [],
+        "missing_branches": [],
+    }
+    config = _config(tmp_path)
+    coverage = _coverage(tmp_path, {"src/haute/a.py": uncovered, "src/haute/b.py": uncovered})
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.setattr(
+        checker, "collect_changed_lines", lambda *args: ({"src/haute/b.py": {2}}, set())
+    )
+
+    assert checker.main(["--config", str(config), "--coverage-json", str(coverage)]) == 0
+    output = capsys.readouterr()
+    assert "reported, not gated" in output.out
+    assert "src/haute/b.py: statements 0.00%" in output.out
+    assert "no changed safety-critical targets" in output.out
+
+    monkeypatch.setattr(
+        checker,
+        "collect_changed_lines",
+        lambda *args: ({"src/haute/a.py": {2}, "src/haute/b.py": {2}}, set()),
+    )
+    assert checker.main(["--config", str(config), "--coverage-json", str(coverage)]) == 1
+    error = capsys.readouterr().err
+    assert "src/haute/a.py: missing changed lines: 2" in error
+    assert "src/haute/b.py" not in error
+
+
+def test_job_summary_lists_every_changed_file_with_its_gate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    coverage = _coverage(
+        tmp_path,
+        {
+            path: {
+                "executed_lines": [1],
+                "missing_lines": [2],
+                "executed_branches": [[1, 2]],
+                "missing_branches": [[2, 3]],
+            }
+            for path in ("src/haute/a.py", "src/haute/b.py")
+        },
+    )
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr(
+        checker,
+        "collect_changed_lines",
+        lambda *args: ({"src/haute/a.py": {1, 3}, "src/haute/b.py": {2}}, set()),
+    )
+
+    assert checker.main(["--config", str(_config(tmp_path)), "--coverage-json", str(coverage)]) == 1
+    table = summary.read_text(encoding="utf-8")
+    assert "| `src/haute/a.py` | safety-critical | 100.00% | 50.00% | branches 2->3 |" in table
+    assert "| `src/haute/b.py` | report only | 0.00% | 50.00% | lines 2; branches 2->3 |" in table
+
+    # A file whose changes touch no executable line is left out of the table.
+    monkeypatch.setattr(
+        checker,
+        "collect_changed_lines",
+        lambda *args: ({"src/haute/a.py": {1, 3}, "src/haute/b.py": {9}}, set()),
+    )
+    summary.unlink()
+    checker.main(["--config", str(_config(tmp_path)), "--coverage-json", str(coverage)])
+    assert "src/haute/b.py" not in summary.read_text(encoding="utf-8")

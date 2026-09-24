@@ -307,53 +307,6 @@ def test_internal_engineering_docs_are_excluded_from_public_mkdocs_site() -> Non
     assert "\n  - Roadmap:" not in config
 
 
-def test_current_specs_reconcile_the_audited_high_low_contradictions() -> None:
-    hosted_high = (SPECS_ROOT / "hosted-databricks-app/high-level.md").read_text(encoding="utf-8")
-    databricks_high = (SPECS_ROOT / "databricks-io/high-level.md").read_text(encoding="utf-8")
-    databricks_low = (SPECS_ROOT / "databricks-io/low-level.md").read_text(encoding="utf-8")
-    quality_high = (SPECS_ROOT / "engineering-quality/high-level.md").read_text(encoding="utf-8")
-    quality_low = (SPECS_ROOT / "engineering-quality/low-level.md").read_text(encoding="utf-8")
-
-    assert "DRAFT" not in hosted_high
-    assert "Nothing in this spec is implemented" not in hosted_high
-    assert "haute.hosted.create_app()" in hosted_high
-    for document in (databricks_high, databricks_low):
-        for credential in (
-            "DATABRICKS_HOST",
-            "DATABRICKS_TOKEN",
-            "DATABRICKS_CLIENT_ID",
-            "DATABRICKS_CLIENT_SECRET",
-        ):
-            assert credential in document
-    assert "schema 4" in quality_high
-    assert "schema 4" in quality_low
-    assert "schema 3" not in quality_high
-    assert "schema-3" not in quality_low
-    assert '"schema_version": 4' in (ROOT / "scripts/run_perf_suite.py").read_text(encoding="utf-8")
-
-
-def test_execution_engine_spec_has_one_assistant_schema_inspection_contract() -> None:
-    text = (SPECS_ROOT / "execution-engine/high-level.md").read_text(encoding="utf-8")
-    assert text.count("**Assistant schema inspection is plan-only.**") == 1
-
-
-def test_readme_is_the_single_temporary_contract_lifecycle_owner() -> None:
-    readme = SPECS_README.read_text(encoding="utf-8")
-    template = (SPECS_ROOT / "TEMPLATE.md").read_text(encoding="utf-8")
-
-    for required_record in (
-        "**Current limitation.**",
-        "**Unresolved target.**",
-        "**Non-goals.**",
-        "**Failure and compatibility semantics.**",
-        "**Acceptance evidence.**",
-        "**Roadmap package.**",
-    ):
-        assert required_record in readme
-        assert required_record not in template
-    assert "README.md#temporary-change-contract-lifecycle" in template
-
-
 def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> None:
     expected_markdown = (
         {"README.md"}
@@ -1749,25 +1702,6 @@ def test_live_defect_note_linkage_rule(
 
     assert [violation.rule for violation in violations] == (
         [] if expected_rule is None else [expected_rule]
-    )
-
-
-def test_frontend_git_specs_state_the_transport_ownership_split() -> None:
-    high = (SPECS_ROOT / "frontend-git-ui" / "high-level.md").read_text(encoding="utf-8")
-    low = (SPECS_ROOT / "frontend-git-ui" / "low-level.md").read_text(encoding="utf-8")
-    for text in (high, low):
-        normalised = " ".join(text.split()).casefold()
-        assert "`frontend/src/api/client.ts` and `apierror` are owned by" in normalised
-        assert "the git request/response wire contract is owned by" in normalised
-        assert "backend http routing and status behaviour are owned by" in normalised
-    low_normalised = " ".join(low.split()).casefold()
-    assert (
-        re.search(
-            r"`frontend/src/api/client[.]ts` and `?apierror`?.{0,120}"
-            r"owned by \[server-api",
-            low_normalised,
-        )
-        is None
     )
 
 

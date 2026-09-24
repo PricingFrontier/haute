@@ -391,7 +391,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §5.5 Slim scoring runtime | `DEP-R02` (deploy, delivered; its roadmap file is retired) |
 | §6 Canonical-only policy versus the code | `PCFG-R06` (pipeline config, delivered) |
 | §6 Specification drift | `ENGQ-R03` (engineering quality, delivered), plus `CACHE-S23` and `CODEGEN-R01` (delivered) and `PCFG-R04` ([pipeline config](pipeline-config.md)) for their own statements |
-| §6 Governance pointed inward | `ENGQ-R04` ([engineering quality](engineering-quality.md)) |
+| §6 Governance pointed inward | `ENGQ-R04` (engineering quality, delivered; the [engineering-quality specification](../engineering-quality/high-level.md) records the coverage rule and the retained checks) |
 | §7 Test organisation | `ENGQ-R05` ([engineering quality](engineering-quality.md)) |
 
 Three §4.10 items are observations, not recommendations, and have no

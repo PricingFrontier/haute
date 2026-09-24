@@ -37,7 +37,6 @@ merges, remove that round from the table.
 
 | Round | Theme | Packages, in order | Needs | Size | Why here |
 |---:|---|---|---|---|---|
-| 3 | Tests and gates | `ENGQ-R04` | — | M | Removes CI noise and narrows the coverage gate before the large refactors, which then work under the lighter rule. |
 | 4 | Optimiser routes | `API-R01`, `MLF-R02`, `OPT-P13` | — | M | All three change `routes/optimiser.py` and `_optimiser_service.py`; `OPT-P13` opens the optimiser chain. |
 | 5 | Optimiser estimate | `OPT-P16` | 4 | M | Moves the last pipeline read out of the server process, onto the warm worker pool. |
 | 6 | Optimiser frontier | `OPT-P06`, `OPT-P12`, `OPT-P14` | 4 | L | The benchmark decides `OPT-P06`; `OPT-P12` and `OPT-P14` finish splitting the optimiser service. |
@@ -52,7 +51,7 @@ merges, remove that round from the table.
 | 15 | Cache measurements | `CACHE-S17`, `CACHE-S22`, `CACHE-S18`, `CACHE-S13` | 12 | M | Each runs its measurement and builds only past its gate, once the planner and config changes above have landed. |
 | 16 | Containment | `SBX-R01` | 9 | M | The remaining path comparisons, after the project context has deleted the resolvers that held many of them. |
 | 17 | Dead code | `ENGQ-R01` | 16 | M | After the refactors have deleted what they replace; adds knip to the frontend lint. |
-| 18 | Test organisation | `ENGQ-R05` | 3, 17 | L | Last, so the suite is reorganised once, under the coverage rule `ENGQ-R04` sets. Several PRs, by component. |
+| 18 | Test organisation | `ENGQ-R05` | 17 | L | Last, so the suite is reorganised once, under the risk-based coverage rule. Several PRs, by component. |
 
 Sizes are rough: M is a day or so, L several days or more than one PR.
 
@@ -64,8 +63,6 @@ round starts.
 
 - `SUB-R01`: `@pipeline.instance` and `instanceOf` are rejected; **Create
   Instance** makes a one-node submodel with a second occurrence.
-- `ENGQ-R04`: the changed-code coverage gate blocks only the safety-critical
-  modules.
 
 ## Not scheduled
 

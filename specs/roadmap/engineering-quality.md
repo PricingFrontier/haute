@@ -12,15 +12,15 @@ These packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ENGQ-R04 | Planned | P3 | Coverage and documentation gates are pointed at risk and at user-facing documents. |
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
 
 ## Planned improvements
 
 `ENGQ-R01` is an independent clean-up, cheapest after the larger refactors
-have deleted what they replace. `ENGQ-R05` comes
-after `ENGQ-R04` has set the coverage rule the reorganised suite must meet.
+have deleted what they replace. `ENGQ-R05` reorganises the suite under the
+coverage rule the [engineering-quality specification](../engineering-quality/high-level.md)
+states.
 
 ### ENGQ-R01 — Remove unreferenced and test-only production code
 **Why:** Several production functions have no caller at all:
@@ -71,51 +71,6 @@ consumer), so the reviewed allowlist covers it.
 `frontend/src/panels/editors/rating/index.ts`;
 `frontend/src/api/client.ts::checkHauteSession`.
 
-### ENGQ-R04 — Point the gates at risk and at users
-**Why:** About 5,000 lines of tests, plus a 1,360-line coverage ledger, keep
-the internal specification corpus consistent (`test_docs_accuracy.py`,
-`test_workflow_coverage.py`, `test_test_debt.py`, the corpus inventory),
-while only one check (`tests/test_node_reference_docs.py`, from `BUILD-R01`)
-covers a user-facing document. CI requires 100% statement and branch coverage of changed
-code in the execution-critical surface, which rewards line-shaped tests (see
-`ENGQ-R05`).
-
-**Decided (24 September 2026):** the 23 September 2026 codebase review's
-recommendation. The changed-code gate (100% statement and branch coverage of
-changed lines), the per-file critical floors and the mutation targets apply
-only to the safety-critical code, whose silent failure changes a computed
-price or corrupts persisted work: rating, deploy scoring, feature contracts,
-cache identity and snapshot publication. Everywhere else the changed-code
-report is shown in the job summary but does not fail the build, and coverage
-is judged in review against risk. The global coverage floor stays. The
-generated node-reference tables and `mkdocs build --strict` are the
-user-facing documentation checks. An internal governance check stays only
-if it guards something a user or a later change relies on.
-
-**Plan:** State the rule and the safety-critical module list in the
-engineering-quality specification. Rewrite
-`[tool.haute.changed_coverage].paths` and the critical-coverage file list to
-that set (the changed-code list still names the deleted
-`_dataframe_execution_cache.py`), narrow the mutation target plan to it, and
-make `check_changed_coverage.py` report without failing for other paths.
-Review `test_docs_accuracy.py`, `test_workflow_coverage.py` with its ledger,
-`test_test_debt.py` and the corpus inventory against the retention rule, and
-record in the specification which checks stay and why; delete the rest.
-
-**Acceptance:** The engineering-quality specification states the coverage
-rule, the safety-critical list and which documentation checks cover
-user-facing documents; CI enforces exactly that; each internal governance
-check still in the suite has a recorded reason.
-
-**Dependencies:** None.
-
-**Evidence:** `tests/test_docs_accuracy.py`; `tests/test_workflow_coverage.py`;
-`tests/workflow_coverage.toml`; `tests/test_test_debt.py`;
-`scripts/check_changed_coverage.py`; `scripts/check_critical_coverage.py`;
-`scripts/run_mutation_suite.py`; `scripts/spec_corpus_inventory.py`;
-`pyproject.toml` (`[tool.haute.changed_coverage]`,
-`[tool.haute.critical_coverage]`); `.github/workflows/ci.yml`.
-
 ### ENGQ-R05 — Organise tests by behaviour
 **Why:** Backend tests total 421,000 lines, 2.3 times the source they test;
 `test_optimiser_routes.py` alone is 16,581 lines. About 20,000 lines sit in
@@ -133,10 +88,10 @@ split the largest modules by behaviour. Record the target structure in the
 engineering-quality specification.
 
 **Acceptance:** No test module is named after a coverage campaign or fix
-wave; no module exceeds an agreed size; coverage of the critical surface is
-unchanged; suite runtime is recorded before and after.
+wave; no module exceeds an agreed size; coverage of the safety-critical
+modules is unchanged; suite runtime is recorded before and after.
 
-**Dependencies:** `ENGQ-R04`.
+**Dependencies:** None.
 
 **Evidence:** `tests/test_optimiser_routes.py`;
 `tests/test_expression_parser_coverage.py`;
