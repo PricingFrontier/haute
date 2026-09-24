@@ -441,7 +441,7 @@ scalar input selectors follow renamed edges. A collision refuses the entire edit
 | Null handle on an inbound edge targeting a selected submodel | `ParseError` with definition/instance/edge context | `flatten_graph` raises through `resolve_submodel_instances` (matching `_port_name`); the transform returns no graph and touches no files. |
 | Missing or wrong-prefixed public handle, undeclared port id, or invalid definition endpoint passed to `flatten_graph` | `ParseError` with definition/instance/edge context | `_submodel_instances` validation; the transform returns no graph and touches no files. |
 | Sanitised node-name collision | `HTTPException(400, <specific collision detail>)` | `SavePipelineService` validation, before writes. |
-| Any write step in the later explicit Save transaction fails (config write, sidecar write, module delete) | Best-effort rollback by `SavePipelineService`, original error re-raised | The server's generic exception middleware produces `500 {"detail": "Internal server error"}`; a failed compensating operation is logged and can leave partial state. See [server-api](../server-api/high-level.md). |
+| Any write step in the later explicit Save transaction fails (config write, sidecar write, module delete) | Best-effort rollback by `SavePipelineService`, original error re-raised | The server's unexpected-exception handler produces `500 {"detail": _INTERNAL_ERROR_DETAIL}`; a failed compensating operation is logged and can leave partial state. See [server-api](../server-api/high-level.md). |
 | Child is hand-authored/shared, ownership is ambiguous, or reference audit is incomplete | Later explicit Save retains the source and sidecar | Uncertainty never authorises deletion. |
 
 ## Testing

@@ -5,12 +5,13 @@ import {
   ChartEmptyState,
   ChartLegend,
   ChartSvg,
+  ChartValueGrid,
   MODELLING_CHART_AXIS_FONT_SIZE as axisFontSize,
   MODELLING_CHART_AXIS_TEXT_COLOR as axisTextColor,
   MODELLING_CHART_GRID_COLOR as gridColor,
   ResponsiveChart,
 } from "./ChartScaffold"
-import { chartDomain, chartTicks, formatChartNumber } from "./chartGeometry"
+import { chartDomain, chartTicks, formatChartNumber } from "../../utils/chartHelpers"
 
 interface ResidualsTabProps {
   result: TrainResult
@@ -112,26 +113,7 @@ function ResidualsHistogram({
         ariaLabel="Residuals distribution histogram"
       >
         <title>Residuals distribution histogram</title>
-        {chartTicks(0, yMax, 5).map((value) => (
-          <g key={value}>
-            <line
-              x1={marginLeft}
-              y1={yScale(value)}
-              x2={marginLeft + plotWidth}
-              y2={yScale(value)}
-              stroke={gridColor}
-            />
-            <text
-              x={marginLeft - 6}
-              y={yScale(value) + 4}
-              textAnchor="end"
-              fontSize={axisFontSize}
-              fill={axisTextColor}
-            >
-              {formatChartNumber(value)}
-            </text>
-          </g>
-        ))}
+        <ChartValueGrid ticks={chartTicks(0, yMax, 5)} left={marginLeft} right={marginLeft + plotWidth} y={yScale} />
         {chartTicks(xMin, xMax, tickCount).map((value, index, all) => (
           <text
             key={value}
@@ -275,15 +257,9 @@ function ActualVsPredictedScatter({
         ariaLabel="Actual versus predicted scatter plot"
       >
         <title>Actual versus predicted scatter plot; identity line marks equal values</title>
+        <ChartValueGrid ticks={chartTicks(domainLow, domainHigh, tickCount)} left={marginLeft} right={marginLeft + plotWidth} y={yScale} />
         {chartTicks(domainLow, domainHigh, tickCount).map((value, index, all) => (
           <g key={value}>
-            <line
-              x1={marginLeft}
-              y1={yScale(value)}
-              x2={marginLeft + plotWidth}
-              y2={yScale(value)}
-              stroke={gridColor}
-            />
             <line
               x1={xScale(value)}
               y1={marginTop}
@@ -291,15 +267,6 @@ function ActualVsPredictedScatter({
               y2={marginTop + plotHeight}
               stroke={gridColor}
             />
-            <text
-              x={marginLeft - 6}
-              y={yScale(value) + 4}
-              textAnchor="end"
-              fontSize={axisFontSize}
-              fill={axisTextColor}
-            >
-              {formatChartNumber(value)}
-            </text>
             <text
               x={xScale(value)}
               y={marginTop + plotHeight + 15}

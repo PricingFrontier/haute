@@ -52,7 +52,7 @@
   is the stamped field that pins when stripping becomes due; once set it is not
   recomputed on subsequent updates (`_prepare_heavy_object_policy_locked` returns early
   if the key already exists).
-- **`_KNOWN_PREFIXES: frozenset[str] = {"training", "optimiser", "explore", "input_cache"}`** — the
+- **`_KNOWN_PREFIXES: frozenset[str] = {"training", "optimiser", "optimiser_worker", "explore", "input_cache", "node_data"}`** — the
   closed allow-list behind `get_job_store`, a `functools.cache`d factory returning one
   `JobStore` singleton per prefix for the life of the process.
 - **`TerminalReason`** — `Literal["completed", "superseded", "timed_out",

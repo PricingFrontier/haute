@@ -10,6 +10,7 @@ import {
 import { attachEditorEdgeIdentities } from "./editorIdentities"
 import { NODE_TYPES } from "./nodeTypes"
 import { renameStepInputs, steppedSurfaceAllowsInputReferences } from "./polarsStepInputs"
+import { isPlainObject } from "../types/guards"
 
 type RenamePair = { from: string; to: string }
 
@@ -60,15 +61,11 @@ type EdgeReconciliation = {
   removed: Array<{ edge: Edge; sourceHandle: string | null }>
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
 function remapRecordKeys(
   value: unknown,
   renames: readonly RenamePair[],
 ): { value: unknown; collision?: string } {
-  if (!isRecord(value) || renames.length === 0) return { value }
+  if (!isPlainObject(value) || renames.length === 0) return { value }
   const renameByFrom = new Map(renames.map(({ from, to }) => [from, to]))
   const next: Record<string, unknown> = {}
   for (const [key, entry] of Object.entries(value)) {
@@ -80,7 +77,7 @@ function remapRecordKeys(
 }
 
 function remapRecordValues(value: unknown, renames: readonly RenamePair[]): unknown {
-  if (!isRecord(value) || renames.length === 0) return value
+  if (!isPlainObject(value) || renames.length === 0) return value
   const renameByFrom = new Map(renames.map(({ from, to }) => [from, to]))
   let changed = false
   const next = Object.fromEntries(
@@ -328,7 +325,7 @@ function preserveCodedTransformBindings(
   const scopeChanges = changes.get(scope) ?? new Map<string, Record<string, unknown>>()
   const config = scopeChanges.get(target.id) ?? ((target.data.config ?? {}) as Record<string, unknown>)
   const mapping: Record<string, string> = {}
-  if (isRecord(config.inputMapping)) {
+  if (isPlainObject(config.inputMapping)) {
     for (const [logical, current] of Object.entries(config.inputMapping)) {
       if (typeof current === "string") mapping[logical] = current
     }

@@ -616,10 +616,11 @@ keep reporting the failing line so the editor can name the failing step.
   cost of being an estimate rather than an exact
   measurement — hence a 3× empirical overhead multiplier and a configurable safety
   factor rather than a computed exact figure.
-- **Operational evidence is deterministic and bounded.** Execution contexts expose
-  request-local sequenced fault points at named collect/sink/checkpoint/reducer/
-  response/terminal boundaries, record cancellation latency from the first request,
-  and release cleanup callbacks in reverse order plus admission exactly once.
+- **Operational evidence is deterministic and bounded.** Execution contexts record
+  cancellation latency from the first request, and release cleanup callbacks in
+  reverse order plus admission exactly once. Production code carries no
+  fault-injection points: a test that must fail or observe an execution at a named
+  boundary does so at that boundary's checkpoint, through a test-only context.
   Optional terminal telemetry is disabled by default; when enabled it emits at most
   one schema-versioned, allow-listed aggregate event per terminal status/reason,
   excluding identifiers, paths, columns, plans, messages, exception text, and user
@@ -629,6 +630,15 @@ keep reporting the failing line so the editor can name the failing step.
   complete-width admission basis, and estimated-versus-observed memory. These are
   aggregate counters only; paths, graph identifiers, column names, and row values
   remain excluded.
+- **The execution context is a thin composition.** Every execution surface takes one
+  `ExecutionContext`, but the context only composes separate parts: the cancellation
+  token, the memory budget (admission record, limits, RSS probe, enforcement and
+  pressure thresholds), the lease (cleanup callbacks and the one admission release),
+  the metrics recorder, the evidence and provenance recorders, and terminal
+  telemetry. The budget and the lease are built without either recorder, so
+  enforcement never depends on evidence bookkeeping. Callers keep one interface: the
+  context delegates each call to the part that owns it. No class in
+  `_execution_context.py` exceeds 300 lines, and a meta test holds that limit.
 
 ## Interactions
 
@@ -645,8 +655,8 @@ keep reporting the failing line so the editor can name the failing step.
   restricted-globals `exec`.
 - [tracing](../tracing/high-level.md): built directly on `_execute_eager_core` and
   `ExecutionContext`'s stage/checkpoint instrumentation to reconstruct a run's
-  timeline; shares the preview cache's fingerprint shape so a trace can reuse
-  preview-cached frames.
+  timeline; shares the preview cache's lineage-key shape for its own trace cache,
+  but never reads preview-cached frames.
 - [io-layer](../io-layer/high-level.md) / [databricks-io](../databricks-io/high-level.md):
   supply the actual scan/read functions that source-node builders call; this
   component only decides when a source is re-read vs. reused.

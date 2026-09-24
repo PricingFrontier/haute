@@ -4,25 +4,30 @@ Given a code string containing Polars ``with_columns`` calls and a target column
 name, the parser returns a :class:`ParsedExpression` describing the formula in
 human-readable text, its type, referenced columns, constants, and more.
 
-Optionally, :func:`evaluate_expression` substitutes concrete values and computes
-the result, returning an :class:`EvaluatedExpression`.
+Optionally, :func:`evaluate_expression` substitutes concrete values and has
+Polars compute the result on the traced row, returning an
+:class:`EvaluatedExpression`.
 """
 
 from __future__ import annotations
 
 import ast
+import copy
 import json
 import math
-import operator
 import re
-from collections.abc import Callable
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, cast
 
+import polars as pl
+
 __all__ = [
+    "AssignmentPhases",
     "ParsedExpression",
     "EvaluatedExpression",
+    "assignment_phases",
     "parse_expression",
     "evaluate_expression",
     "parse_expression_chain",
@@ -49,6 +54,8 @@ class ParsedExpression:
 class EvaluatedExpression(ParsedExpression):
     substituted_text: str = ""
     result_value: Any = None
+    # Why ``result_value`` could not be computed from the traced row, if it could not.
+    not_computable_reason: str | None = None
     input_values: dict[str, Any] = field(default_factory=dict)
     # Conditional branch tracking
     taken_branch: str | None = None
@@ -131,15 +138,6 @@ _PREC_IFEXP = -3
 _PREC_USUB = 7
 
 
-# Signed 64-bit integer range. The trace evaluator computes integer arithmetic
-# in unbounded Python ints, but Polars integer columns are fixed-width and wrap
-# on overflow (Int64: max * 2 -> -2). Because the evaluator is dtype-unaware it
-# cannot know the real column width (Int8/Int32/Int64/UInt64…), so rather than
-# display a misleading big-integer it reports an out-of-range *integer* result
-# as uncomputable (None) instead of guessing a wraparound.
-_INT64_MIN = -(2**63)
-_INT64_MAX = 2**63 - 1
-
 _COLUMN_PRODUCER_METHODS: frozenset[str] = frozenset({"with_columns", "select"})
 _CONTROL_FLOW_STATEMENT_TYPES: tuple[type[ast.stmt], ...] = (
     ast.If,
@@ -151,35 +149,11 @@ _CONTROL_FLOW_STATEMENT_TYPES: tuple[type[ast.stmt], ...] = (
 )
 
 
-# Binary / comparison operator dispatch tables for the value evaluator. Hoisted
-# to module scope so they are built once rather than on every evaluated node.
-_EVAL_BINOPS: dict[type, Callable[[Any, Any], Any]] = {
-    ast.Add: operator.add,
-    ast.Sub: operator.sub,
-    ast.Mult: operator.mul,
-    ast.Div: operator.truediv,
-    ast.FloorDiv: operator.floordiv,
-    ast.Mod: operator.mod,
-    ast.Pow: operator.pow,
-    ast.BitAnd: operator.and_,
-    ast.BitOr: operator.or_,
-}
-
-_EVAL_CMPOPS: dict[type, Callable[[Any, Any], Any]] = {
-    ast.Eq: operator.eq,
-    ast.NotEq: operator.ne,
-    ast.Lt: operator.lt,
-    ast.LtE: operator.le,
-    ast.Gt: operator.gt,
-    ast.GtE: operator.ge,
-}
-
-
 @lru_cache(maxsize=256)
 def _cached_parse(code: str) -> ast.Module:
     """Parse *code* to an AST module, memoised on the source string.
 
-    ``parse_expression``/``_compute_result``/``_evaluate_conditional_branches``/
+    ``parse_expression``/``_locate_defining_expression``/
     ``parse_expression_chain`` each need the module AST for the *same* code
     string; parsing is the dominant cost and the result is treated as read-only
     by every consumer (symbol-table builders and converters only read the tree;
@@ -1422,18 +1396,26 @@ def evaluate_expression(
     target_column: str,
     row_values: dict[str, Any],
     preamble_ns: dict[str, Any] | None = None,
+    *,
+    row: pl.DataFrame | None = None,
 ) -> EvaluatedExpression:
-    """Parse *code*, substitute *row_values* for referenced columns, and compute
-    the result.  Returns an :class:`EvaluatedExpression`.
+    """Parse *code*, substitute *row_values* for referenced columns, and have
+    Polars compute the result on the traced row.
 
-    Failures are **not** laundered into a fabricated result: previously any
-    exception here fell back to ``result_value=row_values.get(target_column)``,
-    i.e. it displayed the engine's *observed* output as if the trace evaluator
-    had computed it, making an evaluator bug look self-consistent. Instead the
-    exception propagates to the enrichment caller, which records a visible error
-    marker on the step. Fail loud, never guess.
+    *row* is the traced row as a one-row frame in the dtypes the pipeline gave
+    it. Without it the row is built from *row_values*, which must then be native
+    Python values for Polars to infer dtypes from. A frame holding no row means
+    the trace could not recover it, and the result is not computable.
+
+    Polars computes an expression the row-locality classifier proves reads only
+    its own row. Otherwise ``result_value`` stays ``None`` and
+    ``not_computable_reason`` says why: the expression needs other rows (a
+    window, aggregation, shift, rank or cumulative form, named), it uses a name
+    the trace cannot resolve, or no expression assigns the column. A Polars
+    failure on a computable expression propagates to the enrichment caller,
+    which records a visible error marker on the step. Fail loud, never guess.
     """
-    return _evaluate_expression_impl(code, target_column, row_values, preamble_ns=preamble_ns)
+    return _evaluate_expression_impl(code, target_column, row_values, preamble_ns, row)
 
 
 def _wrap_expression_code(code: str) -> str:
@@ -1451,13 +1433,16 @@ def _evaluate_expression_impl(
     code: str,
     target_column: str,
     row_values: dict[str, Any],
-    preamble_ns: dict[str, Any] | None = None,
+    preamble_ns: dict[str, Any] | None,
+    row: pl.DataFrame | None,
 ) -> EvaluatedExpression:
     code = _wrap_expression_code(code)
+    namespace = dict(preamble_ns or {})
 
-    # Merge preamble constants into row_values for evaluation.
-    # Column values (row_values) take priority over preamble constants.
-    effective_row = dict(preamble_ns or {})
+    # Literal preamble constants display beside the row's values; the row wins.
+    effective_row = {
+        name: value for name, value in namespace.items() if _literal_node(value) is not None
+    }
     effective_row.update(row_values)
 
     # Detect window function: .over() in code
@@ -1487,25 +1472,21 @@ def _evaluate_expression_impl(
     # Resolve preamble constants in substituted text
     if preamble_ns:
         for name, val in preamble_ns.items():
-            if name not in row_values:
+            if name not in row_values and _literal_node(val) is not None:
                 # Replace unresolved preamble constant names with their values
                 substituted_text = _replace_column_name(substituted_text, name, _format_value(val))
 
-    # Compute result
-    result_value = _compute_result(code, target_column, effective_row, parsed)
+    traced_row = _native_row(row_values) if row is None else row
+    node = _locate_defining_expression(code, target_column)
+    computed = (
+        _RowValue(reason="expression_not_located")
+        if node is None
+        else _row_value(node, traced_row, namespace)
+    )
 
-    # Conditional branch tracking
-    taken_branch: str | None = None
-    taken_branch_index: int | None = None
-    dimmed_branches: list[int] = []
-    nested_branches: list[str] = []
-
-    if parsed.expression_type == "conditional":
-        branch_info = _evaluate_conditional_branches(code, target_column, effective_row)
-        taken_branch = branch_info.get("taken_branch")
-        taken_branch_index = branch_info.get("taken_branch_index")
-        dimmed_branches = branch_info.get("dimmed_branches", [])
-        nested_branches = branch_info.get("nested_branches", [])
+    branches: dict[str, Any] = {}
+    if node is not None and parsed.expression_type == "conditional":
+        branches = _branch_selection(node, traced_row, namespace) or {}
 
     return EvaluatedExpression(
         target_column=parsed.target_column,
@@ -1516,12 +1497,13 @@ def _evaluate_expression_impl(
         sub_expressions=parsed.sub_expressions,
         source_line=parsed.source_line,
         substituted_text=substituted_text,
-        result_value=result_value,
+        result_value=computed.value,
+        not_computable_reason=computed.reason,
         input_values=input_values,
-        taken_branch=taken_branch,
-        taken_branch_index=taken_branch_index,
-        dimmed_branches=dimmed_branches,
-        nested_branches=nested_branches,
+        taken_branch=branches.get("taken_branch"),
+        taken_branch_index=branches.get("taken_branch_index"),
+        dimmed_branches=branches.get("dimmed_branches", []),
+        nested_branches=branches.get("nested_branches", []),
     )
 
 
@@ -1552,45 +1534,6 @@ def _build_window_description(
     part_col = over_match[0] if over_match else "partition"
 
     return f"{agg_func} of {agg_col} over {part_col}"
-
-
-def _evaluate_conditional_branches(
-    code: str,
-    target_column: str,
-    row_values: dict[str, Any],
-) -> dict[str, Any]:
-    """Evaluate a conditional expression and determine which branch was taken."""
-    code_clean = code.lstrip("\ufeff")
-    try:
-        tree = _cached_parse(code_clean)
-    except SyntaxError:
-        return {}
-
-    stmts = tree.body
-    symbol_table = _build_safe_symbol_table(stmts)
-    _resolve_reassignment_chains(stmts, symbol_table)
-
-    wc_calls = _find_with_columns_calls(tree)
-    best_match: ast.AST | None = None
-
-    for wc_call, lineno in wc_calls:
-        exprs = _extract_expressions_from_with_columns(wc_call, symbol_table)
-        for expr_node, alias_name, ln in exprs:
-            if alias_name == target_column:
-                best_match = expr_node
-
-    if best_match is None:
-        return {}
-
-    # Use _BranchTrackingEvaluator (defined after _ExprEvaluator below)
-    evaluator = _BranchTrackingEvaluator(row_values, symbol_table)
-    evaluator.evaluate(best_match)
-    return {
-        "taken_branch": evaluator.taken_branch,
-        "taken_branch_index": evaluator.taken_branch_index,
-        "dimmed_branches": evaluator.dimmed_branches,
-        "nested_branches": evaluator.nested_branches,
-    }
 
 
 _IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -1651,34 +1594,161 @@ def _format_value(val: Any) -> str:
     return str(val)
 
 
-def _compute_result(
-    code: str,
-    target_column: str,
-    row_values: dict[str, Any],
-    parsed: ParsedExpression,
-) -> Any:
-    """Compute the result of the expression given row values.
+# ---------------------------------------------------------------------------
+# Polars evaluation on the traced row
+# ---------------------------------------------------------------------------
 
-    Uses AST-based evaluation. Evaluator failures are deliberately **not**
-    caught here: previously any exception fell back to
-    ``row_values.get(target_column)``, laundering the engine's observed output
-    into the trace as if the evaluator had computed it and masking evaluator
-    bugs as self-consistent. Failures now propagate to the enrichment caller,
-    which records a visible error. (A genuine "cannot locate the defining
-    expression" is still reported as the observed value below, since there is
-    no computation to be wrong about.)
+_TRACE_VALUE_COLUMN = "__haute_trace_value__"
+
+TRACED_ROW_UNAVAILABLE = "traced_row_unavailable"
+"""Reason for a value the trace could not recover the traced row to compute."""
+
+
+@dataclass(frozen=True)
+class _RowValue:
+    """An expression's value on the traced row, or why one row cannot give it."""
+
+    value: Any = None
+    reason: str | None = None
+
+
+def _native_row(row_values: Mapping[str, Any]) -> pl.DataFrame:
+    """One row built from native Python values, with dtypes Polars infers from them."""
+    return pl.DataFrame([dict(row_values)])
+
+
+@dataclass(frozen=True)
+class AssignmentPhases:
+    """The node's assignments on either side of the call that assigns one column.
+
+    Every expression in one ``with_columns`` call reads the frame as it was
+    before that call, so a column assigned by the same or a later call is read
+    at its earlier value, not the node's output. ``unresolved`` is set when an
+    expression in that call or a later one writes a column whose name cannot be
+    determined statically, so any column may be among them;
+    ``unresolved_before`` when such a write comes in an earlier call, so any
+    column may have been rewritten before the call reads it.
     """
-    return _compute_result_impl(code, target_column, row_values, parsed)
+
+    before: frozenset[str]
+    at_or_after: frozenset[str]
+    unresolved: bool = False
+    unresolved_before: bool = False
 
 
-def _compute_result_impl(
-    code: str,
-    target_column: str,
-    row_values: dict[str, Any],
-    parsed: ParsedExpression,
-) -> Any:
-    """Reparse and evaluate the AST expression with concrete values."""
-    code_clean = code.lstrip("\ufeff")
+# Namespaces whose methods keep the expression's name (``struct.field`` and
+# ``name.*`` rename it).
+_NAME_PRESERVING_NAMESPACES = frozenset({"arr", "bin", "cat", "dt", "list", "str"})
+
+
+def _implicit_output_name(node: ast.AST) -> str | None:
+    """The column an unaliased expression writes, when its leftmost input names it.
+
+    Polars names such an expression after its leftmost input column: methods,
+    arithmetic and the name-keeping namespaces keep that name. An expression
+    that renames, selects several columns, or starts from another function is
+    left unknown.
+    """
+    current = node
+    while True:
+        if isinstance(current, ast.BinOp):
+            current = current.left
+            continue
+        if isinstance(current, ast.UnaryOp):
+            current = current.operand
+            continue
+        if not isinstance(current, ast.Call) or not isinstance(current.func, ast.Attribute):
+            return None
+        receiver = current.func.value
+        if current.func.attr == "alias":
+            alias = current.args[0] if current.args else None
+            if isinstance(alias, ast.Constant) and isinstance(alias.value, str):
+                return alias.value
+            return None
+        if isinstance(receiver, ast.Name) and receiver.id == "pl":
+            if current.func.attr == "lit":
+                return "literal"
+            if current.func.attr != "col" or current.keywords or len(current.args) != 1:
+                return None
+            name = current.args[0]
+            if not isinstance(name, ast.Constant) or not isinstance(name.value, str):
+                return None
+            return None if name.value.startswith("^") else name.value
+        if isinstance(receiver, ast.Attribute) and receiver.attr in _NAME_PRESERVING_NAMESPACES:
+            current = receiver.value
+            continue
+        current = receiver
+
+
+def _call_writes(call: ast.Call, symbol_table: dict[str, ast.AST]) -> tuple[frozenset[str], bool]:
+    """The columns one ``with_columns`` call writes, and whether some write has no static name.
+
+    Only an explicit name counts: a keyword, a literal ``.alias()``, or the
+    strict :func:`_implicit_output_name`. The display parser's first-column
+    guess never does, since ``pl.col("a", "b") + 1`` writes both columns.
+    """
+    items: list[ast.AST] = []
+    unknown = False
+    for arg in call.args:
+        value = arg.value if isinstance(arg, ast.Starred) else arg
+        bound = symbol_table.get(value.id) if isinstance(value, ast.Name) else None
+        if isinstance(bound, ast.List):
+            items.extend(bound.elts)
+        elif isinstance(value, ast.List):
+            items.extend(value.elts)
+        elif isinstance(arg, ast.Starred) or isinstance(value, (ast.ListComp, ast.GeneratorExp)):
+            unknown = True
+        else:
+            items.append(bound if bound is not None else value)
+    names: set[str] = set()
+    for item in items:
+        expr, alias = _strip_alias(item, symbol_table)
+        name = (
+            alias
+            if alias is not None
+            else None
+            if expr is not item
+            else _implicit_output_name(expr)
+        )
+        if name is None:
+            unknown = True
+        else:
+            names.add(name)
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            unknown = True
+        else:
+            names.add(keyword.arg)
+    return frozenset(names), unknown
+
+
+def assignment_phases(code: str, target_column: str) -> AssignmentPhases | None:
+    """Split the columns *code* assigns around the last call assigning *target_column*."""
+    try:
+        tree = _cached_parse(_wrap_expression_code(code).lstrip("﻿"))
+    except SyntaxError:
+        return None
+    stmts = tree.body
+    symbol_table = _build_safe_symbol_table(stmts)
+    _resolve_reassignment_chains(stmts, symbol_table)
+    calls = [_call_writes(call, symbol_table) for call, _lineno in _find_with_columns_calls(tree)]
+    target_calls = [
+        index for index, (names, _unknown) in enumerate(calls) if target_column in names
+    ]
+    if not target_calls:
+        return None
+    last = target_calls[-1]
+    return AssignmentPhases(
+        before=frozenset().union(*(names for names, _unknown in calls[:last])),
+        at_or_after=frozenset().union(*(names for names, _unknown in calls[last:])),
+        unresolved=any(unknown for _names, unknown in calls[last:]),
+        unresolved_before=any(unknown for _names, unknown in calls[:last]),
+    )
+
+
+def _locate_defining_expression(code: str, target_column: str) -> ast.AST | None:
+    """The expression that last assigns *target_column*, with same-node names resolved."""
+    code_clean = code.lstrip("﻿")
     try:
         tree = _cached_parse(code_clean)
     except SyntaxError:
@@ -1690,761 +1760,176 @@ def _compute_result_impl(
 
     wc_calls = _find_with_columns_calls(tree)
     best_match: ast.AST | None = None
-
-    for wc_call, lineno in wc_calls:
-        exprs = _extract_expressions_from_with_columns(wc_call, symbol_table)
-        for expr_node, alias_name, ln in exprs:
+    for wc_call, _lineno in wc_calls:
+        for expr_node, alias_name, _ln in _extract_expressions_from_with_columns(
+            wc_call, symbol_table
+        ):
             if alias_name == target_column:
                 best_match = expr_node
 
     if best_match is None:
-        # Try no-alias match
-        for wc_call, lineno in wc_calls:
+        # An unaliased expression is named after the column it reads.
+        for wc_call, _lineno in wc_calls:
             for arg in wc_call.args:
                 expr_node, alias_name = _strip_alias(arg, symbol_table)
-                if alias_name is None:
-                    auto = _infer_auto_name(expr_node)
-                    if auto == target_column:
-                        best_match = expr_node
-                        break
-            if best_match:
+                if alias_name is None and _infer_auto_name(expr_node) == target_column:
+                    best_match = expr_node
+                    break
+            if best_match is not None:
                 break
 
     if best_match is None:
         return None
-
-    evaluator = _ExprEvaluator(row_values, symbol_table)
-    return evaluator.evaluate(best_match)
+    return cast(ast.AST, _NameResolver(symbol_table).visit(copy.deepcopy(best_match)))
 
 
-class _ExprEvaluator:
-    """Evaluate a Polars expression AST with concrete values."""
+class _NameResolver(ast.NodeTransformer):
+    """Replace names bound earlier in the node's code with the values bound to them."""
 
-    def __init__(self, row_values: dict[str, Any], symbol_table: dict[str, ast.AST] | None = None):
-        self.row_values = row_values
-        self._symbol_table = symbol_table or {}
+    def __init__(self, bindings: Mapping[str, ast.AST]) -> None:
+        self._bindings = bindings
 
-    def evaluate(self, node: ast.AST) -> Any:
-        if isinstance(node, ast.BinOp):
-            return self._binop(node)
-        if isinstance(node, ast.UnaryOp):
-            return self._unaryop(node)
-        if isinstance(node, ast.Compare):
-            return self._compare(node)
-        if isinstance(node, ast.BoolOp):
-            return self._boolop(node)
-        if isinstance(node, ast.Call):
-            return self._call(node)
-        if isinstance(node, ast.Constant):
-            return node.value
-        if isinstance(node, ast.List):
-            return [self.evaluate(e) for e in node.elts]
-        if isinstance(node, ast.Tuple):
-            return tuple(self.evaluate(e) for e in node.elts)
-        if isinstance(node, ast.Set):
-            return {self.evaluate(e) for e in node.elts}
-        if isinstance(node, ast.Name):
-            return self._name(node)
-        if isinstance(node, ast.Attribute):
-            return self._attribute(node)
-        if isinstance(node, ast.Expr):
-            return self.evaluate(node.value)
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        bound = self._bindings.get(node.id)
+        if bound is None:
+            return node
+        return ast.copy_location(copy.deepcopy(bound), node)
+
+
+def _literal_node(value: object) -> ast.expr | None:
+    """*value* as the literal the code could have written, if it is one."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return ast.Constant(value=value)
+    if isinstance(value, (list, tuple)):
+        elements = [_literal_node(item) for item in value]
+        if all(element is not None for element in elements):
+            items = cast(list[ast.expr], elements)
+            return ast.List(elts=items) if isinstance(value, list) else ast.Tuple(elts=items)
+    return None
+
+
+def _row_value(node: ast.AST, row: pl.DataFrame, namespace: Mapping[str, Any]) -> _RowValue:
+    """*node*'s value on the traced *row*, computed by Polars.
+
+    Only an expression the row-locality classifier proves reads nothing but its
+    own row is computed here: a window, aggregation, shift, rank, or cumulative
+    form evaluated on one row would show a value the pipeline never produced,
+    so it is reported as not computable from one row instead, naming the
+    operator that needs other rows. Literal constants in *namespace* are
+    inlined first so they classify as the literals they are.
+    """
+    if row.height != 1:
+        return _RowValue(reason=TRACED_ROW_UNAVAILABLE)
+    literals: dict[str, ast.AST] = {}
+    for name, value in namespace.items():
+        literal = _literal_node(value)
+        if literal is not None:
+            literals[name] = literal
+    resolved = cast(ast.AST, _NameResolver(literals).visit(copy.deepcopy(node)))
+    bound = {sub.arg for sub in ast.walk(resolved) if isinstance(sub, ast.arg)} | {
+        sub.id
+        for sub in ast.walk(resolved)
+        if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store)
+    }
+    free_names = [
+        sub.id
+        for sub in ast.walk(resolved)
+        if isinstance(sub, ast.Name) and sub.id != "pl" and sub.id not in bound
+    ]
+    unresolved = [name for name in free_names if name not in namespace]
+    if unresolved:
+        return _RowValue(reason=f"unresolved_name: {unresolved[0]}")
+    source = ast.unparse(resolved)
+
+    from haute.chunking import classify_row_local_expression
+
+    decision = classify_row_local_expression(source)
+    if not decision.eligible:
+        # A helper or module name blocks as a bare ``Name``/``Call`` node; name it.
+        operator = decision.blocking_operator
+        if operator in {"Name", "Call"} and free_names:
+            operator = free_names[0]
+        return _RowValue(reason=f"not_row_local: {operator or decision.reason}")
+
+    from haute._sandbox import safe_globals, validate_user_code
+
+    validate_user_code(source)
+    globals_ns = safe_globals(
+        pl=pl,
+        **{k: v for k, v in namespace.items() if k != "df" and not k.startswith("__")},
+    )
+    built = eval(source, globals_ns)
+    expression = built if isinstance(built, pl.Expr) else pl.lit(built)
+    missing = [name for name in expression.meta.root_names() if name not in row.columns]
+    if missing:
+        return _RowValue(reason=f"column_unavailable: {missing[0]}")
+    # ``to_list`` gives native values: ``item()`` would return a Series for a
+    # List or Array cell.
+    value = row.select(expression.alias(_TRACE_VALUE_COLUMN)).to_series().to_list()[0]
+    return _RowValue(value=value)
+
+
+def _branch_selection(
+    node: ast.AST, row: pl.DataFrame, namespace: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Which arm of the ``pl.when`` chain at *node* the traced row takes.
+
+    Each condition is evaluated by Polars on the row in source order; the first
+    that is true is taken, and ``otherwise`` when none is. A condition that
+    cannot be computed from one row leaves the branch unknown (``None``). A
+    taken arm that is itself a ``when`` chain adds its own selection to
+    ``nested_branches``.
+    """
+    clauses = _collect_when_then_chain(node)
+    if not clauses:
         return None
-
-    @staticmethod
-    def _is_bool_kleene_operand(left: Any, right: Any) -> bool:
-        """Whether ``&``/``|`` should use boolean Kleene logic for these operands.
-
-        True when at least one operand is a concrete bool, or both are null
-        (``null & null`` is null under Kleene). Integer operands fall through to
-        bitwise semantics.
-        """
-        if isinstance(left, bool) or isinstance(right, bool):
-            return True
-        return left is None and right is None
-
-    @staticmethod
-    def _divide_by_zero(op_type: type, left: Any) -> Any:
-        """Mirror Polars' division-by-zero: ±inf/nan for floats, null for ints.
-
-        - float ``x / 0`` and ``x // 0`` -> ``copysign(inf, x)`` (``0/0`` -> nan);
-          Polars' true-division always promotes to float, so ``int / 0`` is inf too.
-        - float ``x % 0`` -> nan.
-        - integer ``//`` and ``%`` by zero -> null (Polars).
-        """
-        left_is_float = isinstance(left, float)
-        if op_type is ast.Div:
-            if left == 0:
-                return math.nan
-            return math.copysign(math.inf, left)
-        if op_type is ast.FloorDiv:
-            if not left_is_float:
-                return None  # integer floordiv by zero -> Polars null
-            if left == 0:
-                return math.nan
-            return math.copysign(math.inf, left)
-        # Mod
-        if not left_is_float:
-            return None  # integer modulo by zero -> Polars null
-        return math.nan
-
-    @staticmethod
-    def _pow(left: Any, right: Any) -> Any:
-        """Power mirroring Polars float semantics.
-
-        A negative base with a non-integer exponent is NaN in Polars' float
-        domain, where Python would return a complex number.
-        """
-        if left < 0 and isinstance(right, float) and not right.is_integer():
-            return math.nan
-        result = operator.pow(left, right)
-        if isinstance(result, complex):
-            return math.nan
-        return result
-
-    def _binop(self, node: ast.BinOp) -> Any:
-        left = self.evaluate(node.left)
-        right = self.evaluate(node.right)
-        op_type = type(node.op)
-
-        # Kleene three-valued boolean logic for & / | — must run BEFORE the
-        # generic null short-circuit: `False & null` is False and `True | null`
-        # is True in Polars, not null.
-        if op_type is ast.BitAnd and self._is_bool_kleene_operand(left, right):
-            if left is False or right is False:
-                return False
-            if left is None or right is None:
+    total = sum(1 for clause in clauses if "cond" in clause) + (
+        1 if any("otherwise" in clause for clause in clauses) else 0
+    )
+    for index, clause in enumerate(clauses):
+        if "cond" in clause:
+            if clause["cond"] is None:
+                continue
+            outcome = _row_value(clause["cond"], row, namespace)
+            if outcome.reason is not None:
                 return None
-            return bool(left) and bool(right)
-        if op_type is ast.BitOr and self._is_bool_kleene_operand(left, right):
-            if left is True or right is True:
-                return True
-            if left is None or right is None:
-                return None
-            return bool(left) or bool(right)
-
-        # Every other operator propagates null.
-        if left is None or right is None:
-            return None
-
-        # Division/floor-division/modulo by zero: Polars yields ±inf/nan/null
-        # rather than raising ZeroDivisionError.
-        if op_type in (ast.Div, ast.FloorDiv, ast.Mod) and right == 0:
-            return self._divide_by_zero(op_type, left)
-
-        if op_type is ast.Pow:
-            result = self._pow(left, right)
-        else:
-            fn = _EVAL_BINOPS.get(op_type)
-            if fn is None:
-                return None
-            result = fn(left, right)
-
-        # Polars integer columns are fixed-width and wrap on overflow, but the
-        # evaluator is dtype-unaware and computes in unbounded Python ints. An
-        # out-of-int64-range *integer* result would display a wildly wrong
-        # big-integer, so report it as uncomputable (None) instead of guessing a
-        # wraparound width we cannot know.
-        if type(result) is int and not (_INT64_MIN <= result <= _INT64_MAX):
-            return None
-        return result
-
-    def _unaryop(self, node: ast.UnaryOp) -> Any:
-        val = self.evaluate(node.operand)
-        if val is None:
-            return None
-        if isinstance(node.op, ast.USub):
-            return -val
-        if isinstance(node.op, ast.UAdd):
-            return +val
-        if isinstance(node.op, ast.Not):
-            return not val
-        if isinstance(node.op, ast.Invert):
-            # Polars ~ on a boolean is logical negation; Python bitwise-not would
-            # render ~True as -2.
-            if isinstance(val, bool):
-                return not val
-            return ~val
-        return None
-
-    def _compare(self, node: ast.Compare) -> Any:
-        left = self.evaluate(node.left)
-        for op, comp in zip(node.ops, node.comparators):
-            right = self.evaluate(comp)
-            if left is None or right is None:
-                return None
-            fn = _EVAL_CMPOPS.get(type(op))
-            if fn is None:
-                # Unsupported comparison operator (is / is not / in / not in):
-                # report unknown rather than a spurious True.
-                return None
-            if not fn(left, right):
-                return False
-            left = right
-        return True
-
-    def _boolop(self, node: ast.BoolOp) -> Any:
-        if isinstance(node.op, ast.And):
-            result = True
-            for val_node in node.values:
-                v = self.evaluate(val_node)
-                if not v:
-                    return False
-                result = v
-            return result
-        else:  # Or
-            for val_node in node.values:
-                v = self.evaluate(val_node)
-                if v:
-                    return v
-            return False
-
-    def _name(self, node: ast.Name) -> Any:
-        name = node.id
-        if name == "None":
-            return None
-        if name == "True":
-            return True
-        if name == "False":
-            return False
-        if name in self._symbol_table:
-            return self.evaluate(self._symbol_table[name])
-        return self.row_values.get(name)
-
-    def _attribute(self, node: ast.Attribute) -> Any:
-        if isinstance(node.value, ast.Name) and node.value.id == "pl":
-            # pl.Float64, pl.Int32 etc — not a value
-            return None
-        return None
-
-    def _str_contains(self, base_val: str, node: ast.Call) -> Any:
-        """Mirror ``pl.Expr.str.contains(pattern, literal=False)``.
-
-        Polars treats *pattern* as a REGEX by default (so ``"a.c"`` matches
-        ``"abc"``); only ``literal=True`` falls back to a plain substring test.
-        The previous implementation did a substring match unconditionally, so
-        the trace disagreed with the engine for any regex pattern.
-        """
-        if not node.args:
-            return None
-        pattern = self.evaluate(node.args[0])
-        if pattern is None or not isinstance(pattern, str):
-            return None
-        literal = False
-        # Signature: str.contains(pattern, literal=False) — 2nd positional or kw.
-        if len(node.args) >= 2:
-            lit = self.evaluate(node.args[1])
-            if lit is not None:
-                literal = bool(lit)
-        for kw in node.keywords:
-            if kw.arg == "literal":
-                lit = self.evaluate(kw.value)
-                if lit is not None:
-                    literal = bool(lit)
-        if literal:
-            return pattern in base_val
-        try:
-            return re.search(pattern, base_val) is not None
-        except re.error:
-            return None
-
-    def _call(self, node: ast.Call) -> Any:
-        # pl.col("name")
-        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
-            if node.func.value.id == "pl":
-                attr = node.func.attr
-                if attr == "col":
-                    if node.args and isinstance(node.args[0], ast.Constant):
-                        col_name = node.args[0].value
-                        if isinstance(col_name, str):
-                            return self.row_values.get(col_name)
-                        return None
-                    elif node.args and isinstance(node.args[0], ast.Name):
-                        # Resolve variable
-                        var_name = node.args[0].id
-                        if var_name in self._symbol_table:
-                            resolved = self._symbol_table[var_name]
-                            if isinstance(resolved, ast.Constant) and isinstance(
-                                resolved.value, str
-                            ):
-                                return self.row_values.get(resolved.value)
-                    return None
-                if attr == "lit":
-                    if node.args:
-                        return self.evaluate(node.args[0])
-                    return None
-                if attr == "when":
-                    return self._eval_when_chain(node)
-                if attr in _HORIZONTAL_FUNCS:
-                    return self._eval_horizontal(node, attr)
-                if attr == "format":
-                    return self._eval_format(node)
-
-        # Method call on expression
-        if isinstance(node.func, ast.Attribute):
-            method = node.func.attr
-            receiver = node.func.value
-
-            if method == "alias":
-                return self.evaluate(receiver)
-
-            # .cast() — identity for evaluation
-            if method == "cast":
-                return self.evaluate(receiver)
-
-            # .fill_null(value)
-            if method == "fill_null":
-                val = self.evaluate(receiver)
-                if val is None and node.args:
-                    return self.evaluate(node.args[0])
-                return val
-
-            # .fill_nan(value)
-            if method == "fill_nan":
-                val = self.evaluate(receiver)
-                if val is not None and isinstance(val, float) and math.isnan(val):
-                    if node.args:
-                        return self.evaluate(node.args[0])
-                return val
-
-            # .round(n) — mirror Polars exactly.
-            #
-            # Polars computes ``round(v * 10**n) / 10**n`` on the f64 value with
-            # half-to-EVEN tie breaking. This is NOT the same as Python's
-            # decimal-accurate two-arg ``round(v, n)``: the scale-by-10**n step
-            # inherits float-multiply error, so e.g. round(2.675, 2) -> 2.68
-            # under Polars but 2.67 under ``round(2.675, 2)``. (The 2026-06-24
-            # coverage audit's "half-away-from-zero" note does not hold for the
-            # pinned Polars (1.39 through 1.44) — it rounds half-to-even; see the cross-checked
-            # regression tests in test_expression_parser_polars_parity.py.)
-            if method == "round":
-                val = self.evaluate(receiver)
-                if val is None:
-                    return None
-                n = 0
-                if node.args:
-                    n_arg = self.evaluate(node.args[0])
-                    if n_arg is None:
-                        return val
-                    n = n_arg
-                try:
-                    factor = 10.0**n
-                    return round(val * factor) / factor
-                except (TypeError, ValueError, OverflowError):
-                    return val
-
-            # .abs()
-            if method == "abs":
-                val = self.evaluate(receiver)
-                if val is not None:
-                    return abs(val)
-                return None
-
-            # .clip(lower, upper)
-            if method == "clip":
-                val = self.evaluate(receiver)
-                if val is None:
-                    return None
-                lower = None
-                upper = None
-                for a in node.args:
-                    if lower is None:
-                        lower = self.evaluate(a)
-                    else:
-                        upper = self.evaluate(a)
-                for kw in node.keywords:
-                    if kw.arg == "lower_bound":
-                        lower = self.evaluate(kw.value)
-                    elif kw.arg == "upper_bound":
-                        upper = self.evaluate(kw.value)
-                # Polars checks the lower bound FIRST: a value below `lower`
-                # clamps up to `lower`, otherwise a value above `upper` clamps
-                # down to `upper`. With contradictory bounds (lower > upper) the
-                # lower check wins, which sequential min/max would get wrong.
-                if lower is not None and val < lower:
-                    return lower
-                if upper is not None and val > upper:
-                    return upper
-                return val
-
-            # .dt.year(), .dt.month(), .dt.day()
-            if isinstance(receiver, ast.Attribute) and receiver.attr == "dt":
-                base_val = self.evaluate(receiver.value)
-                if base_val is not None:
-                    if method == "year":
-                        return getattr(base_val, "year", None)
-                    if method == "month":
-                        return getattr(base_val, "month", None)
-                    if method == "day":
-                        return getattr(base_val, "day", None)
-                    if method == "total_days":
-                        if hasattr(base_val, "days"):
-                            return base_val.days
-                return None
-
-            # .str.to_lowercase(), etc.
-            if isinstance(receiver, ast.Attribute) and receiver.attr == "str":
-                base_val = self.evaluate(receiver.value)
-                if base_val is not None and isinstance(base_val, str):
-                    if method == "to_lowercase":
-                        return base_val.lower()
-                    if method == "to_uppercase":
-                        return base_val.upper()
-                    if method == "contains":
-                        return self._str_contains(base_val, node)
-                return None
-
-            # .is_null()
-            if method == "is_null":
-                val = self.evaluate(receiver)
-                return val is None
-
-            # .is_not_null()
-            if method == "is_not_null":
-                val = self.evaluate(receiver)
-                return val is not None
-
-            # .is_between(lower, upper, closed="both")
-            # Polars honours the ``closed`` bound: both | left | right | none.
-            if method == "is_between":
-                val = self.evaluate(receiver)
-                if val is not None and len(node.args) >= 2:
-                    lo = self.evaluate(node.args[0])
-                    hi = self.evaluate(node.args[1])
-                    if lo is None or hi is None:
-                        return None
-                    closed = "both"
-                    if len(node.args) >= 3:
-                        c = self.evaluate(node.args[2])
-                        if isinstance(c, str):
-                            closed = c
-                    for kw in node.keywords:
-                        if kw.arg == "closed":
-                            c = self.evaluate(kw.value)
-                            if isinstance(c, str):
-                                closed = c
-                    left_ok = lo <= val if closed in ("both", "left") else lo < val
-                    right_ok = val <= hi if closed in ("both", "right") else val < hi
-                    return left_ok and right_ok
-                return None
-
-            # .is_in(values) — values may be a list/tuple/set literal.
-            if method == "is_in":
-                val = self.evaluate(receiver)
-                if node.args and val is not None:
-                    values = self.evaluate(node.args[0])
-                    if isinstance(values, (list, tuple, set)):
-                        return val in values
-                return None
-
-            # .sum(), .mean(), .min(), .max() — aggregation, return value as-is for single row
-            if method in (
-                "sum",
-                "mean",
-                "min",
-                "max",
-                "count",
-                "first",
-                "last",
-                "std",
-                "var",
-                "median",
-                "null_count",
-                "n_unique",
-            ):
-                return self.evaluate(receiver)
-
-            # .over() — for evaluation, just return the base value
-            if method == "over":
-                return self.evaluate(receiver)
-
-            # .shift(), .diff() — can't evaluate meaningfully for single row
-            if method in ("shift", "diff"):
-                return self.evaluate(receiver)
-
-            # .log() — Polars float domain: log(0) -> -inf, log(<0) -> NaN.
-            if method == "log":
-                val = self.evaluate(receiver)
-                if val is None:
-                    return None
-                if val > 0:
-                    return math.log(val)
-                if val == 0:
-                    return -math.inf
-                return math.nan
-
-            # .sqrt() — Polars float domain: sqrt(<0) -> NaN (not null).
-            if method == "sqrt":
-                val = self.evaluate(receiver)
-                if val is None:
-                    return None
-                if val >= 0:
-                    return math.sqrt(val)
-                return math.nan
-
-            # .when() on expression result (chained when)
-            if method == "when":
-                return self._eval_chained_when(node)
-
-            # .then() / .otherwise()
-            if method in ("then", "otherwise"):
-                return self._eval_when_from_then_or_otherwise(node)
-
-            # .replace_strict() / .replace()
-            if method in ("replace_strict", "replace"):
-                return self._eval_replace(node, method)
-
-            # Unsupported methods are unknown, never identity operations.
-            return None
-
-        # Bare function call
-        if isinstance(node.func, ast.Name):
-            # Can't evaluate user functions
-            return None
-
-        return None
-
-    def _eval_when_chain(self, when_node: ast.Call) -> Any:
-        """This should never be called directly — the when is always part of
-        a then/otherwise chain. Find the full chain by searching the parent."""
-        return None
-
-    def _eval_when_from_then_or_otherwise(self, node: ast.Call) -> Any:
-        """Given a .then() or .otherwise() node, walk back to find the full chain."""
-        clauses = self._collect_eval_clauses(node)
-        return self._eval_clauses(clauses)
-
-    def _eval_chained_when(self, node: ast.Call) -> Any:
-        """Handle .when() on a then result."""
-        # This is typically part of a larger chain; walk up
-        return None
-
-    def _collect_eval_clauses(self, node: ast.AST) -> list[dict[str, Any]]:
-        """Collect when/then/otherwise clauses for evaluation."""
-        return _collect_when_then_chain(node)
-
-    def _eval_clauses(self, clauses: list[dict[str, Any]]) -> Any:
-        for clause in clauses:
-            if "cond" in clause:
-                cond_val = self.evaluate(clause["cond"]) if clause["cond"] else False
-                if cond_val:
-                    return self.evaluate(clause["then"])
-            elif "otherwise" in clause:
-                return self.evaluate(clause["otherwise"])
-        return None
-
-    @staticmethod
-    def _is_nan(v: Any) -> bool:
-        return isinstance(v, float) and math.isnan(v)
-
-    def _eval_horizontal_arg(self, node: ast.AST) -> Any:
-        # A bare string argument to a horizontal function is a COLUMN NAME in
-        # Polars (e.g. ``pl.sum_horizontal("a", "b")``), not a literal string.
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return self.row_values.get(node.value)
-        return self.evaluate(node)
-
-    def _eval_horizontal(self, node: ast.Call, func_name: str) -> Any:
-        values = []
-        for a in node.args:
-            if isinstance(a, ast.List):
-                for elt in a.elts:
-                    values.append(self._eval_horizontal_arg(elt))
-            else:
-                values.append(self._eval_horizontal_arg(a))
-
-        if func_name == "concat_str":
-            return self._eval_concat_str(node, values)
-
-        if func_name == "coalesce":
-            for v in values:
-                if v is not None:
-                    return v
-            return None
-
-        # Boolean horizontal reductions follow Kleene logic across the row.
-        if func_name == "all_horizontal":
-            if any(v is False for v in values):
-                return False
-            if any(v is None for v in values):
-                return None
-            return all(bool(v) for v in values)
-        if func_name == "any_horizontal":
-            if any(v is True for v in values):
-                return True
-            if any(v is None for v in values):
-                return None
-            return any(bool(v) for v in values)
-
-        # Numeric reductions ignore nulls (Polars).
-        non_none = [v for v in values if v is not None]
-        if not non_none:
-            return None
-
-        if func_name in ("max_horizontal", "min_horizontal"):
-            # Polars ignores NaN for both extremes (only NaN -> NaN). Bare
-            # Python max()/min() would instead be argument-order dependent.
-            numbers = [v for v in non_none if not self._is_nan(v)]
-            if not numbers:
-                return math.nan
-            return max(numbers) if func_name == "max_horizontal" else min(numbers)
-        if func_name == "sum_horizontal":
-            return sum(non_none)
-        if func_name == "mean_horizontal":
-            return sum(non_none) / len(non_none)
-        return None
-
-    def _eval_concat_str(self, node: ast.Call, values: list[Any]) -> Any:
-        """Mirror ``pl.concat_str``: join stringified values with ``separator``.
-
-        With the default ``ignore_nulls=False`` any null makes the whole result
-        null; otherwise nulls are dropped before joining.
-        """
-        separator = ""
-        ignore_nulls = False
-        for kw in node.keywords:
-            if kw.arg == "separator":
-                sep = self.evaluate(kw.value)
-                # Polars requires a str separator; a non-str here is a malformed
-                # authored expression. Fail loud rather than coercing to "".
-                if not isinstance(sep, str):
-                    raise ValueError(f"concat_str: separator must be a str, got {sep!r}")
-                separator = sep
-            elif kw.arg == "ignore_nulls":
-                ig = self.evaluate(kw.value)
-                # ignore_nulls must be a bool; a null/non-bool must not be
-                # silently truthiness-coerced (bool is a subclass of int, so
-                # True/False pass this check while ints/None/strings do not).
-                if not isinstance(ig, bool):
-                    raise ValueError(f"concat_str: ignore_nulls must be a bool, got {ig!r}")
-                ignore_nulls = ig
-        if not ignore_nulls and any(v is None for v in values):
-            return None
-        parts = [str(v) for v in values if v is not None]
-        return separator.join(parts)
-
-    def _eval_format(self, node: ast.Call) -> Any:
-        if not node.args:
-            return None
-        fmt = self.evaluate(node.args[0])
-        if not isinstance(fmt, str):
-            return None
-        vals = [self.evaluate(a) for a in node.args[1:]]
-        try:
-            return fmt.format(*vals)
-        except Exception:
-            return None
-
-    def _resolve_replace_mapping(self, mapping_node: ast.AST) -> dict[Any, Any] | None:
-        """Evaluate a ``replace``/``replace_strict`` mapping (dict literal or a
-        symbol-table variable bound to one), or None if it is not a dict."""
-        node: ast.AST = mapping_node
-        if isinstance(node, ast.Name) and node.id in self._symbol_table:
-            node = self._symbol_table[node.id]
-        if isinstance(node, ast.Dict):
-            mapping: dict[Any, Any] = {}
-            for k, v in zip(node.keys, node.values):
-                if k is not None:
-                    mapping[self.evaluate(k)] = self.evaluate(v)
-            return mapping
-        return None
-
-    def _eval_replace(self, node: ast.Call, method: str) -> Any:
-        base_val = self.evaluate(cast(ast.Attribute, node.func).value)
-        if not node.args:
-            return base_val
-        mapping = self._resolve_replace_mapping(node.args[0])
-        if mapping is None:
-            return base_val
-        if base_val in mapping:
-            return mapping[base_val]
-        # Unmapped value: an explicit default kwarg wins for both variants.
-        for kw in node.keywords:
-            if kw.arg == "default":
-                return self.evaluate(kw.value)
-        if method == "replace_strict":
-            # Polars raises InvalidOperationError for an incomplete
-            # replace_strict mapping with no default. Fail loud rather than
-            # silently returning the original value (which would diverge from
-            # the engine and mislead the trace).
-            raise ValueError(
-                "replace_strict: incomplete mapping — no replacement for "
-                f"{base_val!r} and no default provided"
-            )
-        # Non-strict replace leaves unmapped values unchanged.
-        return base_val
+            if outcome.value:
+                return _taken_branch("then", index, total, clause["then"], row, namespace)
+        elif "otherwise" in clause:
+            return _taken_branch("otherwise", total - 1, total, clause["otherwise"], row, namespace)
+    return {}
 
 
-class _BranchTrackingEvaluator(_ExprEvaluator):
-    """Extends _ExprEvaluator to track which conditional branch was taken."""
+def _taken_branch(
+    name: str,
+    index: int,
+    total: int,
+    arm: ast.AST,
+    row: pl.DataFrame,
+    namespace: Mapping[str, Any],
+) -> dict[str, Any]:
+    nested: list[str] = []
+    if _is_when_chain(arm):
+        inner = _branch_selection(arm, row, namespace)
+        if inner and inner.get("taken_branch") is not None:
+            nested = [inner["taken_branch"], *inner.get("nested_branches", [])]
+    return {
+        "taken_branch": name,
+        "taken_branch_index": index,
+        "dimmed_branches": [other for other in range(total) if other != index],
+        "nested_branches": nested,
+    }
 
-    def __init__(self, row_values: dict[str, Any], symbol_table: dict[str, ast.AST] | None = None):
-        super().__init__(row_values, symbol_table)
-        self.taken_branch: str | None = None
-        self.taken_branch_index: int | None = None
-        self.dimmed_branches: list[int] = []
-        self.nested_branches: list[str] = []
 
-    def _eval_clauses(self, clauses: list[dict[str, Any]]) -> Any:
-        # Count branches: each "cond" clause is a branch, "otherwise" is the last.
-        total_branches = sum(1 for c in clauses if "cond" in c) + (
-            1 if any("otherwise" in c for c in clauses) else 0
-        )
-        for i, clause in enumerate(clauses):
-            if "cond" in clause:
-                cond_val = self.evaluate(clause["cond"]) if clause["cond"] else False
-                if cond_val:
-                    return self._take_branch(clause["then"], "then", i, total_branches)
-            elif "otherwise" in clause:
-                otherwise_idx = total_branches - 1
-                return self._take_branch(
-                    clause["otherwise"], "otherwise", otherwise_idx, total_branches
-                )
-        return None
-
-    def _take_branch(self, node: ast.AST, branch_name: str, index: int, total: int) -> Any:
-        """Record this level's branch selection and evaluate the chosen value.
-
-        When the chosen value is itself a nested when/then chain (in *either* a
-        ``then`` or an ``otherwise`` arm), it is evaluated with a fresh
-        sub-tracker so the inner branch is captured in ``nested_branches``
-        without corrupting this level's ``taken_branch``/index/``dimmed``.
-        """
-        # Only the outermost selection populates the primary metadata; this
-        # method records once (taken_branch stays None until the first hit).
-        if self.taken_branch is None:
-            self.taken_branch = branch_name
-            self.taken_branch_index = index
-            self.dimmed_branches = [j for j in range(total) if j != index]
-
-        if self._check_nested_when(node):
-            sub = _BranchTrackingEvaluator(self.row_values, self._symbol_table)
-            result = sub.evaluate(node)
-            if sub.taken_branch is not None:
-                self.nested_branches.append(sub.taken_branch)
-            self.nested_branches.extend(sub.nested_branches)
-            return result
-        return self.evaluate(node)
-
-    def _check_nested_when(self, node: ast.AST) -> bool:
-        """Check if the node contains a nested when/then chain."""
-        if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Attribute):
-                if node.func.attr in ("then", "otherwise"):
-                    return True
-                if node.func.attr == "when":
-                    if isinstance(node.func.value, ast.Name) and node.func.value.id == "pl":
-                        return True
-                return self._check_nested_when(node.func.value)
-            for a in node.args:
-                if self._check_nested_when(a):
-                    return True
+def _is_when_chain(node: ast.AST) -> bool:
+    """Whether *node*'s method chain is, or ends in, a ``pl.when`` conditional."""
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
         return False
-
-
-# ---------------------------------------------------------------------------
-# Intra-node dependency chain
-# ---------------------------------------------------------------------------
+    if node.func.attr in ("then", "otherwise"):
+        return True
+    if node.func.attr == "when":
+        return isinstance(node.func.value, ast.Name) and node.func.value.id == "pl"
+    return _is_when_chain(node.func.value)
 
 
 def parse_expression_chain(code: str, target_column: str) -> list[ParsedExpression] | None:

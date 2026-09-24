@@ -1,15 +1,16 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { OnUpdateConfig } from "../editors"
-import { ApiError } from "../../api/client"
+import { apiErrorMessage } from "../../api/errors"
 import type { DispersionParam } from "../../api/types"
 import { configField } from "../../utils/configField"
 import { effectiveMetrics } from "../../utils/trainingObjective"
 import { toggleButtonStyle } from "./styles"
 import { FailoverHelp } from "./FailoverHelp"
-import { OffsetFieldLabel } from "./OffsetFieldLabel"
 import { GLM_FAMILY_LINKS, isGlmFamily, type GlmFamily } from "./glmFamilies"
 import { ColumnSelector } from "./ColumnSelector"
-import { isNumericDtype } from "../../utils/polarsDtypes"
+import { modelColumnChoices } from "./modelColumns"
+import WeightOffsetFields from "./WeightOffsetFields"
+import useToastStore from "../../stores/useToastStore"
 
 type Column = { name: string; dtype: string }
 
@@ -59,13 +60,17 @@ export type GLMTargetConfigProps = {
   /** Run a profile-likelihood dispersion estimate on the node's training
    *  data and resolve with the value. The estimate is an explicit user
    *  action — the resolved value is filled into the config field for the
-   *  user to accept or adjust, never applied silently. */
-  onEstimateDispersion?: (param: DispersionParam) => Promise<number>
+   *  user to accept or adjust, never applied silently. The signal aborts
+   *  when this panel unmounts. */
+  onEstimateDispersion?: (param: DispersionParam, signal: AbortSignal) => Promise<number>
 }
 
 export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersion }: GLMTargetConfigProps) {
   const [estimating, setEstimating] = useState<DispersionParam | null>(null)
   const [estimateError, setEstimateError] = useState<string | null>(null)
+  // A closed panel has nowhere to show the estimate, so it cancels it.
+  const estimateRef = useRef<AbortController | null>(null)
+  useEffect(() => () => estimateRef.current?.abort(), [])
   const target = configField(config, "target", "")
   const weight = configField(config, "weight", "")
   // No display default: an unselected family must LOOK unselected — the
@@ -81,26 +86,36 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
   const linkUnavailable = link !== "" && !links.includes(link)
   const theta = config.theta
   const offset = configField(config, "offset", "")
-  const targetColumns = columns.filter((column) => column.name !== weight && column.name !== offset)
-  const weightColumns = columns.filter((column) => isNumericDtype(column.dtype) && column.name !== target && column.name !== offset)
-  const offsetColumns = columns.filter((column) => isNumericDtype(column.dtype) && column.name !== target && column.name !== weight)
+  const { targetColumns, weightColumns, offsetColumns } = modelColumnChoices(columns, { target, weight, offset })
 
   const handleEstimate = async (param: DispersionParam) => {
     if (!onEstimateDispersion || estimating) return
+    const estimate = new AbortController()
+    estimateRef.current = estimate
     setEstimating(param)
     setEstimateError(null)
     try {
-      const value = await onEstimateDispersion(param)
+      const value = await onEstimateDispersion(param, estimate.signal)
+      if (estimate.signal.aborted) return
       // Filled in, not applied silently: the value lands in the visible,
       // editable field and the user keeps the final say.
       onUpdate(param, value)
     } catch (e) {
       // Prefer the backend's actionable detail ("GLM config has no factors…")
       // over the generic "HTTP 400" message.
-      const detail = e instanceof ApiError ? e.detail : undefined
-      setEstimateError(detail || (e instanceof Error ? e.message : String(e)))
+      const message = apiErrorMessage(e)
+      if (estimate.signal.aborted) {
+        // The panel has closed, so only a cancellation that failed is news: the
+        // estimate may still be running, and a toast outlives the panel.
+        if ((e as { name?: unknown } | null)?.name !== "AbortError") {
+          useToastStore.getState().addToast("error", `Cancelling the dispersion estimate failed: ${message}`)
+        }
+        return
+      }
+      setEstimateError(message)
     } finally {
-      setEstimating(null)
+      if (estimateRef.current === estimate) estimateRef.current = null
+      if (!estimate.signal.aborted) setEstimating(null)
     }
   }
 
@@ -275,17 +290,13 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
         )}
 
         <h3 className="text-[14px] font-semibold" style={{ color: "var(--text-primary)" }}>Weight and offset</h3>
-        {/* Weight */}
-        <div>
-          <label className="text-[13px]" style={{ color: "var(--text-secondary)" }}>Weight column (optional)</label>
-          <ColumnSelector label="Weight column" value={weight} columns={weightColumns} onChange={(next) => onUpdate("weight", next)} optional />
-        </div>
-
-        {/* Offset */}
-        <div>
-          <OffsetFieldLabel />
-          <ColumnSelector label="Offset column" value={offset} columns={offsetColumns} onChange={(next) => onUpdate("offset", next || null)} optional />
-        </div>
+        <WeightOffsetFields
+          weight={weight}
+          offset={offset}
+          weightColumns={weightColumns}
+          offsetColumns={offsetColumns}
+          onUpdate={onUpdate}
+        />
 
         {/* Intercept */}
         <label className="flex items-center gap-2 cursor-pointer select-none">

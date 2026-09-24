@@ -12,6 +12,7 @@ import type {
   IoOutputCapability,
 } from "../../api/types"
 import { withAlpha } from "../../utils/color"
+import { isPlainObject } from "../../types/guards"
 import { INPUT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import PathPickerField from "./shared/PathPickerField"
@@ -40,10 +41,6 @@ const OUTPUT_COMMON_KEYS = new Set([
   "categorical_levels",
   "contract",
 ])
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
 
 let nextArgumentRowId = 0
 
@@ -83,7 +80,7 @@ export function IoArgumentsEditor({
   onCommit: (next: Record<string, unknown>) => void
   inputStyle?: CSSProperties
 }) {
-  const args = useMemo(() => (isPlainRecord(value) ? value : {}), [value])
+  const args = useMemo(() => (isPlainObject(value) ? value : {}), [value])
   const argsJson = JSON.stringify(args)
   const [rows, setRows] = useState<ArgumentRow[]>(() => argumentRows(args))
   const lastSynced = useRef(argsJson)
@@ -404,7 +401,7 @@ export default function IoFormatEditor({
   }
   if (
     config.arguments !== undefined &&
-    !isPlainRecord(config.arguments)
+    !isPlainObject(config.arguments)
   ) {
     configErrors.push("Arguments must be an object.")
   }

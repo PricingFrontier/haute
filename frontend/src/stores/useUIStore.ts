@@ -11,7 +11,7 @@ import { create } from "zustand"
 
 export type RatingStepEditorSection = "tables" | "combined"
 export type ExplorePane = "code" | "overview" | "pivots" | "charts" | "export"
-export type ExplorePreviewPane = "preview" | "overview" | "pivots" | "charts"
+export type ExplorePreviewPane = "preview" | "overview" | "pivots" | "charts" | "relationships"
 export type ModellingPane = "target" | "features" | "params" | "split" | "train" | "export"
 /** Whether clicking a node calculates its preview ("automatic") or only
  *  shows its last result until Refresh is pressed ("manual"). */

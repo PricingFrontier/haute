@@ -108,6 +108,13 @@ Submodel graph expansion and boundary rewiring are owned by
   "non_finite_float"`, `NON_FINITE_FLOAT_VALUES = {"nan", "inf", "-inf"}` — the
   sentinel object shape `{"__haute_type__": "non_finite_float", "value": "nan"}`
   used to round-trip NaN/±Infinity through JSON.
+- `non_finite_float_sentinel` is the one encoding of a non-finite float. Every
+  payload that can carry one builds it here: preview rows and trace payloads
+  through `to_json_safe`, the optimiser-apply trace explanation through the same
+  `to_json_safe`, and the assistant's value profiles through
+  `_column_summary.json_safe_scalar`. No path renders NaN or infinity as a
+  string or as `null`, so a consumer never has to know which endpoint produced a
+  value, and `null` always means a missing value.
 
 **`_edge_join.py`**
 

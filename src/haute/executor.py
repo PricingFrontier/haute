@@ -1556,10 +1556,6 @@ def _execute_graph_core(
                     )
             return node_warnings
 
-        execution_context.fault_point(
-            "response_shaping",
-            node_id=target_node_id,
-        )
         results: dict[str, NodeResult] = {}
         for nid in result_order:
             if nid in errors:
@@ -2359,10 +2355,6 @@ def prepare_data_output(
             _validate_plain_output_artifact(staging_out)
             size_bytes, sha256 = _output_artifact_signature(staging_out)
 
-        execution_context.fault_point(
-            "response_shaping",
-            node_id=output_node_id,
-        )
         response = WriteOutputResponse(
             status="ok",
             message=f"Wrote {row_count:,} rows to {path}",

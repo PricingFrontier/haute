@@ -5,12 +5,13 @@ import {
   ChartEmptyState,
   ChartLegend,
   ChartSvg,
+  ChartValueGrid,
   MODELLING_CHART_AXIS_FONT_SIZE as axisFontSize,
   MODELLING_CHART_AXIS_TEXT_COLOR as axisTextColor,
   MODELLING_CHART_GRID_COLOR as gridColor,
   ResponsiveChart,
 } from "./ChartScaffold"
-import { chartLabelIndices, chartTicks, formatChartNumber } from "./chartGeometry"
+import { chartLabelIndices, chartTicks, formatChartNumber } from "../../utils/chartHelpers"
 
 interface LiftTabProps {
   result: TrainResult
@@ -173,26 +174,7 @@ function DoubleLiftChart({
     <>
       <ChartSvg width={width} height={height} ariaLabel="Double lift chart">
         <title>Double lift: actual and predicted values by prediction decile</title>
-        {chartTicks(yMin, yMax, 5).map((value) => (
-          <g key={value}>
-            <line
-              x1={marginLeft}
-              y1={yScale(value)}
-              x2={marginLeft + plotWidth}
-              y2={yScale(value)}
-              stroke={gridColor}
-            />
-            <text
-              x={marginLeft - 6}
-              y={yScale(value) + 4}
-              textAnchor="end"
-              fontSize={axisFontSize}
-              fill={axisTextColor}
-            >
-              {formatChartNumber(value)}
-            </text>
-          </g>
-        ))}
+        <ChartValueGrid ticks={chartTicks(yMin, yMax, 5)} left={marginLeft} right={marginLeft + plotWidth} y={yScale} />
         {yMin < 0 && (
           <line
             x1={marginLeft}
@@ -332,15 +314,9 @@ function LorenzChart({
     <>
       <ChartSvg width={width} height={height} ariaLabel="Lorenz curve">
         <title>Lorenz curve with Gini coefficient {gini.toFixed(4)}</title>
+        <ChartValueGrid ticks={chartTicks(0, 1, 5)} left={marginLeft} right={marginLeft + plotWidth} y={yScale} />
         {chartTicks(0, 1, 5).map((value) => (
           <g key={value}>
-            <line
-              x1={marginLeft}
-              y1={yScale(value)}
-              x2={marginLeft + plotWidth}
-              y2={yScale(value)}
-              stroke={gridColor}
-            />
             <line
               x1={xScale(value)}
               y1={marginTop}
@@ -348,15 +324,6 @@ function LorenzChart({
               y2={marginTop + plotHeight}
               stroke={gridColor}
             />
-            <text
-              x={marginLeft - 6}
-              y={yScale(value) + 4}
-              textAnchor="end"
-              fontSize={axisFontSize}
-              fill={axisTextColor}
-            >
-              {formatChartNumber(value)}
-            </text>
             <text
               x={xScale(value)}
               y={marginTop + plotHeight + 15}

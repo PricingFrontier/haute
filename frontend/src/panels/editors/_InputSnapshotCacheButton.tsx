@@ -1,4 +1,4 @@
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import {
   CacheFetchButton,
   PARQUET_CACHE_LABELS,
@@ -15,6 +15,7 @@ import {
   type InputCacheJobStatusResponse,
   type InputCacheSnapshotResponse,
 } from "../../api/types"
+import { waitForJob } from "../../hooks/jobPollingController"
 
 type SnapshotButtonStatus = {
   cached: boolean
@@ -50,13 +51,7 @@ function toButtonStatus(snapshot: InputCacheSnapshotResponse): SnapshotButtonSta
   }
 }
 
-async function pollJobToTerminal(jobId: string): Promise<InputCacheJobStatusResponse> {
-  for (;;) {
-    const job = await getInputCacheJob(jobId)
-    if (TERMINAL_JOB_STATUSES.has(job.status)) return job
-    await new Promise((resolve) => window.setTimeout(resolve, 800))
-  }
-}
+const BUILD_POLL_INTERVAL_MS = 800
 
 export default function InputSnapshotCacheButton({
   config,
@@ -78,6 +73,10 @@ export default function InputSnapshotCacheButton({
     jobId: string
   } | null>(null)
   const cachedRef = useRef({ resourceKey, cached: false })
+  // The build wait belongs to this configuration: unmounting or changing it
+  // stops polling, while the server build runs on for whoever needs it next.
+  const buildWaitRef = useRef<AbortController | null>(null)
+  useEffect(() => () => buildWaitRef.current?.abort(), [resourceKey])
   const [trackedStatus, setTrackedStatus] = useState<{
     resourceKey: string
     cached: boolean
@@ -108,6 +107,8 @@ export default function InputSnapshotCacheButton({
         resourceKey={resourceKey}
         getStatus={() => getInputCacheStatus(payload).then(toButtonStatus).then(track)}
         startFetch={async () => {
+          const buildWait = new AbortController()
+          buildWaitRef.current = buildWait
           const refresh =
             cachedRef.current.resourceKey === resourceKey &&
             cachedRef.current.cached
@@ -120,8 +121,14 @@ export default function InputSnapshotCacheButton({
           activeJobRef.current = activeJob
           let job: InputCacheJobStatusResponse
           try {
-            job = await pollJobToTerminal(started.job_id)
+            job = await waitForJob({
+              poll: (signal) => getInputCacheJob(started.job_id, { signal }),
+              isTerminal: (current) => TERMINAL_JOB_STATUSES.has(current.status),
+              intervalMs: BUILD_POLL_INTERVAL_MS,
+              signal: buildWait.signal,
+            })
           } finally {
+            if (buildWaitRef.current === buildWait) buildWaitRef.current = null
             if (
               activeJobRef.current?.resourceKey === activeJob.resourceKey &&
               activeJobRef.current.jobId === activeJob.jobId

@@ -192,6 +192,12 @@ package input validated by `hatch_build.py`, not hand-edited source.
   focused hook tests keep failure branches deterministic without invoking npm.
 - `tests/test_docs_accuracy.py` is a repository documentation consistency gate;
   it is not a substitute for MkDocs's strict render/build validation.
+- `tests/test_node_reference_docs.py` checks the published node reference: every
+  node type but the submodel port maps to one page, the MkDocs navigation lists
+  exactly those pages plus the index and Instances pages, each page's `Config`
+  table keys are accepted by `haute._config_validation.VALID_KEYS` for its type,
+  and no published page (outside `exclude_docs`) uses retired node vocabulary
+  such as Data Source, Data Sink or `flat_file`.
 - Package/install smoke coverage is defined and run by
   [engineering-quality](../engineering-quality/low-level.md#testing), notably
   `scripts/package_smoke_check.py`, `scripts/init_smoke.py`, and CI's

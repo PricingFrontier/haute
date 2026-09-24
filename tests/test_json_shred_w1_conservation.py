@@ -23,7 +23,7 @@ import pytest
 
 from haute._api_input_schema import _RESERVED_LEAF as _SCALAR_VALUE_LEAF
 from haute._api_input_schema import ApiInputSchemaError
-from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._execution_context import ExecutionProfile
 from haute._json_shred._cache import load_v2_api_source
 from haute._json_shred._inference import infer_v2_schema_from_data
 from haute._json_shred._shred import _buffer_to_frame, shred_to_buffers
@@ -31,6 +31,7 @@ from haute._json_shred._snapshots import api_input_snapshot_source
 from haute._json_shred._writer import _write_tables_streaming
 from haute._sandbox import _get_project_root, set_project_root
 from haute._source_cache import SourceCacheStore
+from tests._execution_faults import FaultInjectingExecutionContext
 from tests.conftest import build_test_api_input_snapshots
 
 
@@ -121,7 +122,7 @@ def test_shred_loop_checkpoints_active_execution_context(
 ) -> None:
     monkeypatch.setattr("haute._json_shred._records._SHRED_EXECUTION_CHECKPOINT_ROWS", 2)
     points: list[str] = []
-    context = ExecutionContext(
+    context = FaultInjectingExecutionContext(
         operation="preview",
         profile=ExecutionProfile.PREVIEW_EAGER,
         memory_sampler=lambda: 1,
@@ -143,7 +144,7 @@ def test_shred_frame_conversion_checkpoints_active_execution_context(
 ) -> None:
     monkeypatch.setattr("haute._json_shred._records._SHRED_EXECUTION_CHECKPOINT_ROWS", 2)
     points: list[str] = []
-    context = ExecutionContext(
+    context = FaultInjectingExecutionContext(
         operation="preview",
         profile=ExecutionProfile.PREVIEW_EAGER,
         memory_sampler=lambda: 1,

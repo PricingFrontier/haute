@@ -1209,6 +1209,37 @@ class InputCacheCancelResponse(_StrictInputCacheModel):
 ExploreColumnKind = Literal["Numeric", "Text", "Temporal", "Boolean", "Nested", "Other"]
 
 
+class ExploreHistogramBin(BaseModel):
+    # Integer columns report exact integer boundaries; a float would round
+    # large identifiers together.
+    start: int | float
+    end: int | float
+    count: int
+
+
+class ExploreHistogram(BaseModel):
+    """Equal-width bins over a numeric column's finite values.
+
+    ``ok``: ``bins`` holds up to ``HISTOGRAM_BIN_COUNT`` equal-width bins
+    spanning the finite minimum to maximum, each ``[start, end)`` except the
+    last, which includes its end. Integer columns have integer boundaries and,
+    when their range is narrower than the bin count, one bin per value.
+    ``constant``: every finite value is equal, so there is one bin with
+    ``start == end``. ``empty``: no finite values. ``skipped``: the column is
+    past the profile's histogram column limit (``column_limit``; nothing was
+    computed) or an integer column with values beyond 2**53 - 1
+    (``integer_precision``), whose boundaries a browser would round together.
+    Null, NaN and infinite values never enter a bin; ``non_finite_count``
+    counts the NaN and infinite ones.
+    """
+
+    status: Literal["ok", "constant", "empty", "skipped"]
+    bins: list[ExploreHistogramBin]
+    finite_count: int | None
+    non_finite_count: int | None
+    skipped_reason: Literal["column_limit", "integer_precision"] | None = None
+
+
 class ExploreColumnStat(BaseModel):
     """Per-column stats captured at Explore cache-materialisation time.
 
@@ -1248,6 +1279,8 @@ class ExploreColumnStat(BaseModel):
     text_mean_length: float | None = None
     text_max_length: int | None = None
     temporal_span: str | None = None
+    # None for non-numeric columns.
+    histogram: ExploreHistogram | None = None
 
 
 class ExploreDistinctValueCount(BaseModel):
@@ -1707,6 +1740,57 @@ class RatingLevelsResponse(BaseModel):
     data_version: str | None = None
     total_rows: int = 0
     columns: list[RatingLevelColumn] = Field(default_factory=list)
+
+
+EXPLORE_RELATIONSHIP_FEATURE_LIMIT = 50
+EXPLORE_KEY_COLUMN_LIMIT = 8
+
+
+class ExploreRelationshipsRequest(NodeDataRequest):
+    """Target relationships and a key check over the data point an Explore node reads."""
+
+    target: str | None = None
+    weight: str | None = None
+    features: list[str] = Field(default_factory=list, max_length=EXPLORE_RELATIONSHIP_FEATURE_LIMIT)
+    key_columns: list[str] = Field(default_factory=list, max_length=EXPLORE_KEY_COLUMN_LIMIT)
+    level_limit: int = Field(default=12, ge=2, le=50)
+
+
+class ExploreRelationshipLevel(BaseModel):
+    label: str
+    kind: Literal["value", "bin", "missing", "other"]
+    rows: int
+    weight: float
+    target_mean: float | None
+
+
+class ExploreRelationship(BaseModel):
+    feature: str
+    kind: Literal["numeric", "categorical"]
+    strength: float
+    levels: list[ExploreRelationshipLevel]
+    levels_truncated: bool
+
+
+class ExploreKeyCheck(BaseModel):
+    columns: list[str]
+    rows: int
+    distinct_keys: int
+    duplicate_rows: int
+    null_key_rows: int
+    unique: bool
+
+
+class ExploreRelationshipsResponse(BaseModel):
+    status: Literal["ok", "cache_required"]
+    point: NodeDataPointResponse
+    data_version: str | None = None
+    total_rows: int = 0
+    target: str | None = None
+    weight: str | None = None
+    used_rows: int = 0
+    relationships: list[ExploreRelationship] = Field(default_factory=list)
+    key_check: ExploreKeyCheck | None = None
 
 
 class ExplorePivotMembersRequest(BaseModel):
@@ -2854,23 +2938,64 @@ class EvaluationPreviewPayload(BaseModel):
         return self
 
 
+class TrainEstimateUnavailable(BaseModel):
+    """Why a training estimate cannot size its input: one reason from a closed set."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: Literal["row_count_unprovable", "schema_unresolvable"]
+    blocking_node_id: str | None
+
+    @model_validator(mode="after")
+    def _blocking_node_matches_reason(self) -> TrainEstimateUnavailable:
+        if self.reason == "row_count_unprovable":
+            if not self.blocking_node_id:
+                raise ValueError("row_count_unprovable names the blocking node")
+        elif self.blocking_node_id is not None:
+            raise ValueError("schema_unresolvable names no blocking node")
+        return self
+
+
 class TrainEstimateResponse(BaseModel):
-    total_rows: int | None = None
+    total_rows: int | None
     safe_row_limit: int | None = None
-    estimated_mb: float = 0.0
-    training_mb: float = 0.0
-    available_mb: float = 0.0
-    bytes_per_row: float = 0.0
+    estimated_mb: float | None
+    training_mb: float | None
+    available_mb: float
+    bytes_per_row: float | None
     was_downsampled: bool = False
     warning: str | None = None
     # GPU VRAM estimation
     gpu_vram_estimated_mb: float | None = None
     gpu_vram_available_mb: float | None = None
     gpu_warning: str | None = None
+    unavailable: TrainEstimateUnavailable | None
+    """Set, with the memory figures null, when the estimate cannot size its input."""
     evaluation_preview: EvaluationPreviewPayload | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )
+
+    @model_validator(mode="after")
+    def _figures_match_availability(self) -> TrainEstimateResponse:
+        figures = (self.estimated_mb, self.training_mb, self.bytes_per_row)
+        if self.unavailable is None:
+            if self.total_rows is None or any(value is None for value in figures):
+                raise ValueError("an available estimate requires a row total and memory figures")
+            return self
+        if any(value is not None for value in figures):
+            raise ValueError("an unavailable estimate has no memory figures")
+        if self.was_downsampled or self.warning is not None:
+            raise ValueError("an unavailable estimate has no downsampling verdict or warning")
+        if (
+            self.gpu_vram_estimated_mb is not None
+            or self.gpu_vram_available_mb is not None
+            or self.gpu_warning is not None
+        ):
+            raise ValueError("an unavailable estimate has no GPU VRAM check")
+        if (self.total_rows is None) != (self.unavailable.reason == "row_count_unprovable"):
+            raise ValueError("only a row_count_unprovable estimate lacks a row total")
+        return self
 
 
 class DispersionEstimateRequest(BaseModel):
@@ -3078,6 +3203,22 @@ class MlflowModelVersionSummary(BaseModel):
     params: dict[str, str] = Field(default_factory=dict)
     # Registered model aliases that currently target this version.
     aliases: list[str] = Field(default_factory=list)
+
+
+class MlflowExperimentList(RootModel[list[MlflowExperimentSummary]]):
+    """``GET /api/mlflow/experiments``."""
+
+
+class MlflowRunList(RootModel[list[MlflowRunSummary]]):
+    """``GET /api/mlflow/runs``."""
+
+
+class MlflowModelList(RootModel[list[MlflowModelSummary]]):
+    """``GET /api/mlflow/models``."""
+
+
+class MlflowModelVersionList(RootModel[list[MlflowModelVersionSummary]]):
+    """``GET /api/mlflow/model-versions``."""
 
 
 # ---------------------------------------------------------------------------

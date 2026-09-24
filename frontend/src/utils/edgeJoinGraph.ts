@@ -5,6 +5,7 @@ import { NODE_TYPES } from "./nodeTypes"
 import { appEdge, appNode, selectOnlyNode } from "./flowElements"
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "./edgeJoinRoles"
 import { edgeInputName, UNRESOLVED_INPUT_NAME } from "./apiInputPorts"
+import { isPlainObject } from "../types/guards"
 
 export type EdgeJoinFailureReason =
   | "target-edge-not-found"
@@ -381,10 +382,10 @@ function assertDownstreamInputMappingCanBeRewritten(
   // A stepped transform rewrites its step references in place (no mapping).
   if (isSteppedTransformConfig(config)) return
   const rawInputMapping = config.inputMapping
-  if (rawInputMapping !== undefined && !isRecord(rawInputMapping)) {
+  if (rawInputMapping !== undefined && !isPlainObject(rawInputMapping)) {
     throw new Error("Cannot rewrite a malformed inputMapping; expected an object")
   }
-  const hasInputMapping = isRecord(rawInputMapping)
+  const hasInputMapping = isPlainObject(rawInputMapping)
   const shouldCreateMapping = target.data.nodeType === NODE_TYPES.POLARS && !config.instanceOf
   if (!hasInputMapping && !shouldCreateMapping) return
 
@@ -425,10 +426,10 @@ function rewriteDownstreamInputMapping(
     return { ...node, data: { ...node.data, config: { ...config, steps: renamed.steps } } }
   }
   const rawInputMapping = config.inputMapping
-  if (rawInputMapping !== undefined && !isRecord(rawInputMapping)) {
+  if (rawInputMapping !== undefined && !isPlainObject(rawInputMapping)) {
     throw new Error("Cannot rewrite a malformed inputMapping; expected an object")
   }
-  const hasInputMapping = isRecord(rawInputMapping)
+  const hasInputMapping = isPlainObject(rawInputMapping)
   const shouldCreateMapping = node.data.nodeType === NODE_TYPES.POLARS && !config.instanceOf
   if (!hasInputMapping && !shouldCreateMapping) return node
 
@@ -474,11 +475,11 @@ function rewriteDownstreamInputsByParentContract(
 ): Node {
   if (node.id !== targetEdge.target) return node
   const config = node.data.config
-  if (!isRecord(config)) return node
+  if (!isPlainObject(config)) return node
   const contract = config.contract
-  if (!isRecord(contract)) return node
+  if (!isPlainObject(contract)) return node
   const inputsByParent = contract.inputs_by_parent
-  if (!isRecord(inputsByParent)) return node
+  if (!isPlainObject(inputsByParent)) return node
   if (!Object.prototype.hasOwnProperty.call(inputsByParent, targetEdge.source)) return node
 
   const nextInputsByParent: Record<string, unknown> = {}
@@ -499,10 +500,6 @@ function rewriteDownstreamInputsByParentContract(
       },
     },
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
 function assertSameOrderedIds(

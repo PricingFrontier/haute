@@ -174,6 +174,7 @@ def Step(df: pl.LazyFrame) -> pl.LazyFrame:
 def test_config_backed_node_without_decorator_mapping_fails_loudly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import haute._codegen_builders as builders
     import haute.codegen as codegen
 
     node = _n(
@@ -182,49 +183,13 @@ def test_config_backed_node_without_decorator_mapping_fails_loudly(
             "data": {"label": "Configured", "nodeType": "banding", "config": {}},
         }
     )
-    monkeypatch.setattr(codegen, "has_config_folder", lambda _node_type: True)
-    monkeypatch.setattr(
-        codegen,
-        "_generate_node_code",
-        lambda *_args, **_kwargs: (
-            "@pipeline.polars()\ndef Configured(df: pl.LazyFrame) -> pl.LazyFrame:\n    return df\n"
-        ),
-    )
-    monkeypatch.setattr(codegen, "NODE_TYPE_TO_DECORATOR", {})
+    monkeypatch.setattr(builders, "NODE_TYPE_TO_DECORATOR", {})
 
     with pytest.raises(HauteError, match="no registered decorator") as exc_info:
         codegen._node_to_code(node)
 
     assert exc_info.value.context["node_id"] == "configured"
-
-
-def test_config_backed_builder_without_function_definition_fails_loudly(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import haute.codegen as codegen
-
-    node = _n(
-        {
-            "id": "configured",
-            "data": {"label": "Configured", "nodeType": "banding", "config": {}},
-        }
-    )
-    monkeypatch.setattr(codegen, "has_config_folder", lambda _node_type: True)
-    monkeypatch.setattr(
-        codegen,
-        "_generate_node_code",
-        lambda *_args, **_kwargs: "@pipeline.polars()\nConfigured = object()\n",
-    )
-    monkeypatch.setattr(
-        codegen,
-        "NODE_TYPE_TO_DECORATOR",
-        {node.data.nodeType: "polars"},
-    )
-
-    with pytest.raises(HauteError, match="no function definition") as exc_info:
-        codegen._node_to_code(node)
-
-    assert exc_info.value.context["node_label"] == "Configured"
+    assert exc_info.value.context["node_type"] == "banding"
 
 
 def test_format_contract_kwarg_preserves_inputs_by_parent() -> None:

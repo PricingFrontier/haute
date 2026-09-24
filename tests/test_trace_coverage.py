@@ -619,7 +619,6 @@ class TestExecuteTraceEdgeCases:
                 {"target": ["src"]},
                 node_map,
                 {"src"},
-                "fresh_execution",
                 None,
             ),
         )

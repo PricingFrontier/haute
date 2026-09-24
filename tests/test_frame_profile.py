@@ -928,7 +928,9 @@ def test_wide_frame_profiles_columns_in_bounded_sequential_batches(
     assert result.overview_summary.data_quality.duplicate_row_count == (
         0 if has_unique_column else 1
     )
-    assert len(calls) == (3 if has_unique_column else 4)
+    # Plus one histogram bin-count query per batch of 8 numeric columns (17
+    # columns -> 3 more batches), since every column here is non-constant.
+    assert len(calls) == (6 if has_unique_column else 7)
 
 
 def test_build_explore_frame_stats_uses_one_streaming_collect_without_categorical_counts(
@@ -954,7 +956,9 @@ def test_build_explore_frame_stats_uses_one_streaming_collect_without_categorica
     )
 
     assert frame_stats.row_count == 3
-    assert len(calls) == 1
+    # One aggregation collect plus one histogram bin-count collect (the
+    # column is non-constant, so it needs bin counts).
+    assert len(calls) == 2
 
 
 def test_build_explore_frame_stats_uses_single_batched_collect_for_bounded_value_counts(
@@ -1119,3 +1123,290 @@ def test_partitioned_distinct_all_identical_and_disk_failure(
             execution_context=explore_execution_context,
             scratch_directory=tmp_path / "failure",
         )
+
+
+def test_histogram_nullable_numeric_column(explore_execution_context) -> None:
+    from haute._frame_profile import _build_frame_stats
+
+    values = [float(i) for i in range(1, 21)] + [None, None]
+    lf = pl.DataFrame({"value": values}, schema={"value": pl.Float64}).lazy()
+
+    stats = _build_frame_stats(
+        lf, lf.collect_schema(), execution_context=explore_execution_context
+    ).columns
+    histogram = stats[0].histogram
+
+    assert histogram is not None
+    assert histogram.status == "ok"
+    assert histogram.finite_count == 20
+    assert histogram.non_finite_count == 0
+    assert len(histogram.bins) == 20
+    # Width 19/20: every value from 1 to 20 lands in its own bin, the maximum
+    # in the last bin, which is closed at its end.
+    assert [bin_.count for bin_ in histogram.bins] == [1] * 20
+    assert histogram.bins[0].start == 1.0
+    assert histogram.bins[1].start == 1.95
+    assert histogram.bins[-1].end == 20.0
+
+
+def test_histogram_constant_column(explore_execution_context) -> None:
+    from haute._frame_profile import _build_frame_stats
+
+    lf = pl.DataFrame({"value": [3.0, 3.0, 3.0, None]}, schema={"value": pl.Float64}).lazy()
+
+    stats = _build_frame_stats(
+        lf, lf.collect_schema(), execution_context=explore_execution_context
+    ).columns
+    histogram = stats[0].histogram
+
+    assert histogram is not None
+    assert histogram.status == "constant"
+    assert histogram.finite_count == 3
+    assert len(histogram.bins) == 1
+    assert histogram.bins[0].start == 3.0
+    assert histogram.bins[0].end == 3.0
+    assert histogram.bins[0].count == 3
+
+
+def test_histogram_negative_values_bin_placement(explore_execution_context) -> None:
+    from haute._frame_profile import _build_frame_stats
+
+    values = list(range(-10, 11))  # -10..10 inclusive, 21 values
+    lf = pl.DataFrame({"value": values}, schema={"value": pl.Int64}).lazy()
+
+    stats = _build_frame_stats(
+        lf, lf.collect_schema(), execution_context=explore_execution_context
+    ).columns
+    histogram = stats[0].histogram
+
+    assert histogram is not None
+    assert histogram.status == "ok"
+    # Width 1.0 over [-10, 10]: value v falls in bin v + 10, and the maximum
+    # joins 9 in the last bin.
+    assert [bin_.count for bin_ in histogram.bins] == [1] * 19 + [2]
+    assert histogram.bins[10].start == 0.0
+    assert histogram.bins[0].start == -10.0
+    assert histogram.bins[-1].end == 10.0
+
+
+def test_histogram_excludes_nan_and_infinite_values(explore_execution_context) -> None:
+    from haute._frame_profile import _build_frame_stats
+
+    values = [1.0, 2.0, 3.0, float("nan"), float("inf"), float("-inf")]
+    lf = pl.DataFrame({"value": values}, schema={"value": pl.Float64}).lazy()
+
+    stats = _build_frame_stats(
+        lf, lf.collect_schema(), execution_context=explore_execution_context
+    ).columns
+    histogram = stats[0].histogram
+
+    assert histogram is not None
+    assert histogram.status == "ok"
+    assert histogram.non_finite_count == 3
+    assert histogram.finite_count == 3
+    assert sum(bin_.count for bin_ in histogram.bins) == 3
+    assert histogram.bins[0].start == 1.0
+    assert histogram.bins[-1].end == 3.0
+
+
+def test_histogram_all_null_numeric_column(explore_execution_context) -> None:
+    from haute._frame_profile import _build_frame_stats
+
+    lf = pl.DataFrame({"value": [None, None, None]}, schema={"value": pl.Float64}).lazy()
+
+    stats = _build_frame_stats(
+        lf, lf.collect_schema(), execution_context=explore_execution_context
+    ).columns
+    histogram = stats[0].histogram
+
+    assert histogram is not None
+    assert histogram.status == "empty"
+    assert histogram.bins == []
+    assert histogram.finite_count == 0
+
+
+def test_histogram_column_limit_skips_later_numeric_columns(
+    monkeypatch, explore_execution_context
+) -> None:
+    from haute import _frame_profile
+
+    monkeypatch.setattr(_frame_profile, "_HISTOGRAM_COLUMN_LIMIT", 2)
+    lf = pl.DataFrame(
+        {
+            "a": [1.0, 2.0, 3.0],
+            "b": [4.0, 5.0, 6.0],
+            "c": [7.0, 8.0, 9.0],
+        }
+    ).lazy()
+
+    stats = _frame_profile._build_frame_stats(
+        lf, lf.collect_schema(), execution_context=explore_execution_context
+    ).columns
+    by_name = {column.name: column for column in stats}
+
+    assert by_name["a"].histogram is not None
+    assert by_name["a"].histogram.status == "ok"
+    assert by_name["b"].histogram is not None
+    assert by_name["b"].histogram.status == "ok"
+    assert by_name["c"].histogram is not None
+    assert by_name["c"].histogram.status == "skipped"
+    assert by_name["c"].histogram.skipped_reason == "column_limit"
+    assert by_name["c"].histogram.bins == []
+    assert by_name["c"].histogram.finite_count is None
+    assert by_name["c"].histogram.non_finite_count is None
+
+
+def test_histogram_none_for_string_and_boolean_columns(explore_execution_context) -> None:
+    from haute._frame_profile import _build_frame_stats
+
+    lf = pl.DataFrame({"text": ["a", "b", "c"], "flag": [True, False, True]}).lazy()
+
+    stats = _build_frame_stats(
+        lf, lf.collect_schema(), execution_context=explore_execution_context
+    ).columns
+    by_name = {column.name: column for column in stats}
+
+    assert by_name["text"].histogram is None
+    assert by_name["flag"].histogram is None
+
+
+def test_histogram_integer_dtype(explore_execution_context) -> None:
+    from haute._frame_profile import _build_frame_stats
+
+    lf = pl.DataFrame({"value": [1, 2, 3, 4, 5]}, schema={"value": pl.Int32}).lazy()
+
+    stats = _build_frame_stats(
+        lf, lf.collect_schema(), execution_context=explore_execution_context
+    ).columns
+    histogram = stats[0].histogram
+
+    assert histogram is not None
+    assert histogram.status == "ok"
+    assert histogram.finite_count == 5
+    # A range narrower than the bin count gets one integer bin per value.
+    assert [(bin_.start, bin_.end, bin_.count) for bin_ in histogram.bins] == [
+        (1, 2, 1),
+        (2, 3, 1),
+        (3, 4, 1),
+        (4, 5, 1),
+        (5, 5, 1),
+    ]
+    assert all(isinstance(bin_.start, int) for bin_ in histogram.bins)
+
+
+def test_histogram_decimal_dtype(explore_execution_context) -> None:
+    from decimal import Decimal
+
+    from haute._frame_profile import _build_frame_stats
+
+    lf = pl.DataFrame(
+        {"value": [Decimal("1.5"), Decimal("2.5"), Decimal("3.5")]},
+        schema={"value": pl.Decimal(scale=1)},
+    ).lazy()
+
+    stats = _build_frame_stats(
+        lf, lf.collect_schema(), execution_context=explore_execution_context
+    ).columns
+    histogram = stats[0].histogram
+
+    assert histogram is not None
+    assert histogram.status == "ok"
+    assert histogram.finite_count == 3
+    # Edges 1.5 + 0.1k: 2.5 opens bin 10, and the maximum closes the last bin.
+    counts = [bin_.count for bin_ in histogram.bins]
+    assert counts == [1] + [0] * 9 + [1] + [0] * 8 + [1]
+    assert histogram.bins[10].start == 2.5
+    assert histogram.bins[-1].end == 3.5
+
+
+def test_histogram_keeps_distinct_large_integers_apart(explore_execution_context) -> None:
+    from haute._frame_profile import _build_frame_stats
+
+    base = 10**18
+    lf = pl.DataFrame({"id": [base, base + 1, base + 2]}, schema={"id": pl.Int64}).lazy()
+
+    histogram = (
+        _build_frame_stats(lf, lf.collect_schema(), execution_context=explore_execution_context)
+        .columns[0]
+        .histogram
+    )
+
+    # A browser parses these boundaries as doubles and would merge them, so the
+    # column is reported as not binned rather than with collapsed intervals;
+    # the extrema are still read natively, so it is not called constant.
+    assert histogram is not None
+    assert histogram.status == "skipped"
+    assert histogram.skipped_reason == "integer_precision"
+    assert histogram.bins == []
+    assert histogram.finite_count == 3
+
+
+def test_histogram_bins_integers_exactly_up_to_the_browser_safe_limit(
+    explore_execution_context,
+) -> None:
+    from haute._frame_profile import _build_frame_stats
+
+    top = 2**53 - 1
+    lf = pl.DataFrame({"id": [top - 2, top - 1, top]}, schema={"id": pl.Int64}).lazy()
+
+    histogram = (
+        _build_frame_stats(lf, lf.collect_schema(), execution_context=explore_execution_context)
+        .columns[0]
+        .histogram
+    )
+
+    assert histogram is not None
+    assert [(bin_.start, bin_.end, bin_.count) for bin_ in histogram.bins] == [
+        (top - 2, top - 1, 1),
+        (top - 1, top, 1),
+        (top, top, 1),
+    ]
+
+
+def test_histogram_places_a_value_on_a_boundary_in_the_bin_it_opens(
+    explore_execution_context,
+) -> None:
+    from haute._frame_profile import _build_frame_stats
+
+    lf = pl.DataFrame({"value": [1.0, 1.15, 2.0]}, schema={"value": pl.Float64}).lazy()
+
+    histogram = (
+        _build_frame_stats(lf, lf.collect_schema(), execution_context=explore_execution_context)
+        .columns[0]
+        .histogram
+    )
+
+    assert histogram is not None
+    counts = [bin_.count for bin_ in histogram.bins]
+    assert [index for index, count in enumerate(counts) if count] == [0, 3, 19]
+    # Each value lies inside the boundaries reported for the bin it is counted in.
+    assert histogram.bins[3].start <= 1.15 < histogram.bins[3].end
+
+
+def test_histogram_integer_bins_are_integer_aligned_and_contain_their_values(
+    explore_execution_context,
+) -> None:
+    from haute._frame_profile import _build_frame_stats
+
+    values = [0, 1, 2, 3, 49, 50, 51, 99, 100]
+    lf = pl.DataFrame({"value": values}, schema={"value": pl.Int64}).lazy()
+
+    histogram = (
+        _build_frame_stats(lf, lf.collect_schema(), execution_context=explore_execution_context)
+        .columns[0]
+        .histogram
+    )
+
+    assert histogram is not None
+    assert len(histogram.bins) == 20
+    assert [bin_.start for bin_ in histogram.bins] == list(range(0, 100, 5))
+    expected = [0] * 20
+    expected[0], expected[9], expected[10], expected[19] = 4, 1, 2, 2
+    assert [bin_.count for bin_ in histogram.bins] == expected
+    for value in values:
+        containing = [
+            index
+            for index, bin_ in enumerate(histogram.bins)
+            if bin_.start <= value < bin_.end or (index == 19 and value == bin_.end)
+        ]
+        assert len(containing) == 1

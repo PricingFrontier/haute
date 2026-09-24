@@ -1,6 +1,6 @@
 # Filesystem Portability
 
-Every data path in a Haute pipeline — a **Data Source** `path`, an **External File** `path`, a Quote Input file — is ultimately a filename handed to a filesystem. On a single machine this just works, and you can skip this page.
+Every data path in a Haute pipeline — a **Data Input** `path`, an **External File** `path`, a Quote Input file — is ultimately a filename handed to a filesystem. On a single machine this just works, and you can skip this page.
 
 Read it if a pipeline (or its data folder) **moves between machines or operating systems**: a checkout shared between a Windows laptop and a Linux server, work inside WSL, files on a network mount, or a Databricks/CI environment picking up a pipeline authored on a Mac. Different filesystems disagree about when two spellings of a filename are "the same file", and those disagreements produce bugs that appear only after the move.
 
@@ -61,4 +61,4 @@ The subtlety, and the limit of the simple mental model: **the rule follows the s
 - A boring naming convention (lowercase, underscores, ASCII) for data files sidesteps every trap on this page.
 - If you see the case-ambiguity warning in the server log, resolve it before the checkout travels.
 
-**See also:** [Data Source](nodes/data-source.md), [External File](nodes/external-file.md), [Preparing Your Data](preparing-your-data.md).
+**See also:** [Data Input](nodes/data-input.md), [External File](nodes/external-file.md), [Preparing Your Data](preparing-your-data.md).

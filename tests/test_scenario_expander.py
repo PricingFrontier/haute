@@ -131,6 +131,32 @@ class TestExecutor:
         with pytest.raises(ValueError, match="whole number"):
             expand_scenarios_from_config(pl.DataFrame({"a": [1]}).lazy(), {"stepCount": 2.5})
 
+    @pytest.mark.parametrize(
+        ("config", "message"),
+        [
+            ({}, "Scenario expander requires stepCount (the number of grid values)."),
+            ({"stepCount": 2.5}, "Scenario expander stepCount must be a whole number, got 2.5"),
+            ({"stepCount": 0}, "Scenario expander requires stepCount >= 1, got 0"),
+        ],
+    )
+    def test_invalid_step_count_is_a_public_node_config_error(self, config, message):
+        """A missing or malformed grid size is a user-fixable config defect: it carries the
+        public contract (code, message, setting) and still reads as a ValueError to the
+        chunk planner and the RAM estimator."""
+        from haute._node_apply import scenario_step_count
+        from haute.errors import NodeConfigError, is_public_contract_error
+
+        with pytest.raises(NodeConfigError) as exc_info:
+            scenario_step_count(config)
+
+        assert isinstance(exc_info.value, ValueError)
+        assert is_public_contract_error(exc_info.value)
+        assert exc_info.value.to_payload() == {
+            "error_code": "node_config_invalid",
+            "message": message,
+            "setting": "stepCount",
+        }
+
     def test_explicit_default_step_count_expands_the_grid(self):
         """A new node's explicit default of 21 (no value column without column_name)."""
         node = _make_node({"stepCount": 21})

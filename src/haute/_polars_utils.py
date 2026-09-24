@@ -103,7 +103,6 @@ def _cancellable_collect(
     )
     poll_label = "streaming_collect_poll" if engine == "streaming" else "auto_collect_poll"
     execution_context.checkpoint(label=checkpoint_label)
-    execution_context.fault_point("collect_before_native")
     execution_context.record_collect()
     query = lf.collect(engine=engine, background=True)
     while True:
@@ -209,8 +208,6 @@ def bounded_collect_batches(
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool) or chunk_size <= 0:
         raise ValueError("chunk_size must be a positive integer")
     metrics_context = execution_context or current_execution_context()
-    if metrics_context is not None:
-        metrics_context.fault_point("collect_before_native", node_id=node_id)
     staging: Path | None = None
     try:
         if metrics_context is not None:
@@ -732,11 +729,8 @@ def _bounded_sink_execute(path: Path, writer: Callable[[], _T]) -> _T:
         directory = parent
     ensure_disk_headroom(directory)
     metrics_context = current_execution_context()
-    if metrics_context is not None:
-        metrics_context.fault_point("sink_before_native")
     result = writer()
     if metrics_context is not None:
-        metrics_context.fault_point("sink_after_native")
         metrics_context.record_bytes_written(path.stat().st_size)
     return result
 

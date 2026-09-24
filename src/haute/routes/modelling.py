@@ -31,7 +31,6 @@ from haute.routes._export_receipts import (
     record_receipt,
     single_flight_mlflow_log,
 )
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
 from haute.routes._mlflow_log_errors import mlflow_log_http_exception, require_mlflow_installed
@@ -71,6 +70,7 @@ from haute.schemas import (
     SaveModelResponse,
     TrainEstimateRequest,
     TrainEstimateResponse,
+    TrainEstimateUnavailable,
     TrainExportReceipts,
     TrainRequest,
     TrainResponse,
@@ -262,18 +262,13 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
     body = body.model_copy(update={"graph": graph})
     node = _find_modelling_node(body.graph, body.node_id)
 
-    # A size the estimator cannot prove comes back as an estimate without a
-    # total; an exception here is a failure and reaches the error path.
+    # A size the estimator cannot prove comes back as an unavailable estimate
+    # with its reason; an exception here is a failure and reaches the error path.
     ram_est = estimate_training_memory(
         body.graph,
         body.node_id,
         source=body.source,
     )
-
-    # estimated_bytes already includes all training phases (evaluation
-    # partitions, pools, CatBoost internals, diagnostics, and bounded tuning).
-    data_mb = ram_est.estimated_bytes / 1024**2
-    training_mb = data_mb  # phase model already accounts for overhead
 
     # Apply user row limit to the estimate
     user_limit = node.data.config.get("row_limit")
@@ -294,11 +289,14 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
 
     # GPU VRAM estimation — use feature count (not total columns), since
     # CatBoost and XGBoost only load features to the GPU.
+    # An unavailable estimate has no rows or columns to size VRAM from.
     vram_check = _VramCheck()
     node_params = node.data.config.get("params", {})
     algorithm = str(node.data.config.get("algorithm", "catboost")).lower()
     xgboost_gpu = algorithm == "xgboost" and node.data.config.get("device") == "gpu"
-    if xgboost_gpu or str(node_params.get("task_type", "")).upper() == "GPU":
+    if ram_est.unavailable_reason is None and (
+        xgboost_gpu or str(node_params.get("task_type", "")).upper() == "GPU"
+    ):
         effective_rows = ram_est.total_rows or 0
         # Feature count = total cols - excluded - target - weight
         n_excluded = len(node.data.config.get("exclude", []))
@@ -327,13 +325,31 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
         else None
     )
 
+    # estimated_bytes already includes all training phases (evaluation
+    # partitions, pools, CatBoost internals, diagnostics, and bounded tuning),
+    # so the training figure needs no further overhead.
+    data_mb = (
+        round(ram_est.estimated_bytes / 1024**2, 1) if ram_est.estimated_bytes is not None else None
+    )
+    unavailable = (
+        TrainEstimateUnavailable(
+            reason=ram_est.unavailable_reason.value,
+            blocking_node_id=ram_est.blocking_node_id,
+        )
+        if ram_est.unavailable_reason is not None
+        else None
+    )
+
     return TrainEstimateResponse(
         total_rows=ram_est.total_rows,
         safe_row_limit=safe_limit,
-        estimated_mb=round(data_mb, 1),
-        training_mb=round(training_mb, 1),
+        estimated_mb=data_mb,
+        training_mb=data_mb,
         available_mb=round(ram_est.available_bytes / 1024**2, 1),
-        bytes_per_row=round(ram_est.bytes_per_row, 1),
+        bytes_per_row=(
+            round(ram_est.bytes_per_row, 1) if ram_est.bytes_per_row is not None else None
+        ),
+        unavailable=unavailable,
         was_downsampled=was_downsampled,
         warning=warning,
         gpu_vram_estimated_mb=vram_check.estimated_mb,
@@ -590,9 +606,6 @@ def save_model(body: SaveModelRequest) -> SaveModelResponse:
                     status_code=500,
                     detail="Filesystem error saving the model. Check the server logs for details.",
                 ) from None
-            except Exception as exc:
-                logger.error("model_save_failed", error=str(exc), job_id=body.job_id, exc_info=True)
-                raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
     logger.info("model_saved", path=str(destination.path), job_id=body.job_id)
     record_receipt(
         _store,

@@ -10,24 +10,20 @@ Current behaviour is specified in [the optimiser specification](../optimiser/low
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| OPT-P11 | Planned | P2 | Extract the canonical artifact-lifecycle owner. |
-| OPT-P13 | Planned | P2 | Isolate immutable solve-input planning and grid construction. |
+| OPT-P13 | Planned | P2 | The store-coupled setup steps become free functions that raise typed failures, so the service keeps only orchestration. |
 | OPT-P06 | Planned | P2 | Benchmark bounded frontier parallelism after input isolation. |
 | OPT-P12 | Planned | P2 | Extract the frontier domain service after the scaling decision. |
 | OPT-P14 | Planned | P2 | Complete solver/result publication extraction. |
-| OPT-P15 | Planned | P2 | One auto-range job remains; the chunked path and its disk-bucket reducer go only if one streaming group-by keeps within the specified memory bound. |
-| OPT-P16 | Planned | P2 | Optimiser inputs are materialised in a hard-capped worker, not on a server thread. |
+| OPT-P16 | Planned | P2 | The input estimate and auto-range chunk planning read pipeline rows only in a hard-capped worker, never in the server process. |
 
 ## Planned improvements
 
-Delivery order is `OPT-P11` → `OPT-P13` → the `OPT-P06` performance
+Delivery order is `OPT-P13` → the `OPT-P06` performance
 decision → `OPT-P12` → `OPT-P14`; later packages must not bypass those
-isolation boundaries. The packages from the
-[23 September 2026 codebase review](codebase-review-2026-09-23.md) are
-independent of that order and each shrinks what the extractions must move:
-`OPT-P15` removes a duplicated auto-range job and possibly the chunked path
-(about 600 lines of the service), and `OPT-P16` is a step towards
-`ROAD-WORKER-04` that needs no solver persistence.
+isolation boundaries. `OPT-P16`, from the
+[23 September 2026 codebase review](codebase-review-2026-09-23.md), is
+independent of that order: it is a step towards `ROAD-WORKER-04` that needs
+no solver persistence.
 
 ### OPT-P06 — Frontier compute scaling
 **Why:** Frontier calculation misses safe bounded parallelism.
@@ -50,24 +46,6 @@ contracts.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_routes_real_library.py`.
 
-### OPT-P11 — Extract owned artifact lifecycle
-**Why:** Persistence, handle validation, load diagnostics, orphan cleanup, and startup reaping are
-independent of solve orchestration but occupy the same module.
-
-**Plan:** Move the two artifact families and their registered cleaners to
-`src/haute/routes/_optimiser_artifacts.py`. Move every maintained internal
-importer in the same package and remove the obsolete service-module names
-immediately; Haute has no released internal import surface, so no compatibility
-re-export or deprecation shim is permitted. Preserve the current artifact-handle
-wire schema because it is the canonical persisted contract.
-
-**Acceptance:** Artifact round-trip, tampered-handle, orphan-race, TTL-cleanup, and stale-startup
-tests pass unchanged; `_optimiser_service.py` owns no filesystem deletion.
-
-**Dependencies:** The current bounded artifact-memory lifecycle.
-
-**Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_apply_artifacts.py`.
-
 ### OPT-P12 — Extract frontier domain service
 **Why:** Frontier range normalisation, compute dispatch, payload limiting, job lifecycle, point
 selection, and point-artifact retention form a cohesive domain separate from initial solve setup.
@@ -82,28 +60,38 @@ state lock. Keep FastAPI response assembly in `src/haute/routes/optimiser.py`.
 materialisation, artifact-cap, and unrelated-parent concurrency regressions remain green at each
 extraction step.
 
-**Dependencies:** OPT-P11, OPT-P13, and the OPT-P06 implement/no-change
+**Dependencies:** OPT-P13 and the OPT-P06 implement/no-change
 decision, plus the current frontier apply and interruptibility contracts.
 
 **Evidence:** `src/haute/routes/optimiser.py`; `src/haute/routes/_optimiser_service.py`;
 `tests/test_optimiser_frontier_materialisation.py`; `tests/test_optimiser_routes.py`.
 
-### OPT-P13 — Extract input planning and grid construction
-**Why:** Projection planning, retained-input resolution, schema/value validation, ratebook-factor
-extraction, chunk sizing, and quote-grid construction are one setup pipeline with no need to know
-solver result publication.
+### OPT-P13 — Extract the store-coupled setup steps
+**Why:** Projection planning, retained-input resolution, the value-contract
+checks and their details, solver-input chunk sizing and resident-grid
+admission live in `src/haute/routes/_optimiser_input.py`. The setup steps
+that run them — data-input resolution, validation and projection (solve and
+auto-range), ratebook-factor extraction, the solver-input write and the grid
+build — are still `OptimiserSolveService` methods, because each records its
+own failure on the job before it raises, and grid construction records chunk
+provenance on the job.
 
-**Plan:** Move those functions and their small dataclasses to
-`src/haute/routes/_optimiser_input.py`, preserving `ExecutionContext` checkpoints and typed
-contract errors. `OptimiserSolveService` retains only orchestration calls.
+**Plan:** Make those steps free functions in `_optimiser_input.py` that raise
+typed failures carrying what is recorded today (including the contract-error
+fields `contract_error_job_fields` supplies) and return chunk provenance; the
+service's failure mappings record them, so `OptimiserSolveService` retains only
+orchestration calls. Preserve `ExecutionContext` checkpoints and typed
+contract errors.
 
-**Acceptance:** Projection, bounded-memory, multi-input, null/non-finite, chunk provenance, and
-grid ordering tests pass without fixture rewrites.
+**Acceptance:** Projection, bounded-memory, multi-input, null/non-finite, chunk
+provenance, and grid ordering tests pass without fixture rewrites; every setup
+failure's job record is unchanged.
 
-**Dependencies:** OPT-P11 and the current constraint-validation and scan-bounding
+**Dependencies:** The current constraint-validation and scan-bounding
 contracts.
 
-**Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_service_coverage.py`;
+**Evidence:** `src/haute/routes/_optimiser_service.py::OptimiserSolveService`;
+`src/haute/routes/_optimiser_input.py`; `tests/test_optimiser_service_coverage.py`;
 `tests/test_optimiser_service_validation.py`.
 
 ### OPT-P14 — Extract solver execution and result publication
@@ -118,87 +106,34 @@ setup/worker composition. Retain the worker-context guard at the extracted publi
 dtype, and save/apply agreement suites pass; `_optimiser_service.py` is an orchestration module
 rather than a mixed domain/utilities module.
 
-**Dependencies:** OPT-P11–OPT-P13 and the OPT-P06 scaling decision.
+**Dependencies:** OPT-P12, OPT-P13 and the OPT-P06 scaling decision.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_routes.py`;
 `tests/test_optimiser_golden.py`; `tests/test_optimiser_ratebook_apply_agreement.py`.
 
-### OPT-P15 — One auto-range job, bounded by measurement
-**Why:** Auto-range needs, for each constraint, the sum over quotes of each
-quote's minimum and maximum across its scenarios. Two jobs compute it:
-`_run_frontier_auto_range_job` and `_run_streaming_frontier_auto_range_job`,
-which is largely a clone of the first (72- and 34-line copied blocks) plus a
-chunked-execution plan and fallback. Both feed
-`_ScenarioFrontierRangeAccumulator`, a hand-written out-of-core,
-hash-partitioned group-by that writes per-bucket Parquet parts so that no
-global per-quote aggregate table is held in memory. The streaming path is the
-only production consumer of the 2,251-line chunked runner. The same quantity
-can be written as one streaming query,
-`group_by(quote).agg(min, max).select(sum)`.
+### OPT-P16 — Keep the input estimate and chunk planning out of the server process
+**Why:** Solve setup and auto-range execute the pipeline in a hard-capped,
+killable spawn worker. Two optimiser paths still read pipeline rows in the
+server process: `POST /api/optimiser/estimate` executes the pipeline and runs
+its quote-count scan on the request thread, and auto-range preparation's
+byte-budgeted chunk planning samples a bounded number of rows of the target
+plan before the job starts.
 
-That query is not yet known to be as frugal. The optimiser specification
-promises that, when the upstream chain is provably row-local, auto-range runs
-chunk by chunk and never materialises the fully expanded scenario frame, and
-`test_frontier_auto_range_streams_before_scenario_expansion_and_recombines_quotes`
-pins the bounded chunks. One streaming group-by keeps that bound only if
-every node between the base and the optimiser, including scenario expansion
-and model scoring, streams in Polars, and only if the per-quote group-by state
-fits in memory at high quote cardinality. The estimate endpoint's group-by
-does not settle this: it selects only the quote-id column, so projection can
-skip the scoring nodes that auto-range needs.
-
-**Plan:** Build a representative fixture with high quote cardinality, scenario
-expansion and model scoring, and measure peak memory for the current
-streaming path and for one streaming group-by run under the job's execution
-context and cancellation. If the group-by stays within the bound, state the
-bound in the optimiser specification in place of the chunk-by-chunk
-paragraph, replace both jobs with one that runs it, and delete the streaming
-plan, `_ChunkFallback`, the accumulator and the duplicate job. If it does not,
-keep the chunk-before-expansion path and merge only the duplicated job code.
-
-**Acceptance:** One auto-range job remains; its ranges equal the current
-jobs' ranges on the existing fixtures, including null quote-id and
-non-finite rejections; a test on the representative fixture asserts that
-peak memory stays within the bound the optimiser specification states,
-replacing the chunk-size assertion only if the chunked path is removed; the
-specification describes whichever path remains.
-
-**Dependencies:** None. `EXEC-R03` (execution engine) removes the runner
-afterwards, if this package removes its consumer.
-
-**Evidence:** `src/haute/routes/_optimiser_service.py::_run_frontier_auto_range_job`;
-`src/haute/routes/_optimiser_service.py::_run_streaming_frontier_auto_range_job`;
-`src/haute/routes/_optimiser_service.py::_ScenarioFrontierRangeAccumulator`;
-`src/haute/routes/_optimiser_service.py::_build_streaming_auto_range_plan`;
-`src/haute/routes/_optimiser_service.py::_ChunkFallback`;
-`src/haute/routes/optimiser.py::_optimiser_input_metrics`;
-`tests/test_optimiser_routes.py`.
-
-### OPT-P16 — Materialise optimiser inputs in a capped worker
-**Why:** The optimiser runs its upstream pipeline execution and its solve on
-daemon threads in the server process, with no hard memory cap and
-cooperative cancellation only. Every other heavy surface (preview, trace,
-Explore, JSON-cache builds, output writes, training preparation) runs in
-killable spawn workers under a native cap. `ROAD-WORKER-04` defers isolating
-the whole optimiser until solvers have versioned persistence, but the
-pipeline execution does not need that: the grid builder already reads a
-Parquet file.
-
-**Plan:** Run setup and auto-range materialisation in the existing
-hard-capped worker, as training preparation does, writing the projected,
-validated solver input to a parent-owned Parquet artifact. The solve thread
-builds the quote grid from that file as it does now. This also takes the
-pipeline's execution off the server's threads.
+**Plan:** First decide how an estimate pays for isolation: a spawn worker per
+estimate (several seconds of start-up on Windows, on a request the canvas
+makes while the user edits) or a warm interactive worker, as preview and trace
+use. Then run the estimate's execution and scan there, answering the same
+typed 400/507 contract, and move auto-range chunk planning into the auto-range
+worker, which then reports the recorded `chunk_fallback` with its totals.
 
 **Acceptance:** No optimiser code path collects or sinks a pipeline frame in
-the server process; a memory-limited setup ends as a typed `memory_limited`
-job; cancellation during setup terminates the worker; solve results match
-the existing golden tests.
+the server process; a memory-limited estimate answers the typed 507; the
+estimate's single-scan cost contract still holds.
 
 **Dependencies:** The worker protocol and artifact publication specified in
 background jobs; `ROAD-WORKER-04` remains the package for the solver itself.
 
-**Evidence:** `src/haute/routes/_optimiser_service.py::_execute_pipeline`;
-`src/haute/routes/_optimiser_service.py::_build_grid`;
-`src/haute/routes/_training_preparation.py`; `src/haute/_worker_protocol.py`;
-`tests/test_optimiser_golden.py`.
+**Evidence:** `src/haute/routes/optimiser.py::_optimiser_input_metrics`;
+`src/haute/routes/_optimiser_service.py::_prepare_frontier_auto_range`;
+`src/haute/routes/_optimiser_worker.py::frontier_auto_range_worker`;
+`tests/test_optimiser_routes_real_library.py`.

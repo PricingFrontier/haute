@@ -841,45 +841,51 @@ describe("client runtime contracts", () => {
   })
 
   it("getMilestones rejects malformed milestone payloads", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ working_branch: "w", entries: [{ sha: 123 }] }))
-    await expect(getMilestones()).rejects.toThrow(/parseGitMilestonesResponse/i)
+    mockFetch.mockReturnValue(jsonResponse({
+      working_branch: "w",
+      entries: [{ sha: 123, short_sha: "s", message: "m", timestamp: "t", version_label: null, is_root: false }],
+    }))
+    await expect(getMilestones()).rejects.toThrow("GitMilestonesResponse: invalid contract at /entries/0/sha: type")
   })
 
   it("getMilestoneSaves rejects malformed ledger-save payloads", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ saves: [{ sha: 123 }] }))
-    await expect(getMilestoneSaves("abc")).rejects.toThrow(/parseGitLedgerSavesResponse/i)
+    mockFetch.mockReturnValue(jsonResponse({ saves: [{ sha: 123, short_sha: "s", message: "m", timestamp: "t", files: [] }] }))
+    await expect(getMilestoneSaves("abc")).rejects.toThrow("GitLedgerSavesResponse: invalid contract at /saves/0/sha: type")
   })
 
   it("getPendingSaves rejects malformed ledger-save payloads", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ saves: [{ message: 5 }] }))
-    await expect(getPendingSaves()).rejects.toThrow(/parseGitLedgerSavesResponse/i)
+    mockFetch.mockReturnValue(jsonResponse({ saves: [{ sha: "a", short_sha: "a", message: 5, timestamp: "t", files: [] }] }))
+    await expect(getPendingSaves()).rejects.toThrow("GitLedgerSavesResponse: invalid contract at /saves/0/message: type")
   })
 
   it("commitMilestone rejects malformed commit payloads", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ sha: "x" }))
-    await expect(commitMilestone("m", null)).rejects.toThrow(/parseGitCommitResponse/i)
+    mockFetch.mockReturnValue(jsonResponse({ sha: 42, short_sha: "x", working_branch: "dev", version_label: null }))
+    await expect(commitMilestone("m", null)).rejects.toThrow("GitCommitResponse: invalid contract at /sha: type")
   })
 
   it("getWorkingBranches rejects malformed branch payloads", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ current: "demo", branches: [{ name: 123 }] }))
-    await expect(getWorkingBranches()).rejects.toThrow(/parseGitWorkingBranchesResponse/i)
+    mockFetch.mockReturnValue(jsonResponse({
+      current: "demo",
+      branches: [{ name: 123, is_current: true, is_archived: false, has_unmerged_saves: false, has_uncommitted_changes: false }],
+    }))
+    await expect(getWorkingBranches()).rejects.toThrow("GitWorkingBranchesResponse: invalid contract at /branches/0/name: type")
   })
 
   it("restoreBranch rejects malformed restore payloads", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ wrong: 1 }))
-    await expect(restoreBranch("archive/x")).rejects.toThrow(/parseGitRestoreResponse/i)
+    mockFetch.mockReturnValue(jsonResponse({ restored_as: 1 }))
+    await expect(restoreBranch("archive/x")).rejects.toThrow("GitRestoreResponse: invalid contract at /restored_as: type")
   })
 
   it("createWorkingBranch rejects malformed fork payloads", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ working_branch: "x", moved: "no" }))
+    mockFetch.mockReturnValue(jsonResponse({ working_branch: "x", moved: "no", switched: true, last_save_sha: null }))
     await expect(createWorkingBranch("x")).rejects.toThrow(
-      /parseGitCreateWorkingBranchResponse/i,
+      "GitCreateWorkingBranchResponse: invalid contract at /moved: type",
     )
   })
 
-  it("getGitPrefs coerces a missing flag to false (tolerant prefs)", async () => {
+  it("getGitPrefs rejects prefs without the flag the server always sends", async () => {
     mockFetch.mockReturnValue(jsonResponse({}))
-    await expect(getGitPrefs()).resolves.toEqual({ skip_switch_confirm: false })
+    await expect(getGitPrefs()).rejects.toThrow("GitPrefs: invalid contract at /skip_switch_confirm: required")
   })
 
 })
@@ -889,7 +895,7 @@ describe("next-wave client runtime contracts", () => {
     name: string
     response: Record<string, unknown>
     call: () => Promise<unknown>
-    error: RegExp
+    error: RegExp | string
   }> = [
     {
       name: "getNodeDataPoint",
@@ -954,43 +960,43 @@ describe("next-wave client runtime contracts", () => {
       name: "getMlflowDestinations",
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_destinations_response"), destinations: "none" },
       call: () => getMlflowDestinations(true),
-      error: /parseMlflowDestinationsResponse/i,
+      error: "MlflowDestinationsResponse: invalid contract at /destinations: type",
     },
     {
       name: "getMlflowSettings",
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_settings_response"), section_present: "yes" },
       call: () => getMlflowSettings(),
-      error: /parseMlflowSettingsResponse/i,
+      error: "MlflowSettingsResponse: invalid contract at /section_present: type",
     },
     {
       name: "testMlflowConnection",
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_test_connection_response"), ok: "no" },
       call: () => testMlflowConnection(),
-      error: /parseMlflowTestConnectionResponse/i,
+      error: "MlflowTestConnectionResponse: invalid contract at /ok: type",
     },
     {
       name: "estimateTrainingRam",
       response: { ...loadUiContractFixture<Record<string, unknown>>("train_estimate_response"), estimated_mb: "bad" },
       call: () => estimateTrainingRam({ graph: dummyGraph, node_id: "model1" }),
-      error: /parseTrainEstimateResponse/i,
+      error: "TrainEstimateResponse: invalid contract at /estimated_mb: type",
     },
     {
       name: "logToMlflow",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_log_response"), run_id: 42 },
+      response: { ...loadUiContractFixture<Record<string, unknown>>("train_mlflow_log_response"), run_id: 42 },
       call: () => logToMlflow({ job_id: "job-1", destination: "" }),
-      error: /parseMlflowLogResponse/i,
+      error: "LogExperimentResponse: invalid contract at /run_id: type",
     },
     {
       name: "saveTrainedModel",
       response: { ...loadUiContractFixture<Record<string, unknown>>("model_save_response"), path: 42 },
       call: () => saveTrainedModel({ job_id: "job-1", output_path: "frequency", overwrite: false }),
-      error: /parseSaveModelResponse/i,
+      error: "SaveModelResponse: invalid contract at /path: type",
     },
     {
       name: "resolveModelSaveDestination",
       response: { ...loadUiContractFixture<Record<string, unknown>>("model_save_destination_response"), suffix_mismatch: 1 },
       call: () => resolveModelSaveDestination({ output_path: "frequency", algorithm: "catboost" }),
-      error: /parseModelSaveDestinationResponse/i,
+      error: "ModelSaveDestinationResponse: invalid contract at /suffix_mismatch: type",
     },
     {
       name: "solveOptimiser",
@@ -1065,43 +1071,43 @@ describe("next-wave client runtime contracts", () => {
       name: "listUtilityFiles",
       response: { ...loadUiContractFixture<Record<string, unknown>>("utility_list_response"), files: "bad" },
       call: () => listUtilityFiles(),
-      error: /parseUtilityListResponse/i,
+      error: /UtilityListResponse: invalid contract at \/files: type/,
     },
     {
       name: "readUtilityFile",
       response: { ...loadUiContractFixture<Record<string, unknown>>("utility_read_response"), content: 42 },
       call: () => readUtilityFile("helpers"),
-      error: /parseUtilityReadResponse/i,
+      error: /UtilityReadResponse: invalid contract at \/content: type/,
     },
     {
       name: "createUtilityFile",
       response: { ...loadUiContractFixture<Record<string, unknown>>("utility_write_response"), import_line: 42 },
       call: () => createUtilityFile({ name: "helpers", content: "" }),
-      error: /parseUtilityWriteResponse/i,
+      error: /UtilityWriteResponse: invalid contract at \/import_line: type/,
     },
     {
       name: "updateUtilityFile",
       response: { ...loadUiContractFixture<Record<string, unknown>>("utility_write_response"), error_line: "bad" },
       call: () => updateUtilityFile("helpers", "print('x')"),
-      error: /parseUtilityWriteResponse/i,
+      error: /UtilityWriteResponse: invalid contract at \/error_line: type/,
     },
     {
       name: "deleteUtilityFile",
       response: { ...loadUiContractFixture<Record<string, unknown>>("utility_delete_response"), module: 42 },
       call: () => deleteUtilityFile("helpers"),
-      error: /parseUtilityDeleteResponse/i,
+      error: /UtilityDeleteResponse: invalid contract at \/module: type/,
     },
     {
       name: "gitArchiveBranch",
       response: { ...loadUiContractFixture<Record<string, unknown>>("git_archive_response"), archived_as: 42 },
       call: () => gitArchiveBranch("feat/pricing-improvements"),
-      error: /parseGitArchiveResponse/i,
+      error: "GitArchiveResponse: invalid contract at /archived_as: type",
     },
     {
       name: "gitDeleteBranch",
       response: { ...loadUiContractFixture<Record<string, unknown>>("git_delete_branch_response"), branch: 42 },
       call: () => gitDeleteBranch("feat/pricing-improvements"),
-      error: /parseGitDeleteBranchResponse/i,
+      error: "GitDeleteBranchResponse: invalid contract at /branch: type",
     },
   ]
 
@@ -1122,7 +1128,7 @@ describe("shared client trust-boundary endpoints", () => {
       name: "main", is_archived: false, is_current: true, tip_sha: "a",
       fork_point_sha: null, fork_of: null, fork_source_sha: null, fork_credit_sha: null,
       truncated: false,
-      entries: [{ sha: "a", short_sha: "a", message: "init", timestamp: "today", version_label: null, parents: [] }],
+      entries: [{ sha: "a", short_sha: "a", message: "init", timestamp: "today", version_label: null, is_root: true, parents: [] }],
     }],
   }
 
@@ -1133,16 +1139,18 @@ describe("shared client trust-boundary endpoints", () => {
     url: string
     method?: string
     malformed: unknown
+    /** The exact failure, when a generated validator checks the response. */
+    malformedError?: string
   }> = [
     { name: "checkHauteSession", body: { ok: true }, call: () => checkHauteSession(), url: "/api/session", malformed: { ok: "yes" } },
     { name: "outputAssembleDryRun", body: { status: "ok", document: [], row_count: 0, error: null }, call: () => outputAssembleDryRun({ graph: dummyGraph, nodeId: "out", outputMapping: [] }), url: "/api/output-assemble/dry-run", method: "POST", malformed: { status: "ok", document: [], row_count: "1" } },
     { name: "inferJsonCacheSchema", body: { tables: [{ name: "drivers" }] }, call: () => inferJsonCacheSchema({ path: "/data/input.json" }), url: "/api/json-cache/infer", method: "POST", malformed: { tables: ["bad"] } },
-    { name: "getExperiments", body: [{ experiment_id: "1", name: "pricing" }], call: () => getExperiments(""), url: "/api/mlflow/experiments", malformed: [{ experiment_id: "1" }] },
-    { name: "getRuns", body: [{ run_id: "r", run_name: "baseline", metrics: { auc: 0.9 }, artifacts: [] }], call: () => getRuns("exp", "model", ""), url: "/api/mlflow/runs?experiment_id=exp&artifact_filter=model", malformed: [{ run_id: "r", run_name: "baseline", metrics: {}, artifacts: [1] }] },
-    { name: "getModels", body: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "r" }] }], call: () => getModels(""), url: "/api/mlflow/models", malformed: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY" }] }] },
-    { name: "getModelVersions", body: [{ version: "1", run_id: "r", status: "READY", description: "baseline" }], call: () => getModelVersions("pricing model", ""), url: "/api/mlflow/model-versions?model_name=pricing%20model", malformed: [{ version: "1", run_id: "r", status: "READY" }] },
+    { name: "getExperiments", body: [{ experiment_id: "1", name: "pricing" }], call: () => getExperiments(""), url: "/api/mlflow/experiments", malformed: [{ experiment_id: "1" }], malformedError: "MlflowExperimentList: invalid contract at /0/name: required" },
+    { name: "getRuns", body: [{ run_id: "r", run_name: "baseline", status: "FINISHED", start_time: null, metrics: { auc: 0.9 }, params: {}, artifacts: [] }], call: () => getRuns("exp", "model", ""), url: "/api/mlflow/runs?experiment_id=exp&artifact_filter=model", malformed: [{ run_id: "r", run_name: "baseline", status: "FINISHED", start_time: null, metrics: {}, params: {}, artifacts: [1] }], malformedError: "MlflowRunList: invalid contract at /0/artifacts/0: type" },
+    { name: "getModels", body: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "r" }] }], call: () => getModels(""), url: "/api/mlflow/models", malformed: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY" }] }], malformedError: "MlflowModelList: invalid contract at /0/latest_versions/0/run_id: required" },
+    { name: "getModelVersions", body: [{ version: "1", run_id: "r", status: "READY", creation_timestamp: null, description: "baseline", params: {}, aliases: [] }], call: () => getModelVersions("pricing model", ""), url: "/api/mlflow/model-versions?model_name=pricing%20model", malformed: [{ version: "1", run_id: "r", status: "READY", creation_timestamp: null, params: {}, aliases: [] }], malformedError: "MlflowModelVersionList: invalid contract at /0/description: required" },
     { name: "listFiles", body: { items: [{ name: "data", path: "/data", type: "directory" }] }, call: () => listFiles("/data", ".json"), url: "/api/files?dir=%2Fdata&extensions=.json", malformed: { items: [{ name: "data", path: "/data", type: "other" }] } },
-    { name: "getGitGraph", body: validGitGraph, call: () => getGitGraph(5), url: "/api/git/graph?limit=5", malformed: { ...validGitGraph, branches: [{ ...validGitGraph.branches[0], entries: [{ ...validGitGraph.branches[0].entries[0], parents: [1] }] }] } },
+    { name: "getGitGraph", body: validGitGraph, call: () => getGitGraph(5), url: "/api/git/graph?limit=5", malformed: { ...validGitGraph, branches: [{ ...validGitGraph.branches[0], entries: [{ ...validGitGraph.branches[0].entries[0], parents: [1] }] }] }, malformedError: "GitGraphResponse: invalid contract at /branches/0/entries/0/parents/0: type" },
   ]
 
   for (const testCase of cases) {
@@ -1155,7 +1163,7 @@ describe("shared client trust-boundary endpoints", () => {
 
     it(`${testCase.name} rejects malformed successful payloads`, async () => {
       mockFetch.mockReturnValue(jsonResponse(testCase.malformed))
-      await expect(testCase.call()).rejects.toThrow()
+      await expect(testCase.call()).rejects.toThrow(testCase.malformedError)
     })
   }
 })

@@ -336,15 +336,15 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 |---|---|
 | §1.1 Global Polars-config lock | `EXEC-R01` ([execution engine](execution-engine.md)) |
 | §1.2 Deploy omits `utility/` | `DEP-R01` ([deploy](deploy.md)) |
-| §1.3 User docs describe removed nodes | `BUILD-R01` ([build and distribution](build-and-distribution.md)) |
+| §1.3 User docs describe removed nodes | `BUILD-R01` (build and distribution, delivered; its roadmap file is retired) |
 | §1.4 Project-root resolvers | `PCFG-R04` ([pipeline config](pipeline-config.md)) |
 | §1.5 Silent config-key drop | `PCFG-R05` ([pipeline config](pipeline-config.md)) |
 | §1.6 Frontier point derived twice | `OPT-P18` ([optimiser](optimiser.md)) |
 | §1.7 Swallowed exceptions | `MLF-R01` ([MLflow model registry](mlflow-model-registry.md)), `MOD-T09` ([modelling](modelling.md)), `OPT-P17` ([optimiser](optimiser.md)) |
 | §1.8 Unbounded poll loop | `FSH-R01` ([frontend shared](frontend-shared.md)) |
 | §1.8 Three non-finite float encodings | `JSON-R01` ([JSON shredding](json-shredding.md)) |
-| §1.8 Permissive dtype names; dtype mapping ×7 | `IO-R01` ([IO layer](io-layer.md)) |
-| §1.8 Fixed-name atomic write; lock wrappers | `IO-R02` ([IO layer](io-layer.md)) |
+| §1.8 Permissive dtype names; dtype mapping ×7 | `IO-R01` (IO layer, delivered; its roadmap file is retired) |
+| §1.8 Fixed-name atomic write; lock wrappers | `IO-R02` (IO layer, delivered; its roadmap file is retired) |
 | §1.8 Path containment ×5 | `SBX-R01` ([sandbox security](sandbox-security.md)) |
 | §1.8 Client picks the build profile from error text | `CACHE-S27` ([caching](caching.md)) |
 | §2.1 Dead dataframe execution cache | `CACHE-S23` ([caching](caching.md)) |
@@ -371,13 +371,13 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §4.1 Static memory analysis versus hard caps | `EXEC-R04` ([execution engine](execution-engine.md)) |
 | §4.2 One execution walker | `EXEC-R05` ([execution engine](execution-engine.md)) |
 | §4.3 Optimiser pipeline in a capped worker | `OPT-P16` ([optimiser](optimiser.md)) |
-| §4.4 Hand-written Polars interpreter | `EXPR-R01` ([expression parsing](expression-parsing.md)) |
+| §4.4 Hand-written Polars interpreter | `EXPR-R01`; the [expression-parsing specification](../expression-parsing/high-level.md) records the outcome |
 | §4.5 Trace row identity | `TRACE-R01` ([tracing](tracing.md)) |
 | §4.6 Recovery and repair scope | `API-R04` ([server API](server-api.md)) |
 | §4.7 Four reuse mechanisms | `SUB-R01` ([submodels](submodels.md)) |
 | §4.8 Implicit-join output assembly | `JSON-R02` ([JSON shredding](json-shredding.md)) |
 | §4.9 Node-code guard | `SBX-R02` ([sandbox security](sandbox-security.md)) |
-| §4.10 Codegen decorator splice | `CODEGEN-R01` ([codegen](codegen.md)) |
+| §4.10 Codegen decorator splice | `CODEGEN-R01` (codegen, delivered; its roadmap file is retired) |
 | §4.10 Node registry | `PCFG-R09` ([pipeline config](pipeline-config.md)) |
 | §4.10 `ExecutionContext` size | `EXEC-R07` ([execution engine](execution-engine.md)) |
 | §4.10 Cache identity framework | `CACHE-S25` ([caching](caching.md)) |

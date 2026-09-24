@@ -1622,10 +1622,15 @@ def test_training_ram_estimates_use_only_usable_snapshots(
     expected_rows = 4 if cache_state == "fresh" else None
     assert response.total_rows == rows == expected_rows
     if cache_state == "fresh":
+        assert response.unavailable is None
         assert response.bytes_per_row == 2 * 8 * 3
         assert columns == 2
     else:
-        assert response.bytes_per_row == columns == 0
+        assert response.unavailable is not None
+        assert response.unavailable.reason == "row_count_unprovable"
+        assert response.unavailable.blocking_node_id == "A"
+        assert response.bytes_per_row is None
+        assert columns == 0
     assert _staging_dirs(store) == []
 
 

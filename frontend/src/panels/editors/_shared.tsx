@@ -6,6 +6,7 @@ import type { FileListItem } from "../../api/types"
 import ColumnTable from "../../components/ColumnTable"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { formatValue } from "../../utils/formatValue"
+import { formatBytes } from "../../utils/formatBytes"
 
 // ─── Shared Styles ───────────────────────────────────────────────
 export const INPUT_STYLE = {
@@ -154,11 +155,6 @@ export function FileBrowser({
     onSelect(path)
   }
 
-  const formatSize = (bytes: number) => {
-    if (bytes > 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-    return `${(bytes / 1024).toFixed(1)} KB`
-  }
-
   return (
     <div>
       {showSelectionSummary && selectedPath && (
@@ -218,7 +214,7 @@ export function FileBrowser({
                   </span>
                   {typeof item.size === "number" && (
                     <span className="text-[11px] ml-auto shrink-0" style={{ color: 'var(--text-muted)' }}>
-                      {formatSize(item.size)}
+                      {formatBytes(item.size)}
                     </span>
                   )}
                 </button>

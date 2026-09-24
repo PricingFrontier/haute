@@ -265,6 +265,7 @@ import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import * as api from "../api/client"
+import { makeGitWorkingBranch } from "../test-utils/factories"
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Test helpers
@@ -534,7 +535,7 @@ beforeEach(() => {
   vi.mocked(api.listUtilityFiles).mockReset().mockResolvedValue({ files: [] })
   // Default to a healthy clone so the startup modal stays closed; tests that
   // need unset/divergent override with mockResolvedValue inside the test.
-  vi.mocked(api.getWorkingBranch).mockReset().mockResolvedValue({ working_branch: "dev", state: "ready", errors: [], current_branch: "dev-save", last_save_sha: "abc1234def", eligible_branches: ["dev"], identity_set: true, user_name: "Test User", user_email: "test@example.com" })
+  vi.mocked(api.getWorkingBranch).mockReset().mockResolvedValue(makeGitWorkingBranch({ working_branch: "dev", state: "ready", errors: [], current_branch: "dev-save", last_save_sha: "abc1234def", eligible_branches: ["dev"], identity_set: true, user_name: "Test User", user_email: "test@example.com" }))
   vi.mocked(api.setWorkingBranch).mockReset().mockResolvedValue({ working_branch: "dev", state: "ready", last_save_sha: null })
   vi.mocked(api.setGitIdentity).mockReset().mockResolvedValue({ user_name: "", user_email: "", scope: "local" })
   vi.mocked(api.commitMilestone).mockReset().mockResolvedValue({ sha: "deadbeef0000", short_sha: "deadbee", working_branch: "dev", version_label: null })
@@ -1330,7 +1331,7 @@ describe("App integration - save pipeline", () => {
 
   it("save-gate: with no working branch, Save opens the modal first, then runs on confirm", async () => {
     // No working branch configured for this clone.
-    vi.mocked(api.getWorkingBranch).mockResolvedValue({
+    vi.mocked(api.getWorkingBranch).mockResolvedValue(makeGitWorkingBranch({
       working_branch: null,
       state: "unset",
       errors: [],
@@ -1340,7 +1341,7 @@ describe("App integration - save pipeline", () => {
       identity_set: true,
       user_name: "U",
       user_email: "u@x.y",
-    })
+    }))
     vi.mocked(api.setWorkingBranch).mockResolvedValue({
       working_branch: "dev",
       state: "ready",
@@ -1416,7 +1417,7 @@ describe("App integration - save pipeline", () => {
   it("commit-gate: with no working branch, Commit chooses a branch first, then commits", async () => {
     // First call (startup) is unset → chooser; after the branch is set, the
     // beforeEach default (ready) takes over so the milestone modal is enabled.
-    vi.mocked(api.getWorkingBranch).mockResolvedValueOnce({
+    vi.mocked(api.getWorkingBranch).mockResolvedValueOnce(makeGitWorkingBranch({
       working_branch: null,
       state: "unset",
       errors: [],
@@ -1426,7 +1427,7 @@ describe("App integration - save pipeline", () => {
       identity_set: true,
       user_name: "U",
       user_email: "u@x.y",
-    })
+    }))
     vi.mocked(api.setWorkingBranch).mockResolvedValue({
       working_branch: "dev",
       state: "ready",

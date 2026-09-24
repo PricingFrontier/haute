@@ -92,10 +92,12 @@ class TestTomlConfiguredPipeline:
         _make_haute_toml(tmp_path, '[project]\npipeline = ""\n')
         assert _toml_configured_pipeline(tmp_path) is None
 
-    def test_returns_none_when_pipeline_not_a_string(self, tmp_path: Path) -> None:
-        """Line 130 branch: a non-string ``pipeline`` (e.g. a number) → None."""
+    def test_non_string_pipeline_raises_config_error(self, tmp_path: Path) -> None:
+        """A configured value that is not a path is a broken tier one: it must
+        not fall through to discovery and bind a different pipeline."""
         _make_haute_toml(tmp_path, "[project]\npipeline = 42\n")
-        assert _toml_configured_pipeline(tmp_path) is None
+        with pytest.raises(ConfigError, match="must be a path string"):
+            _toml_configured_pipeline(tmp_path)
 
 
 # ===========================================================================

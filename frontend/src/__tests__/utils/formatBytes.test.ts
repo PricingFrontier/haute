@@ -29,6 +29,12 @@ describe("formatBytes", () => {
   it("handles exact boundary at 1 MB", () => {
     expect(formatBytes(1024 * 1024)).toBe("1.0 MB")
   })
+
+  it("formats gigabytes from 1 GB", () => {
+    expect(formatBytes(1024 ** 3 - 1)).toBe("1024.0 MB")
+    expect(formatBytes(1024 ** 3)).toBe("1.0 GB")
+    expect(formatBytes(3.8 * 1024 ** 3)).toBe("3.8 GB")
+  })
 })
 
 describe("formatByteSize", () => {
@@ -42,7 +48,7 @@ describe("formatByteSize", () => {
     expect(formatByteSize(1023)).toBe("1023 B")
   })
 
-  it("climbs through every unit, unlike formatBytes which stops at MB", () => {
+  it("climbs through every unit and drops the decimal from ten", () => {
     expect(formatByteSize(KIB)).toBe("1.0 KB")
     expect(formatByteSize(MIB)).toBe("1.0 MB")
     expect(formatByteSize(3.8 * GIB)).toBe("3.8 GB")

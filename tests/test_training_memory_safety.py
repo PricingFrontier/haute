@@ -607,7 +607,7 @@ def test_launch_background_reconstructs_child_context_from_admitted_budget(
     assert ctx is not admitted
     assert ctx.memory_limit_bytes == 1_000
     assert ctx.admission is None
-    assert ctx.admission_release is None
+    assert ctx.lease.admission_release is None
 
 
 def test_launch_background_releases_admission_after_thread_completes(
@@ -752,7 +752,7 @@ def test_start_releases_admission_when_prep_fails_before_launch(
         service._join_preparation(response.job_id)
 
     assert captured_contexts, "admitted context should have been created"
-    assert captured_contexts[0]._admission_released is True
+    assert captured_contexts[0].lease.released is True
     job = store.require_job(response.job_id)
     assert job["status"] == "error"
     assert "prep boom" in job["error"]
@@ -807,7 +807,7 @@ def test_start_keeps_admission_held_after_successful_launch(
 
     assert response.status == "started"
     admitted = captured["context"]
-    assert admitted._admission_released is False, (
+    assert admitted.lease.released is False, (
         "admission must remain held after start() returns; "
         "ownership belongs to the background worker"
     )
@@ -816,7 +816,7 @@ def test_start_keeps_admission_held_after_successful_launch(
     assert admitted.memory_limit_bytes is not None
     assert admitted.admission is not None
     captured["on_finished"]()
-    assert admitted._admission_released is True
+    assert admitted.lease.released is True
 
 
 def test_catboost_gpu_vram_limit_refuses_before_launch(

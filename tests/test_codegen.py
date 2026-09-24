@@ -17,7 +17,9 @@ from haute._codegen_builders import (
     _sanitize_description,
     _wrap_user_code,
 )
+from haute._config_io import NODE_TYPE_TO_FOLDER, has_config_folder
 from haute._topo import UnknownEdgeEndpointError
+from haute._types import NODE_TYPE_TO_DECORATOR, NodeType
 from haute.codegen import (
     _generate_node_code,
     _instance_to_code,
@@ -2041,8 +2043,12 @@ class TestApiInputCodegen:
         _compile_node_code(code)
 
     def test_retained_api_input_code_has_no_escaped_path_artifact(self):
-        template = _retained_api_input_template("config/custom/quotes.json")
+        template = _retained_api_input_template(
+            '@pipeline.api_input(config="config/custom/quotes.json")',
+            "config/custom/quotes.json",
+        )
         assert not template.startswith("\\")
+        assert template.startswith('@pipeline.api_input(config="config/custom/quotes.json")\n')
         assert '"config/custom/quotes.json"' in template
 
 
@@ -2238,6 +2244,55 @@ def transform(rows: pl.LazyFrame) -> pl.LazyFrame:
 # ---------------------------------------------------------------------------
 
 
+_CONFIG_BACKED_TYPES = sorted(
+    node_type for node_type in NODE_TYPE_TO_FOLDER if has_config_folder(node_type)
+)
+
+
+@pytest.mark.parametrize("node_type", _CONFIG_BACKED_TYPES, ids=str)
+def test_every_config_backed_builder_emits_its_config_decorator(node_type: NodeType) -> None:
+    """A config-backed builder opens with its sidecar reference itself (CODEGEN-R01).
+
+    The decorator carries only the sidecar path, and ``_node_to_code`` leaves
+    the builder's code untouched apart from the contract kwarg it injects.
+    """
+    node = _n({"id": "n1", "data": {"label": "My Step", "nodeType": node_type, "config": {}}})
+    sources = (
+        []
+        if node_type in {NodeType.API_INPUT, NodeType.DATA_INPUT, NodeType.CONSTANT}
+        else ["upstream"]
+    )
+    folder = NODE_TYPE_TO_FOLDER[node_type]
+    decorator = (
+        f'@pipeline.{NODE_TYPE_TO_DECORATOR[node_type]}(config="config/{folder}/My_Step.json")'
+    )
+
+    raw_code = _generate_node_code(node, source_names=sources)
+
+    assert raw_code.startswith(decorator + "\n")
+    assert _node_to_code(node, source_names=sources, derive_contract=False) == raw_code
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        ({"tables": "nope"}, "tables must be a list"),
+        ({"tables": [{"factors": "region"}]}, r"tables\[0\]\.factors must be a list"),
+        ({"tables": [], "combinedOutputs": "nope"}, "combinedOutputs must be a list"),
+        (
+            {"tables": [], "combinedOutputs": [{"outputColumn": ""}]},
+            r"combinedOutputs\[0\] requires outputColumn",
+        ),
+    ],
+)
+def test_rating_step_codegen_rejects_a_config_it_does_not_render(config, message) -> None:
+    """Codegen runs at save, so a malformed rating config fails there, not first at run."""
+    node = _n({"id": "rs", "data": {"label": "Rate", "nodeType": "ratingStep", "config": config}})
+
+    with pytest.raises(ValueError, match=message):
+        _node_to_code(node, source_names=["quotes"], derive_contract=False)
+
+
 class TestPassthroughAndBehaviouralCodegen:
     """Integration tests for the scenario_expander / optimiser / optimiser_apply
     / modelling codegen builders.
@@ -2293,8 +2348,8 @@ class TestPassthroughAndBehaviouralCodegen:
         config_key_sample,
         config_folder,
     ):
-        """Each passthrough builder generates code with the correct type-specific
-        decorator, config kwargs, and a passthrough return statement."""
+        """Each passthrough builder generates code with its type-specific
+        sidecar decorator, no inline config kwargs, and the right body."""
         node = _n(
             {
                 "id": "n1",
@@ -2305,11 +2360,14 @@ class TestPassthroughAndBehaviouralCodegen:
                 },
             }
         )
-        # _generate_node_code preserves the inline decorator (pre-config rewrite)
+        # The builder emits the sidecar reference itself; no config value is
+        # rendered into the decorator.
         raw_code = _generate_node_code(node, source_names=["upstream"])
-        assert f"@pipeline.{decorator_name}(" in raw_code
+        assert raw_code.startswith(
+            f'@pipeline.{decorator_name}(config="config/{config_folder}/My_Step.json")\n'
+        )
         for key, val in config_key_sample.items():
-            assert f"{key}={val!r}" in raw_code
+            assert f"{key}={val!r}" not in raw_code
         assert "def My_Step(upstream: pl.LazyFrame)" in raw_code
         if node_type in self._PASSTHROUGH_TYPES:
             assert "return upstream" in raw_code
@@ -2318,7 +2376,6 @@ class TestPassthroughAndBehaviouralCodegen:
             assert "return upstream\n" not in raw_code
             assert "_from_config(" in raw_code
 
-        # _node_to_code replaces decorator with config= path
         final_code = _node_to_code(node, source_names=["upstream"])
         assert f'config="config/{config_folder}/My_Step.json"' in final_code
         _compile_node_code(final_code)
@@ -3798,7 +3855,8 @@ class TestRoundTripEdgeCases:
             }
         )
         raw_code = _generate_node_code(node, source_names=["data"])
-        assert "factors=" in raw_code
+        assert raw_code.startswith('@pipeline.banding(config="config/banding/MultiBand.json")\n')
+        assert "factors=" not in raw_code
         assert "def MultiBand(data: pl.LazyFrame)" in raw_code
         assert 'apply_banding_from_config(data, "config/banding/MultiBand.json"' in raw_code
         final_code = _node_to_code(node, source_names=["data"])
@@ -3839,11 +3897,11 @@ class TestRoundTripEdgeCases:
             }
         )
         raw_code = _generate_node_code(node, source_names=["base"])
-        assert "tables=" in raw_code
-        assert (
-            "combined_outputs=[{'output_column': 'total_factor', "
-            "'operation': 'add', 'base_value': 0.0}]"
-        ) in raw_code
+        assert raw_code.startswith(
+            '@pipeline.rating_step(config="config/rating_step/MultiRate.json")\n'
+        )
+        assert "tables=" not in raw_code
+        assert "combined_outputs=" not in raw_code
         assert "apply_rating_step_from_config(base" in raw_code
         assert "return df" in raw_code
         final_code = _node_to_code(node, source_names=["base"])

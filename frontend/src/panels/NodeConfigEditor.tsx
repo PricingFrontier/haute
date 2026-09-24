@@ -30,6 +30,17 @@ import type { InputSource, OnReplaceConfig, OnUpdateConfig, SimpleNode } from ".
 
 type Column = { name: string; dtype: string }
 
+/**
+ * Node types the read-only comparison view shows as a config dump: their
+ * editors need live graph context (Explore panes, Edge Join inputs, submodel
+ * ports) that a single compared node does not have.
+ */
+const NO_READ_ONLY_EDITOR = new Set<string>([
+  NODE_TYPES.EXPLORE,
+  NODE_TYPES.EDGE_JOIN,
+  NODE_TYPES.SUBMODEL_PORT,
+])
+
 const EXPLORE_PANES = [
   { key: "code", label: "Polars Code" },
   { key: "overview", label: "Overview" },
@@ -63,9 +74,26 @@ export type NodeConfigEditorProps = {
   exploreConfigHash: string | null
   reservedApiInputFrameLabels: Set<string>
   accentColor: string
+  /**
+   * The comparison view's inert render: node types without a read-only editor
+   * show their config, and nothing offers a config replacement.
+   */
+  readOnly?: boolean
 }
 
-/** Pure known-node editor switch used by the node panel. */
+function ReadOnlyConfigDump({ config }: { config: Record<string, unknown> }) {
+  return (
+    <pre
+      data-testid="readonly-config-fallback"
+      className="text-[11px] font-mono whitespace-pre-wrap break-all px-3 py-2"
+      style={{ color: "var(--text-secondary)" }}
+    >
+      {JSON.stringify(config, null, 2)}
+    </pre>
+  )
+}
+
+/** The one per-type editor switch, for the node panel and the comparison view. */
 export function NodeConfigEditor({
   nodeType,
   config,
@@ -91,7 +119,9 @@ export function NodeConfigEditor({
   exploreConfigHash,
   reservedApiInputFrameLabels,
   accentColor,
+  readOnly = false,
 }: NodeConfigEditorProps) {
+  if (readOnly && NO_READ_ONLY_EDITOR.has(nodeType)) return <ReadOnlyConfigDump config={config} />
   const activeExplorePaneMeta = EXPLORE_PANES.find((pane) => pane.key === activeExplorePane) ?? EXPLORE_PANES[0]
   const nodeColumns = (node.data._columns as Column[] | undefined) ?? []
   const effectiveColumns = upstreamColumns.length > 0 ? upstreamColumns : nodeColumns
@@ -163,7 +193,7 @@ export function NodeConfigEditor({
       return <ConstantEditor config={config} onUpdate={onUpdateConfig} />
 
     case NODE_TYPES.POLARS:
-      return <TransformEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={onReplaceConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} runError={runError} upstreamColumns={upstreamColumns} />
+      return <TransformEditor config={config} onUpdate={onUpdateConfig} onReplaceConfig={readOnly ? undefined : onReplaceConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} errorLine={errorLine} runError={runError} upstreamColumns={upstreamColumns} />
 
     case NODE_TYPES.EDGE_JOIN:
       return <EdgeJoinEditor config={config} onUpdate={onUpdateConfig} nodeId={node.id} accentColor={accentColor} onDeleteInput={onDeleteEdge} onSwapInputs={onSwapEdgeJoinInputs ? () => onSwapEdgeJoinInputs(node.id) : undefined} />
@@ -180,6 +210,6 @@ export function NodeConfigEditor({
       )
 
     default:
-      return null
+      return readOnly ? <ReadOnlyConfigDump config={config} /> : null
   }
 }

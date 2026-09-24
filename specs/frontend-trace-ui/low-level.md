@@ -73,7 +73,11 @@
 5. `frontend/src/trace/NodeDetailBlock.tsx` dispatches on `detail_type` (and optimiser status/mode).
    Detail components call their matching helpers before rendering; an unknown type is shown as
    formatted generic detail instead of disappearing.
-6. `frontend/src/trace/CalculationHero.tsx` prefers backend waterfall entries.
+6. `frontend/src/trace/CalculationHero.tsx` prefers backend waterfall entries. A calculation,
+   chain entry or input source carrying `not_computable_reason` shows a note: "From the traced
+   run: …" when `result_source` is `trace_execution`, otherwise "Not computed from this row: …",
+   with the reason described by `describeNotComputable`. A value that was not computed is never
+   replaced by the row's input value.
    `StepCard` owns the single backend-waterfall-error alert and never passes an
    error payload into the hero. The hero builds a local arithmetic waterfall
    only when backend entries are absent. It renders client-parsed conditional

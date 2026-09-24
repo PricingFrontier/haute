@@ -25,8 +25,9 @@ import {
   retryGitStorageSync,
 } from "../../api/client"
 import type { GitManagedBranch, GitWorkingBranchResponse } from "../../api/types"
+import { makeGitWorkingBranch } from "../../test-utils/factories"
 
-const READY: GitWorkingBranchResponse = {
+const READY: GitWorkingBranchResponse = makeGitWorkingBranch({
   working_branch: "dev",
   state: "ready",
   errors: [],
@@ -36,7 +37,7 @@ const READY: GitWorkingBranchResponse = {
   identity_set: true,
   user_name: "U",
   user_email: "u@x.y",
-}
+})
 
 // The store singleton is pristine at import time; resetForTests must restore
 // exactly this snapshot, however the store's shape grows. Data fields only,

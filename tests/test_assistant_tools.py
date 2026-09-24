@@ -482,7 +482,7 @@ def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
 
         by_name = _profiles_by_name(get_column_profiles("main.py", "totals", "claims"))
 
-        assert by_name["exposure"]["max"] == "inf"
+        assert by_name["exposure"]["max"] == {"__haute_type__": "non_finite_float", "value": "inf"}
         assert by_name["exposure"]["min"] == 1.0
 
     def test_a_column_named_count_is_profiled_like_any_other(self, dtype_matrix_project: Path):

@@ -157,10 +157,13 @@ describe("InputSnapshotCacheButton", () => {
         schema_version: 1, job_id: "job-2", identity_digest: "snapshot-2",
         status: "running", joined: false,
       })
-    vi.mocked(getInputCacheJob).mockImplementation((jobId) => (
+    let firstSignal: AbortSignal | undefined
+    vi.mocked(getInputCacheJob).mockImplementation((jobId, options) => (
       new Promise((resolve) => {
-        if (jobId === "job-1") finishFirst = resolve
-        else finishSecond = resolve
+        if (jobId === "job-1") {
+          finishFirst = resolve
+          firstSignal ??= options?.signal
+        } else finishSecond = resolve
       })
     ))
     vi.mocked(cancelInputCacheJob).mockResolvedValue({
@@ -172,7 +175,7 @@ describe("InputSnapshotCacheButton", () => {
 
     const { rerender } = renderButton()
     fireEvent.click(await screen.findByRole("button", { name: "Cache as Parquet" }))
-    await waitFor(() => expect(getInputCacheJob).toHaveBeenCalledWith("job-1"))
+    await waitFor(() => expect(getInputCacheJob).toHaveBeenCalledWith("job-1", { signal: expect.any(AbortSignal) }))
 
     rerender(
       <InputSnapshotCacheButton
@@ -181,8 +184,10 @@ describe("InputSnapshotCacheButton", () => {
         requiredReady
       />,
     )
+    // The old configuration's wait ends with it; its build is left to finish.
+    expect(firstSignal?.aborted).toBe(true)
     fireEvent.click(await screen.findByRole("button", { name: "Cache as Parquet" }))
-    await waitFor(() => expect(getInputCacheJob).toHaveBeenCalledWith("job-2"))
+    await waitFor(() => expect(getInputCacheJob).toHaveBeenCalledWith("job-2", { signal: expect.any(AbortSignal) }))
 
     await act(async () => {
       finishFirst?.({
@@ -271,5 +276,33 @@ describe("InputSnapshotCacheButton", () => {
 
     expect(await screen.findByText("15 rows")).toBeInTheDocument()
     expect(screen.getByText("5 cols")).toBeInTheDocument()
+  })
+
+  it("stops polling its build once it unmounts, leaving the build to run", async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(getInputCacheJob).mockResolvedValue({
+        schema_version: 1, job_id: "job-1", identity_digest: "snapshot",
+        status: "running", terminal_reason: null, message: "Building",
+        refresh: false, build_class: "bounded",
+        progress: { phase: "building", rows: 1, batches: 1, bytes: 64, elapsed_seconds: 1 },
+        snapshot: null, error_code: null,
+      })
+      const { unmount } = renderButton()
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      fireEvent.click(screen.getByRole("button", { name: "Cache as Parquet" }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
+      expect(getInputCacheJob).toHaveBeenCalledWith("job-1", { signal: expect.any(AbortSignal) })
+
+      unmount()
+      const requests = vi.mocked(getInputCacheJob).mock.calls.length
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+
+      expect(getInputCacheJob).toHaveBeenCalledTimes(requests)
+      expect(cancelInputCacheJob).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

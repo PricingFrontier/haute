@@ -1,7 +1,7 @@
 import React from "react"
 import { ExpressionChainRowContentView } from "./ExpressionChain"
 import { formatDisplayExpression } from "./traceFormatting"
-import type { InputSourceEntry } from "./traceHelpers"
+import { evaluatedValue, notComputableNote, type InputSourceEntry } from "./traceHelpers"
 
 // ---------------------------------------------------------------------------
 // InputSourceTree — the upstream input-sources tree attached to a calculation.
@@ -42,8 +42,9 @@ const InputSourceTree: React.FC<InputSourceTreeProps> = ({ subSources }) => {
               column={subCol}
               formulaText={sfm}
               substitutedText={ssub}
-              value={subSrc.result_value}
+              value={evaluatedValue(subSrc, undefined)}
               source={subSrc.node_name}
+              note={notComputableNote(subSrc)}
             />
           </div>
         )

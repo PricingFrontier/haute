@@ -62,9 +62,9 @@ from haute.routes._contract_errors import (
     contract_error_http_exception,
     contract_error_job_fields,
     contract_error_terminal_reason,
+    memory_limit_http_exception,
 )
 from haute.routes._helpers import find_typed_node
-from haute.routes._memory_messages import memory_limit_user_message
 from haute.routes._synchronous_analysis import CLIENT_CLOSED_REQUEST_STATUS
 from haute.schemas import (
     TrainingFeatureSelectionDiagnosticPayload,
@@ -97,13 +97,7 @@ def _seeded_training_sample(lf: pl.LazyFrame, row_limit: int) -> pl.LazyFrame:
 def _memory_limit_http_exception(
     exc: ExecutionAdmissionError | ExecutionMemoryLimitExceededError,
 ) -> HTTPException:
-    detail = exc.to_payload()
-    # str(exc) names the internal operation and raw byte counts; author the
-    # public message from the structured attributes instead. Assigned
-    # unconditionally: a payload-carried "message" must not win over the
-    # curated wording.
-    detail["message"] = memory_limit_user_message(exc, operation_noun="Training")
-    return HTTPException(status_code=507, detail=detail)
+    return memory_limit_http_exception(exc, operation_noun="Training")
 
 
 def _http_failure_job_parts(

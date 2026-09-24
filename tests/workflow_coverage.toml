@@ -679,7 +679,6 @@ tests = [
   "tests/test_runtime_input_cache_invalidation.py::TestPreviewRuntimeFileInvalidation::test_external_file_change_recomputes_preview",
   "tests/test_runtime_input_cache_invalidation.py::TestPreviewRuntimeFileInvalidation::test_direct_parquet_overwrite_recomputes_preview",
   "tests/test_runtime_input_cache_invalidation.py::TestTraceRuntimeInputInvalidation::test_trace_recomputes_after_datasource_edit",
-  "tests/test_runtime_input_cache_invalidation.py::TestTraceRuntimeInputInvalidation::test_trace_reuses_preview_entry_with_file_signature_present",
   "tests/test_runtime_input_cache_invalidation.py::test_graph_input_fingerprint_uses_canonical_json",
   "tests/test_input_preparation.py::test_a_warm_preview_returns_the_new_rows_after_the_source_is_rewritten",
   "tests/test_input_preparation.py::test_a_cold_trace_builds_a_missing_generation_and_traces_the_rows",
@@ -703,9 +702,9 @@ tests = [
 invariant = "Preview, refresh and trace over the active source return the same rows and trace identity across cold and warm caches; a config, data or helper edit invalidates the cached result; filtered, reordered, joined and multi-frame rows trace to the correct source row; a mismatched clicked row is a 409 rather than a wrong trace; and a stale preview or trace result never replaces a newer selection."
 
 [scenarios.evidence]
-commit = "5057be3a"
+commit = "dee8c285"
 command = 'uv run pytest tests/test_trace_matches_preview.py tests/test_trace_multi_frame.py tests/test_pipeline_route_supersession.py tests/test_runtime_input_cache_invalidation.py "tests/test_executor.py::TestPreviewCacheInvalidation" "tests/test_executor.py::TestPreviewCachePartialHit" "tests/test_trace_api.py::TestRequestValidation" "tests/test_server.py::TestPreviewNode" tests/test_input_preparation.py -q -p no:warnings'
-result = "145 passed in 14.86s"
+result = "172 passed in 22.44s"
 
 [[scenarios]]
 id = "W06-S02"
@@ -718,8 +717,8 @@ lane = "backend"
 real = []
 stubbed = []
 tests = []
-reason = "the HTTP preview route materialises the target node only, so a first trace recomputes lineage by the supported route; successful full-lineage preview-cache reuse needs a separate cache-scope change and is explicitly not an acceptance requirement of this programme"
-invariant = "Full-lineage preview-cache reuse by a first trace is not applicable: the documented tracing coverage gap is a scoped future change, not a missing witness of current behaviour."
+reason = "the trace does not read the preview cache: the HTTP preview route materialises the target node only, and the trace's preview reader was removed (TRACE-R02), so a first trace recomputes its lineage by design"
+invariant = "Preview-cache reuse by a trace is not applicable: the trace's only prior results are its own trace cache, which W06-S01 covers."
 
 [[scenarios]]
 id = "W06-S03"
@@ -766,19 +765,19 @@ tests = [
   "tests/test_rating_step.py::TestRatingStepExecutor::test_combine_operations",
   "tests/test_rating_step_config_coverage.py::test_duplicate_table_output_columns_are_rejected_with_both_indices",
   "tests/test_rating.py::TestApplyRatingTableEdgeCases::test_nan_in_entries_rejected",
-  "tests/test_expression_parser_polars_parity.py::test_round_matches_polars",
-  "tests/test_expression_parser_polars_parity.py::test_sqrt_and_clip_match_polars",
-  "tests/test_expression_parser_polars_parity.py::test_attribute_and_unsupported_nodes_return_none",
+  "tests/test_expression_parity_properties.py::test_evaluator_agrees_with_polars_on_documented_single_row_forms",
+  "tests/test_expression_parity_properties.py::test_receiver_value_window_forms_classified",
+  "tests/test_expression_parity_properties.py::test_window_semantics_diverge_from_single_row_approximation",
   "tests/test_expression_parser.py::TestSyntaxErrors::test_code_with_syntax_error",
   "tests/test_expression_parser.py::TestEvaluatedExpressionNulls::test_none_value_propagation",
   "tests/test_expression_parser.py::TestEvaluatedExpressionConditional::test_when_then_substituted",
 ]
-invariant = "A rating step previewed and traced through the real executor reproduces hand-calculated premiums (band thresholds at the boundary, a null falling to the default, a table miss resolved as neutral, a multiplicative combine over a base value); every banding and table rule has its documented outcome at exact thresholds, ties, nulls, missing factors, mixed key dtypes and rounding; invalid expressions become opaque and unsupported AST forms return None rather than a guess."
+invariant = "A rating step previewed and traced through the real executor reproduces hand-calculated premiums (band thresholds at the boundary, a null falling to the default, a table miss resolved as neutral, a multiplicative combine over a base value); every banding and table rule has its documented outcome at exact thresholds, ties, nulls, missing factors, mixed key dtypes and rounding; invalid expressions become opaque, and a formula one row cannot determine is reported not computable rather than guessed."
 
 [scenarios.evidence]
-commit = "80346da2"
-command = 'uv run pytest tests/test_rating_hand_calculated.py tests/test_rating.py tests/test_banding.py tests/test_rating_step.py tests/test_rating_step_config_coverage.py tests/test_rating_key_agreement.py tests/test_rating_miss_fail_loud.py tests/test_rating_dtype_contract.py tests/test_expression_parser.py tests/test_expression_parser_polars_parity.py -q -p no:warnings'
-result = "847 passed in 11.60s"
+commit = "dee8c285"
+command = 'uv run pytest tests/test_rating_hand_calculated.py tests/test_rating.py tests/test_banding.py tests/test_rating_step.py tests/test_rating_step_config_coverage.py tests/test_rating_key_agreement.py tests/test_rating_miss_fail_loud.py tests/test_rating_dtype_contract.py tests/test_expression_parser.py tests/test_expression_parity_properties.py -q -p no:warnings'
+result = "809 passed in 18.51s"
 
 [[scenarios]]
 id = "W08-S01"

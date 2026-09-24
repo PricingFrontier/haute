@@ -366,18 +366,14 @@ class TestJoinTraceNullLeftJoin:
         preview_rows = results["join"].preview
         null_row_idx = next(i for i, r in enumerate(preview_rows) if r["key"] == 2)
 
-        # Pass the executor's preview cache explicitly so the trace
-        # reuses the exact DataFrames ``execute_graph`` just populated
-        # — a cold re-execution would pick a different row ordering
-        # for non-deterministic polars joins.  Wave 9E (#104) removed
-        # the implicit reach-through that used to happen inside the
-        # trace module.
+        # A cold re-execution may order a non-deterministic join differently,
+        # so the clicked row's values anchor the trace to the previewed row.
         result = execute_trace(
             graph,
             row_index=null_row_idx,
             target_node_id="join",
             column="val_b",
-            preview=_preview_cache,
+            row_values=preview_rows[null_row_idx],
         )
         assert result.output_value is None
 
@@ -1913,15 +1909,15 @@ class TestCacheInvalidatesOnGraphChange:
         assert r2.output_value["y"] == 15
 
 
-class TestCacheReusesPreview:
-    """K.5: Preview cache available -- trace reuses it.
+class TestTraceAfterPreview:
+    """K.5: A trace after a preview shows the previewed rows.
 
-    When execute_graph has already been called, the trace should reuse
-    those DataFrames instead of re-executing.
-    Why: Prevents redundant computation and ensures trace/preview consistency.
+    The trace never reads the preview cache: it executes its own lineage (or
+    reuses its own trace cache), and still shows the row the preview showed.
+    Why: trace/preview consistency must not depend on a shared cache.
     """
 
-    def test_trace_reuses_preview_cache(self, tmp_path):
+    def test_trace_after_a_full_preview_shows_the_previewed_row(self, tmp_path):
         _trace_cache.clear()
         _preview_cache.clear()
 
@@ -1938,11 +1934,10 @@ class TestCacheReusesPreview:
         # Preview first
         execute_graph(graph, target_node_id="t", row_limit=_ROW_LIMIT)
 
-        # Trace should reuse preview cache
         result = execute_trace(graph, row_index=0, target_node_id="t", row_limit=_ROW_LIMIT)
         assert result.output_value["x"] == 1
 
-    def test_trace_reexecutes_when_projected_preview_cache_has_only_target(
+    def test_trace_after_a_target_only_preview_executes_its_lineage(
         self,
         tmp_path,
     ):
@@ -1985,7 +1980,6 @@ class TestCacheReusesPreview:
                 column="z",
                 row_limit=_ROW_LIMIT,
                 row_values=preview,
-                preview=_preview_cache,
             )
 
         execute_eager.assert_called_once()
@@ -2639,15 +2633,14 @@ class TestBurnCostExample:
         preview_rows = results["join_premiums"].preview
         null_row_idx = next(i for i, r in enumerate(preview_rows) if r["quote_id"] == 102)
 
-        # Pass the executor's preview cache so the trace correlates
-        # against the exact same join output ``execute_graph`` produced.
-        # See the matching note in ``test_trace_null_from_left_join``.
+        # The clicked row's values anchor the trace to the previewed row; see
+        # the matching note in ``test_trace_null_from_left_join``.
         result = execute_trace(
             graph,
             row_index=null_row_idx,
             target_node_id="join_premiums",
             column="burn_cost",
-            preview=_preview_cache,
+            row_values=preview_rows[null_row_idx],
         )
         assert result.output_value is None
 

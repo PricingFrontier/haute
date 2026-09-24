@@ -44,16 +44,28 @@ def scenario_step_count(config: Mapping[str, Any]) -> int:
     """The scenario grid size, ``stepCount``: a required whole number of at least 1.
 
     There is no absent-key default: a new node is created with an explicit
-    count (``node_defaults.json``), and a config without one is a defect.
+    count (``node_defaults.json``), and a config without one is a defect the
+    user fixes on the node, reported as :class:`NodeConfigError`.
     """
+    from haute.errors import NodeConfigError
+
     raw = config.get("stepCount")
     if raw is None:
-        raise ValueError("Scenario expander requires stepCount (the number of grid values).")
+        raise NodeConfigError(
+            "Scenario expander requires stepCount (the number of grid values).",
+            setting="stepCount",
+        )
     if isinstance(raw, bool) or not isinstance(raw, int | float) or int(raw) != raw:
-        raise ValueError(f"Scenario expander stepCount must be a whole number, got {raw!r}")
+        raise NodeConfigError(
+            f"Scenario expander stepCount must be a whole number, got {raw!r}",
+            setting="stepCount",
+        )
     steps = int(raw)
     if steps < 1:
-        raise ValueError(f"Scenario expander requires stepCount >= 1, got {steps}")
+        raise NodeConfigError(
+            f"Scenario expander requires stepCount >= 1, got {steps}",
+            setting="stepCount",
+        )
     return steps
 
 

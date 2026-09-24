@@ -88,27 +88,44 @@ class TestDockerBuild:
 class TestGitShaShort:
     """Tests for _git_sha_short()."""
 
-    def test_returns_sha_on_success(self) -> None:
-        """Returns the trimmed stdout when git succeeds."""
+    def test_returns_the_short_head_sha_of_a_repository(self, tmp_path, monkeypatch) -> None:
+        """Reads HEAD through the git command core."""
+        from haute._git_core import _run_git
         from haute.deploy._container import _git_sha_short
 
-        with patch("haute.deploy._container.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(stdout="abc1234\n")
+        monkeypatch.chdir(tmp_path)
+        _run_git("init", "-q")
+        _run_git(
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        )
 
-            result = _git_sha_short()
+        assert _git_sha_short() == _run_git("rev-parse", "--short", "HEAD")
 
-        assert result == "abc1234"
-
-    def test_returns_local_on_exception(self) -> None:
-        """Falls back to 'local' when git is unavailable or not a repo."""
+    def test_returns_local_outside_a_repository(self, tmp_path, monkeypatch) -> None:
         from haute.deploy._container import _git_sha_short
 
-        with patch("haute.deploy._container.subprocess.run") as mock_run:
-            mock_run.side_effect = FileNotFoundError("git not found")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
 
-            result = _git_sha_short()
+        assert _git_sha_short() == "local"
 
-        assert result == "local"
+    def test_returns_local_without_a_git_binary(self) -> None:
+        from haute.deploy._container import _git_sha_short
+
+        with (
+            patch("haute.deploy._container.git_binary_available", return_value=False),
+            patch("haute.deploy._container._run_git_ok") as run_git_ok,
+        ):
+            assert _git_sha_short() == "local"
+        run_git_ok.assert_not_called()
 
 
 class TestUpdateService:

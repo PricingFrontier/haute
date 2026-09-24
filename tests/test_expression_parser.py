@@ -20,6 +20,8 @@ import pytest
 # The dataclasses under test (will live in haute._expression_parser)
 # ---------------------------------------------------------------------------
 from haute._expression_parser import (
+    AssignmentPhases,
+    assignment_phases,
     evaluate_expression,
     parse_expression,
 )
@@ -1478,7 +1480,96 @@ class TestEvaluatedExpressionStructure:
         assert isinstance(result.input_values, dict)
         assert result.input_values == {"a": 3.0}
 
-    def test_unsupported_method_does_not_return_receiver_value(self):
+    def test_floor_returns_polars_value(self):
+        """floor() is a registered row-local method now computed by Polars
+        (the old hand-written interpreter used to return None for it)."""
         code = 'df = df.with_columns(pl.col("x").floor().alias("y"))'
         result = evaluate_expression(code, "y", {"x": 2.7})
-        assert result.result_value is None
+        assert result.result_value == 2.0
+
+
+class TestAssignmentPhases:
+    """Which assignments a with_columns call reads at their earlier value."""
+
+    @pytest.mark.parametrize(
+        ("code", "target", "expected"),
+        [
+            pytest.param(
+                "df = df.with_columns(x=pl.col('x') + 1).with_columns(y=pl.col('x') * 2)",
+                "y",
+                AssignmentPhases(before=frozenset({"x"}), at_or_after=frozenset({"y"})),
+                id="earlier-call",
+            ),
+            pytest.param(
+                "df = df.with_columns(pl.col('x').cast(pl.Int8), y=pl.col('x') * 2)",
+                "y",
+                AssignmentPhases(before=frozenset(), at_or_after=frozenset({"x", "y"})),
+                id="unaliased-method-chain",
+            ),
+            pytest.param(
+                "df = df.with_columns((pl.col('a').alias('b') + 1), y=pl.col('b'))",
+                "y",
+                AssignmentPhases(before=frozenset(), at_or_after=frozenset({"b", "y"})),
+                id="inner-alias",
+            ),
+            pytest.param(
+                "df = df.with_columns(pl.col('s').str.to_uppercase(), pl.lit(1), y=pl.col('s'))",
+                "y",
+                AssignmentPhases(before=frozenset(), at_or_after=frozenset({"s", "literal", "y"})),
+                id="name-keeping-namespace-and-literal",
+            ),
+            pytest.param(
+                "df = df.with_columns(pl.col('x').name.suffix('_2'), y=pl.col('x'))",
+                "y",
+                AssignmentPhases(before=frozenset(), at_or_after=frozenset({"y"}), unresolved=True),
+                id="renaming-namespace-is-unknown",
+            ),
+            pytest.param(
+                "df = df.with_columns(*[pl.col(c) for c in cols], y=pl.col('x'))",
+                "y",
+                AssignmentPhases(before=frozenset(), at_or_after=frozenset({"y"}), unresolved=True),
+                id="comprehension-is-unknown",
+            ),
+            pytest.param(
+                "df = df.with_columns(pl.col('a', 'b') + 1, y=pl.col('b'))",
+                "y",
+                AssignmentPhases(before=frozenset(), at_or_after=frozenset({"y"}), unresolved=True),
+                id="multi-column-is-unknown",
+            ),
+            pytest.param(
+                "df = df.with_columns(pl.col(['x']).cast(pl.Int8), y=pl.col('x'))",
+                "y",
+                AssignmentPhases(before=frozenset(), at_or_after=frozenset({"y"}), unresolved=True),
+                id="selector-list-is-unknown",
+            ),
+            pytest.param(
+                "df = df.with_columns(pl.col('^x.*$') * 2, y=pl.col('x'))",
+                "y",
+                AssignmentPhases(before=frozenset(), at_or_after=frozenset({"y"}), unresolved=True),
+                id="regex-is-unknown",
+            ),
+            pytest.param(
+                "df = df.with_columns(pl.col('x').alias(name), y=pl.col('x'))",
+                "y",
+                AssignmentPhases(before=frozenset(), at_or_after=frozenset({"y"}), unresolved=True),
+                id="dynamic-alias-is-unknown",
+            ),
+            pytest.param(
+                "df = df.with_columns([pl.col('x').cast(pl.Int8), (pl.col('x') * 2).alias('y')])",
+                "y",
+                AssignmentPhases(before=frozenset(), at_or_after=frozenset({"x", "y"})),
+                id="list-argument",
+            ),
+        ],
+    )
+    def test_phases(self, code: str, target: str, expected: AssignmentPhases) -> None:
+        assert assignment_phases(code, target) == expected
+
+    def test_an_unknown_write_before_the_target_call_is_recorded(self) -> None:
+        code = "df = df.with_columns(pl.all().fill_null(0)).with_columns(y=pl.col('x'))"
+        assert assignment_phases(code, "y") == AssignmentPhases(
+            before=frozenset(), at_or_after=frozenset({"y"}), unresolved_before=True
+        )
+
+    def test_a_column_no_call_assigns_has_no_phases(self) -> None:
+        assert assignment_phases("df = df.with_columns(y=pl.col('x'))", "z") is None

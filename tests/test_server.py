@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from watchfiles import Change
 
 from haute._sandbox import set_project_root
+from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from tests.conftest import (
     build_test_input_snapshot,
     current_source_revision,
@@ -354,6 +355,43 @@ class TestPreviewNode:
             "build_class": "bounded",
             "reason_code": "build_failed",
             "remediation": "Build this Data Input's snapshot and try again.",
+        }
+
+    def test_preview_reports_a_rejected_node_config_as_a_contract_error(
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+    ) -> None:
+        """A Scenario Expander without its grid size is a node config defect: the
+        preview answers 422 naming the setting, not the internal-error 500."""
+        from haute._types import GraphNode, NodeData
+        from haute.parser import parse_pipeline_file
+        from tests.conftest import make_edge
+
+        graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
+        source_id = graph.nodes[0].id
+        graph.nodes.append(
+            GraphNode(
+                id="expander",
+                data=NodeData(
+                    label="expander",
+                    nodeType="scenarioExpander",
+                    config={"column_name": "price", "min_value": 0.1, "max_value": 0.3},
+                ),
+            )
+        )
+        graph.edges.append(make_edge(source_id, "expander"))
+
+        resp = client.post(
+            "/api/pipeline/preview",
+            json={"graph": graph.model_dump(), "node_id": "expander", "row_limit": 10},
+        )
+
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["detail"] == {
+            "error_code": "node_config_invalid",
+            "message": "Scenario expander requires stepCount (the number of grid values).",
+            "setting": "stepCount",
         }
 
     def test_preview_rejects_unassigned_submodel_input_draft(
@@ -3311,7 +3349,7 @@ class TestMiddleware500:
         import json
 
         body = json.loads(resp.body)
-        assert body == {"detail": "Internal server error"}
+        assert body == {"detail": _INTERNAL_ERROR_DETAIL}
         assert 1 <= len(resp.headers["x-request-id"]) <= 64
 
     def test_request_id_header_passthrough(self, client: TestClient):
@@ -4894,7 +4932,7 @@ class TestMiddlewareLogging:
 
         assert resp.status_code == 500
         body = json.loads(resp.body)
-        assert body == {"detail": "Internal server error"}
+        assert body == {"detail": _INTERNAL_ERROR_DETAIL}
         assert "secret internal detail" not in resp.body.decode()
         assert "Traceback" not in resp.body.decode()
 

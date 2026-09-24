@@ -40,7 +40,8 @@ import {
   runtimeNodeIdForVisibleNode,
   type DrilledOccurrenceIdentity,
 } from "../utils/submodelRuntimeTarget"
-import { executionErrorDetailMessage, executionWarningNodeIds } from "../utils/executionDiagnostics"
+import { executionWarningNodeIds } from "../utils/executionDiagnostics"
+import { apiErrorMessage } from "../api/errors"
 export { columnFingerprint } from "../utils/columnFingerprint"
 
 interface PipelineAPIParams {
@@ -396,13 +397,6 @@ function isApiTimeoutError(err: unknown): err is ApiTimeoutError {
   return typeof err === "object" &&
     err !== null &&
     (err as { name?: unknown }).name === "ApiTimeoutError"
-}
-
-function previewErrorDetail(err: unknown): string {
-  const detailMessage = executionErrorDetailMessage(err)
-  if (detailMessage) return detailMessage
-  if (err instanceof ApiError && err.detail) return err.detail
-  return err instanceof Error ? err.message : String(err)
 }
 
 export default function usePipelineAPI({
@@ -779,7 +773,7 @@ export default function usePipelineAPI({
         if (previewRequestSeq.current !== requestId) return
         if (!documentStillCurrent()) return
         if (isAbortError(err) || isPreviewSupersededError(err)) return
-        const detail = previewErrorDetail(err)
+        const detail = apiErrorMessage(err)
         const failure = makePreviewData(node.id, label, { status: "error", error: detail })
         if (!requestStillCurrent()) {
           // Same terminal-state requirement as the success path: a failure
@@ -1004,7 +998,7 @@ export default function usePipelineAPI({
             .catch((err: unknown) => {
               if (!requestStillCurrent()) return
               if (isAbortError(err) || isPreviewSupersededError(err)) return
-              const detail = previewErrorDetail(err)
+              const detail = apiErrorMessage(err)
               addToast("warning", `Upstream preview failed for "${upstream.data?.label || upstream.id}": ${detail}`)
             })
             .finally(finishOne)
@@ -1042,7 +1036,7 @@ export default function usePipelineAPI({
       .catch((err: unknown) => {
         if (previewRequestSeq.current !== requestId || isAbortError(err)) return
         if (!documentStillCurrent()) return
-        const detail = previewErrorDetail(err)
+        const detail = apiErrorMessage(err)
         setPreviewData(
           makePreviewData(node.id, nodeLabel(node), {
             status: "error",
@@ -1160,7 +1154,7 @@ export default function usePipelineAPI({
         if (previewRequestSeq.current !== requestId) return
         if (!documentStillCurrent()) return
         if (isAbortError(err) || isPreviewSupersededError(err)) return
-        const detail = previewErrorDetail(err)
+        const detail = apiErrorMessage(err)
         setPreviewData(makePreviewData(node.id, label, { status: "error", error: detail }))
         if (isApiTimeoutError(err)) {
           addToast("error", `Preview timed out for "${label}": ${detail}`)
@@ -1306,11 +1300,7 @@ export default function usePipelineAPI({
         )
         return false
       }
-      const detail = err instanceof ApiError && err.detail
-        ? err.detail
-        : err instanceof Error
-          ? err.message
-          : "unknown error"
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Failed to save pipeline: ${detail}`)
       return false
     }

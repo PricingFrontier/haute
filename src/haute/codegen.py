@@ -20,7 +20,7 @@ from haute._codegen_builders import (
     _sanitize_description,
 )
 from haute._config_builder import resolve_parse_time_contract
-from haute._config_io import config_path_for_node, has_config_folder
+from haute._config_io import has_config_folder
 from haute._config_validation import reject_removed_config_keys
 from haute._contracts import (
     OPAQUE_CONTRACT_SENTINEL,
@@ -45,7 +45,6 @@ from haute._registry import NODE_REGISTRY
 from haute._submodel_instances import ResolvedSubmodelInstance, resolve_submodel_instances
 from haute._topo import topo_sort_ids
 from haute._types import (
-    NODE_TYPE_TO_DECORATOR,
     GraphEdge,
     GraphNode,
     NodeType,
@@ -286,11 +285,11 @@ def _node_to_code(
 ) -> str:
     """Generate code for a single node.
 
-    Delegates to :func:`_generate_node_code` for the type-specific body,
-    then replaces the decorator line with a ``config=`` file reference for
-    node types that use external JSON config files, and finally injects
-    the column contract as an additional decorator kwarg so reviewers
-    and the parser can cross-check it without running the pipeline.
+    Delegates to :func:`_generate_node_code` for the type-specific code — a
+    config-backed builder already emits its ``config=`` sidecar reference as
+    the decorator — then injects the column contract as an additional
+    decorator kwarg so reviewers and the parser can cross-check it without
+    running the pipeline.
     """
     if source_names is None:
         source_names = []
@@ -298,30 +297,6 @@ def _node_to_code(
         source_ids = []
 
     code = _generate_node_code(node, source_names)
-
-    node_type = node.data.nodeType
-    if has_config_folder(node_type):
-        func_name = _sanitize_func_name(node.data.label)
-        cfg_path = config_path_for_node(node_type, func_name).as_posix()
-        try:
-            dec_name = NODE_TYPE_TO_DECORATOR[node_type]
-        except KeyError as exc:
-            raise HauteError(
-                "config-backed node has no registered decorator; this is a codegen bug",
-                node_id=node.id,
-                node_label=node.data.label,
-                node_type=str(node_type),
-            ) from exc
-        try:
-            def_idx = code.index("\ndef ")
-        except ValueError as exc:
-            raise HauteError(
-                "config-backed node code has no function definition; this is a codegen bug",
-                node_id=node.id,
-                node_label=node.data.label,
-                node_type=str(node_type),
-            ) from exc
-        code = f"@pipeline.{dec_name}(config={_safe_path(cfg_path)})" + code[def_idx:]
 
     if not derive_contract and node.data.config.get("contract") is None:
         return code

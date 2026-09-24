@@ -526,9 +526,10 @@ def _profile_value(value: object) -> object:
 
     Every summary is encoded twice before the model reads it — once to bound
     the result, once by the provider adapter — and both encoders take only
-    JSON scalars. `json_safe_scalar` is where a `date`, `Decimal`, or infinity
-    becomes one; the length bound then applies to whatever text results, so a
-    rendered value can no more dominate the payload than a stored string can.
+    JSON values. `json_safe_scalar` is where a `date` or `Decimal` becomes text
+    and an infinity becomes the shared tagged non-finite sentinel; the length
+    bound then applies to whatever text results, so a rendered value can no
+    more dominate the payload than a stored string can.
     Never a partial row.
     """
 

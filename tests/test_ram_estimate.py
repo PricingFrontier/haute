@@ -18,6 +18,7 @@ from haute._ram_estimate import (
     MaterialisationEstimate,
     MaterialisationEstimateState,
     RamEstimate,
+    TrainingEstimateUnavailableReason,
     _bounded_cardinality_evidence,
     _cardinality_name_bindings,
     _data_input_parquet_artifact,
@@ -875,9 +876,12 @@ class TestEstimateSafeTrainingRows:
 
         result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
 
+        assert result.unavailable_reason is TrainingEstimateUnavailableReason.ROW_COUNT_UNPROVABLE
+        assert result.blocking_node_id == transform.id
         assert result.total_rows is None
         assert result.safe_row_limit is None
-        assert result.estimated_bytes == 0
+        assert result.estimated_bytes is None
+        assert result.bytes_per_row is None
         assert result.probe_columns == 0
 
     def test_string_exclude_config_is_ignored_as_invalid_sequence(self, tmp_path) -> None:
@@ -2252,8 +2256,11 @@ class TestEstimateSafeTrainingRowsEdgeCases:
         graph = PipelineGraph(nodes=[src, target], edges=[edge])
 
         result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+        assert result.unavailable_reason is TrainingEstimateUnavailableReason.ROW_COUNT_UNPROVABLE
+        assert result.blocking_node_id == src.id
         assert result.safe_row_limit is None
         assert result.total_rows is None
+        assert result.estimated_bytes is None
         assert not result.was_downsampled
 
     def test_safe_row_limit_respects_minimum(self, tmp_path) -> None:
@@ -2295,7 +2302,7 @@ class TestEstimateSafeTrainingRowsEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# RamEstimate — NamedTuple field access
+# RamEstimate — field access and availability invariants
 # ---------------------------------------------------------------------------
 
 
@@ -2337,17 +2344,111 @@ class TestRamEstimateFields:
         assert est.bytes_per_row == expected_bpr
 
     def test_default_probe_columns(self) -> None:
-        """probe_columns defaults to 0."""
+        """probe_columns defaults to 0; zero figures are an honest known-empty estimate."""
         est = RamEstimate(
             safe_row_limit=None,
-            total_rows=None,
+            total_rows=0,
             estimated_bytes=0,
             available_bytes=1,
-            bytes_per_row=0,
+            bytes_per_row=0.0,
             was_downsampled=False,
             warning=None,
         )
         assert est.probe_columns == 0
+        assert est.unavailable_reason is None
+
+    def test_unavailable_constructors_carry_their_reason(self) -> None:
+        row_count = RamEstimate.row_count_unprovable("join", available_bytes=10)
+        assert row_count.unavailable_reason is (
+            TrainingEstimateUnavailableReason.ROW_COUNT_UNPROVABLE
+        )
+        assert (row_count.total_rows, row_count.blocking_node_id) == (None, "join")
+        assert (row_count.estimated_bytes, row_count.bytes_per_row) == (None, None)
+
+        schema = RamEstimate.schema_unresolvable(250, available_bytes=10)
+        assert schema.unavailable_reason is TrainingEstimateUnavailableReason.SCHEMA_UNRESOLVABLE
+        assert (schema.total_rows, schema.blocking_node_id) == (250, None)
+        assert (schema.estimated_bytes, schema.bytes_per_row) == (None, None)
+
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ({"estimated_bytes": None}, "requires a row total and memory figures"),
+            ({"total_rows": None}, "requires a row total and memory figures"),
+            ({"blocking_node_id": "src"}, "names no blocking node"),
+            (
+                {
+                    "unavailable_reason": TrainingEstimateUnavailableReason.SCHEMA_UNRESOLVABLE,
+                },
+                "has no memory figures",
+            ),
+            (
+                {
+                    "unavailable_reason": TrainingEstimateUnavailableReason.ROW_COUNT_UNPROVABLE,
+                    "estimated_bytes": None,
+                    "bytes_per_row": None,
+                    "blocking_node_id": "src",
+                },
+                "names its blocking node and has no row total",
+            ),
+            (
+                {
+                    "unavailable_reason": TrainingEstimateUnavailableReason.ROW_COUNT_UNPROVABLE,
+                    "total_rows": None,
+                    "estimated_bytes": None,
+                    "bytes_per_row": None,
+                },
+                "names its blocking node and has no row total",
+            ),
+            (
+                {
+                    "unavailable_reason": TrainingEstimateUnavailableReason.SCHEMA_UNRESOLVABLE,
+                    "estimated_bytes": None,
+                    "bytes_per_row": None,
+                    "blocking_node_id": "src",
+                },
+                "keeps its row total and names no blocking node",
+            ),
+            (
+                {
+                    "unavailable_reason": TrainingEstimateUnavailableReason.SCHEMA_UNRESOLVABLE,
+                    "estimated_bytes": None,
+                    "bytes_per_row": None,
+                    "warning": "downsampled",
+                },
+                "has no memory figures, row limit, warning",
+            ),
+        ],
+    )
+    def test_rejects_figures_that_disagree_with_availability(
+        self,
+        overrides: dict[str, object],
+        message: str,
+    ) -> None:
+        fields: dict[str, object] = {
+            "safe_row_limit": None,
+            "total_rows": 100,
+            "estimated_bytes": 2_400,
+            "available_bytes": 1_000_000,
+            "bytes_per_row": 24.0,
+            "was_downsampled": False,
+            "warning": None,
+        }
+        with pytest.raises(ValueError, match=message):
+            RamEstimate(**{**fields, **overrides})  # type: ignore[arg-type]
+
+    def test_rejects_a_reason_outside_the_closed_set(self) -> None:
+        with pytest.raises(TypeError, match="TrainingEstimateUnavailableReason"):
+            RamEstimate(
+                safe_row_limit=None,
+                total_rows=100,
+                estimated_bytes=None,
+                available_bytes=1,
+                bytes_per_row=None,
+                was_downsampled=False,
+                warning=None,
+                unavailable_reason="schema_unresolvable",  # type: ignore[arg-type]
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -2371,10 +2472,13 @@ class TestEstimateSafeTrainingRowsSchemaUnavailable:
 
         with patch("haute._ram_estimate._resolve_target_columns", return_value=None):
             result = estimate_safe_training_rows(graph, target.id, _build_dummy_node_fn)
+        assert result.unavailable_reason is TrainingEstimateUnavailableReason.SCHEMA_UNRESOLVABLE
+        assert result.blocking_node_id is None
         assert not result.was_downsampled
         assert result.safe_row_limit is None
         assert result.total_rows == 100
-        assert result.bytes_per_row == 0
+        assert result.estimated_bytes is None
+        assert result.bytes_per_row is None
         assert result.probe_columns == 0
 
 

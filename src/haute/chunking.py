@@ -29,6 +29,8 @@ from haute._polars_io_registry import (
 )
 from haute._polars_operations import (
     EXPRESSION_NAMESPACE_NAMES,
+    POLARS_OPERATIONS,
+    OperationClass,
     OperationReceiver,
     chunk_admitted_names,
 )
@@ -63,6 +65,7 @@ __all__ = [
     "chunk_capability_declarations",
     "ChunkLocalDecision",
     "classify_chunk_local_polars_code",
+    "classify_row_local_expression",
     "is_chunk_local_polars_code",
     "collect_chunked",
     "iter_chunked_frames",
@@ -440,6 +443,57 @@ _ROW_LOCAL_NAMESPACE_METHOD_NAMES: Mapping[str, frozenset[str]] = MappingProxyTy
 )
 
 
+@dataclass(frozen=True, slots=True)
+class _RowLocalAdmission:
+    """The operation names one classification admits, by receiver."""
+
+    frame_methods: frozenset[str]
+    expr_methods: frozenset[str]
+    polars_functions: frozenset[str]
+    namespace_methods: Mapping[str, frozenset[str]]
+
+
+def _row_semantic_names(
+    receiver: OperationReceiver, namespace: str | None = None
+) -> frozenset[str]:
+    return frozenset(
+        entry.name
+        for entry in POLARS_OPERATIONS.values()
+        if entry.operation_class is OperationClass.ROW_LOCAL
+        and entry.receiver is receiver
+        and entry.namespace == namespace
+    )
+
+
+# Chunked execution admits only constructs with a chunked==full proof.
+_CHUNK_PROVEN_ADMISSION = _RowLocalAdmission(
+    frame_methods=_ROW_LOCAL_DF_METHOD_NAMES,
+    expr_methods=_ROW_LOCAL_EXPR_METHOD_NAMES,
+    polars_functions=_ROW_LOCAL_POLARS_FUNCTIONS,
+    namespace_methods=_ROW_LOCAL_NAMESPACE_METHOD_NAMES,
+)
+# One row determines an expression's value when every operation in it is
+# registered row-local, proven for chunking or not. ``when`` chained on a
+# conditional (``pl.when(a).then(x).when(b)``) opens another arm, as ``pl.when``.
+_ROW_SEMANTICS_ADMISSION = _RowLocalAdmission(
+    frame_methods=_row_semantic_names(OperationReceiver.FRAME),
+    expr_methods=_row_semantic_names(OperationReceiver.EXPR) | {"when"},
+    polars_functions=_row_semantic_names(OperationReceiver.POLARS_FUNCTION),
+    namespace_methods=MappingProxyType(
+        {
+            namespace: _row_semantic_names(OperationReceiver.NAMESPACE, namespace)
+            for namespace in sorted(
+                {
+                    entry.namespace
+                    for entry in POLARS_OPERATIONS.values()
+                    if entry.namespace is not None
+                }
+            )
+        }
+    ),
+)
+
+
 def _is_literal_scalar(node: ast.expr) -> bool:
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd | ast.USub):
         return isinstance(node.operand, ast.Constant)
@@ -625,6 +679,7 @@ class _ChunkLocalTrace:
     blocking_operator: str | None = None
     line: int | None = None
     column: int | None = None
+    admission: _RowLocalAdmission = _CHUNK_PROVEN_ADMISSION
 
     def record(self, reason: str, blocking_operator: str | None, node: ast.AST) -> None:
         if self.reason is not None:
@@ -734,6 +789,42 @@ def classify_chunk_local_polars_code(
     recognises it, and every rejection carries a closed reason, the blocking
     operator, and a 1-based source location.
     """
+    return _classify_row_local(
+        code,
+        frame_names=frame_names,
+        selector_aliases=selector_aliases,
+        admission=_CHUNK_PROVEN_ADMISSION,
+    )
+
+
+def classify_row_local_expression(
+    source: str,
+    *,
+    selector_aliases: frozenset[str] = frozenset(),
+) -> ChunkLocalDecision:
+    """Classify whether one row determines a Polars expression's value.
+
+    The walk is the chunk classifier's, with the same argument guards, but it
+    admits every operation the operation registry classes as row-local rather
+    than only those proven for chunked execution. An expression holding a
+    window, aggregation, shift, rank, cumulative, or unregistered operation is
+    rejected with that operator named.
+    """
+    return _classify_row_local(
+        f"df = df.with_columns(__haute_expression__=({source}))",
+        frame_names=("df",),
+        selector_aliases=selector_aliases,
+        admission=_ROW_SEMANTICS_ADMISSION,
+    )
+
+
+def _classify_row_local(
+    code: object,
+    *,
+    frame_names: Iterable[str] | None,
+    selector_aliases: frozenset[str],
+    admission: _RowLocalAdmission,
+) -> ChunkLocalDecision:
     if not isinstance(code, str) or not code.strip():
         return ChunkLocalDecision(eligible=True, reason="empty_code")
     allowed_frames = {name for name in (frame_names or ()) if name}
@@ -748,7 +839,7 @@ def classify_chunk_local_polars_code(
             line=exc.lineno,
             column=exc.offset,
         )
-    trace = _ChunkLocalTrace()
+    trace = _ChunkLocalTrace(admission=admission)
     local_frames: set[str] = set()
     # A ``polars.selectors`` alias the code rebinds no longer names the module.
     selector_aliases = frozenset(selector_aliases) - {
@@ -1613,19 +1704,8 @@ def run_chunked_reduce(
             "is not allowed on chunked_map_reduce paths.",
             target_node_id=request.plan.target_node_id,
         )
-    context = request.execution_context
     for batch in iter_chunked_frames(request):
-        if context is not None:
-            context.fault_point(
-                "reducer_add",
-                node_id=request.plan.target_node_id,
-            )
         reducer.add(batch)
-    if context is not None:
-        context.fault_point(
-            "reducer_finish",
-            node_id=request.plan.target_node_id,
-        )
     return reducer.finish()
 
 
@@ -1803,7 +1883,7 @@ def _row_local_call_is_supported(
         return True, False
     method_name = func.attr
     if isinstance(func.value, ast.Name) and func.value.id == "pl":
-        if method_name not in _ROW_LOCAL_POLARS_FUNCTIONS:
+        if method_name not in trace.admission.polars_functions:
             trace.record("unsupported_polars_function", f"pl.{method_name}", func)
             return False, False
         args_supported = _row_local_subexprs_are_supported(
@@ -1833,10 +1913,10 @@ def _row_local_call_is_supported(
     if not receiver_supported:
         return False, False
     if receiver_derived:
-        if method_name not in _ROW_LOCAL_DF_METHOD_NAMES:
+        if method_name not in trace.admission.frame_methods:
             trace.record("unsupported_frame_method", method_name, func)
             return False, False
-    elif method_name not in _ROW_LOCAL_EXPR_METHOD_NAMES:
+    elif method_name not in trace.admission.expr_methods:
         trace.record("unsupported_expression_method", method_name, func)
         return False, False
     shape_validator = _CHUNK_LOCAL_CALL_SHAPE_VALIDATORS.get(method_name)
@@ -1878,7 +1958,7 @@ def _row_local_namespace_call_is_supported(
         # A frame exposes no expression namespaces: treat it as unadmitted.
         trace.record("unsupported_namespace_method", qualified, namespace)
         return False, False
-    if method_name not in _ROW_LOCAL_NAMESPACE_METHOD_NAMES.get(namespace.attr, frozenset()):
+    if method_name not in trace.admission.namespace_methods.get(namespace.attr, frozenset()):
         trace.record("unsupported_namespace_method", qualified, namespace)
         return False, False
     if not _namespace_call_args_are_literal(call):

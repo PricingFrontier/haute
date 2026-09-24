@@ -17,6 +17,7 @@ from haute._mlflow_utils import (
     set_experiment_creating_workspace_folder,
     set_tracking_uri_preserving_env,
 )
+from haute._polars_dtypes import rendered_dtype_mlflow_type_name
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._utils import build_manifest, model_source_line
 from haute.errors import DeployError
@@ -244,41 +245,18 @@ def _build_signature(resolved: ResolvedDeploy) -> object:
     from mlflow.models import ModelSignature
     from mlflow.types import ColSpec, DataType, Schema
 
-    dtype_map = {
-        "Int8": DataType.integer,
-        "Int16": DataType.integer,
-        "Int32": DataType.integer,
-        "Int64": DataType.long,
-        "UInt8": DataType.integer,
-        "UInt16": DataType.integer,
-        "UInt32": DataType.long,
-        "UInt64": DataType.long,
-        "Float32": DataType.float,
-        "Float64": DataType.double,
-        "String": DataType.string,
-        "Utf8": DataType.string,
-        "Categorical": DataType.string,
-        "Enum": DataType.string,
-        "Boolean": DataType.boolean,
-        "Date": DataType.datetime,
-        "Datetime": DataType.datetime,
-    }
-
     def _to_colspecs(schema: dict[str, str]) -> list[ColSpec]:
         specs = []
         for col_name, dtype_str in schema.items():
-            # Handle parameterized types like Datetime('us', 'UTC')
-            base_type = dtype_str.split("(")[0] if "(" in dtype_str else dtype_str
-            try:
-                mlflow_type = dtype_map[base_type]
-            except KeyError as exc:
+            mlflow_type = rendered_dtype_mlflow_type_name(dtype_str)
+            if mlflow_type is None:
                 raise DeployError(
                     f"Cannot build an MLflow signature for column {col_name!r}: "
                     f"unsupported Polars dtype {dtype_str!r}.",
                     column=col_name,
                     dtype=dtype_str,
-                ) from exc
-            specs.append(ColSpec(type=mlflow_type, name=col_name))
+                )
+            specs.append(ColSpec(type=DataType[mlflow_type], name=col_name))
         return specs
 
     input_schema = Schema(_to_colspecs(resolved.input_schema))  # type: ignore[arg-type]

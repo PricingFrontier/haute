@@ -256,7 +256,7 @@ describe("ensureInputSnapshots", () => {
       refresh: false,
       profile: "lazy_sink",
     })
-    expect(getInputCacheJob).toHaveBeenCalledWith("job-1")
+    expect(getInputCacheJob).toHaveBeenCalledWith("job-1", { signal: expect.any(AbortSignal) })
   })
 
   it("uses ready snapshots without refreshing either fresh or stale data", async () => {
@@ -278,7 +278,7 @@ describe("ensureInputSnapshots", () => {
     await ensureInputSnapshots([dataInput("quotes")])
 
     expect(buildInputCache).toHaveBeenCalledOnce()
-    expect(getInputCacheJob).toHaveBeenCalledWith("job-1")
+    expect(getInputCacheJob).toHaveBeenCalledWith("job-1", { signal: expect.any(AbortSignal) })
   })
 
   it("retries an unsupported lazy build once with the eager profile", async () => {

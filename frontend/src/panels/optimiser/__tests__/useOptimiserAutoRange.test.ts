@@ -74,13 +74,17 @@ describe("useOptimiserAutoRange", () => {
       requestSignal = signal
       return Promise.resolve({ status: "started", job_id: "stale-job" })
     })
-    api.status.mockReturnValue(status.promise)
+    let statusSignal: AbortSignal | undefined
+    api.status.mockImplementation((_jobId: string, { signal }: { signal: AbortSignal }) => {
+      statusSignal = signal
+      return status.promise
+    })
     const { result, onUpdate } = renderAutoRange()
 
     act(() => result.current.run())
     await waitFor(() => expect(api.status).toHaveBeenCalledWith(
       "stale-job",
-      { signal: requestSignal },
+      { signal: expect.any(AbortSignal) },
     ))
 
     act(() => {
@@ -89,6 +93,7 @@ describe("useOptimiserAutoRange", () => {
 
     await waitFor(() => expect(api.cancel).toHaveBeenCalledWith("stale-job"))
     expect(requestSignal?.aborted).toBe(true)
+    expect(statusSignal?.aborted).toBe(true)
     expect(result.current.autoRangeLoading).toBe(false)
 
     await act(async () => {

@@ -7,7 +7,7 @@ import type {
 import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSummary"
 import type { SolveProgress } from "../../stores/useNodeResultsStore"
 import { withAlpha } from "../../utils/color"
-import { formatElapsed } from "../../utils/formatValue"
+import { formatDuration } from "../../utils/formatValue"
 import type { IterationSummary } from "./iterationSummary"
 
 type OptimiserSolveStatusProps = {
@@ -139,7 +139,7 @@ export default function OptimiserSolveStatus({
                     {progress.message || "Solving..."}
                   </span>
                   <span style={{ color: "var(--text-muted)" }}>
-                    {formatElapsed(progress.elapsed_seconds)}
+                    {formatDuration(progress.elapsed_seconds)}
                   </span>
                 </div>
                 <div
