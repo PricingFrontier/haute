@@ -956,3 +956,40 @@ class TestPrivateRecords:
         )
         assert set(store.list_jobs()) == before
         assert store.get_job(unrelated) is not None
+
+
+def test_a_self_admitted_auto_range_job_returns_its_admission_when_it_fails(
+    project: Path,
+) -> None:
+    """The job releases the admission it took, not garbage collection.
+
+    The background launcher enters the job without a context. With the failure
+    still referenced and the cycle collector off, a reservation left to the
+    context's finaliser would stay in flight and refuse the next heavy request.
+    """
+    import gc
+
+    from haute import _execution_admission
+
+    graph = _online_graph(_scored_parquet(project, null_quote=True))
+    body = OptimiserFrontierAutoRangeRequest.model_validate({"graph": graph, "node_id": "opt"})
+    service = OptimiserSolveService(JobStore())
+    prepared = service._prepare_frontier_auto_range(body)
+    job_id = service._store.create_job({"status": "running", "job_type": "frontier_auto_range"})
+
+    def held() -> list[str]:
+        return [
+            operation
+            for _profile, _bytes, operation in _execution_admission._IN_FLIGHT_RESERVATIONS.values()
+            if operation == "frontier_auto_range"
+        ]
+
+    assert held() == []
+    gc.disable()
+    try:
+        with pytest.raises(HTTPException) as raised:
+            service._run_frontier_auto_range_job(body, job_id, **prepared)
+        assert raised.value.status_code == 400
+        assert held() == []
+    finally:
+        gc.enable()

@@ -297,7 +297,10 @@ HTTP 422; the 422 mapping remains for bounded streaming-collect failures.
   already running (unlike
   `start()`'s stricter conflict behaviour), otherwise creates a cancellable job, registers it,
   and spawns a worker thread.
-- `_run_frontier_auto_range_job` is the one auto-range job. It owns admission, cancellation,
+- `_run_frontier_auto_range_job` is the one auto-range job. It owns admission (entered
+  without a context, as the background launcher enters it, it admits its own and releases it on
+  every exit, so a failed job never leaves its memory reservation to garbage collection),
+  cancellation,
   completion (the result's `warning` and `chunk_fallback` come from the recorded fallback) and a
   single failure classification, and takes its range batches from one of two sources:
   `_chunked_frontier_ranges` (execute to the streaming plan's base node, then

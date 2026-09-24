@@ -3423,19 +3423,65 @@ class OptimiserSolveService:
         false only inside that worker, which passes the *seed_plan* handoff).
         """
         del node, mode
-        if execution_context is None:
-            # A job entered without a caller-owned context still runs under
-            # admission: a materialising boundary is never admitted bare.
-            execution_context = create_admitted_execution_context(
-                operation="frontier_auto_range",
-                profile=ExecutionProfile.AUTO_RANGE,
-                job_id=job_id,
-            )
-            bind_running_execution_metrics_publisher(
-                self._store,
+        if execution_context is not None:
+            return self._run_admitted_frontier_auto_range_job(
+                body,
                 job_id,
-                execution_context,
+                execution_context=execution_context,
+                config=config,
+                chunk_size=chunk_size,
+                partition_count=partition_count,
+                timeout=timeout,
+                required_columns_by_node=required_columns_by_node,
+                streaming_plan=streaming_plan,
+                chunk_fallback=chunk_fallback,
+                seed_plan=seed_plan,
+                isolate=isolate,
             )
+        # A job entered without a caller-owned context still runs under
+        # admission: a materialising boundary is never admitted bare. The job
+        # owns that admission and returns it on every exit, rather than leaving
+        # the memory reservation to garbage collection.
+        owned_context = create_admitted_execution_context(
+            operation="frontier_auto_range",
+            profile=ExecutionProfile.AUTO_RANGE,
+            job_id=job_id,
+        )
+        try:
+            bind_running_execution_metrics_publisher(self._store, job_id, owned_context)
+            return self._run_admitted_frontier_auto_range_job(
+                body,
+                job_id,
+                execution_context=owned_context,
+                config=config,
+                chunk_size=chunk_size,
+                partition_count=partition_count,
+                timeout=timeout,
+                required_columns_by_node=required_columns_by_node,
+                streaming_plan=streaming_plan,
+                chunk_fallback=chunk_fallback,
+                seed_plan=seed_plan,
+                isolate=isolate,
+            )
+        finally:
+            owned_context.release_admission(preserve_primary_error=True)
+
+    def _run_admitted_frontier_auto_range_job(
+        self,
+        body: OptimiserFrontierAutoRangeRequest,
+        job_id: str,
+        *,
+        execution_context: ExecutionContext,
+        config: dict[str, Any],
+        chunk_size: int,
+        partition_count: int,
+        timeout: int,
+        required_columns_by_node: Mapping[str, Iterable[str]],
+        streaming_plan: _StreamingAutoRangePlan | None,
+        chunk_fallback: dict[str, Any] | None,
+        seed_plan: SeedPlanHandoff | None,
+        isolate: bool,
+    ) -> OptimiserFrontierAutoRangeResponse:
         try:
             execution_context.checkpoint(label="frontier_auto_range_start")
         except ExecutionCancelledError as exc:
@@ -4354,15 +4400,20 @@ class OptimiserSolveService:
         """Record a setup step's refusal as the job's terminal state, then answer it."""
         try:
             yield
-        except OptimiserSetupError as failure:
-            self._record_setup_failure(
-                job_id,
-                to=failure.reason,
-                message=failure.message,
-                fields=failure.fields,
-                execution_context=execution_context,
-            )
-            raise failure.http_exception() from failure
+        except OptimiserSetupError as caught:
+            failure = caught
+        else:
+            return
+        self._record_setup_failure(
+            job_id,
+            to=failure.reason,
+            message=failure.message,
+            fields=failure.fields,
+            execution_context=execution_context,
+        )
+        # Raised outside the handler, as the steps used to raise it: the answer
+        # carries no chain back to the step's frames.
+        raise failure.http_exception()
 
     def _resolve_data_input_frame(
         self,
