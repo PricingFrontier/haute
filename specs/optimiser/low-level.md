@@ -363,7 +363,12 @@ phase and a background sweep phase, mirroring the solve submission pattern:
 3. **Background** (`_run_frontier_sweep`): calls
    `haute.routes._optimiser_service._compute_frontier`, a thin dispatcher: ratebook passes
    `ratebook_factors`/`factor_columns` kwargs to `solver.frontier(...)`, while online omits them.
-   A cancellation checkpoint runs before and after the external frontier call. The response is
+   The library sweeps serially (its `parallel` flag stays off): its parallel sweep was 39-89%
+   faster on the measured frontiers but raised peak memory by up to forty times, moved 1-D lambdas
+   by up to 9e-4 relative and changed 2-D points' convergence and lambdas, so it was not adopted
+   (`scripts/benchmarks/opt-p06-frontier-parallelism.json`).
+   A cancellation checkpoint runs before and after the external frontier call, so a cancel is
+   observed when the sweep returns. The response is
    capped via `haute.routes._optimiser_limits.limited_frontier_payload` (caps to
    `FRONTIER_POINT_LIMIT` while always reporting the true total and truncation flag, and attaches
    `point_summaries`, one `frontier_point_summary` per returned point in point order; a point that

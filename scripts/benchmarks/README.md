@@ -16,5 +16,9 @@ test suite or a product-behaviour contract.
   raw JSON results keep the commands and paths recorded when they ran.
 - `benchmark_optimiser_*.py`: optimiser auto-range and pipeline timing
   benchmarks; each takes `--pipeline` for the project to measure.
+- `opt-p06-frontier-parallelism.*`: the library's serial against parallel
+  frontier sweep (24 September 2026). The parallel sweep was faster but raised
+  peak memory and changed results, so the frontier stays serial; the decision is
+  recorded in `specs/optimiser/low-level.md`.
 - `price_contour_ratebook_frontier/`: a standalone reproduction of a slow
   ratebook efficient frontier, with its metadata.
