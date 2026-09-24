@@ -31,7 +31,7 @@ or maintenance issue; `P3` opportunistic work.
 | [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients | `MLF-R02` |
 | [Modelling](modelling.md) | Evaluation and tuning invariants checked once | `MOD-T10` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers, auto-range, input isolation | `OPT-P13` |
-| [Pipeline config](pipeline-config.md) | Repair, save validation, the error a rejected config reports, project context, typed configs, node specification | `PCFG-R01` |
+| [Pipeline config](pipeline-config.md) | Repair, save validation, the error a rejected config reports, project context, typed configs, node specification | `PCFG-R03` |
 | [Sandbox security](sandbox-security.md) | One path-containment check, the node-code guard | `SBX-R01` |
 | [Server API](server-api.md) | Error translation, generated browser contract, recovery scope | `API-R01` |
 | [Submodels](submodels.md) | One reuse mechanism | `SUB-R01` |

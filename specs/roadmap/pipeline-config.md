@@ -16,7 +16,6 @@ knows enough to prevent it and none of them acts.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| PCFG-R01 | Planned | P2 | A repair never reports success while leaving a node unrunnable. |
 | PCFG-R03 | Planned | P3 | Save refuses a config the executor cannot build. |
 | PCFG-R04 | Planned | P2 | One project context, resolved once, replaces a dozen project-root and pipeline-directory resolvers. |
 | PCFG-R06 | Decision | P2 | One stated rule for non-canonical input, and code that follows it. |
@@ -24,11 +23,11 @@ knows enough to prevent it and none of them acts.
 | PCFG-R08 | Planned | P3 | Editor-only state travels beside the node config, not inside it. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
 
-The delivery order is `PCFG-R01` → `PCFG-R03`. `R01` stops new
-unrunnable configs being written; `R03` closes the remaining write path.
-The ones already on disk are legible: a builder's config rejection is a
-`NodeConfigError`, which the public contract returns as a 422 naming the
-setting.
+A recover now states what it could not fix (every unresolved engine error
+is completeness on the node), and the configs already on disk are legible: a
+builder's config rejection is a `NodeConfigError`, which the public contract
+returns as a 422 naming the setting. `PCFG-R03` closes the remaining write
+path.
 
 `PCFG-R04` to `PCFG-R09` come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md).
@@ -55,44 +54,11 @@ which the preview route cannot classify, so the browser received
 log recorded only `interactive_worker_remote_failure … remote_type=ValueError`.
 
 Three defects, one user-visible symptom: an opaque 500 on a node the system
-had already diagnosed precisely. The last of them is fixed (the preview now
-answers 422 with the engine's message); `PCFG-R01` and `PCFG-R03` remain.
+had already diagnosed precisely. Two are fixed: the repair reports the
+missing grid size as completeness on the node, and the preview answers 422
+with the engine's message. `PCFG-R03` remains.
 
 ## Planned improvements
-
-### PCFG-R01 — A repair states what it could not fix
-**Why:** `reconcile_config` returns the issues it found alongside the repaired
-config, and `_recover_node` discards them. Its own comment says engine issues
-are surfaced as completeness, but `_recover_completeness` returns `[]` for
-every node type except `DATA_INPUT` and `DATA_OUTPUT`, so for every other
-node an error-level issue is dropped. The repair plan then reports success.
-Field changes are still reported, so a dropped required key is shown to the
-user as `defaulted` — which reads as *fixed*.
-
-**Plan:** Carry `ConfigRecoveryResult.issues` through `_recover_node` into the
-plan. Report an error-level issue as node completeness for every node type,
-not only the two Data provider families; `_recover_completeness` keeps its
-provider-specific gap detail and gains the engine issues as its general case.
-Decide and record one product rule for an error-level issue that survives a
-repair: either the plan reports the node incomplete and applies (the node is
-visibly unfinished, matching a declared-incomplete Data Input), or the repair
-is refused and the user is offered reset. Do not resolve this by consulting
-`node_defaults.json` on the recover path — `reconcile_config(reset=False)`
-deliberately does not adopt defaults, because a recover must not invent
-settings the user never chose.
-
-**Acceptance:** A recover of a Scenario Expander whose config lacks `stepCount`
-reports that node as incomplete with the engine's own message, and a test
-asserts the issue reaches the plan rather than the engine's return value. A
-recover that resolves every issue still reports no completeness gaps. The
-chosen rule for applying-versus-refusing is specified in the pipeline-config
-low-level spec before the behaviour changes.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_pipeline_repair_actions.py` (`_recover_node`,
-`_recover_completeness`); `src/haute/_node_config_recovery.py`
-(`reconcile_config`, `_validator_issues`).
 
 ### PCFG-R03 — Save refuses a config the executor cannot build
 **Why:** `_validate_strict_node_configs` runs `validate_node_config` for
@@ -116,9 +82,9 @@ is rejected with a message naming the node and the setting; saving a
 deliberately unfinished node of each type that has an incomplete form still
 succeeds. Tests cover both directions per node type touched.
 
-**Dependencies:** PCFG-R01 (a repair should stop producing these configs
-before save starts refusing them, or a user with an already-damaged project
-can neither repair nor save). The save route is owned by server-api; this
+**Dependencies:** None (a recover already reports what it could not fix,
+so a user with an already-damaged project can recover and then complete the
+node before saving). The save route is owned by server-api; this
 package changes the validation it calls, not the route's contract.
 
 **Evidence:** `src/haute/routes/_save_pipeline.py`

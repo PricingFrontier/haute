@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from haute._config_io import _prepare_config_for_sidecar, config_path_for_node, node_emits_sidecar
 from haute._config_validation import reject_unrecognized_config_keys
@@ -48,6 +48,9 @@ from haute.schemas import (
     RecoveryGraphSnapshot,
     RecoveryPipelineNode,
 )
+
+if TYPE_CHECKING:
+    from haute._node_config_recovery import RecoveryIssue
 
 
 def _unsupported(message: str) -> PipelineRepairError:
@@ -583,26 +586,36 @@ def _recover_node(
         edits,
         raw,
         field_changes,
-        _recover_completeness(node_type, result.config, target.recovery_id),
+        _recover_completeness(node_type, result.config, target.recovery_id, result.issues),
     )
 
 
 def _recover_completeness(
-    node_type: NodeType, config: dict[str, Any], recovery_id: str
+    node_type: NodeType,
+    config: dict[str, Any],
+    recovery_id: str,
+    issues: Sequence[RecoveryIssue],
 ) -> list[PipelineNodeCompleteness]:
+    """What the recover could not fix: provider gaps plus unresolved engine errors."""
     from haute._polars_io_registry import data_input_completeness, data_output_completeness
 
     if node_type is NodeType.DATA_INPUT:
-        gaps = data_input_completeness(config)
+        gaps = [(gap.path, gap.code, gap.message) for gap in data_input_completeness(config)]
     elif node_type is NodeType.DATA_OUTPUT:
-        gaps = data_output_completeness(config)
+        gaps = [(gap.path, gap.code, gap.message) for gap in data_output_completeness(config)]
     else:
-        return []
+        gaps = []
+    # An error the engine could not resolve must never read as fixed: the
+    # recover applies and the node shows it as unfinished.
+    for issue in issues:
+        if issue.severity != "error":
+            continue
+        entry = (issue.path or "/", issue.code, issue.message[:1024])
+        if entry not in gaps:
+            gaps.append(entry)
     return [
-        PipelineNodeCompleteness(
-            element_id=recovery_id, path=gap.path, code=gap.code, message=gap.message
-        )
-        for gap in gaps
+        PipelineNodeCompleteness(element_id=recovery_id, path=path, code=code, message=message)
+        for path, code, message in gaps
     ]
 
 

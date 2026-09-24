@@ -486,8 +486,8 @@ nodes offer `Recover settings` (primary) and `Reset node`. These actions follow 
 server-owned apply contract in
 [node recovery actions](../server-api/node-recovery-actions.md). Blocked nodes expose no
 reset or recover action. Reset confirmation explicitly describes replaced settings/code and
-required reconfiguration; a successful recover records a dismissible session summary of
-retained/defaulted/needs-input/removed
+required reconfiguration; a successful recover records a dismissible session summary, with
+what it could not fix listed as still to complete, of retained/defaulted/needs-input/removed
 fields with on-demand previous-configuration and diff views; updating a submodel preserves
 its contents and consumer code. In degraded documents, `scoped_editable` nodes keep their
 normal editors and save through the node-scoped save, which adopts the authoritative

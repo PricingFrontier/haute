@@ -184,7 +184,21 @@ completeness-tolerant mode (`require_complete=False`): structural and branch vio
 raise `ConfigError`, while missing required locator values (the empty string treated as
 absence) no longer fail the parse. Field-level completeness is not a parse artefact; the
 editor document loader recomputes it from the same validators, and execution, preview, and
-deploy still validate strictly before running. The resulting raw node
+deploy still validate strictly before running.
+
+**What a recover cannot fix.** The editor's Recover settings action
+(`src/haute/_pipeline_repair_actions.py::_recover_node`, over
+`src/haute/_node_config_recovery.py::reconcile_config`) never reports an unresolved problem as
+fixed. For a candidate that still loads, every error-level engine issue that survives the
+reconciliation (a required value the engine will not invent, an invalid range) is reported, for
+every node type, as a completeness entry on the target: the issue's field path (`/` for a
+whole-config issue), its code and the engine's own message, beside the Data Input/Output
+provider gaps; the node panel shows them with the recover summary. The recover applies and the
+node is visibly unfinished, like a declared-incomplete Data Input; Reset remains the explicit
+replacement with palette defaults. A candidate that cannot load (for example an unknown
+provider branch) is refused as before. Omitted settings stay absent: recover never fills an
+absent field from `node_defaults.json` and never takes a default from another provider branch
+(an invalid present value may take its own branch's audited default). The resulting raw node
 dicts feed `_build_edges` (explicit `connect()` tuples in one four-field
 `(source, target, source_port, target_port)` form,
 plus implicit parameter-name-matching edges; edges are never invented, so a file declaring no

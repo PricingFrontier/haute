@@ -400,6 +400,73 @@ def test_recover_retains_valid_settings_and_reports_outcomes(tmp_path):
     assert "code" not in written
 
 
+def test_recover_reports_what_it_could_not_fix_as_completeness(tmp_path):
+    """The worked example: a Scenario Expander sidecar from before the stepCount rename
+    (`steps: 11`, no `stepCount`). The recover applies, and the engine's own issue
+    reaches the plan as completeness instead of being dropped."""
+    from haute._config_io import collect_node_configs
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
+    from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+    from haute.codegen import graph_to_code
+
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="quotes",
+                data=NodeData(
+                    label="quotes",
+                    nodeType=NodeType.CONSTANT,
+                    config={"values": [{"name": "quote_id", "value": "1"}]},
+                ),
+            ),
+            GraphNode(
+                id="grid",
+                data=NodeData(
+                    label="grid",
+                    nodeType=NodeType.SCENARIO_EXPANDER,
+                    config={
+                        "quote_id": "quote_id",
+                        "column_name": "price",
+                        "step_column": "scenario_index",
+                        "min_value": 0.1,
+                        "max_value": 0.3,
+                        "stepCount": 3,
+                        "steps": [],
+                    },
+                ),
+            ),
+        ],
+        edges=[GraphEdge(id="e_quotes_grid", source="quotes", target="grid")],
+    )
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(graph_to_code(graph, pipeline_name="demo"))
+    for rel_path, content in collect_node_configs(graph).items():
+        config_file = tmp_path / rel_path
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(content)
+    sidecar = tmp_path / "config/expander/grid.json"
+    stale = json.loads(sidecar.read_text())
+    del stale["stepCount"]
+    stale["steps"] = 11
+    sidecar.write_text(json.dumps(stale))
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    target = next(node for node in document.nodes if node.authored_id == "grid")
+    assert target.availability == "unavailable"
+
+    request = _request(tmp_path, "grid", "recover")
+    plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
+
+    assert [(entry.path, entry.code, entry.message) for entry in plan.response.completeness] == [
+        ("/", "incomplete_range", "Scenario range and stepCount are required.")
+    ]
+    assert all(entry.element_id == target.recovery_id for entry in plan.response.completeness)
+    result = _apply(tmp_path, request)
+    assert [entry.code for entry in result.completeness] == ["incomplete_range"]
+    applied = next(node for node in result.document.nodes if node.authored_id == "grid")
+    assert applied.availability == "ready"
+    assert "stepCount" not in json.loads(sidecar.read_text())
+
+
 def test_recover_empty_locator_applies_as_incomplete(tmp_path):
     from haute._pipeline_repair import build_recover_unavailable_node_plan
 

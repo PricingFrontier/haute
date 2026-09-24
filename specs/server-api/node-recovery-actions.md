@@ -54,7 +54,10 @@ The recovery inspector extends removal with three explicitly confirmed actions:
   never fills a default from a different provider/format/mode branch. Unrecoverable
   collection entries are excluded from the candidate and reported with their original
   value, never emitted as null placeholders. Missing required values use the
-  declared-incomplete form and surface as completeness, not as a blocked plan. Authored
+  declared-incomplete form and surface as completeness, not as a blocked plan. Every
+  error-level engine issue that survives the recover, for any node type, is reported
+  as a completeness entry on the target with the engine's own message, so nothing
+  unresolved reads as fixed. Authored
   code bytes in declared code slots are retained; only recognised generated scaffolding
   is regenerated. The applied node must load (available, or blocked only by an upstream
   failure) — completeness and execution-readiness are explicitly not plan gates.
