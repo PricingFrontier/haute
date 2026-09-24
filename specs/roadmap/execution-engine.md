@@ -19,48 +19,15 @@ the static estimate admits only what no cap bounds.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| EXEC-R03 | Planned | P3 | The chunked map-reduce planner and runner are removed with their only consumer. |
 | EXEC-R05 | Planned | P2 | One graph walker builds every execution; eager, preview, trace and scoring differ only in their collect policy. |
 
 ## Planned improvements
 
-`EXEC-R03` follows the optimiser's `OPT-P15` if that package removes the
-runner's only consumer. The walker in `EXEC-R05` keeps projection planning, which
-the memory-safety decision retains for uncapped surfaces.
-
-### EXEC-R03 — Retire the chunked map-reduce runner
-**Why:** `chunking.py` is a 2,251-line planner and runner, with per-node-type
-capability declarations, an AST row-locality whitelist, chunk sizing and a
-hypothesis-based proof suite. It has exactly one production consumer: the
-streaming frontier auto-range job. If `OPT-P15` shows that one streaming
-group-by keeps auto-range within its memory bound and replaces that job, the
-planner and runner are dead. `classify_chunk_local_polars_code` is also used
-for row-locality checks in lazy execution and trace correlation, and trace
-formula evaluation uses its row-semantics mode (`classify_row_local_expression`),
-so the classifier stays while those checks exist.
-
-**Plan:** After `OPT-P15` removes the consumer, delete `chunk_plan`,
-`iter_chunked_frames`, `run_chunked_reduce`, `collect_chunked`, the
-capability declarations and their tests. Move `classify_chunk_local_polars_code`,
-`classify_row_local_expression` and their helpers to a small module next to their remaining
-callers. Remove the chunked map-reduce text from the
-execution-engine specification in the same change.
-
-**Acceptance:** No production module imports the planner or runner; the
-execution-engine specification no longer describes a chunked map-reduce
-mode; the chunk tests that only exercised the runner are gone and the
-row-locality classifier keeps its own tests.
-
-**Dependencies:** `OPT-P15` (optimiser); this package does not proceed if
-`OPT-P15` keeps the chunked auto-range path. The classifier survives: lazy
-execution, trace correlation and trace formula evaluation keep using it.
-
-**Evidence:** `src/haute/chunking.py::chunk_plan`;
-`src/haute/chunking.py::iter_chunked_frames`;
-`src/haute/chunking.py::classify_chunk_local_polars_code`;
-`src/haute/routes/_optimiser_service.py::_chunked_frontier_ranges`;
-`tests/test_chunk_plan.py`; `tests/test_chunk_runner.py`;
-`tests/test_chunk_whitelist_proofs.py`.
+The walker in `EXEC-R05` keeps projection planning, which the memory-safety
+decision retains for uncapped surfaces. The chunked map-reduce runner stays:
+the optimiser's `OPT-P15` measured the streaming frontier auto-range job and
+kept its chunked path, so the retirement once planned for the runner does not
+proceed and the runner becomes one more policy over the walker.
 
 ### EXEC-R05 — One graph walker with a collect policy
 **Why:** `_execute_lazy` (1,062 lines, 18 parameters, 11 nested functions
@@ -89,8 +56,8 @@ deploy scoring pass their existing suites unchanged through the new walker;
 the two old cores are deleted; no function in the walker exceeds a
 cyclomatic complexity the team agrees in the specification.
 
-**Dependencies:** `EXEC-R03`, or, if the chunked runner stays, re-expressing it as one more
-policy over the walker.
+**Dependencies:** None. The chunked runner stays (see above), so it moves onto
+the walker as one more policy.
 
 **Evidence:** `src/haute/_execute_lazy.py::_execute_lazy`;
 `src/haute/_execute_lazy.py::_execute_eager_core`;

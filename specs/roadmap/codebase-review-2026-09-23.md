@@ -348,7 +348,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §1.8 Path containment ×5 | `SBX-R01` ([sandbox security](sandbox-security.md)) |
 | §1.8 Client picks the build profile from error text | `CACHE-S27` ([caching](caching.md)) |
 | §2.1 Dead dataframe execution cache | `CACHE-S23` ([caching](caching.md)) |
-| §2.2 Chunked runner and streaming auto-range | `OPT-P15` ([optimiser](optimiser.md)), then `EXEC-R03` ([execution engine](execution-engine.md)) if the measurement removes the runner's consumer |
+| §2.2 Chunked runner and streaming auto-range | `OPT-P15` (optimiser, delivered) kept the chunked auto-range path, so the runner's retirement (`EXEC-R03`) was dropped and the runner becomes a walker policy in `EXEC-R05` ([execution engine](execution-engine.md)) |
 | §2.3 Unreferenced and test-only code | `ENGQ-R01` ([engineering quality](engineering-quality.md)); the preview-reader protocol is `TRACE-R02` ([tracing](tracing.md)) |
 | §2.4 Per-request chunk-size knob | `EXEC-R01` ([execution engine](execution-engine.md)), with §1.1 |
 | §2.5 Assistant legacy catalogue and harnesses | `ASSIST-R01` ([assistant](assistant.md)) |
