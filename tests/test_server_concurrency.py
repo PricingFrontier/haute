@@ -199,7 +199,10 @@ class TestWsClientsConcurrentMutation:
         raised and the invariant holds.
 
         A proper fix exposes a shared lock or uses a thread-safe
-        container; we verify by stress-testing the pattern.
+        container. The interleaving is forced rather than left to the
+        scheduler: every dead client's send is held until the disconnector
+        has discarded the dead clients, so the broadcasts discard clients the
+        disconnect already removed.
 
         The hard send timeout is pinned well above any runner stall: this
         test is about set mutation, and on a loaded runner a starved thread
@@ -209,9 +212,20 @@ class TestWsClientsConcurrentMutation:
         from unittest.mock import AsyncMock, MagicMock
 
         import haute.routes._helpers as helpers
-        from haute.routes._helpers import broadcast, ws_clients
+        from haute.routes._helpers import broadcast, ws_clients, ws_clients_discard
 
         monkeypatch.setattr(helpers, "_WS_SEND_TIMEOUT_SECONDS", 60.0)
+
+        sending = threading.Event()
+        disconnected = threading.Event()
+
+        async def send_to_closed_socket(_payload: str) -> None:
+            # A broadcast has snapshotted the clients and is mid-send: hold the
+            # send until the disconnector has discarded this client.
+            sending.set()
+            while not disconnected.is_set():
+                await asyncio.sleep(0.001)
+            raise RuntimeError("closed")
 
         # 50 clients, half of which are "dead" (raise on send_text)
         dead_clients = []
@@ -219,7 +233,7 @@ class TestWsClientsConcurrentMutation:
         for i in range(50):
             m = MagicMock()
             if i % 2:
-                m.send_text = AsyncMock(side_effect=RuntimeError("closed"))
+                m.send_text = send_to_closed_socket
                 dead_clients.append(m)
             else:
                 m.send_text = AsyncMock()
@@ -227,16 +241,19 @@ class TestWsClientsConcurrentMutation:
             ws_clients.add(m)
 
         errors: list[BaseException] = []
-        barrier = threading.Barrier(3)
+        barrier = threading.Barrier(2)
 
         def disconnector() -> None:
             """Mimic ws_sync finally block: discards clients mid-broadcast."""
             try:
-                barrier.wait()
+                if not sending.wait(timeout=30):
+                    raise AssertionError("no broadcast reached a dead client")
                 for c in dead_clients:
-                    ws_clients.discard(c)
+                    ws_clients_discard(c)
             except BaseException as exc:  # noqa: BLE001
                 errors.append(exc)
+            finally:
+                disconnected.set()
 
         def broadcaster(n: int) -> None:
             try:
@@ -255,10 +272,17 @@ class TestWsClientsConcurrentMutation:
             threading.Thread(target=broadcaster, args=(5,), daemon=True),
             threading.Thread(target=broadcaster, args=(5,), daemon=True),
         ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10)
+        try:
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+            assert [t.name for t in threads if t.is_alive()] == [], "#6: a worker never finished"
+        finally:
+            # Release any held send so no worker outlives the fixture teardown.
+            disconnected.set()
+            for t in threads:
+                t.join(timeout=30)
 
         assert not errors, (
             "#6: concurrent broadcast + disconnect raised: "
@@ -269,6 +293,7 @@ class TestWsClientsConcurrentMutation:
             assert c not in ws_clients, "#6: dead client leaked back into ws_clients"
         for c in live_clients:
             assert c in ws_clients, "#6: live client was accidentally removed"
+            c.send_text.assert_awaited()
 
     def test_a_live_client_whose_send_stalls_past_the_timeout_is_closed_and_dropped(
         self,
