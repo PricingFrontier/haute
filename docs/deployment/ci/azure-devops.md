@@ -228,7 +228,7 @@ When the pipeline reaches the production stage, it will pause and send a notific
     - **Environment approvals** - configure approval checks on the `production` environment if you need manual approval before production deploy
     - **Deployment job** - the production stage uses a `deployment` job type, which gives you deployment history and tracking in Azure DevOps
     - **Artifacts** - the impact report is published as a pipeline artifact you can download from the build summary
-    - **Git tagging** - after production deploy, the pipeline tags the release as `deploy/v<version>`
+    - **Git tagging** - after production deploy, the pipeline tags the release: `deploy/v<version>` (the registered model version) for Databricks, `deploy/<commit>` for container targets, whose image tag carries the same commit
 
 ??? info "Stage details"
 

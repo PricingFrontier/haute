@@ -172,6 +172,37 @@ service = "{name}"
 BUILD_AND_PUSH_ONLY_TARGETS = ("azure-container-apps", "aws-ecs", "gcp-run")
 
 
+# Targets whose deploy builds a container image. ``haute status`` reads the
+# MLflow registry, so these have no registered version to tag a release with.
+_CONTAINER_BASED_TARGETS = ("container", *BUILD_AND_PUSH_ONLY_TARGETS)
+
+
+def _release_tag_script(target: str, indent: str) -> str:
+    """Shell lines, indented, that tag the production release in git.
+
+    Databricks tags the registered MLflow model version. A container-based
+    target tags the deployed commit, the identity its image tag carries; a
+    redeploy of a commit that is already tagged leaves the tag as it is.
+    """
+    if target in _CONTAINER_BASED_TARGETS:
+        lines = [
+            'TAG="deploy/$(git rev-parse --short HEAD)"',
+            'if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then',
+            '  echo "Release tag $TAG already exists."',
+            "else",
+            '  git tag "$TAG"',
+            '  git push origin "$TAG"',
+            "fi",
+        ]
+    else:
+        lines = [
+            'VERSION=$(uv run haute status --version-only 2>/dev/null || echo "unknown")',
+            'git tag "deploy/v$VERSION"',
+            'git push origin "deploy/v$VERSION"',
+        ]
+    return "\n".join(indent + line for line in lines)
+
+
 def _get_target(target: str) -> _TargetConfig:
     """Look up *target* in :data:`TARGETS`, raising on unknown names."""
     try:
@@ -532,6 +563,7 @@ def github_deploy_prod_yml(target: str) -> str:
     untested code.
     """
     secrets_env = _github_secrets_env(target)
+    release_tag = _release_tag_script(target, " " * 10)
 
     return (
         _build_only_notice(target)
@@ -582,9 +614,7 @@ jobs:
       - name: Tag release
         run: |
           set -euo pipefail
-          VERSION=$(uv run haute status --version-only 2>/dev/null || echo "unknown")
-          git tag "deploy/v$VERSION"
-          git push origin "deploy/v$VERSION"
+{release_tag}
 """
     )
 
@@ -602,6 +632,7 @@ def gitlab_ci_yml(target: str) -> str:
     jobs (protected-branch jobs), not in the MR validation job.
     """
     secrets_env = _gitlab_secrets_env(target)
+    release_tag = _release_tag_script(target, " " * 6)
     verify = target not in BUILD_AND_PUSH_ONLY_TARGETS
     verification_stages = "  - smoke-test\n  - impact-analysis\n" if verify else ""
     verification_jobs = (
@@ -691,9 +722,7 @@ deploy-production:
   script:
     - uv run haute deploy
     - |
-      VERSION=$(uv run haute status --version-only 2>/dev/null || echo "unknown")
-      git tag "deploy/v$VERSION"
-      git push origin "deploy/v$VERSION"
+{release_tag}
   when: manual
   allow_failure: false
   rules:
@@ -720,6 +749,7 @@ def azure_devops_yml(target: str) -> str:
     # The DeployProduction deployment strategy nests ``env:`` at 18 spaces, so
     # its secret keys must sit at 20 — deeper than the 14-space job-level block.
     secrets_env_production = _azure_devops_secrets_env(target, indent=" " * 20)
+    release_tag = _release_tag_script(target, " " * 20)
     verify = target not in BUILD_AND_PUSH_ONLY_TARGETS
     production_depends_on = "ImpactAnalysis" if verify else "DeployStaging"
     verification_stages = (
@@ -923,9 +953,7 @@ stages:
 {secrets_env_production}
                 - script: |
                     set -euo pipefail
-                    VERSION=$(uv run haute status --version-only 2>/dev/null || echo "unknown")
-                    git tag "deploy/v$VERSION"
-                    git push origin "deploy/v$VERSION"
+{release_tag}
                   displayName: Tag release
 """
     )

@@ -1,6 +1,9 @@
 """Tests for haute._scaffold - template generation for ``haute init``."""
 
+import os
+import subprocess
 import tomllib
+from pathlib import Path
 
 import pytest
 import yaml
@@ -8,6 +11,7 @@ import yaml
 from haute._scaffold import (
     BUILD_AND_PUSH_ONLY_TARGETS,
     TARGETS,
+    _release_tag_script,
     azure_devops_yml,
     env_example,
     github_ci_yml,
@@ -20,6 +24,20 @@ from haute._scaffold import (
     starter_test,
     starter_test_quote,
 )
+
+
+def _posix_shell() -> str:
+    """The bash a CI runner would use: Git for Windows' own on Windows.
+
+    A bare ``bash`` on Windows may be WSL's, which sees neither the Windows
+    paths nor the Windows git.
+    """
+    if os.name != "nt":
+        return "bash"
+    exec_path = subprocess.run(
+        ["git", "--exec-path"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    return str(Path(exec_path).parents[2] / "bin" / "bash.exe")
 
 
 class TestHauteToml:
@@ -1079,6 +1097,51 @@ class TestOfferedTargets:
         ]
         for content in self._generated_files(target).values():
             assert "haute smoke" not in content.split("# `haute impact` once it does.")[-1]
+
+    def test_container_releases_are_tagged_by_commit_and_a_redeploy_keeps_its_tag(
+        self, tmp_path: Path
+    ) -> None:
+        # ``haute status`` reads MLflow, so a container-based target has no
+        # registered version: every release used to be tagged deploy/vunknown
+        # and the second release failed on the existing tag.
+        script = _release_tag_script("gcp-run", "")
+        assert all(
+            _release_tag_script(target, "") == script
+            for target in ("container", *BUILD_AND_PUSH_ONLY_TARGETS)
+        )
+        assert _release_tag_script("databricks", "") != script
+
+        def git(*arguments: str) -> str:
+            return subprocess.run(
+                ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", *arguments],
+                cwd=tmp_path / "work",
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+
+        (tmp_path / "work").mkdir()
+        git("init", "-q", "--bare", str(tmp_path / "remote.git"))
+        git("init", "-q")
+        git("remote", "add", "origin", str(tmp_path / "remote.git"))
+        heads = []
+        for release in ("first", "second"):
+            (tmp_path / "work" / "release.txt").write_text(release, encoding="utf-8")
+            git("add", "release.txt")
+            git("commit", "-q", "-m", release)
+            heads.append(git("rev-parse", "--short", "HEAD").strip())
+            for _ in range(2):  # the second run is a redeploy of the same commit
+                subprocess.run(
+                    [_posix_shell(), "-c", "set -euo pipefail\n" + script],
+                    cwd=tmp_path / "work",
+                    check=True,
+                    capture_output=True,
+                )
+
+        remote_tags = git("ls-remote", "--tags", "origin").splitlines()
+        assert sorted(line.split("refs/tags/")[1] for line in remote_tags) == sorted(
+            f"deploy/{head}" for head in heads
+        )
 
     @pytest.mark.parametrize("target", ["databricks", "container"])
     def test_end_to_end_pipelines_smoke_test_and_compare_staging(self, target: str) -> None:

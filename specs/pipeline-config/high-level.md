@@ -156,7 +156,10 @@ encodes the same fixed release flow: a validate job (lint, type check, test, pip
 and a production-deploy job gated behind a provider-specific approval mechanism. A
 build-and-push-only target's workflow has no smoke-test or impact-analysis job (its production
 job follows staging directly): nothing runs the pushed image until someone updates the service
-by hand, so those checks would test the old service. GitHub uses
+by hand, so those checks would test the old service. The production job tags the release in git:
+Databricks as `deploy/v<registered model version>`; a container-based target, which has no
+registered version, as `deploy/<short commit>` (the commit its image tag carries), leaving an
+existing tag in place when the same commit is deployed again. GitHub uses
 a separate `workflow_dispatch`-triggered workflow (so the split works without GitHub
 Team/Enterprise environment protection rules); GitLab uses `when: manual` on the production
 job; Azure DevOps runs the production job as a `deployment` under an `environment: production`
