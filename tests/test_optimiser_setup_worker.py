@@ -1143,3 +1143,57 @@ class TestAutoRangeChunkSizingInTheWorker:
         assert response.warning == response.chunk_fallback.message
         recorded = service._store.require_job(job_id)["chunk_fallback"]
         assert recorded["code"] == "chunk_plan_unsupported"
+
+
+def test_a_memory_error_behind_the_estimates_setup_answer_is_the_typed_507(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Setup translates a native allocation failure into a 500; the worker must
+    re-raise the MemoryError so the pool answers the typed 507."""
+    from haute._execution_admission import (
+        create_admitted_execution_context,
+        isolated_execution_budget,
+    )
+    from haute._interactive_workers import InteractiveWorkerRemoteError
+    from haute.routes import optimiser as optimiser_routes
+    from haute.routes._optimiser_worker import optimiser_estimate_worker
+    from haute.schemas import OptimiserEstimateRequest
+
+    def out_of_memory(*_args: Any, **_kwargs: Any) -> Any:
+        raise MemoryError("native allocation failed")
+
+    monkeypatch.setattr(_optimiser_service, "execute_lazy_graph", out_of_memory)
+    graph = _online_graph(_scored_parquet(project))
+    body = OptimiserEstimateRequest.model_validate({"graph": graph, "node_id": "opt"})
+    context = create_admitted_execution_context(
+        operation="optimiser_estimate",
+        profile=ExecutionProfile.OPTIMISER_SETUP,
+    )
+    try:
+        with pytest.raises(MemoryError, match="native allocation failed") as raised:
+            optimiser_estimate_worker(body, isolated_execution_budget(context))
+    finally:
+        context.release_admission()
+
+    class _InlinePool:
+        """Run the entrypoint here and report its exception as the pool does."""
+
+        def run(self, function: Any, *args: Any, **_kwargs: Any) -> Any:
+            try:
+                return function(*args)
+            except BaseException as exc:
+                raise InteractiveWorkerRemoteError(
+                    remote_type=type(exc).__name__,
+                    remote_module=type(exc).__module__,
+                    remote_message=str(exc),
+                    remote_traceback="",
+                    public_payload=None,
+                ) from None
+
+    assert type(raised.value) is MemoryError
+    _process_mode(monkeypatch)
+    monkeypatch.setattr(optimiser_routes, "interactive_worker_pool", _InlinePool)
+    with pytest.raises(HTTPException) as answered:
+        optimiser_routes._optimiser_input_metrics(body)
+    assert answered.value.status_code == 507
+    assert answered.value.detail["error_code"] == "memory_limit"

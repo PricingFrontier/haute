@@ -442,15 +442,17 @@ def optimiser_estimate_worker(
         return OptimiserEstimateOutcome(
             metrics=service.estimate_input(body, execution_context=context)
         )
-    except HTTPException as exc:
-        return OptimiserEstimateOutcome(failure=(exc.status_code, exc.detail))
-    except ESTIMATE_MAPPED_ERRORS as exc:
-        answer = estimate_failure_http_exception(exc, node_id=body.node_id)
-        return OptimiserEstimateOutcome(failure=(answer.status_code, answer.detail))
     except Exception as exc:
+        # A MemoryError behind any translation (setup maps it to a 500) leaves
+        # the worker as itself, so the pool answers the typed 507.
         memory_error = _memory_error_in(exc)
         if memory_error is not None:
             raise memory_error from None
+        if isinstance(exc, HTTPException):
+            return OptimiserEstimateOutcome(failure=(exc.status_code, exc.detail))
+        if isinstance(exc, ESTIMATE_MAPPED_ERRORS):
+            answer = estimate_failure_http_exception(exc, node_id=body.node_id)
+            return OptimiserEstimateOutcome(failure=(answer.status_code, answer.detail))
         raise
     finally:
         context.release_admission(preserve_primary_error=True)
