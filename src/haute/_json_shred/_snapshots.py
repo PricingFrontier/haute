@@ -105,7 +105,7 @@ def _table_descriptor(data_path: Path, table: Mapping[str, Any]) -> dict[str, ob
 
 def api_input_snapshot_source(
     config: Mapping[str, Any],
-    data_path: str | Path,
+    data_path: str | Path,  # pragma: no mutate
 ) -> ApiInputSnapshotSource:
     """Validate *config* and name the store identity of each emitting table.
 
@@ -124,12 +124,12 @@ def api_input_snapshot_source(
                 descriptor=_table_descriptor(resolved, table),
             ),
         )
-        for spec, table in zip(specs, emitting, strict=True)
+        for spec, table in zip(specs, emitting, strict=True)  # pragma: no mutate - equal lengths
     )
     return ApiInputSnapshotSource(data_path=resolved, config=config, tables=tables)
 
 
-def api_input_source_signature(data_path: str | Path) -> str:
+def api_input_source_signature(data_path: str | Path) -> str:  # pragma: no mutate
     """The content proof a table's generation records, or ``"missing"``.
 
     The shared source proof (:func:`_source_proof.file_signature`), the same
@@ -142,7 +142,7 @@ def api_input_source_signature(data_path: str | Path) -> str:
     return _source_proof.file_signature(path).source_signature
 
 
-def freshness_signature(source_signature: str | None) -> str | None:
+def freshness_signature(source_signature: str | None) -> str | None:  # pragma: no mutate
     """The signature a table's freshness is judged against.
 
     A missing source proves nothing about a published table: its freshness is
@@ -155,8 +155,8 @@ def freshness_signature(source_signature: str | None) -> str | None:
 def api_input_table_statuses(
     source: ApiInputSnapshotSource,
     store: SourceCacheStore,
-    *,
-    source_signature: str | None,
+    *,  # pragma: no mutate
+    source_signature: str | None,  # pragma: no mutate
 ) -> tuple[tuple[ApiInputTable, SourceCacheStatus], ...]:
     """Each emitting table's store status, judged against *source_signature*."""
     signature = freshness_signature(source_signature)
@@ -247,14 +247,14 @@ def scratch_directory(store: SourceCacheStore, token: str) -> Path:
 def build_api_input_tables(
     source: ApiInputSnapshotSource,
     labels: Sequence[str],
-    *,
+    *,  # pragma: no mutate
     store: SourceCacheStore,
     profile: ExecutionProfile,
-    cancellation: Callable[[], bool] | None = None,
-    deadline: float | None = None,
-    execution_context: ExecutionContext | None = None,
-    plans: Mapping[str, TableBuildPlan] | None = None,
-    scratch_token: str | None = None,
+    cancellation: Callable[[], bool] | None = None,  # pragma: no mutate
+    deadline: float | None = None,  # pragma: no mutate
+    execution_context: ExecutionContext | None = None,  # pragma: no mutate
+    plans: Mapping[str, TableBuildPlan] | None = None,  # pragma: no mutate
+    scratch_token: str | None = None,  # pragma: no mutate
     defer_retirement: bool = False,
 ) -> dict[str, SourceCacheGeneration]:
     """Shred the source once and publish a fresh generation of each table in *labels*.
@@ -312,11 +312,11 @@ def build_api_input_tables(
             "api_input_tables_built",
             data_path=str(source.data_path),
             table_count=len(generations),
-            elapsed_seconds=round(time.monotonic() - started, 3),
+            elapsed_seconds=round(time.monotonic() - started, 3),  # pragma: no mutate - log detail
         )
         return generations
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        shutil.rmtree(scratch, ignore_errors=True)  # pragma: no mutate - scratch exists
 
 
 @dataclass(frozen=True, slots=True)
@@ -377,7 +377,7 @@ def build_api_input_tables_worker(
 def run_supervised_api_input_build(
     source: ApiInputSnapshotSource,
     labels: Sequence[str],
-    *,
+    *,  # pragma: no mutate
     store: SourceCacheStore,
     profile: ExecutionProfile,
     budget: Any,

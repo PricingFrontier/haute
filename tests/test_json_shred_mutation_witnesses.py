@@ -72,6 +72,20 @@ def test_json_shred_internal_value_objects_preserve_mutability_contracts() -> No
     plan = _snapshots.TableBuildPlan(generation_id="generation", staging_token="token")
     outcome = _snapshots.ApiInputBuildOutcome(generation_ids={})
     source = _snapshots.ApiInputSnapshotSource(data_path=Path("data.json"), config={}, tables=())
+    table = _snapshots.ApiInputTable(label="rows", spec=None, identity=None)  # type: ignore[arg-type]
+    request = _snapshots.ApiInputBuildRequest(
+        config={},
+        data_path="data.json",
+        labels=(),
+        cache_root="root",
+        project_root="root",
+        profile=None,  # type: ignore[arg-type]
+        plans={},
+        scratch_token="token",
+    )
+    freshness = _source_proof.Freshness(token=1, reusable=True)
+    cached_schema = _inference_cache._CachedSchema(revision=1, payload=b"{}")
+    builder = _snapshots._ParquetFileBuilder(Path("table.parquet"))
 
     for value, field, replacement in (
         (revision, "size", 99),
@@ -80,11 +94,27 @@ def test_json_shred_internal_value_objects_preserve_mutability_contracts() -> No
         (plan, "generation_id", "changed"),
         (outcome, "generation_ids", {"a": "b"}),
         (source, "tables", ()),
+        (table, "label", "other"),
+        (request, "scratch_token", "other"),
+        (freshness, "reusable", False),
+        (cached_schema, "payload", b"[]"),
     ):
         with pytest.raises(FrozenInstanceError):
             setattr(value, field, replacement)
 
-    for value in (revision, signature, xml_shape, plan, outcome, source):
+    for value in (
+        revision,
+        signature,
+        xml_shape,
+        plan,
+        outcome,
+        source,
+        table,
+        request,
+        freshness,
+        cached_schema,
+        builder,
+    ):
         assert not hasattr(value, "__dict__")
 
 

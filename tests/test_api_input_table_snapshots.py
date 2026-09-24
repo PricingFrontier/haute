@@ -1019,3 +1019,231 @@ def test_preparation_is_skipped_without_an_admitted_execution(
         == ()
     )
     assert not Path(store.inputs_root / ".shred").exists()
+
+
+# ----------------------------------------------------------- mutation witnesses
+
+
+def _equal_but_distinct(text: str) -> str:
+    """A string equal to *text* that is not the interned literal object."""
+    half = len(text) // 2
+    return "".join([text[:half], text[half:]])
+
+
+def _generation_ids(store: SourceCacheStore, digest: str) -> set[str]:
+    generations = store.inputs_root / digest / "generations"
+    return {path.name for path in generations.iterdir()} if generations.is_dir() else set()
+
+
+@pytest.fixture()
+def no_retire_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retire superseded generations at once, so retirement is observable."""
+    monkeypatch.setenv("HAUTE_INPUT_CACHE_RETIRE_GRACE_SECONDS", "0.001")
+
+
+def test_freshness_is_judged_only_against_a_present_source() -> None:
+    assert _snapshots.freshness_signature(_equal_but_distinct("missing")) is None
+    assert _snapshots.freshness_signature(None) is None
+    assert _snapshots.freshness_signature("xxh64:abc:3") == "xxh64:abc:3"
+
+
+def test_a_table_is_found_by_an_equal_label(tmp_path: Path) -> None:
+    data = _write_source(tmp_path / "quotes.jsonl")
+    source = api_input_snapshot_source(_config(data), data)
+
+    assert source.table(_equal_but_distinct("drivers")) is source.tables[1]
+
+
+@pytest.mark.parametrize("mismatch", ["missing_one", "extra_one"])
+def test_build_plans_must_name_exactly_the_tables_built(
+    project: tuple[Path, SourceCacheStore], mismatch: str
+) -> None:
+    root, store = project
+    data = _write_source(root / "quotes.jsonl")
+    source = api_input_snapshot_source(_config(data), data)
+    plans = new_table_build_plans(source, ["quotes", "drivers"])
+    if mismatch == "missing_one":
+        plans.pop(source.table("drivers").identity.digest)
+    else:
+        plans["0" * 64] = next(iter(plans.values()))
+
+    with pytest.raises(ValueError, match="exactly the identities"):
+        _build_all(source, store, plans=plans)
+    assert not (store.inputs_root / ".shred").exists()
+
+
+def test_a_missing_source_is_refused_before_any_scratch_exists(
+    project: tuple[Path, SourceCacheStore], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, store = project
+    data = _write_source(root / "quotes.jsonl")
+    source = api_input_snapshot_source(_config(data), data)
+    monkeypatch.setattr(
+        _snapshots, "api_input_source_signature", lambda _path: _equal_but_distinct("missing")
+    )
+
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        _build_all(source, store)
+    assert not (store.inputs_root / ".shred").exists()
+
+
+@pytest.mark.parametrize("signatures", [("xxh64:a:1", "xxh64:b:1"), ("xxh64:b:1", "xxh64:a:1")])
+def test_a_source_that_moves_either_way_publishes_nothing(
+    project: tuple[Path, SourceCacheStore],
+    monkeypatch: pytest.MonkeyPatch,
+    signatures: tuple[str, str],
+) -> None:
+    root, store = project
+    data = _write_source(root / "quotes.jsonl")
+    source = api_input_snapshot_source(_config(data), data)
+    observed = iter(signatures)
+    monkeypatch.setattr(_snapshots, "api_input_source_signature", lambda _path: next(observed))
+
+    with pytest.raises(SourceChangedDuringCacheBuildError):
+        _build_all(source, store)
+    assert all(not _generation_ids(store, table.identity.digest) for table in source.tables)
+
+
+def test_a_store_builds_again_after_a_build(project: tuple[Path, SourceCacheStore]) -> None:
+    root, store = project
+    data = _write_source(root / "quotes.jsonl")
+    source = api_input_snapshot_source(_config(data), data)
+
+    first = _build_all(source, store)
+    second = _build_all(source, store)
+
+    assert set(first) == set(second)
+    assert all(first[key].generation_id != second[key].generation_id for key in first)
+
+
+@pytest.mark.parametrize("token", ["abcdef09", None])
+def test_the_scratch_directory_is_named_by_the_given_token(
+    project: tuple[Path, SourceCacheStore], monkeypatch: pytest.MonkeyPatch, token: str | None
+) -> None:
+    root, store = project
+    data = _write_source(root / "quotes.jsonl")
+    source = api_input_snapshot_source(_config(data), data)
+    scratches: list[Path] = []
+    shred_into = _snapshots._shred_into
+
+    def spy(source_: Any, tables: Any, scratch: Path) -> Any:
+        scratches.append(scratch)
+        return shred_into(source_, tables, scratch)
+
+    monkeypatch.setattr(_snapshots, "_shred_into", spy)
+    _build_all(source, store, scratch_token=token)
+
+    [scratch] = scratches
+    if token is None:
+        assert scratch.parent == store.inputs_root / ".shred"
+        assert scratch.name.startswith(".staging-") and len(scratch.name) == len(".staging-") + 8
+    else:
+        assert scratch == scratch_directory(store, token)
+
+
+def test_a_direct_build_retires_what_it_replaced(
+    project: tuple[Path, SourceCacheStore], no_retire_grace: None
+) -> None:
+    root, _store = project
+    store = SourceCacheStore(root)
+    data = _write_source(root / "quotes.jsonl")
+    source = api_input_snapshot_source(_config(data), data)
+
+    _build_all(source, store)
+    second = _build_all(source, store)
+
+    for digest, generation in second.items():
+        assert _generation_ids(store, digest) == {generation.generation_id}
+
+
+def test_the_worker_defers_retirement_and_its_parent_retires(
+    project: tuple[Path, SourceCacheStore],
+    worker_context: list[_ContextStub],
+    no_retire_grace: None,
+) -> None:
+    root, _store = project
+    store = SourceCacheStore(root)
+    data = _write_source(root / "quotes.jsonl")
+    source = api_input_snapshot_source(_config(data), data)
+    first = _build_all(source, store)
+
+    # The worker alone keeps what it replaced: only this process's leases count.
+    outcome = build_api_input_tables_worker(_request(source, store, root), budget=None)
+    for digest, generation_id in outcome.generation_ids.items():
+        assert _generation_ids(store, digest) == {first[digest].generation_id, generation_id}
+
+    # A supervised build retires the replaced generations once the worker is done.
+    published = run_supervised_api_input_build(
+        source,
+        ["quotes", "drivers"],
+        store=store,
+        profile=_PROFILE,
+        budget=None,
+        worker_config=None,
+        spawn=_Spawn(run=True, failure=None),
+    )
+    for digest, generation in published.items():
+        assert _generation_ids(store, digest) == {generation.generation_id}
+
+
+def test_a_dead_worker_whose_every_generation_was_staged_is_still_a_failure(
+    project: tuple[Path, SourceCacheStore], worker_context: list[_ContextStub]
+) -> None:
+    root, store = project
+    data = _write_source(root / "quotes.jsonl")
+    source = api_input_snapshot_source(_config(data), data)
+    spawn = _Spawn(run=False, failure=RuntimeError("died after staging"))
+
+    def stage_everything(function: Any, request: Any, budget: Any, *, config: Any) -> Any:
+        for digest, plan in request.plans.items():
+            (store.inputs_root / digest / f".staging-{plan.staging_token}").mkdir(parents=True)
+        return spawn(function, request, budget, config=config)
+
+    with pytest.raises(RuntimeError, match="died after staging"):
+        run_supervised_api_input_build(
+            source,
+            ["quotes", "drivers"],
+            store=store,
+            profile=_PROFILE,
+            budget=None,
+            worker_config=None,
+            spawn=stage_everything,
+        )
+    assert spawn.request is not None
+    for digest, plan in spawn.request.plans.items():
+        assert not (store.inputs_root / digest / f".staging-{plan.staging_token}").exists()
+
+
+def test_a_worker_config_is_narrowed_only_when_a_table_is_left_out(tmp_path: Path) -> None:
+    config = _config(tmp_path / "quotes.jsonl")
+
+    # Every emitting table is written (a non-emitting one never counts): unchanged.
+    assert _writer._config_emitting_only(config, {"quotes", "drivers"}) is config
+
+    narrowed = _writer._config_emitting_only(config, {"drivers"})
+    assert [table["emit"] for table in narrowed["tables"]] == [False, True, False]
+    assert [table["emit"] for table in config["tables"]] == [True, True, False]
+
+
+@pytest.mark.parametrize("outcome", ["unremovable", "discarded_staging", "absent"])
+def test_a_dead_worker_is_a_failure_unless_every_table_was_published(
+    project: tuple[Path, SourceCacheStore],
+    worker_context: list[_ContextStub],
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+) -> None:
+    root, store = project
+    data = _write_source(root / "quotes.jsonl")
+    source = api_input_snapshot_source(_config(data), data)
+    monkeypatch.setattr(store, "reconcile_unpublished", lambda *_args: outcome)
+
+    with pytest.raises(RuntimeError, match="worker lost"):
+        run_supervised_api_input_build(
+            source,
+            ["quotes", "drivers"],
+            store=store,
+            profile=_PROFILE,
+            budget=None,
+            worker_config=None,
+            spawn=_Spawn(run=False, failure=RuntimeError("worker lost")),
+        )

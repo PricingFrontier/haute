@@ -11,6 +11,7 @@ tests/test_json_shred_runtime_control_mutation.py
 tests/test_json_shred_publication_mutation.py
 tests/test_inference_cache.py
 tests/test_api_input_table_snapshots.py
+tests/test_load_v2_api_source.py
 
 # Complete-inference optimizations retain cache, full-walk, and parser contracts.
 tests/test_scalar_array_and_inference.py::test_infer_records_filters_known_shapes_and_relearns_on_mismatch

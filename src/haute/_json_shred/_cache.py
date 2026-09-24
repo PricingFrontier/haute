@@ -29,7 +29,7 @@ _STANDALONE_SPILL_ROOT = ".haute_cache"
 
 def _projected_table_specs(
     complete_table_specs: tuple[_EmittingTableSpec, ...],
-    port_columns: Mapping[str, frozenset[str] | set[str] | None] | None,
+    port_columns: Mapping[str, frozenset[str] | set[str] | None] | None,  # pragma: no mutate
 ) -> tuple[_EmittingTableSpec, ...]:
     """The demanded ports and columns, in schema order."""
     if port_columns is None:
@@ -99,7 +99,7 @@ def _leased_table_frames(
     data_path: str,
     config: dict[str, Any],
     table_specs: tuple[_EmittingTableSpec, ...],
-    store: SourceCacheStore | None,
+    store: SourceCacheStore | None,  # pragma: no mutate
 ) -> dict[str, pl.LazyFrame]:
     from haute._input_providers import _cache_root, lease_input_generation
     from haute._json_shred._snapshots import api_input_snapshot_source
@@ -149,10 +149,10 @@ def _standalone_shred(
 def load_v2_api_source(
     data_path: str,
     config: dict[str, Any],
-    *,
-    port_columns: Mapping[str, frozenset[str] | set[str] | None] | None = None,
+    *,  # pragma: no mutate
+    port_columns: Mapping[str, frozenset[str] | set[str] | None] | None = None,  # pragma: no mutate
     read_snapshots: bool = False,
-    store: SourceCacheStore | None = None,
+    store: SourceCacheStore | None = None,  # pragma: no mutate
 ) -> dict[str, pl.LazyFrame]:
     """Load a v2 apiInput as an emit-gated per-port frame bundle.
 

@@ -291,3 +291,32 @@ def test_a_missing_path_or_a_directory_is_signed_by_its_stat(
         "mtime_ns": observed.st_mtime_ns,
     }
     assert hashes == []
+
+
+def test_a_file_exactly_the_settle_age_old_is_reusable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    without_native_revision: list[tuple[str, dict[str, Any]]],
+) -> None:
+    path = _write(tmp_path / "a.csv")
+    mtime = path.stat().st_mtime
+    monkeypatch.setattr(_source_proof.time, "time", lambda: mtime + SETTLE_SECONDS)
+
+    assert observe_freshness(path).reusable is True
+
+
+@pytest.mark.parametrize(
+    ("os_name", "reader"),
+    [("".join(["n", "t"]), "_windows_strong_file_revision"), ("ce", "_posix_strong_file_revision")],
+)
+def test_the_native_revision_reader_follows_the_os(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, os_name: str, reader: str
+) -> None:
+    calls: list[str] = []
+    for name in ("_windows_strong_file_revision", "_posix_strong_file_revision"):
+        monkeypatch.setattr(_source_proof, name, lambda _path, name=name: calls.append(name))
+    monkeypatch.setattr(_source_proof.os, "name", os_name)
+
+    _source_proof._strong_file_revision(tmp_path / "a.csv")
+
+    assert calls == [reader]
