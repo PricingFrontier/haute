@@ -254,7 +254,6 @@ export default function DataInputEditor({
       {requiresSnapshot && group && (
         <InputSnapshotCacheButton
           config={config}
-          admittedEager={format?.input?.snapshot_build === "admitted_eager"}
           requiredReady={requiredReady}
         />
       )}

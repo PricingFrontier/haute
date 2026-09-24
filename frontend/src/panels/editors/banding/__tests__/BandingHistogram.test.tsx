@@ -57,7 +57,7 @@ describe("BandingHistogram", () => {
     expect(container.querySelectorAll("rect")).toHaveLength(2)
   })
 
-  it("places a bar across the interval its bin covers", () => {
+  it("places a bar across the interval its bin covers, in pixels", () => {
     const { container } = render(
       <BandingHistogram
         bins={[
@@ -66,11 +66,61 @@ describe("BandingHistogram", () => {
         ]}
         boundaries={[]}
         accentColor={ACCENT}
+        width={200}
       />,
     )
+    const svg = container.querySelector("svg")
+    expect(svg?.getAttribute("width")).toBe("200")
+    expect(svg?.hasAttribute("viewBox")).toBe(false)
     const rects = Array.from(container.querySelectorAll("rect"))
-    expect(rects.map((rect) => rect.getAttribute("x"))).toEqual(["0", "50"])
-    expect(rects.map((rect) => rect.getAttribute("width"))).toEqual(["50", "50"])
+    expect(rects.map((rect) => rect.getAttribute("x"))).toEqual(["0", "100"])
+    expect(rects.map((rect) => rect.getAttribute("width"))).toEqual(["100", "100"])
+  })
+
+  it("spans exactly the binned data, so a boundary at the data's end sits at the edge", () => {
+    const { container } = render(
+      <BandingHistogram
+        bins={[
+          { lower: 0, upper: 5, count: 1 },
+          { lower: 5, upper: 10, count: 2 },
+        ]}
+        boundaries={[10, 11]}
+        accentColor={ACCENT}
+        width={200}
+      />,
+    )
+    const lines = Array.from(container.querySelectorAll("line"))
+    // The boundary beyond the data is not drawn; the one at its end is flush.
+    expect(lines.map((line) => line.getAttribute("x1"))).toEqual(["200"])
+  })
+
+  it("labels the ends with compact chart numbers", () => {
+    const { container } = render(
+      <BandingHistogram
+        bins={[{ lower: 0, upper: 12345, count: 3 }]}
+        boundaries={[]}
+        accentColor={ACCENT}
+        width={200}
+      />,
+    )
+    const labels = Array.from(container.querySelectorAll("text")).map((text) => text.textContent)
+    expect(labels).toEqual(["0", "12.3K"])
+  })
+
+  it("draws a constant column as one centred bar with its boundaries in the middle", () => {
+    const { container } = render(
+      <BandingHistogram
+        bins={[{ lower: 5, upper: 5, count: 4 }]}
+        boundaries={[5]}
+        accentColor={ACCENT}
+        width={200}
+      />,
+    )
+    const rect = container.querySelector("rect")
+    expect(rect?.getAttribute("x")).toBe("90")
+    expect(rect?.getAttribute("width")).toBe("20")
+    expect(container.querySelector("line")?.getAttribute("x1")).toBe("100")
+    expect(Array.from(container.querySelectorAll("text")).map((text) => text.textContent)).toEqual(["5"])
   })
 
   it("renders boundary lines at correct positions", () => {

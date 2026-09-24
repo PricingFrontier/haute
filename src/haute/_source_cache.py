@@ -409,6 +409,7 @@ class _SourceCacheCoordination:
     verified_generations: set[_VerifiedGeneration] = field(default_factory=set)
     guard: threading.Lock = field(default_factory=threading.Lock)
     publication_locks: dict[str, FileLock] = field(default_factory=dict)
+    budget_lock: FileLock | None = None
     token: str | None = None
     token_handle: Any | None = None
     retired_cleaned: bool = False

@@ -30,6 +30,7 @@ import type {
   CacheNodeEntry,
   CacheNodesResponse,
   CacheOwnerEntry,
+  CacheUsageResponse,
   DissolveSubmodelResponse,
   ExecutionAdmission,
   ExecutionCacheProof,
@@ -1787,7 +1788,7 @@ function parseInputCacheGeneration(value: unknown, field: string): InputCacheGen
   const p = "parseInputCacheSnapshotResponse"; const obj = expectPlainObject(p, value, field)
   return { generation_id: expectString(p, obj.generation_id, `${field}.generation_id`), row_count: expectNumber(p, obj.row_count, `${field}.row_count`), column_count: expectNumber(p, obj.column_count, `${field}.column_count`), columns: parseInputCacheStringRecord(p, obj.columns, `${field}.columns`), size_bytes: expectNumber(p, obj.size_bytes, `${field}.size_bytes`), created_at: expectNumber(p, obj.created_at, `${field}.created_at`), build_class: expectStringLiteral(p, obj.build_class, `${field}.build_class`, BUILD_CLASSES) }
 }
-export function parseInputCacheBuildResponse(value: unknown): InputCacheBuildResponse { const p = "parseInputCacheBuildResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), status: expectStringLiteral(p, obj.status, "field `status`", ["running"]), joined: expectBoolean(p, obj.joined, "field `joined`") } }
+export function parseInputCacheBuildResponse(value: unknown): InputCacheBuildResponse { const p = "parseInputCacheBuildResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), status: expectStringLiteral(p, obj.status, "field `status`", ["running"]), joined: expectBoolean(p, obj.joined, "field `joined`"), build_class: expectStringLiteral(p, obj.build_class, "field `build_class`", ["bounded", "admitted_eager"]) } }
 function parseInputCacheTableStatus(value: unknown, field: string): InputCacheTableStatus {
   const p = "parseInputCacheSnapshotResponse"; const obj = expectPlainObject(p, value, field)
   return { label: expectString(p, obj.label, `${field}.label`), identity_digest: expectString(p, obj.identity_digest, `${field}.identity_digest`), state: expectStringLiteral(p, obj.state, `${field}.state`, INPUT_CACHE_SNAPSHOT_STATES), freshness: expectStringLiteral(p, obj.freshness, `${field}.freshness`, INPUT_CACHE_FRESHNESS), generation: obj.generation === null ? null : parseInputCacheGeneration(obj.generation, `${field}.generation`) }
@@ -1857,6 +1858,17 @@ export function parseCacheClearResponse(value: unknown): CacheClearResponse {
     schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"),
     cleared: parseArray(p, obj.cleared, "field `cleared`", (v, at) => expectNonBlankString(p, v, at)),
     freed_bytes: expectNonNegativeInteger(p, obj.freed_bytes, "field `freed_bytes`"),
+  }
+}
+
+export function parseCacheUsageResponse(value: unknown): CacheUsageResponse {
+  const p = "parseCacheUsageResponse"
+  const obj = expectPlainObject(p, value)
+  return {
+    schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"),
+    total_bytes: expectNonNegativeInteger(p, obj.total_bytes, "field `total_bytes`"),
+    automatic_bytes: expectNonNegativeInteger(p, obj.automatic_bytes, "field `automatic_bytes`"),
+    automatic_budget_bytes: expectNonNegativeInteger(p, obj.automatic_budget_bytes, "field `automatic_budget_bytes`"),
   }
 }
 

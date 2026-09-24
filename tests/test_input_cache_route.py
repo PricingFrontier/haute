@@ -71,6 +71,7 @@ def test_build_job_publishes_snapshot_and_snapshot_status(
         "identity_digest": start_payload["identity_digest"],
         "status": "running",
         "joined": False,
+        "build_class": "bounded",
     }
     terminal = _wait_for_terminal(client, start_payload["job_id"])
     assert terminal["status"] == "completed"
@@ -462,7 +463,6 @@ def _start_admitted_eager_build(client: TestClient, *, refresh: bool = False) ->
         json={
             "schema_version": 1,
             "config": _file_config(),
-            "profile": "preview_eager",
             "refresh": refresh,
         },
     )
@@ -670,7 +670,6 @@ def test_admitted_eager_memory_refusal_has_a_stable_safe_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from haute._execution_admission import ExecutionAdmissionError
-    from haute._execution_context import ExecutionProfile
     from haute.routes import input_cache
 
     def reject(**kwargs: Any) -> Any:
@@ -695,7 +694,6 @@ def test_admitted_eager_memory_refusal_has_a_stable_safe_status(
         json={
             "schema_version": 1,
             "config": _file_config(),
-            "profile": ExecutionProfile.PREVIEW_EAGER.value,
         },
     )
     assert started.status_code == 202
@@ -813,6 +811,93 @@ def test_secret_bearing_config_is_rejected_without_echo(
     body = response.text
     assert "do-not-echo" not in body
     assert response.json()["detail"].startswith("invalid_input_config:")
+
+
+# Formats without a file extension, each in its canonical Data Input shape.
+_EXTENSIONLESS_FORMAT_CONFIGS: dict[str, dict[str, Any]] = {
+    "database": {
+        "inputType": "database",
+        "format": "database",
+        "uri": "sqlite:///data.sqlite",
+        "query": "SELECT 1",
+    },
+    "delta": {"inputType": "lakehouse", "format": "delta", "mode": "scan", "path": "table"},
+    "iceberg": {"inputType": "lakehouse", "format": "iceberg", "mode": "scan", "path": "table"},
+    "records": {"inputType": "inline", "format": "records", "records": [{"x": 1}]},
+}
+
+
+def _format_configs() -> list[Any]:
+    """One snapshot-backed Data Input config per format in the registry."""
+    from haute._polars_io_registry import FORMATS
+
+    configs = []
+    for fmt in FORMATS:
+        if not fmt.extensions:
+            configs.append(pytest.param(_EXTENSIONLESS_FORMAT_CONFIGS[fmt.name], id=fmt.name))
+            continue
+        # A Parquet scan is read directly; its eager read is snapshot-backed.
+        mode = "read" if fmt.name == "parquet" else None
+        config = {"inputType": "file", "format": fmt.name, "path": f"input{fmt.extensions[0]}"}
+        if mode is not None:
+            config["mode"] = mode
+        configs.append(pytest.param(config, id=fmt.name))
+    return configs
+
+
+@pytest.mark.parametrize("config", _format_configs())
+def test_the_server_chooses_each_formats_build_profile(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: dict[str, Any],
+) -> None:
+    """The browser sends no profile: bounded formats stream, eager-only ones are admitted."""
+    from haute._execution_context import ExecutionProfile
+    from haute._polars_io_registry import format_for_config, snapshot_input_plan
+    from haute.routes import input_cache
+    from haute.schemas import InputCacheBuildResponse
+
+    started: list[dict[str, Any]] = []
+
+    def record_start(**kwargs: Any) -> InputCacheBuildResponse:
+        started.append(kwargs)
+        return InputCacheBuildResponse(
+            job_id="job-1",
+            identity_digest=kwargs["key"],
+            status="running",
+            joined=False,
+            build_class=kwargs["build_class"],
+        )
+
+    monkeypatch.setattr(input_cache, "_start_build", record_start)
+    if config["inputType"] == "database":
+        import sqlite3
+
+        # A SQLite snapshot source must be an existing on-disk database.
+        connection = sqlite3.connect(tmp_path / "data.sqlite")
+        connection.execute("CREATE TABLE t (x INTEGER)")
+        connection.close()
+    expected = snapshot_input_plan(format_for_config(config), config)[1]
+
+    response = client.post("/api/input-cache/build", json={"schema_version": 1, "config": config})
+
+    assert response.status_code == 202, response.json()
+    assert response.json()["build_class"] == expected
+    [start] = started
+    assert start["build_class"] == expected
+    assert start["target_kwargs"]["profile"] == (
+        ExecutionProfile.LAZY_SINK if expected == "bounded" else ExecutionProfile.PREVIEW_EAGER
+    )
+
+
+def test_a_build_request_naming_a_profile_is_rejected(client: TestClient) -> None:
+    response = client.post(
+        "/api/input-cache/build",
+        json={"schema_version": 1, "config": _file_config(), "profile": "lazy_sink"},
+    )
+
+    assert response.status_code == 422
 
 
 def test_unsupported_database_scheme_is_rejected_before_job_creation(
@@ -1193,6 +1278,7 @@ def test_api_input_clear_removes_every_table_but_not_while_building(
     )
     joined = client.post("/api/input-cache/build", json=_api_input_body())
     assert joined.json()["joined"] is True
+    assert joined.json()["build_class"] == "bounded"
     assert joined.json()["job_id"] == job_id
 
     refused = client.post("/api/input-cache/clear", json=_api_input_body())

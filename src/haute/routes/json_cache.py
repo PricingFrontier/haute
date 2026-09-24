@@ -9,7 +9,9 @@ Errors raised by :func:`haute._api_input_schema.validate_v2_schema`,
 :class:`haute._api_input_schema.ApiInputSchemaError` and turn into a
 structured HTTP 422 with body
 ``{"detail": "...", "type": "ApiInputSchemaError"}`` — the frontend
-discriminates on ``type`` rather than string-matching ``detail``.
+discriminates on ``type`` rather than string-matching ``detail``. Anything
+unexpected is left to the application's handler, which logs it with its
+traceback and answers the sanitized internal-error detail.
 """
 
 from __future__ import annotations
@@ -23,13 +25,10 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from haute._api_input_schema import ApiInputSchemaError
-from haute._logging import get_logger
 from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, pipeline_dir
+from haute.routes._helpers import pipeline_dir
 from haute.routes._runtime_path_errors import runtime_path_http_exception
 from haute.schemas import JsonCacheInferRequest, JsonCacheInferResponse
-
-logger = get_logger(component="server.json_cache")
 
 router = APIRouter(prefix="/api/json-cache", tags=["json-cache"])
 
@@ -94,7 +93,4 @@ async def infer_json_cache_schema(body: JsonCacheInferRequest) -> Any:
         # e.g. a nested array (array of arrays) that can't be a flat table —
         # surface the structured 422 naming the field rather than an opaque 500.
         return _api_input_schema_error_response(e)
-    except Exception as e:
-        logger.error("json_cache_infer_failed", error=str(e))
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     return JsonCacheInferResponse(tables=result.get("tables", []))

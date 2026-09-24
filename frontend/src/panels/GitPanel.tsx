@@ -17,7 +17,7 @@ import { computeGitGraphLayout, computeRailRuns, railWidth } from "./gitgraph/la
 import type { RailModel, RailRow, RailRowGeom, RowDescriptor } from "./gitgraph/layout"
 import { GraphRailCell, GraphRailHeader, GraphRailOverlay } from "./gitgraph/GraphCell"
 import { recordSwitch } from "../utils/vcHistory"
-import { gitErrorMessage } from "../utils/gitError"
+import { apiErrorMessage } from "../api/errors"
 import { useGitHistory } from "./git/useGitHistory"
 
 /** Minimal graph-branch shape the in-row spawn chips need. */
@@ -171,7 +171,7 @@ function GitPanelBranchScope({
       }
       await refresh()
     } catch (err) {
-      const detail = gitErrorMessage(err, "unknown error")
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Could not create branch: ${detail}`)
     } finally {
       setForking(false)
@@ -198,7 +198,7 @@ function GitPanelBranchScope({
       await loadStatus()
       await refresh()
     } catch (err) {
-      const detail = gitErrorMessage(err, "unknown error")
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Could not switch branch: ${detail}`)
     } finally {
       setSwitching(false)

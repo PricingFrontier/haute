@@ -50,7 +50,7 @@ const ready = {
 }
 
 function renderButton(props: Partial<ComponentProps<typeof InputSnapshotCacheButton>> = {}) {
-  return render(<InputSnapshotCacheButton config={config} admittedEager={false} requiredReady {...props} />)
+  return render(<InputSnapshotCacheButton config={config} requiredReady {...props} />)
 }
 
 beforeEach(() => {
@@ -61,7 +61,7 @@ beforeEach(() => {
     job_id: "job-1",
     identity_digest: "snapshot",
     status: "running",
-    joined: false,
+    joined: false, build_class: "bounded",
   })
   vi.mocked(getInputCacheJob).mockResolvedValue({
     schema_version: 1,
@@ -93,17 +93,17 @@ describe("InputSnapshotCacheButton", () => {
         schema_version: 1,
         config,
         refresh: false,
-        profile: "lazy_sink",
       }),
     )
     expect(await screen.findByRole("button", { name: "Refresh Cache" })).toBeInTheDocument()
     expect(screen.getByText("3 rows")).toBeInTheDocument()
   })
 
-  it("uses the admitted-eager profile", async () => {
-    renderButton({ admittedEager: true })
+  it("leaves the build profile to the server", async () => {
+    renderButton()
     fireEvent.click(await screen.findByRole("button", { name: "Cache as Parquet" }))
-    await waitFor(() => expect(buildInputCache).toHaveBeenCalledWith(expect.objectContaining({ profile: "preview_eager" })))
+    await waitFor(() => expect(buildInputCache).toHaveBeenCalledOnce())
+    expect(vi.mocked(buildInputCache).mock.calls[0][0]).not.toHaveProperty("profile")
   })
 
   it("does not query or build until the snapshot configuration is ready", () => {
@@ -151,11 +151,11 @@ describe("InputSnapshotCacheButton", () => {
     vi.mocked(buildInputCache)
       .mockResolvedValueOnce({
         schema_version: 1, job_id: "job-1", identity_digest: "snapshot-1",
-        status: "running", joined: false,
+        status: "running", joined: false, build_class: "bounded",
       })
       .mockResolvedValueOnce({
         schema_version: 1, job_id: "job-2", identity_digest: "snapshot-2",
-        status: "running", joined: false,
+        status: "running", joined: false, build_class: "bounded",
       })
     let firstSignal: AbortSignal | undefined
     vi.mocked(getInputCacheJob).mockImplementation((jobId, options) => (
@@ -180,7 +180,6 @@ describe("InputSnapshotCacheButton", () => {
     rerender(
       <InputSnapshotCacheButton
         config={nextConfig}
-        admittedEager={false}
         requiredReady
       />,
     )
@@ -260,7 +259,6 @@ describe("InputSnapshotCacheButton", () => {
     render(
       <InputSnapshotCacheButton
         config={apiConfig}
-        admittedEager={false}
         requiredReady
         nodeType="apiInput"
       />,
@@ -301,6 +299,29 @@ describe("InputSnapshotCacheButton", () => {
       expect(getInputCacheJob).toHaveBeenCalledTimes(requests)
       expect(cancelInputCacheJob).not.toHaveBeenCalled()
       expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("shows build progress from its one job poll, with no separate progress timer", async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(getInputCacheJob).mockResolvedValue({
+        schema_version: 1, job_id: "job-1", identity_digest: "snapshot",
+        status: "running", terminal_reason: null, message: "Building",
+        refresh: false, build_class: "bounded",
+        progress: { phase: "building", rows: 1234, batches: 2, bytes: 64, elapsed_seconds: 2.4 },
+        snapshot: null, error_code: null,
+      })
+      renderButton()
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      fireEvent.click(screen.getByRole("button", { name: "Cache as Parquet" }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
+
+      // The build wait polls at 0, 800, 1600 and 2400 ms, and nothing else does.
+      expect(getInputCacheJob).toHaveBeenCalledTimes(4)
+      expect(screen.getByRole("button", { name: /building… 1,234 rows · 2s/ })).toBeInTheDocument()
     } finally {
       vi.useRealTimers()
     }

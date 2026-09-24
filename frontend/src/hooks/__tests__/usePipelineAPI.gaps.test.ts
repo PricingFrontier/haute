@@ -60,6 +60,7 @@ vi.mock("../../utils/makePreviewData", () => ({
 
 import { loadPipeline, previewNode, savePipeline, ApiError } from "../../api/client"
 import { makeNode } from "../../test-utils/factories"
+import { NODE_TYPES } from "../../utils/nodeTypes"
 import { makeLoadedPipeline } from "../../testSupport/pipelineDocumentFixture"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
@@ -376,6 +377,56 @@ describe("usePipelineAPI - gap tests", () => {
         await vi.advanceTimersByTimeAsync(1)
       })
       expect(mockPreview).toHaveBeenCalledTimes(1)
+    })
+
+    it("waits 200 ms by default before starting the API request", async () => {
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
+      mockPreview.mockResolvedValue({
+        node_id: "n1",
+        status: "ok",
+        columns: [],
+        preview: [],
+        row_count: 0,
+        column_count: 0,
+      })
+
+      const { result } = renderHook(() => usePipelineAPI(makeParams()))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      vi.useFakeTimers()
+      act(() => {
+        result.current.fetchPreview(makeNode("n1"))
+      })
+      act(() => {
+        vi.advanceTimersByTime(199)
+      })
+      expect(mockPreview).not.toHaveBeenCalled()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1)
+      })
+      expect(mockPreview).toHaveBeenCalledTimes(1)
+    })
+
+    it("drops a waiting preview when the next selection cannot be previewed", async () => {
+      mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
+
+      const { result } = renderHook(() => usePipelineAPI(makeParams()))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      vi.useFakeTimers()
+      act(() => {
+        result.current.fetchPreview(makeNode("n1"))
+      })
+      act(() => {
+        result.current.fetchPreview(makeNode("sub", NODE_TYPES.SUBMODEL))
+      })
+      expect(result.current.previewData).toBeNull()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000)
+      })
+      expect(mockPreview).not.toHaveBeenCalled()
     })
 
     it("uses graph structuralVersion to decide preview freshness", async () => {

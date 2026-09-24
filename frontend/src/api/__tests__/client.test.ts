@@ -1690,10 +1690,11 @@ describe("no request carries streaming_chunk_size", () => {
 
   it("uses the exact input-cache V1 paths, methods, and request bodies", async () => {
     const source = { schema_version: 1 as const, config: { path: "data.csv" } }
-    mockFetch.mockReturnValueOnce(jsonResponse({ schema_version: 1, job_id: "job / 1", identity_digest: "digest", status: "running", joined: false }))
-    await buildInputCache({ ...source, refresh: true, profile: "preview_eager" })
+    mockFetch.mockReturnValueOnce(jsonResponse({ schema_version: 1, job_id: "job / 1", identity_digest: "digest", status: "running", joined: false, build_class: "admitted_eager" }))
+    const started = await buildInputCache({ ...source, refresh: true })
+    expect(started.build_class).toBe("admitted_eager")
     expect(mockFetch.mock.calls[0][0]).toBe("/api/input-cache/build")
-    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ ...source, refresh: true, profile: "preview_eager" })
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ ...source, refresh: true })
 
     mockFetch.mockReturnValueOnce(jsonResponse({ schema_version: 1, job_id: "job / 1", identity_digest: "digest", status: "running", terminal_reason: null, message: "", refresh: false, build_class: "bounded", progress: { phase: "queued", rows: 0, batches: 0, bytes: 0, elapsed_seconds: 0 }, snapshot: null, error_code: null }))
     await getInputCacheJob("job / 1")
@@ -1713,6 +1714,18 @@ describe("no request carries streaming_chunk_size", () => {
     await clearInputCache(source)
     expect(mockFetch.mock.calls[4][0]).toBe("/api/input-cache/clear")
     expect(JSON.parse(mockFetch.mock.calls[4][1].body)).toEqual(source)
+  })
+
+  it("reads the snapshot store's size with a GET and rejects a malformed reply", async () => {
+    const { fetchCacheUsage } = await import("../client")
+    const usage = { schema_version: 1, total_bytes: 2048, automatic_bytes: 1024, automatic_budget_bytes: 4096 }
+    mockFetch.mockReturnValueOnce(jsonResponse(usage))
+    await expect(fetchCacheUsage()).resolves.toEqual(usage)
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/cache/usage")
+    expect(mockFetch.mock.calls[0][1]?.method ?? "GET").toBe("GET")
+
+    mockFetch.mockReturnValueOnce(jsonResponse({ ...usage, automatic_bytes: -1 }))
+    await expect(fetchCacheUsage()).rejects.toThrow("automatic_bytes")
   })
 
   it("sends the exact scoped node-save body and parses the authoritative document", async () => {

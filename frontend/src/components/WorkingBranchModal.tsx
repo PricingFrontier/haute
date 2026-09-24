@@ -3,8 +3,8 @@ import { useState } from "react"
 import { setGitIdentity, setWorkingBranch } from "../api/client"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
-import { gitErrorMessage } from "../utils/gitError"
-import ConfigCheckbox from "./form/ConfigCheckbox"
+import { apiErrorMessage } from "../api/errors"
+import { GitIdentityFields, ModalFormActions, ModalFormHeader, ModalTextInput } from "./ModalForm"
 import ModalShell from "./ModalShell"
 
 interface WorkingBranchModalProps {
@@ -60,7 +60,7 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
       addToast("success", `Working branch set to ${branchName}`)
       onConfirmed()
     } catch (err: unknown) {
-      const detail = gitErrorMessage(err, "unknown error")
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Could not set working branch: ${detail}`)
     } finally {
       setBusy(false)
@@ -76,14 +76,9 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
       width="w-[440px]"
       testId="working-branch-modal"
     >
-      <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
-        <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-          Choose a working branch
-        </h2>
-        <p className="text-[12px] mt-0.5" style={{ color: "var(--text-muted)" }}>
-          Saves are recorded against this branch. You can change it later from the Git panel.
-        </p>
-      </div>
+      <ModalFormHeader title="Choose a working branch">
+        Saves are recorded against this branch. You can change it later from the Git panel.
+      </ModalFormHeader>
 
       <form
         className="p-4 flex flex-col gap-3"
@@ -139,20 +134,13 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
             >
               New branch name
             </label>
-            <input
+            <ModalTextInput
               id="working-branch-new"
               data-testid="working-branch-new"
               value={newBranch}
               onChange={(e) => setNewBranch(e.target.value)}
               autoFocus
               placeholder="e.g. motor-pricing-2026"
-              className="w-full px-3 py-1.5 text-[13px] rounded-md focus:outline-none focus:ring-2"
-              style={{
-                background: "var(--bg-input)",
-                border: "1px solid var(--border)",
-                color: "var(--text-primary)",
-                caretColor: "var(--accent)",
-              }}
             />
           </div>
         )}
@@ -165,60 +153,26 @@ export default function WorkingBranchModal({ onConfirmed, onClose }: WorkingBran
             <p className="text-[12px]" style={{ color: "var(--text-secondary)" }}>
               Git needs a name and email to record saves.
             </p>
-            <input
-              data-testid="identity-name"
-              value={userName}
-              onChange={(e) => setUserName(e.target.value)}
-              placeholder="Your name"
-              className="w-full px-3 py-1.5 text-[13px] rounded-md focus:outline-none focus:ring-2"
-              style={{
-                background: "var(--bg-input)",
-                border: "1px solid var(--border)",
-                color: "var(--text-primary)",
-                caretColor: "var(--accent)",
-              }}
-            />
-            <input
-              data-testid="identity-email"
-              type="email"
-              value={userEmail}
-              onChange={(e) => setUserEmail(e.target.value)}
-              placeholder="you@example.com"
-              className="w-full px-3 py-1.5 text-[13px] rounded-md focus:outline-none focus:ring-2"
-              style={{
-                background: "var(--bg-input)",
-                border: "1px solid var(--border)",
-                color: "var(--text-primary)",
-                caretColor: "var(--accent)",
-              }}
-            />
-            <ConfigCheckbox
-              checked={setGlobal}
-              onChange={setSetGlobal}
-              label="Use this identity for all my projects (global git config)"
+            <GitIdentityFields
+              testIdPrefix="identity"
+              name={userName}
+              email={userEmail}
+              setGlobal={setGlobal}
+              onNameChange={setUserName}
+              onEmailChange={setUserEmail}
+              onSetGlobalChange={setSetGlobal}
             />
           </div>
         )}
 
-        <div className="flex justify-end gap-2 pt-1">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            data-testid="working-branch-confirm"
-            disabled={!canSubmit}
-            className="px-4 py-1.5 text-[12px] font-semibold rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--structure-action-hover)] disabled:hover:bg-[var(--structure-action)]"
-            style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
-          >
-            {busy ? "Setting…" : "Use this branch"}
-          </button>
-        </div>
+        <ModalFormActions
+          onCancel={onClose}
+          submitLabel="Use this branch"
+          busyLabel="Setting…"
+          busy={busy}
+          disabled={!canSubmit}
+          submitTestId="working-branch-confirm"
+        />
       </form>
     </ModalShell>
   )

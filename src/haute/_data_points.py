@@ -624,20 +624,6 @@ def _project(frame: pl.LazyFrame, demand: NodeSnapshotColumns) -> pl.LazyFrame:
     return frame.select(projected_or_carrier_columns(schema_columns, demand.names))
 
 
-def resolve_point(
-    graph: PipelineGraph,
-    point: DataPoint,
-    *,
-    source: str,
-    columns: NodeSnapshotColumns,
-    store: NodeSnapshotStore | None = None,
-    building: BuildingProbe | None = None,
-) -> PointResolution:
-    return DataPointResolver(graph, source=source, store=store, building=building).resolve(
-        point, columns
-    )
-
-
 @contextlib.contextmanager
 def lease_point_frame(
     graph: PipelineGraph,

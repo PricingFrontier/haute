@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
-import CommittedTextField, { CommittedTextArea } from "../CommittedTextField"
+import CommittedTextField, { CommittedTextArea, ValidatedTextField } from "../CommittedTextField"
 
 afterEach(cleanup)
 
@@ -132,5 +132,74 @@ describe("CommittedTextArea - commit on blur only (Enter is a newline)", () => {
     fireEvent.blur(area)
     expect(onCommit).toHaveBeenCalledTimes(1)
     expect(onCommit).toHaveBeenCalledWith("a\nb")
+  })
+})
+
+describe("ValidatedTextField - refuses invalid values at the commit boundary", () => {
+  const required = (candidate: string) => (candidate.trim() ? null : "A value is required.")
+  function field(overrides: Partial<Parameters<typeof ValidatedTextField>[0]> = {}) {
+    return (
+      <ValidatedTextField
+        dataTestId="v"
+        value="a"
+        onCommit={vi.fn()}
+        validate={required}
+        containerClassName=""
+        className=""
+        style={{}}
+        {...overrides}
+      />
+    )
+  }
+
+  it("keeps an invalid draft with its error and commits once it is fixed", () => {
+    const onCommit = vi.fn()
+    render(field({ onCommit }))
+    const input = screen.getByTestId("v") as HTMLInputElement
+
+    fireEvent.change(input, { target: { value: " " } })
+    fireEvent.blur(input)
+    expect(onCommit).not.toHaveBeenCalled()
+    expect(input.value).toBe(" ")
+    expect(input.getAttribute("aria-invalid")).toBe("true")
+    expect(screen.getByTestId("v-error").textContent).toBe("A value is required.")
+
+    fireEvent.change(input, { target: { value: "b" } })
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(onCommit).toHaveBeenCalledTimes(1)
+    expect(onCommit).toHaveBeenCalledWith("b")
+    expect(screen.queryByTestId("v-error")).toBeNull()
+  })
+
+  it("shows the error of an invalid committed value without any interaction", () => {
+    render(field({ value: "" }))
+    expect(screen.getByTestId("v-error").textContent).toBe("A value is required.")
+  })
+
+  it("keeps the draft when its owner refuses the commit, and shows the owner's error", () => {
+    const onCommit = vi.fn(() => ({ ok: false }))
+    const { rerender } = render(field({ onCommit }))
+    const input = screen.getByTestId("v") as HTMLInputElement
+
+    fireEvent.change(input, { target: { value: "taken" } })
+    fireEvent.blur(input)
+    expect(onCommit).toHaveBeenCalledWith("taken")
+    expect(input.value).toBe("taken")
+
+    rerender(field({ onCommit, commitError: "That name is taken." }))
+    expect(screen.getByTestId("v-error").textContent).toBe("That name is taken.")
+    // The field's own validation error comes first.
+    fireEvent.change(input, { target: { value: "" } })
+    expect(screen.getByTestId("v-error").textContent).toBe("A value is required.")
+  })
+
+  it("shows a warning only while there is no error", () => {
+    render(field({ warning: "Conflicts with another path." }))
+    const input = screen.getByTestId("v") as HTMLInputElement
+    expect(screen.getByTestId("v-warning").textContent).toBe("Conflicts with another path.")
+
+    fireEvent.change(input, { target: { value: "" } })
+    expect(screen.queryByTestId("v-warning")).toBeNull()
+    expect(screen.getByTestId("v-error")).toBeTruthy()
   })
 })

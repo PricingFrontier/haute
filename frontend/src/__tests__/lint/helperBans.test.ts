@@ -28,6 +28,7 @@ describe("helper bans", () => {
     ["export function errorDetail(e: unknown) { return String(e) }", "apiErrorMessage"],
     ["export const requestErrorDetail = (e: unknown) => String(e)", "apiErrorMessage"],
     ["export const errorMessage = function (e: unknown) { return String(e) }", "apiErrorMessage"],
+    ["export function gitErrorMessage(e: unknown) { return String(e) }", "apiErrorMessage"],
     ["export const text = (e: { detail?: string; message: string }) => e.detail || e.message", "apiErrorMessage"],
     ["export const text = (e: { detail?: string; message: string }) => e.detail ?? e.message", "apiErrorMessage"],
     ["export function formatMemory(b: number) { return `${b}` }", "formatBytes"],

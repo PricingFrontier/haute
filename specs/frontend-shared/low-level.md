@@ -41,7 +41,7 @@
 | `frontend/src/utils/portableKey.ts` | Browser-owned persistence key; intentionally not Python-compatible or reversible. Executable identity comes only from server metadata. |
 | `frontend/src/components/ErrorBoundary.tsx` | Class-component error boundary with a "Try again" fallback UI. |
 | `frontend/src/components/Toast.tsx` | `ToastMessage` type + `ToastContainer`, rendering `useToastStore`'s queue with per-type icon/colour and auto-dismiss. |
-| `frontend/src/components/ModalShell.tsx` | Shared dialog chrome: backdrop, Escape-close, full Tab focus trap, focus restore on unmount. |
+| `frontend/src/components/ModalShell.tsx` | Shared dialog chrome: backdrop, Escape-close, full Tab focus trap, focus restore on unmount; the panel is centred, or top-aligned with `placement="top"` (the node-search palette). |
 | `frontend/src/components/Tooltip.tsx` | Zero-delay hover and focus tooltip. The bubble renders into the document body with fixed positioning, so scrolling or overflow-clipped panels never cut it off; it is placed from the anchor's viewport rectangle, clamped inside the viewport horizontally, flipped between top and bottom when the preferred side would clip, closed on scroll or resize, wraps long unbroken text such as URLs, and describes the control that takes focus: a single element child receives the tooltip in its described-by reference (unless its accessible label already is the tooltip text), a function child receives the id to place on a nested control such as a native radio inside its label, and only text or fragment children leave the reference on the hover wrapper. |
 | `frontend/src/components/ContextMenu.tsx` | Node right-click menu: rename/duplicate/create-instance/dissolve-submodel/delete, arrow-key roving focus. |
 | `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
@@ -52,9 +52,10 @@
 | `frontend/src/components/BreakdownDropdown.tsx` | Sorted, accessible timing/memory breakdown disclosure used by the shared toolbar. |
 | `frontend/src/panels/ImportsPanel.tsx` | Active pipeline-imports right panel: `PanelShell` plus `CodeEditor`, explanatory always-included imports, and callback-only preamble mutation/close handling. `App.tsx` supplies the graph-store-backed preamble and selects it through `importsOpen`. |
 | `frontend/src/components/BackgroundJobPolling.tsx` | Zero-render mount point (`memo`) that only invokes `useBackgroundJobs()`. |
-| `frontend/src/components/NodeSearch.tsx` | Ctrl+K command palette: dynamically imported by `App.tsx` only while open, filters/windows the current React Flow node list, supports arrow-key navigation, and hands the chosen node to `App.tsx`, which selects it and asks `useActiveNodeReveal` to centre it at zoom 0.8 within the canvas area the inspector leaves (see [frontend-graph-canvas](../frontend-graph-canvas/high-level.md), Active node visibility). |
+| `frontend/src/components/NodeSearch.tsx` | Ctrl+K command palette on a top-aligned `ModalShell` (which owns Escape, backdrop close and the focus trap): dynamically imported by `App.tsx` only while open, filters/windows the current React Flow node list, supports arrow-key navigation, and hands the chosen node to `App.tsx`, which selects it and asks `useActiveNodeReveal` to centre it at zoom 0.8 within the canvas area the inspector leaves (see [frontend-graph-canvas](../frontend-graph-canvas/high-level.md), Active node visibility). |
 | `frontend/src/components/BreadcrumbBar.tsx` | Pipeline → submodel navigation trail; renders nothing at stack depth ≤ 1. |
 | `frontend/src/hooks/useClickOutside.ts` | Attaches/detaches a `mousedown` listener that fires `onClose` when the click lands outside `ref`, only while `active`. |
+| `frontend/src/hooks/useDebouncedCallback.ts` | The one debounce for a scheduled call: `schedule(args, delayMs?)` runs the latest callback with the latest arguments once the delay passes without another schedule (a per-call delay overrides the hook's), `flush()` runs a waiting call now and returns its result, `cancel()` drops it, and `pending()` reads its arguments. On unmount a waiting call is dropped, or run when the owner asks for `onUnmount: "flush"`. The code editor's change commit, the utility panel's autosave and the canvas preview fetch use it; a delayed request inside an effect, whose cleanup clears the timer and aborts the request, stays in that effect. |
 | `frontend/src/hooks/useDragResize.ts` | Bottom-panel drag-to-resize: DOM-direct mutation while dragging, commits to React state on mouseup. |
 | `frontend/src/hooks/useJobPolling.ts` | Thin React adapter that keeps one `JobPollingController` configured, reconciles the current job record after commit, and disposes it on unmount. |
 | `frontend/src/hooks/jobPollingController.ts` | The single state authority for generic background polling: active poller identities, timers, abort controllers, interval ramp, progress throttling, replacement, terminal completion/error, and disposal. Also exports `waitForJob`, the only way to await one job's terminal status inside an operation, and its `JobWaitTimeoutError`. |
@@ -69,7 +70,7 @@
 | `frontend/src/utils/mlflowModelMetadata.ts` | Pure MLflow model metadata helpers for Model Score: `resolveLoadedVersion` (the loaded version a stored choice resolves to; `latest` is the newest) and `recordedModelTask` (a run's recorded `task` param when it is `regression` or `classification`, else `null`). |
 | `frontend/src/components/NodeTypeIcon.tsx` | Shared node-type icon wrapper: looks up canonical metadata and deliberately renders the Polars icon for an absent or unknown type, so compact lists never crash on incomplete historical data. |
 | `frontend/src/components/ToggleButtonGroup.tsx` | Generic controlled segmented single-choice group with radio semantics, roving `tabIndex`, Arrow/Home/End selection and focus movement, optional accessible name, and token-derived active styling. |
-| `frontend/src/components/form/CommittedTextField.tsx` | Controlled-looking input/textarea with a local draft: commits once on blur (and Enter for the input), skips no-op commits, and discards a stale draft when the external value changes, preserving one edit/one undo snapshot. |
+| `frontend/src/components/form/CommittedTextField.tsx` | Controlled-looking input/textarea with a local draft: commits once on blur (and Enter for the input), skips no-op commits, and discards a stale draft when the external value changes, preserving one edit/one undo snapshot. `ValidatedTextField` is the validated single-line variant the API Input and Output editors share: an invalid candidate is refused with its error beside the field and the draft kept, an invalid committed value shows its error too, a commit its owner refuses (`{ ok: false }`) keeps the draft, an owner's `commitError` shows while the value itself is valid, and a non-blocking `warning` shows only when there is no error. |
 | `frontend/src/components/form/ConfigCheckbox.tsx` | Labelled controlled checkbox using a caller id or React `useId`, disabled semantics, and shared accent/text tokens. |
 | `frontend/src/components/form/EditorLabel.tsx` | Consistent micro-label primitive; can be a correctly associated `<label>` or non-form span/div for display-only content. |
 | `frontend/src/components/form/index.ts` | Public barrel for the committed text field/area, checkbox, and editor-label primitives; editor callers import the shared contract rather than deep paths. |
@@ -258,7 +259,9 @@ cancels the job; a caller that owns the job decides that. The callers are:
   `cancelInputSnapshotBuild` waits at most 48 seconds for the cancelled build
   to stop, then raises `CancellationFailedError`.
 - `InputSnapshotCacheButton` waits for its build with a signal aborted on
-  unmount and when its configuration changes; the server build continues.
+  unmount and when its configuration changes; the server build continues. Its
+  `onStatus` reports each running status as `CacheFetchButton`'s progress, so
+  there is no second progress poll.
 - `useOptimiserAutoRange` waits with the active run's signal and retires the
   run from `onStatus` once it is no longer current.
 
@@ -728,7 +731,7 @@ same Vitest config.
   (root-level, under `frontend/src/__tests__/components/`),
   `frontend/src/components/__tests__/ModalShell.test.tsx` and
   `frontend/src/components/__tests__/ModalShell.focusTrap.test.tsx` (focus trap and
-  restore-on-close in particular),
+  restore-on-close in particular; centred or top placement),
   `frontend/src/components/__tests__/Toast.test.tsx`,
   `frontend/src/components/__tests__/Tooltip.test.tsx`,
   `frontend/src/components/__tests__/ContextMenu.test.tsx`,
@@ -768,6 +771,8 @@ same Vitest config.
   stale save is rejected, the local edit survives until an explicit reload, and a fresh save
   succeeds afterwards.
 - **Generic hooks**: `frontend/src/__tests__/hooks/useClickOutside.test.ts` + `frontend/src/__tests__/hooks/useClickOutside.gaps.test.tsx`,
+  `frontend/src/hooks/__tests__/useDebouncedCallback.test.ts` (latest arguments and callback,
+  per-call delay, flush result, cancel, stable object, drop or flush on unmount),
   `frontend/src/__tests__/hooks/useDragResize.test.ts`, `frontend/src/__tests__/hooks/useJobPolling.test.ts` (root-level, generic
   poller mechanics) plus the colocated dedup/progress-throttle variants and
   `frontend/src/hooks/__tests__/jobPollingController.test.ts` (controller
@@ -801,7 +806,8 @@ Arrow/Home/End radio-group selection/focus behaviour;
 `frontend/src/components/form/__tests__/CommittedTextField.test.tsx`,
 `frontend/src/__tests__/components/form/ConfigCheckbox.test.tsx`, and
 `frontend/src/__tests__/components/form/EditorLabel.test.tsx` cover commit boundaries,
-no-op blur, external-value draft reset, and form-label/control semantics.
+no-op blur, external-value draft reset, `ValidatedTextField`'s refused candidates, owner
+refusals, commit errors and warnings, and form-label/control semantics.
 `frontend/src/utils/__tests__/chartHelpers.test.ts` and
 `frontend/src/utils/__tests__/formatTrace.test.ts` respectively pin numeric
 ticks/formatting and trace substitutions/non-finite display.
@@ -822,8 +828,10 @@ Known gaps: `frontend/src/components/Toolbar.tsx`'s inline millisecond timing he
 `formatBytes`/`formatByteSize`, durations in seconds from `formatDuration`, and the
 non-array-object check from `isPlainObject`/`expectPlainObject` in `types/guards.ts`. ESLint's
 `no-restricted-syntax` rejects a local function named `errorMessage`, `errorMsg`, `errorDetail`,
-`requestErrorDetail` or `previewErrorDetail` (declared or assigned; the tracing hook's raw-detail
-text and the repair dialog's `code: message` text are marked exceptions until FSH-R02 folds them in), the
+`requestErrorDetail`, `previewErrorDetail` or `gitErrorMessage` (declared or assigned; the repair
+dialog's `code: message` text is a marked exception, left with the recovery-scope work, `API-R04`;
+the tracing hook's `technicalDetail` is not error text but the raw detail its Technical details
+disclosure shows whole), the
 `e.detail || e.message` idiom, a local `formatBytes`/`formatMemory`/`formatSize`/`formatDuration`/
 `formatElapsed`, and a local `isRecord`/`asRecord`/`isPlainRecord`/`isPlainObject`/`isObjectLiteral`
 outside the owning modules. `utils/objectLiteral.ts`'s `isObjectLiteral` is the stricter check a

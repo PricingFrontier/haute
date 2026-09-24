@@ -1125,8 +1125,9 @@ class InputCacheSourceRequest(_StrictInputCacheModel):
 
 
 class InputCacheBuildRequest(InputCacheSourceRequest):
+    """Start or join a snapshot build; the server chooses how it is built."""
+
     refresh: bool = False
-    profile: Literal["preview_eager", "lazy_sink"] = "lazy_sink"
 
 
 class InputCacheBuildResponse(_StrictInputCacheModel):
@@ -1135,6 +1136,9 @@ class InputCacheBuildResponse(_StrictInputCacheModel):
     identity_digest: str
     status: Literal["running"]
     joined: bool
+    # How the server builds it: ``bounded`` streams in a lazy sink,
+    # ``admitted_eager`` reads eagerly inside a hard-capped worker.
+    build_class: Literal["bounded", "admitted_eager"]
 
 
 class InputCacheProgress(_StrictInputCacheModel):
@@ -1518,6 +1522,21 @@ class CacheClearResponse(BaseModel):
     schema_version: Literal[1] = 1
     cleared: list[str]
     freed_bytes: int = Field(ge=0)
+
+
+class CacheUsageResponse(BaseModel):
+    """The snapshot store's size, and its automatic captures against their budget.
+
+    Only node-output captures no pin protects count toward the budget; input
+    snapshots and explicit builds are kept until the user clears them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    total_bytes: int = Field(ge=0)
+    automatic_bytes: int = Field(ge=0)
+    automatic_budget_bytes: int = Field(ge=0)
 
 
 class CacheNodesResponse(BaseModel):

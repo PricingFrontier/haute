@@ -384,6 +384,8 @@ vi.mock("../../api/client", () => ({
   selectFrontierPoint: vi.fn(),
   saveOptimiser: vi.fn(),
   logOptimiserToMlflow: vi.fn(),
+  // DataPreview's status bar reads the snapshot store's size on mount.
+  fetchCacheUsage: vi.fn(() => Promise.resolve({ schema_version: 1, total_bytes: 0, automatic_bytes: 0, automatic_budget_bytes: 1 })),
 }))
 
 // Stub the heavy sub-components of OptimiserPreview so the render tree

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from "react"
+import { useDebouncedCallback } from "../../hooks/useDebouncedCallback"
 import { EditorView, placeholder as cmPlaceholder, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, rectangularSelection } from "@codemirror/view"
 import { EditorState, Compartment, Annotation } from "@codemirror/state"
 import { python } from "@codemirror/lang-python"
@@ -254,12 +255,10 @@ export default function CodeMirrorEditor({
   const onChangeRef = useRef(onChange)
   const onEditorViewRef = useRef(onEditorView)
   const notifiedEditorViewCallbackRef = useRef<((view: EditorView | null) => void) | undefined>(undefined)
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const diagnosticsClearRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const placeholderCompartment = useRef(new Compartment())
   const columnCompartment = useRef(new Compartment())
   const lastPropValueRef = useRef(defaultValue)
-  const pendingLocalValueRef = useRef<string | null>(null)
   const pendingExternalValueRef = useRef<string | null>(null)
 
   // Keep onChange ref fresh without recreating the editor
@@ -278,30 +277,20 @@ export default function CodeMirrorEditor({
     }
   }, [onEditorView])
 
-  const clearPendingLocalChangeTimer = useCallback(() => {
-    if (debounceRef.current) {
-      clearTimeout(debounceRef.current)
-      debounceRef.current = undefined
-    }
-  }, [])
-
-  const discardPendingLocalChange = useCallback(() => {
-    clearPendingLocalChangeTimer()
-    pendingLocalValueRef.current = null
-  }, [clearPendingLocalChangeTimer])
-
-  const flushPendingLocalChange = useCallback(() => {
-    clearPendingLocalChangeTimer()
-    const value = pendingLocalValueRef.current
-    if (value === null) return
-    pendingLocalValueRef.current = null
-    if (value === lastPropValueRef.current) return
-    lastPropValueRef.current = value
-    onChangeRef.current(value)
-  }, [clearPendingLocalChangeTimer])
+  // A local edit commits once typing pauses, and at once on blur, before an
+  // external value is applied, and on unmount.
+  const localChange = useDebouncedCallback(
+    (value: string) => {
+      if (value === lastPropValueRef.current) return
+      lastPropValueRef.current = value
+      onChangeRef.current(value)
+    },
+    LOCAL_CHANGE_DEBOUNCE_MS,
+    { onUnmount: "flush" },
+  )
 
   const applyExternalValue = useCallback((view: EditorView, value: string) => {
-    flushPendingLocalChange()
+    localChange.flush()
     const currentDoc = view.state.doc.toString()
     if (value === currentDoc) {
       lastPropValueRef.current = value
@@ -314,7 +303,7 @@ export default function CodeMirrorEditor({
     })
     lastPropValueRef.current = value
     pendingExternalValueRef.current = null
-  }, [flushPendingLocalChange])
+  }, [localChange])
 
   // Sync external value changes into the editor. Focused editors still accept
   // updates when their buffer matches the last committed prop value, which
@@ -329,7 +318,7 @@ export default function CodeMirrorEditor({
     if (defaultValue === currentDoc) {
       lastPropValueRef.current = defaultValue
       pendingExternalValueRef.current = null
-      discardPendingLocalChange()
+      localChange.cancel()
       return
     }
     if (!view.hasFocus || currentDoc === lastPropValueRef.current) {
@@ -337,7 +326,7 @@ export default function CodeMirrorEditor({
       return
     }
     pendingExternalValueRef.current = defaultValue
-  }, [applyExternalValue, defaultValue, discardPendingLocalChange])
+  }, [applyExternalValue, defaultValue, localChange])
 
   // Create the editor once on mount
   useEffect(() => {
@@ -350,11 +339,7 @@ export default function CodeMirrorEditor({
         )
         if (isExternalSync) return
         const value = update.state.doc.toString()
-        pendingLocalValueRef.current = value
-        clearPendingLocalChangeTimer()
-        debounceRef.current = setTimeout(() => {
-          flushPendingLocalChange()
-        }, LOCAL_CHANGE_DEBOUNCE_MS)
+        localChange.schedule([value])
         // Clear diagnostics after the current CodeMirror transaction completes.
         if (diagnosticsClearRef.current) clearTimeout(diagnosticsClearRef.current)
         const view = update.view
@@ -421,8 +406,8 @@ export default function CodeMirrorEditor({
         EditorView.domEventHandlers({
           blur: (_event, view) => {
             const lastCommittedBeforeBlur = lastPropValueRef.current
-            const pendingLocalBeforeBlur = pendingLocalValueRef.current
-            flushPendingLocalChange()
+            const pendingLocalBeforeBlur = localChange.pending()?.[0] ?? null
+            localChange.flush()
             if (
               pendingLocalBeforeBlur !== null &&
               pendingLocalBeforeBlur !== lastCommittedBeforeBlur
@@ -456,8 +441,9 @@ export default function CodeMirrorEditor({
       notifiedEditorViewCallbackRef.current = onEditorViewRef.current
     }
 
+    // A pending local edit is committed by `localChange`'s own unmount flush,
+    // which runs before this cleanup.
     return () => {
-      flushPendingLocalChange()
       if (diagnosticsClearRef.current) {
         clearTimeout(diagnosticsClearRef.current)
         diagnosticsClearRef.current = undefined

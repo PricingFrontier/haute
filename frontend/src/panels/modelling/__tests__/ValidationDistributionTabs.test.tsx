@@ -92,6 +92,26 @@ describe("LiftTab", () => {
 })
 
 describe("ResidualsTab", () => {
+  it("puts the histogram and scatter side by side from 760 px and stacks them below", () => {
+    const result = {
+      ...baseResult,
+      residuals_histogram: [{ bin_center: 0, count: 4, weighted_count: 4 }],
+      actual_vs_predicted: [{ actual: 1, predicted: 1.1, weight: 1 }],
+    }
+    const widths = () =>
+      ["Residuals distribution histogram", "Actual versus predicted scatter plot"].map((name) =>
+        screen.getByRole("img", { name }).getAttribute("width"),
+      )
+    const inTwoColumns = () =>
+      screen.getByRole("img", { name: "Residuals distribution histogram" }).closest(".grid-cols-2") !== null
+    const { rerender } = render(<ResidualsTab width={800} result={result} />)
+    expect(widths()).toEqual(["388", "388"])
+    expect(inTwoColumns()).toBe(true)
+    rerender(<ResidualsTab width={759} result={result} />)
+    expect(widths()).toEqual(["759", "759"])
+    expect(inTwoColumns()).toBe(false)
+  })
+
   it("renders numeric histogram ticks and keeps bars within the plot", () => {
     render(
       <ResidualsTab

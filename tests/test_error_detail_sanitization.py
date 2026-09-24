@@ -715,7 +715,8 @@ _LOG_ON_ERROR_CASES: list[tuple] = [
         "/api/json-cache/infer",
         {"json": {"path": "data.jsonl"}},
         _json_cache_infer_patch,
-        "haute.routes.json_cache",
+        # Left to the application's unexpected-exception handler, like Databricks.
+        "haute.server",
         "internal-json-error",
         500,
         id="json-cache-infer-log",
@@ -917,7 +918,6 @@ class TestInternalErrorDetailConstant:
         [
             "haute.server",
             "haute.routes.pipeline",
-            "haute.routes.json_cache",
             "haute.routes.optimiser",
             "haute.routes.git",
             "haute.routes.mlflow",

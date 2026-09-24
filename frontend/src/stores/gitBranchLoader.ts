@@ -1,6 +1,6 @@
 import { getWorkingBranches } from "../api/client"
 import type { GitManagedBranch } from "../api/types"
-import { gitErrorMessage } from "../utils/gitError"
+import { apiErrorMessage } from "../api/errors"
 import { createSingleFlight } from "./singleFlight"
 
 interface GitBranchState {
@@ -57,7 +57,7 @@ export function loadGitBranches(
           if (isCurrent()) {
             set({
               branchesLoading: false,
-              branchesError: gitErrorMessage(error, "Unable to load branches"),
+              branchesError: apiErrorMessage(error, "Unable to load branches"),
             })
           }
           throw error
@@ -69,7 +69,7 @@ export function loadGitBranches(
       onStale: (error) =>
         set({
           branchesLoading: false,
-          branchesError: gitErrorMessage(error, "Unable to load branches"),
+          branchesError: apiErrorMessage(error, "Unable to load branches"),
         }),
     },
   )
