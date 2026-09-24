@@ -26,7 +26,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Optimiser](optimiser.md) | Service extraction, scaling, input isolation | `OPT-P13` |
 | [Pipeline config](pipeline-config.md) | Project context, typed configs, editor state, node specification | `PCFG-R04` |
 | [Sandbox security](sandbox-security.md) | Every containment comparison through the one check | `SBX-R01` |
-| [Server API](server-api.md) | Error translation, generated browser contract | `API-R01` |
+| [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |
 | [Submodels](submodels.md) | One reuse mechanism | `SUB-R01` |
 
 ## Delivery plan — 24 September 2026

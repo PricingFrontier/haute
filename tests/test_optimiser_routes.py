@@ -24,6 +24,7 @@ from haute._execution_context import ExecutionProfile
 from haute._sandbox import set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.graph_utils import NodeType
+from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._optimiser_input import _optimiser_solve_required_columns_by_node
 from haute.routes._optimiser_limits import (
     APPLY_PREVIEW_ROW_LIMIT,
@@ -14793,15 +14794,16 @@ class TestApplyException:
                 "completed_at": time.time(),
             },
         )
-        with patch("haute.routes.optimiser.logger.error") as log_error:
+        with patch("haute.server.logger.error") as log_error:
             resp = client.post("/api/optimiser/apply", json={"job_id": "apply_err"})
 
         assert resp.status_code == 500
+        assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        # The application handler logs it; the route no longer catches it.
         log_error.assert_called_once()
-        assert log_error.call_args.args == ("apply_failed",)
-        assert log_error.call_args.kwargs["error"] == "boom"
-        assert log_error.call_args.kwargs["job_id"] == "apply_err"
-        assert log_error.call_args.kwargs["exc_info"] is True
+        assert log_error.call_args.args == ("unhandled_exception",)
+        assert log_error.call_args.kwargs["error_class"] == "RuntimeError"
+        assert log_error.call_args.kwargs["path"] == "/api/optimiser/apply"
         job = clean_job_store.require_job("apply_err")
         assert "solve_result" in job
 
@@ -14971,18 +14973,19 @@ class TestSaveExceptionPaths:
 
         with (
             patch("pathlib.Path.write_bytes", side_effect=RuntimeError("unexpected")),
-            patch("haute.routes.optimiser.logger.error") as log_error,
+            patch("haute.server.logger.error") as log_error,
         ):
             resp = client.post(
                 "/api/optimiser/save",
                 json={"job_id": "save_gen", "output_path": out_path},
             )
         assert resp.status_code == 500
+        assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        # The application handler logs it; the route no longer catches it.
         log_error.assert_called_once()
-        assert log_error.call_args.args == ("save_failed",)
-        assert log_error.call_args.kwargs["error"] == "unexpected"
-        assert log_error.call_args.kwargs["job_id"] == "save_gen"
-        assert log_error.call_args.kwargs["exc_info"] is True
+        assert log_error.call_args.args == ("unhandled_exception",)
+        assert log_error.call_args.kwargs["error_class"] == "RuntimeError"
+        assert log_error.call_args.kwargs["path"] == "/api/optimiser/save"
 
 
 class TestSaveArtifactGate:

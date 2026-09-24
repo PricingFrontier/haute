@@ -105,6 +105,7 @@ from haute.routes._contract_errors import (
     contract_error_http_exception,
     contract_error_job_fields,
     contract_error_terminal_reason,
+    memory_limit_http_exception,
 )
 from haute.routes._frontier_point_summary import NON_CONVERGED_WARNING
 from haute.routes._job_lifecycle import (
@@ -119,7 +120,6 @@ from haute.routes._job_store import (
     JobStore,
     RunningJobFields,
 )
-from haute.routes._memory_messages import memory_limit_user_message
 from haute.routes._optimiser_input import (
     _NULL_QUOTE_ID_DETAIL_PREFIX,
     _QUOTE_ID_NULL_COUNT_ALIAS,
@@ -316,17 +316,6 @@ def _with_flattened_optimiser_graph(
     return body.model_copy(update={"graph": flat_graph})
 
 
-def _memory_limit_http_exception(
-    exc: ExecutionAdmissionError | ExecutionMemoryLimitExceededError,
-) -> HTTPException:
-    detail = exc.to_payload()
-    # str(exc) names the internal operation and raw byte counts; author the
-    # public message from the structured attributes via the shared shape
-    # (matching the training and input-snapshot surfaces).
-    detail["message"] = memory_limit_user_message(exc, operation_noun="Auto-range")
-    return HTTPException(status_code=507, detail=detail)
-
-
 def _is_memory_limit_http_exception(exc: HTTPException) -> bool:
     return (
         exc.status_code == 507
@@ -345,7 +334,7 @@ def _normalise_memory_limit_payload(detail: object) -> dict[str, object]:
 
 
 def _memory_limit_message(payload: Mapping[str, object]) -> str:
-    # A "message" key can only have been stamped by _memory_limit_http_exception
+    # A "message" key can only have been stamped by memory_limit_http_exception
     # (the exceptions' to_payload() carries no message) — prefer that curated
     # wording so the job's terminal message matches the HTTP surface.
     message = payload.get("message")
@@ -2839,7 +2828,7 @@ class OptimiserSolveService:
                 elapsed_seconds=elapsed_seconds,
             )
         elif isinstance(exc, (ExecutionAdmissionError, ExecutionMemoryLimitExceededError)):
-            http_exc = _memory_limit_http_exception(exc)
+            http_exc = memory_limit_http_exception(exc, operation_noun="Auto-range")
             if execution_context is not None:
                 memory_error_update = _memory_limit_job_update(
                     detail=http_exc.detail,
@@ -2971,7 +2960,7 @@ class OptimiserSolveService:
                     execution_context,
                 )
             except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-                http_exc = _memory_limit_http_exception(exc)
+                http_exc = memory_limit_http_exception(exc, operation_noun="Auto-range")
                 self._lifecycle.transition(
                     job_id,
                     to="memory_limited",
@@ -3408,7 +3397,7 @@ class OptimiserSolveService:
                 profile=ExecutionProfile.AUTO_RANGE,
             )
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-            raise _memory_limit_http_exception(exc) from None
+            raise memory_limit_http_exception(exc, operation_noun="Auto-range") from None
         try:
             with runtime_project_root_scope(graph.source_file):
                 prepare_input_snapshots(
@@ -3569,7 +3558,7 @@ class OptimiserSolveService:
             reason = self._jobs.cancellation_reason(job_id) or "cancelled"
             raise BackgroundJobStoppedError(job_id, reason) from exc
         except ExecutionMemoryLimitExceededError as exc:
-            http_exc = _memory_limit_http_exception(exc)
+            http_exc = memory_limit_http_exception(exc, operation_noun="Auto-range")
             self._lifecycle.transition(
                 job_id,
                 to="memory_limited",

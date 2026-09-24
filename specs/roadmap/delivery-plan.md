@@ -40,7 +40,7 @@ merges, remove its rounds from the table.
 
 | Phase | Round | Theme | Packages, in order | Needs | Size | Why here |
 |---|---:|---|---|---|---|---|
-| B | 4 | Optimiser routes | `API-R01`, `MLF-R02`, `OPT-P13` | — | M | All three change `routes/optimiser.py` and `_optimiser_service.py`; `OPT-P13` opens the optimiser chain. |
+| B | 4 | Optimiser routes | `MLF-R02`, `OPT-P13` | — | M | Both change `routes/optimiser.py` and `_optimiser_service.py`; `OPT-P13` opens the optimiser chain. |
 | B | 5 | Optimiser estimate | `OPT-P16` | 4 | M | Moves the last pipeline read out of the server process, onto the warm worker pool. |
 | B | 6 | Optimiser frontier | `OPT-P06`, `OPT-P12`, `OPT-P14` | 4 | L | The benchmark decides `OPT-P06`; `OPT-P12` and `OPT-P14` finish splitting the optimiser service. |
 | B | 7 | Domain errors | `API-R02` | 4, 6 | L | Services stop raising HTTP types after the optimiser service has been split, so its errors are converted once, in their final modules. |

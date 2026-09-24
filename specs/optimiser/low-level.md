@@ -780,11 +780,15 @@ returned as a generic `status: "error"` payload.
   worker thread failing to even start; a generic/unclassified pipeline or grid failure; an
   invalid server-owned artifact handle; a corrupt persisted artifact), 507
   (`ExecutionAdmissionError`/`ExecutionMemoryLimitExceededError`
-  wrapped via `_memory_limit_http_exception`, whose payload `message` is the
+  mapped by the shared `memory_limit_http_exception(exc, operation_noun="Auto-range")`,
+  whose payload `message` is the
   shared curated wording from `routes/_memory_messages.memory_limit_user_message`
   — the same shape training and the input-snapshot build use — and the
   memory-limited job's terminal message reuses it rather than the generic
-  exceeded-its-memory-budget fallback). This applies to `POST /frontier` only up through its
+  exceeded-its-memory-budget fallback). Any other exception a request handler raises is not
+  caught in the route: it reaches the application handler, which logs it as
+  `unhandled_exception` and answers the sanitized 500. The frontier apply path first
+  removes the apply artifact that request created, then re-raises. This applies to `POST /frontier` only up through its
   synchronous validation phase (runtime resolution, compute budget, already-running-sweep check);
   once validation and worker launch succeed, the request returns 200 with a `status: "started"`
   body.

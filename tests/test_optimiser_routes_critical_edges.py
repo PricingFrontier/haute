@@ -11,6 +11,7 @@ import polars as pl
 import pytest
 from fastapi import HTTPException
 
+from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from tests.job_store_support import discard_corrupt_job, seed_job
 from tests.optimiser_fixtures import make_select_job as _make_select_job
 from tests.optimiser_fixtures import run_frontier_and_wait
@@ -452,21 +453,23 @@ def test_frontier_apply_cleans_new_artifact_after_unexpected_store_failure(
             "atomic_update_if_heavy_present",
             side_effect=RuntimeError("store write failed"),
         ),
-        patch("haute.routes.optimiser.logger.error") as log_error,
+        patch("haute.server.logger.error") as log_error,
     ):
         resp = client.post(
             "/api/optimiser/apply",
             json={"job_id": "select_store_failure", "point_index": 0},
         )
 
-    assert resp.status_code == 500
+    # The request-created artifact is removed before the failure propagates.
     assert not orphan_path.exists()
     assert not orphan_dir.exists()
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
+    # The application handler logs it; the route no longer catches it.
     log_error.assert_called_once()
-    assert log_error.call_args.args == ("frontier_apply_materialise_failed",)
-    assert log_error.call_args.kwargs["error"] == "store write failed"
-    assert log_error.call_args.kwargs["job_id"] == "select_store_failure"
-    assert log_error.call_args.kwargs["exc_info"] is True
+    assert log_error.call_args.args == ("unhandled_exception",)
+    assert log_error.call_args.kwargs["error_class"] == "RuntimeError"
+    assert log_error.call_args.kwargs["path"] == "/api/optimiser/apply"
 
 
 def test_save_rechecks_solve_result_after_touch(client, clean_job_store, tmp_path: Path):
@@ -686,8 +689,6 @@ def test_frontier_select_unhandled_exception_logged_and_500(
     """Unexpected errors in select must be logged (with traceback) and
     returned as a generic 500 — never bubbling internal state to the
     client."""
-    from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
-    from haute.routes.optimiser import logger as optimiser_logger
 
     seed_job(clean_job_store, "select_boom", _make_select_job())
 
@@ -697,7 +698,7 @@ def test_frontier_select_unhandled_exception_logged_and_500(
             "haute.routes.optimiser._frontier_point_result_dict",
             side_effect=ZeroDivisionError("kaboom"),
         ),
-        patch.object(optimiser_logger, "error") as log_error,
+        patch("haute.server.logger.error") as log_error,
     ):
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -706,12 +707,11 @@ def test_frontier_select_unhandled_exception_logged_and_500(
 
     assert resp.status_code == 500
     assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
-    # The cause was logged with full context so it can be triaged.
-    assert log_error.call_count == 1
-    assert log_error.call_args.args == ("frontier_select_failed",)
-    assert log_error.call_args.kwargs["job_id"] == "select_boom"
-    assert log_error.call_args.kwargs["error"] == "kaboom"
-    assert log_error.call_args.kwargs["exc_info"] is True
+    # The application handler logs it; the route no longer catches it.
+    log_error.assert_called_once()
+    assert log_error.call_args.args == ("unhandled_exception",)
+    assert log_error.call_args.kwargs["error_class"] == "ZeroDivisionError"
+    assert log_error.call_args.kwargs["path"] == "/api/optimiser/frontier/select"
 
 
 # ---------------------------------------------------------------------------
