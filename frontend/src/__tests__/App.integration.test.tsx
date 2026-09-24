@@ -99,7 +99,6 @@ vi.mock("../api/client", async () => {
     previewInputs: vi.fn(async () => ({ input_node_ids: [] as string[] })),
     previewNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
     previewRecoveryNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
-    dryRunRemoveUnavailableNode: vi.fn(() => Promise.resolve({})),
     applyRemoveUnavailableNode: vi.fn(() => Promise.resolve({})),
     savePipeline: vi.fn(() => Promise.resolve({ file: "pipeline.py", pipeline_name: "main" })),
     traceCell: vi.fn(() => Promise.resolve({ status: "ok" })),
@@ -514,7 +513,6 @@ beforeEach(() => {
   vi.mocked(api.savePipeline).mockReset().mockResolvedValue({ file: "pipeline.py", pipeline_name: "main", source_revision: "revision-test" })
   vi.mocked(api.previewNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
   vi.mocked(api.previewRecoveryNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
-  vi.mocked(api.dryRunRemoveUnavailableNode).mockReset()
   vi.mocked(api.applyRemoveUnavailableNode).mockReset()
   vi.mocked(api.getNodeDataPoint).mockReset().mockResolvedValue(missingPoint())
   vi.mocked(api.runNodeData).mockReset().mockResolvedValue({ status: "started", job_id: "node-data-1", cached: false, message: "Caching started", point: missingPoint() })
@@ -728,30 +726,6 @@ describe("App integration - degraded execution fence", () => {
       source_revision: "revision-degraded",
       nodes: [broken],
     }))
-    const planHash = "a".repeat(64)
-    vi.mocked(api.dryRunRemoveUnavailableNode).mockResolvedValueOnce({
-      repair_kind: "remove_unavailable_node",
-      source_file: "rating/main.py",
-      source_revision: "revision-degraded",
-      target_source_file: "rating/main.py",
-      target_recovery_id: "broken@10",
-      target_authored_id: "broken",
-      delete_config: false,
-      plan_hash: planHash,
-      changes: [{
-        path: "rating/main.py",
-        operation: "update",
-        description: "Remove broken.",
-        diff: "-@pipeline.removed",
-        diff_truncated: false,
-      }],
-      retained_artifacts: [],
-      warnings: [],
-      predicted_load_status: "ready",
-      field_changes: [],
-      completeness: [],
-      previous_config: null,
-    })
     const repaired = makePipelineEditorDocument({
       source_file: "rating/main.py",
       source_revision: "revision-repaired",
@@ -759,8 +733,14 @@ describe("App integration - degraded execution fence", () => {
     })
     vi.mocked(api.applyRemoveUnavailableNode).mockResolvedValueOnce({
       repair_kind: "remove_unavailable_node",
-      plan_hash: planHash,
       applied_artifacts: ["rating/main.py"],
+      changes: [{
+        path: "rating/main.py",
+        operation: "update",
+        description: "Remove broken.",
+        diff: "-@pipeline.removed",
+        diff_truncated: false,
+      }],
       document: repaired,
       field_changes: [],
       completeness: [],
@@ -779,7 +759,7 @@ describe("App integration - degraded execution fence", () => {
         { timeout: PANEL_HYDRATION_TIMEOUT_MS },
       ),
     )
-    await screen.findByText("Remove broken.", {}, { timeout: PANEL_HYDRATION_TIMEOUT_MS })
+    await screen.findByTestId("pipeline-repair-dialog", {}, { timeout: PANEL_HYDRATION_TIMEOUT_MS })
     expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["broken@10"])
 
     fireEvent.click(screen.getByRole("button", { name: "Remove node" }))

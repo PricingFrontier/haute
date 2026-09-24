@@ -43,9 +43,8 @@ def _two_inputs(root: Path) -> Path:
 def _recover(root: Path, authored_id: str) -> None:
     from haute._pipeline_repair import (
         apply_recover_unavailable_node_plan,
-        build_recover_unavailable_node_plan,
     )
-    from haute.schemas import PipelineRepairRecoverApplyRequest, PipelineRepairRecoverRequest
+    from haute.schemas import PipelineRepairRecoverRequest
 
     document = load_pipeline_editor_document(root / "main.py", project_root=root)
     target = next(node for node in document.nodes if node.authored_id == authored_id)
@@ -56,13 +55,7 @@ def _recover(root: Path, authored_id: str) -> None:
         target_recovery_id=target.recovery_id,
         action="recover",
     )
-    plan = build_recover_unavailable_node_plan(project_root=root, request=request)
-    apply_recover_unavailable_node_plan(
-        project_root=root,
-        request=PipelineRepairRecoverApplyRequest(
-            **request.model_dump(), plan_hash=plan.response.plan_hash
-        ),
-    )
+    apply_recover_unavailable_node_plan(project_root=root, request=request)
 
 
 def _save_request(root: Path, authored_id: str, config: dict):

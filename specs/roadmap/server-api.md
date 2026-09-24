@@ -15,15 +15,13 @@ come from the [23 September 2026 codebase review](codebase-review-2026-09-23.md)
 | API-R01 | Planned | P2 | The optimiser and JSON-cache routes join the application exception handlers. |
 | API-R02 | Planned | P3 | Domain services raise domain errors; only routes speak HTTP. |
 | API-R03 | Planned | P2 | Every browser type and response parser is generated from the Pydantic models. |
-| API-R04 | Planned | P3 | The repair actions apply in one confirmed step, without the plan-hash dry-run. |
 
 ## Planned improvements
 
 `API-R03` has the largest payoff: the hand-maintained contract files are the
 most-changed files in the repository. The application exception handlers
 from `API-R01` are in place; what remains of it sits in files owned by the
-optimiser and caching work and can land with `API-R02`. `API-R04` is a
-product decision.
+optimiser and caching work and can land with `API-R02`.
 
 ### API-R01 — Translate errors once at the application edge
 **Why:** The application exception handlers exist (`routes/_error_handlers.py`:
@@ -136,28 +134,3 @@ tuning and evaluation response models to structure.
 `frontend/src/api/types.ts`; `frontend/src/api/client.ts`;
 `src/haute/schemas.py`; `tests/fixtures/ui_contracts`;
 `frontend/src/types/__tests__/guards.contract.test.ts`.
-
-### API-R04 — Scope the editor recovery subsystem
-**Why:** The scope is decided (option C, 24 September 2026) and specified in
-the server-api specification: hand edits to node bodies and the preamble load
-per node, and a file that is not valid Python shows its parse error with no
-canvas. The regex parser and the source-only stale canvas are gone. What is
-left is the plan-hash dry-run layer: every repair action is a dry-run that
-returns a plan and its hash, then an apply that must present that hash.
-
-**Plan:** Replace each dry-run/apply pair with one apply request bound to the
-document's source revision. The server still computes, verifies and rolls
-back the plan under the save lock; the confirmation dialog states the action
-and applies it, and the apply response carries the changed-artifact report
-the recover summary shows.
-
-**Acceptance:** No route or request carries a plan hash; the remove, reset,
-recover and update actions apply in one request that refuses a stale
-revision; the repair dialog applies without a preview step.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_pipeline_repair.py::_commit_repair_plan`;
-`src/haute/routes/pipeline.py::dry_run_remove_unavailable_node`;
-`frontend/src/components/PipelineRepairDialog.tsx`;
-`tests/test_pipeline_recovery.py`.

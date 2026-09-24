@@ -169,15 +169,9 @@ const modellingValidators = () => import("../generated/api-contracts.modelling.v
 const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
 import {
   parseRemoveUnavailableNodeApplyResponse,
-  parseRemoveUnavailableNodeDryRunResponse,
   parseRecoverUnavailableNodeApplyResponse,
-  parseRecoverUnavailableNodeDryRunResponse,
-  type ApplyRecoverUnavailableNodeRequest,
-  type ApplyRemoveUnavailableNodeRequest,
-  type RecoverUnavailableNodeDryRunResponse,
   type RecoverUnavailableNodeApplyResponse,
   type RecoverUnavailableNodeRequest,
-  type RemoveUnavailableNodeDryRunResponse,
   type RemoveUnavailableNodeApplyResponse,
   type RemoveUnavailableNodeRequest,
 } from "../types/pipelineRepair"
@@ -717,21 +711,8 @@ export async function resolveEditorNodeIdentities(
   return response
 }
 
-export function dryRunRemoveUnavailableNode(
-  args: RemoveUnavailableNodeRequest,
-  options?: MutationOptions,
-): Promise<RemoveUnavailableNodeDryRunResponse> {
-  return post<unknown>("/api/pipeline/repair/remove/dry-run", {
-    source_file: args.sourceFile,
-    source_revision: args.sourceRevision,
-    target_source_file: args.targetSourceFile,
-    target_recovery_id: args.targetRecoveryId,
-    delete_config: args.deleteConfig,
-  }, options).then(parseRemoveUnavailableNodeDryRunResponse)
-}
-
 export function applyRemoveUnavailableNode(
-  args: ApplyRemoveUnavailableNodeRequest,
+  args: RemoveUnavailableNodeRequest,
   options?: MutationOptions,
 ): Promise<RemoveUnavailableNodeApplyResponse> {
   return post<unknown>("/api/pipeline/repair/remove/apply", {
@@ -740,25 +721,11 @@ export function applyRemoveUnavailableNode(
     target_source_file: args.targetSourceFile,
     target_recovery_id: args.targetRecoveryId,
     delete_config: args.deleteConfig,
-    plan_hash: args.planHash,
   }, options).then(parseRemoveUnavailableNodeApplyResponse)
 }
 
-export function dryRunRecoverUnavailableNode(
-  args: RecoverUnavailableNodeRequest,
-  options?: MutationOptions,
-): Promise<RecoverUnavailableNodeDryRunResponse> {
-  return post<unknown>("/api/pipeline/repair/recover/dry-run", {
-    source_file: args.sourceFile,
-    source_revision: args.sourceRevision,
-    target_source_file: args.targetSourceFile,
-    target_recovery_id: args.targetRecoveryId,
-    action: args.action,
-  }, options).then(parseRecoverUnavailableNodeDryRunResponse)
-}
-
 export function applyRecoverUnavailableNode(
-  args: ApplyRecoverUnavailableNodeRequest,
+  args: RecoverUnavailableNodeRequest,
   options?: MutationOptions,
 ): Promise<RecoverUnavailableNodeApplyResponse> {
   return post<unknown>("/api/pipeline/repair/recover/apply", {
@@ -767,7 +734,6 @@ export function applyRecoverUnavailableNode(
     target_source_file: args.targetSourceFile,
     target_recovery_id: args.targetRecoveryId,
     action: args.action,
-    plan_hash: args.planHash,
   }, options).then(parseRecoverUnavailableNodeApplyResponse)
 }
 

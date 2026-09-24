@@ -62,8 +62,6 @@ from haute._pipeline_repair import (
     PipelineRepairError,
     apply_recover_unavailable_node_plan,
     apply_remove_unavailable_node_plan,
-    build_recover_unavailable_node_plan,
-    build_remove_unavailable_node_plan,
 )
 from haute._pipeline_repair_actions import apply_scoped_node_save
 from haute._polars_io_registry import (
@@ -171,12 +169,9 @@ from haute.schemas import (
     OutputDestinationResponse,
     PipelineEditorDocument,
     PipelineNodeSaveRequest,
-    PipelineRepairApplyRequest,
     PipelineRepairApplyResponse,
-    PipelineRepairDryRunRequest,
-    PipelineRepairPlanResponse,
-    PipelineRepairRecoverApplyRequest,
     PipelineRepairRecoverRequest,
+    PipelineRepairRemoveRequest,
     PipelineSummary,
     PolarsStepsRenderRequest,
     PolarsStepsRenderResponse,
@@ -765,42 +760,13 @@ def _pipeline_recovery_error_response(
 
 
 @router.post(
-    "/pipeline/repair/remove/dry-run",
-    response_model=PipelineRepairPlanResponse,
-)
-async def dry_run_remove_unavailable_node(
-    body: PipelineRepairDryRunRequest,
-) -> PipelineRepairPlanResponse | JSONResponse:
-    """Plan one exact remove-only recovery repair without writing."""
-    try:
-        async with save_lock:
-            plan = await run_in_threadpool(
-                build_remove_unavailable_node_plan,
-                project_root=Path.cwd().resolve(),
-                request=body,
-            )
-        return plan.response
-    except PipelineRepairError as exc:
-        return _pipeline_recovery_error_response(exc.status_code, exc.detail())
-    except OSError as exc:
-        logger.warning("pipeline_repair_dry_run_io_failed", error=str(exc))
-        return _pipeline_recovery_error_response(
-            409,
-            {
-                "code": "repair_artifact_unavailable",
-                "message": "A repair artifact could not be read; reload and try again.",
-            },
-        )
-
-
-@router.post(
     "/pipeline/repair/remove/apply",
     response_model=PipelineRepairApplyResponse,
 )
 async def apply_remove_unavailable_node(
-    body: PipelineRepairApplyRequest,
+    body: PipelineRepairRemoveRequest,
 ) -> PipelineRepairApplyResponse | JSONResponse:
-    """Apply one freshly recomputed and explicitly confirmed repair plan."""
+    """Plan and apply one explicitly confirmed removal against its named revision."""
     try:
         async with save_lock:
             return await run_in_threadpool(
@@ -850,37 +816,11 @@ async def scoped_node_save(
         )
 
 
-@router.post("/pipeline/repair/recover/dry-run", response_model=PipelineRepairPlanResponse)
-async def dry_run_recover_unavailable_node(
-    body: PipelineRepairRecoverRequest,
-) -> PipelineRepairPlanResponse | JSONResponse:
-    """Preview an explicit current-format update or reset without writing."""
-    try:
-        async with save_lock:
-            plan = await run_in_threadpool(
-                build_recover_unavailable_node_plan,
-                project_root=Path.cwd().resolve(),
-                request=body,
-            )
-        return plan.response
-    except PipelineRepairError as exc:
-        return _pipeline_recovery_error_response(exc.status_code, exc.detail())
-    except OSError as exc:
-        logger.warning("pipeline_repair_dry_run_io_failed", error=str(exc))
-        return _pipeline_recovery_error_response(
-            409,
-            {
-                "code": "repair_artifact_unavailable",
-                "message": "A repair artifact could not be read; reload and try again.",
-            },
-        )
-
-
 @router.post("/pipeline/repair/recover/apply", response_model=PipelineRepairApplyResponse)
 async def apply_recover_unavailable_node(
-    body: PipelineRepairRecoverApplyRequest,
+    body: PipelineRepairRecoverRequest,
 ) -> PipelineRepairApplyResponse | JSONResponse:
-    """Commit the recomputed, confirmed update/reset through the shared transaction."""
+    """Plan and commit one confirmed update, reset or recover through the shared transaction."""
     try:
         async with save_lock:
             return await run_in_threadpool(

@@ -17,7 +17,7 @@ required_headings = [
   "Recovery loading and retention",
   "Confirmed recovery actions",
   "Consumer error attribution",
-  "Recovery dry-run and apply API",
+  "Recovery apply API",
   "Verification, rollback, and save-lock transactions",
   "Acceptance evidence",
 ]

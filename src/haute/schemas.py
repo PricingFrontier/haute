@@ -581,7 +581,7 @@ RecoveryGraphSnapshot.model_rebuild()
 
 
 class PipelineRepairRemoveRequest(BaseModel):
-    """Server-identified remove-only repair request shared by dry-run/apply."""
+    """One confirmed remove-node repair, applied against the revision it names."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -590,16 +590,6 @@ class PipelineRepairRemoveRequest(BaseModel):
     target_source_file: str = Field(min_length=1)
     target_recovery_id: str = Field(min_length=1)
     delete_config: StrictBool = False
-
-
-class PipelineRepairDryRunRequest(PipelineRepairRemoveRequest):
-    """Read-only remove-node planning request."""
-
-
-class PipelineRepairApplyRequest(PipelineRepairRemoveRequest):
-    """Confirmed remove-only plan; replacement bytes never cross the API."""
-
-    plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class PipelineRepairRecoverRequest(BaseModel):
@@ -612,10 +602,6 @@ class PipelineRepairRecoverRequest(BaseModel):
     target_source_file: str = Field(min_length=1)
     target_recovery_id: str = Field(min_length=1)
     action: Literal["update", "reset", "recover"]
-
-
-class PipelineRepairRecoverApplyRequest(PipelineRepairRecoverRequest):
-    plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class PipelineNodeSaveRequest(BaseModel):
@@ -653,7 +639,7 @@ class PipelineRepairFieldChange(BaseModel):
 
 
 class PipelineRepairPlanResponse(BaseModel):
-    """Read-only remove-node plan presented for explicit confirmation."""
+    """A server-computed repair plan; the apply routes build it under the save lock."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -666,11 +652,7 @@ class PipelineRepairPlanResponse(BaseModel):
     target_recovery_id: str = Field(min_length=1)
     target_authored_id: str = Field(min_length=1)
     delete_config: bool
-    plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     changes: list[PipelineRepairChange] = Field(min_length=1)
-    retained_artifacts: list[str] = Field(default_factory=list)
-    warnings: list[str] = Field(default_factory=list)
-    predicted_load_status: Literal["ready", "degraded"]
     field_changes: list[PipelineRepairFieldChange] = Field(default_factory=list)
     completeness: list[PipelineNodeCompleteness] = Field(default_factory=list)
     previous_config: dict[str, Any] | None = None
@@ -684,8 +666,8 @@ class PipelineRepairApplyResponse(BaseModel):
     repair_kind: Literal["remove_unavailable_node", "update_node", "reset_node", "recover_node"] = (
         "remove_unavailable_node"
     )
-    plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     applied_artifacts: list[str] = Field(min_length=1)
+    changes: list[PipelineRepairChange] = Field(min_length=1)
     document: PipelineEditorDocument
     field_changes: list[PipelineRepairFieldChange] = Field(default_factory=list)
     completeness: list[PipelineNodeCompleteness] = Field(default_factory=list)

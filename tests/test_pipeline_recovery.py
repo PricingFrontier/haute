@@ -2073,7 +2073,7 @@ def test_unexpected_submodel_parser_defect_is_localised_with_incident(
     assert "private submodel parser implementation detail" not in internal[0].message
 
 
-def test_remove_unavailable_node_dry_run_is_no_write_and_enumerates_exact_edits(
+def test_remove_unavailable_node_apply_reports_the_exact_edits_it_made(
     tmp_path: Path,
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -2090,10 +2090,9 @@ def test_remove_unavailable_node_dry_run_is_no_write_and_enumerates_exact_edits(
     monkeypatch.chdir(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     target = next(node for node in document.nodes if node.authored_id == "explore")
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
 
     response = client.post(
-        "/api/pipeline/repair/remove/dry-run",
+        "/api/pipeline/repair/remove/apply",
         json={
             "source_file": document.source_file,
             "source_revision": document.source_revision,
@@ -2104,25 +2103,19 @@ def test_remove_unavailable_node_dry_run_is_no_write_and_enumerates_exact_edits(
     )
 
     assert response.status_code == 200, response.text
-    plan = response.json()
-    assert plan["repair_kind"] == "remove_unavailable_node"
-    assert plan["source_revision"] == document.source_revision
-    assert plan["target_recovery_id"] == target.recovery_id
-    assert plan["target_authored_id"] == "explore"
-    assert plan["delete_config"] is False
-    assert len(plan["plan_hash"]) == 64
-    assert plan["predicted_load_status"] == "ready"
-    assert [change["path"] for change in plan["changes"]] == [
+    applied = response.json()
+    assert applied["repair_kind"] == "remove_unavailable_node"
+    assert "plan_hash" not in applied
+    assert [change["path"] for change in applied["changes"]] == [
         "main.py",
         "main.haute.json",
     ]
-    source_change = plan["changes"][0]
+    source_change = applied["changes"][0]
     assert source_change["operation"] == "update"
     assert "@pipeline.explore" in source_change["diff"]
     assert 'pipeline.connect("aggregate", "explore")' in source_change["diff"]
     assert source_change["diff_truncated"] is False
-    assert plan["retained_artifacts"] == []
-    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert applied["document"]["load_status"] == "ready"
 
 
 def test_remove_unavailable_node_apply_commits_confirmed_plan_and_returns_document(
@@ -2149,22 +2142,15 @@ def test_remove_unavailable_node_apply_commits_confirmed_plan_and_returns_docume
         "target_recovery_id": target.recovery_id,
         "delete_config": False,
     }
-    plan_response = client.post(
-        "/api/pipeline/repair/remove/dry-run",
-        json=request,
-    )
-    assert plan_response.status_code == 200, plan_response.text
-    plan = plan_response.json()
 
     response = client.post(
         "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": plan["plan_hash"]},
+        json=request,
     )
 
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["repair_kind"] == "remove_unavailable_node"
-    assert payload["plan_hash"] == plan["plan_hash"]
     assert payload["applied_artifacts"] == ["main.py", "main.haute.json"]
     assert payload["document"]["load_status"] == "ready"
     assert payload["document"]["source_revision"] != document.source_revision
@@ -2197,12 +2183,12 @@ def test_repair_refuses_syntax_broken_source() -> None:
         assert raised.value.code == "repair_syntax_unsupported"
 
 
-def test_remove_unavailable_node_predicts_ready_when_only_target_connections_block(
+def test_remove_unavailable_node_is_ready_when_only_target_connections_block(
     tmp_path: Path,
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Diagnostics on connections naming the target do not degrade the prediction."""
+    """Diagnostics on connections naming the target do not survive its removal."""
     from haute._pipeline_recovery import load_pipeline_editor_document
 
     pipeline_file = _write(
@@ -2223,14 +2209,10 @@ def test_remove_unavailable_node_predicts_ready_when_only_target_connections_blo
         "target_recovery_id": target.recovery_id,
         "delete_config": False,
     }
-    plan_response = client.post("/api/pipeline/repair/remove/dry-run", json=request)
-    assert plan_response.status_code == 200, plan_response.text
-    plan = plan_response.json()
-    assert plan["predicted_load_status"] == "ready"
 
     response = client.post(
         "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": plan["plan_hash"]},
+        json=request,
     )
 
     assert response.status_code == 200, response.text
@@ -2302,19 +2284,16 @@ def test_remove_unavailable_node_repairs_a_child_submodel_source(
     }
     parent_before = pipeline_file.read_bytes()
 
-    dry_run = client.post("/api/pipeline/repair/remove/dry-run", json=request)
-    assert dry_run.status_code == 200, dry_run.text
-    assert [change["path"] for change in dry_run.json()["changes"]] == [
-        "modules/scoring.py",
-        "modules/scoring.haute.json",
-    ]
-
     applied = client.post(
         "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": dry_run.json()["plan_hash"]},
+        json=request,
     )
 
     assert applied.status_code == 200, applied.text
+    assert [change["path"] for change in applied.json()["changes"]] == [
+        "modules/scoring.py",
+        "modules/scoring.haute.json",
+    ]
     assert applied.json()["document"]["load_status"] == "ready"
     assert pipeline_file.read_bytes() == parent_before
     assert "@submodel.removed_node" not in child_file.read_text(encoding="utf-8")
@@ -2364,7 +2343,7 @@ def test_remove_unavailable_node_rejects_implicit_consumers_without_writing(
     before = pipeline_file.read_bytes()
 
     response = client.post(
-        "/api/pipeline/repair/remove/dry-run",
+        "/api/pipeline/repair/remove/apply",
         json=_remove_repair_request(document, "obsolete"),
     )
 
@@ -2377,7 +2356,7 @@ def test_remove_unavailable_node_rejects_implicit_consumers_without_writing(
     assert pipeline_file.read_bytes() == before
 
 
-def test_remove_unavailable_node_apply_rejects_revision_and_plan_drift(
+def test_remove_unavailable_node_apply_rejects_a_stale_revision(
     tmp_path: Path,
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -2388,26 +2367,13 @@ def test_remove_unavailable_node_apply_rejects_revision_and_plan_drift(
     monkeypatch.chdir(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     request = _remove_repair_request(document, "explore")
-    plan_response = client.post(
-        "/api/pipeline/repair/remove/dry-run",
-        json=request,
-    )
-    assert plan_response.status_code == 200, plan_response.text
     original = pipeline_file.read_bytes()
-
-    wrong_plan = client.post(
-        "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": "0" * 64},
-    )
-    assert wrong_plan.status_code == 409
-    assert wrong_plan.json()["detail"]["code"] == "repair_plan_conflict"
-    assert pipeline_file.read_bytes() == original
 
     _write_bytes(pipeline_file, original + b"\n# concurrent external edit\n")
     externally_edited = pipeline_file.read_bytes()
     stale_revision = client.post(
         "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": plan_response.json()["plan_hash"]},
+        json=request,
     )
     assert stale_revision.status_code == 409
     assert stale_revision.json()["detail"]["code"] == "repair_revision_conflict"
@@ -2448,28 +2414,74 @@ def test_remove_unavailable_node_retains_config_unless_separately_approved(
         "delete_config": delete_config,
     }
 
-    dry_run = client.post(
-        "/api/pipeline/repair/remove/dry-run",
-        json=request,
-    )
-    assert dry_run.status_code == 200, dry_run.text
-    plan = dry_run.json()
-    if delete_config:
-        assert plan["retained_artifacts"] == []
-        assert plan["changes"][-1]["path"] == "config/obsolete.json"
-        assert plan["changes"][-1]["operation"] == "delete"
-        assert plan["changes"][-1]["diff"] == ""
-    else:
-        assert plan["retained_artifacts"] == ["config/obsolete.json"]
-        assert "will be retained" in plan["warnings"][0]
-
     applied = client.post(
         "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": plan["plan_hash"]},
+        json=request,
     )
     assert applied.status_code == 200, applied.text
+    changes = applied.json()["changes"]
+    if delete_config:
+        assert changes[-1]["path"] == "config/obsolete.json"
+        assert changes[-1]["operation"] == "delete"
+        assert changes[-1]["diff"] == ""
+    else:
+        assert all(change["path"] != "config/obsolete.json" for change in changes)
     assert config.exists() is (not delete_config)
     assert applied.json()["document"]["load_status"] == "ready"
+
+
+def test_remove_unavailable_node_refuses_a_config_edited_while_planning(
+    tmp_path: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An external edit between the planner's revision check and its artifact
+    reads is refused, never deleted: the confirmed revision is re-checked before
+    anything is staged."""
+    import haute._pipeline_repair as repair
+    from haute._pipeline_recovery import load_pipeline_editor_document
+
+    config = tmp_path / "config" / "obsolete.json"
+    config.parent.mkdir()
+    config.write_text('{"legacy":true}\n', encoding="utf-8")
+    pipeline_file = _write(
+        tmp_path / "main.py",
+        """
+        import haute
+        pipeline = haute.Pipeline("config-race")
+
+        @pipeline.removed_node(config="config/obsolete.json")
+        def obsolete():
+            return None
+
+        @pipeline.polars
+        def healthy():
+            return None
+        """,
+    )
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
+    request = {**_remove_repair_request(document, "obsolete"), "delete_config": True}
+    original_source = pipeline_file.read_bytes()
+    concurrent = b'{"edited":"by another program"}\n'
+    real_load = repair.load_pipeline_editor_document
+    loads = 0
+
+    def edit_after_the_revision_check(path, *, project_root):
+        nonlocal loads
+        loads += 1
+        loaded = real_load(path, project_root=project_root)
+        if loads == 1:
+            config.write_bytes(concurrent)
+        return loaded
+
+    monkeypatch.setattr(repair, "load_pipeline_editor_document", edit_after_the_revision_check)
+    response = client.post("/api/pipeline/repair/remove/apply", json=request)
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "repair_revision_conflict"
+    assert config.read_bytes() == concurrent
+    assert pipeline_file.read_bytes() == original_source
 
 
 def test_remove_unavailable_node_rejects_deleting_a_shared_config(
@@ -2501,7 +2513,7 @@ def test_remove_unavailable_node_rejects_deleting_a_shared_config(
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
 
     response = client.post(
-        "/api/pipeline/repair/remove/dry-run",
+        "/api/pipeline/repair/remove/apply",
         json={
             **_remove_repair_request(document, "obsolete"),
             "delete_config": True,
@@ -2543,7 +2555,7 @@ def test_remove_unavailable_node_rejects_config_deletion_of_a_document_artifact(
     }
 
     response = client.post(
-        "/api/pipeline/repair/remove/dry-run",
+        "/api/pipeline/repair/remove/apply",
         json={
             **_remove_repair_request(document, "obsolete"),
             "delete_config": True,
@@ -2581,7 +2593,7 @@ def test_remove_unavailable_node_rejects_duplicate_identity_and_mixed_chain(
     duplicate_document = load_pipeline_editor_document(duplicate_file, project_root=tmp_path)
     duplicate_target = duplicate_document.nodes[0]
     duplicate = client.post(
-        "/api/pipeline/repair/remove/dry-run",
+        "/api/pipeline/repair/remove/apply",
         json={
             "source_file": duplicate_document.source_file,
             "source_revision": duplicate_document.source_revision,
@@ -2616,7 +2628,7 @@ def test_remove_unavailable_node_rejects_duplicate_identity_and_mixed_chain(
     )
     mixed_document = load_pipeline_editor_document(mixed_file, project_root=tmp_path)
     mixed = client.post(
-        "/api/pipeline/repair/remove/dry-run",
+        "/api/pipeline/repair/remove/apply",
         json=_remove_repair_request(mixed_document, "obsolete"),
     )
     assert mixed.status_code == 409
@@ -2652,7 +2664,7 @@ def test_remove_unavailable_node_rejects_connection_sharing_a_source_line(
     before = pipeline_file.read_bytes()
 
     response = client.post(
-        "/api/pipeline/repair/remove/dry-run",
+        "/api/pipeline/repair/remove/apply",
         json=_remove_repair_request(document, "obsolete"),
     )
 
@@ -2690,7 +2702,7 @@ def test_remove_unavailable_node_does_not_delete_a_trailing_connection_comment(
     before = pipeline_file.read_bytes()
 
     response = client.post(
-        "/api/pipeline/repair/remove/dry-run",
+        "/api/pipeline/repair/remove/apply",
         json=_remove_repair_request(document, "obsolete"),
     )
 
@@ -2724,13 +2736,10 @@ def test_remove_unavailable_node_can_leave_independent_degraded_error(
     monkeypatch.chdir(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     request = _remove_repair_request(document, "obsolete")
-    dry_run = client.post("/api/pipeline/repair/remove/dry-run", json=request)
-    assert dry_run.status_code == 200, dry_run.text
-    assert dry_run.json()["predicted_load_status"] == "degraded"
 
     applied = client.post(
         "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": dry_run.json()["plan_hash"]},
+        json=request,
     )
 
     assert applied.status_code == 200, applied.text
@@ -2756,8 +2765,6 @@ def test_remove_unavailable_node_rolls_back_every_staged_artifact_on_write_failu
     monkeypatch.chdir(tmp_path)
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     request = _remove_repair_request(document, "explore")
-    dry_run = client.post("/api/pipeline/repair/remove/dry-run", json=request)
-    assert dry_run.status_code == 200, dry_run.text
     before = {pipeline_file: pipeline_file.read_bytes(), sidecar: sidecar.read_bytes()}
     real_stage = _save_pipeline._stage_artifact_write_bytes
 
@@ -2773,7 +2780,7 @@ def test_remove_unavailable_node_rolls_back_every_staged_artifact_on_write_failu
 
     response = client.post(
         "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": dry_run.json()["plan_hash"]},
+        json=request,
     )
 
     assert response.status_code == 409

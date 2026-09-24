@@ -18,7 +18,7 @@
 | `frontend/src/types/generatedContractValidation.ts` | Adapter for generated-validator errors: constructs stable instance paths (including missing required properties), formats contract failures, and locates matching keyword/path errors without coupling callers to Ajv internals. `expectGeneratedContract(contract, validate, value)` returns the payload typed by its generated validator or throws `<contract>: invalid contract at <path>: <keyword>`; `api/client.ts` uses it for every converted response. It holds no contract data, so importing it eagerly hoists nothing Explore-only. |
 | `frontend/src/generated/api-contracts.schema.json`, `frontend/src/generated/api-contracts.generated.ts`, `frontend/src/generated/api-contracts.constants.generated.ts`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.mjs`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.d.mts`, `frontend/src/generated/api-contracts.explore-charts.validators.mjs`, and `frontend/src/generated/api-contracts.explore-charts.validators.d.mts` | Committed contract source, static declarations, lazy Explore constants, and split self-contained validators owned by [engineering-quality](../engineering-quality/low-level.md) and consumed by frontend trust boundaries. The execution validator co-exports its generated schema version and is eager; the Explore chart validator and option constants stay behind its lazy panel chunk. |
 | `frontend/src/types/trainGuards.ts` | Dynamically imported runtime parsers for modelling train/status/estimate responses. Training parsing strictly retains authoritative live-history/truncation and validates complete evaluation/tuning reports, weighted fit evidence, deterministic winner/count links, and bounded evaluation previews while remaining outside the initial JavaScript graph. `parseTrainEstimateResponse` takes the estimate's structure from the generated `TrainEstimateResponse` validator and applies only the cross-field rules by hand: the evaluation preview's strategy/validation consistency, and the unavailable reason's figures and blocking node (narrowed to a discriminated union). |
-| `frontend/src/types/pipelineRepair.ts` | Exact-key minimal repair dry-run/apply wire types and parsers. Apply delegates its nested document to `parsePipelineEditorDocument`; no response or request type contains replacement source bytes or migration operations. |
+| `frontend/src/types/pipelineRepair.ts` | Exact-key minimal repair apply wire types and parsers. Apply delegates its nested document to `parsePipelineEditorDocument`; no response or request type contains replacement source bytes or migration operations. |
 | `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview/solve/train/explore/pivot result and job caches (`startTrainJob` records the `trainingLineage` of the submitted training payload that the editor passes in; a fence-current completion remembers the job in the browser handles of `utils/trainedJobHandles` and an error or failure forgets it; `restoreTrainResult` puts back a completed training result restored after a reload, never replacing an existing result or running job), authoritative training history plus bounded ETA samples, column cache, derived-getter memoization, LRU eviction, and the atomic per-pivot start claim (one current claim per Explore node + pivot id holding the owning node id, the requested dataframe cache key, calculation identity, and a unique generation token; taking a claim before submission serialises concurrent consumers, an identical automatic target no-ops, every manual Retry and every newer automatic target atomically replaces the generation, only the current token may promote it to a job or release it — superseded outcomes are discarded — and clearing a node's results drops exactly the claims whose stored node id matches). |
 | `frontend/src/stores/useNodeDataStore.ts` | Zustand store of the data every consumer of one point shares, keyed by slot (`producerNodeId|portLabel|source`): the point's kind, the generation its producer's current signature has (id, column set, rows, bytes, retention, freshness), the running build — a node-data job with its progress, or a delegated build with its message, its canceller, and the token that owns it — the profile of the data version it holds and why the last profile failed — attributed to the version that profile was computed for, so a generation published while it ran is still profiled — how the point is built or cleared, and a monotonic node-data epoch. It also records, per consumer node, the slot it was last told it reads together with the identity that answer was given for, so a read for another identity returns nothing. A consumer's own availability is derived from the entry and its column demand, never stored. |
 | `frontend/src/hooks/useNodeDataCache.ts` | One consumer node's view of the data it reads: the point, its availability for that consumer's demand, and `run`, `refresh`, `cancel`, and `clear`. |
@@ -996,20 +996,15 @@ recovery objects.
 
 ## Minimal repair transport
 
-`api/client.ts` exposes removal dry-run and apply calls. Both send the root
-document source, current raw revision, target source/recovery identity, and
-explicit `delete_config`; apply adds the exact dry-run plan hash. Runtime
-parsers reject unknown keys, non-remove discriminators, malformed hashes,
-unbounded/invalid patch entries, and a malformed nested editor document.
-
-The public dry-run plan contains bounded display diffs and artifact metadata,
-not the bytes that apply will write. The server recomputes those bytes. A
-config-retention toggle creates a new request and invalidates the previous plan
-hash. API errors preserve structured repair detail for the confirmation UI.
-Separate recovery calls send `action: update | reset | recover` and no deletion
-option to `/api/pipeline/repair/recover/dry-run` and `/apply`. The shared generic
-plan parser validates exact fields and action-specific discriminators; recovery
-plans require `delete_config: false`. Recover responses additionally parse the
+`api/client.ts` exposes one apply call per repair family; there is no dry-run
+call or plan hash. The removal call sends the root document source, current raw
+revision, target source/recovery identity, and explicit `delete_config`; the
+recovery call sends `action: update | reset | recover` and no deletion option to
+`/api/pipeline/repair/recover/apply`. Runtime parsers reject unknown keys,
+unexpected discriminators, unbounded/invalid patch entries, and a malformed
+nested editor document. The response's bounded display diffs describe what the
+server wrote; the browser never sends bytes. API errors preserve structured
+repair detail for the confirmation UI. Recover responses additionally parse the
 field-outcome report, completeness entries and previous configuration. Requests
 never carry client-authored replacement source/config. `saveNodeScoped` posts one
 node's proposed configuration to `/api/pipeline/node/save` and parses the
@@ -1019,9 +1014,8 @@ authoritative document.
 
 Recovery has no draft dialog, draft transport, draft validators, or persistent
 client recovery state. The single `PipelineRepairDialog` confirms all four
-actions (remove, update, reset, recover) with one Apply click over the strict
-dry-run plan; for recover the per-artifact source diffs are collapsed by
-default behind an expander. Applying a recover stores the response's field
+actions (remove, update, reset, recover) with one Apply click; there is no
+preview step. Applying a recover stores the apply response's field
 outcomes, completeness entries, previous configuration and bounded diffs in
 `useRecoverySummaryStore`, keyed by the owning source file plus the target's
 recovery id (ids repeat across documents) — transient session state, never

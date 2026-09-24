@@ -572,19 +572,18 @@ arrive as degraded or source-only documents.
 Structured repair includes `Remove unavailable node` and the explicit update/reset
 actions defined in [node recovery actions](node-recovery-actions.md). Removal is not a
 recovery-graph Save and does not accept source bytes, source spans, replacement
-graphs, or migration instructions from the client. Dry-run identifies the
-current document by source file and raw-artifact revision, resolves the target
-recovery node on the server, and returns a deterministic plan hash, bounded
-human-readable patches, the exact touched-artifact manifest, retained config
-artifacts, warnings, and predicted recovery state without writing.
-
-Apply takes the same identities, revision, explicit config-deletion choice,
-and confirmed plan hash. Under the shared save lock it reloads recovery state,
-recomputes the plan, rejects revision or plan drift, then uses the existing
-atomic staged-write/rollback machinery. It removes only the selected
+graphs, or migration instructions from the client. Each action is one confirmed
+apply request naming the current document by source file and raw-artifact
+revision, the target recovery node and, for removal, the explicit config-deletion
+choice; there is no dry-run preview or plan hash. Under the shared save lock the
+server reloads recovery state, rejects a stale revision, resolves the target,
+computes the plan itself and applies it through the existing atomic
+staged-write/rollback machinery, then returns the authoritative editor document
+with the touched-artifact manifest and bounded human-readable patches of what it
+changed. Removal removes only the selected
 decorator/function block, standalone explicit connection declarations that
 reference it, and its position entry. A referenced config JSON file is
-retained unless it is separately enumerated and explicitly approved. A
+retained unless the request explicitly asks for its deletion. A
 shared config, config path overlapping a pipeline source/position artifact,
 duplicate authored identity, ambiguous span, mixed connection chain, authored
 content sharing a connection's removal line, or downstream function parameter

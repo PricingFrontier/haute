@@ -4421,7 +4421,7 @@ def test_recovery_plans_a_malformed_step_container_without_raising(project_root:
             action="recover",
         ),
     )
-    assert plan.response.plan_hash
+    assert plan.response.changes
     # The proposed replacement itself must carry the authored body. Searching the
     # whole response would pass on `previous_config` alone, even if the
     # replacement dropped the code.

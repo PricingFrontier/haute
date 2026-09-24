@@ -412,11 +412,9 @@ valid document update. Authored recovery states never arrive through that frame.
 Degraded preview calls use the recovery-preview transport with source, revision, and target identity
 only. A source-only state keeps no earlier renderable snapshot.
 
-Minimal repair responses cross a separate strict parser boundary. Dry-run
-validation requires the action-specific discriminator, source/target identities,
-64-hex plan hash, bounded artifact patches, retained artifacts, warnings, and
-predicted load state. Apply validation requires the same plan identity plus a
-complete valid editor document. The browser never accepts replacement bytes,
-source spans, migration instructions, or a recovery graph as an apply payload;
-it sends only server identities, revision, the update/reset action or explicit removal config-deletion choice,
-and the confirmed plan hash.
+Minimal repair responses cross a separate strict parser boundary. Apply
+validation requires the action-specific discriminator, the applied artifacts,
+bounded artifact patches and a complete valid editor document. The browser never
+accepts replacement bytes, source spans, migration instructions, or a recovery
+graph as an apply payload; it sends only server identities, revision, and the
+update/reset/recover action or explicit removal config-deletion choice.

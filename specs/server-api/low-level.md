@@ -1149,11 +1149,11 @@ alternate sidecar identifiers. Ordinary current-schema validation and safe error
 
 ## Minimal pipeline repair implementation contract
 
-`PipelineRepairDryRunRequest` and `PipelineRepairApplyRequest` are
-forbidden-extra models carrying the root document source, raw-artifact
-revision, target source/recovery identity, and explicit `delete_config`
-choice; apply additionally requires the 64-hex plan hash returned by dry-run.
-The response contains no executable graph and no replacement bytes.
+`PipelineRepairRemoveRequest` is a forbidden-extra model carrying the root
+document source, raw-artifact revision, target source/recovery identity, and
+explicit `delete_config` choice. There is no plan hash: the request applies
+against the revision it names. The response contains no executable graph and
+no replacement bytes.
 
 `_pipeline_repair.py` locates one unavailable target by server-produced source
 identity and recovery id. It rejects blocked/ready nodes, duplicate authored
@@ -1161,22 +1161,16 @@ identity, absent or ambiguous spans, downstream signature consumers, shared
 or managed-artifact config deletion, a connection line containing other
 authored content, and a chain whose unrelated link would otherwise be removed.
 Source edits operate on exact line-bounded bytes and are applied in descending
-offsets. Both recovery span sources are decorator-inclusive: AST skeletons span
-from the first matched decorator line and regex fragments from their decorator
-anchor line through the last body line, so removing a node from a syntax-broken
-parent never strands decorator text. Position JSON editing preserves unrelated
-bytes and rejects duplicate positions/target keys as ambiguous. The
-public patch is bounded; the plan hash covers the complete untruncated edits,
-revision, identities, options, and touched-artifact manifest.
-`predicted_load_status` treats as removed the target's own diagnostics,
-diagnostics anchored inside the target's span in its file, and diagnostics of
-unresolved connections naming the target's authored id — exactly what a
-successful plan provably deletes; any other diagnostic or unavailable node
-keeps the prediction `degraded`. The post-apply document remains authoritative.
+offsets. AST skeleton spans are decorator-inclusive (from the first matched
+decorator line through the last body line), so removing a node never strands
+decorator text; syntax-broken source is refused with `repair_syntax_unsupported`.
+Position JSON editing preserves unrelated bytes and rejects duplicate
+positions/target keys as ambiguous. The display patch in the apply response is
+bounded; the server writes the complete untruncated edits. The post-apply
+document is authoritative.
 
-Both routes acquire `save_lock`. Dry-run writes nothing. Apply reloads the
-document and recomputes the complete plan under the lock; a stale revision or
-different plan hash is HTTP 409 before staging. Staged writes/deletes and
+Each apply route acquires `save_lock`, reloads the document and computes the
+complete plan under the lock; a stale revision is HTTP 409 before staging. Staged writes/deletes and
 rollback reuse `_save_pipeline.py`'s touched-file and `Writer` primitives so
 each forward and rollback write participates in self-write suppression. After
 staging, recovery parsing must conserve the remaining source and the selected
@@ -1184,16 +1178,15 @@ identity must be absent. Strict parse success is recorded by the returned
 editor document; an independent authored error may validly remain degraded.
 Any verification or write failure rolls back all touched artifacts.
 
-The additional `/api/pipeline/repair/recover/dry-run` and `/apply` routes accept
-`PipelineRepairRecoverRequest` / `PipelineRepairRecoverApplyRequest`, replacing the
-removal-only `delete_config` option with `action: update | reset | recover`. Their plan
-responses use `update_node` / `reset_node` / `recover_node`, keep `delete_config` false
-and otherwise share the bounded repair transport; recover responses add the engine's
+The additional `/api/pipeline/repair/recover/apply` route accepts
+`PipelineRepairRecoverRequest`, replacing the removal-only `delete_config` option with
+`action: update | reset | recover`. Its responses use `update_node` / `reset_node` /
+`recover_node` and otherwise share the bounded repair transport; recover responses add the engine's
 `field_changes` outcome report, the target's completeness entries, and `previous_config`.
 The full scope and acceptance criteria are defined in
 [node recovery actions](node-recovery-actions.md). Updates, resets, and recovers retain
 the target; application checks its recovered availability and compares the complete
-staged structure against the isolated preview. Python replacements use the shared LibCST
+staged structure against the plan's isolated single-node preview. Python replacements use the shared LibCST
 boundary. Ordinary saves validate Data Input/Output structure strictly but tolerate
 declared-incomplete locators (`require_complete=False`), so a loadable incomplete node
 round-trips through save. `POST /api/pipeline/node/save` provides the node-scoped save
