@@ -20,12 +20,14 @@ merges, remove its rounds from the table.
 - **Per package.** Follow the [working protocol](README.md#working-protocol):
   reverify against `HEAD` and retire the package if its outcome already
   holds; update the owning specification first; add the smallest failing
-  regression; implement; run the targeted verification in `AGENTS.md`; have
-  Codex review the diff (`codex-code-review`) and resolve its findings; then
-  commit. Remove the package from its component roadmap in the same commit,
+  regression; implement; run the affected tests once; then commit. Remove
+  the package from its component roadmap in the same commit,
   and delete a component roadmap that is left empty, with its README row and
   its `_EXPECTED_ACTIVE_COMPONENT_ROADMAPS` entry in
   `tests/test_docs_accuracy.py`.
+- **Before the phase's PR.** Follow "Before a pull request" in `AGENTS.md`:
+  one Codex review of the whole branch diff, with its findings resolved,
+  before the PR is opened.
 - **CI is the full run.** Push, watch `gh pr checks` until they finish, read a
   failing job's log with `gh`, and fix and push again. Rerun an environmental
   flake with `gh run rerun <id> --failed` instead of pushing a change.
