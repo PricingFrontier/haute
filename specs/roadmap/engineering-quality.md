@@ -12,47 +12,15 @@ These packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| ENGQ-R06 | Planned | P3 | Tests leave the source tree alone: no test writes into the package, and source walks cannot race another worker's bytecode cache. |
 | ENGQ-R04 | Planned | P3 | Coverage and documentation gates are pointed at risk and at user-facing documents. |
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
 
 ## Planned improvements
 
-`ENGQ-R06` and `ENGQ-R01` are independent clean-ups; `ENGQ-R01` is cheapest
-after the larger refactors have deleted what they replace. `ENGQ-R05` comes
+`ENGQ-R01` is an independent clean-up, cheapest after the larger refactors
+have deleted what they replace. `ENGQ-R05` comes
 after `ENGQ-R04` has set the coverage rule the reorganised suite must meet.
-
-### ENGQ-R06 — Tests leave the source tree alone
-**Why:** Two test-hygiene defects surfaced on 24 September 2026. An ignored
-MLflow store (`mlruns/`) appeared inside
-`src/haute/assistant/assets/examples/model_lifecycle/` after a local run, so
-some test opens an MLflow store rooted in the package tree; the write-sandbox
-lint did not catch it because MLflow's default `./mlruns` is relative to the
-working directory, not a spelled path. And a CI run on `main` failed
-`test_no_forbidden_tokens_in_src` with `FileNotFoundError` on
-`src/haute/__pycache__`: the test walks `src/haute` with `rglob("*.py")` while
-another xdist worker removes a bytecode cache directory. About fifteen test
-modules walk `src/` or `tests/` the same way.
-
-**Plan:** Find the test that points MLflow at the package tree (search for
-MLflow use after a `chdir` into packaged example assets, or run the assistant
-example tests with a sentinel that fails on a new `mlruns/` under `src/`) and
-give it a `tmp_path` tracking URI; extend the MLflow isolation fixture in
-`tests/conftest.py` so an unset tracking URI can never default into the
-working directory. Give the source-walking tests one helper that lists the
-tracked Python files (`git ls-files`, or a walk that prunes `__pycache__`), and
-find what deletes `src/haute/__pycache__` during a run.
-
-**Acceptance:** A full CI run leaves no untracked file under `src/`, checked by
-the repository-hygiene test; every test that walks source files uses the one
-helper; no test deletes a bytecode cache under `src/`.
-
-**Dependencies:** None.
-
-**Evidence:** `tests/conftest.py`; `tests/test_submodel_port_names.py::test_no_forbidden_tokens_in_src`;
-`tests/test_repository_hygiene.py`; `tests/test_write_sandbox_lint.py`;
-`src/haute/assistant/assets/examples/model_lifecycle`.
 
 ### ENGQ-R01 — Remove unreferenced and test-only production code
 **Why:** Several production functions have no caller at all:

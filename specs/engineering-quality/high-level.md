@@ -56,6 +56,14 @@ Out of scope:
   xfails/config/markers strictly, and turns most runtime warnings into errors.
   Performance tests run through dedicated scripts/workflows with explicit time
   budgets instead.
+- Tests leave the source tree alone. The controlling pytest session records the
+  files under `src/` (bytecode caches excluded) at start and fails the run,
+  naming each file, when any new one appears by the end. The suite also stops
+  the server's startup bytecode clear for its duration (a session fixture), so
+  no test removes the package's `__pycache__` directories, and every test that
+  walks `src/` or `tests/` goes through `source_files` in `tests/_source_files.py`,
+  which never enters a bytecode cache; a hygiene test rejects a raw
+  `rglob("*.py")` walk in the tests.
 - A versioned workflow coverage ledger, `tests/workflow_coverage.toml`, records
   every supported workflow family, node type, and component with the scenarios
   that carry its executable witnesses. Each scenario is `covered`, `gap`,

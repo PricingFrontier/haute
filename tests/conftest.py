@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 import sys
@@ -22,6 +23,7 @@ from haute.executor import _preview_cache
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.trace import _cache as _trace_cache
 from tests import _write_sandbox as _ws
+from tests._source_files import source_tree_snapshot
 
 _TEST_LOCAL_SESSION_TOKEN = "pytest-haute-local-session-token"
 
@@ -35,6 +37,25 @@ _TEST_LOCAL_SESSION_TOKEN = "pytest-haute-local-session-token"
 # it to its own @settings.
 hypothesis_settings.register_profile("haute", deadline=None)
 hypothesis_settings.load_profile("haute")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _keep_package_bytecode() -> Iterator[None]:
+    """Stop server startup deleting the package's bytecode caches during the suite.
+
+    The app lifespan removes every ``__pycache__`` under ``src/haute``; with
+    several workers that races any test walking the source tree. The stub keeps
+    the real function as ``__wrapped__`` for the test that exercises it.
+    """
+    import haute.server as server
+
+    @functools.wraps(server._clear_bytecache)
+    def keep_bytecode() -> None:
+        return None
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(server, "_clear_bytecache", keep_bytecode)
+        yield
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -920,14 +941,36 @@ def pytest_configure(config: pytest.Config) -> None:
     config._ws_census_spool = spool
 
 
+def pytest_sessionstart(session: pytest.Session) -> None:
+    # The controller (or a run without xdist) records the source tree so the
+    # session can fail if a test leaves a file under src/ (see sessionfinish).
+    if not hasattr(session.config, "workerinput"):
+        session.config._haute_source_tree = source_tree_snapshot()
+
+
 def pytest_sessionfinish(session: pytest.Session) -> None:
     census_dir = os.environ.get(_ws.ENV_CENSUS_DIR)
     if census_dir and _ws.VIOLATIONS:
         worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
         _ws.dump_census(census_dir, worker)
+    before = getattr(session.config, "_haute_source_tree", None)
+    if before is not None:
+        added = sorted(source_tree_snapshot() - before)
+        if added:
+            session.config._haute_source_tree_added = added
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 def pytest_terminal_summary(terminalreporter) -> None:
+    added = getattr(terminalreporter.config, "_haute_source_tree_added", None)
+    if added:
+        terminalreporter.section("files left under src/", red=True)
+        for path in added:
+            terminalreporter.line(f"src/{path}")
+        terminalreporter.line(
+            f"{len(added)} file(s) appeared under src/ during the run; tests must write "
+            "under tmp_path, never into the package tree."
+        )
     violations = list(_ws.VIOLATIONS)
     census_dir = os.environ.get(_ws.ENV_CENSUS_DIR)
     if census_dir:

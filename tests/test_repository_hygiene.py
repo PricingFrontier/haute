@@ -6,6 +6,8 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+from tests._source_files import source_files
+
 
 def _tracked_files() -> set[str]:
     result = subprocess.run(
@@ -55,6 +57,26 @@ def test_no_local_mlflow_store_is_tracked() -> None:
         )
         == []
     )
+
+
+def test_source_walks_never_enter_bytecode_caches(tmp_path: Path) -> None:
+    # Another worker may create or remove a __pycache__ mid-walk; the shared
+    # walk prunes caches before listing them.
+    (tmp_path / "pkg" / "__pycache__").mkdir(parents=True)
+    (tmp_path / "pkg" / "__pycache__" / "stale.py").write_text("", encoding="utf-8")
+    (tmp_path / "pkg" / "module.py").write_text("", encoding="utf-8")
+
+    assert source_files(tmp_path) == [tmp_path / "pkg" / "module.py"]
+
+
+def test_tests_walk_source_trees_through_the_shared_helper() -> None:
+    raw_walk = "rglob(" + '"*.py")'
+    offenders = [
+        path.relative_to(_REPO_ROOT).as_posix()
+        for path in source_files(_REPO_ROOT / "tests")
+        if path.name != "_source_files.py" and raw_walk in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
 
 
 def test_the_roadmap_holds_reports_not_probes_or_benchmark_output() -> None:
@@ -122,7 +144,7 @@ _CALLER_CHOKEPOINTS = (
 def _iter_src_haute_sources() -> list[Path]:
     return sorted(
         path
-        for path in _SRC_HAUTE.rglob("*.py")
+        for path in source_files(_SRC_HAUTE)
         if not any(part in _SCAN_SKIP_DIRS for part in path.parts)
     )
 

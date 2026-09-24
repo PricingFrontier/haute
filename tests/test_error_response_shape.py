@@ -37,6 +37,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from haute.server import app
+from tests._source_files import source_files
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -416,7 +417,7 @@ class TestNoRouteConstructsDictDetail:
 
         routes_pkg = Path("src/haute/routes")
         offenders: list[str] = []
-        for py in sorted(routes_pkg.rglob("*.py")):
+        for py in source_files(routes_pkg):
             src = py.read_text(encoding="utf-8")
             tree = ast.parse(src, filename=str(py))
             for node in ast.walk(tree):

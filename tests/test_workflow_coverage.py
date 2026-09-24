@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from haute._types import NodeType
+from tests._source_files import source_files
 from tests._test_debt_scanner import (
     REPO_ROOT,
     _DebtSite,
@@ -198,7 +199,7 @@ def _scan_backend_debt(root: Path) -> list[_DebtSite]:
     sites: list[_DebtSite] = []
     tests_dir = root / "tests"
     if tests_dir.is_dir():
-        for py_path in sorted(tests_dir.rglob("*.py")):
+        for py_path in source_files(tests_dir):
             if not py_path.is_file():
                 continue
             tree = _parse_python(py_path)

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._source_files import source_files
 from tests._test_debt_scanner import (
     _FRONTEND_TEST_ROOTS,
     REPO_ROOT,
@@ -372,7 +373,7 @@ _EXPECTED_FRONTEND_DEBT_REASONS: dict[str, str] = {
 
 def _scan_debt_sites() -> list[_DebtSite]:
     sites: list[_DebtSite] = []
-    for path in sorted(TESTS_DIR.rglob("*.py")):
+    for path in source_files(TESTS_DIR):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         visitor = _DebtVisitor(path.relative_to(TESTS_DIR.parent))
         sites.extend(visitor.scan(tree))

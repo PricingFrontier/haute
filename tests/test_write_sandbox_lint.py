@@ -52,6 +52,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._source_files import source_files
 from tests._write_sandbox import ENV_ROOT, STRICT_FILES
 
 _TESTS_DIR = Path(__file__).resolve().parent
@@ -106,7 +107,7 @@ class LintViolation:
 def _iter_test_sources() -> list[Path]:
     return sorted(
         path
-        for path in _TESTS_DIR.rglob("*.py")
+        for path in source_files(_TESTS_DIR)
         if not any(part in _SKIP_DIRS for part in path.parts)
     )
 

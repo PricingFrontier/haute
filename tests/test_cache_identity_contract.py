@@ -26,6 +26,7 @@ from haute._cache import (
 from haute._config_validation import VALID_KEYS
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.execution import dataframe_graph_input_fingerprint
+from tests._source_files import source_files
 
 
 def test_json_digest_encoders_use_canonical_json_except_persisted_feature_contract() -> None:
@@ -53,7 +54,7 @@ def test_json_digest_encoders_use_canonical_json_except_persisted_feature_contra
             "blake2b",
         }
 
-    for path in source_root.rglob("*.py"):
+    for path in source_files(source_root):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for function in (node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)):
             dumped_names = {

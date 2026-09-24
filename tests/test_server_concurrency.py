@@ -25,6 +25,8 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
+from tests._source_files import source_files
+
 # ---------------------------------------------------------------------------
 # #6 — ws_clients set mutated without a lock
 # ---------------------------------------------------------------------------
@@ -416,7 +418,7 @@ class TestJobStoreAtomicUpdateEnforced:
 
         routes_dir = Path(routes_pkg.__file__).resolve().parent
         offenders: list[str] = []
-        for f in routes_dir.rglob("*.py"):
+        for f in source_files(routes_dir):
             if f.name == "_job_store.py":
                 continue
             txt = f.read_text(encoding="utf-8", errors="replace")
