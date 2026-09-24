@@ -719,6 +719,26 @@ def test_clearing_a_row_removes_exactly_what_that_row_reported(
     assert other_after and other_after[0]["size_bytes"] == other_before[0]["size_bytes"]
 
 
+def test_usage_reports_the_stores_size_and_the_automatic_budget(
+    client: TestClient, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HAUTE_AUTOMATIC_CAPTURE_MAX_BYTES", str(10**12))
+    store = NodeSnapshotStore(project)
+    _publish(store, project, "join", "live", 5)
+
+    response = client.get("/api/cache/usage")
+
+    assert response.status_code == 200
+    stored = _stored_bytes(project)
+    assert stored > 0
+    assert response.json() == {
+        "schema_version": 1,
+        "total_bytes": stored,
+        "automatic_bytes": stored,
+        "automatic_budget_bytes": 10**12,
+    }
+
+
 def test_clearing_a_row_the_store_no_longer_holds_is_not_an_error(
     client: TestClient, project: Path
 ) -> None:

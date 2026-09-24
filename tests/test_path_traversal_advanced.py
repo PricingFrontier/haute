@@ -236,14 +236,14 @@ class TestSymlinkTraversal:
     root that points to /etc or /home can bypass is_relative_to checks
     IF the check is done BEFORE resolve() (checking the unresolved path).
 
-    validate_safe_path and validate_project_path both resolve() first,
+    contained_path and validate_project_path both resolve() first,
     which is correct.  These tests confirm that behavior.
 
     Production failure: a symlink at project/data -> /etc allows reading
     /etc/passwd via the path "data/passwd".
     """
 
-    def test_validate_safe_path_blocks_symlink_escape(self, tmp_path: Path):
+    def test_contained_path_blocks_symlink_escape(self, tmp_path: Path):
         """A symlink inside base pointing outside must be rejected."""
 
         from haute._sandbox import contained_path
@@ -342,7 +342,7 @@ class TestWindowsMixedSeparatorTraversal:
     path validation on Windows servers.
     """
 
-    def test_validate_safe_path_blocks_backslash_traversal(self, tmp_path: Path):
+    def test_contained_path_blocks_backslash_traversal(self, tmp_path: Path):
         """..\\..\\etc\\passwd must be blocked on all platforms.
 
         On Unix, backslashes are literal filename characters (harmless).
@@ -558,7 +558,7 @@ class TestVeryLongPaths:
                 id="load_node_config",
             ),
             pytest.param(
-                "validate_safe_path handles very long path",
+                "contained_path handles very long path",
                 lambda: __import__("haute._sandbox", fromlist=["contained_path"]).contained_path,
                 lambda tp: {
                     "args": (tp, "sub/" * 500 + "file.txt"),

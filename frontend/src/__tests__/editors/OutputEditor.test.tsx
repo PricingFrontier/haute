@@ -792,8 +792,8 @@ describe("OutputEditor - path validation", () => {
       { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
     )
     expandFrame("output-frame-0")
-    expect(screen.getByTestId("output-frame-0-row-0-path-conflict")).toBeTruthy()
-    expect(screen.getByTestId("output-frame-0-row-1-path-conflict")).toBeTruthy()
+    expect(screen.getByTestId("output-frame-0-row-0-path-warning")).toBeTruthy()
+    expect(screen.getByTestId("output-frame-0-row-1-path-warning")).toBeTruthy()
   })
 
   it("a scalar leaf and an array container at the same name do NOT conflict (array-flag aware)", () => {
@@ -814,8 +814,8 @@ describe("OutputEditor - path validation", () => {
       { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
     )
     expandFrame("output-frame-0")
-    expect(screen.queryByTestId("output-frame-0-row-0-path-conflict")).toBeNull()
-    expect(screen.queryByTestId("output-frame-0-row-1-path-conflict")).toBeNull()
+    expect(screen.queryByTestId("output-frame-0-row-0-path-warning")).toBeNull()
+    expect(screen.queryByTestId("output-frame-0-row-1-path-warning")).toBeNull()
   })
 })
 
@@ -914,6 +914,82 @@ describe("OutputEditor - same-resolved-port collision (blocker)", () => {
     expect(screen.getByTestId("output-frame-0-infer")).toBeTruthy()
     // Frame 1 stays collapsed — its Infer button is not rendered.
     expect(screen.queryByTestId("output-frame-1-infer")).toBeNull()
+  })
+})
+
+describe("OutputEditor - one frame per array level (JSON-R02)", () => {
+  function row(source_port: string, source_column: string, output_path: string, enabled = true) {
+    return { source_port, source_column, output_path, enabled }
+  }
+
+  it("two frames emitting at the root level show a banner naming both and the level", () => {
+    render(
+      <OutputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          outputMapping: [row("Source_A", "alpha", "$[:].alpha"), row("Source_B", "beta", "$[:].beta")],
+          outputFormat: "json",
+        }}
+      />,
+      { allNodes: TWO_SINGLE_PORT_NODES, edges: TWO_SINGLE_PORT_EDGES },
+    )
+    const banner = screen.getByTestId("output-same-level-banner")
+    expect(banner.textContent).toContain("Frames Source_A and Source_B emit at the same array level ($[:])")
+    expect(banner.textContent).toContain("join them upstream (for example with a Join node)")
+  })
+
+  it("a frame emits at its deepest level, and three frames there are all named", () => {
+    render(
+      <OutputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          outputMapping: [
+            row("policies", "policy_id", "$[:].policy_id"),
+            row("policies", "premium", "$[:].drivers[:].premium"),
+            row("drivers", "driver_id", "$[:].drivers[:].driver_id"),
+            row("claims", "claim_id", "$[:].drivers[:].claim_id"),
+          ],
+          outputFormat: "json",
+        }}
+      />,
+      { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
+    )
+    const banner = screen.getByTestId("output-same-level-banner")
+    expect(banner.textContent).toContain("Frames policies, drivers and claims emit at the same array level ($[:].drivers[:])")
+  })
+
+  // Each mapping would share a level if the excluded rows or frame counted.
+  it.each([
+    [
+      "the frames emit at different levels",
+      [row("policies", "policy_id", "$[:].policy_id"), row("drivers", "driver_id", "$[:].drivers[:].driver_id")],
+    ],
+    [
+      "the other frame's root row is disabled",
+      [row("policies", "policy_id", "$[:].policy_id"), row("drivers", "driver_id", "$[:].driver_id", false)],
+    ],
+    [
+      "the other frame's root row has no column",
+      [row("policies", "policy_id", "$[:].policy_id"), row("drivers", "", "$[:].driver_id")],
+    ],
+    [
+      "the other frame's root row has an invalid path",
+      [row("policies", "policy_id", "$[:].policy_id"), row("drivers", "driver_id", "$.driver_id")],
+    ],
+    [
+      "the other frame emits into divergent branches (its own error)",
+      [
+        row("policies", "premium", "$[:].a[:].premium"),
+        row("drivers", "driver_id", "$[:].a[:].driver_id"),
+        row("drivers", "claim_id", "$[:].b[:].claim_id"),
+      ],
+    ],
+  ])("shows no banner when %s", (_case, outputMapping) => {
+    render(
+      <OutputEditor {...DEFAULT_PROPS} config={{ outputMapping, outputFormat: "json" }} />,
+      { allNodes: MULTI_FRAME_NODES, edges: MULTI_FRAME_EDGES },
+    )
+    expect(screen.queryByTestId("output-same-level-banner")).toBeNull()
   })
 })
 

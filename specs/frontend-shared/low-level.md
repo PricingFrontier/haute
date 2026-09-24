@@ -14,10 +14,10 @@
 | `frontend/src/types/node.ts` | Canonical persisted `PIPELINE_NODE_TYPES` vocabulary and `NodeTypeValue`; `HauteNodeData`/`PipelineFlowNode`/`SubmodelNodeData` shapes, `ColumnInfo`, `BackendNodeStatus`/`NodeStatus`, and the `nodeData()`/`effectiveNodeType()` accessors used everywhere a React Flow `Node.data` needs typed access. |
 | `frontend/src/types/trace.ts` | Trace playback shapes (`TraceStep`, `TraceResult`, per-node-type `TraceNodeDetail` variants) mirroring backend trace output. |
 | `frontend/src/types/banding.ts` | Banding-factor rule shapes shared between the banding node editor and its trace rendering. |
-| `frontend/src/types/guards.ts` | Shared runtime parser primitives plus parsers (`parse*`) and type guards for eagerly used concrete JSON API response shapes; part of the JSON/DOM trust boundary. A converted response module group has no parser here. Execution-strategy parsing delegates matching-version structural assertions to its generated standalone validator, then applies explicit compatibility, relationship, ordering, and calibration semantics. `parseFileListResponse` accepts absent, numeric, or null `size` while retaining strict validation of every other field. Generic transport helpers, the caller-generic `readJson<T>`, and split-module local parsers are explicit exceptions. |
+| `frontend/src/types/guards.ts` | Shared runtime parser primitives plus parsers (`parse*`) and type guards for eagerly used concrete JSON API response shapes; part of the JSON/DOM trust boundary. A converted response module group has no parser here; the Explore pivot responses keep only their UI rules (`explorePivotRunFromContract`, `explorePivotStatusFromContract`, `explorePivotMembersFromContract`): each member key narrowed to the value its kind carries, in its canonical string form, and every cell inside the declared matrix naming a declared value. The optimiser status, frontier status and auto-range status responses keep theirs (`optimiserStatusFromContract`, `frontierStatusFromContract`, `frontierAutoRangeStatusFromContract`): one frontier point summary per point, the typed fields the UI reads from each open frontier point object, and execution metrics parsed by the shared parser. Execution-strategy parsing delegates matching-version structural assertions to its generated standalone validator, then applies explicit compatibility, relationship, ordering, and calibration semantics. Generic transport helpers, the caller-generic `readJson<T>`, and split-module local parsers are explicit exceptions. |
 | `frontend/src/types/generatedContractValidation.ts` | Adapter for generated-validator errors: constructs stable instance paths (including missing required properties), formats contract failures, and locates matching keyword/path errors without coupling callers to Ajv internals. `expectGeneratedContract(contract, validate, value)` returns the payload typed by its generated validator or throws `<contract>: invalid contract at <path>: <keyword>`; `api/client.ts` uses it for every converted response. It holds no contract data, so importing it eagerly hoists nothing Explore-only. |
 | `frontend/src/generated/api-contracts.schema.json`, `frontend/src/generated/api-contracts.generated.ts`, `frontend/src/generated/api-contracts.constants.generated.ts`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.mjs`, `frontend/src/generated/api-contracts.execution-strategy-diagnostic.validators.d.mts`, `frontend/src/generated/api-contracts.explore-charts.validators.mjs`, and `frontend/src/generated/api-contracts.explore-charts.validators.d.mts` | Committed contract source, static declarations, lazy Explore constants, and split self-contained validators owned by [engineering-quality](../engineering-quality/low-level.md) and consumed by frontend trust boundaries. The execution validator co-exports its generated schema version and is eager; the Explore chart validator and option constants stay behind its lazy panel chunk. |
-| `frontend/src/types/trainGuards.ts` | Dynamically imported runtime parsers for modelling train/status/estimate responses. Training parsing strictly retains authoritative live-history/truncation and validates complete evaluation/tuning reports, weighted fit evidence, deterministic winner/count links, and bounded evaluation previews while remaining outside the initial JavaScript graph. `parseTrainEstimateResponse` takes the estimate's structure from the generated `TrainEstimateResponse` validator and applies only the cross-field rules by hand: the evaluation preview's strategy/validation consistency, and the unavailable reason's figures and blocking node (narrowed to a discriminated union). |
+| `frontend/src/types/trainGuards.ts` | Dynamically imported runtime parsers for modelling train/status/estimate responses, outside the initial JavaScript graph. `parseTrainResponse` and `parseTrainStatusResponse` take the whole structure, including the evaluation and tuning reports and the fit evidence, from the generated `training` validators, and shape by hand only what the server model leaves open: the diagnostic row lists, loss history, GLM inference and regularisation, EBM terms and the feature-selection report. The evaluation and tuning invariants are checked once on the server, where their artifacts are produced, so the browser does not re-check them. `parseTrainEstimateResponse` takes the estimate's structure from the generated `TrainEstimateResponse` validator and applies only the cross-field rules by hand: the evaluation preview's strategy/validation consistency, and the unavailable reason's figures and blocking node (narrowed to a discriminated union). |
 | `frontend/src/types/pipelineRepair.ts` | Exact-key minimal repair apply wire types and parsers. Apply delegates its nested document to `parsePipelineEditorDocument`; no response or request type contains replacement source bytes or migration operations. |
 | `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview/solve/train/explore/pivot result and job caches (`startTrainJob` records the `trainingLineage` of the submitted training payload that the editor passes in; a fence-current completion remembers the job in the browser handles of `utils/trainedJobHandles` and an error or failure forgets it; `restoreTrainResult` puts back a completed training result restored after a reload, never replacing an existing result or running job), authoritative training history plus bounded ETA samples, column cache, derived-getter memoization, LRU eviction, and the atomic per-pivot start claim (one current claim per Explore node + pivot id holding the owning node id, the requested dataframe cache key, calculation identity, and a unique generation token; taking a claim before submission serialises concurrent consumers, an identical automatic target no-ops, every manual Retry and every newer automatic target atomically replaces the generation, only the current token may promote it to a job or release it — superseded outcomes are discarded — and clearing a node's results drops exactly the claims whose stored node id matches). |
 | `frontend/src/stores/useNodeDataStore.ts` | Zustand store of the data every consumer of one point shares, keyed by slot (`producerNodeId|portLabel|source`): the point's kind, the generation its producer's current signature has (id, column set, rows, bytes, retention, freshness), the running build — a node-data job with its progress, or a delegated build with its message, its canceller, and the token that owns it — the profile of the data version it holds and why the last profile failed — attributed to the version that profile was computed for, so a generation published while it ran is still profiled — how the point is built or cleared, and a monotonic node-data epoch. It also records, per consumer node, the slot it was last told it reads together with the identity that answer was given for, so a read for another identity returns nothing. A consumer's own availability is derived from the entry and its column demand, never stored. |
@@ -41,7 +41,7 @@
 | `frontend/src/utils/portableKey.ts` | Browser-owned persistence key; intentionally not Python-compatible or reversible. Executable identity comes only from server metadata. |
 | `frontend/src/components/ErrorBoundary.tsx` | Class-component error boundary with a "Try again" fallback UI. |
 | `frontend/src/components/Toast.tsx` | `ToastMessage` type + `ToastContainer`, rendering `useToastStore`'s queue with per-type icon/colour and auto-dismiss. |
-| `frontend/src/components/ModalShell.tsx` | Shared dialog chrome: backdrop, Escape-close, full Tab focus trap, focus restore on unmount. |
+| `frontend/src/components/ModalShell.tsx` | Shared dialog chrome: backdrop, Escape-close, full Tab focus trap, focus restore on unmount; the panel is centred, or top-aligned with `placement="top"` (the node-search palette). |
 | `frontend/src/components/Tooltip.tsx` | Zero-delay hover and focus tooltip. The bubble renders into the document body with fixed positioning, so scrolling or overflow-clipped panels never cut it off; it is placed from the anchor's viewport rectangle, clamped inside the viewport horizontally, flipped between top and bottom when the preferred side would clip, closed on scroll or resize, wraps long unbroken text such as URLs, and describes the control that takes focus: a single element child receives the tooltip in its described-by reference (unless its accessible label already is the tooltip text), a function child receives the id to place on a nested control such as a native radio inside its label, and only text or fragment children leave the reference on the hover wrapper. |
 | `frontend/src/components/ContextMenu.tsx` | Node right-click menu: rename/duplicate/create-instance/dissolve-submodel/delete, arrow-key roving focus. |
 | `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
@@ -52,9 +52,10 @@
 | `frontend/src/components/BreakdownDropdown.tsx` | Sorted, accessible timing/memory breakdown disclosure used by the shared toolbar. |
 | `frontend/src/panels/ImportsPanel.tsx` | Active pipeline-imports right panel: `PanelShell` plus `CodeEditor`, explanatory always-included imports, and callback-only preamble mutation/close handling. `App.tsx` supplies the graph-store-backed preamble and selects it through `importsOpen`. |
 | `frontend/src/components/BackgroundJobPolling.tsx` | Zero-render mount point (`memo`) that only invokes `useBackgroundJobs()`. |
-| `frontend/src/components/NodeSearch.tsx` | Ctrl+K command palette: dynamically imported by `App.tsx` only while open, filters/windows the current React Flow node list, supports arrow-key navigation, and hands the chosen node to `App.tsx`, which selects it and asks `useActiveNodeReveal` to centre it at zoom 0.8 within the canvas area the inspector leaves (see [frontend-graph-canvas](../frontend-graph-canvas/high-level.md), Active node visibility). |
+| `frontend/src/components/NodeSearch.tsx` | Ctrl+K command palette on a top-aligned `ModalShell` (which owns Escape, backdrop close and the focus trap): dynamically imported by `App.tsx` only while open, filters/windows the current React Flow node list, supports arrow-key navigation, and hands the chosen node to `App.tsx`, which selects it and asks `useActiveNodeReveal` to centre it at zoom 0.8 within the canvas area the inspector leaves (see [frontend-graph-canvas](../frontend-graph-canvas/high-level.md), Active node visibility). |
 | `frontend/src/components/BreadcrumbBar.tsx` | Pipeline → submodel navigation trail; renders nothing at stack depth ≤ 1. |
 | `frontend/src/hooks/useClickOutside.ts` | Attaches/detaches a `mousedown` listener that fires `onClose` when the click lands outside `ref`, only while `active`. |
+| `frontend/src/hooks/useDebouncedCallback.ts` | The one debounce for a scheduled call: `schedule(args, delayMs?)` runs the latest callback with the latest arguments once the delay passes without another schedule (a per-call delay overrides the hook's), `flush()` runs a waiting call now and returns its result, `cancel()` drops it, and `pending()` reads its arguments. On unmount a waiting call is dropped, or run when the owner asks for `onUnmount: "flush"`. The code editor's change commit, the utility panel's autosave and the canvas preview fetch use it; a delayed request inside an effect, whose cleanup clears the timer and aborts the request, stays in that effect. |
 | `frontend/src/hooks/useDragResize.ts` | Bottom-panel drag-to-resize: DOM-direct mutation while dragging, commits to React state on mouseup. |
 | `frontend/src/hooks/useJobPolling.ts` | Thin React adapter that keeps one `JobPollingController` configured, reconciles the current job record after commit, and disposes it on unmount. |
 | `frontend/src/hooks/jobPollingController.ts` | The single state authority for generic background polling: active poller identities, timers, abort controllers, interval ramp, progress throttling, replacement, terminal completion/error, and disposal. Also exports `waitForJob`, the only way to await one job's terminal status inside an operation, and its `JobWaitTimeoutError`. |
@@ -69,7 +70,7 @@
 | `frontend/src/utils/mlflowModelMetadata.ts` | Pure MLflow model metadata helpers for Model Score: `resolveLoadedVersion` (the loaded version a stored choice resolves to; `latest` is the newest) and `recordedModelTask` (a run's recorded `task` param when it is `regression` or `classification`, else `null`). |
 | `frontend/src/components/NodeTypeIcon.tsx` | Shared node-type icon wrapper: looks up canonical metadata and deliberately renders the Polars icon for an absent or unknown type, so compact lists never crash on incomplete historical data. |
 | `frontend/src/components/ToggleButtonGroup.tsx` | Generic controlled segmented single-choice group with radio semantics, roving `tabIndex`, Arrow/Home/End selection and focus movement, optional accessible name, and token-derived active styling. |
-| `frontend/src/components/form/CommittedTextField.tsx` | Controlled-looking input/textarea with a local draft: commits once on blur (and Enter for the input), skips no-op commits, and discards a stale draft when the external value changes, preserving one edit/one undo snapshot. |
+| `frontend/src/components/form/CommittedTextField.tsx` | Controlled-looking input/textarea with a local draft: commits once on blur (and Enter for the input), skips no-op commits, and discards a stale draft when the external value changes, preserving one edit/one undo snapshot. `ValidatedTextField` is the validated single-line variant the API Input and Output editors share: an invalid candidate is refused with its error beside the field and the draft kept, an invalid committed value shows its error too, a commit its owner refuses (`{ ok: false }`) keeps the draft, an owner's `commitError` shows while the value itself is valid, and a non-blocking `warning` shows only when there is no error. |
 | `frontend/src/components/form/ConfigCheckbox.tsx` | Labelled controlled checkbox using a caller id or React `useId`, disabled semantics, and shared accent/text tokens. |
 | `frontend/src/components/form/EditorLabel.tsx` | Consistent micro-label primitive; can be a correctly associated `<label>` or non-form span/div for display-only content. |
 | `frontend/src/components/form/index.ts` | Public barrel for the committed text field/area, checkbox, and editor-label primitives; editor callers import the shared contract rather than deep paths. |
@@ -258,7 +259,9 @@ cancels the job; a caller that owns the job decides that. The callers are:
   `cancelInputSnapshotBuild` waits at most 48 seconds for the cancelled build
   to stop, then raises `CancellationFailedError`.
 - `InputSnapshotCacheButton` waits for its build with a signal aborted on
-  unmount and when its configuration changes; the server build continues.
+  unmount and when its configuration changes; the server build continues. Its
+  `onStatus` reports each running status as `CacheFetchButton`'s progress, so
+  there is no second progress poll.
 - `useOptimiserAutoRange` waits with the active run's signal and retires the
   run from `onStatus` once it is no longer current.
 
@@ -728,7 +731,7 @@ same Vitest config.
   (root-level, under `frontend/src/__tests__/components/`),
   `frontend/src/components/__tests__/ModalShell.test.tsx` and
   `frontend/src/components/__tests__/ModalShell.focusTrap.test.tsx` (focus trap and
-  restore-on-close in particular),
+  restore-on-close in particular; centred or top placement),
   `frontend/src/components/__tests__/Toast.test.tsx`,
   `frontend/src/components/__tests__/Tooltip.test.tsx`,
   `frontend/src/components/__tests__/ContextMenu.test.tsx`,
@@ -768,6 +771,8 @@ same Vitest config.
   stale save is rejected, the local edit survives until an explicit reload, and a fresh save
   succeeds afterwards.
 - **Generic hooks**: `frontend/src/__tests__/hooks/useClickOutside.test.ts` + `frontend/src/__tests__/hooks/useClickOutside.gaps.test.tsx`,
+  `frontend/src/hooks/__tests__/useDebouncedCallback.test.ts` (latest arguments and callback,
+  per-call delay, flush result, cancel, stable object, drop or flush on unmount),
   `frontend/src/__tests__/hooks/useDragResize.test.ts`, `frontend/src/__tests__/hooks/useJobPolling.test.ts` (root-level, generic
   poller mechanics) plus the colocated dedup/progress-throttle variants and
   `frontend/src/hooks/__tests__/jobPollingController.test.ts` (controller
@@ -801,7 +806,8 @@ Arrow/Home/End radio-group selection/focus behaviour;
 `frontend/src/components/form/__tests__/CommittedTextField.test.tsx`,
 `frontend/src/__tests__/components/form/ConfigCheckbox.test.tsx`, and
 `frontend/src/__tests__/components/form/EditorLabel.test.tsx` cover commit boundaries,
-no-op blur, external-value draft reset, and form-label/control semantics.
+no-op blur, external-value draft reset, `ValidatedTextField`'s refused candidates, owner
+refusals, commit errors and warnings, and form-label/control semantics.
 `frontend/src/utils/__tests__/chartHelpers.test.ts` and
 `frontend/src/utils/__tests__/formatTrace.test.ts` respectively pin numeric
 ticks/formatting and trace substitutions/non-finite display.
@@ -822,8 +828,9 @@ Known gaps: `frontend/src/components/Toolbar.tsx`'s inline millisecond timing he
 `formatBytes`/`formatByteSize`, durations in seconds from `formatDuration`, and the
 non-array-object check from `isPlainObject`/`expectPlainObject` in `types/guards.ts`. ESLint's
 `no-restricted-syntax` rejects a local function named `errorMessage`, `errorMsg`, `errorDetail`,
-`requestErrorDetail` or `previewErrorDetail` (declared or assigned; the tracing hook's raw-detail
-text and the repair dialog's `code: message` text are marked exceptions until FSH-R02 folds them in), the
+`requestErrorDetail`, `previewErrorDetail` or `gitErrorMessage` (declared or assigned, with no
+exceptions; the tracing hook's `technicalDetail` is not error text but the raw detail its Technical
+details disclosure shows whole), the
 `e.detail || e.message` idiom, a local `formatBytes`/`formatMemory`/`formatSize`/`formatDuration`/
 `formatElapsed`, and a local `isRecord`/`asRecord`/`isPlainRecord`/`isPlainObject`/`isObjectLiteral`
 outside the owning modules. `utils/objectLiteral.ts`'s `isObjectLiteral` is the stricter check a
@@ -911,11 +918,12 @@ The following remain shared-infrastructure-owned:
   `modellingPanes: Record<nodeId, pane>` and its immutable setter, following the existing Explore
   selection-memory pattern. It is browser UI state only and is not serialized into node config.
 - `frontend/src/api/types.ts`, `frontend/src/types/trainGuards.ts`, and the train-progress type used by
-  `frontend/src/stores/useNodeResultsStore.ts` share the backend's optional
-  `train_loss_history` and `train_loss_history_truncated` status fields.
-  `parseTrainStatusResponse` retains those fields and parses every present row through the same
-  finite-number/required-iteration contract as completed `loss_history`; malformed present data
-  throws, omitted history stays omitted, and no latest-loss reconstruction is invented.
+  `frontend/src/stores/useNodeResultsStore.ts` share the backend's `train_loss_history` and
+  `train_loss_history_truncated` status fields, which the server always sends.
+  `parseTrainStatusResponse` requires both and parses every row through the same
+  finite-number/required-iteration contract as completed `loss_history`; malformed or missing
+  history throws, and no latest-loss reconstruction is invented. The store's type keeps them
+  optional for the entries it makes itself.
 - `frontend/src/stores/useNodeResultsStore.ts` keeps each active job's latest status/history
   snapshot unchanged and a bounded pair of distinct increasing iteration/elapsed samples for the
   browser-derived remaining-time estimate. A sample is usable only when iteration and elapsed time

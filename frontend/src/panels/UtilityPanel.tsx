@@ -3,6 +3,7 @@ import { Plus, Trash2, FileCode2, ChevronDown } from "lucide-react"
 import { CodeEditor } from "./editors/CodeEditor"
 import PanelShell from "./PanelShell"
 import useClickOutside from "../hooks/useClickOutside"
+import { useDebouncedCallback } from "../hooks/useDebouncedCallback"
 import useToastStore from "../stores/useToastStore"
 import {
   ApiError,
@@ -52,11 +53,6 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState("")
 
-  // Auto-save: debounce API calls so we don't fire on every keystroke
-  const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
-  // The value awaiting the debounce window. Tracked so a file switch / unmount
-  // can FLUSH it (persist immediately) instead of discarding the last edit.
-  const pendingSaveRef = useRef<{ module: string; value: string } | null>(null)
   const inflightSaveRef = useRef<Promise<boolean> | null>(null)
   // A rejected draft remains dirty after its request settles. Keep that
   // failure separate from the in-flight queue so a later file switch cannot
@@ -111,39 +107,24 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
     return queued
   }, [persistSave])
 
+  // Auto-save: debounce API calls so we don't fire on every keystroke. A file
+  // switch or unmount FLUSHES the waiting edit (persists it now) instead of
+  // discarding it; the unmount flush is fire-and-forget, and persistSave's
+  // post-await guards skip state updates once unmounted.
+  const pendingSave = useDebouncedCallback(queueSave, 500, { onUnmount: "flush" })
   const autoSave = useCallback((module: string, value: string) => {
-    clearTimeout(saveTimer.current)
-    pendingSaveRef.current = { module, value }
-    saveTimer.current = setTimeout(() => {
-      pendingSaveRef.current = null
-      void queueSave(module, value)
-    }, 500)
-  }, [queueSave])
+    pendingSave.schedule([module, value])
+  }, [pendingSave])
 
   // Flush a pending debounced save synchronously (returns the persist promise so
   // callers can await it before switching file). No-op when nothing is pending.
   const flushSave = useCallback(async (): Promise<boolean> => {
-    const pending = pendingSaveRef.current
-    if (pending) {
-      clearTimeout(saveTimer.current)
-      pendingSaveRef.current = null
-      return queueSave(pending.module, pending.value)
-    }
+    const flushed = pendingSave.flush()
+    if (flushed) return flushed
     if (inflightSaveRef.current) return inflightSaveRef.current
     return failedSaveModuleRef.current === null
       || failedSaveModuleRef.current !== activeModuleRef.current
-  }, [queueSave])
-
-  // On unmount, flush any pending edit (fire-and-forget — cleanup can't await;
-  // persistSave's post-await guards skip state updates once unmounted).
-  useEffect(() => () => {
-    const pending = pendingSaveRef.current
-    clearTimeout(saveTimer.current)
-    if (pending) {
-      pendingSaveRef.current = null
-      void queueSave(pending.module, pending.value)
-    }
-  }, [queueSave])
+  }, [pendingSave])
 
   // Load file list.  The backend returns `{files: []}` for a missing
   // utility/ dir, so anything reaching this catch is a real failure
@@ -215,8 +196,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
     if (!activeModule) return
     if (!confirm(`Delete ${activeModule}?`)) return
     // Discard any pending save — the file is being removed.
-    clearTimeout(saveTimer.current)
-    pendingSaveRef.current = null
+    pendingSave.cancel()
     try {
       await deleteUtilityFile(activeModule)
       if (failedSaveModuleRef.current === activeModule) {
@@ -230,7 +210,7 @@ export default function UtilityPanel({ onClose, onImportAdded }: UtilityPanelPro
       addToast("error", `Failed to delete utility file "${activeModule}": ${detail}`)
       setErrorMsg("Failed to delete")
     }
-  }, [activeModule, loadFiles, addToast])
+  }, [activeModule, pendingSave, loadFiles, addToast])
 
   return (
     <PanelShell

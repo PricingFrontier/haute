@@ -910,7 +910,7 @@ class TestPathTraversalInPayloads:
     """Path traversal attempts in JSON body fields should be blocked."""
 
     def test_path_traversal_in_source_file(self, client):
-        """source_file='../../etc/passwd' should be rejected by validate_safe_path.
+        """source_file='../../etc/passwd' should be rejected by contained_path.
 
         Real failure: attacker-controlled source_file causes arbitrary
         file write outside the project root.

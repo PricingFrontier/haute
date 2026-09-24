@@ -216,8 +216,11 @@ function makeTrainResponse(overrides: Record<string, unknown> = {}) {
     glm_inference: null,
     glm_smooth_terms: [],
     glm_regularization: null,
+    ebm_terms: [],
     diagnostics_errors: [],
     feature_selection: null,
+    final_tree_count: null,
+    fit_evidence: null,
     ...overrides,
   }
 }
@@ -230,9 +233,26 @@ function makeTrainStatusResponse(overrides: Record<string, unknown> = {}) {
     iteration: 1,
     total_iterations: 10,
     train_loss: {},
+    train_loss_history: [],
+    train_loss_history_truncated: false,
     elapsed_seconds: 1,
     result: null,
     warning: null,
+    terminal_reason: null,
+    execution_metrics: null,
+    feature_selection: null,
+    error_code: null,
+    http_status_code: null,
+    error_detail: null,
+    phase: null,
+    trial_index: null,
+    trial_count: null,
+    fold_index: null,
+    fold_count: null,
+    completed_fits: null,
+    total_fits: null,
+    best_objective: null,
+    export_receipts: { mlflow: [], model_files: [] },
     ...overrides,
   }
 }
@@ -542,7 +562,13 @@ describe("request() core via loadPipeline", () => {
 
   it("getExecutionSettings rejects a malformed response", async () => {
     mockFetch.mockReturnValue(jsonResponse({ streaming_chunk_size: "not-a-number" }))
-    await expect(getExecutionSettings()).rejects.toThrow()
+    await expect(getExecutionSettings()).rejects.toThrow(
+      "ExecutionSettings: invalid contract at /streaming_chunk_size: type",
+    )
+    mockFetch.mockReturnValue(jsonResponse({ streaming_chunk_size: 0 }))
+    await expect(getExecutionSettings()).rejects.toThrow(
+      "ExecutionSettings: invalid contract at /streaming_chunk_size: minimum",
+    )
   })
 
   it("putExecutionSettings issues a PUT with the JSON payload and parses the response", async () => {
@@ -873,6 +899,7 @@ describe("endpoint contracts", () => {
   })
 
   it("listFiles GETs /api/files with dir and optional extensions", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ dir: "data", items: [] }))
     await listFiles("data", ".csv,.parquet")
     const [url] = mockFetch.mock.calls[0]
     expect(url).toContain("/api/files?")
@@ -1646,6 +1673,7 @@ describe("no request carries streaming_chunk_size", () => {
 
   it("estimateOptimiserSolve body omits streaming_chunk_size", async () => {
     const { estimateOptimiserSolve } = await import("../client")
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_estimate_response")))
     await estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt1" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
@@ -1661,10 +1689,11 @@ describe("no request carries streaming_chunk_size", () => {
 
   it("uses the exact input-cache V1 paths, methods, and request bodies", async () => {
     const source = { schema_version: 1 as const, config: { path: "data.csv" } }
-    mockFetch.mockReturnValueOnce(jsonResponse({ schema_version: 1, job_id: "job / 1", identity_digest: "digest", status: "running", joined: false }))
-    await buildInputCache({ ...source, refresh: true, profile: "preview_eager" })
+    mockFetch.mockReturnValueOnce(jsonResponse({ schema_version: 1, job_id: "job / 1", identity_digest: "digest", status: "running", joined: false, build_class: "admitted_eager" }))
+    const started = await buildInputCache({ ...source, refresh: true })
+    expect(started.build_class).toBe("admitted_eager")
     expect(mockFetch.mock.calls[0][0]).toBe("/api/input-cache/build")
-    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ ...source, refresh: true, profile: "preview_eager" })
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ ...source, refresh: true })
 
     mockFetch.mockReturnValueOnce(jsonResponse({ schema_version: 1, job_id: "job / 1", identity_digest: "digest", status: "running", terminal_reason: null, message: "", refresh: false, build_class: "bounded", progress: { phase: "queued", rows: 0, batches: 0, bytes: 0, elapsed_seconds: 0 }, snapshot: null, error_code: null }))
     await getInputCacheJob("job / 1")
@@ -1684,6 +1713,18 @@ describe("no request carries streaming_chunk_size", () => {
     await clearInputCache(source)
     expect(mockFetch.mock.calls[4][0]).toBe("/api/input-cache/clear")
     expect(JSON.parse(mockFetch.mock.calls[4][1].body)).toEqual(source)
+  })
+
+  it("reads the snapshot store's size with a GET and rejects a malformed reply", async () => {
+    const { fetchCacheUsage } = await import("../client")
+    const usage = { schema_version: 1, total_bytes: 2048, automatic_bytes: 1024, automatic_budget_bytes: 4096 }
+    mockFetch.mockReturnValueOnce(jsonResponse(usage))
+    await expect(fetchCacheUsage()).resolves.toEqual(usage)
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/cache/usage")
+    expect(mockFetch.mock.calls[0][1]?.method ?? "GET").toBe("GET")
+
+    mockFetch.mockReturnValueOnce(jsonResponse({ ...usage, automatic_bytes: -1 }))
+    await expect(fetchCacheUsage()).rejects.toThrow("automatic_bytes")
   })
 
   it("sends the exact scoped node-save body and parses the authoritative document", async () => {

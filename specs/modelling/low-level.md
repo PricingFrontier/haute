@@ -1615,11 +1615,18 @@ The implementation seams are:
   digest links and response/artifact agreement before atomically replacing the whole
   generation. A non-tuned replacement retires stale tuning companions in that same
   rollback-capable transaction.
-- `schemas.py` and `frontend/src/types/trainGuards.ts` independently enforce the strict
-  terminal response: completed runs require evaluation, row/fit counts and artifact
-  digests must agree, selection/trial aggregates must recompute from persisted fits,
-  and the deterministic tuning winner/improvement must be correct. The frontend store
-  retains the canonical objects, while `SummaryTab` labels selection estimates,
+- Each evaluation and tuning invariant is checked once, where it is produced:
+  `haute.modelling._evaluation` and `haute.modelling._tuning` check row/fit counts,
+  contiguous fits and trials, aggregates recomputed from persisted fits, and the
+  deterministic tuning winner/improvement when they write and strictly reload the plan,
+  results and report artifacts, and publication reloads them the same way
+  (`routes/_training_artifacts.py`). The response models in `schemas.py` are structural.
+  A completed response's links to its own reports (evaluation present, non-empty
+  diagnostics, row counts, diagnostics set, fit count, the tuned refit and the tuning
+  plan's evaluation digest) are checked by `_require_consistent_completed_response`
+  (`routes/_training_worker.py`), which the worker runs before sending the response and
+  the parent runs again when it accepts it. The browser validates only the generated
+  structure. The frontend store retains the canonical objects, while `SummaryTab` labels selection estimates,
   final-test metrics, baseline/winner comparison, exact fit counts and the completed
   job's total elapsed time separately.
 - `POST /api/modelling/estimate` calls the same planner over the same eligible rows and

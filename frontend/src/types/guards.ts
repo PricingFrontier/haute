@@ -13,12 +13,25 @@ import {
   validateExecutionStrategyDiagnostic,
 } from "../generated/api-contracts.execution-strategy-diagnostic.validators.mjs"
 import type {
+  OptimiserFrontierAutoRangeStatusResponse as GeneratedOptimiserFrontierAutoRangeStatusResponse,
+  OptimiserFrontierResponse as GeneratedOptimiserFrontierResponse,
+  OptimiserFrontierStatusResponse as GeneratedOptimiserFrontierStatusResponse,
+  OptimiserStatusResponse as GeneratedOptimiserStatusResponse,
+} from "../generated/api-contracts.generated"
+import type {
+  ExplorePivotMembersResponse as GeneratedExplorePivotMembersResponse,
+  ExplorePivotPath as GeneratedExplorePivotPath,
+  ExplorePivotResult as GeneratedExplorePivotResult,
+  ExplorePivotRunResponse as GeneratedExplorePivotRunResponse,
+  ExplorePivotStatusResponse as GeneratedExplorePivotStatusResponse,
+} from "../generated/api-contracts.generated"
+import type {
   CacheClearResponse,
   CacheNodeEntry,
   CacheNodesResponse,
   CacheOwnerEntry,
+  CacheUsageResponse,
   DissolveSubmodelResponse,
-  EditorIdentityBatchResponse,
   ExecutionAdmission,
   ExecutionCacheProof,
   ExecutionMemoryPressureEvent,
@@ -44,35 +57,17 @@ import type {
   ExploreDataQualitySummary,
   ExploreDistinctValueCount,
   ExploreOverviewSummary,
-  ExplorePivotCell,
-  ExplorePivotFailure,
   ExplorePivotMemberKey,
-  ExplorePivotMemberOption,
   ExplorePivotMembersResponse,
   ExplorePivotPath,
   ExplorePivotResult,
   ExplorePivotRunResponse,
   ExplorePivotStatusResponse,
-  ExplorePivotValueIdentity,
-  FrontierAutoRangeResponse,
-  FrontierAutoRangeStartResponse,
   FrontierAutoRangeStatusResponse,
   FrontierStatusResponse,
   FrontierPoint,
-  FrontierPointSummary,
   FrontierResponse,
-  FrontierSelectResponse,
-  GitMilestoneFork,
-  GitRemoteLeg,
-  GitPushRejection,
-  GitStorageClaim,
-  IoCapabilitiesResponse,
-  IoCapabilityGroup,
   OutputDestinationResponse,
-  IoFieldCapability,
-  IoFormatCapability,
-  IoInputCapability,
-  IoOutputCapability,
   InputCacheBuildResponse,
   InputCacheCancelResponse,
   InputCacheGeneration,
@@ -80,31 +75,16 @@ import type {
   InputCacheProgress,
   InputCacheSnapshotResponse,
   InputCacheTableStatus,
-  FileListItem,
-  ExecutionSettings,
-  MlflowLogResponse,
   NodeDataClearResponse,
   NodeDataColumns,
   NodeDataPointResponse,
   NodeDataProfile,
-  BandingStatsResponse,
-  RatingLevelsResponse,
-  NodeDataProfileResponse,
   NodeDataRunResponse,
   NodeDataStatusResponse,
-  OptimiserHistoryEntry,
-  OptimiserScenarioValueHistogram,
-  OptimiserScenarioValueStats,
-  OptimiserEstimate,
-  OptimiserSolveResponse,
-  OptimiserSolveResult,
   OptimiserStatusResponse,
-  PolarsStepsRenderResponse,
   PreviewInputsResponse,
   PreviewNodeResponse,
   PreviewSeedPlanEntry,
-  ApplyOptimiserResponse,
-  SaveOptimiserResponse,
   SavePipelineResponse,
   SchemaResult,
   WriteOutputResponse,
@@ -380,21 +360,6 @@ function optionalPlainObjectArray(
 ): Record<string, unknown>[] {
   const value = obj[key]
   return value === undefined ? defaultValue : parsePlainObjectArray(parser, value, `field \`${key}\``)
-}
-
-function optionalFactorTables(
-  parser: string,
-  obj: Record<string, unknown>,
-  key: string,
-): OptimiserSolveResult["factor_tables"] {
-  const rawFactorTables = optionalNullableObject(parser, obj, key)
-  if (rawFactorTables === null) return undefined
-
-  const factorTables: NonNullable<OptimiserSolveResult["factor_tables"]> = {}
-  for (const [factorName, rows] of Object.entries(rawFactorTables)) {
-    factorTables[factorName] = parsePlainObjectArray(parser, rows, `field \`${key}.${factorName}\``)
-  }
-  return factorTables
 }
 
 function parseNumberRecord(
@@ -1312,79 +1277,6 @@ export function parsePipelineResponse(value: unknown): PipelineResponse {
   }
 }
 
-const EDITOR_IDENTITY_PARSER = "parseEditorNodeIdentityBatchResponse"
-
-function parseRequiredNullableNonBlankString(
-  value: unknown,
-  field: string,
-): string | null {
-  if (value === null) return null
-  return expectNonBlankString(EDITOR_IDENTITY_PARSER, value, field)
-}
-
-function parseEditorIdentityStringMap(
-  value: unknown,
-  field: string,
-): Record<string, string> {
-  const object = expectPlainObject(EDITOR_IDENTITY_PARSER, value, field)
-  return Object.fromEntries(
-    Object.entries(object).map(([key, item]) => [
-      expectNonBlankString(EDITOR_IDENTITY_PARSER, key, `${field} key`),
-      expectNonBlankString(EDITOR_IDENTITY_PARSER, item, `${field}.${key}`),
-    ]),
-  )
-}
-
-export function parseEditorNodeIdentityBatchResponse(
-  value: unknown,
-): EditorIdentityBatchResponse {
-  const object = expectPlainObject(EDITOR_IDENTITY_PARSER, value)
-  expectExactKeys(EDITOR_IDENTITY_PARSER, object, "response", ["identities"])
-  const identities = expectArray(
-    EDITOR_IDENTITY_PARSER,
-    object.identities,
-    "response.identities",
-  ).map((item, index) => {
-    const field = `response.identities[${index}]`
-    const identity = expectPlainObject(EDITOR_IDENTITY_PARSER, item, field)
-    expectExactKeys(EDITOR_IDENTITY_PARSER, identity, field, [
-      "node_id",
-      "function_name",
-      "config_reference",
-      "default_input_name",
-      "source_handle_input_names",
-    ])
-    return {
-      node_id: expectNonBlankString(
-        EDITOR_IDENTITY_PARSER,
-        identity.node_id,
-        `${field}.node_id`,
-      ),
-      function_name: expectNonBlankString(
-        EDITOR_IDENTITY_PARSER,
-        identity.function_name,
-        `${field}.function_name`,
-      ),
-      config_reference: parseRequiredNullableNonBlankString(
-        identity.config_reference,
-        `${field}.config_reference`,
-      ),
-      default_input_name: parseRequiredNullableNonBlankString(
-        identity.default_input_name,
-        `${field}.default_input_name`,
-      ),
-      source_handle_input_names: parseEditorIdentityStringMap(
-        identity.source_handle_input_names,
-        `${field}.source_handle_input_names`,
-      ),
-    }
-  })
-  if (new Set(identities.map((identity) => identity.node_id)).size !== identities.length) {
-    throw new Error(`${EDITOR_IDENTITY_PARSER}: duplicate node_id in response.identities`)
-  }
-  return { identities }
-}
-
 function parseNestedPipelineResponse(
   parser: string,
   obj: Record<string, unknown>,
@@ -1879,12 +1771,6 @@ export function parseSchemaResponse(value: unknown): SchemaResult {
   }
 }
 
-const IO_INPUT_MODES = ["scan", "read"] as const
-const IO_OUTPUT_MODES = ["sink", "write"] as const
-const IO_FORMAT_GROUPS = ["file", "database", "lakehouse", "inline"] as const
-const IO_GROUPS = ["file", "database", "lakehouse", "databricks", "inline"] as const
-const IO_FIELD_KINDS = ["path", "connection", "text", "query", "table", "records"] as const
-const IO_CACHE_MODES = ["direct", "snapshot"] as const
 const BUILD_CLASSES = ["bounded", "admitted_eager", "unsupported"] as const
 const INPUT_CACHE_PHASES = ["queued", "building", "publishing", "completed", "failed", "cancelled"] as const
 const INPUT_CACHE_SNAPSHOT_STATES = ["missing", "building", "ready", "corrupt", "failed"] as const
@@ -1892,42 +1778,6 @@ const INPUT_CACHE_FRESHNESS = ["fresh", "stale", "unknown"] as const
 function parseInputCacheStringRecord(parser: string, value: unknown, field: string): Record<string, string> {
   const obj = expectPlainObject(parser, value, field)
   return Object.fromEntries(Object.entries(obj).map(([key, item]) => [key, expectString(parser, item, `${field}.${key}`)]))
-}
-
-function parseIoInputCapability(value: unknown, field: string): IoInputCapability {
-  const p = "parseIoCapabilitiesResponse"
-  const obj = expectPlainObject(p, value, field)
-  return { modes: parseArray(p, obj.modes, `${field}.modes`, (v, f) => expectStringLiteral(p, v, f, IO_INPUT_MODES)), arguments: parseArrayRecord(p, obj.arguments, `${field}.arguments`, (v, f) => expectString(p, v, f)), engines_missing: parseStringArray(p, obj.engines_missing, `${field}.engines_missing`), cache_mode: expectStringLiteral(p, obj.cache_mode, `${field}.cache_mode`, IO_CACHE_MODES), direct_bounded: expectBoolean(p, obj.direct_bounded, `${field}.direct_bounded`), needs_schema_when_bounded: expectBoolean(p, obj.needs_schema_when_bounded, `${field}.needs_schema_when_bounded`), snapshot_build: expectStringLiteral(p, obj.snapshot_build, `${field}.snapshot_build`, BUILD_CLASSES), cached_read: expectBoolean(p, obj.cached_read, `${field}.cached_read`) }
-}
-
-function parseIoOutputCapability(value: unknown, field: string): IoOutputCapability {
-  const p = "parseIoCapabilitiesResponse"
-  const obj = expectPlainObject(p, value, field)
-  return { modes: parseArray(p, obj.modes, `${field}.modes`, (v, f) => expectStringLiteral(p, v, f, IO_OUTPUT_MODES)), arguments: parseArrayRecord(p, obj.arguments, `${field}.arguments`, (v, f) => expectString(p, v, f)), engines_missing: parseStringArray(p, obj.engines_missing, `${field}.engines_missing`), native_sink: expectBoolean(p, obj.native_sink, `${field}.native_sink`), eager_writer: expectBoolean(p, obj.eager_writer, `${field}.eager_writer`), publication: expectStringLiteral(p, obj.publication, `${field}.publication`, ["atomic_file", "transactional"]) }
-}
-
-function parseIoFormatCapability(value: unknown, field: string): IoFormatCapability {
-  const p = "parseIoCapabilitiesResponse"
-  const obj = expectPlainObject(p, value, field)
-  return { name: expectString(p, obj.name, `${field}.name`), label: expectString(p, obj.label, `${field}.label`), group: expectStringLiteral(p, obj.group, `${field}.group`, IO_FORMAT_GROUPS), extensions: parseStringArray(p, obj.extensions, `${field}.extensions`), unstable: expectBoolean(p, obj.unstable, `${field}.unstable`), input: obj.input === null ? null : parseIoInputCapability(obj.input, `${field}.input`), output: obj.output === null ? null : parseIoOutputCapability(obj.output, `${field}.output`) }
-}
-
-function parseIoFieldCapability(value: unknown, field: string): IoFieldCapability {
-  const p = "parseIoCapabilitiesResponse"
-  const obj = expectPlainObject(p, value, field)
-  return { name: expectString(p, obj.name, `${field}.name`), label: expectString(p, obj.label, `${field}.label`), kind: expectStringLiteral(p, obj.kind, `${field}.kind`, IO_FIELD_KINDS), required: expectBoolean(p, obj.required, `${field}.required`) }
-}
-
-function parseIoCapabilityGroup(value: unknown, field: string): IoCapabilityGroup {
-  const p = "parseIoCapabilitiesResponse"
-  const obj = expectPlainObject(p, value, field)
-  return { name: expectStringLiteral(p, obj.name, `${field}.name`, IO_GROUPS), label: expectString(p, obj.label, `${field}.label`), input_available: expectBoolean(p, obj.input_available, `${field}.input_available`), output_available: expectBoolean(p, obj.output_available, `${field}.output_available`), cache_modes: parseArray(p, obj.cache_modes, `${field}.cache_modes`, (v, f) => expectStringLiteral(p, v, f, IO_CACHE_MODES)), input_fields: parseArray(p, obj.input_fields, `${field}.input_fields`, parseIoFieldCapability), output_fields: parseArray(p, obj.output_fields, `${field}.output_fields`, parseIoFieldCapability), formats: parseArray(p, obj.formats, `${field}.formats`, parseIoFormatCapability) }
-}
-
-export function parseIoCapabilitiesResponse(value: unknown): IoCapabilitiesResponse {
-  const p = "parseIoCapabilitiesResponse"
-  const obj = expectPlainObject(p, value)
-  return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), groups: parseArray(p, obj.groups, "field `groups`", parseIoCapabilityGroup) }
 }
 
 function parseInputCacheProgress(value: unknown, field: string): InputCacheProgress {
@@ -1938,7 +1788,7 @@ function parseInputCacheGeneration(value: unknown, field: string): InputCacheGen
   const p = "parseInputCacheSnapshotResponse"; const obj = expectPlainObject(p, value, field)
   return { generation_id: expectString(p, obj.generation_id, `${field}.generation_id`), row_count: expectNumber(p, obj.row_count, `${field}.row_count`), column_count: expectNumber(p, obj.column_count, `${field}.column_count`), columns: parseInputCacheStringRecord(p, obj.columns, `${field}.columns`), size_bytes: expectNumber(p, obj.size_bytes, `${field}.size_bytes`), created_at: expectNumber(p, obj.created_at, `${field}.created_at`), build_class: expectStringLiteral(p, obj.build_class, `${field}.build_class`, BUILD_CLASSES) }
 }
-export function parseInputCacheBuildResponse(value: unknown): InputCacheBuildResponse { const p = "parseInputCacheBuildResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), status: expectStringLiteral(p, obj.status, "field `status`", ["running"]), joined: expectBoolean(p, obj.joined, "field `joined`") } }
+export function parseInputCacheBuildResponse(value: unknown): InputCacheBuildResponse { const p = "parseInputCacheBuildResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), status: expectStringLiteral(p, obj.status, "field `status`", ["running"]), joined: expectBoolean(p, obj.joined, "field `joined`"), build_class: expectStringLiteral(p, obj.build_class, "field `build_class`", ["bounded", "admitted_eager"]) } }
 function parseInputCacheTableStatus(value: unknown, field: string): InputCacheTableStatus {
   const p = "parseInputCacheSnapshotResponse"; const obj = expectPlainObject(p, value, field)
   return { label: expectString(p, obj.label, `${field}.label`), identity_digest: expectString(p, obj.identity_digest, `${field}.identity_digest`), state: expectStringLiteral(p, obj.state, `${field}.state`, INPUT_CACHE_SNAPSHOT_STATES), freshness: expectStringLiteral(p, obj.freshness, `${field}.freshness`, INPUT_CACHE_FRESHNESS), generation: obj.generation === null ? null : parseInputCacheGeneration(obj.generation, `${field}.generation`) }
@@ -2008,6 +1858,17 @@ export function parseCacheClearResponse(value: unknown): CacheClearResponse {
     schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"),
     cleared: parseArray(p, obj.cleared, "field `cleared`", (v, at) => expectNonBlankString(p, v, at)),
     freed_bytes: expectNonNegativeInteger(p, obj.freed_bytes, "field `freed_bytes`"),
+  }
+}
+
+export function parseCacheUsageResponse(value: unknown): CacheUsageResponse {
+  const p = "parseCacheUsageResponse"
+  const obj = expectPlainObject(p, value)
+  return {
+    schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"),
+    total_bytes: expectNonNegativeInteger(p, obj.total_bytes, "field `total_bytes`"),
+    automatic_bytes: expectNonNegativeInteger(p, obj.automatic_bytes, "field `automatic_bytes`"),
+    automatic_budget_bytes: expectNonNegativeInteger(p, obj.automatic_budget_bytes, "field `automatic_budget_bytes`"),
   }
 }
 
@@ -2282,110 +2143,6 @@ export function parseNodeDataProfile(value: unknown): NodeDataProfile {
   }
 }
 
-export function parseBandingStatsResponse(value: unknown): BandingStatsResponse {
-  const parser = "parseBandingStatsResponse"
-  const obj = expectPlainObject(parser, value)
-  return {
-    status: expectStringLiteral(parser, obj.status, "field `status`", [
-      "ok",
-      "cache_required",
-    ] as const),
-    point: parseNodeDataPointResponse(obj.point),
-    data_version: optionalNullableString(parser, obj, "data_version"),
-    total_rows: expectNumber(parser, obj.total_rows ?? 0, "field `total_rows`"),
-    null_count: expectNumber(parser, obj.null_count ?? 0, "field `null_count`"),
-    non_finite_count: optionalNullableNumber(parser, obj, "non_finite_count"),
-    minimum: optionalNullableNumber(parser, obj, "minimum"),
-    maximum: optionalNullableNumber(parser, obj, "maximum"),
-    bins: expectArray(parser, obj.bins ?? [], "field `bins`").map((bin, index) => {
-      const item = expectPlainObject(parser, bin)
-      return {
-        lower: expectNumber(parser, item.lower, `field \`bins[${index}].lower\``),
-        upper: expectNumber(parser, item.upper, `field \`bins[${index}].upper\``),
-        count: expectNumber(parser, item.count, `field \`bins[${index}].count\``),
-      }
-    }),
-    values: expectArray(parser, obj.values ?? [], "field `values`").map((entry, index) => {
-      const item = expectPlainObject(parser, entry)
-      return {
-        value: expectString(parser, item.value, `field \`values[${index}].value\``),
-        count: expectNumber(parser, item.count, `field \`values[${index}].count\``),
-      }
-    }),
-    distinct_count: optionalNullableNumber(parser, obj, "distinct_count"),
-    other_count: optionalNullableNumber(parser, obj, "other_count"),
-    rule_counts: expectArray(parser, obj.rule_counts ?? [], "field `rule_counts`").map(
-      (count, index) => expectNumber(parser, count, `field \`rule_counts[${index}]\``),
-    ),
-    unmatched_count: optionalNullableNumber(parser, obj, "unmatched_count"),
-  }
-}
-
-export function parseRatingLevelsResponse(value: unknown): RatingLevelsResponse {
-  const parser = "parseRatingLevelsResponse"
-  const obj = expectPlainObject(parser, value)
-  return {
-    status: expectStringLiteral(parser, obj.status, "field `status`", [
-      "ok",
-      "cache_required",
-    ] as const),
-    point: parseNodeDataPointResponse(obj.point),
-    data_version: optionalNullableString(parser, obj, "data_version"),
-    total_rows: expectNumber(parser, obj.total_rows ?? 0, "field `total_rows`"),
-    columns: expectArray(parser, obj.columns ?? [], "field `columns`").map((entry, index) => {
-      const item = expectPlainObject(parser, entry)
-      return {
-        column: expectString(parser, item.column, `field \`columns[${index}].column\``),
-        values: expectArray(parser, item.values ?? [], `field \`columns[${index}].values\``).map(
-          (level, position) => {
-            const value = expectPlainObject(parser, level)
-            return {
-              value: expectString(
-                parser,
-                value.value,
-                `field \`columns[${index}].values[${position}].value\``,
-              ),
-              count: expectNumber(
-                parser,
-                value.count,
-                `field \`columns[${index}].values[${position}].count\``,
-              ),
-            }
-          },
-        ),
-        distinct_count: expectNumber(
-          parser,
-          item.distinct_count ?? 0,
-          `field \`columns[${index}].distinct_count\``,
-        ),
-        null_count: expectNumber(
-          parser,
-          item.null_count ?? 0,
-          `field \`columns[${index}].null_count\``,
-        ),
-      }
-    }),
-  }
-}
-
-export function parseNodeDataProfileResponse(value: unknown): NodeDataProfileResponse {
-  const parser = "parseNodeDataProfileResponse"
-  const obj = expectPlainObject(parser, value)
-  return {
-    status: expectStringLiteral(parser, obj.status, "field `status`", [
-      "completed",
-      "started",
-      "joined",
-      "cache_required",
-    ] as const),
-    job_id: optionalNullableString(parser, obj, "job_id"),
-    message: optionalString(parser, obj, "message"),
-    result:
-      obj.result === undefined || obj.result === null ? null : parseNodeDataProfile(obj.result),
-    point: parseNodeDataPointResponse(obj.point),
-  }
-}
-
 export function parseNodeDataRunResponse(value: unknown): NodeDataRunResponse {
   const parser = "parseNodeDataRunResponse"
   const obj = expectPlainObject(parser, value)
@@ -2428,8 +2185,6 @@ export function parseNodeDataClearResponse(value: unknown): NodeDataClearRespons
   }
 }
 
-const EXPLORE_PIVOT_RUN_STATUSES = ["started", "completed", "cache_required"] as const
-const EXPLORE_PIVOT_MEMBER_STATUSES = ["ok", "cache_required", "error"] as const
 const EXPLORE_PIVOT_MEMBER_KINDS = [
   "null",
   "string",
@@ -2441,16 +2196,6 @@ const EXPLORE_PIVOT_MEMBER_KINDS = [
   "datetime",
   "time",
   "decimal",
-] as const
-const EXPLORE_PIVOT_AGGREGATIONS = [
-  "sum",
-  "count",
-  "average",
-  "min",
-  "max",
-  "median",
-  "distinct_count",
-  "formula",
 ] as const
 const PIVOT_INTEGER_PATTERN = /^-?(?:0|[1-9][0-9]*)$/
 const PIVOT_DECIMAL_PATTERN = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:E[+-]?[0-9]+)?$/
@@ -2617,105 +2362,33 @@ function parseExplorePivotMemberKey(value: unknown, field: string): ExplorePivot
   }
 }
 
-function parseExplorePivotFailure(value: unknown, field: string): ExplorePivotFailure {
-  const parser = "parseExplorePivotFailure"
-  const obj = expectPlainObject(parser, value, field)
-  const rawDimensions = expectPlainObject(parser, obj.dimensions, `${field}.dimensions`)
-  const dimensions = Object.fromEntries(
-    Object.entries(rawDimensions).map(([key, dimension]) => {
-      if (typeof dimension === "string") return [key, dimension]
-      return [key, expectSafeInteger(parser, dimension, `${field}.dimensions.${key}`)]
-    }),
-  )
-  return {
-    reason_code: expectString(parser, obj.reason_code, `${field}.reason_code`),
-    message: expectString(parser, obj.message, `${field}.message`),
-    remediation: expectString(parser, obj.remediation, `${field}.remediation`),
-    dimensions,
-  }
-}
-
-function parseNullablePivotFailure(
-  value: unknown,
+// The generated explore validators own the pivot responses' structure. The UI
+// narrows each member key to the value its kind carries and checks that every
+// cell sits inside the declared matrix and names a declared value.
+function explorePivotPathFromContract(
+  path: GeneratedExplorePivotPath,
   field: string,
-): ExplorePivotFailure | null {
-  return value === null ? null : parseExplorePivotFailure(value, field)
-}
-
-function parseExplorePivotPath(value: unknown, field: string): ExplorePivotPath {
-  const parser = "parseExplorePivotResult"
-  const obj = expectPlainObject(parser, value, field)
+): ExplorePivotPath {
   return {
-    members: parseArray(parser, obj.members, `${field}.members`, parseExplorePivotMemberKey),
-    is_grand_total: expectBoolean(parser, obj.is_grand_total, `${field}.is_grand_total`),
-  }
-}
-
-function parseExplorePivotValueIdentity(
-  value: unknown,
-  field: string,
-): ExplorePivotValueIdentity {
-  const parser = "parseExplorePivotResult"
-  const obj = expectPlainObject(parser, value, field)
-  return {
-    id: expectString(parser, obj.id, `${field}.id`),
-    field: expectString(parser, obj.field, `${field}.field`),
-    aggregation: expectStringLiteral(
-      parser,
-      obj.aggregation,
-      `${field}.aggregation`,
-      EXPLORE_PIVOT_AGGREGATIONS,
+    ...path,
+    members: path.members.map((member, index) =>
+      parseExplorePivotMemberKey(member, `${field}.members[${index}]`),
     ),
   }
 }
 
-function parseExplorePivotCell(value: unknown, field: string): ExplorePivotCell {
+function explorePivotResultFromContract(
+  result: GeneratedExplorePivotResult,
+): ExplorePivotResult {
   const parser = "parseExplorePivotResult"
-  const obj = expectPlainObject(parser, value, field)
-  const rawValue = obj.value
-  if (
-    rawValue !== null &&
-    typeof rawValue !== "string" &&
-    typeof rawValue !== "boolean" &&
-    typeof rawValue !== "number"
-  ) {
-    throw new Error(`${parser}: expected ${field}.value to be a scalar or null`)
-  }
-  return {
-    row_index: expectNonNegativeInteger(parser, obj.row_index, `${field}.row_index`),
-    column_index: expectNonNegativeInteger(parser, obj.column_index, `${field}.column_index`),
-    value_id: expectString(parser, obj.value_id, `${field}.value_id`),
-    value:
-      typeof rawValue === "number"
-        ? expectFiniteNumber(parser, rawValue, `${field}.value`)
-        : rawValue,
-  }
-}
-
-function parseExplorePivotResult(value: unknown, field: string): ExplorePivotResult {
-  const parser = "parseExplorePivotResult"
-  const obj = expectPlainObject(parser, value, field)
-  const rowPaths = parseArray(
-    parser,
-    obj.row_paths,
-    `${field}.row_paths`,
-    parseExplorePivotPath,
+  const rowPaths = result.row_paths.map((path, index) =>
+    explorePivotPathFromContract(path, `result.row_paths[${index}]`),
   )
-  const columnPaths = parseArray(
-    parser,
-    obj.column_paths,
-    `${field}.column_paths`,
-    parseExplorePivotPath,
+  const columnPaths = result.column_paths.map((path, index) =>
+    explorePivotPathFromContract(path, `result.column_paths[${index}]`),
   )
-  const values = parseArray(
-    parser,
-    obj.values,
-    `${field}.values`,
-    parseExplorePivotValueIdentity,
-  )
-  const cells = parseArray(parser, obj.cells, `${field}.cells`, parseExplorePivotCell)
-  const valueIds = new Set(values.map((identity) => identity.id))
-  for (const cell of cells) {
+  const valueIds = new Set(result.values.map((identity) => identity.id))
+  for (const cell of result.cells) {
     if (cell.row_index >= rowPaths.length || cell.column_index >= columnPaths.length) {
       throw new Error(`${parser}: pivot cell index is outside the declared matrix`)
     }
@@ -2724,131 +2397,44 @@ function parseExplorePivotResult(value: unknown, field: string): ExplorePivotRes
     }
   }
   return {
-    version: expectSchemaVersionOne(parser, obj.version, `${field}.version`),
-    node_id: expectString(parser, obj.node_id, `${field}.node_id`),
-    pivot_id: expectString(parser, obj.pivot_id, `${field}.pivot_id`),
-    source: expectString(parser, obj.source, `${field}.source`),
-    data_version: expectString(parser, obj.data_version, `${field}.data_version`),
-    calculation_key: expectString(parser, obj.calculation_key, `${field}.calculation_key`),
-    row_fields: parseArray(parser, obj.row_fields, `${field}.row_fields`, (item, itemField) =>
-      expectString(parser, item, itemField),
-    ),
-    column_fields: parseArray(
-      parser,
-      obj.column_fields,
-      `${field}.column_fields`,
-      (item, itemField) => expectString(parser, item, itemField),
-    ),
-    values,
+    ...result,
     row_paths: rowPaths,
     column_paths: columnPaths,
-    cells,
-    warnings: parseArray(parser, obj.warnings, `${field}.warnings`, (item, itemField) =>
-      expectString(parser, item, itemField),
+    execution_metrics: optionalExecutionMetrics(parser, { execution_metrics: result.execution_metrics }),
+  }
+}
+
+export function explorePivotRunFromContract(
+  response: GeneratedExplorePivotRunResponse,
+): ExplorePivotRunResponse {
+  return {
+    ...response,
+    result: response.result === null ? null : explorePivotResultFromContract(response.result),
+  }
+}
+
+export function explorePivotStatusFromContract(
+  response: GeneratedExplorePivotStatusResponse,
+): ExplorePivotStatusResponse {
+  return {
+    ...response,
+    result: response.result === null ? null : explorePivotResultFromContract(response.result),
+    execution_metrics: optionalExecutionMetrics(
+      "parseExplorePivotStatusResponse",
+      { execution_metrics: response.execution_metrics },
     ),
-    generated_at: expectFiniteNumber(parser, obj.generated_at, `${field}.generated_at`),
-    execution_metrics:
-      obj.execution_metrics === null
-        ? null
-        : parseExecutionMetrics(parser, obj.execution_metrics, `${field}.execution_metrics`),
   }
 }
 
-export function parseExplorePivotRunResponse(value: unknown): ExplorePivotRunResponse {
-  const parser = "parseExplorePivotRunResponse"
-  const obj = expectPlainObject(parser, value)
+export function explorePivotMembersFromContract(
+  response: GeneratedExplorePivotMembersResponse,
+): ExplorePivotMembersResponse {
   return {
-    status: expectStringLiteral(
-      parser,
-      obj.status,
-      "field `status`",
-      EXPLORE_PIVOT_RUN_STATUSES,
-    ),
-    job_id: expectNullableString(parser, obj.job_id, "field `job_id`"),
-    cached: expectBoolean(parser, obj.cached, "field `cached`"),
-    message: expectString(parser, obj.message, "field `message`"),
-    result:
-      obj.result === null ? null : parseExplorePivotResult(obj.result, "field `result`"),
-    failure: parseNullablePivotFailure(obj.failure, "field `failure`"),
-  }
-}
-
-export function parseExplorePivotStatusResponse(value: unknown): ExplorePivotStatusResponse {
-  const parser = "parseExplorePivotStatusResponse"
-  const obj = expectPlainObject(parser, value)
-  return {
-    status: expectStringLiteral(parser, obj.status, "field `status`", JOB_STATUS_VALUES),
-    progress: expectFiniteNumber(parser, obj.progress, "field `progress`"),
-    message: expectString(parser, obj.message, "field `message`"),
-    result:
-      obj.result === null ? null : parseExplorePivotResult(obj.result, "field `result`"),
-    failure: parseNullablePivotFailure(obj.failure, "field `failure`"),
-    terminal_reason: expectNullableString(parser, obj.terminal_reason, "field `terminal_reason`"),
-    execution_metrics:
-      obj.execution_metrics === null
-        ? null
-        : parseExecutionMetrics(parser, obj.execution_metrics, "field `execution_metrics`"),
-  }
-}
-
-function parseExplorePivotMemberOption(
-  value: unknown,
-  field: string,
-): ExplorePivotMemberOption {
-  const parser = "parseExplorePivotMembersResponse"
-  const obj = expectPlainObject(parser, value, field)
-  return {
-    key: parseExplorePivotMemberKey(obj.key, `${field}.key`),
-    label: expectString(parser, obj.label, `${field}.label`),
-    count: expectNonNegativeInteger(parser, obj.count, `${field}.count`),
-  }
-}
-
-export function parseExplorePivotMembersResponse(value: unknown): ExplorePivotMembersResponse {
-  const parser = "parseExplorePivotMembersResponse"
-  const obj = expectPlainObject(parser, value)
-  return {
-    status: expectStringLiteral(
-      parser,
-      obj.status,
-      "field `status`",
-      EXPLORE_PIVOT_MEMBER_STATUSES,
-    ),
-    field: expectNullableString(parser, obj.field, "field `field`"),
-    members: parseArray(
-      parser,
-      obj.members,
-      "field `members`",
-      parseExplorePivotMemberOption,
-    ),
-    failure: parseNullablePivotFailure(obj.failure, "field `failure`"),
-  }
-}
-
-export function parseExecutionSettings(value: unknown): ExecutionSettings {
-  const p = "parseExecutionSettings"
-  const obj = expectPlainObject(p, value)
-  return {
-    streaming_chunk_size: expectPositiveInteger(p, obj.streaming_chunk_size, "field `streaming_chunk_size`"),
-  }
-}
-
-export function parseMlflowLogResponse(value: unknown): MlflowLogResponse {
-  const obj = expectPlainObject("parseMlflowLogResponse", value)
-  return {
-    status: expectStringLiteral("parseMlflowLogResponse", obj.status, "field `status`", ["ok", "error"]),
-    backend: optionalString("parseMlflowLogResponse", obj, "backend"),
-    experiment_name: optionalString("parseMlflowLogResponse", obj, "experiment_name"),
-    run_id: optionalNullableString("parseMlflowLogResponse", obj, "run_id"),
-    run_url: optionalNullableString("parseMlflowLogResponse", obj, "run_url"),
-    tracking_uri: optionalString("parseMlflowLogResponse", obj, "tracking_uri"),
-    error: optionalNullableString("parseMlflowLogResponse", obj, "error"),
-    ...(obj.operation_id === undefined
-      ? {}
-      : { operation_id: optionalNullableString("parseMlflowLogResponse", obj, "operation_id") }),
-    ...(obj.logged_at === undefined
-      ? {}
-      : { logged_at: optionalNullableString("parseMlflowLogResponse", obj, "logged_at") }),
+    ...response,
+    members: response.members.map((member, index) => ({
+      ...member,
+      key: parseExplorePivotMemberKey(member.key, `members[${index}].key`),
+    })),
   }
 }
 
@@ -2856,355 +2442,90 @@ export function parseMlflowLogResponse(value: unknown): MlflowLogResponse {
 // Optimiser contracts
 // ---------------------------------------------------------------------------
 
-function parseOptimiserHistoryEntry(value: unknown, field: string): OptimiserHistoryEntry {
-  const obj = expectPlainObject("parseOptimiserStatusResponse", value, field)
-  return {
-    iteration: expectNumber("parseOptimiserStatusResponse", obj.iteration, `${field}.iteration`),
-    total_objective: expectNumber("parseOptimiserStatusResponse", obj.total_objective, `${field}.total_objective`),
-    max_lambda_change: expectNumber("parseOptimiserStatusResponse", obj.max_lambda_change, `${field}.max_lambda_change`),
-    all_constraints_satisfied: obj.all_constraints_satisfied === undefined ? undefined : expectBoolean("parseOptimiserStatusResponse", obj.all_constraints_satisfied, `${field}.all_constraints_satisfied`),
-    lambdas: obj.lambdas === undefined ? undefined : parseNumberRecord("parseOptimiserStatusResponse", obj.lambdas, `${field}.lambdas`),
-    total_constraints: obj.total_constraints === undefined ? undefined : parseNumberRecord("parseOptimiserStatusResponse", obj.total_constraints, `${field}.total_constraints`),
-  }
-}
-
-export function parseSolveOptimiserResponse(value: unknown): OptimiserSolveResponse {
-  const obj = expectPlainObject("parseSolveOptimiserResponse", value)
-  return {
-    status: expectStringLiteral("parseSolveOptimiserResponse", obj.status, "field `status`", ["started", "error"]),
-    job_id: optionalNullableString("parseSolveOptimiserResponse", obj, "job_id"),
-    error: optionalNullableString("parseSolveOptimiserResponse", obj, "error"),
-  }
-}
-
-export function parseOptimiserEstimateResponse(value: unknown): OptimiserEstimate {
-  const obj = expectPlainObject("parseOptimiserEstimateResponse", value)
-  return {
-    total_rows: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "total_rows"),
-    quote_count: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "quote_count"),
-    scenarios_per_quote_min: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "scenarios_per_quote_min"),
-    scenarios_per_quote_max: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "scenarios_per_quote_max"),
-    scenarios_per_quote_mean: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "scenarios_per_quote_mean"),
-    expanded_row_count: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "expanded_row_count"),
-  }
-}
-
-function parseScenarioValueStats(parser: string, value: unknown, field: string): OptimiserScenarioValueStats {
-  const stats = expectPlainObject(parser, value, field)
-  const stat = (key: keyof OptimiserScenarioValueStats) => expectNumber(parser, stats[key], `${field}.${key}`)
-  return {
-    mean: stat("mean"),
-    std: stat("std"),
-    min: stat("min"),
-    max: stat("max"),
-    p5: stat("p5"),
-    p25: stat("p25"),
-    p50: stat("p50"),
-    p75: stat("p75"),
-    p95: stat("p95"),
-    pct_increase: stat("pct_increase"),
-    pct_decrease: stat("pct_decrease"),
-  }
-}
-
-function parseScenarioValueHistogram(parser: string, value: unknown, field: string): OptimiserScenarioValueHistogram {
-  const histogram = expectPlainObject(parser, value, field)
-  const numbers = (key: "counts" | "edges") =>
-    parseArray(parser, histogram[key], `${field}.${key}`, (item, itemField) => expectNumber(parser, item, itemField))
-  return { counts: numbers("counts"), edges: numbers("edges") }
-}
-
-function parseFrontierPointSummary(value: unknown, field: string): FrontierPointSummary {
+// The generated optimiser validators own the responses' structure. The server
+// leaves each frontier point an open object, so the UI types the fields it
+// reads; it keeps one summary per point (it applies a point's summary by
+// index) and parses execution metrics with the shared parser.
+function parseFrontierPoint(value: Record<string, unknown>, field: string): FrontierPoint {
   const parser = "parseOptimiserStatusResponse"
-  const obj = expectPlainObject(parser, value, field)
-  // Every field is always sent; null means the point has none.
-  const nullable = <T>(key: keyof FrontierPointSummary, parse: (item: unknown, itemField: string) => T): T | null => {
-    if (!(key in obj)) throw new Error(`${parser}: expected ${field}.${key} to be present`)
-    return obj[key] === null ? null : parse(obj[key], `${field}.${key}`)
-  }
-  const number = (item: unknown, itemField: string) => expectNumber(parser, item, itemField)
-  const text = (item: unknown, itemField: string) => expectString(parser, item, itemField)
   return {
-    total_objective: expectNumber(parser, obj.total_objective, `${field}.total_objective`),
-    constraints: parseNumberRecord(parser, obj.constraints, `${field}.constraints`),
-    lambdas: parseNumberRecord(parser, obj.lambdas, `${field}.lambdas`),
-    converged: expectBoolean(parser, obj.converged, `${field}.converged`),
-    iterations: nullable("iterations", number),
-    cd_iterations: nullable("cd_iterations", number),
-    clamp_rate: nullable("clamp_rate", number),
-    history: nullable("history", (item, itemField) => parseArray(parser, item, itemField, parseOptimiserHistoryEntry)),
-    scenario_value_stats: nullable("scenario_value_stats", (item, itemField) => parseScenarioValueStats(parser, item, itemField)),
-    scenario_value_histogram: nullable("scenario_value_histogram", (item, itemField) => parseScenarioValueHistogram(parser, item, itemField)),
-    factor_tables: nullable("factor_tables", (item, itemField) =>
-      Object.fromEntries(
-        Object.entries(expectPlainObject(parser, item, itemField)).map(([name, rows]) => [
-          name,
-          parsePlainObjectArray(parser, rows, `${itemField}.${name}`),
-        ]),
-      ),
-    ),
-    warning: nullable("warning", text),
-    frontier_error: nullable("frontier_error", text),
+    ...value,
+    index: value.index === undefined ? undefined : expectNumber(parser, value.index, `${field}.index`),
+    total_objective: value.total_objective === undefined
+      ? undefined
+      : expectNumber(parser, value.total_objective, `${field}.total_objective`),
+    constraints: value.constraints === undefined
+      ? undefined
+      : parseNumberRecord(parser, value.constraints, `${field}.constraints`),
+    lambdas: value.lambdas === undefined
+      ? undefined
+      : parseNumberRecord(parser, value.lambdas, `${field}.lambdas`),
   }
 }
 
-export function parseFrontierResponse(value: unknown, field = "object"): FrontierResponse {
-  const obj = expectPlainObject("parseOptimiserStatusResponse", value, field)
-  const points = optionalArray("parseOptimiserStatusResponse", obj, "points", parseFrontierPoint)
-  const pointSummaries = optionalArray("parseOptimiserStatusResponse", obj, "point_summaries", parseFrontierPointSummary)
-  if (pointSummaries.length !== points.length) {
+function frontierFromContract(
+  frontier: GeneratedOptimiserFrontierResponse,
+  field: string,
+): FrontierResponse {
+  if (frontier.point_summaries.length !== frontier.points.length) {
     throw new Error(
-      `parseOptimiserStatusResponse: expected ${field}.point_summaries to hold one summary per point, got ${pointSummaries.length} for ${points.length} points`,
+      `parseOptimiserStatusResponse: expected ${field}.point_summaries to hold one summary per point, got ${frontier.point_summaries.length} for ${frontier.points.length} points`,
     )
   }
   return {
-    status: expectString("parseOptimiserStatusResponse", obj.status, `${field}.status`),
-    points,
-    point_summaries: pointSummaries,
-    n_points: optionalNumber("parseOptimiserStatusResponse", obj, "n_points"),
-    points_returned: optionalNumber("parseOptimiserStatusResponse", obj, "points_returned"),
-    constraint_names: optionalStringArray("parseOptimiserStatusResponse", obj, "constraint_names"),
-    points_limit: optionalNullableNumber("parseOptimiserStatusResponse", obj, "points_limit"),
-    points_truncated: optionalBoolean("parseOptimiserStatusResponse", obj, "points_truncated"),
-    job_id: optionalNullableString("parseOptimiserStatusResponse", obj, "job_id"),
+    ...frontier,
+    points: frontier.points.map((point, index) => parseFrontierPoint(point, `${field}.points[${index}]`)),
   }
 }
 
-export function parseFrontierStatusResponse(value: unknown): FrontierStatusResponse {
-  const obj = expectPlainObject("parseFrontierStatusResponse", value)
+export function optimiserStatusFromContract(
+  response: GeneratedOptimiserStatusResponse,
+): OptimiserStatusResponse {
+  const result = response.result
   return {
-    status: expectStringLiteral(
+    ...response,
+    result: result === null
+      ? null
+      : {
+          ...result,
+          frontier: result.frontier === null ? null : frontierFromContract(result.frontier, "result.frontier"),
+        },
+    frontier: response.frontier === null ? null : frontierFromContract(response.frontier, "frontier"),
+    execution_metrics: optionalExecutionMetrics(
+      "parseOptimiserStatusResponse",
+      { execution_metrics: response.execution_metrics },
+    ),
+  }
+}
+
+export function frontierStatusFromContract(
+  response: GeneratedOptimiserFrontierStatusResponse,
+): FrontierStatusResponse {
+  return {
+    ...response,
+    result: response.result === null ? null : frontierFromContract(response.result, "result"),
+    execution_metrics: optionalExecutionMetrics(
       "parseFrontierStatusResponse",
-      obj.status,
-      "field `status`",
-      JOB_STATUS_VALUES,
+      { execution_metrics: response.execution_metrics },
     ),
-    progress: optionalNumber("parseFrontierStatusResponse", obj, "progress"),
-    message: optionalString("parseFrontierStatusResponse", obj, "message"),
-    elapsed_seconds: optionalNumber("parseFrontierStatusResponse", obj, "elapsed_seconds"),
-    result: obj.result == null ? null : parseFrontierResponse(obj.result, "result"),
-    terminal_reason: optionalNullableString("parseFrontierStatusResponse", obj, "terminal_reason"),
-    error_code: optionalNullableString("parseFrontierStatusResponse", obj, "error_code"),
-    http_status_code: optionalNullableNumber("parseFrontierStatusResponse", obj, "http_status_code"),
-    error_detail: obj.error_detail,
-    execution_metrics: optionalExecutionMetrics("parseFrontierStatusResponse", obj, "execution_metrics"),
   }
 }
 
-function parseFrontierPoint(value: unknown, field: string): FrontierPoint {
-  const obj = expectPlainObject("parseOptimiserStatusResponse", value, field)
+export function frontierAutoRangeStatusFromContract(
+  response: GeneratedOptimiserFrontierAutoRangeStatusResponse,
+): FrontierAutoRangeStatusResponse {
   return {
-    ...obj,
-    index: obj.index === undefined ? undefined : expectNumber("parseOptimiserStatusResponse", obj.index, `${field}.index`),
-    total_objective: obj.total_objective === undefined
-      ? undefined
-      : expectNumber("parseOptimiserStatusResponse", obj.total_objective, `${field}.total_objective`),
-    constraints: obj.constraints === undefined
-      ? undefined
-      : parseNumberRecord("parseOptimiserStatusResponse", obj.constraints, `${field}.constraints`),
-    lambdas: obj.lambdas === undefined
-      ? undefined
-      : parseNumberRecord("parseOptimiserStatusResponse", obj.lambdas, `${field}.lambdas`),
-  }
-}
-
-export function parseFrontierAutoRangeResponse(value: unknown): FrontierAutoRangeResponse {
-  const obj = expectPlainObject("parseFrontierAutoRangeResponse", value)
-  const rawRanges = expectPlainObject("parseFrontierAutoRangeResponse", obj.ranges, "field `ranges`")
-  const ranges: FrontierAutoRangeResponse["ranges"] = {}
-  for (const [key, item] of Object.entries(rawRanges)) {
-    const range = expectPlainObject(
-      "parseFrontierAutoRangeResponse",
-      item,
-      `field \`ranges.${key}\``,
-    )
-    ranges[key] = {
-      min: expectNumber("parseFrontierAutoRangeResponse", range.min, `field \`ranges.${key}.min\``),
-      max: expectNumber("parseFrontierAutoRangeResponse", range.max, `field \`ranges.${key}.max\``),
-    }
-  }
-  return {
-    status: expectString("parseFrontierAutoRangeResponse", obj.status, "field `status`"),
-    ranges,
-    method: expectString("parseFrontierAutoRangeResponse", obj.method, "field `method`"),
-    warning: optionalNullableString("parseFrontierAutoRangeResponse", obj, "warning"),
-  }
-}
-
-export function parseFrontierAutoRangeStartResponse(value: unknown): FrontierAutoRangeStartResponse {
-  const obj = expectPlainObject("parseFrontierAutoRangeStartResponse", value)
-  return {
-    status: expectStringLiteral(
-      "parseFrontierAutoRangeStartResponse",
-      obj.status,
-      "field `status`",
-      ["started", "error"],
-    ),
-    job_id: optionalNullableString("parseFrontierAutoRangeStartResponse", obj, "job_id"),
-    error: optionalNullableString("parseFrontierAutoRangeStartResponse", obj, "error"),
-  }
-}
-
-export function parseFrontierAutoRangeStatusResponse(value: unknown): FrontierAutoRangeStatusResponse {
-  const obj = expectPlainObject("parseFrontierAutoRangeStatusResponse", value)
-  return {
-    status: expectStringLiteral(
+    ...response,
+    execution_metrics: optionalExecutionMetrics(
       "parseFrontierAutoRangeStatusResponse",
-      obj.status,
-      "field `status`",
-      JOB_STATUS_VALUES,
+      { execution_metrics: response.execution_metrics },
     ),
-    progress: optionalNumber("parseFrontierAutoRangeStatusResponse", obj, "progress"),
-    message: optionalString("parseFrontierAutoRangeStatusResponse", obj, "message"),
-    elapsed_seconds: optionalNumber("parseFrontierAutoRangeStatusResponse", obj, "elapsed_seconds"),
-    result: obj.result == null ? null : parseFrontierAutoRangeResponse(obj.result),
-    terminal_reason: optionalNullableString("parseFrontierAutoRangeStatusResponse", obj, "terminal_reason"),
-    error_code: optionalNullableString("parseFrontierAutoRangeStatusResponse", obj, "error_code"),
-    http_status_code: optionalNullableNumber("parseFrontierAutoRangeStatusResponse", obj, "http_status_code"),
-    error_detail: obj.error_detail,
-    execution_metrics: optionalExecutionMetrics("parseFrontierAutoRangeStatusResponse", obj, "execution_metrics"),
-  }
-}
-
-function parseOptimiserSolveResult(value: unknown, field: string): OptimiserSolveResult {
-  const obj = expectPlainObject("parseOptimiserStatusResponse", value, field)
-  const stats = optionalNullableObject("parseOptimiserStatusResponse", obj, "scenario_value_stats")
-  const histogram = optionalNullableObject("parseOptimiserStatusResponse", obj, "scenario_value_histogram")
-  const factorTables = optionalFactorTables("parseOptimiserStatusResponse", obj, "factor_tables")
-
-  return {
-    mode: obj.mode === undefined ? undefined : optionalNullableString("parseOptimiserStatusResponse", obj, "mode"),
-    total_objective: expectNumber("parseOptimiserStatusResponse", obj.total_objective, `${field}.total_objective`),
-    baseline_objective: expectNumber("parseOptimiserStatusResponse", obj.baseline_objective, `${field}.baseline_objective`),
-    constraints: obj.constraints === undefined ? {} : parseNumberRecord("parseOptimiserStatusResponse", obj.constraints, `${field}.constraints`),
-    baseline_constraints: obj.baseline_constraints === undefined ? {} : parseNumberRecord("parseOptimiserStatusResponse", obj.baseline_constraints, `${field}.baseline_constraints`),
-    lambdas: obj.lambdas === undefined ? {} : parseNumberRecord("parseOptimiserStatusResponse", obj.lambdas, `${field}.lambdas`),
-    converged: expectBoolean("parseOptimiserStatusResponse", obj.converged, `${field}.converged`),
-    iterations: obj.iterations === undefined ? undefined : optionalNullableNumber("parseOptimiserStatusResponse", obj, "iterations"),
-    n_quotes: obj.n_quotes === undefined ? undefined : optionalNullableNumber("parseOptimiserStatusResponse", obj, "n_quotes"),
-    n_steps: obj.n_steps === undefined ? undefined : optionalNullableNumber("parseOptimiserStatusResponse", obj, "n_steps"),
-    cd_iterations: obj.cd_iterations === undefined ? undefined : optionalNullableNumber("parseOptimiserStatusResponse", obj, "cd_iterations"),
-    factor_tables: factorTables,
-    history: obj.history === undefined || obj.history === null ? null : parseArray("parseOptimiserStatusResponse", obj.history, `${field}.history`, parseOptimiserHistoryEntry),
-    warning: obj.warning === undefined ? undefined : optionalNullableString("parseOptimiserStatusResponse", obj, "warning"),
-    frontier_error: obj.frontier_error === undefined ? undefined : optionalNullableString("parseOptimiserStatusResponse", obj, "frontier_error"),
-    scenario_value_stats: stats === null
-      ? undefined
-      : {
-          mean: expectNumber("parseOptimiserStatusResponse", stats.mean, "field `scenario_value_stats.mean`"),
-          std: expectNumber("parseOptimiserStatusResponse", stats.std, "field `scenario_value_stats.std`"),
-          min: expectNumber("parseOptimiserStatusResponse", stats.min, "field `scenario_value_stats.min`"),
-          max: expectNumber("parseOptimiserStatusResponse", stats.max, "field `scenario_value_stats.max`"),
-          p5: expectNumber("parseOptimiserStatusResponse", stats.p5, "field `scenario_value_stats.p5`"),
-          p25: expectNumber("parseOptimiserStatusResponse", stats.p25, "field `scenario_value_stats.p25`"),
-          p50: expectNumber("parseOptimiserStatusResponse", stats.p50, "field `scenario_value_stats.p50`"),
-          p75: expectNumber("parseOptimiserStatusResponse", stats.p75, "field `scenario_value_stats.p75`"),
-          p95: expectNumber("parseOptimiserStatusResponse", stats.p95, "field `scenario_value_stats.p95`"),
-          pct_increase: expectNumber("parseOptimiserStatusResponse", stats.pct_increase, "field `scenario_value_stats.pct_increase`"),
-          pct_decrease: expectNumber("parseOptimiserStatusResponse", stats.pct_decrease, "field `scenario_value_stats.pct_decrease`"),
-        },
-    scenario_value_histogram: histogram === null
-      ? undefined
-      : {
-          counts: parseArray("parseOptimiserStatusResponse", histogram.counts, "field `scenario_value_histogram.counts`", (item, itemField) => expectNumber("parseOptimiserStatusResponse", item, itemField)),
-          edges: parseArray("parseOptimiserStatusResponse", histogram.edges, "field `scenario_value_histogram.edges`", (item, itemField) => expectNumber("parseOptimiserStatusResponse", item, itemField)),
-        },
-    clamp_rate: obj.clamp_rate === undefined ? undefined : obj.clamp_rate === null ? null : expectNumber("parseOptimiserStatusResponse", obj.clamp_rate, `${field}.clamp_rate`),
-    frontier: obj.frontier === undefined || obj.frontier === null ? null : parseFrontierResponse(obj.frontier, `${field}.frontier`),
-  }
-}
-
-export function parseApplyOptimiserResponse(value: unknown): ApplyOptimiserResponse {
-  const obj = expectPlainObject("parseApplyOptimiserResponse", value)
-  return {
-    status: expectString("parseApplyOptimiserResponse", obj.status, "field `status`"),
-    total_objective: optionalNumber("parseApplyOptimiserResponse", obj, "total_objective"),
-    constraints: optionalNumberRecord("parseApplyOptimiserResponse", obj, "constraints"),
-    from_artifact: optionalBoolean("parseApplyOptimiserResponse", obj, "from_artifact"),
-    preview: optionalPlainObjectArray("parseApplyOptimiserResponse", obj, "preview"),
-    row_count: optionalNumber("parseApplyOptimiserResponse", obj, "row_count"),
-    preview_row_count: optionalNumber("parseApplyOptimiserResponse", obj, "preview_row_count"),
-    preview_row_limit: optionalNullableNumber("parseApplyOptimiserResponse", obj, "preview_row_limit"),
-    preview_truncated: optionalBoolean("parseApplyOptimiserResponse", obj, "preview_truncated"),
-    error: optionalNullableString("parseApplyOptimiserResponse", obj, "error"),
-  }
-}
-
-export function parseFrontierSelectResponse(value: unknown): FrontierSelectResponse {
-  const obj = expectPlainObject("parseFrontierSelectResponse", value)
-  const stats = optionalNullableObject("parseFrontierSelectResponse", obj, "scenario_value_stats")
-  const histogram = optionalNullableObject("parseFrontierSelectResponse", obj, "scenario_value_histogram")
-  return {
-    status: expectString("parseFrontierSelectResponse", obj.status, "field `status`"),
-    point_index: obj.point_index === undefined ? undefined : optionalNullableNumber("parseFrontierSelectResponse", obj, "point_index"),
-    total_objective: optionalNumber("parseFrontierSelectResponse", obj, "total_objective"),
-    constraints: optionalNumberRecord("parseFrontierSelectResponse", obj, "constraints"),
-    baseline_objective: optionalNumber("parseFrontierSelectResponse", obj, "baseline_objective"),
-    baseline_constraints: optionalNumberRecord("parseFrontierSelectResponse", obj, "baseline_constraints"),
-    lambdas: optionalNumberRecord("parseFrontierSelectResponse", obj, "lambdas"),
-    converged: optionalBoolean("parseFrontierSelectResponse", obj, "converged", true),
-    iterations: obj.iterations === undefined ? undefined : optionalNullableNumber("parseFrontierSelectResponse", obj, "iterations"),
-    cd_iterations: obj.cd_iterations === undefined ? undefined : optionalNullableNumber("parseFrontierSelectResponse", obj, "cd_iterations"),
-    factor_tables: optionalFactorTables("parseFrontierSelectResponse", obj, "factor_tables"),
-    history: obj.history === undefined || obj.history === null ? null : parseArray("parseFrontierSelectResponse", obj.history, "field `history`", parseOptimiserHistoryEntry),
-    warning: obj.warning === undefined ? undefined : optionalNullableString("parseFrontierSelectResponse", obj, "warning"),
-    scenario_value_stats: stats === null
-      ? undefined
-      : {
-          mean: expectNumber("parseFrontierSelectResponse", stats.mean, "field `scenario_value_stats.mean`"),
-          std: expectNumber("parseFrontierSelectResponse", stats.std, "field `scenario_value_stats.std`"),
-          min: expectNumber("parseFrontierSelectResponse", stats.min, "field `scenario_value_stats.min`"),
-          max: expectNumber("parseFrontierSelectResponse", stats.max, "field `scenario_value_stats.max`"),
-          p5: expectNumber("parseFrontierSelectResponse", stats.p5, "field `scenario_value_stats.p5`"),
-          p25: expectNumber("parseFrontierSelectResponse", stats.p25, "field `scenario_value_stats.p25`"),
-          p50: expectNumber("parseFrontierSelectResponse", stats.p50, "field `scenario_value_stats.p50`"),
-          p75: expectNumber("parseFrontierSelectResponse", stats.p75, "field `scenario_value_stats.p75`"),
-          p95: expectNumber("parseFrontierSelectResponse", stats.p95, "field `scenario_value_stats.p95`"),
-          pct_increase: expectNumber("parseFrontierSelectResponse", stats.pct_increase, "field `scenario_value_stats.pct_increase`"),
-          pct_decrease: expectNumber("parseFrontierSelectResponse", stats.pct_decrease, "field `scenario_value_stats.pct_decrease`"),
-        },
-    scenario_value_histogram: histogram === null
-      ? undefined
-      : {
-          counts: parseArray("parseFrontierSelectResponse", histogram.counts, "field `scenario_value_histogram.counts`", (item, itemField) => expectNumber("parseFrontierSelectResponse", item, itemField)),
-          edges: parseArray("parseFrontierSelectResponse", histogram.edges, "field `scenario_value_histogram.edges`", (item, itemField) => expectNumber("parseFrontierSelectResponse", item, itemField)),
-        },
-    clamp_rate: obj.clamp_rate === undefined ? undefined : obj.clamp_rate === null ? null : expectNumber("parseFrontierSelectResponse", obj.clamp_rate, "field `clamp_rate`"),
-    error: optionalNullableString("parseFrontierSelectResponse", obj, "error"),
-  }
-}
-
-export function parseSaveOptimiserResponse(value: unknown): SaveOptimiserResponse {
-  const obj = expectPlainObject("parseSaveOptimiserResponse", value)
-  return {
-    status: expectString("parseSaveOptimiserResponse", obj.status, "field `status`"),
-    path: optionalNullableString("parseSaveOptimiserResponse", obj, "path"),
-    message: optionalString("parseSaveOptimiserResponse", obj, "message"),
-  }
-}
-
-export function parseOptimiserStatusResponse(value: unknown): OptimiserStatusResponse {
-  const obj = expectPlainObject("parseOptimiserStatusResponse", value)
-  return {
-    status: expectStringLiteral("parseOptimiserStatusResponse", obj.status, "field `status`", JOB_STATUS_VALUES),
-    progress: optionalNumber("parseOptimiserStatusResponse", obj, "progress"),
-    message: optionalString("parseOptimiserStatusResponse", obj, "message"),
-    elapsed_seconds: optionalNumber("parseOptimiserStatusResponse", obj, "elapsed_seconds"),
-    result: obj.result === undefined || obj.result === null ? null : parseOptimiserSolveResult(obj.result, "field `result`"),
-    frontier: obj.frontier === undefined || obj.frontier === null ? null : parseFrontierResponse(obj.frontier, "field `frontier`"),
-    terminal_reason: optionalNullableString("parseOptimiserStatusResponse", obj, "terminal_reason"),
-    execution_metrics: optionalExecutionMetrics("parseOptimiserStatusResponse", obj, "execution_metrics"),
   }
 }
 
 // ---------------------------------------------------------------------------
 // Databricks / cache / git contracts
 // ---------------------------------------------------------------------------
-
-export function parseHauteSessionResponse(value: unknown): { ok: boolean } {
-  const obj = expectPlainObject("parseHauteSessionResponse", value)
-  return { ok: expectBoolean("parseHauteSessionResponse", obj.ok, "field `ok`") }
-}
 
 export function parseOutputAssembleDryRunResponse(value: unknown): { status: string; document: unknown[]; row_count: number; error?: string | null } {
   const obj = expectPlainObject("parseOutputAssembleDryRunResponse", value)
@@ -3223,81 +2544,6 @@ export function parseOutputAssembleDryRunResponse(value: unknown): { status: str
 export function parseJsonCacheSchemaInferenceResponse(value: unknown): { tables: Array<Record<string, unknown>> } {
   const obj = expectPlainObject("parseJsonCacheSchemaInferenceResponse", value)
   return { tables: parsePlainObjectArray("parseJsonCacheSchemaInferenceResponse", obj.tables, "field `tables`") }
-}
-
-export function parseFileListResponse(value: unknown): { items?: FileListItem[] } {
-  const obj = expectPlainObject("parseFileListResponse", value)
-  if (obj.items === undefined) return {}
-  return {
-    items: parseArray("parseFileListResponse", obj.items, "field `items`", (item, field) => {
-      const itemObj = expectPlainObject("parseFileListResponse", item, field)
-      return {
-        name: expectString("parseFileListResponse", itemObj.name, `${field}.name`),
-        path: expectString("parseFileListResponse", itemObj.path, `${field}.path`),
-        type: expectStringLiteral("parseFileListResponse", itemObj.type, `${field}.type`, ["file", "directory"]),
-        ...(itemObj.size === undefined ? {} : { size: expectNullableNumber("parseFileListResponse", itemObj.size, `${field}.size`) }),
-      }
-    }),
-  }
-}
-
-/** Lenient reader for the structured 409 body a claimed bind returns.
- *  Returns null when the payload is not claim-shaped (e.g. a plain-string
- *  detail from an older backend) so callers fall back to generic error text. */
-export function gitStorageClaimFromDetail(value: unknown): GitStorageClaim | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null
-  const obj = value as Record<string, unknown>
-  if (typeof obj.app_name !== "string" || !obj.app_name) return null
-  if (typeof obj.message !== "string" || !obj.message) return null
-  return {
-    app_name: obj.app_name,
-    user: typeof obj.user === "string" && obj.user ? obj.user : null,
-    refreshed_at: typeof obj.refreshed_at === "string" && obj.refreshed_at ? obj.refreshed_at : null,
-    message: obj.message,
-  }
-}
-
-const LEG_STATUSES: ReadonlySet<string> = new Set([
-  "untracked", "unknown", "synced", "ahead", "behind", "diverged",
-])
-
-function parseGitRemoteLeg(value: unknown, field: string): GitRemoteLeg {
-  const obj = expectPlainObject("parseGitRemotesResponse", value, field)
-  const status = expectString("parseGitRemotesResponse", obj.status, `${field}.status`)
-  if (!LEG_STATUSES.has(status)) {
-    throw new Error(`parseGitRemotesResponse: ${field}.status has unexpected value \`${status}\``)
-  }
-  return {
-    status: status as GitRemoteLeg["status"],
-    ahead: optionalNullableNumber("parseGitRemotesResponse", obj, "ahead"),
-    behind: optionalNullableNumber("parseGitRemotesResponse", obj, "behind"),
-  }
-}
-
-/** Parse a 409 push-rejection body; non-matching discriminators return null. */
-export function parseGitPushRejection(value: unknown): GitPushRejection | null {
-  if (!isPlainObject(value) || value.status !== "rejected_diverged") return null
-  return {
-    status: "rejected_diverged",
-    remote: expectString("parseGitPushRejection", value.remote, "remote"),
-    working: parseGitRemoteLeg(value.working, "working"),
-    ledger: value.ledger == null ? null : parseGitRemoteLeg(value.ledger, "ledger"),
-    message: expectString("parseGitPushRejection", value.message, "message"),
-    is_rewrite: value.is_rewrite === undefined
-      ? false
-      : expectBoolean("parseGitPushRejection", value.is_rewrite, "is_rewrite"),
-  }
-}
-
-/** Parse a 409 milestone-fork body; non-matching discriminators return null. */
-export function parseGitMilestoneFork(value: unknown): GitMilestoneFork | null {
-  if (!isPlainObject(value) || value.status !== "would_fork") return null
-  return {
-    status: "would_fork",
-    remote: expectString("parseGitMilestoneFork", value.remote, "remote"),
-    working: parseGitRemoteLeg(value.working, "working"),
-    message: expectString("parseGitMilestoneFork", value.message, "message"),
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3324,16 +2570,3 @@ export function validateReactFlowNode(value: unknown): Node {
   return value as Node
 }
 
-export function parsePolarsStepsRenderResponse(value: unknown): PolarsStepsRenderResponse {
-  const parser = "parsePolarsStepsRenderResponse"
-  const obj = expectPlainObject(parser, value)
-  return {
-    ok: expectBoolean(parser, obj.ok, "field `ok`"),
-    code: expectString(parser, obj.code, "field `code`"),
-    step_lines: parseArray(parser, obj.step_lines, "field `step_lines`", (item, field) =>
-      parseArray(parser, item, field, (line, lineField) => expectNumber(parser, line, lineField)),
-    ),
-    step_index: expectNullableNumber(parser, obj.step_index, "field `step_index`"),
-    message: expectString(parser, obj.message, "field `message`"),
-  }
-}

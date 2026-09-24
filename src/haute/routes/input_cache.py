@@ -902,12 +902,36 @@ def _complete_api_input_job(
     )
 
 
+# The build classes a started build can have; "unsupported" never starts one.
+_BuildableClass = Literal["bounded", "admitted_eager"]
+
+
+def _chosen_build(config: dict[str, Any]) -> tuple[ExecutionProfile, _BuildableClass]:
+    """How the server builds a Data Input's snapshot: the profile and build class.
+
+    A format the registry reads in bounded slices streams through a lazy sink;
+    one that needs an eager read is admitted eagerly and contained by the
+    hard-capped worker. Raises for a config that cannot build a snapshot.
+    """
+    build_class = input_snapshot_build_class(
+        config,
+        base_dir=_pipeline_base_dir(),
+        profile=ExecutionProfile.LAZY_SINK,
+        allow_admitted_eager=True,
+    )
+    if build_class == "bounded":
+        return ExecutionProfile.LAZY_SINK, build_class
+    if build_class == "admitted_eager":
+        return ExecutionProfile.PREVIEW_EAGER, build_class
+    raise PolarsIoConfigError("This Data Input cannot build a snapshot.")
+
+
 def _start_build(
     *,
     key: str,
     identity_payload: dict[str, object],
     refresh: bool,
-    build_class: BuildClass,
+    build_class: _BuildableClass,
     target_kwargs: dict[str, Any],
     table_digests: tuple[str, ...] = (),
 ) -> InputCacheBuildResponse:
@@ -924,6 +948,7 @@ def _start_build(
                     identity_digest=key,
                     status="running",
                     joined=True,
+                    build_class=job["build_class"],
                 )
             _singleflight.release(key, job_id=active.job_id)
             _jobs.release(active.job_id)
@@ -973,6 +998,7 @@ def _start_build(
         identity_digest=key,
         status="running",
         joined=False,
+        build_class=build_class,
     )
 
 
@@ -1005,19 +1031,11 @@ def build_input_cache(body: InputCacheBuildRequest) -> InputCacheBuildResponse:
 
     config, identity = _safe_config(body)
     try:
-        profile = ExecutionProfile(body.profile)
-        build_class = input_snapshot_build_class(
-            config,
-            base_dir=_pipeline_base_dir(),
-            profile=profile,
-        )
+        profile, build_class = _chosen_build(config)
     except (PolarsIoConfigError, TypeError, ValueError):
         raise HTTPException(
             status_code=400,
-            detail=(
-                "snapshot_build_unsupported: This Data Input cannot build a "
-                "snapshot in the requested profile."
-            ),
+            detail="snapshot_build_unsupported: This Data Input cannot build a snapshot.",
         ) from None
 
     return _start_build(

@@ -82,6 +82,7 @@ describe("RemotePushControl - error paths and catch-up matrix", () => {
       working: { status: "diverged", ahead: 1, behind: 2 },
       ledger: { status: "ahead", ahead: 1, behind: 0 },
       message: "The shared copy changed; local work is safe.",
+      is_rewrite: false,
     }
     mockGitPush.mockRejectedValue(
       new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
@@ -144,6 +145,7 @@ describe("RemotePushControl - error paths and catch-up matrix", () => {
       working: { status: "diverged", ahead: 1, behind: 2 },
       ledger: { status: "diverged", ahead: 1, behind: 2 },
       message: "forked 'origin' - never force-pushes.",
+      is_rewrite: false,
     }
     mockGitPush.mockRejectedValue(
       new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
@@ -174,6 +176,7 @@ describe("RemotePushControl - error paths and catch-up matrix", () => {
       working: { status: "diverged", ahead: 1, behind: 2 },
       ledger: { status: "diverged", ahead: 1, behind: 2 },
       message: "forked 'origin' - never force-pushes.",
+      is_rewrite: false,
     }
     mockGitPush.mockRejectedValue(
       new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), { detail: rejection }),
@@ -231,7 +234,7 @@ describe("RemotePushControl - error paths and catch-up matrix", () => {
     await waitFor(() =>
       expect(mockAddToast).toHaveBeenCalledWith(
         "error",
-        expect.stringContaining("parseGitPushRejection"),
+        "Push failed: GitPushRejection: invalid contract at /remote: required",
       ),
     )
     expect(screen.queryByTestId("git-push-rejected")).not.toBeInTheDocument()
@@ -261,6 +264,7 @@ describe("RemotePushControl - error paths and catch-up matrix", () => {
       working: { status: "diverged", ahead: 1, behind: 2 },
       ledger: { status: "synced", ahead: 0, behind: 0 },
       message: "Remote history diverged.",
+      is_rewrite: false,
     }
     mockGitPush.mockRejectedValue(
       new ApiError("HTTP 409", 409, JSON.stringify({ detail: rejection }), {

@@ -28,10 +28,10 @@ optimiser and caching work and can land with `API-R02`.
 public contract errors, memory refusals and overruns, the `GitError`
 family; `_RequestIdMiddleware` answers anything unclaimed with
 `_INTERNAL_ERROR_DETAIL`), and the git, pipeline, files, Databricks,
-modelling and OUTPUT dry-run routes no longer catch `Exception` to log it
-and answer 500. Files owned by the optimiser and caching work were left
-alone: `routes/optimiser.py` still has five catch-log-500 blocks (one also
-cleans up an orphaned apply artifact first), `routes/json_cache.py` two, and
+modelling, OUTPUT dry-run and JSON-cache routes no longer catch `Exception`
+to log it and answer 500. The optimiser's files were left alone:
+`routes/optimiser.py` still has five catch-log-500 blocks (one also cleans
+up an orphaned apply artifact first), and
 `_optimiser_service._memory_limit_http_exception` is a second copy of the
 memory-limit mapping. Turning an `HTTPException` detail into a job failure
 record is still implemented twice, in `_optimiser_service._http_error_job_update`
@@ -45,15 +45,14 @@ jobs stop carrying HTTP types at all.
 
 **Acceptance:** No route contains a generic `except Exception` that only logs
 and returns the internal-error detail; `memory_limit_http_exception` is the
-only memory-limit mapping; the optimiser and JSON-cache status-code and
-sanitised-error tests pass unchanged.
+only memory-limit mapping; the optimiser status-code and sanitised-error tests
+pass unchanged.
 
 **Dependencies:** None; best taken with `API-R02` in the optimiser work.
 
 **Evidence:** `src/haute/routes/optimiser.py` (`apply_lambdas`,
 `run_frontier`, `select_frontier_point`, `save_result`,
-`_materialise_frontier_point_apply`); `src/haute/routes/json_cache.py`
-(`build_json_cache`, `infer_json_cache_schema`);
+`_materialise_frontier_point_apply`);
 `src/haute/routes/_optimiser_service.py::_memory_limit_http_exception`;
 `src/haute/routes/_optimiser_service.py::_http_error_job_update`;
 `src/haute/routes/_training_preparation.py::_http_failure_job_parts`.
@@ -104,19 +103,25 @@ shapes.
 **Delivered:** utility; Databricks listings; MLflow settings, destinations,
 test connection and discovery lists; modelling GPU status, training estimate,
 dispersion start and status, training MLflow log and model save; every git
-success response.
+success response; the training responses (`TrainResponse`,
+`TrainStatusResponse`), with `MOD-T10`; Explore pivot run, status, cancel and
+members, and the data profile; banding stats and rating levels; I/O
+capabilities; the session check and file listing; editor identities, Polars
+step rendering and execution settings; the git 409 advisory bodies
+(`GitPushRejection`, `GitMilestoneFork`), whose storage-claim reader had no
+caller left and is deleted; the optimiser responses (solve, estimate, status,
+apply, save, MLflow log, frontier status, auto-range start and status, frontier
+select).
 
-**Remaining:** the training responses (`TrainResponse`, `TrainStatusResponse`,
-best taken with `MOD-T10`, whose browser semantic re-checks would otherwise be
-rewritten only to be deleted); optimiser, including its MLflow log (still on
-the hand-written `parseMlflowLogResponse`); pipeline load and save, preview,
+**Remaining:** pipeline load and save, preview,
 trace and submodel responses (they carry node configs, so after `PCFG-R07`);
-recovery and repair; node data, cache, JSON cache and input cache; Explore
-pivot and profile; output write, destination and assemble dry run; I/O
-capabilities; banding stats and rating levels (they embed the node-data point);
-session bootstrap and file listing; editor identities; Polars step rendering;
-execution settings; and the git 409 advisory bodies (`GitPushRejection`,
-`GitMilestoneFork`) with the storage-claim reader.
+recovery and repair; node data, cache, JSON cache and input cache (the
+converted Explore, banding and rating responses keep the node-data point and
+profile on their hand types until then); output write, destination and assemble
+dry run; and the shared execution-metrics parser, which the converted status
+responses still apply after their generated check (each group's validator
+carries its own copy of the metrics contract, about 13 KiB gzip; one shared
+execution-metrics validator module would remove both).
 
 **Acceptance:** Every response the client parses is validated by generated
 code; `guards.ts`, `trainGuards.ts` and `api/types.ts` contain no structural
@@ -125,8 +130,7 @@ edits one Python model plus a regeneration.
 
 **Dependencies:** None. It covers the response models that exist today, and
 later packages build on it: `PCFG-R07` (pipeline config) adds the node-config
-models to the generated set, and `MOD-T10` (modelling) then reduces the
-tuning and evaluation response models to structure.
+models to the generated set.
 
 **Evidence:** `scripts/generate_api_contracts.py`;
 `frontend/src/generated/api-contracts.schema.json`;

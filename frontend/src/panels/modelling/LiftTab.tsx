@@ -6,10 +6,11 @@ import {
   ChartLegend,
   ChartSvg,
   ChartValueGrid,
+  ChartValuesTable,
   MODELLING_CHART_AXIS_FONT_SIZE as axisFontSize,
   MODELLING_CHART_AXIS_TEXT_COLOR as axisTextColor,
   MODELLING_CHART_GRID_COLOR as gridColor,
-  ResponsiveChart,
+  TwoChartLayout,
 } from "./ChartScaffold"
 import { chartLabelIndices, chartTicks, formatChartNumber } from "../../utils/chartHelpers"
 
@@ -30,34 +31,35 @@ export function LiftTab({ result, width, height = 280 }: LiftTabProps) {
   const hasLorenz = Boolean(result.lorenz_curve?.length)
   if (!hasLift && !hasLorenz) return <ChartEmptyState>No lift data available</ChartEmptyState>
 
+  const bothCharts = hasLift && hasLorenz
+  const selectedView = bothCharts ? view : hasLift ? "lift" : "lorenz"
   return (
-    <ResponsiveChart width={width}>
-      {(containerWidth) => {
-        const showBoth = containerWidth >= 900 && hasLift && hasLorenz
-        const selectedView = hasLift && hasLorenz ? view : hasLift ? "lift" : "lorenz"
-        const chartWidth = showBoth ? Math.max(260, (containerWidth - 24) / 2) : containerWidth
-        return (
-          <section className="space-y-3" aria-label="Lift validation charts">
-            {!showBoth && hasLift && hasLorenz && (
-              <ViewSwitch view={selectedView} onChange={setView} />
-            )}
-            <div className={showBoth ? "grid grid-cols-2 gap-6" : ""}>
-              {hasLift && (showBoth || selectedView === "lift") && (
-                <LiftPanel data={result.double_lift!} width={chartWidth} height={height} />
-              )}
-              {hasLorenz && (showBoth || selectedView === "lorenz") && (
-                <LorenzPanel
-                  curve={result.lorenz_curve!}
-                  perfectCurve={result.lorenz_curve_perfect}
-                  width={chartWidth}
-                  height={height}
-                />
-              )}
-            </div>
-          </section>
-        )
-      }}
-    </ResponsiveChart>
+    <TwoChartLayout
+      width={width}
+      ariaLabel="Lift validation charts"
+      bothCharts={bothCharts}
+      sideBySideFrom={900}
+      minChartWidth={260}
+      header={(sideBySide) =>
+        !sideBySide && bothCharts ? <ViewSwitch view={selectedView} onChange={setView} /> : null
+      }
+    >
+      {({ sideBySide, chartWidth }) => (
+        <>
+          {hasLift && (sideBySide || selectedView === "lift") && (
+            <LiftPanel data={result.double_lift!} width={chartWidth} height={height} />
+          )}
+          {hasLorenz && (sideBySide || selectedView === "lorenz") && (
+            <LorenzPanel
+              curve={result.lorenz_curve!}
+              perfectCurve={result.lorenz_curve_perfect}
+              width={chartWidth}
+              height={height}
+            />
+          )}
+        </>
+      )}
+    </TwoChartLayout>
   )
 }
 
@@ -103,43 +105,17 @@ function LiftPanel({ data, width, height }: { data: LiftPoint[]; width: number; 
         Double lift
       </h4>
       <DoubleLiftChart data={data} width={width} height={height} />
-      <details className="mt-3">
-        <summary className="cursor-pointer text-[12px]" style={{ color: "var(--text-secondary)" }}>
-          View lift values
-        </summary>
-        <table className="mt-2 w-full text-[12px]" style={{ color: "var(--text-secondary)" }}>
-          <thead>
-            <tr style={{ borderBottom: "1px solid var(--border)" }}>
-              <th scope="col" className="py-1 text-left font-medium">
-                Decile
-              </th>
-              <th scope="col" className="py-1 text-right font-medium">
-                Actual
-              </th>
-              <th scope="col" className="py-1 text-right font-medium">
-                Predicted
-              </th>
-              <th scope="col" className="py-1 text-right font-medium">
-                Count
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.map((row) => (
-              <tr key={row.decile}>
-                <th scope="row" className="py-1 text-left font-normal">
-                  {row.decile}
-                </th>
-                <td className="py-1 text-right tabular-nums">{row.actual.toFixed(4)}</td>
-                <td className="py-1 text-right tabular-nums" style={{ color: predictedColor }}>
-                  {row.predicted.toFixed(4)}
-                </td>
-                <td className="py-1 text-right tabular-nums">{row.count.toLocaleString()}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </details>
+      <ChartValuesTable
+        summary="View lift values"
+        ariaLabel="Lift values"
+        headers={["Decile", "Actual", "Predicted", "Count"]}
+        rows={data.map((row) => [
+          row.decile,
+          row.actual.toFixed(4),
+          <span style={{ color: predictedColor }}>{row.predicted.toFixed(4)}</span>,
+          row.count.toLocaleString(),
+        ])}
+      />
     </div>
   )
 }

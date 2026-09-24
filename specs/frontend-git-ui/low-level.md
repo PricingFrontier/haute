@@ -21,8 +21,8 @@
 | `frontend/src/components/WorkingBranchModal.tsx` | Startup / save-gate branch-selection modal, with an inline git-identity sub-form. |
 | `frontend/src/components/RemotePushControl.tsx` | Remote dropdown, ahead/behind + ledger-divergence display, explicit push (including empty-remote default-bootstrap tooltip/toast and the pending-save integrity confirm), catch-up, the non-fast-forward `PushRejectedModal`, `AheadBehind`/`LedgerStatus`/`RejectedLeg` sub-components. |
 | `frontend/src/components/DivergenceModal.tsx` | Recorded-branch-vs-HEAD divergence recovery modal (go home / stay here / open branch manager). |
+| `frontend/src/components/ModalForm.tsx` | The form blocks the working-branch, divergence and save-time identity modals share inside `ModalShell`: the heading with its line of context, the modal text input, the git identity fields (name, email, global-config checkbox) and the cancel/submit row. |
 | `frontend/src/utils/vcHistory.ts` | Records switch/archive/restore/delete as undoable entries on `useGraphStore`'s VC history stacks; each entry's undo/redo leg re-syncs git status + the panel's history nonce. |
-| `frontend/src/utils/gitError.ts` | Formats Git UI failures by preferring a human-readable string `ApiError.detail`, then `Error.message`, then a stable fallback; serialized structured details are left to their dedicated parsers rather than rendered as raw JSON. |
 
 ## Key types and data structures
 
@@ -323,16 +323,19 @@ or a failed push.
   and status behaviour are owned by [server-api](../server-api/low-level.md). Handlers narrow on
   `err instanceof ApiError && err.status === 409` to distinguish the two structured
   rejection bodies (`GitMilestoneFork`, `GitPushRejection`) from all other errors.
-  Generic Git failures pass through `gitErrorMessage`, which prefers a human-readable
-  backend-authored `ApiError.detail`, then an ordinary `Error.message`, then the stable
-  fallback `"Git operation failed"`. A detail string that decodes to a structured JSON
-  value is not human-readable here and therefore falls through to `Error.message`.
-- `parseGitMilestoneFork` / `parseGitPushRejection` (`frontend/src/types/guards.ts`) return
-  `null` only before their status discriminator matches. Once a body declares
-  `would_fork` / `rejected_diverged`, malformed required fields throw and each call site
-  converts that parser failure into a plain error toast instead of crashing the modal.
-- `parseGitPushResponse` treats `default_branch` and `bootstrapped_default` as required and
-  type-checks both. A malformed success body rejects through the normal request promise and
+  Generic Git failures pass through the shared `apiErrorMessage`
+  ([frontend shared](../frontend-shared/low-level.md)) with a call-site fallback: a structured
+  detail's `message` (both 409 bodies carry a leg-naming one), else a string detail, else an
+  ordinary `Error.message`, else the fallback. A structured 409 body that is neither rejection
+  is reported by its status, never printed as raw JSON.
+- `parseGitMilestoneFork` / `parseGitPushRejection` (`frontend/src/api/client.ts`, async
+  because they load the lazy generated git validators) resolve `null` only before their
+  status discriminator matches. Once a body declares `would_fork` / `rejected_diverged`, the
+  generated `GitMilestoneFork` / `GitPushRejection` validator checks it, a malformed body
+  rejects, and each call site converts that failure into a plain error toast instead of
+  crashing the modal.
+- The generated `GitPushResponse` validator requires `default_branch` and
+  `bootstrapped_default` and type-checks both. A malformed success body rejects through the normal request promise and
   reaches `RemotePushControl`'s error toast; the UI must not infer a bootstrap from
   `pushed_refs` or silently substitute `main`.
 - `useGitHistory.refresh()`'s catch only toasts and returns `null` when its own generation is
@@ -476,6 +479,9 @@ Library component/unit tests (no e2e for this surface).
 - **`frontend/src/components/__tests__/DivergenceModal.gaps.test.tsx`** — error-toast surfacing on a
   rejected `setWorkingBranch` (both `Error` and non-`Error`), the busy/"Working…" disabled
   state, double-submit guarding, and null-status placeholder rendering.
+- **`frontend/src/components/__tests__/ModalForm.test.tsx`** — the shared heading, the identity
+  fields (change callbacks under the caller's test ids, email type, autofocus, the global-config
+  checkbox) and the cancel/submit row (cancel, busy label on a disabled submit).
 
 Known coverage gaps: none flagged in the suites' own comments; the layout test file's
 breadth (60+ cases) suggests `computeGitGraphLayout`/`computeRailRuns` are the

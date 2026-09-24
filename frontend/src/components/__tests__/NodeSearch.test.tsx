@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, cleanup, fireEvent } from "@testing-library/react"
+import { render, screen, cleanup, fireEvent, within } from "@testing-library/react"
 import { ReactFlowProvider } from "@xyflow/react"
 import NodeSearch, {
   NODE_SEARCH_OVERSCAN_ROWS,
@@ -61,8 +61,21 @@ describe("NodeSearch", () => {
 
   it("renders the search dialog with input", () => {
     renderSearch()
-    expect(screen.getByRole("dialog")).toBeInTheDocument()
+    expect(screen.getByRole("dialog", { name: "Search pipeline nodes" })).toBeInTheDocument()
     expect(screen.getByPlaceholderText("Search nodes by name or type...")).toBeInTheDocument()
+  })
+
+  it("is a top-aligned modal that traps Tab inside the palette", () => {
+    renderSearch()
+    const dialog = screen.getByRole("dialog", { name: "Search pipeline nodes" })
+    expect(dialog).toHaveAttribute("aria-modal", "true")
+    expect(dialog).toHaveClass("items-start")
+
+    const input = screen.getByPlaceholderText("Search nodes by name or type...")
+    const results = within(dialog).getAllByRole("option")
+    results.at(-1)?.focus()
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Tab" })
+    expect(document.activeElement).toBe(input)
   })
 
   it("shows all nodes when query is empty", () => {

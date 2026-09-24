@@ -15,7 +15,6 @@ from typing import Any, Literal, cast
 
 import polars as pl
 from fastapi import HTTPException
-from pydantic import ValidationError
 
 from haute._env import int_env
 from haute._execution_admission import (
@@ -150,6 +149,7 @@ from haute.routes._training_worker import (
     _friendly_error,
     _job_elapsed_seconds,
     _max_train_loss_history,
+    _require_consistent_completed_response,
     _run_dispersion_process_job,
     _run_training_process_job,
     _training_context_phrase,
@@ -1983,7 +1983,8 @@ class TrainService:
             )
             try:
                 staged_response = TrainResponse.model_validate(response_fields)
-            except ValidationError as exc:
+                _require_consistent_completed_response(staged_response)
+            except ValueError as exc:
                 raise WorkerProtocolError(f"Training response is malformed: {exc}") from exc
             _assert_json_finite(staged_response)
             artifacts_by_kind = {artifact.kind: artifact for artifact in result.artifacts}

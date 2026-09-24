@@ -96,7 +96,7 @@ import {
   getTrainStatus,
 } from "../../api/client"
 import { resolveGraphFromRefs } from "../../utils/buildGraph"
-import { makeEdge, makeNode, makeTrainResult } from "../../test-utils/factories"
+import { makeEdge, makeNode, makeTrainResult, makeTrainStatus } from "../../test-utils/factories"
 
 // A preview that waits on a cache build crosses several effects and mocked
 // requests; a whole parallel suite run makes that slower without making it
@@ -348,7 +348,7 @@ describe("usePipelineAPI", () => {
     await act(async () => { expect(await api.result.current.handleSave()).toBe(true) })
     expect(useNodeResultsStore.getState().trainJobs.model).toMatchObject({ jobId: "training-1", configHash: "original-config", structuralVersion: 7 })
     const result = makeTrainResult()
-    await act(async () => finish({ status: "completed", progress: 1, message: "Done", elapsed_seconds: 5, iteration: 6, total_iterations: 6, train_loss: {}, result }))
+    await act(async () => finish(makeTrainStatus({ status: "completed", progress: 1, message: "Done", elapsed_seconds: 5, iteration: 6, total_iterations: 6, train_loss: {}, result })))
     await waitFor(() => expect(useNodeResultsStore.getState().trainResults.model?.result).toEqual(result))
     expect(useNodeResultsStore.getState().trainResults.model).toMatchObject({ jobId: "training-1", configHash: "original-config", structuralVersion: 7 })
   })
@@ -1622,7 +1622,7 @@ describe("usePipelineAPI", () => {
         job_id: "snapshot-job",
         identity_digest: "snapshot-identity",
         status: "running",
-        joined: false,
+        joined: false, build_class: "bounded",
       })
       let completeJob!: (value: InputCacheJobStatusResponse) => void
       mockGetInputCacheJob.mockImplementation(() => new Promise((resolve) => { completeJob = resolve }))
@@ -1695,7 +1695,7 @@ describe("usePipelineAPI", () => {
       job_id: "snapshot-job",
       identity_digest: "snapshot-identity",
       status: "running",
-      joined: false,
+      joined: false, build_class: "bounded",
     })
     mockGetInputCacheJob.mockResolvedValue(inputCacheJob("completed"))
     mockPreview.mockResolvedValue({
@@ -1748,7 +1748,7 @@ describe("usePipelineAPI", () => {
       job_id: "snapshot-job",
       identity_digest: "snapshot-identity",
       status: "running",
-      joined: false,
+      joined: false, build_class: "bounded",
     })
     mockGetInputCacheJob.mockResolvedValue(inputCacheJob("completed"))
     mockPreview.mockResolvedValue({
@@ -1791,7 +1791,7 @@ describe("usePipelineAPI", () => {
       job_id: "snapshot-job",
       identity_digest: "snapshot-identity",
       status: "running",
-      joined: false,
+      joined: false, build_class: "bounded",
     })
     mockGetInputCacheJob.mockResolvedValue(inputCacheJob("completed"))
     mockPreview.mockResolvedValue({
@@ -1859,7 +1859,7 @@ describe("usePipelineAPI", () => {
       job_id: "snapshot-job",
       identity_digest: "snapshot-identity",
       status: "running",
-      joined: false,
+      joined: false, build_class: "bounded",
     })
     mockGetInputCacheJob.mockResolvedValue(
       inputCacheJob("error", "Snapshot quota is exhausted."),

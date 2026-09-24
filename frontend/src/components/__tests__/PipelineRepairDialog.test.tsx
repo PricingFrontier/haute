@@ -41,6 +41,13 @@ describe("PipelineRepairDialog", () => {
     vi.clearAllMocks()
   })
 
+  it("names the failed step when a rejection carries no detail", async () => {
+    applyRemoveUnavailableNode.mockRejectedValueOnce(new ApiError("HTTP 500", 500))
+    renderDialog()
+    fireEvent.click(screen.getByRole("button", { name: "Remove node" }))
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not apply this repair.")
+  })
+
   it("applies a removal once against the displayed revision and adopts its document", async () => {
     const document = makePipelineEditorDocument({ source_file: "authoritative.py" })
     applyRemoveUnavailableNode.mockResolvedValueOnce(applied({ document }))
@@ -70,7 +77,7 @@ describe("PipelineRepairDialog", () => {
     applyRemoveUnavailableNode.mockRejectedValueOnce(new ApiError("HTTP 409", 409, undefined, undefined, { code: "repair_revision_conflict", message: "Reload before repairing." }))
     const { onClose } = renderDialog()
     fireEvent.click(screen.getByRole("button", { name: "Remove node" }))
-    expect(await screen.findByRole("alert")).toHaveTextContent("repair_revision_conflict: Reload before repairing.")
+    expect(await screen.findByRole("alert")).toHaveTextContent(/^Reload before repairing.$/)
     expect(screen.getByTestId("pipeline-repair-dialog")).toBeInTheDocument()
     expect(onClose).not.toHaveBeenCalled()
   })
@@ -99,7 +106,7 @@ describe("PipelineRepairDialog", () => {
     renderDialog("reset")
     fireEvent.click(screen.getByRole("button", { name: "Reset node" }))
     await waitFor(() => expect(applyRecoverUnavailableNode).toHaveBeenCalledWith(expect.objectContaining({ action: "reset" })))
-    expect(await screen.findByRole("alert")).toHaveTextContent("repair_revision_conflict: Reload before repairing.")
+    expect(await screen.findByRole("alert")).toHaveTextContent(/^Reload before repairing.$/)
     expect(screen.getByTestId("pipeline-repair-dialog")).toBeInTheDocument()
   })
 

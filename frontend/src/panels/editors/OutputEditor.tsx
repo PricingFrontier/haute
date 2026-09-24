@@ -4,11 +4,10 @@ import {
   useCallback,
   useLayoutEffect,
   useRef,
-  type CSSProperties,
 } from "react"
 import { ChevronRight, ChevronDown, Plus, X, Wand2, Pencil, Check, AlertTriangle } from "lucide-react"
 import type { OnUpdateConfig, SimpleNode, SimpleEdge } from "./_shared"
-import { EditorLabel } from "../../components/form"
+import { EditorLabel, ValidatedTextField } from "../../components/form"
 import { useGraph } from "../useGraph"
 import { buildGraph } from "../../utils/buildGraph"
 import useSettingsStore from "../../stores/useSettingsStore"
@@ -279,6 +278,10 @@ export default function OutputEditor({
     if (shape.kind === "v2") return shape.v2
     return emptyV2()
   }, [shape])
+
+  // An OUTPUT level takes one frame (the backend rejects two), so frames that
+  // emit at the same array level are flagged before a run or save fails.
+  const sharedLevels = useMemo(() => framesSharingALevel(v2.outputMapping), [v2.outputMapping])
 
   // Editor-only row status (Inferred pill). Never persisted. Keyed by ABSOLUTE
   // index into v2.outputMapping.
@@ -653,6 +656,27 @@ export default function OutputEditor({
           Two input frames resolve to the same name ({duplicatePorts.join(", ")})
           and would collide in the response. Give the sources distinct
           names/labels before mapping them.
+        </div>
+      )}
+
+      {sharedLevels.length > 0 && (
+        <div
+          data-testid="output-same-level-banner"
+          className="px-2.5 py-2 rounded-md text-[11px] leading-relaxed space-y-1"
+          style={{
+            background: "var(--danger-soft)",
+            border: "1px solid var(--danger-border-strong)",
+            color: "var(--danger-text)",
+          }}
+        >
+          {sharedLevels.map(({ level, ports }) => (
+            <p key={level}>
+              Frames {listNames(ports)} emit at the same array level (
+              <span className="font-mono">{level}</span>). An output level takes one frame: join
+              them upstream (for example with a Join node) or map one of them to a different
+              level.
+            </p>
+          ))}
         </div>
       )}
 
@@ -1265,6 +1289,40 @@ function prefixComparable(a: string, b: string): boolean {
   return true
 }
 
+/**
+ * The array levels more than one frame emits at, mirroring the backend's
+ * one-frame-per-level rule (`validate_v2_output_mapping`). Over ACTIVE rows
+ * (enabled, with a column and a grammatical path), a path's level is the names
+ * of its `[:]` segments and a frame emits at its deepest one. A frame whose
+ * levels do not form one chain is rejected for that on its own, so it takes no
+ * part here. Each shared level is returned as a path (`$[:]`, `$[:].a[:]`) with
+ * its frames in mapping order.
+ */
+function framesSharingALevel(mapping: OutputMappingEntryV2[]): { level: string; ports: string[] }[] {
+  const levelsByPort = new Map<string, string[][]>()
+  for (const entry of mapping) {
+    if (!entry.enabled || !entry.source_column.trim() || !entry.output_path.trim()) continue
+    if (validateOutputPath(entry.output_path) !== null) continue
+    const level = parsePath(entry.output_path).segments.filter((s) => s.isArray).map((s) => s.name)
+    levelsByPort.set(entry.source_port, [...(levelsByPort.get(entry.source_port) ?? []), level])
+  }
+  const portsByLevel = new Map<string, string[]>()
+  for (const [port, levels] of levelsByPort) {
+    const deepest = levels.reduce((a, b) => (b.length > a.length ? b : a))
+    if (!levels.every((level) => level.every((name, i) => deepest[i] === name))) continue
+    const path = `$[:]${deepest.map((name) => `.${name}[:]`).join("")}`
+    portsByLevel.set(path, [...(portsByLevel.get(path) ?? []), port])
+  }
+  return [...portsByLevel]
+    .filter(([, ports]) => ports.length > 1)
+    .map(([level, ports]) => ({ level, ports }))
+}
+
+/** "a and b", "a, b and c". */
+function listNames(names: string[]): string {
+  return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`
+}
+
 // ─── MappingRow ───────────────────────────────────────────────────
 
 function MappingRow({
@@ -1324,15 +1382,16 @@ function MappingRow({
           ))}
         </select>
       </div>
-      <CommittedTextInput
+      <ValidatedTextField
         dataTestId={`${testIdPrefix}-path`}
         value={entry.output_path}
         onCommit={onPath}
         validate={validatePathInput}
+        placeholder="$[:].field"
         containerClassName="flex-1 min-w-0"
         className="w-full text-[11px] px-1.5 py-0.5 rounded font-mono"
         style={{ background: "var(--bg-input)", border: "1px solid var(--border)", color: "var(--text-muted)" }}
-        conflictNote={pathConflict ? "Conflicts with another field's path in this frame (best-effort)." : null}
+        warning={pathConflict ? "Conflicts with another field's path in this frame (best-effort)." : null}
       />
       {status === "Inferred" && (
         <span
@@ -1368,92 +1427,4 @@ function validatePathInput(candidate: string): string | null {
   const trimmed = candidate.trim()
   if (!trimmed) return "An output path is required."
   return validateOutputPath(trimmed)
-}
-
-// ─── CommittedTextInput ───────────────────────────────────────────
-//
-// Mirrors the apiInput editor's committed-input pattern: a path buffers locally
-// and commits on blur/Enter, refusing invalid candidates (keeping the draft +
-// a visible error). This avoids per-keystroke config churn and never lets an
-// invalid path silently reach the backend. The optional `conflictNote` is a
-// non-blocking advisory (the path is grammatically fine but conflicts with a
-// sibling — backend is the authority), shown alongside any hard error.
-
-function CommittedTextInput({
-  value,
-  onCommit,
-  validate,
-  dataTestId,
-  containerClassName,
-  className,
-  style,
-  conflictNote,
-}: {
-  value: string
-  onCommit: (next: string) => void
-  validate: (candidate: string) => string | null
-  dataTestId: string
-  containerClassName: string
-  className: string
-  style: CSSProperties
-  conflictNote?: string | null
-}) {
-  const [draft, setDraft] = useState<string | null>(null)
-  const [lastValue, setLastValue] = useState(value)
-  if (lastValue !== value) {
-    setLastValue(value)
-    setDraft(null)
-  }
-  const shown = draft ?? value
-  const error = validate(shown)
-  const commit = () => {
-    if (draft === null) return
-    if (draft === value) {
-      setDraft(null)
-      return
-    }
-    if (validate(draft) !== null) return
-    onCommit(draft)
-    setDraft(null)
-  }
-  return (
-    <div className={containerClassName}>
-      <input
-        data-testid={dataTestId}
-        type="text"
-        value={shown}
-        aria-invalid={error !== null ? true : undefined}
-        placeholder="$[:].field"
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") commit()
-        }}
-        className={className}
-        style={
-          error !== null
-            ? { ...style, border: "1px solid var(--danger-border-strong)" }
-            : style
-        }
-      />
-      {error !== null && (
-        <div
-          data-testid={`${dataTestId}-error`}
-          className="mt-0.5 px-1.5 py-0.5 rounded text-[10px] leading-snug"
-          style={{ background: "var(--danger-soft)", color: "var(--danger-text)" }}
-        >
-          {error}
-        </div>
-      )}
-      {error === null && conflictNote && (
-        <div
-          data-testid={`${dataTestId}-conflict`}
-          className="mt-0.5 px-1.5 py-0.5 rounded text-[10px] leading-snug"
-          style={{ background: "var(--warning-soft)", color: "var(--warning-strong)" }}
-        >
-          {conflictNote}
-        </div>
-      )}
-    </div>
-  )
 }

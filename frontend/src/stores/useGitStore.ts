@@ -219,11 +219,11 @@ const useGitStore = create<GitState>()((set, get) => ({
             if (!isCurrent()) return null
             // Readiness is best-effort editor chrome. Keep the last successful
             // state for gating, but expose this failure for an explicit retry.
-            const { gitErrorMessage } = await import("../utils/gitError")
+            const { apiErrorMessage } = await import("../api/errors")
             if (!isCurrent()) return null
             set({
               loading: false,
-              statusError: gitErrorMessage(error, "Unable to check Git status"),
+              statusError: apiErrorMessage(error, "Unable to check Git status"),
             })
             return null
           }),

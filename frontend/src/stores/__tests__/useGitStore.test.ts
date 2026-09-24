@@ -193,7 +193,7 @@ describe("useGitStore", () => {
     )
     const first = useGitStore.getState().loadStatus()
     // Two microtask ticks let the rejection reach the catch handler, which
-    // passes its first identity check and suspends at the dynamic gitError
+    // passes its first identity check and suspends at the dynamic api/errors
     // import; the reset then detaches the request before it resumes. (If an
     // engine drains differently the reset simply lands before the handler's
     // first check instead — the assertions hold on either path.)

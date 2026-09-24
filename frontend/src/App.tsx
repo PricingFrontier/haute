@@ -1137,8 +1137,8 @@ function FlowEditor() {
         sessionStorage.setItem(JUST_MOVED_KEY, target.label)
         window.location.reload()
       } catch (err: unknown) {
-        const { gitErrorMessage } = await import("./utils/gitError")
-        const detail = gitErrorMessage(err, "unknown error")
+        const { apiErrorMessage } = await import("./api/errors")
+        const detail = apiErrorMessage(err, "unknown error")
         addToast("error", `Could not move to this version: ${detail}`)
         useGitStore.getState().closeMove()
       }

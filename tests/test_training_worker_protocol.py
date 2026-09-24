@@ -1725,3 +1725,24 @@ def test_live_training_never_auto_logs(tmp_path: Path) -> None:
     assert mock_launch.call_count == 1
     request: WorkerRequest = mock_launch.call_args[0][2]
     assert request.payload["job_kwargs"]["mlflow_experiment"] is None
+
+
+def test_publication_rejects_an_evaluation_report_without_its_selection_metrics(
+    tmp_path: Path,
+) -> None:
+    root, output, manifest, expected_evaluation, _expected_tuning = _staged_tuned_training_manifest(
+        tmp_path
+    )
+    artifact_paths = {
+        artifact.kind: root / artifact.relative_path for artifact in manifest.artifacts
+    }
+    evaluation_report = output / evaluation_artifact_filenames("quoted")["report"]
+    evaluation_data = json.loads(evaluation_report.read_text(encoding="utf-8"))
+    evaluation_data.update(metrics={}, total_validation_rows=0)
+    _write_scratch_text(evaluation_report, json.dumps(evaluation_data))
+
+    with pytest.raises(WorkerProtocolError, match="metric names do not match configured metrics"):
+        _validate_evaluation_artifact_contents(
+            artifact_paths,
+            response_fit_count=expected_evaluation.fit_count,
+        )

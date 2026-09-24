@@ -15,7 +15,7 @@ Each test class targets a specific attack surface:
 10. SSRFViaDatabricksTable      -- SQL injection with SSRF in table param
 11. SymlinkTraversalBrowse      -- symlink following outside base dir
 12. SecondOrderCodeInjection    -- stored config with malicious code
-13. PathURLSchemeRejection      -- URL schemes rejected by validate_safe_path/read_source
+13. PathURLSchemeRejection      -- URL schemes rejected by contained_path/read_source
 14. NullByteHTTPParam           -- null bytes in HTTP path parameters
 15. DoubleEncodedHTTPTraversal  -- double-encoded ../ in HTTP requests
 16. W8bLocalSessionProtection   -- server-level Host/Origin/session guards
@@ -255,14 +255,14 @@ class TestCommandInjectionGitRef:
 class TestPathTraversalURLEncoded:
     """URL-encoded traversal sequences (%2e%2e%2f) are typically decoded by
     the web framework before reaching route handlers.  These tests verify
-    that validate_safe_path blocks traversal regardless of whether the
+    that contained_path blocks traversal regardless of whether the
     percent-encoding has been decoded or remains literal.
 
     When percent-encoding is NOT decoded (literal '%2e%2e'), the resulting
     path stays within the base directory (it's a literal filename containing
-    '%' characters), so validate_safe_path correctly allows it.
+    '%' characters), so contained_path correctly allows it.
 
-    When percent-encoding IS decoded (becomes '..'), validate_safe_path
+    When percent-encoding IS decoded (becomes '..'), contained_path
     must block the traversal.
     """
 
@@ -290,7 +290,7 @@ class TestPathTraversalURLEncoded:
         assert result.is_relative_to(tmp_path.resolve())
 
     def test_manually_decoded_double_dot_blocked(self, tmp_path: Path):
-        """If the framework decodes '%2e%2e' to '..', validate_safe_path blocks it."""
+        """If the framework decodes '%2e%2e' to '..', contained_path blocks it."""
         from urllib.parse import unquote
 
         from haute._sandbox import contained_path
@@ -317,7 +317,7 @@ class TestPathTraversalURLEncoded:
 
 
 # =========================================================================
-# 5. Path Traversal — Null bytes in validate_safe_path
+# 5. Path Traversal — Null bytes in contained_path
 # =========================================================================
 
 
@@ -614,7 +614,7 @@ class TestSymlinkTraversalBrowse:
 
 
 class TestPathURLSchemeRejection:
-    """validate_safe_path or read_source must reject paths starting with URL schemes."""
+    """contained_path or read_source must reject paths starting with URL schemes."""
 
     @pytest.mark.parametrize(
         "scheme_path",
@@ -695,7 +695,7 @@ class TestDoubleEncodedHTTPTraversal:
     FastAPI/Starlette performs a single URL-decode before routing.
     After single decode, %252e%252e%252f becomes %2e%2e%2f (a literal
     filename, not ..).  After double decode it becomes ../ which is dangerous.
-    validate_safe_path must ensure the resolved path stays within the base
+    contained_path must ensure the resolved path stays within the base
     regardless of encoding.
     """
 

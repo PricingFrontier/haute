@@ -1,7 +1,7 @@
 """Comprehensive tests for haute.routes._helpers.
 
 Covers:
-  - validate_safe_path  — valid paths, traversal attempts, absolute paths
+  - contained_path  — valid paths, traversal attempts, absolute paths
   - raise_node_not_found / raise_node_type_error / raise_pipeline_not_found / raise_validation_error
   - mark_self_write / is_self_write — timing-based self-write detection
   - load_sidecar / load_sidecar_positions — valid JSON, corrupt JSON, missing file
@@ -44,11 +44,11 @@ from haute.routes._helpers import (
 )
 
 # ===========================================================================
-# validate_safe_path
+# contained_path
 # ===========================================================================
 
 
-class TestValidateSafePath:
+class TestContainedPath:
     def test_valid_relative_path(self, tmp_path):
         sub = tmp_path / "subdir"
         sub.mkdir()

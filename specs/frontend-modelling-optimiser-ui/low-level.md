@@ -52,8 +52,8 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/modelling/NumberField.tsx` | Numeric input that keeps a draft until a valid, in-range value commits on blur or Enter. |
 | `frontend/src/panels/modelling/modellingPanes.ts` | `modellingPanesFor(algorithm)` and `resolveModellingPane`, the one pane list behind the modelling tabs and pane bodies. |
 | `frontend/src/panels/modelling/FeatureImportance.tsx`, `frontend/src/panels/modelling/FeaturesTab.tsx`, `frontend/src/panels/modelling/FeatureBrowser.tsx` | Feature-importance display, tab and feature browser. |
-| `frontend/src/panels/modelling/ChartScaffold.tsx`, `frontend/src/panels/modelling/LossChart.tsx`, `frontend/src/panels/modelling/LossTab.tsx` | Shared chart primitives (responsive width, SVG surface, legend, empty state, and `ChartValueGrid`, the value axis of gridlines with compact labels that every validation chart draws) and loss visualisation. Charts are hand-drawn SVG on these primitives; ECharts stays confined to the Explore combo chart. |
-| `frontend/src/panels/modelling/LiftTab.tsx`, `frontend/src/panels/modelling/ResidualsTab.tsx`, `frontend/src/panels/modelling/AveTab.tsx`, `frontend/src/panels/modelling/PdpTab.tsx` | Lift, residual, actual-versus-estimated and partial-dependence result views. |
+| `frontend/src/panels/modelling/ChartScaffold.tsx`, `frontend/src/panels/modelling/LossChart.tsx`, `frontend/src/panels/modelling/LossTab.tsx` | Shared chart primitives (responsive width, SVG surface, legend, empty state, `ChartValueGrid`, the value axis of gridlines with compact labels that every validation chart draws, `ChartValuesTable`, a chart's raw values behind a native disclosure in the shared `validation-value-table` (the first column is each row's header), which the Lift, AvE and PDP tabs use, and `TwoChartLayout`, the two-chart result layout: side by side with a 24 px gap from a caller breakpoint when both charts exist, each chart at least a caller minimum wide, otherwise full width one under the other, with an optional header above) and loss visualisation. Charts are hand-drawn SVG on these primitives; ECharts stays confined to the Explore combo chart. |
+| `frontend/src/panels/modelling/LiftTab.tsx`, `frontend/src/panels/modelling/ResidualsTab.tsx`, `frontend/src/panels/modelling/AveTab.tsx`, `frontend/src/panels/modelling/PdpTab.tsx` | Lift, residual, actual-versus-estimated and partial-dependence result views. Lift and Residuals lay their two charts out with `TwoChartLayout`: Lift side by side from 900 px (charts at least 260 px, a Double lift / Lorenz curve switch in the header when narrower), Residuals from 760 px (at least 280 px, stacked when narrower). |
 | `frontend/src/panels/modelling/FailoverHelp.tsx`, `frontend/src/panels/modelling/OffsetFieldLabel.tsx`, `frontend/src/panels/modelling/styles.ts` | Algorithm help, offset label and modelling visual helpers, including the shared modelling input surface. |
 | `frontend/src/panels/optimiser/SummaryTab.tsx` | Objective/constraint/lambda summary, ratebook-impact state and scenario histogram. |
 | `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/optimiser/FrontierChart.tsx`, `frontend/src/panels/optimiser/DetailCard.tsx` | Iteration convergence, selectable frontier and strict frontier-point detail display. Both charts scale through the shared `chartDomain`/`chartTicks`/`formatChartNumber`. |
@@ -534,10 +534,10 @@ The behavioural contract is defined in
   roving focus or layout
   ([frontend-preview-explore](../frontend-preview-explore/low-level.md#modelling-config-panes)).
 - `api/types.ts`, `types/trainGuards.ts`, and the train-progress store type share the backend status
-  contract. `parseTrainStatusResponse` strictly retains present history/truncation and leaves
-  absent history absent. `parseTrainResponse` rejects retired result fields and strictly
-  recomputes evaluation/tuning counts, weighted aggregates, digest links, winner and improvement
-  invariants. `useUIStore.ts` remembers the pane per node.
+  contract. `parseTrainStatusResponse` requires the history and truncation flag the server
+  always sends. `parseTrainResponse` validates the generated structure, which rejects retired
+  result fields; the evaluation/tuning counts, weighted aggregates, digest links, winner and
+  improvement are the server's to check, where the artifacts are produced. `useUIStore.ts` remembers the pane per node.
   `useNodeResultsStore.ts` retains the latest authoritative history snapshot and only the last two
   valid increasing iteration/elapsed samples; it never reconstructs loss history. A new or
   terminal job resets the ETA state

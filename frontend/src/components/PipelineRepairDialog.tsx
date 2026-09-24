@@ -1,10 +1,10 @@
 import { useRef, useState } from "react"
 import {
-  ApiError,
   applyRecoverUnavailableNode,
   applyRemoveUnavailableNode,
 } from "../api/client"
 import type { PipelineEditorDocument } from "../types/pipelineDocument"
+import { apiErrorMessage } from "../api/errors"
 import ModalShell from "./ModalShell"
 import { useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
 
@@ -20,19 +20,6 @@ interface PipelineRepairDialogProps {
   sourceRevision: string
   onClose: () => void
   onApplied: (document: PipelineEditorDocument) => void
-}
-
-// eslint-disable-next-line no-restricted-syntax -- "code: message" repair text; folding it into apiErrorMessage is FSH-R02's remaining scope
-function errorDetail(error: unknown): string {
-  if (error instanceof ApiError) {
-    const detail = error.rawDetail
-    if (typeof detail === "object" && detail !== null && !Array.isArray(detail)) {
-      const { code, message } = detail as { code?: unknown; message?: unknown }
-      if (typeof code === "string" && typeof message === "string") return `${code}: ${message}`
-    }
-    if (error.detail) return error.detail
-  }
-  return error instanceof Error ? error.message : String(error)
 }
 
 function PipelineRepairDialogContent({
@@ -92,7 +79,7 @@ function PipelineRepairDialogContent({
       }
       onApplied(response.document)
     } catch (err) {
-      setError(errorDetail(err))
+      setError(apiErrorMessage(err, "Could not apply this repair."))
     } finally {
       applyingRef.current = false
       setApplying(false)

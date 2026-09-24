@@ -17,6 +17,7 @@ import {
   estimateOptimiserSolve,
   estimateTrainingRam,
   commitMilestone,
+  renderPolarsSteps,
   resolveEditorNodeIdentities,
   resolveOutputDestination,
   writeOutput,
@@ -35,6 +36,7 @@ import {
   getExplorePivotStatus,
   getMilestones,
   getMilestoneSaves,
+  getFrontierStatus,
   getOptimiserFrontierAutoRangeStatus,
   getOptimiserStatus,
   getPendingSaves,
@@ -224,7 +226,7 @@ describe("client runtime contracts", () => {
     }))
 
     await expect(resolveEditorNodeIdentities({ nodes: [] })).rejects.toThrow(
-      /parseEditorNodeIdentityBatchResponse/i,
+      "EditorIdentitiesResponse: invalid contract at /identities/0: additionalProperties",
     )
   })
 
@@ -319,14 +321,47 @@ describe("client runtime contracts", () => {
     })).rejects.toThrow(/API frame identities must preserve raw source handles/i)
   })
 
+  it("renderPolarsSteps resolves rendered code and a failing step as data", async () => {
+    const rendered = { ok: true, code: "df = df.filter(x)", step_lines: [[1, 1]], step_index: null, message: "" }
+    mockFetch.mockReturnValue(jsonResponse(rendered))
+
+    await expect(
+      renderPolarsSteps({ steps: [{ kind: "filter" }], inputNames: ["quotes"], start: "input" }),
+    ).resolves.toEqual(rendered)
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/pipeline/polars-steps/render")
+    expect(JSON.parse(String(init?.body))).toEqual({
+      steps: [{ kind: "filter" }], input_names: ["quotes"], start: "input",
+    })
+
+    // A step validation failure is data, not a rejected request.
+    const failed = { ok: false, code: "", step_lines: [], step_index: 2, message: "Pick a column." }
+    mockFetch.mockReturnValue(jsonResponse(failed))
+    await expect(
+      renderPolarsSteps({ steps: [], inputNames: [], start: "frame" }),
+    ).resolves.toEqual(failed)
+  })
+
+  it("renderPolarsSteps rejects a malformed step line range", async () => {
+    mockFetch.mockReturnValue(jsonResponse({
+      ok: true, code: "df = df", step_lines: [[1, "2"]], step_index: null, message: "",
+    }))
+
+    await expect(
+      renderPolarsSteps({ steps: [], inputNames: [], start: "frame" }),
+    ).rejects.toThrow("PolarsStepsRenderResponse: invalid contract at /step_lines/0/1: type")
+  })
+
   it("fetchIoCapabilities rejects unknown V1 discriminants", async () => {
     mockFetch.mockReturnValue(jsonResponse({ schema_version: 1, groups: [{ name: "file", label: "Files", input_available: true, output_available: true, cache_modes: ["unknown"], input_fields: [], output_fields: [], formats: [] }] }))
-    await expect(fetchIoCapabilities()).rejects.toThrow(/parseIoCapabilitiesResponse/i)
+    await expect(fetchIoCapabilities()).rejects.toThrow(
+      "IoCapabilitiesResponse: invalid contract at /groups/0/cache_modes/0: enum",
+    )
   })
 
   it("input-cache build rejects a malformed V1 response", async () => {
     mockFetch.mockReturnValue(jsonResponse({ schema_version: 2, job_id: "job", identity_digest: "digest", status: "running", joined: false }))
-    await expect(buildInputCache({ schema_version: 1, config: {}, refresh: false, profile: "lazy_sink" })).rejects.toThrow(/parseInputCacheBuildResponse/i)
+    await expect(buildInputCache({ schema_version: 1, config: {}, refresh: false })).rejects.toThrow(/parseInputCacheBuildResponse/i)
   })
 
   it("previewInputs asks which inputs a preview reads", async () => {
@@ -567,10 +602,18 @@ describe("client runtime contracts", () => {
     const stats = {
       status: "ok",
       point: loadUiContractFixture("node_data_point_response"),
+      data_version: "v1",
       total_rows: 10,
       null_count: 1,
+      non_finite_count: 0,
+      minimum: 0,
+      maximum: 5,
       bins: [{ lower: 0, upper: 5, count: 9 }],
       values: [],
+      distinct_count: null,
+      other_count: null,
+      rule_counts: [],
+      unmatched_count: null,
     }
     mockFetch.mockReturnValue(jsonResponse(stats))
     const factor = { column: "age" }
@@ -597,6 +640,11 @@ describe("client runtime contracts", () => {
       histogram_bins: 20,
       value_limit: 50,
     })
+
+    mockFetch.mockReturnValue(jsonResponse({ ...stats, bins: [{ lower: 0, upper: 5, count: "many" }] }))
+    await expect(
+      getBandingStats({ graph: dummyGraph, node_id: "banding", factor }),
+    ).rejects.toThrow("BandingStatsResponse: invalid contract at /bins/0/count: type")
   })
 
   it("getRatingLevels posts the columns and parses the levels of each one", async () => {
@@ -636,13 +684,15 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(
       jsonResponse({
         ...fixture,
-        columns: [{ column: "region", values: [{ value: "North", count: "many" }] }],
+        columns: [
+          { column: "region", values: [{ value: "North", count: "many" }], distinct_count: 1, null_count: 0 },
+        ],
       }),
     )
 
     await expect(
       getRatingLevels({ graph: dummyGraph, node_id: "rating", columns: ["region"] }),
-    ).rejects.toThrow(/columns\[0\]\.values\[0\]\.count/)
+    ).rejects.toThrow("RatingLevelsResponse: invalid contract at /columns/0/values/0/count: type")
   })
 
   it("runNodeData sends refresh with no streaming chunk size, and parses the started job", async () => {
@@ -713,7 +763,7 @@ describe("client runtime contracts", () => {
 
     await expect(getOptimiserStatus("job-1")).rejects.toMatchObject({
       name: "ApiResponseValidationError",
-      message: expect.stringMatching(/could not read optimiser status.*parseOptimiserStatusResponse/i),
+      message: "Could not read optimiser status: OptimiserStatusResponse: invalid contract at /result/lambdas/loss: type",
       cause: expect.any(Error),
     })
     await expect(getOptimiserStatus("job-1")).rejects.toBeInstanceOf(ApiResponseValidationError)
@@ -740,9 +790,45 @@ describe("client runtime contracts", () => {
 
     await expect(getExplorePivotStatus("pivot-job-1")).rejects.toMatchObject({
       name: "ApiResponseValidationError",
-      message: expect.stringMatching(/could not read pivot status.*parseExplorePivotStatusResponse/i),
+      message: "Could not read pivot status: ExplorePivotStatusResponse: invalid contract at /progress: type",
       cause: expect.any(Error),
     })
+  })
+
+  it("getFrontierStatus checks the frontier job and its one summary per point", async () => {
+    const frontier = loadUiContractFixture<Record<string, unknown>>("optimiser_frontier_response")
+    const status = (result: unknown) => ({
+      status: "completed",
+      progress: 1,
+      message: "Frontier ready",
+      elapsed_seconds: 3,
+      result,
+      terminal_reason: null,
+      error_code: null,
+      http_status_code: null,
+      error_detail: null,
+      execution_metrics: null,
+    })
+
+    mockFetch.mockReturnValue(jsonResponse(status(frontier)))
+    const parsed = await getFrontierStatus("frontier-job-1")
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/optimiser/frontier/status/frontier-job-1")
+    expect(parsed.result?.points[0]?.total_objective).toBe(125)
+    expect(parsed.result?.point_summaries[0]?.lambdas).toEqual({ loss: 0.3 })
+
+    const summaries = frontier.point_summaries as Record<string, unknown>[]
+    mockFetch.mockReturnValue(jsonResponse(status({
+      ...frontier,
+      point_summaries: [{ ...summaries[0], converged: "yes" }],
+    })))
+    await expect(getFrontierStatus("frontier-job-1")).rejects.toThrow(
+      "OptimiserFrontierStatusResponse: invalid contract at /result/point_summaries/0/converged: type",
+    )
+
+    mockFetch.mockReturnValue(jsonResponse(status({ ...frontier, point_summaries: [] })))
+    await expect(getFrontierStatus("frontier-job-1")).rejects.toThrow(
+      "parseOptimiserStatusResponse: expected result.point_summaries to hold one summary per point, got 0 for 1 points",
+    )
   })
 
   it("preserves optimiser auto-range start contract metadata", async () => {
@@ -762,6 +848,11 @@ describe("client runtime contracts", () => {
         message: "Completed",
         elapsed_seconds: 2.5,
         result: loadUiContractFixture("optimiser_frontier_auto_range_response"),
+        terminal_reason: null,
+        error_code: null,
+        http_status_code: null,
+        error_detail: null,
+        execution_metrics: null,
       }),
     )
 
@@ -776,6 +867,11 @@ describe("client runtime contracts", () => {
         message: "Cancelled",
         elapsed_seconds: 2.5,
         result: null,
+        terminal_reason: null,
+        error_code: null,
+        http_status_code: null,
+        error_detail: null,
+        execution_metrics: null,
       }),
     )
 
@@ -1002,37 +1098,37 @@ describe("next-wave client runtime contracts", () => {
       name: "solveOptimiser",
       response: { ...loadUiContractFixture<Record<string, unknown>>("solve_optimiser_response"), job_id: 42 },
       call: () => solveOptimiser({ graph: dummyGraph, node_id: "opt1" }),
-      error: /parseSolveOptimiserResponse/i,
+      error: "OptimiserSolveResponse: invalid contract at /job_id: type",
     },
     {
       name: "estimateOptimiserSolve",
       response: { ...loadUiContractFixture<Record<string, unknown>>("optimiser_estimate_response"), total_rows: "bad" },
       call: () => estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt1" }),
-      error: /parseOptimiserEstimateResponse/i,
+      error: "OptimiserEstimateResponse: invalid contract at /total_rows: type",
     },
     {
       name: "applyOptimiser",
       response: { ...loadUiContractFixture<Record<string, unknown>>("optimiser_apply_response"), constraints: { loss: "bad" } },
       call: () => applyOptimiser({ job_id: "opt-job-1" }),
-      error: /parseApplyOptimiserResponse/i,
+      error: "OptimiserApplyResponse: invalid contract at /constraints/loss: type",
     },
     {
       name: "saveOptimiser",
       response: { ...loadUiContractFixture<Record<string, unknown>>("optimiser_save_response"), message: 42 },
       call: () => saveOptimiser({ job_id: "opt-job-1", output_path: "output.py" }),
-      error: /parseSaveOptimiserResponse/i,
+      error: "OptimiserSaveResponse: invalid contract at /message: type",
     },
     {
       name: "logOptimiserToMlflow",
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_log_response"), tracking_uri: 42 },
       call: () => logOptimiserToMlflow({ job_id: "opt-job-1", destination: "" }),
-      error: /parseMlflowLogResponse/i,
+      error: "OptimiserMlflowLogResponse: invalid contract at /tracking_uri: type",
     },
     {
       name: "startOptimiserFrontierAutoRange",
       response: { status: "started", job_id: 42, error: null },
       call: () => startOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" }),
-      error: /parseFrontierAutoRangeStartResponse/i,
+      error: "OptimiserFrontierAutoRangeStartResponse: invalid contract at /job_id: type",
     },
     {
       name: "getOptimiserFrontierAutoRangeStatus",
@@ -1045,9 +1141,14 @@ describe("next-wave client runtime contracts", () => {
           ...loadUiContractFixture<Record<string, unknown>>("optimiser_frontier_auto_range_response"),
           ranges: { expected_margin: { min: "bad", max: 39 } },
         },
+        terminal_reason: null,
+        error_code: null,
+        http_status_code: null,
+        error_detail: null,
+        execution_metrics: null,
       },
       call: () => getOptimiserFrontierAutoRangeStatus("range-job-1"),
-      error: /parseFrontierAutoRangeResponse/i,
+      error: "OptimiserFrontierAutoRangeStatusResponse: invalid contract at /result/ranges/expected_margin/min: type",
     },
     {
       name: "cancelOptimiserFrontierAutoRange",
@@ -1057,15 +1158,20 @@ describe("next-wave client runtime contracts", () => {
         message: "Cancelled",
         elapsed_seconds: "bad",
         result: null,
+        terminal_reason: null,
+        error_code: null,
+        http_status_code: null,
+        error_detail: null,
+        execution_metrics: null,
       },
       call: () => cancelOptimiserFrontierAutoRange("range-job-1"),
-      error: /elapsed_seconds/i,
+      error: "OptimiserFrontierAutoRangeStatusResponse: invalid contract at /elapsed_seconds: type",
     },
     {
       name: "selectFrontierPoint",
       response: { ...loadUiContractFixture<Record<string, unknown>>("optimiser_frontier_select_response"), lambdas: { loss: "bad" } },
       call: () => selectFrontierPoint({ job_id: "opt-job-1", point_index: 0 }),
-      error: /parseFrontierSelectResponse/i,
+      error: "OptimiserFrontierSelectResponse: invalid contract at /lambdas/loss: type",
     },
     {
       name: "listUtilityFiles",
@@ -1142,14 +1248,14 @@ describe("shared client trust-boundary endpoints", () => {
     /** The exact failure, when a generated validator checks the response. */
     malformedError?: string
   }> = [
-    { name: "checkHauteSession", body: { ok: true }, call: () => checkHauteSession(), url: "/api/session", malformed: { ok: "yes" } },
+    { name: "checkHauteSession", body: { ok: true }, call: () => checkHauteSession(), url: "/api/session", malformed: { ok: "yes" }, malformedError: "SessionStatusResponse: invalid contract at /ok: type" },
     { name: "outputAssembleDryRun", body: { status: "ok", document: [], row_count: 0, error: null }, call: () => outputAssembleDryRun({ graph: dummyGraph, nodeId: "out", outputMapping: [] }), url: "/api/output-assemble/dry-run", method: "POST", malformed: { status: "ok", document: [], row_count: "1" } },
     { name: "inferJsonCacheSchema", body: { tables: [{ name: "drivers" }] }, call: () => inferJsonCacheSchema({ path: "/data/input.json" }), url: "/api/json-cache/infer", method: "POST", malformed: { tables: ["bad"] } },
     { name: "getExperiments", body: [{ experiment_id: "1", name: "pricing" }], call: () => getExperiments(""), url: "/api/mlflow/experiments", malformed: [{ experiment_id: "1" }], malformedError: "MlflowExperimentList: invalid contract at /0/name: required" },
     { name: "getRuns", body: [{ run_id: "r", run_name: "baseline", status: "FINISHED", start_time: null, metrics: { auc: 0.9 }, params: {}, artifacts: [] }], call: () => getRuns("exp", "model", ""), url: "/api/mlflow/runs?experiment_id=exp&artifact_filter=model", malformed: [{ run_id: "r", run_name: "baseline", status: "FINISHED", start_time: null, metrics: {}, params: {}, artifacts: [1] }], malformedError: "MlflowRunList: invalid contract at /0/artifacts/0: type" },
     { name: "getModels", body: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "r" }] }], call: () => getModels(""), url: "/api/mlflow/models", malformed: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY" }] }], malformedError: "MlflowModelList: invalid contract at /0/latest_versions/0/run_id: required" },
     { name: "getModelVersions", body: [{ version: "1", run_id: "r", status: "READY", creation_timestamp: null, description: "baseline", params: {}, aliases: [] }], call: () => getModelVersions("pricing model", ""), url: "/api/mlflow/model-versions?model_name=pricing%20model", malformed: [{ version: "1", run_id: "r", status: "READY", creation_timestamp: null, params: {}, aliases: [] }], malformedError: "MlflowModelVersionList: invalid contract at /0/description: required" },
-    { name: "listFiles", body: { items: [{ name: "data", path: "/data", type: "directory" }] }, call: () => listFiles("/data", ".json"), url: "/api/files?dir=%2Fdata&extensions=.json", malformed: { items: [{ name: "data", path: "/data", type: "other" }] } },
+    { name: "listFiles", body: { dir: "/data", items: [{ name: "data", path: "/data", type: "directory", size: null }] }, call: () => listFiles("/data", ".json"), url: "/api/files?dir=%2Fdata&extensions=.json", malformed: { dir: "/data", items: [{ name: "data", path: "/data", type: "other", size: null }] }, malformedError: "BrowseFilesResponse: invalid contract at /items/0/type: enum" },
     { name: "getGitGraph", body: validGitGraph, call: () => getGitGraph(5), url: "/api/git/graph?limit=5", malformed: { ...validGitGraph, branches: [{ ...validGitGraph.branches[0], entries: [{ ...validGitGraph.branches[0].entries[0], parents: [1] }] }] }, malformedError: "GitGraphResponse: invalid contract at /branches/0/entries/0/parents/0: type" },
   ]
 
@@ -1230,7 +1336,7 @@ describe("pivot client contracts", () => {
     )
     await expect(
       runExplorePivot({ graph: dummyGraph, node_id: "explore", pivot: {} }),
-    ).rejects.toThrow(/parseExplorePivotRunResponse/i)
+    ).rejects.toThrow("ExplorePivotRunResponse: invalid contract at /job_id: required")
   })
 })
 

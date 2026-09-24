@@ -60,6 +60,8 @@ vi.mock("../api/client", async () => {
     notifyHauteSessionExpired: actual.notifyHauteSessionExpired,
     bootstrapHauteSession: vi.fn(() => Promise.resolve()),
     checkHauteSession: vi.fn(() => Promise.resolve({ ok: true })),
+    // The preview status bar reads the snapshot store's size.
+    fetchCacheUsage: vi.fn(() => Promise.resolve({ schema_version: 1, total_bytes: 0, automatic_bytes: 0, automatic_budget_bytes: 1 })),
     // Pipeline endpoints
     renderPolarsSteps: vi.fn(async ({ steps }: { steps: Array<{ kind: string; input?: string }> }) => ({
       ok: true,
@@ -519,7 +521,7 @@ beforeEach(() => {
   vi.mocked(api.getNodeDataStatus).mockReset().mockResolvedValue({ status: "running", progress: 0, message: "Caching data" })
   vi.mocked(api.cancelNodeData).mockReset().mockResolvedValue({ status: "cancelled", progress: 1, message: "cancelled" })
   vi.mocked(api.clearNodeData).mockReset().mockResolvedValue({ status: "cleared", point: missingPoint() })
-  vi.mocked(api.getNodeDataProfile).mockReset().mockResolvedValue({ status: "cache_required", message: "Cache it first", point: missingPoint() })
+  vi.mocked(api.getNodeDataProfile).mockReset().mockResolvedValue({ status: "cache_required", job_id: null, message: "Cache it first", result: null, point: missingPoint() })
   vi.mocked(api.getMlflowDestinations).mockReset().mockResolvedValue({
     mlflow_installed: true,
     mlflow_importable: true,
@@ -1161,6 +1163,7 @@ describe("App integration - load a pipeline with nodes", () => {
     vi.mocked(api.getNodeDataPoint).mockResolvedValue(profiledPoint)
     vi.mocked(api.getNodeDataProfile).mockResolvedValue({
       status: "completed",
+      job_id: null,
       message: "Profile is ready",
       point: profiledPoint,
       result: {

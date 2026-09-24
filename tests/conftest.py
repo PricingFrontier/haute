@@ -182,6 +182,19 @@ def _interactive_execution_test_mode(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def _one_training_thread_per_test(monkeypatch: pytest.MonkeyPatch):
+    """Give each training job one engine thread, so parallel test workers don't oversubscribe.
+
+    A training job's allotment defaults to every logical CPU. CI runs four xdist
+    workers on a four-vCPU runner, so concurrent training tests each started
+    XGBoost/CatBoost/LightGBM with all cores, and OpenMP's spinning threads
+    slowed a five-trial XGBoost study past the 60-second timeout. Tests that
+    exercise the allotment set ``HAUTE_TRAINING_THREADS`` themselves.
+    """
+    monkeypatch.setenv("HAUTE_TRAINING_THREADS", "1")
+
+
+@pytest.fixture(autouse=True)
 def _clear_trace_caches():
     """Invalidate global trace, preview and inference caches between tests.
 

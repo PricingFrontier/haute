@@ -1,10 +1,10 @@
 """Tests for path traversal fixes in optimiser and submodel routes (S1, S2, S3).
 
-S1: optimiser.py save_result — replaced str.startswith with validate_safe_path
-S2: submodel.py get_submodel — added validate_safe_path for name parameter
-S3: submodel.py dissolve_submodel — added validate_safe_path for source_file
-S3b: submodel.py create_submodel — added validate_safe_path for source_file
-S3c: submodel.py dissolve_submodel — sm_file traversal via validate_safe_path
+S1: optimiser.py save_result — replaced str.startswith with contained_path
+S2: submodel.py get_submodel — added contained_path for name parameter
+S3: submodel.py dissolve_submodel — added contained_path for source_file
+S3b: submodel.py create_submodel — added contained_path for source_file
+S3c: submodel.py dissolve_submodel — sm_file traversal via contained_path
 """
 
 from __future__ import annotations
@@ -115,7 +115,7 @@ def _graph_with_submodel() -> dict:
 
 # =========================================================================
 # S1: optimiser save_result — smoke tests confirming endpoint uses
-# validate_safe_path (comprehensive validation is in TestValidateSafePath)
+# contained_path (comprehensive validation is in TestContainedPath)
 # =========================================================================
 
 
@@ -123,8 +123,8 @@ class TestOptimiserSavePathTraversal:
     """S1: Smoke tests that the optimiser save endpoint enforces path safety.
 
     The old str.startswith check was subtly broken for prefix attacks.
-    validate_safe_path (via is_relative_to) is now used instead.
-    Comprehensive attack vector coverage is in TestValidateSafePath.
+    contained_path (via is_relative_to) is now used instead.
+    Comprehensive attack vector coverage is in TestContainedPath.
     """
 
     def test_valid_relative_path(self, client, clean_job_store, tmp_path):
@@ -169,7 +169,7 @@ class TestGetSubmodelPathTraversal:
     """S2: Smoke tests that get_submodel enforces path safety on name parameter.
 
     The name URL parameter was used unsanitised in path construction.
-    Comprehensive attack vector coverage is in TestValidateSafePath.
+    Comprehensive attack vector coverage is in TestContainedPath.
     """
 
     def test_valid_submodel_name(self, client, tmp_path):
@@ -215,9 +215,9 @@ pipeline = haute.Pipeline("main")
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"].lower()
 
-    def test_validate_safe_path_blocks_traversal_directly(self, tmp_path):
+    def test_contained_path_blocks_traversal_directly(self, tmp_path):
         """Defense-in-depth: if a name with '..' somehow reaches the endpoint,
-        validate_safe_path blocks it at the function level."""
+        contained_path blocks it at the function level."""
         from haute._sandbox import contained_path
 
         modules_dir = tmp_path / "modules"
@@ -237,7 +237,7 @@ class TestDissolveSubmodelPathTraversal:
 
     A crafted source_file like '../../etc/cron.d/evil' could write arbitrary
     code to the filesystem. Comprehensive attack vector coverage is in
-    TestValidateSafePath.
+    TestContainedPath.
     """
 
     def test_valid_source_file(self, client, tmp_path):
@@ -316,12 +316,12 @@ pipeline.submodel(
 
 
 # =========================================================================
-# validate_safe_path unit tests — comprehensive validation of all attack vectors
+# contained_path unit tests — comprehensive validation of all attack vectors
 # =========================================================================
 
 
-class TestValidateSafePath:
-    """Direct unit tests for the validate_safe_path helper.
+class TestContainedPath:
+    """Direct unit tests for the contained_path helper.
 
     This is the single comprehensive test class for all path traversal
     attack vectors. Endpoint-specific tests above are smoke tests that
@@ -420,7 +420,7 @@ class TestValidateSafePath:
     def test_double_encoded_dotdot_blocked(self, tmp_path):
         """Literal %2e%2e in a path segment is not traversal (it's a filename).
 
-        validate_safe_path operates on already-decoded strings, so URL
+        contained_path operates on already-decoded strings, so URL
         encoding is irrelevant.  But a literal '%2e%2e' filename should
         resolve safely within the base (it is NOT '..' after decode).
         """
@@ -455,7 +455,7 @@ class TestValidateSafePath:
 class TestCreateSubmodelPathTraversal:
     """S3b: Smoke tests that create_submodel enforces path safety on source_file.
 
-    Comprehensive attack vector coverage is in TestValidateSafePath.
+    Comprehensive attack vector coverage is in TestContainedPath.
     """
 
     def _minimal_create_body(
