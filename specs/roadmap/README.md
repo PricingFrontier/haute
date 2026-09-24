@@ -30,7 +30,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md) | Shared result tabs, target configuration and charts; why a training estimate is unavailable | `FMO-R01` |
 | [Frontend node editors](frontend-node-editors.md) | Shared editor pieces and one dispatcher | `FNE-R01` |
 | [Frontend shared](frontend-shared.md) | Job polling, repeated helpers, results store | `FSH-R01` |
-| [IO layer](io-layer.md) | One dtype vocabulary, one atomic write and file lock | `IO-R01` |
+| [IO layer](io-layer.md) | One atomic write and file lock | `IO-R02` |
 | [JSON shredding](json-shredding.md) | Explicit output nesting | `JSON-R02` |
 | [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients | `MLF-R02` |
 | [Modelling](modelling.md) | RustyStats 0.9.0 upgrade, GLM terms and interactions; invariant checks | `MOD-T00` |
