@@ -29,7 +29,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Expression parsing](expression-parsing.md) | Traced formulas evaluated by Polars | `EXPR-R01` |
 | [Frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md) | Shared result tabs, target configuration and charts; why a training estimate is unavailable | `FMO-R01` |
 | [Frontend node editors](frontend-node-editors.md) | Shared editor pieces and one dispatcher | `FNE-R01` |
-| [Frontend shared](frontend-shared.md) | Job polling, repeated helpers, results store | `FSH-R01` |
+| [Frontend shared](frontend-shared.md) | Repeated helpers, results store | `FSH-R02` |
 | [IO layer](io-layer.md) | One dtype vocabulary, one atomic write and file lock | `IO-R01` |
 | [JSON shredding](json-shredding.md) | One non-finite float encoding, explicit output nesting | `JSON-R01` |
 | [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients | `MLF-R02` |

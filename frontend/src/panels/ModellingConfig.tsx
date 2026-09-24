@@ -466,12 +466,12 @@ export default function ModellingConfig({
     [config.refit_on_development, onUpdate],
   )
   const onEstimateDispersion = useCallback(
-    (param: DispersionParam) => runDispersionEstimate({
+    (param: DispersionParam, signal: AbortSignal) => runDispersionEstimate({
       graph: graph(),
       node_id: nodeId,
       param,
       source: useSettingsStore.getState().activeSource,
-    }),
+    }, { signal }),
     [graph, nodeId],
   )
   const onTrain = useCallback(async () => {

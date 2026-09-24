@@ -281,6 +281,7 @@ export async function streamAssistantMessage(
   }
 
   try {
+    // eslint-disable-next-line no-restricted-syntax -- reads one SSE stream to its end; not a job poll
     while (true) {
       const { done, value } = await reader.read()
       if (done) break

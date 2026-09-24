@@ -13,11 +13,12 @@ import {
 import { TERMINAL_JOB_STATUSES } from "../api/types"
 import { dataInputIsDirect } from "../utils/dataInputMode"
 import { NODE_TYPES } from "../utils/nodeTypes"
+import { JobWaitTimeoutError, waitForJob } from "./jobPollingController"
 
 const POLL_INTERVAL_MS = 800
 // A cancelled build is waited for, because a point reports itself as building
 // until its job is terminal and nothing else is polling it by then.
-const CANCELLATION_TERMINAL_POLLS = 60
+const CANCELLATION_WAIT_MS = 60 * POLL_INTERVAL_MS
 
 /**
  * A cancellation that the server did not accept, or whose build never reached a
@@ -114,6 +115,7 @@ async function ensureQuoteInputCache(
     options.signal?.addEventListener("abort", onAbort, { once: true })
     const pollProgress = async () => {
       try {
+        // eslint-disable-next-line no-restricted-syntax -- JSON-cache progress, removed with the json-cache routes in CACHE-S08
         for (;;) {
           await waitForNextPoll(controller.signal)
           const progress = await getJsonCacheProgress(path, { signal: controller.signal })
@@ -165,21 +167,19 @@ function waitForNextPoll(signal?: AbortSignal): Promise<void> {
   })
 }
 
-async function waitForJob(
+async function waitForBuild(
   jobId: string,
   signal?: AbortSignal,
 ): Promise<void> {
   try {
-    for (;;) {
-      if (signal?.aborted) throw abortError()
-      const job = signal
-        ? await getInputCacheJob(jobId, { signal })
-        : await getInputCacheJob(jobId)
-      if (job.status === "completed") return
-      if (TERMINAL_JOB_STATUSES.has(job.status)) {
-        throw new Error(job.message || `Input snapshot build ${job.status}.`)
-      }
-      await waitForNextPoll(signal)
+    const job = await waitForJob({
+      poll: (pollSignal) => getInputCacheJob(jobId, { signal: pollSignal }),
+      isTerminal: (current) => TERMINAL_JOB_STATUSES.has(current.status),
+      intervalMs: POLL_INTERVAL_MS,
+      signal,
+    })
+    if (job.status !== "completed") {
+      throw new Error(job.message || `Input snapshot build ${job.status}.`)
     }
   } catch (caught) {
     if (!signal?.aborted) throw caught
@@ -209,26 +209,28 @@ export async function cancelInputSnapshotBuild(jobId: string): Promise<void> {
     )
   }
   if (TERMINAL_JOB_STATUSES.has(acknowledged.status as never)) return
-  for (let poll = 0; poll < CANCELLATION_TERMINAL_POLLS; poll += 1) {
-    await waitForNextPoll()
-    let job: { status: string }
-    try {
-      job = await getInputCacheJob(jobId)
-    } catch (caught) {
-      // The build was asked to stop but its state is unknown, which is a
-      // failed cancellation rather than an ordinary build error: the caller
-      // must keep offering to stop it.
+  try {
+    await waitForJob({
+      poll: (signal) => getInputCacheJob(jobId, { signal }),
+      isTerminal: (job) => TERMINAL_JOB_STATUSES.has(job.status),
+      intervalMs: POLL_INTERVAL_MS,
+      timeoutMs: CANCELLATION_WAIT_MS,
+    })
+  } catch (caught) {
+    if (caught instanceof JobWaitTimeoutError) {
       throw new CancellationFailedError(
-        `The snapshot build could not be confirmed as stopped: ${
-          caught instanceof Error ? caught.message : String(caught)
-        }`,
+        "The snapshot build did not stop after it was cancelled; it may still be running.",
       )
     }
-    if (TERMINAL_JOB_STATUSES.has(job.status as never)) return
+    // The build was asked to stop but its state is unknown, which is a
+    // failed cancellation rather than an ordinary build error: the caller
+    // must keep offering to stop it.
+    throw new CancellationFailedError(
+      `The snapshot build could not be confirmed as stopped: ${
+        caught instanceof Error ? caught.message : String(caught)
+      }`,
+    )
   }
-  throw new CancellationFailedError(
-    "The snapshot build did not stop after it was cancelled; it may still be running.",
-  )
 }
 
 async function startBuild(
@@ -307,7 +309,7 @@ export async function ensureInputSnapshots(
       notifyBuildStart()
       const jobId = await startBuild(config, options.signal, options.force === true)
       options.onJobStarted?.(jobId)
-      await waitForJob(jobId, options.signal)
+      await waitForBuild(jobId, options.signal)
     }),
   )
 }

@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { OnUpdateConfig } from "../editors"
 import { ApiError } from "../../api/client"
 import type { DispersionParam } from "../../api/types"
@@ -10,6 +10,7 @@ import { OffsetFieldLabel } from "./OffsetFieldLabel"
 import { GLM_FAMILY_LINKS, isGlmFamily, type GlmFamily } from "./glmFamilies"
 import { ColumnSelector } from "./ColumnSelector"
 import { isNumericDtype } from "../../utils/polarsDtypes"
+import useToastStore from "../../stores/useToastStore"
 
 type Column = { name: string; dtype: string }
 
@@ -59,13 +60,17 @@ export type GLMTargetConfigProps = {
   /** Run a profile-likelihood dispersion estimate on the node's training
    *  data and resolve with the value. The estimate is an explicit user
    *  action — the resolved value is filled into the config field for the
-   *  user to accept or adjust, never applied silently. */
-  onEstimateDispersion?: (param: DispersionParam) => Promise<number>
+   *  user to accept or adjust, never applied silently. The signal aborts
+   *  when this panel unmounts. */
+  onEstimateDispersion?: (param: DispersionParam, signal: AbortSignal) => Promise<number>
 }
 
 export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersion }: GLMTargetConfigProps) {
   const [estimating, setEstimating] = useState<DispersionParam | null>(null)
   const [estimateError, setEstimateError] = useState<string | null>(null)
+  // A closed panel has nowhere to show the estimate, so it cancels it.
+  const estimateRef = useRef<AbortController | null>(null)
+  useEffect(() => () => estimateRef.current?.abort(), [])
   const target = configField(config, "target", "")
   const weight = configField(config, "weight", "")
   // No display default: an unselected family must LOOK unselected — the
@@ -87,10 +92,13 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
 
   const handleEstimate = async (param: DispersionParam) => {
     if (!onEstimateDispersion || estimating) return
+    const estimate = new AbortController()
+    estimateRef.current = estimate
     setEstimating(param)
     setEstimateError(null)
     try {
-      const value = await onEstimateDispersion(param)
+      const value = await onEstimateDispersion(param, estimate.signal)
+      if (estimate.signal.aborted) return
       // Filled in, not applied silently: the value lands in the visible,
       // editable field and the user keeps the final say.
       onUpdate(param, value)
@@ -98,9 +106,19 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
       // Prefer the backend's actionable detail ("GLM config has no factors…")
       // over the generic "HTTP 400" message.
       const detail = e instanceof ApiError ? e.detail : undefined
-      setEstimateError(detail || (e instanceof Error ? e.message : String(e)))
+      const message = detail || (e instanceof Error ? e.message : String(e))
+      if (estimate.signal.aborted) {
+        // The panel has closed, so only a cancellation that failed is news: the
+        // estimate may still be running, and a toast outlives the panel.
+        if ((e as { name?: unknown } | null)?.name !== "AbortError") {
+          useToastStore.getState().addToast("error", `Cancelling the dispersion estimate failed: ${message}`)
+        }
+        return
+      }
+      setEstimateError(message)
     } finally {
-      setEstimating(null)
+      if (estimateRef.current === estimate) estimateRef.current = null
+      if (!estimate.signal.aborted) setEstimating(null)
     }
   }
 

@@ -174,7 +174,8 @@ Only a current, accepted save response may acknowledge this revision transition.
    terminal `gpu_vram_limit` message require an explicit CPU selection and retry rather than
    describing an automatic fallback. The optional GLM dispersion action calls the dispersion API
    and writes a successful theta/variance-power estimate through the ordinary editable update
-   callback.
+   callback. `GLMTargetConfig` aborts an estimate still running when it unmounts, which cancels
+   the job and applies no value; a failed cancellation is reported as an error toast.
 4. `frontend/src/panels/ModellingPreview.tsx` computes which tabs have result data, renders only
    those, and resets the active tab when a new result arrives. `SummaryTab` separates selection
    estimates from final-test metrics, renders ordered validation fits and tuning
@@ -203,7 +204,8 @@ Only a current, accepted save response may acknowledge this revision transition.
 3. `useOptimiserAutoRange` is the only authority for auto-range state and
    request identity. Starting or restarting increments a monotonic generation,
    captures the current document/config fence, aborts and best-effort cancels
-   the prior owned job, and polls status every second with an abort-aware delay.
+   the prior owned job, and waits for the status through the shared
+   `waitForJob`, polling every second with the generation's abort signal.
    Only the current generation may publish terminal state or apply completed
    ranges, and completed output is accepted only when every configured
    constraint has a returned finite range. A document/config replacement or

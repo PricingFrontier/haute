@@ -256,8 +256,10 @@ generation statistics and a clear action. Direct Parquet renders no cache
 control; a stored `read`-mode Parquet input is snapshot-backed and renders
 the cache control like any other snapshot input. Snapshot build classification is execution metadata and is not shown
 as technical diagnostic copy in the editor. Builds use `lazy_sink`, except admitted-eager formats use
-`preview_eager`, and refresh a ready snapshot. The adapter polls jobs to a
-terminal result, allows the active button action to cancel the current job,
+`preview_eager`, and refresh a ready snapshot. The adapter waits for jobs to a
+terminal result through the shared `waitForJob`, stops polling (leaving the build
+running) when it unmounts or its configuration changes, allows the active button
+action to cancel the current job,
 and keeps stale readiness reactive so `Source changed since cache — Refresh to
 update.` remains visible. Required source fields gate all build actions.
 

@@ -79,8 +79,9 @@ Out of scope:
   checking. Vitest's blocking global coverage floors are 80% statements, 75%
   branches, 80% functions, and 80% lines, followed by the configured
   source-specific critical-coverage ratchet. ESLint treats useless assignments,
-  discarded caught-error context, unsafe hook refs, and state updates in effects
-  as errors; fourteen pre-existing file/rule pairs remain visible as narrow config
+  discarded caught-error context, unsafe hook refs, state updates in effects, and
+  job-polling loops or intervals outside the shared poller as errors; fifteen
+  pre-existing file/rule pairs remain visible as narrow config
   exceptions until their owning changes land.
 - Execution-strategy diagnostics and Explore chart configuration use a two-stage,
   reviewed contract pipeline. Canonical domain Pydantic models emit one committed

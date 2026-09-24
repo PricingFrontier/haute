@@ -16,6 +16,7 @@ import useDocumentStatusStore, {
   type DocumentExecutionFence,
 } from "../../stores/useDocumentStatusStore"
 import useGraphStore from "../../stores/useGraphStore"
+import { waitForJob } from "../../hooks/jobPollingController"
 import {
   buildExecutionFailureMessage,
   executionErrorDetailMessage,
@@ -163,25 +164,6 @@ function requestErrorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new DOMException("Aborted", "AbortError"))
-      return
-    }
-
-    const onAbort = () => {
-      clearTimeout(timeoutId)
-      reject(new DOMException("Aborted", "AbortError"))
-    }
-    const timeoutId = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort)
-      resolve()
-    }, ms)
-    signal.addEventListener("abort", onAbort, { once: true })
-  })
-}
-
 function validateRanges(
   status: FrontierAutoRangeStatusResponse,
   constraintNames: readonly string[],
@@ -317,19 +299,16 @@ export function useOptimiserAutoRange({
       }
 
       const jobId = start.job_id
-      let status = await getOptimiserFrontierAutoRangeStatus(jobId, {
+      const status = await waitForJob({
+        poll: (signal) => getOptimiserFrontierAutoRangeStatus(jobId, { signal }),
+        isTerminal: (current) => current.status !== "running",
+        intervalMs: POLL_INTERVAL_MS,
         signal: active.controller.signal,
+        // Retiring aborts the run's signal, which ends the wait.
+        onStatus: () => {
+          if (!isCurrent(active)) retire(active)
+        },
       })
-      while (status.status === "running") {
-        await abortableDelay(POLL_INTERVAL_MS, active.controller.signal)
-        if (!isCurrent(active)) {
-          retire(active)
-          return
-        }
-        status = await getOptimiserFrontierAutoRangeStatus(jobId, {
-          signal: active.controller.signal,
-        })
-      }
       if (!isCurrent(active)) {
         retire(active)
         return

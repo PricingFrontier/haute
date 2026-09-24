@@ -38,6 +38,30 @@ export default defineConfig([
       ],
     },
   },
+  // Job polling lives in src/hooks/jobPollingController.ts (the store-tracked
+  // controller and the awaited waitForJob), so browser source may not open its
+  // own unbounded loop or interval.
+  {
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: ['src/**/__tests__/**', 'src/**/*.test.{ts,tsx}'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'ForStatement[init=null][test=null][update=null]',
+          message: 'Wait for a job with waitForJob or JobPollingController (hooks/jobPollingController.ts).',
+        },
+        {
+          selector: 'WhileStatement[test.type="Literal"][test.value=true]',
+          message: 'Wait for a job with waitForJob or JobPollingController (hooks/jobPollingController.ts).',
+        },
+        {
+          selector: 'CallExpression[callee.name="setInterval"], CallExpression[callee.property.name="setInterval"]',
+          message: 'Wait for a job with waitForJob or JobPollingController (hooks/jobPollingController.ts).',
+        },
+      ],
+    },
+  },
   // Exact file/rule debt that predates the blocking severities. New instances
   // elsewhere fail lint; remove each override with its owning-stream fix.
   {
@@ -50,6 +74,14 @@ export default defineConfig([
     files: ['src/types/guards.ts'],
     rules: {
       'preserve-caught-error': 'warn',
+    },
+  },
+  {
+    // Its progress interval goes with the component or onto the shared
+    // poller in CACHE-S08.
+    files: ['src/components/CacheFetchButton.tsx'],
+    rules: {
+      'no-restricted-syntax': 'warn',
     },
   },
   {

@@ -56,7 +56,7 @@
 | `frontend/src/hooks/useClickOutside.ts` | Attaches/detaches a `mousedown` listener that fires `onClose` when the click lands outside `ref`, only while `active`. |
 | `frontend/src/hooks/useDragResize.ts` | Bottom-panel drag-to-resize: DOM-direct mutation while dragging, commits to React state on mouseup. |
 | `frontend/src/hooks/useJobPolling.ts` | Thin React adapter that keeps one `JobPollingController` configured, reconciles the current job record after commit, and disposes it on unmount. |
-| `frontend/src/hooks/jobPollingController.ts` | The single state authority for generic background polling: active poller identities, timers, abort controllers, interval ramp, progress throttling, replacement, terminal completion/error, and disposal. |
+| `frontend/src/hooks/jobPollingController.ts` | The single state authority for generic background polling: active poller identities, timers, abort controllers, interval ramp, progress throttling, replacement, terminal completion/error, and disposal. Also exports `waitForJob`, the only way to await one job's terminal status inside an operation, and its `JobWaitTimeoutError`. |
 | `frontend/src/hooks/useBackgroundJobs.ts` | Wires `useJobPolling` to the optimiser/train/explore/node-data endpoints and the `useNodeResultsStore` and `useNodeDataStore` actions; mounted once in `App.tsx`. |
 | `frontend/src/hooks/useMlflowBrowser.ts` | Lazy-loads MLflow experiments/runs/models/versions for dropdown UIs from one destination (`destination` option: the node's stored value, `""` = the local folder, passed to every discovery request); shared by `ModelScoreEditor`, `OptimiserApplyEditor` (node-editors), and the modelling Export pane's experiment suggestions. |
 | `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern used by `frontend/src/panels/editors/ApiInputEditor.tsx` and `frontend/src/panels/editors/DataInputEditor.tsx` (node-editors). |
@@ -234,16 +234,32 @@ before invoking its callback. These feature parsers tolerate unrelated additive
 fields but reject missing or mistyped required fields with ordinary `Error`
 values; only the shared transport manufactures `ApiError`.
 
-**Client-embedded job polling** (`runDispersionEstimate`): a third polling
-shape alongside `useJobPolling` and `useNodeResultsStore`'s result caches —
-the poll loop lives directly inside the `async` client function rather than
-in a hook or store action. It starts the job, polls
-`getDispersionStatus(jobId)` at the configured interval (500ms by default),
-and resolves or rejects the single outer promise. Because there is no store
-entry for this job, a caller that unmounts mid-poll relies on its own
-`AbortSignal` to stop the loop. An abort after job creation awaits
-`cancelDispersion(jobId)` before the outer promise rejects; cancellation
-failure remains visible.
+**Awaited job waits** (`waitForJob`): a job that one operation starts and
+awaits, with no store entry, is waited for by `waitForJob` in
+`hooks/jobPollingController.ts`. It polls at once and then at the caller's
+fixed interval, calls `onStatus` with each non-terminal status, and resolves
+with the first terminal one. A poll error rejects the wait at once, because
+the transport already retries transient failures. The caller's `AbortSignal`
+rejects the wait with an `AbortError` and aborts the request in flight; the
+deadline (the controller's 24-hour lifetime unless the caller passes a
+shorter `timeoutMs`) rejects it with `JobWaitTimeoutError`. The wait never
+cancels the job; a caller that owns the job decides that. The callers are:
+
+- `runDispersionEstimate`: starts the job, waits at the configured interval
+  (500ms by default) with the caller's signal, and resolves or rejects the
+  single outer promise. An abort after job creation awaits
+  `cancelDispersion(jobId)` before the outer promise rejects; cancellation
+  failure remains visible. `GLMTargetConfig` owns one controller per estimate
+  and aborts it on unmount, so a closed panel cancels its estimate and never
+  applies the value; a cancellation that fails after the panel closed is
+  reported as an error toast, because the estimate may still be running.
+- `ensureInputSnapshots` waits for each build with the ensure pass's signal;
+  `cancelInputSnapshotBuild` waits at most 48 seconds for the cancelled build
+  to stop, then raises `CancellationFailedError`.
+- `InputSnapshotCacheButton` waits for its build with a signal aborted on
+  unmount and when its configuration changes; the server build continues.
+- `useOptimiserAutoRange` waits with the active run's signal and retires the
+  run from `onStatus` once it is no longer current.
 
 **Result-cache write path** (`useNodeResultsStore`): each `complete*Job`
 action first validates the active job's `DocumentExecutionFence`; a stale
@@ -751,7 +767,10 @@ same Vitest config.
   succeeds afterwards.
 - **Generic hooks**: `frontend/src/__tests__/hooks/useClickOutside.test.ts` + `frontend/src/__tests__/hooks/useClickOutside.gaps.test.tsx`,
   `frontend/src/__tests__/hooks/useDragResize.test.ts`, `frontend/src/__tests__/hooks/useJobPolling.test.ts` (root-level, generic
-  poller mechanics) plus the colocated dedup/progress-throttle variants,
+  poller mechanics) plus the colocated dedup/progress-throttle variants and
+  `frontend/src/hooks/__tests__/jobPollingController.test.ts` (controller
+  mechanics and `waitForJob`: terminal resolution, abort in flight, deadline,
+  poll errors, `onStatus` retirement),
   `frontend/src/__tests__/hooks/useBackgroundJobs.test.ts` + `frontend/src/__tests__/hooks/useBackgroundJobs.gaps.test.ts` (root-level, orchestration
   wiring), `frontend/src/__tests__/hooks/useWebSocketSync.test.ts` and
   `frontend/src/__tests__/hooks/useWebSocketSync.gaps.test.ts` (root-level — note

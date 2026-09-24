@@ -13,40 +13,10 @@ Generating the API contract is planned in the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FSH-R01 | Planned | P2 | Every job wait uses the shared poller, which stops on unmount and cancellation. |
 | FSH-R02 | Planned | P3 | One helper each for error messages, number and byte formatting, and debouncing; one modal and table base. |
 | FSH-R03 | Planned | P3 | The results store holds results; validation and optimiser logic move out. |
 
 ## Planned improvements
-
-`FSH-R01` fixes a leak and goes first.
-
-### FSH-R01 — Every job wait uses the shared poller
-**Why:** A shared `jobPollingController` and `useJobPolling` exist, but there
-are sixteen polling implementations. Ad hoc loops live in the cache fetch
-button (`setInterval`), the input-snapshot helpers, the input-snapshot cache
-button, the optimiser auto-range hook and the dispersion client. The
-snapshot cache button's `pollJobToTerminal` is an unbounded `for (;;)` loop
-that polls every 800 ms with no abort signal or timeout, so it keeps polling
-after its component unmounts.
-
-**Plan:** Route every job wait through the shared controller, with an abort
-signal tied to the component or request lifetime and a bounded wait where the
-backend has a timeout.
-
-**Acceptance:** No `for (;;)`, `while (true)` or `setInterval` job loop
-remains outside the shared controller; a test unmounts the snapshot cache
-button mid-build and observes no further status requests.
-
-**Dependencies:** None.
-
-**Evidence:** `frontend/src/hooks/jobPollingController.ts`;
-`frontend/src/hooks/useJobPolling.ts`;
-`frontend/src/panels/editors/_InputSnapshotCacheButton.tsx::pollJobToTerminal`;
-`frontend/src/hooks/ensureInputSnapshots.ts`;
-`frontend/src/components/CacheFetchButton.tsx`;
-`frontend/src/panels/optimiser/useOptimiserAutoRange.ts`;
-`frontend/src/api/dispersion.ts::runDispersionEstimate`.
 
 ### FSH-R02 — One helper per repeated concern
 **Why:** Error messages are extracted from `ApiError` at 27 sites, with

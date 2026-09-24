@@ -23,6 +23,87 @@ export interface JobPollingConfig<TJob, TStatus> {
   failLabel: string
 }
 
+/** An awaited job wait passed its deadline without a terminal status. */
+export class JobWaitTimeoutError extends Error {
+  override name = "JobWaitTimeout"
+  readonly timeoutMs: number
+
+  constructor(timeoutMs: number) {
+    super(`The job did not finish within ${Math.round(timeoutMs / 1_000)} seconds.`)
+    this.timeoutMs = timeoutMs
+  }
+}
+
+export interface WaitForJobOptions<TStatus> {
+  /** Read the job's status; the signal ends with the wait. */
+  poll: (signal: AbortSignal) => Promise<TStatus>
+  isTerminal: (status: TStatus) => boolean
+  /** Delay between one response and the next request. */
+  intervalMs: number
+  /** The lifetime of the component or request that owns the wait. */
+  signal?: AbortSignal
+  /** Defaults to the polling lifetime shared with the controller. */
+  timeoutMs?: number
+  /** Each non-terminal status; it may abort `signal` or throw to end the wait. */
+  onStatus?: (status: TStatus) => void
+}
+
+function jobWaitAborted(): DOMException {
+  return new DOMException("The job wait was aborted.", "AbortError")
+}
+
+/**
+ * Wait for one job that an operation started and awaits, with no store entry
+ * to track it. Rejects on the first poll error, on `signal`, and at the
+ * deadline; the job itself is left to the caller that owns it.
+ */
+export function waitForJob<TStatus>({
+  poll,
+  isTerminal,
+  intervalMs,
+  signal,
+  timeoutMs = MAX_LIFETIME_MS,
+  onStatus,
+}: WaitForJobOptions<TStatus>): Promise<TStatus> {
+  if (signal?.aborted) return Promise.reject(jobWaitAborted())
+  return new Promise<TStatus>((resolve, reject) => {
+    const requests = new AbortController()
+    let settled = false
+    let pollTimeoutId: ReturnType<typeof setTimeout> | undefined
+    const settle = (finish: () => void) => {
+      if (settled) return
+      settled = true
+      clearTimeout(pollTimeoutId)
+      clearTimeout(deadlineId)
+      signal?.removeEventListener("abort", onAbort)
+      requests.abort()
+      finish()
+    }
+    const onAbort = () => settle(() => reject(jobWaitAborted()))
+    const deadlineId = setTimeout(
+      () => settle(() => reject(new JobWaitTimeoutError(timeoutMs))),
+      timeoutMs,
+    )
+    signal?.addEventListener("abort", onAbort, { once: true })
+
+    const request = () => {
+      Promise.resolve()
+        .then(() => poll(requests.signal))
+        .then((status) => {
+          if (settled) return
+          if (isTerminal(status)) {
+            settle(() => resolve(status))
+            return
+          }
+          onStatus?.(status)
+          if (!settled) pollTimeoutId = setTimeout(request, intervalMs)
+        })
+        .catch((error: unknown) => settle(() => reject(error)))
+    }
+    request()
+  })
+}
+
 interface JobPollerState<TStatus> {
   jobId: string
   startedAt: number
