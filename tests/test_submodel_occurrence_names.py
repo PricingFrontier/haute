@@ -93,12 +93,10 @@ def test_parsing_parent_with_label_raises_parse_error() -> None:
         extract_submodel_registrations(tree)
 
     assert exc_info.value.message == (
-        "pipeline.submodel() no longer accepts label=; an occurrence's name is the "
-        "second argument."
+        "pipeline.submodel() no longer accepts label=; an occurrence's name is the second argument."
     )
     assert exc_info.value.context["remediation"] == (
-        "Write pipeline.submodel(<path>, <name>) and let the child file declare its "
-        "definition id."
+        "Write pipeline.submodel(<path>, <name>) and let the child file declare its definition id."
     )
     assert exc_info.value.context["path"] == "modules/pricing.py"
     assert exc_info.value.context["line"] == 1
