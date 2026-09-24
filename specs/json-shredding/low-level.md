@@ -30,7 +30,7 @@ the server (see [IO layer](../io-layer/low-level.md#automatic-preparation)).
 | `src/haute/_json_shred/_cache.py` | The runtime apiInput loader: store-leased tables for canvas execution, an in-process bounded shred for generated standalone code. |
 | `src/haute/_json_safe.py` | Recursively converts Python/pipeline values into JSON-safe representations for API responses and preview rows. |
 | `src/haute/_jsonpath.py` | The shared canonical array-outer JSON path parser and writer used by both INPUT and OUTPUT path addressing. |
-| `src/haute/_output_assembler.py` | V2 OUTPUT mapping validation and document assembly: GYO residue/cut planning, bag-natural joins, array-prefix nesting, pruning, and collected-frame rendering. |
+| `src/haute/_output_assembler.py` | V2 OUTPUT mapping validation (including one source frame per array level) and document assembly: array-prefix nesting by relation keys, pruning, and collected-frame rendering. |
 | `src/haute/_edge_join.py` | `edgeJoin` node config validation, Polars join-kwargs construction/execution, and the shared join column-demand-narrowing function used by both static projection and runtime narrowing. |
 
 Submodel graph expansion and boundary rewiring are owned by
@@ -55,8 +55,6 @@ Submodel graph expansion and boundary rewiring are owned by
 - `OutputMappingSchemaError(HauteError)` is the OUTPUT grammar/structural mapping
   error. `OutputNestingKeyError(OutputMappingSchemaError)` is the fail-loud
   relation-key-null error with stable `frame`, `output_path`, and `key` fields.
-  `_Core` and `_CutPlan` record the deterministic feedback-edge cut and the
-  residual per-frame fields used for same-level assembly.
 - An active mapping row is enabled and has non-blank `source_column` and
   `output_path` fields; incomplete editor rows are ignored consistently by
   validation, contracts, projection demand, and assembly. Every consumer uses
@@ -171,17 +169,12 @@ columns to output paths, and passes the field frames to `_assemble_document`. Th
 validator parses every distinct active path once, sorts the parsed destinations, and
 uses adjacent comparisons for duplicate/prefix and array-prefix-chain conflicts
 (`O(n log n)`, not an `O(n²)` pair scan). It also rejects divergent emit prefixes
-within one source frame before any frame collection. `_assemble_document` resolves
-the lazy schemas before data materialisation, groups frames by their emit prefix, and
-collects the final plan for each emitting prefix exactly once. In particular, frames
-emitting at the same array prefix are not first collected individually and then read
-again for their join. They are planned by `_plan_cut` and `_execute_plan` before the
-single collection; residual shared fields are full bag-
-joined (fan-out is retained), cut/disconnected groups are diagonal-concatenated as
-partials, and joins preserve the deterministic sorted-member left-to-right row order
-(`maintain_order="left_right"`) under both automatic and streaming Polars execution.
-Every fold member must overlap the accumulated connected component; a violated plan
-invariant fails loudly instead of falling back to an unbounded Cartesian join.
+within one source frame and, across frames, a second frame whose emit prefix (its
+deepest array prefix) is already taken, naming both frames and one path from each —
+all before any frame collection. `_assemble_document` resolves the lazy schemas
+before data materialisation, maps each emit prefix to its one frame (raising the same
+`OutputMappingSchemaError` if called directly with two frames at one level), and
+collects each emitting frame exactly once. It never joins frames.
 The prefix-tree builder nests child arrays by ancestor values without
 joining siblings. An object's identity at a level is the tuple of its own leaf
 values, canonicalised by `_identity`: scalars (including `None`) pass through
@@ -723,8 +716,9 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   `OutputMappingSchemaError` from the OUTPUT side — carrying the offending
   `output_path`.
 - `OutputMappingSchemaError` covers a non-array root, two different columns from
-  one port targeting the same path, leaf/container prefix collisions, and one frame
-  targeting divergent emit prefixes. `assemble_output_from_mapping` itself runs the
+  one port targeting the same path, leaf/container prefix collisions, one frame
+  targeting divergent emit prefixes, and two frames emitting at the same array
+  level (`source_ports` names both). `assemble_output_from_mapping` itself runs the
   validator before collecting any frame, so direct/runtime and route callers receive
   the same typed failure. Missing `frames[port]` or `pl.col(source_column)` failures
   remain loud and are never converted into an empty output.
@@ -832,13 +826,13 @@ V2 schema codec and OUTPUT shape:
   rules.
 - `tests/test_output_assembler.py` and
   `tests/test_output_assembler_mutation_witnesses.py` own mapping validation,
-  focused mutation boundaries, deterministic cyclic
-  cuts, bag fan-out, unmatched partials, sibling-array non-explosion, pruning,
+  focused mutation boundaries, the rejection of two frames at one array level
+  (the root or a nested level, before any frame is collected), sibling-array
+  non-explosion, pruning,
   rendering, exact assembled shapes, one-parse-per-distinct-path validation,
   incomplete editor rows, multi-frame relation keys absent from a
   non-participating frame, and limited assembly (the first documents read only
-  their own children's rows, limited multi-port levels emit unlimited documents,
-  a synthesised root is complete, duplicate root rows collapse, and a limited level
+  their own children's rows, a synthesised root is complete, duplicate root rows collapse, and a limited level
   filters on its nearest collected ancestor's own key with `is_in`, semi-joins on
   several, and reads every row when it carries none);
   `tests/test_output_nest_example_contract.py`

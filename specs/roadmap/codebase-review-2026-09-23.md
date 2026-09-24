@@ -342,7 +342,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §1.6 Frontier point derived twice | `OPT-P18` ([optimiser](optimiser.md)) |
 | §1.7 Swallowed exceptions | `MLF-R01` ([MLflow model registry](mlflow-model-registry.md)), `MOD-T09` ([modelling](modelling.md)), `OPT-P17` ([optimiser](optimiser.md)) |
 | §1.8 Unbounded poll loop | `FSH-R01` ([frontend shared](frontend-shared.md)) |
-| §1.8 Three non-finite float encodings | `JSON-R01` ([JSON shredding](json-shredding.md)) |
+| §1.8 Three non-finite float encodings | `JSON-R01` (JSON shredding, delivered; its roadmap file is retired) |
 | §1.8 Permissive dtype names; dtype mapping ×7 | `IO-R01` (IO layer, delivered; its roadmap file is retired) |
 | §1.8 Fixed-name atomic write; lock wrappers | `IO-R02` (IO layer, delivered; its roadmap file is retired) |
 | §1.8 Path containment ×5 | `SBX-R01` ([sandbox security](sandbox-security.md)) |
@@ -352,7 +352,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §2.3 Unreferenced and test-only code | `ENGQ-R01` ([engineering quality](engineering-quality.md)); the preview-reader protocol is `TRACE-R02` ([tracing](tracing.md)) |
 | §2.4 Per-request chunk-size knob | `EXEC-R01` ([execution engine](execution-engine.md)), with §1.1 |
 | §2.5 Assistant legacy catalogue and harnesses | `ASSIST-R01` ([assistant](assistant.md)) |
-| §2.6 Tracked artifacts and the `rating/` reference | `ENGQ-R02` ([engineering quality](engineering-quality.md)); the external assembler document is `JSON-R02` ([JSON shredding](json-shredding.md)) |
+| §2.6 Tracked artifacts and the `rating/` reference | `ENGQ-R02` ([engineering quality](engineering-quality.md)); the external assembler document is `JSON-R02` (JSON shredding, delivered; its roadmap file is retired) |
 | §3.1 Error translation | `API-R01` ([server API](server-api.md)) |
 | §3.1 HTTP types in services | `API-R02` ([server API](server-api.md)) |
 | §3.1 Three worker mechanisms | `ROAD-WORKER-05` ([background jobs](background-jobs-api.md)) |
@@ -375,7 +375,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §4.5 Trace row identity | `TRACE-R01` ([tracing](tracing.md)) |
 | §4.6 Recovery and repair scope | `API-R04` ([server API](server-api.md)) |
 | §4.7 Four reuse mechanisms | `SUB-R01` ([submodels](submodels.md)) |
-| §4.8 Implicit-join output assembly | `JSON-R02` ([JSON shredding](json-shredding.md)) |
+| §4.8 Implicit-join output assembly | `JSON-R02` (JSON shredding, delivered; its roadmap file is retired) |
 | §4.9 Node-code guard | `SBX-R02` ([sandbox security](sandbox-security.md)) |
 | §4.10 Codegen decorator splice | `CODEGEN-R01` (codegen, delivered; its roadmap file is retired) |
 | §4.10 Node registry | `PCFG-R09` ([pipeline config](pipeline-config.md)) |

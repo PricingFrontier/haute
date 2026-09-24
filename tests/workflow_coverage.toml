@@ -649,7 +649,7 @@ tests = [
   "tests/test_output_assembler.py::test_validate_rejects_two_columns_on_one_path",
   "tests/test_v2_codec_and_shred.py::test_validate_rejects_duplicate_table_labels",
   "tests/test_json_shred_parallel.py::test_byte_ranges_read_back_every_record_in_order",
-  "tests/test_output_assembler.py::test_same_level_join_output_follows_the_first_source_then_unmatched_later_rows",
+  "tests/test_output_assembler.py::test_validate_rejects_two_frames_emitting_at_one_array_level",
   "tests/test_v2_codec_and_shred.py::test_validate_v2_schema_rejects_invalid_declared_scalars",
   "tests/test_scalar_array_and_inference.py::test_build_bool_in_numeric_column_fails_loud",
   "tests/test_json_shred_w1_conservation.py::test_build_conserves_root_rows_and_accounts_skips",

@@ -31,9 +31,8 @@ editor's cache control and the OUTPUT nesting rule have settled.
 **Acceptance:** The copied block is a single component; editor tests pass.
 
 **Dependencies:** `CACHE-S08` ([caching](caching.md)) replaces the API Input
-editor's cache control, and `JSON-R02` ([JSON shredding](json-shredding.md),
-a Decision) settles how OUTPUT nesting is declared, which the Output side of
-the block edits.
+editor's cache control. OUTPUT nesting is settled: one source frame per array
+level, which the Output side of the block mirrors as a validation message.
 
 **Evidence:** `frontend/src/panels/editors/ApiInputEditor.tsx`;
 `frontend/src/panels/editors/OutputEditor.tsx`.

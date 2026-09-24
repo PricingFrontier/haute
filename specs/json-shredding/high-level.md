@@ -30,9 +30,9 @@ In scope:
 - The v2 apiInput schema codec: shape recognition, shared table/column path
   parsing, canonical path writing, structural validation, and filesystem-safe
   table labels.
-- The v2 OUTPUT mapping contract and document assembler, including same-level
-  cyclic-table cut planning, bag-natural joins, array-prefix nesting, and the
-  final response-document shape.
+- The v2 OUTPUT mapping contract and document assembler: one source frame per
+  array level, array-prefix nesting by relation keys, and the final
+  response-document shape.
 - Validating and executing `edgeJoin` node configuration (Polars join construction).
 - The shared array-outer JSON path grammar (acceptance, canonical form, parsing).
 - Converting arbitrary Python/pipeline values into JSON-safe payloads for API
@@ -155,18 +155,16 @@ or at an ancestor boundary so an ancestor value can be distributed into child
 rows. The OUTPUT side consumes only active, complete mapping rows and requires
 the same single array-outer path grammar: `$[:]` at the root, dotted ASCII
 identifier keys, and `[:]` for array traversal. Its explicit structural
-validator rejects same-port duplicate or prefix-comparable destinations and a
-single source frame mapped to divergent emit prefixes. The runtime assembler invokes
+validator rejects same-port duplicate or prefix-comparable destinations, a
+single source frame mapped to divergent emit prefixes, and two source frames that
+emit at the same array level. The runtime assembler invokes
 that validator before frame collection, so dry-run, direct runtime, generated, and
 deployed execution share one acceptance boundary. Validation scales with the
 mapping set rather than repeatedly reparsing every pair of paths. Incomplete
 editor rows are inactive and ignored consistently.
-Assembly returns a top-level list of objects:
-sibling array branches are nested independently (never cross-multiplied),
-same-level frames use a deterministic cut plan and bag semantics, unmatched
-partials survive, and same-level joins retain deterministic source-row order
-(the sorted left source first, followed by unmatched rows from later sources).
-Null-valued/empty-collection object fields are pruned
+Assembly returns a top-level list of objects built by the algorithm below:
+sibling array branches are nested independently (never cross-multiplied), and
+the assembler joins nothing. Null-valued/empty-collection object fields are pruned
 from the rendered document (null or empty-list elements already inside arrays
 remain array elements). A relation key is checked only in frames that actually
 carry that key: a missing column in another mapping frame is absence, not a null.
@@ -182,6 +180,45 @@ JSON-scalar compatibility rule: genuine scalars can render deterministically int
 declared string, while objects and arrays remain shape values and fail or count as
 shape mismatches. Inference rejects source keys outside the canonical ASCII
 identifier grammar (and the reserved `$value` sentinel) before returning a schema.
+
+**OUTPUT assembly.** This is the whole assembly algorithm; nothing outside this
+specification defines it.
+
+1. *Frames and fields.* Each active mapping row renames one column of one source
+   frame (its `source_port`) to one output path; a column mapped to several paths
+   appears once per path. A frame's *fields* are its output paths.
+2. *Levels.* A path's *array prefix* is the sequence of its `[:]` segments; the
+   root `$[:]` is the empty prefix. A frame *emits* at its deepest array prefix —
+   the structural validator has already required its prefixes to form one chain
+   — and carries its shallower paths as keys for nesting. The *levels* of the
+   document are every emitting prefix and all of its ancestors.
+3. *One frame per level.* At most one frame emits at a level (decided
+   24 September 2026). Two frames at one level are rejected by the structural
+   validator before any frame is collected, naming both frames; the assembler
+   never joins frames. Frames that describe the same objects are combined
+   upstream, where the join is an explicit, reviewable pipeline node.
+4. *Level objects.* An emitting level's objects are its frame's rows, grouped by
+   the level's *own* fields (the paths whose array prefix is that level) in
+   first-occurrence order; an object's identity is the tuple of its own leaf
+   values, container values canonicalised to hashable tuples. A level no frame
+   emits at is synthesised from the rows of the frames below it, grouped the same
+   way by the ancestor values those rows carry.
+5. *Nesting.* Assembly descends the level tree carrying a *scope* of relation
+   keys. Under each parent object, the parent level's own fields that the child's
+   subtree carries join the scope with that object's values, and the child level
+   takes the rows whose values equal the scope on every key in it; a row that
+   lacks a scope key matches no parent object. A level whose scope is empty takes
+   every row of its level. Sibling levels are assembled independently, so the
+   document costs the sum of the branch sizes, never their product.
+6. *Nulls.* A present null in a relation key raises `OutputNestingKeyError`
+   naming the frame, path and key; a frame that does not carry the key is not a
+   participant. Null object fields and empty arrays and objects are then pruned
+   from the document.
+7. *Limits.* A row-limited assembly reads the first rows of an emitting root
+   level and, for each deeper emitting level, only the rows whose relation keys
+   match its nearest collected ancestor level, so every returned top-level object
+   equals the unlimited assembly's object for the same root rows. A synthesised
+   root has no rows of its own to limit and is assembled in full.
 
 **Edge Join semantics.** The built-in `edgeJoin` accepts exactly the Polars
 strategies `inner`, `left`, `right`, `full`, `semi`, `anti`, and `cross`.
@@ -203,6 +240,14 @@ same array depth are siblings in the same table, because addressing through an
 object never changes cardinality. Treating every nesting level as a new table would
 produce a table explosion with mostly 1-row joins; folding 1-1 objects into dotted
 columns keeps the shredded schema close to what a user actually wants to query.
+
+**One frame per array level; joins belong in the pipeline.** Earlier releases
+joined frames that emitted at the same array level on the output paths they
+shared, which needed GYO α-acyclicity reduction, cyclic-core detection, recursive
+cut planning, full-outer bag joins and leftover partial objects, and hid a join the
+author never configured inside the OUTPUT node. With one frame per level every
+document is a tree walk, cycles cannot be expressed, and any join is an explicit
+Join node with its own keys and strategy.
 
 **Every dropped element is counted, never silently discarded.** Every array element resolves
 cleanly, fails loud (a genuine structural mismatch, e.g. a dotted leaf crossing a
@@ -270,8 +315,8 @@ strict build and raises a specific, column-named error instead.
   mid-walk.
 - Every OUTPUT assembly entry point calls the structural validator before frame
   collection. Malformed syntax, duplicate/prefix conflicts, divergent per-frame
-  emit prefixes, and missing source ports/columns therefore fail loudly rather than
-  becoming ambiguous or empty output.
+  emit prefixes, two frames emitting at one array level, and missing source
+  ports/columns therefore fail loudly rather than becoming ambiguous or empty output.
 - Any active parent or child row whose *present* simple/composite relation key has a
   null component raises `OutputNestingKeyError(OutputMappingSchemaError)` with
   `frame`, `output_path`, and `key`; the HTTP adapter maps it to 422. A frame that
