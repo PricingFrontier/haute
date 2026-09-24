@@ -25,11 +25,14 @@ from haute._execution_context import (
     ExecutionCancellationToken,
     ExecutionCancelledError,
     ExecutionContext,
-    ExecutionFaultPoint,
+    ExecutionEvidence,
+    ExecutionLease,
+    ExecutionMemoryBudget,
     ExecutionMemoryLimitExceededError,
     ExecutionMetricsRecorder,
     ExecutionProfile,
     ExecutionStageMetric,
+    ExecutionTelemetry,
     ExecutionTelemetryEvent,
     _bounded_telemetry_attributes,
 )
@@ -38,6 +41,7 @@ from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.errors import ContractMismatchError, SchemaMismatchError
 from haute.graph_utils import NodeType, _execute_eager_core, _execute_lazy
 from haute.schemas import ExecutionMetricsPayload
+from tests._execution_faults import ExecutionFaultPoint, FaultInjectingExecutionContext
 from tests.conftest import (
     make_edge,
     make_file_output_config,
@@ -1100,16 +1104,143 @@ def test_cancellation_latency_uses_first_request_and_meets_controlled_checkpoint
     )
 
 
-def test_execution_fault_points_are_ordered_and_include_bounded_context() -> None:
-    points: list[ExecutionFaultPoint] = []
+def test_execution_contexts_carry_no_fault_injection() -> None:
+    from haute import _execution_context as context_mod
+
+    assert not hasattr(context_mod, "ExecutionFaultPoint")
+    assert not hasattr(ExecutionContext, "fault_point")
+    with pytest.raises(TypeError, match="fault_injector"):
+        ExecutionContext(
+            operation="fault-test",
+            profile=ExecutionProfile.LAZY_SINK,
+            fault_injector=print,  # type: ignore[call-arg]
+        )
+
+
+def _crossed_thresholds(budget: ExecutionMemoryBudget, rss_bytes: int) -> list[int]:
+    events = budget.pressure_events(
+        rss_bytes,
+        operation="budget-only",
+        profile=ExecutionProfile.LAZY_SINK,
+        job_id=None,
+        stage=None,
+        node_id=None,
+        label="probe",
+    )
+    return [event.threshold_percent for event in events]
+
+
+def test_budget_and_lease_work_without_either_recorder() -> None:
+    budget = ExecutionMemoryBudget(memory_limit_bytes=100, memory_baseline_bytes=0)
+
+    budget.enforce(50, operation="budget-only", job_id=None)
+    assert _crossed_thresholds(budget, 95) == [50, 75, 90]
+    assert _crossed_thresholds(budget, 99) == []
+    # A process cap at or below the baseline leaves no window to measure pressure in.
+    capped = ExecutionMemoryBudget(
+        memory_limit_bytes=100, memory_baseline_bytes=100, rss_limit_bytes=50
+    )
+    assert _crossed_thresholds(capped, 60) == []
+    with pytest.raises(ExecutionMemoryLimitExceededError) as exc_info:
+        budget.enforce(101, operation="budget-only", job_id="job-1")
+    assert exc_info.value.reason == "rss_exceeds_memory_limit"
+
+    released: list[str] = []
+    lease = ExecutionLease(lambda: released.append("admission"))
+    lease.add_cleanup(lambda: released.append("first"))
+    lease.add_cleanup(lambda: released.append("second"))
+    lease.release()
+    lease.release()
+    assert released == ["second", "first", "admission"]
+    assert lease.released
+
+
+def test_context_reads_its_limits_admission_and_sampler_through_its_budget() -> None:
+    def sampler() -> int:
+        return 10
+
     context = ExecutionContext(
+        operation="read-through",
+        profile=ExecutionProfile.LAZY_SINK,
+        memory_limit_bytes=100,
+        rss_limit_bytes=150,
+        memory_sampler=sampler,
+    )
+
+    assert context.memory_limit_bytes == context.budget.memory_limit_bytes == 100
+    assert context.rss_limit_bytes == context.budget.rss_limit_bytes == 150
+    assert context.admission is context.budget.admission is None
+    assert context.memory_sampler is context.budget.sampler is sampler
+
+
+def test_evidence_rejects_invalid_widths_and_byte_counts() -> None:
+    evidence = ExecutionEvidence()
+
+    with pytest.raises(ValueError, match="non-empty node_id"):
+        evidence.record_column_widths(node_id="")
+    with pytest.raises(ValueError, match="input_width must be a non-negative integer"):
+        evidence.record_column_widths(node_id="node-1", input_width=-1)
+    with pytest.raises(ValueError, match="output_width must be a non-negative integer"):
+        evidence.record_column_widths(node_id="node-1", output_width=True)
+    with pytest.raises(ValueError, match="non-negative integers"):
+        evidence.record_bytes_written(-1)
+
+
+def test_cancellation_latency_keeps_the_first_observed_value() -> None:
+    clock = iter([10.0, 10.025, 10.5])
+    token = ExecutionCancellationToken(monotonic_clock=lambda: next(clock))
+    context = ExecutionContext(
+        operation="cancel", profile=ExecutionProfile.LAZY_SINK, cancellation_token=token
+    )
+
+    token.cancel()
+    for _ in range(2):
+        with pytest.raises(ExecutionCancelledError):
+            context.checkpoint(label="after-cancel")
+
+    assert context.metrics_payload()["cancellation_latency_ms"] == pytest.approx(25.0)
+
+
+def test_terminal_telemetry_skips_live_statuses_and_logs_without_a_sink() -> None:
+    telemetry = ExecutionTelemetry(enabled=True)
+
+    with patch("haute._execution_context.logger") as log:
+        telemetry.emit_terminal({"status": "running"})
+        log.info.assert_not_called()
+        telemetry.emit_terminal({"status": "completed"})
+        telemetry.emit_terminal({"status": "completed"})
+
+    log.info.assert_called_once()
+    assert log.info.call_args.args == ("execution_terminal",)
+
+
+@pytest.mark.meta
+def test_no_class_in_the_execution_context_module_exceeds_300_lines() -> None:
+    """The execution-engine specification caps every class in the module at 300 lines."""
+    import ast
+
+    from haute import _execution_context as context_mod
+
+    tree = ast.parse(Path(context_mod.__file__).read_text(encoding="utf-8"))
+    sizes = {
+        node.name: node.end_lineno - node.lineno + 1
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.end_lineno is not None
+    }
+    assert "ExecutionContext" in sizes
+    assert {name: size for name, size in sizes.items() if size > 300} == {}
+
+
+def test_fault_injecting_context_reports_checkpoints_in_order() -> None:
+    points: list[ExecutionFaultPoint] = []
+    context = FaultInjectingExecutionContext(
         operation="fault-test",
         profile=ExecutionProfile.LAZY_SINK,
         fault_injector=points.append,
     )
 
     context.checkpoint(label="before-node", node_id="node-1")
-    context.fault_point("response_shaping", node_id="node-1")
+    context.checkpoint(label="after-node")
 
     assert points == [
         ExecutionFaultPoint(
@@ -1119,9 +1250,9 @@ def test_execution_fault_points_are_ordered_and_include_bounded_context() -> Non
             sequence=1,
         ),
         ExecutionFaultPoint(
-            name="response_shaping",
+            name="after-node",
             operation="fault-test",
-            node_id="node-1",
+            node_id=None,
             sequence=2,
         ),
     ]
@@ -1132,7 +1263,7 @@ def test_execution_fault_injector_failure_propagates_before_checkpoint_work() ->
         assert point.name == "before-native"
         raise RuntimeError("deterministic fault")
 
-    context = ExecutionContext(
+    context = FaultInjectingExecutionContext(
         operation="fault-test",
         profile=ExecutionProfile.LAZY_SINK,
         fault_injector=inject,
@@ -1154,9 +1285,8 @@ def test_execution_telemetry_disabled_mode_never_calls_sink() -> None:
         telemetry_sink=events.append,
     )
 
-    with patch.object(
-        ExecutionContext,
-        "_telemetry_attributes",
+    with patch(
+        "haute._execution_context._terminal_telemetry_attributes",
         side_effect=AssertionError("disabled telemetry assembled attributes"),
     ):
         context.metrics_payload(status="completed")
@@ -1266,8 +1396,9 @@ def test_telemetry_attribute_failure_does_not_change_metrics_payload() -> None:
     context = ExecutionContext(
         operation="telemetry", profile=ExecutionProfile.LAZY_SINK, telemetry_enabled=True
     )
-    with patch.object(
-        ExecutionContext, "_telemetry_attributes", side_effect=RuntimeError("bad telemetry")
+    with patch(
+        "haute._execution_context._terminal_telemetry_attributes",
+        side_effect=RuntimeError("bad telemetry"),
     ):
         assert context.metrics_payload(status="completed")["status"] == "completed"
 
@@ -1291,30 +1422,29 @@ def test_preview_cache_unpins_entry_when_preview_projection_fails(tmp_path) -> N
 
 
 def test_execute_graph_response_shaping_fault_releases_preview_cache_pin(
-    tmp_path,
+    tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from haute import executor
     from haute.executor import _preview_cache, execute_graph
 
     data_path = tmp_path / "input.parquet"
     pl.DataFrame({"a": [1, 2]}).write_parquet(data_path)
     graph = make_graph({"nodes": [make_source_node("source", str(data_path))], "edges": []})
 
-    def inject(point: ExecutionFaultPoint) -> None:
-        if point.name == "response_shaping":
-            raise RuntimeError("response shaping fault")
+    def fail_response_shaping(**_fields: object) -> None:
+        raise RuntimeError("response shaping fault")
 
-    context = ExecutionContext(
-        operation="preview",
-        profile=ExecutionProfile.PREVIEW_EAGER,
-        fault_injector=inject,
-    )
+    monkeypatch.setattr(executor, "NodeResult", fail_response_shaping)
 
     with pytest.raises(RuntimeError, match="response shaping fault"):
         execute_graph(
             graph,
             target_node_id="source",
             target_preview_only=True,
-            execution_context=context,
+            execution_context=ExecutionContext(
+                operation="preview",
+                profile=ExecutionProfile.PREVIEW_EAGER,
+            ),
         )
 
     assert _preview_cache.stats()["pinned_entries"] == 0
@@ -1556,7 +1686,7 @@ def test_stage_exit_reports_every_internal_finalization_failure(
 
     with pytest.raises(RuntimeError, match="stage stack is unbalanced") as exc_info:
         with context.stage("collect", node_id="node-1"):
-            context._active_stage_stack().clear()
+            context._open_stages.stack.clear()
 
     notes = getattr(exc_info.value, "__notes__", ())
     assert any("LookupError: context reset failed" in note for note in notes)
@@ -2080,7 +2210,7 @@ def test_admitted_execution_context_uses_profile_specific_memory_limit(monkeypat
     assert context.admission.profile == ExecutionProfile.PREVIEW_EAGER
     assert context.admission.memory_limit_bytes == 512 * 1024 * 1024
     assert context.admission.rss_at_admission_bytes == 128 * 1024 * 1024
-    assert context.memory_baseline_bytes == 128 * 1024 * 1024
+    assert context.budget.memory_baseline_bytes == 128 * 1024 * 1024
     assert context.rss_limit_bytes == 640 * 1024 * 1024
     assert context.admission.rss_limit_bytes == 640 * 1024 * 1024
     assert context.admission.headroom_bytes == 512 * 1024 * 1024
@@ -2104,11 +2234,11 @@ def test_isolated_context_uses_plain_parent_budget_without_reserving_twice(
     child = create_isolated_execution_context(budget)
 
     assert budget.memory_limit_bytes == 64 * 1024 * 1024
-    assert child.memory_baseline_bytes == 200
+    assert child.budget.memory_baseline_bytes == 200
     assert child.rss_limit_bytes == 200 + 64 * 1024 * 1024
     assert child.admission is not None
     assert child.admission.operation == "pipeline_preview"
-    assert child.admission_release is None
+    assert child.lease.admission_release is None
     child.release_admission()
     parent.release_admission()
 
@@ -2216,16 +2346,17 @@ def test_terminal_calibration_ignores_invalid_positive_evidence() -> None:
     context = ExecutionContext(operation="preview", profile=ExecutionProfile.PREVIEW_EAGER)
     diagnostic = SimpleNamespace(strategy=SimpleNamespace(value="materialisation-boundary"))
 
-    context._record_estimate_calibration(
+    context.evidence.record_estimate_calibration(
         {
             "status": "completed",
             "raw_estimated_bytes": True,
             "observed_peak_rss_growth_bytes": 1,
         },
+        profile=context.profile,
         diagnostic=diagnostic,
     )
 
-    assert context._estimate_calibration_recorded is False
+    assert context.evidence._calibration_recorded is False
 
 
 def test_isolated_context_uses_admitted_headroom_and_absolute_process_cap(
@@ -2258,7 +2389,7 @@ def test_isolated_context_uses_admitted_headroom_and_absolute_process_cap(
     assert budget.memory_limit_bytes == 25
     assert budget.process_rss_limit_bytes == 125
     assert child.memory_limit_bytes == 25
-    assert child.memory_baseline_bytes == 110
+    assert child.budget.memory_baseline_bytes == 110
     assert child.rss_limit_bytes == 125
     assert child.admission is not None
     assert child.admission.headroom_bytes == 15
@@ -2337,7 +2468,7 @@ def test_admitted_execution_context_allows_warm_process_above_operation_budget(
         memory_sampler=lambda: next(samples),
     )
 
-    assert context.memory_baseline_bytes == 2 * gib
+    assert context.budget.memory_baseline_bytes == 2 * gib
     assert context.memory_limit_bytes == 512 * mib
     assert context.rss_limit_bytes == 2 * gib + 512 * mib
     context.checkpoint(label="within-operation-growth-budget")
@@ -2386,7 +2517,7 @@ def test_process_rss_cap_catches_cumulative_warm_process_ratcheting(
         memory_sampler=lambda: next(samples),
     )
 
-    assert context.memory_baseline_bytes == 900 * mib
+    assert context.budget.memory_baseline_bytes == 900 * mib
     assert context.memory_limit_bytes == 512 * mib
     assert context.rss_limit_bytes == 1024 * mib
     with pytest.raises(ExecutionMemoryLimitExceededError) as exc_info:
@@ -3463,7 +3594,7 @@ async def test_preview_route_admits_when_warm_process_rss_exceeds_operation_budg
 
     assert response.status == "ok"
     context = captured["execution_context"]
-    assert context.memory_baseline_bytes == 2 * gib
+    assert context.budget.memory_baseline_bytes == 2 * gib
     assert context.rss_limit_bytes == 2 * gib + 384 * 1024 * 1024
 
 

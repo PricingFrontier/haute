@@ -16,10 +16,10 @@
 | `src/haute/_column_lineage.py` | Fail-closed AST interpreter for linear Polars frame programs: exact forward schema transfer, per-input backward column demand, and a closed row-effect class (row-preserving, row-non-increasing, bounded-expansion, or unavailable) for the supported operation vocabulary, plus the audited per-namespace registry of `str`/`dt` expression methods whose bare string arguments Polars parses as literals and the audited `_LITERAL_ARGUMENT_EXPRESSION_METHODS` registry of plain-expression replacement methods whose arguments it parses as literals. |
 | `src/haute/_polars_operations.py` | The closed, receiver-aware registry of recognised Polars operations (`PolarsOperation` entries keyed by receiver, namespace, and name) with their class, recompute cost (`costly_to_recompute=`), slice transparency (`slice_transparent=`), evidence-backed policy, expansion, chunk-proof status, lineage support, and materialisation memory factor in basis points, plus the lookup helpers the chunk classifier, the lineage/cardinality analyser, and the planner derive their vocabularies from. Import-time validation rejects duplicate keys and class/policy/expansion combinations that contradict each other. |
 | `src/haute/_polars_selectors.py` | Literal Polars column selectors: `preamble_selector_aliases` (the preamble's `polars.selectors` import aliases), `literal_selector` (the closed grammar that rebuilds a selector written with literal arguments as the Polars object, accepted only when Polars reports a pure column selection), `selector_root` (the selector a computation starts from), and `expand_literal_selector` (expansion against a column set by Polars, refusing positional selectors and dtype-dependent selectors without every dtype). |
-| `src/haute/_execution_context.py` | `ExecutionContext`, `ExecutionProfile`, `ExecutionCancellationToken`, `ExecutionMetricsRecorder`, deterministic request-local fault points, bounded opt-in terminal telemetry, cancellation-latency evidence, cleanup precedence, and RSS-sampling/memory-pressure-event machinery. Contexts created directly may be unbudgeted; admitted contexts carry the resolved limits. |
+| `src/haute/_execution_context.py` | `ExecutionContext`, the thin per-run composition, and its parts: `ExecutionCancellationToken`, `ExecutionMemoryBudget` (limits, RSS probe, enforcement and memory-pressure thresholds), `ExecutionLease` (cleanup precedence and the one admission release), `ExecutionMetricsRecorder`, `ExecutionEvidence` (aggregate counters, cancellation latency and estimate calibration), `ExecutionProvenance` (input preparation, snapshot seeds and captures, write outcomes and warnings, exchanged with workers) and `ExecutionTelemetry` (bounded opt-in terminal telemetry); plus `ExecutionProfile`. No class in the module exceeds 300 lines. Contexts created directly may be unbudgeted; admitted contexts carry the resolved limits. |
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
 | `src/haute/_chunked_writes.py` | Bounded chunked writes: `sliceable` (positive proof on Polars' optimised IR that slicing a frame equals slicing its single Parquet/IPC scan or in-memory input), `write_parts` (a node output as ordered `part-NNNNN.parquet` files: a chunked edge join, one native sink per slice, an input-sliced write, or one native sink), `JoinRecipe`, `WriteRecipe`, `reads_only_memory`, `part_paths`/`scan_parts`. |
-| `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve fault, collect-count, and typed-error telemetry. `bounded_collect_batches` streams batches from a query run on a dedicated thread, so an engine panic raises instead of ending the stream early. It also owns the Python scans that expose opaque Python steps to Polars pushdown (`row_local_python_scan`, `fanout_python_scan`, `limited_python_scan`, `key_prefix_python_scan`) and the parked scan-failure registry every collect seam re-raises from. |
+| `src/haute/_polars_utils.py` | Shared with [io-layer](../io-layer/low-level.md): Polars materialisation seams. `execution_collect` selects `auto` or streaming execution and automatically polls a native background query whenever an execution context is active; without one it remains synchronous. `streaming_collect` and `cancellable_streaming_collect` are streaming-engine wrappers over that same contract. All three preserve checkpoint, collect-count, and typed-error telemetry. `bounded_collect_batches` streams batches from a query run on a dedicated thread, so an engine panic raises instead of ending the stream early. It also owns the Python scans that expose opaque Python steps to Polars pushdown (`row_local_python_scan`, `fanout_python_scan`, `limited_python_scan`, `key_prefix_python_scan`) and the parked scan-failure registry every collect seam re-raises from. |
 | `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion (`expand_scenarios_from_config`, and `expand_scenarios_bounded` for the interactive form a preview row limit reaches through), `optimiserApply` artifact dispatch, and output response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
 | `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`, declaring every type's recompute cost (`recompute_cost=`); owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component, and `pass_through_selected_edge` / `PASS_THROUGH_NODE_TYPES`, which state the incoming edge a pass-through node's built function returns. It imports the incomplete-transform message from `src/haute/_code_extraction.py` (owned by [codegen](../codegen/low-level.md)). |
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
@@ -39,12 +39,18 @@
 
 ## Key types and data structures
 
-- **`ExecutionContext`** (`_execution_context.py`, mutable dataclass) — per-run controls:
-  `operation`, `profile: ExecutionProfile`, `job_id`, `cancellation_token`,
-  `memory_limit_bytes`/`memory_baseline_bytes`/`rss_limit_bytes`, `admission:
-  ExecutionAdmission | None`, `projection_plan`, `metrics: ExecutionMetricsRecorder`,
-  `memory_sampler`, `memory_pressure_callback`, `admission_release`, optional
-  `fault_injector`, and optional bounded `telemetry_sink`. `stage(name,
+- **`ExecutionContext`** (`_execution_context.py`, slotted class) — per-run controls,
+  constructed from `operation`, `profile: ExecutionProfile`, `job_id`,
+  `cancellation_token`, `memory_limit_bytes`/`memory_baseline_bytes`/`rss_limit_bytes`,
+  `admission: ExecutionAdmission | None`, `projection_plan`, `metrics:
+  ExecutionMetricsRecorder`, `memory_sampler`, `memory_pressure_callback`,
+  `admission_release`, `telemetry_enabled`, and optional bounded `telemetry_sink`. It
+  builds its parts from them — `budget: ExecutionMemoryBudget`, `lease:
+  ExecutionLease`, `evidence: ExecutionEvidence`, `provenance: ExecutionProvenance`,
+  `telemetry: ExecutionTelemetry` — and keeps only the identity, `projection_plan`,
+  `memory_pressure_callback`, and the per-thread stage stack itself. The limits,
+  admission, and sampler read through to the budget, and every recording method
+  delegates to the part that owns the record. `stage(name,
   node_id=...)` is a context manager that times the block, samples RSS at entry/exit,
   records an `ExecutionStageMetric`, and raises `ExecutionMemoryLimitExceededError`
   before entering the block if already over budget. Stage exit always restores the
@@ -52,7 +58,7 @@
   exit-sampling or metric-recording failure is attached to that primary exception
   instead of replacing it; without a primary exception the exit failure remains loud.
   `checkpoint(label=...)` is the cheap variant used between statements (no stage timing) — both call
-  `cancellation_token.throw_if_cancelled()` first. `_effective_rss_limit_bytes()` is
+  `cancellation_token.throw_if_cancelled()` first. `ExecutionMemoryBudget.effective_rss_limit_bytes` is
   `rss_limit_bytes` if set, else `memory_baseline_bytes + memory_limit_bytes`, else
   `memory_limit_bytes` alone, else unbounded.
 - **`ExecutionProfile`** (`StrEnum`) — `PREVIEW_EAGER`, `LAZY_SINK`, `TRAINING_PREP`,
@@ -295,8 +301,7 @@
 - **Unobservable availability** — when psutil cannot read availability the
   single `available_ram_unavailable` warning records why and the result is
   `None`, never a fabricated capacity.
-- **`ExecutionFaultPoint` / `ExecutionTelemetryEvent`** (`_execution_context.py`) —
-  immutable sequenced request-local fault boundaries and schema-versioned,
+- **`ExecutionTelemetryEvent`** (`_execution_context.py`) — schema-versioned,
   identifier-free terminal telemetry with a bounded scalar attribute allow-list.
 
 ## Control flow
@@ -1777,9 +1782,9 @@ present a structural or schema result as execution evidence.
   in-flight memory share; interactive/low-latency paths are not throttled by
   concurrent heavy jobs.
 - **Memory-pressure events are deduplicated per threshold per context instance**
-  (`_memory_pressure_seen`, a `set[int]` of `threshold_percent` values guarded by
-  `_memory_pressure_lock`) — each of the 50/75/90% thresholds fires at most once per
-  `ExecutionContext`, not once per checkpoint that happens to be above it.
+  (the budget's `set[int]` of `threshold_percent` values, guarded by its lock) — each
+  of the 50/75/90% thresholds fires at most once per `ExecutionMemoryBudget`, and so
+  once per `ExecutionContext`, not once per checkpoint that happens to be above it.
 - **A planned execution never switches to another writer's data.** Every capture
   continues from what this run wrote — its publication or its own staged artifact —
   never from a generation another run published meanwhile, and every capture is
@@ -2053,10 +2058,12 @@ present a structural or schema result as execution evidence.
   column that no incoming frame provides, and two entries mapping one output
   path from source columns of different dtypes, are
   `OutputMappingSchemaError` rejections.
-- **Sampler/fault/cleanup machinery is stable.** Windows RSS bindings initialize once
+- **Sampler and cleanup machinery is stable.** Windows RSS bindings initialize once
   per sampler-factory identity under concurrency, reset explicitly, and reinitialize
   after a factory change. Eager diamonds share one producer-side cached `LazyFrame`.
-  Timings are milliseconds. Fault points are no-ops without an injector. Cleanup runs
+  Timings are milliseconds. Production code has no fault-injection points; tests fail
+  or observe an execution at its checkpoints through `tests/_execution_faults.py`.
+  Cleanup runs
   callbacks in reverse registration order and releases admission once; preserving a
   genuinely propagating primary exception is an explicit opt-in.
 - **Terminal telemetry is opt-in and redacted.** `HAUTE_EXECUTION_TELEMETRY` is a
@@ -2456,8 +2463,9 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
 - **`test_trace_matches_preview.py`** — cross-checks that the preview cache and
   tracing's cache reconstruction agree on fingerprint/cache-key shape.
 - **`test_execution_context.py`** — `ExecutionContext` stage/checkpoint
-  behaviour, `ExecutionMetricsRecorder`, memory-pressure thresholding, and (via
-  imports) `_execution_admission` budget resolution.
+  behaviour, `ExecutionMetricsRecorder`, memory-pressure thresholding, the budget and
+  lease working without either recorder, the 300-line class limit for the module,
+  and (via imports) `_execution_admission` budget resolution.
 - **`test_container.py`**, **`test_deploy_internals.py`**, **`test_node_data_routes.py`**,
   **`test_optimiser_routes.py`**, **`test_pipeline_route_supersession.py`**,
   **`test_schema_snapshots.py`**, **`test_train_service_coverage.py`**,

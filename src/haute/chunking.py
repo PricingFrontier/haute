@@ -1613,19 +1613,8 @@ def run_chunked_reduce(
             "is not allowed on chunked_map_reduce paths.",
             target_node_id=request.plan.target_node_id,
         )
-    context = request.execution_context
     for batch in iter_chunked_frames(request):
-        if context is not None:
-            context.fault_point(
-                "reducer_add",
-                node_id=request.plan.target_node_id,
-            )
         reducer.add(batch)
-    if context is not None:
-        context.fault_point(
-            "reducer_finish",
-            node_id=request.plan.target_node_id,
-        )
     return reducer.finish()
 
 

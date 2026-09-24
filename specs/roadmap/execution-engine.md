@@ -21,14 +21,12 @@ the static estimate admits only what no cap bounds.
 |---|---|---:|---|
 | EXEC-R03 | Planned | P3 | The chunked map-reduce planner and runner are removed with their only consumer. |
 | EXEC-R05 | Planned | P2 | One graph walker builds every execution; eager, preview, trace and scoring differ only in their collect policy. |
-| EXEC-R07 | Planned | P3 | `ExecutionContext` is split into cancellation, admission, and evidence parts. |
 
 ## Planned improvements
 
 `EXEC-R03` follows the optimiser's `OPT-P15` if that package removes the
 runner's only consumer. The walker in `EXEC-R05` keeps projection planning, which
 the memory-safety decision retains for uncapped surfaces.
-`EXEC-R07` is independent and can be taken whenever its file is next open.
 
 ### EXEC-R03 — Retire the chunked map-reduce runner
 **Why:** `chunking.py` is a 2,251-line planner and runner, with per-node-type
@@ -98,27 +96,3 @@ policy over the walker.
 `src/haute/trace.py::_execute_trace_core`;
 `src/haute/deploy/_scorer.py::_score_graph_lazy`;
 `src/haute/pipeline.py::Pipeline`; `docs/COMMIT_STANDARDS.md`.
-
-### EXEC-R07 — Split `ExecutionContext`
-**Why:** `ExecutionContext` is a 1,011-line class that combines the
-cancellation token, admission and memory budget, RSS sampling, stage metrics,
-column-width evidence, estimate calibration, terminal telemetry, evidence
-payloads and request-local fault-injection points. Every execution surface
-depends on all of it.
-
-**Plan:** Separate cancellation, admission and budget enforcement, and
-evidence and telemetry recording into collaborating objects composed by a
-thin context. Move test-only fault injection behind a test seam so production
-code carries no fault points.
-
-**Acceptance:** No class in the module exceeds an agreed size; cancellation
-and admission can be constructed without the evidence recorder; the existing
-execution-context suite passes; `ExecutionFaultPoint` is not reachable from
-production entry points.
-
-**Dependencies:** None. The memory-safety decision keeps calibration and
-estimate evidence for the uncapped surfaces.
-
-**Evidence:** `src/haute/_execution_context.py::ExecutionContext`;
-`src/haute/_execution_context.py::ExecutionFaultPoint`;
-`tests/test_execution_context.py`.

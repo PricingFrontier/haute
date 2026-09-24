@@ -19,6 +19,8 @@ from haute._logging import get_logger
 from haute._process_memory import current_process_rss_bytes
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
     from haute._chunked_writes import ChunkedWrite
 
 EXECUTION_METRICS_SCHEMA_VERSION = 1
@@ -30,8 +32,15 @@ _MAX_STREAMABILITY_EVIDENCE = 32
 _MAX_TELEMETRY_ATTRIBUTES = 48
 _MAX_TELEMETRY_STRING_LENGTH = 128
 _MEMORY_PRESSURE_THRESHOLDS: tuple[float, ...] = (0.50, 0.75, 0.90)
-_RSS_SAMPLE_UNSET = object()
 _TERMINAL_NON_STATES = frozenset({"pending", "queued", "running"})
+_STREAMING_STRATEGIES = frozenset(
+    {"projected", "schema-all-except", "unprojected-streaming-boundary"}
+)
+# A conservative run still materialises at its group-by boundary; only the
+# estimate that would have sized it is missing.
+_MATERIALISING_STRATEGIES = frozenset(
+    {"full-width-admitted-eager", "materialisation-boundary", "full-width-conservative"}
+)
 _CURRENT_EXECUTION_CONTEXT: contextvars.ContextVar[ExecutionContext | None] = (
     contextvars.ContextVar("haute_current_execution_context", default=None)
 )
@@ -60,16 +69,6 @@ class ExecutionCacheProofMissReason(StrEnum):
     ARTIFACT_INTEGRITY_SCHEMA_FAILURE = "artifact_integrity_schema_failure"
     UNREADABLE_ARTIFACT = "unreadable_artifact"
     PROOF_UNAVAILABLE = "proof_unavailable"
-
-
-@dataclass(frozen=True, slots=True)
-class ExecutionFaultPoint:
-    """One deterministic, request-local execution fault boundary."""
-
-    name: str
-    operation: str
-    node_id: str | None
-    sequence: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -713,6 +712,205 @@ def current_rss_bytes() -> int | None:
     return current_process_rss_bytes()
 
 
+class ExecutionMemoryBudget:
+    """One execution's memory limits and the RSS probe that enforces them.
+
+    It carries the admission decision when there was one, and needs no evidence
+    recorder: :meth:`enforce` raises when a sample is over the effective limit,
+    and :meth:`pressure_events` reports each advisory threshold the first time a
+    sample crosses it.
+    """
+
+    __slots__ = (
+        "memory_limit_bytes",
+        "memory_baseline_bytes",
+        "rss_limit_bytes",
+        "admission",
+        "sampler",
+        "_pressure_lock",
+        "_pressure_seen",
+    )
+
+    def __init__(
+        self,
+        *,
+        memory_limit_bytes: int | None = None,
+        memory_baseline_bytes: int | None = None,
+        rss_limit_bytes: int | None = None,
+        admission: ExecutionAdmission | None = None,
+        sampler: Callable[[], int | None] = current_rss_bytes,
+    ) -> None:
+        self.memory_limit_bytes = memory_limit_bytes
+        self.memory_baseline_bytes = memory_baseline_bytes
+        self.rss_limit_bytes = rss_limit_bytes
+        self.admission = admission
+        self.sampler = sampler
+        self._pressure_lock = threading.RLock()
+        self._pressure_seen: set[int] = set()
+
+    @property
+    def effective_rss_limit_bytes(self) -> int | None:
+        """The explicit RSS limit, else baseline plus growth, else growth alone."""
+        if self.rss_limit_bytes is not None:
+            return self.rss_limit_bytes
+        if self.memory_limit_bytes is None:
+            return None
+        if self.memory_baseline_bytes is None:
+            return self.memory_limit_bytes
+        return self.memory_baseline_bytes + self.memory_limit_bytes
+
+    def payload(self) -> dict[str, object]:
+        """The limits and admission as metrics-payload fields."""
+        return {
+            "memory_limit_bytes": self.memory_limit_bytes,
+            "memory_baseline_bytes": self.memory_baseline_bytes,
+            "rss_limit_bytes": self.effective_rss_limit_bytes,
+            "admission": self.admission.to_dict() if self.admission is not None else None,
+        }
+
+    def enforce(self, rss_bytes: int | None, *, operation: str, job_id: str | None) -> None:
+        """Raise when a budgeted sample is over the limit, or could not be taken."""
+        effective_limit = self.effective_rss_limit_bytes
+        if effective_limit is None or (rss_bytes is not None and rss_bytes <= effective_limit):
+            return
+        if rss_bytes is None:
+            reason = "memory_sampler_unavailable"
+        elif (
+            self.memory_baseline_bytes is not None
+            and self.memory_limit_bytes is not None
+            and effective_limit < self.memory_baseline_bytes + self.memory_limit_bytes
+        ):
+            reason = "process_rss_limit_exceeded"
+        else:
+            reason = "rss_exceeds_memory_limit"
+        raise ExecutionMemoryLimitExceededError(
+            operation,
+            job_id=job_id,
+            rss_bytes=rss_bytes,
+            limit_bytes=(
+                self.memory_limit_bytes if self.memory_limit_bytes is not None else effective_limit
+            ),
+            baseline_rss_bytes=self.memory_baseline_bytes,
+            rss_limit_bytes=effective_limit,
+            reason=reason,
+        )
+
+    def pressure_events(
+        self,
+        rss_bytes: int,
+        *,
+        operation: str,
+        profile: ExecutionProfile,
+        job_id: str | None,
+        stage: str | None,
+        node_id: str | None,
+        label: str | None,
+    ) -> Iterator[ExecutionMemoryPressureEvent]:
+        """Yield an event for each threshold *rss_bytes* crosses for the first time."""
+        effective_limit = self.effective_rss_limit_bytes
+        if effective_limit is None or effective_limit <= 0:
+            return
+        baseline = self.memory_baseline_bytes or 0
+        budget_window = effective_limit - baseline
+        if budget_window <= 0:
+            return
+        headroom_used_bytes = max(0, rss_bytes - baseline)
+        admission = self.admission
+        for threshold in _MEMORY_PRESSURE_THRESHOLDS:
+            threshold_percent = int(threshold * 100)
+            if headroom_used_bytes < math.ceil(budget_window * threshold):
+                continue
+            with self._pressure_lock:
+                if threshold_percent in self._pressure_seen:
+                    continue
+                self._pressure_seen.add(threshold_percent)
+            yield ExecutionMemoryPressureEvent(
+                operation=operation,
+                profile=profile,
+                job_id=job_id,
+                node_id=node_id,
+                stage=stage,
+                label=label,
+                threshold_ratio=threshold,
+                threshold_percent=threshold_percent,
+                rss_bytes=rss_bytes,
+                rss_limit_bytes=effective_limit,
+                headroom_bytes=effective_limit - rss_bytes,
+                headroom_used_bytes=headroom_used_bytes,
+                rss_peak_bytes=rss_bytes,
+                memory_limit_bytes=self.memory_limit_bytes,
+                memory_baseline_bytes=self.memory_baseline_bytes,
+                baseline_rss_bytes=self.memory_baseline_bytes,
+                budget_policy=admission.budget_policy if admission is not None else None,
+                config_key=admission.config_key if admission is not None else None,
+                available_ram_bytes=(
+                    admission.available_ram_bytes if admission is not None else None
+                ),
+                os_reserve_bytes=admission.os_reserve_bytes if admission is not None else None,
+                pressure_ratio=round(headroom_used_bytes / budget_window, 6),
+            )
+
+
+class ExecutionLease:
+    """The runtime resources one execution holds, released once with its admission.
+
+    Cleanup callbacks run in reverse registration order, then the admission
+    release; each runs once however often :meth:`release` is called.
+    """
+
+    __slots__ = ("admission_release", "_lock", "_cleanups", "_cleanups_released", "released")
+
+    def __init__(self, admission_release: Callable[[], None] | None = None) -> None:
+        self.admission_release = admission_release
+        self._lock = threading.RLock()
+        self._cleanups: list[Callable[[], None]] = []
+        self._cleanups_released = False
+        self.released = False
+
+    def add_cleanup(self, callback: Callable[[], None]) -> None:
+        """Retain a runtime resource until this lease is released."""
+        with self._lock:
+            if self._cleanups_released:
+                raise RuntimeError("cannot register a resource on a released execution context")
+            self._cleanups.append(callback)
+
+    def release(self, *, primary_error: BaseException | None = None) -> None:
+        """Run the cleanups, then the admission release, once.
+
+        Failures become notes on *primary_error* when one is propagating;
+        otherwise the first is raised with the rest attached as notes.
+        """
+        with self._lock:
+            callbacks = [] if self._cleanups_released else list(reversed(self._cleanups))
+            self._cleanups_released = True
+            self._cleanups.clear()
+        errors: list[BaseException] = []
+        for callback in callbacks:
+            try:
+                callback()
+            except BaseException as exc:
+                errors.append(exc)
+        with self._lock:
+            release = None if self.released else self.admission_release
+            self.released = True
+            self.admission_release = None
+        if release is not None:
+            try:
+                release()
+            except BaseException as exc:
+                errors.append(exc)
+        if not errors:
+            return
+        if primary_error is not None:
+            for error in errors:
+                primary_error.add_note(_cleanup_failure_note(error))
+            return
+        first_error, *later_errors = errors
+        for error in later_errors:
+            first_error.add_note(_cleanup_failure_note(error))
+        raise first_error
+
+
 @dataclass(frozen=True, slots=True)
 class _EvidenceRecord:
     """A record reported by another process, kept in its payload form."""
@@ -723,303 +921,43 @@ class _EvidenceRecord:
         return dict(self.payload)
 
 
-@dataclass(slots=True, weakref_slot=True)
-class ExecutionContext:
-    """Shared per-run execution controls and instrumentation."""
+class ExecutionEvidence:
+    """The aggregate efficiency evidence one execution reports.
 
-    operation: str
-    profile: ExecutionProfile
-    job_id: str | None = None
-    cancellation_token: ExecutionCancellationToken = field(
-        default_factory=ExecutionCancellationToken
-    )
-    memory_limit_bytes: int | None = None
-    memory_baseline_bytes: int | None = None
-    rss_limit_bytes: int | None = None
-    admission: ExecutionAdmission | None = None
-    projection_plan: Any | None = None
-    metrics: ExecutionMetricsRecorder = field(default_factory=ExecutionMetricsRecorder)
-    memory_sampler: Callable[[], int | None] = current_rss_bytes
-    memory_pressure_callback: Callable[[ExecutionMemoryPressureEvent], None] | None = None
-    admission_release: Callable[[], None] | None = None
-    fault_injector: Callable[[ExecutionFaultPoint], None] | None = None
-    telemetry_enabled: bool = field(default_factory=_execution_telemetry_enabled)
-    telemetry_sink: Callable[[ExecutionTelemetryEvent], None] | None = None
-    _stage_local: threading.local = field(default_factory=threading.local, init=False)
-    _memory_pressure_seen: set[int] = field(default_factory=set, init=False)
-    _memory_pressure_lock: threading.RLock = field(
-        default_factory=threading.RLock,
-        init=False,
-    )
-    _admission_release_lock: threading.RLock = field(
-        default_factory=threading.RLock,
-        init=False,
-    )
-    _admission_released: bool = field(default=False, init=False)
-    _cleanup_lock: threading.RLock = field(
-        default_factory=threading.RLock,
-        init=False,
-    )
-    _cleanup_callbacks: list[Callable[[], None]] = field(default_factory=list, init=False)
-    _cleanups_released: bool = field(default=False, init=False)
-    _fault_lock: threading.RLock = field(default_factory=threading.RLock, init=False)
-    _fault_sequence: int = field(default=0, init=False)
-    _telemetry_lock: threading.RLock = field(default_factory=threading.RLock, init=False)
-    _telemetry_emitted: set[tuple[str, str | None]] = field(
-        default_factory=set,
-        init=False,
-    )
-    _evidence_lock: threading.RLock = field(default_factory=threading.RLock, init=False)
-    _column_widths: dict[str, ExecutionColumnWidths] = field(
-        default_factory=dict,
-        init=False,
-    )
-    _bytes_read: int | None = field(default=None, init=False)
-    _bytes_written: int | None = field(default=None, init=False)
-    _chunk_count: int = field(default=0, init=False)
-    _observed_peak_rss_bytes: int | None = field(default=None, init=False)
-    _cancellation_latency_ms: float | None = field(default=None, init=False)
-    _estimate_calibration_recorded: bool = field(default=False, init=False)
-    _cache_proof_hits: int = field(default=0, init=False)
-    _cache_proof_misses: int = field(default=0, init=False)
-    _cache_direct_fallbacks: int = field(default=0, init=False)
-    _input_preparation: list[Any] = field(default_factory=list, init=False)
-    _shared_snapshot_seeds: list[Any] = field(default_factory=list, init=False)
-    _shared_snapshot_captures: list[Any] = field(default_factory=list, init=False)
-    _shared_snapshot_capture_skips: list[Any] = field(default_factory=list, init=False)
-    _preview_seed_plan: tuple[Any, ...] = field(default=(), init=False)
-    _execution_warnings: list[dict[str, str | None]] = field(default_factory=list, init=False)
-    _training_write_strategy: str | None = field(default=None, init=False)
-    _training_write_input_slices: int | None = field(default=None, init=False)
-    _training_write_native_reason: str | None = field(default=None, init=False)
-    _training_write_blocking_operator: str | None = field(default=None, init=False)
-    _data_output_write_strategy: str | None = field(default=None, init=False)
-    _data_output_write_input_slices: int | None = field(default=None, init=False)
-    _data_output_write_native_reason: str | None = field(default=None, init=False)
-    _cache_proof_miss_reason_counts: dict[ExecutionCacheProofMissReason, int] = field(
-        default_factory=lambda: {reason: 0 for reason in ExecutionCacheProofMissReason},
-        init=False,
+    Column widths, byte and chunk counts, cache-proof outcomes by closed
+    reason, the observed RSS peak, and the first cancellation latency. It keeps
+    counts and widths only, never paths, column names, or values, and it feeds
+    one terminal estimate/observation pair to estimate calibration.
+    """
+
+    __slots__ = (
+        "_lock",
+        "_column_widths",
+        "_bytes_read",
+        "_bytes_written",
+        "_chunk_count",
+        "_observed_peak_rss_bytes",
+        "_cancellation_latency_ms",
+        "_cache_proof_hits",
+        "_cache_proof_misses",
+        "_cache_direct_fallbacks",
+        "_cache_proof_miss_reason_counts",
+        "_calibration_recorded",
     )
 
-    def cancel(self) -> None:
-        self.cancellation_token.cancel()
-
-    def add_cleanup(self, callback: Callable[[], None]) -> None:
-        """Retain a runtime resource until this execution context is released."""
-        with self._cleanup_lock:
-            if self._cleanups_released:
-                raise RuntimeError("cannot register a resource on a released execution context")
-            self._cleanup_callbacks.append(callback)
-
-    def _release_cleanups(self) -> list[BaseException]:
-        with self._cleanup_lock:
-            if self._cleanups_released:
-                return []
-            self._cleanups_released = True
-            callbacks = list(reversed(self._cleanup_callbacks))
-            self._cleanup_callbacks.clear()
-        errors: list[BaseException] = []
-        for callback in callbacks:
-            try:
-                callback()
-            except BaseException as exc:
-                errors.append(exc)
-        return errors
-
-    @staticmethod
-    def _cleanup_failure_note(error: BaseException) -> str:
-        return f"Execution cleanup failed: {type(error).__name__}: {error}"
-
-    def release_admission(self, *, preserve_primary_error: bool = False) -> None:
-        """Release resources, optionally preserving an exception propagating through ``finally``."""
-        primary_error = sys.exception() if preserve_primary_error else None
-        release: Callable[[], None] | None = None
-        errors = self._release_cleanups()
-        with self._admission_release_lock:
-            if not self._admission_released:
-                self._admission_released = True
-                release = self.admission_release
-                self.admission_release = None
-        if release is not None:
-            try:
-                release()
-            except BaseException as exc:
-                errors.append(exc)
-        if not errors:
-            return
-        if primary_error is not None:
-            for error in errors:
-                primary_error.add_note(self._cleanup_failure_note(error))
-            return
-        first_error, *later_errors = errors
-        for error in later_errors:
-            first_error.add_note(self._cleanup_failure_note(error))
-        raise first_error
-
-    def fault_point(self, name: str, *, node_id: str | None = None) -> None:
-        """Invoke the request-local deterministic fault seam when configured."""
-        injector = self.fault_injector
-        if injector is None:
-            return
-        if not isinstance(name, str) or not name:
-            raise ValueError("execution fault-point name must be a non-empty string")
-        with self._fault_lock:
-            self._fault_sequence += 1
-            point = ExecutionFaultPoint(
-                name=name,
-                operation=self.operation,
-                node_id=node_id,
-                sequence=self._fault_sequence,
-            )
-        injector(point)
-
-    def _throw_if_cancelled(self) -> None:
-        try:
-            self.cancellation_token.throw_if_cancelled(
-                self.operation,
-                job_id=self.job_id,
-            )
-        except ExecutionCancelledError as exc:
-            if exc.cancellation_latency_ms is not None:
-                with self._evidence_lock:
-                    if self._cancellation_latency_ms is None:
-                        self._cancellation_latency_ms = exc.cancellation_latency_ms
-            raise
-
-    def checkpoint(self, *, label: str, node_id: str | None = None) -> None:
-        self._throw_if_cancelled()
-        self.fault_point(label, node_id=node_id)
-        self._record_checkpoint()
-        rss_bytes = (
-            self.memory_sampler()
-            if self._effective_rss_limit_bytes() is not None or self._active_stage_stack()
-            else None
-        )
-        if rss_bytes is not None:
-            self._observe_rss(rss_bytes, label=label, node_id=node_id)
-        self._check_memory_budget(rss_bytes=rss_bytes)
-
-    def remaining_memory_bytes(self) -> int | None:
-        """Return current RSS headroom after enforcing this context's limit."""
-        effective_limit = self._effective_rss_limit_bytes()
-        if effective_limit is None:
-            return None
-        sampled = self.memory_sampler()
-        self._observe_rss(sampled)
-        self._check_memory_budget(rss_bytes=sampled)
-        assert sampled is not None
-        return max(0, effective_limit - sampled)
-
-    @contextlib.contextmanager
-    def stage(
-        self,
-        name: str,
-        *,
-        node_id: str | None = None,
-        skip_metric_on_exception: tuple[type[BaseException], ...] = (),
-    ) -> Iterator[None]:
-        t0 = time.perf_counter()
-        self._throw_if_cancelled()
-        rss_start = self.memory_sampler()
-        self._observe_rss(rss_start, stage=name, node_id=node_id)
-        try:
-            self._check_memory_budget(rss_bytes=rss_start)
-        except ExecutionMemoryLimitExceededError:
-            elapsed_ms = round((time.perf_counter() - t0) * 1000, 3)
-            self.metrics.record(
-                ExecutionStageMetric(
-                    name=name,
-                    elapsed_ms=elapsed_ms,
-                    operation=self.operation,
-                    profile=self.profile,
-                    node_id=node_id,
-                    job_id=self.job_id,
-                    rss_start_bytes=rss_start,
-                    rss_end_bytes=rss_start,
-                    rss_peak_bytes=rss_start,
-                )
-            )
-            raise
-        active_stage = _ActiveStage(name=name, node_id=node_id, rss_peak_bytes=rss_start)
-        self._active_stage_stack().append(active_stage)
-        current_context_token = _CURRENT_EXECUTION_CONTEXT.set(self)
-        primary_error: BaseException | None = None
-        skip_metric = False
-        try:
-            yield
-        except BaseException as exc:
-            primary_error = exc
-            skip_metric = bool(
-                skip_metric_on_exception and isinstance(exc, skip_metric_on_exception)
-            )
-            raise
-        finally:
-            elapsed_ms = round((time.perf_counter() - t0) * 1000, 3)
-            rss_end = active_stage.rss_peak_bytes
-            finalization_errors: list[BaseException] = []
-            try:
-                rss_end = self.memory_sampler()
-                self._observe_rss(rss_end, stage=name, node_id=node_id)
-            except BaseException as exc:
-                finalization_errors.append(exc)
-            try:
-                active_stack = self._active_stage_stack()
-                if not active_stack or active_stack[-1] is not active_stage:
-                    raise RuntimeError("execution stage stack is unbalanced")
-                active_stack.pop()
-            except BaseException as exc:
-                finalization_errors.append(exc)
-            try:
-                _CURRENT_EXECUTION_CONTEXT.reset(current_context_token)
-            except BaseException as exc:
-                finalization_errors.append(exc)
-            if not skip_metric:
-                try:
-                    self.metrics.record(
-                        ExecutionStageMetric(
-                            name=name,
-                            elapsed_ms=elapsed_ms,
-                            operation=self.operation,
-                            profile=self.profile,
-                            node_id=node_id,
-                            job_id=self.job_id,
-                            rss_start_bytes=rss_start,
-                            rss_end_bytes=rss_end,
-                            rss_peak_bytes=active_stage.rss_peak_bytes,
-                            n_collects=active_stage.n_collects,
-                            n_checkpoints=active_stage.n_checkpoints,
-                        )
-                    )
-                except BaseException as exc:
-                    finalization_errors.append(exc)
-            if primary_error is None and not finalization_errors:
-                self._check_memory_budget(rss_bytes=rss_end)
-            if finalization_errors:
-                if primary_error is not None:
-                    primary_error.add_note(
-                        "\n".join(
-                            map(
-                                lambda error: (
-                                    "Execution stage finalization failed: "
-                                    f"{type(error).__name__}: {error}"
-                                ),
-                                finalization_errors,
-                            )
-                        )
-                    )
-                else:
-                    first_error, *later_errors = finalization_errors
-                    for error in later_errors:
-                        first_error.add_note(
-                            f"Execution stage finalization failed: {type(error).__name__}: {error}"
-                        )
-                    raise first_error
-
-    def record_collect(self) -> None:
-        """Record a Polars materialisation against active execution stages."""
-        self.metrics.record_collect()
-        for stage in self._active_stage_stack():
-            stage.n_collects += 1
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._column_widths: dict[str, ExecutionColumnWidths] = {}
+        self._bytes_read: int | None = None
+        self._bytes_written: int | None = None
+        self._chunk_count = 0
+        self._observed_peak_rss_bytes: int | None = None
+        self._cancellation_latency_ms: float | None = None
+        self._cache_proof_hits = 0
+        self._cache_proof_misses = 0
+        self._cache_direct_fallbacks = 0
+        self._cache_proof_miss_reason_counts = dict.fromkeys(ExecutionCacheProofMissReason, 0)
+        self._calibration_recorded = False
 
     def record_column_widths(
         self,
@@ -1033,117 +971,232 @@ class ExecutionContext:
         """Merge width evidence without collecting a frame solely for metrics."""
         if not isinstance(node_id, str) or not node_id:
             raise ValueError("column-width evidence requires a non-empty node_id")
-        values = {
+        widths = {
             "input_width": input_width,
             "output_width": output_width,
             "requested_width": requested_width,
             "physically_scanned_width": physically_scanned_width,
         }
-        for name, value in values.items():
+        for name, value in widths.items():
             if value is not None and (
                 not isinstance(value, int) or isinstance(value, bool) or value < 0
             ):
                 raise ValueError(f"{name} must be a non-negative integer or None")
-        with self._evidence_lock:
-            previous = self._column_widths.get(node_id)
+        with self._lock:
+            previous = self._column_widths.get(node_id, ExecutionColumnWidths(node_id=node_id))
             self._column_widths[node_id] = ExecutionColumnWidths(
-                node_id=node_id,
-                input_width=(
-                    input_width
-                    if input_width is not None
-                    else previous.input_width
-                    if previous is not None
-                    else None
-                ),
-                output_width=(
-                    output_width
-                    if output_width is not None
-                    else previous.output_width
-                    if previous is not None
-                    else None
-                ),
-                requested_width=(
-                    requested_width
-                    if requested_width is not None
-                    else previous.requested_width
-                    if previous is not None
-                    else None
-                ),
-                physically_scanned_width=(
-                    physically_scanned_width
-                    if physically_scanned_width is not None
-                    else previous.physically_scanned_width
-                    if previous is not None
-                    else None
-                ),
+                node_id,
+                **{
+                    name: getattr(previous, name) if value is None else value
+                    for name, value in widths.items()
+                },
             )
 
     def record_bytes_read(self, byte_count: int) -> None:
-        self._record_supported_bytes("read", byte_count)
+        _require_byte_count(byte_count)
+        with self._lock:
+            self._bytes_read = (self._bytes_read or 0) + byte_count
 
     def record_bytes_written(self, byte_count: int) -> None:
-        self._record_supported_bytes("written", byte_count)
-
-    def _record_supported_bytes(self, direction: str, byte_count: int) -> None:
-        if not isinstance(byte_count, int) or isinstance(byte_count, bool) or byte_count < 0:
-            raise ValueError("supported byte counters must be non-negative integers")
-        with self._evidence_lock:
-            if direction == "read":
-                self._bytes_read = (self._bytes_read or 0) + byte_count
-            elif direction == "written":
-                self._bytes_written = (self._bytes_written or 0) + byte_count
-            else:
-                raise ValueError(f"unknown byte-counter direction: {direction!r}")
+        _require_byte_count(byte_count)
+        with self._lock:
+            self._bytes_written = (self._bytes_written or 0) + byte_count
 
     def record_chunk(self) -> None:
-        with self._evidence_lock:
+        with self._lock:
             self._chunk_count += 1
 
     def record_cache_proof_hit(self) -> None:
-        with self._evidence_lock:
+        with self._lock:
             self._cache_proof_hits += 1
 
     def record_cache_proof_miss(self, reason: ExecutionCacheProofMissReason) -> None:
         if not isinstance(reason, ExecutionCacheProofMissReason):
             raise TypeError("cache proof miss reason must be an ExecutionCacheProofMissReason")
-        with self._evidence_lock:
+        with self._lock:
             self._cache_proof_misses += 1
             self._cache_proof_miss_reason_counts[reason] += 1
 
     def record_cache_direct_fallback(self) -> None:
-        with self._evidence_lock:
+        with self._lock:
             self._cache_direct_fallbacks += 1
 
-    def record_input_preparation(self, record: Any) -> None:
-        """Append one automatic input-preparation record to the diagnostics."""
-        with self._evidence_lock:
-            self._input_preparation.append(record)
+    def observe_rss(self, rss_bytes: int) -> None:
+        """Raise the observed RSS peak to *rss_bytes* when it is higher."""
+        with self._lock:
+            peak = self._observed_peak_rss_bytes
+            self._observed_peak_rss_bytes = rss_bytes if peak is None else max(peak, rss_bytes)
 
-    def record_shared_snapshot_seed(self, record: Any) -> None:
-        """Record one node output this execution read from a shared snapshot."""
-        with self._evidence_lock:
-            self._shared_snapshot_seeds.append(record)
+    def record_cancellation_latency(self, latency_ms: float | None) -> None:
+        """Keep the first known latency of a cancellation this execution observed."""
+        with self._lock:
+            if self._cancellation_latency_ms is None:
+                self._cancellation_latency_ms = latency_ms
 
-    def record_shared_snapshot_capture(self, record: Any) -> None:
-        """Record one full-data materialisation this execution wrote to shared snapshots."""
-        with self._evidence_lock:
-            self._shared_snapshot_captures.append(record)
+    def payload(
+        self,
+        metrics_payload: Mapping[str, object],
+        *,
+        diagnostic: Any | None,
+        memory_baseline_bytes: int | None,
+    ) -> dict[str, object]:
+        """This evidence as metrics-payload fields, next to the stage rollups."""
+        with self._lock:
+            widths = tuple(self._column_widths[node_id] for node_id in sorted(self._column_widths))
+            observed_peak = self._observed_peak_rss_bytes
+            cache_proof = {
+                "hits": self._cache_proof_hits,
+                "misses": self._cache_proof_misses,
+                "direct_fallbacks": self._cache_direct_fallbacks,
+                "miss_reason_counts": {
+                    reason.value: self._cache_proof_miss_reason_counts[reason]
+                    for reason in ExecutionCacheProofMissReason
+                },
+            }
+            bytes_read, bytes_written = self._bytes_read, self._bytes_written
+            chunk_count, cancellation_latency_ms = (
+                self._chunk_count,
+                self._cancellation_latency_ms,
+            )
+        retained_widths = widths[:_MAX_RETAINED_COLUMN_WIDTHS]
+        baseline = memory_baseline_bytes
+        if baseline is None:
+            raw_rss_start = metrics_payload.get("rss_start_bytes")
+            baseline = raw_rss_start if isinstance(raw_rss_start, int) else None
+        return {
+            "streamability": _streamability(diagnostic),
+            "streamability_evidence": _streamability_evidence(diagnostic),
+            "column_widths": {
+                "state": "truncated" if len(widths) > len(retained_widths) else "available",
+                "total_count": len(widths),
+                "items": [item.to_dict() for item in retained_widths],
+            },
+            "requested_column_width_total": _width_total(widths, "requested_width"),
+            "physically_scanned_column_width_total": _width_total(
+                widths, "physically_scanned_width"
+            ),
+            "cache_proof": cache_proof,
+            "bytes_read": bytes_read,
+            "bytes_written": bytes_written,
+            "estimated_bytes": getattr(diagnostic, "estimated_peak_bytes", None),
+            "raw_estimated_bytes": getattr(diagnostic, "raw_estimated_peak_bytes", None),
+            "estimate_calibration_factor_basis_points": getattr(
+                diagnostic, "estimate_calibration_factor_basis_points", None
+            ),
+            "estimate_admission_basis": getattr(diagnostic, "estimate_admission_basis", None),
+            "checkpoint_count": metrics_payload["n_checkpoints"],
+            "chunk_count": chunk_count,
+            "observed_peak_rss_bytes": observed_peak,
+            "observed_peak_rss_growth_bytes": (
+                max(0, observed_peak - baseline)
+                if observed_peak is not None and baseline is not None
+                else None
+            ),
+            "cancellation_latency_ms": cancellation_latency_ms,
+        }
 
-    def record_shared_snapshot_capture_skip(self, record: Any) -> None:
-        """Record one candidate capture point skipped under cost gating."""
-        with self._evidence_lock:
-            self._shared_snapshot_capture_skips.append(record)
+    def record_estimate_calibration(
+        self,
+        payload: Mapping[str, object],
+        *,
+        profile: ExecutionProfile,
+        diagnostic: Any | None,
+    ) -> None:
+        """Consume one terminal, positive estimate/observation pair at most once."""
+        status = payload.get("status")
+        if (
+            not isinstance(status, str)
+            or not status
+            or status.lower() in _TERMINAL_NON_STATES
+            or getattr(getattr(diagnostic, "strategy", None), "value", None)
+            != "materialisation-boundary"
+        ):
+            return
+        raw_estimate = payload.get("raw_estimated_bytes")
+        observed_growth = payload.get("observed_peak_rss_growth_bytes")
+        if (
+            not isinstance(raw_estimate, int)
+            or isinstance(raw_estimate, bool)
+            or raw_estimate <= 0
+            or not isinstance(observed_growth, int)
+            or isinstance(observed_growth, bool)
+            or observed_growth <= 0
+        ):
+            return
+        with self._lock:
+            if self._calibration_recorded:
+                return
+            self._calibration_recorded = True
 
-    def record_preview_seed_plan(self, generations: tuple[Any, ...]) -> None:
-        """Record the snapshot generations a preview's rows were computed from."""
-        with self._evidence_lock:
-            self._preview_seed_plan = tuple(generations)
+        from haute._estimate_calibration import observe_materialisation_estimate
+
+        observe_materialisation_estimate(
+            profile,
+            estimated_bytes=raw_estimate,
+            observed_growth_bytes=observed_growth,
+        )
+
+
+_WORKER_RECORD_KEYS = (
+    "input_preparation",
+    "shared_snapshot_seeds",
+    "shared_snapshot_captures",
+    "shared_snapshot_capture_skips",
+)
+
+
+class ExecutionProvenance:
+    """What one execution prepared, read, captured, wrote, and warned about.
+
+    A spawned worker returns its records (:meth:`worker_evidence`) and its
+    supervising parent adopts them (:meth:`adopt`), so a job whose phases run
+    in several processes reports all of them.
+    """
+
+    __slots__ = ("_lock", "_records", "_warnings", "_preview_seed_plan", "_write_outcomes")
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._records: dict[str, list[Any]] = {key: [] for key in _WORKER_RECORD_KEYS}
+        self._warnings: list[dict[str, str | None]] = []
+        self._preview_seed_plan: tuple[Any, ...] = ()
+        # Separate training and Data Output fields, because the payload is shared
+        # by every operation: a preview carries both sets as nulls rather than
+        # one set that means different things.
+        self._write_outcomes: dict[str, object] = dict.fromkeys(
+            (
+                "training_write_strategy",
+                "training_write_input_slices",
+                "training_write_native_reason",
+                "training_write_blocking_operator",
+                "data_output_write_strategy",
+                "data_output_write_input_slices",
+                "data_output_write_native_reason",
+            )
+        )
+
+    def record(self, key: str, record: Any) -> None:
+        """Append one record under its metrics-payload key."""
+        with self._lock:
+            self._records[key].append(record)
+
+    def record_warning(
+        self, code: str, *, node_id: str | None = None, reason: str | None = None
+    ) -> None:
+        """Record one non-fatal condition the execution continued past."""
+        with self._lock:
+            self._warnings.append({"code": code, "node_id": node_id, "reason": reason})
 
     @property
     def preview_seed_plan(self) -> tuple[Any, ...]:
-        """The generations :meth:`record_preview_seed_plan` recorded, or none."""
-        with self._evidence_lock:
+        """The snapshot generations a preview's rows were computed from, or none."""
+        with self._lock:
             return self._preview_seed_plan
+
+    @preview_seed_plan.setter
+    def preview_seed_plan(self, generations: tuple[Any, ...]) -> None:
+        with self._lock:
+            self._preview_seed_plan = tuple(generations)
 
     def record_training_write(
         self, outcome: ChunkedWrite, *, native_reason: str | None = None
@@ -1156,75 +1209,55 @@ class ExecutionContext:
         sampled frame may still slice on its own, and a reason for a strategy
         that did not happen would be a false statement in the evidence.
         """
-        with self._evidence_lock:
-            self._training_write_strategy = outcome.strategy
-            self._training_write_input_slices = outcome.input_slices
-            self._training_write_blocking_operator = outcome.blocking_operator
-            self._training_write_native_reason = (
-                (native_reason or outcome.native_reason) if outcome.strategy == "native" else None
+        native = outcome.strategy == "native"
+        with self._lock:
+            self._write_outcomes.update(
+                training_write_strategy=outcome.strategy,
+                training_write_input_slices=outcome.input_slices,
+                training_write_native_reason=(
+                    (native_reason or outcome.native_reason) if native else None
+                ),
+                training_write_blocking_operator=outcome.blocking_operator,
             )
 
     def record_data_output_write(
         self, *, strategy: str, native_reason: str | None = None, input_slices: int | None = None
     ) -> None:
-        """Record how one Data Output's file was written, and why.
-
-        Separate from the training fields because this payload is shared by
-        every operation: a preview should not carry four permanently null
-        training fields, nor a training run four null output ones.
-        """
-        with self._evidence_lock:
-            self._data_output_write_strategy = strategy
-            self._data_output_write_input_slices = input_slices
-            self._data_output_write_native_reason = native_reason if strategy == "native" else None
+        """Record how one Data Output's file was written, and why."""
+        with self._lock:
+            self._write_outcomes.update(
+                data_output_write_strategy=strategy,
+                data_output_write_input_slices=input_slices,
+                data_output_write_native_reason=native_reason if strategy == "native" else None,
+            )
 
     def worker_evidence(self) -> dict[str, list[dict[str, Any]]]:
-        """This execution's input preparation, seeds, captures, and warnings.
-
-        Returned as payload dicts under their metrics-payload keys. A spawned
-        worker returns this so its supervising parent can report what the
-        worker prepared, read, and wrote (:meth:`adopt_worker_evidence`).
-        """
-        with self._evidence_lock:
-            return {
-                "input_preparation": [dict(record.to_dict()) for record in self._input_preparation],
-                "shared_snapshot_seeds": [
-                    dict(record.to_dict()) for record in self._shared_snapshot_seeds
-                ],
-                "shared_snapshot_captures": [
-                    dict(record.to_dict()) for record in self._shared_snapshot_captures
-                ],
-                "shared_snapshot_capture_skips": [
-                    dict(record.to_dict()) for record in self._shared_snapshot_capture_skips
-                ],
-                "warnings": [dict(warning) for warning in self._execution_warnings],
+        """The records a worker returns to its parent, under their payload keys."""
+        with self._lock:
+            evidence = {
+                key: [dict(record.to_dict()) for record in self._records[key]]
+                for key in _WORKER_RECORD_KEYS
             }
+            evidence["warnings"] = [dict(warning) for warning in self._warnings]
+            return evidence
 
-    def adopt_worker_evidence(self, evidence: Mapping[str, Any]) -> None:
-        """Report a worker's evidence as this execution's own.
-
-        *evidence* is a worker's :meth:`worker_evidence` or its whole metrics
-        payload, which carries the same keys.
-        """
-        with self._evidence_lock:
-            for payload in evidence.get("input_preparation", ()):
-                self._input_preparation.append(_EvidenceRecord(dict(payload)))
-            for payload in evidence.get("shared_snapshot_seeds", ()):
-                self._shared_snapshot_seeds.append(_EvidenceRecord(dict(payload)))
-            for payload in evidence.get("shared_snapshot_captures", ()):
-                self._shared_snapshot_captures.append(_EvidenceRecord(dict(payload)))
-            for payload in evidence.get("shared_snapshot_capture_skips", ()):
-                self._shared_snapshot_capture_skips.append(_EvidenceRecord(dict(payload)))
-            for warning in evidence.get("warnings", ()):
-                self._execution_warnings.append(
-                    {
-                        "code": warning.get("code"),
-                        "node_id": warning.get("node_id"),
-                        "reason": warning.get("reason"),
-                    }
+    def adopt(self, evidence: Mapping[str, Any]) -> None:
+        """Report a worker's evidence, or its whole metrics payload, as this execution's own."""
+        with self._lock:
+            for key in _WORKER_RECORD_KEYS:
+                self._records[key].extend(
+                    _EvidenceRecord(dict(payload)) for payload in evidence.get(key, ())
                 )
+            self._warnings.extend(
+                {
+                    "code": warning.get("code"),
+                    "node_id": warning.get("node_id"),
+                    "reason": warning.get("reason"),
+                }
+                for warning in evidence.get("warnings", ())
+            )
 
-    def metrics_with_worker_evidence(self, worker_metrics: Mapping[str, Any]) -> dict[str, Any]:
+    def with_worker_metrics(self, worker_metrics: Mapping[str, Any]) -> dict[str, Any]:
         """Adopt a worker's metrics evidence and return them carrying all of it.
 
         A job whose phases run in separate processes persists the metrics of
@@ -1232,15 +1265,320 @@ class ExecutionContext:
         this execution's accumulated evidence, so what the parent and every
         earlier worker prepared, read, wrote, and warned about is not lost.
         """
-        self.adopt_worker_evidence(worker_metrics)
+        self.adopt(worker_metrics)
         return {**worker_metrics, **self.worker_evidence()}
+
+    def payload(self) -> dict[str, object]:
+        """The write outcomes, records, and warnings as metrics-payload fields."""
+        with self._lock:
+            return {
+                **self._write_outcomes,
+                **{
+                    key: [record.to_dict() for record in self._records[key]]
+                    for key in _WORKER_RECORD_KEYS
+                },
+                "warnings": [dict(warning) for warning in self._warnings],
+            }
+
+
+class ExecutionTelemetry:
+    """Opt-in terminal telemetry: at most one event per terminal status and reason.
+
+    A failure to assemble or deliver the event is logged and never changes the
+    execution's outcome.
+    """
+
+    __slots__ = ("enabled", "sink", "_lock", "_emitted")
+
+    def __init__(
+        self,
+        *,
+        enabled: bool | None = None,
+        sink: Callable[[ExecutionTelemetryEvent], None] | None = None,
+    ) -> None:
+        """``enabled=None`` follows the process's ``HAUTE_EXECUTION_TELEMETRY`` setting."""
+        self.enabled = _execution_telemetry_enabled() if enabled is None else enabled
+        self.sink = sink
+        self._lock = threading.RLock()
+        self._emitted: set[tuple[str, str | None]] = set()
+
+    def emit_terminal(self, payload: Mapping[str, object]) -> None:
+        if not self.enabled:
+            return
+        status = payload.get("status")
+        if not isinstance(status, str) or not status or status.lower() in _TERMINAL_NON_STATES:
+            return
+        raw_reason = payload.get("terminal_reason")
+        emission_key = (status, raw_reason if isinstance(raw_reason, str) else None)
+        with self._lock:
+            if emission_key in self._emitted:
+                return
+            self._emitted.add(emission_key)
+
+        try:
+            event = ExecutionTelemetryEvent(
+                schema_version=EXECUTION_TELEMETRY_SCHEMA_VERSION,
+                event="execution_terminal",
+                attributes=_terminal_telemetry_attributes(payload),
+            )
+            sink = self.sink
+            if sink is None:
+                logger.info(
+                    event.event,
+                    schema_version=event.schema_version,
+                    **dict(event.attributes),
+                )
+            else:
+                sink(event)
+        except Exception as exc:
+            logger.warning(
+                "execution_telemetry_sink_failed",
+                error_type=type(exc).__name__,
+            )
+
+
+class _OpenStages(threading.local):
+    """The stages open on one thread, innermost last, with their running totals."""
+
+    def __init__(self) -> None:
+        self.stack: list[_ActiveStage] = []
+
+    @property
+    def innermost(self) -> _ActiveStage | None:
+        return self.stack[-1] if self.stack else None
+
+    def push(self, stage: _ActiveStage) -> None:
+        self.stack.append(stage)
+
+    def pop(self, stage: _ActiveStage) -> None:
+        if not self.stack or self.stack[-1] is not stage:
+            raise RuntimeError("execution stage stack is unbalanced")
+        self.stack.pop()
+
+    def observe_rss(self, rss_bytes: int) -> None:
+        for stage in self.stack:
+            peak = stage.rss_peak_bytes
+            stage.rss_peak_bytes = rss_bytes if peak is None else max(peak, rss_bytes)
+
+    def record_collect(self) -> None:
+        for stage in self.stack:
+            stage.n_collects += 1
+
+    def record_checkpoint(self) -> None:
+        for stage in self.stack:
+            stage.n_checkpoints += 1
+
+
+class ExecutionContext:
+    """Shared per-run execution controls, composed from separate parts.
+
+    Every execution surface takes one context. It keeps the execution's
+    identity and strategy, and delegates to the parts that do the work: the
+    cancellation token, the memory ``budget``, the ``lease`` on runtime
+    resources, the stage ``metrics``, ``evidence``, ``provenance``, and
+    ``telemetry``.
+    """
+
+    __slots__ = (
+        "operation",
+        "profile",
+        "job_id",
+        "projection_plan",
+        "cancellation_token",
+        "memory_pressure_callback",
+        "budget",
+        "lease",
+        "metrics",
+        "evidence",
+        "provenance",
+        "telemetry",
+        "_open_stages",
+        "__weakref__",
+    )
+
+    def __init__(
+        self,
+        operation: str,
+        profile: ExecutionProfile,
+        job_id: str | None = None,
+        *,
+        cancellation_token: ExecutionCancellationToken | None = None,
+        memory_limit_bytes: int | None = None,
+        memory_baseline_bytes: int | None = None,
+        rss_limit_bytes: int | None = None,
+        admission: ExecutionAdmission | None = None,
+        projection_plan: Any | None = None,
+        metrics: ExecutionMetricsRecorder | None = None,
+        memory_sampler: Callable[[], int | None] = current_rss_bytes,
+        memory_pressure_callback: Callable[[ExecutionMemoryPressureEvent], None] | None = None,
+        admission_release: Callable[[], None] | None = None,
+        telemetry_enabled: bool | None = None,
+        telemetry_sink: Callable[[ExecutionTelemetryEvent], None] | None = None,
+    ) -> None:
+        self.operation = operation
+        self.profile = profile
+        self.job_id = job_id
+        self.projection_plan = projection_plan
+        self.cancellation_token = (
+            ExecutionCancellationToken() if cancellation_token is None else cancellation_token
+        )
+        self.memory_pressure_callback = memory_pressure_callback
+        self.budget = ExecutionMemoryBudget(
+            memory_limit_bytes=memory_limit_bytes,
+            memory_baseline_bytes=memory_baseline_bytes,
+            rss_limit_bytes=rss_limit_bytes,
+            admission=admission,
+            sampler=memory_sampler,
+        )
+        self.lease = ExecutionLease(admission_release)
+        self.metrics = ExecutionMetricsRecorder() if metrics is None else metrics
+        self.evidence = ExecutionEvidence()
+        self.provenance = ExecutionProvenance()
+        self.telemetry = ExecutionTelemetry(enabled=telemetry_enabled, sink=telemetry_sink)
+        self._open_stages = _OpenStages()
+
+    @property
+    def memory_limit_bytes(self) -> int | None:
+        return self.budget.memory_limit_bytes
+
+    @property
+    def rss_limit_bytes(self) -> int | None:
+        return self.budget.rss_limit_bytes
+
+    @property
+    def admission(self) -> ExecutionAdmission | None:
+        return self.budget.admission
+
+    @property
+    def memory_sampler(self) -> Callable[[], int | None]:
+        return self.budget.sampler
+
+    def cancel(self) -> None:
+        self.cancellation_token.cancel()
+
+    def add_cleanup(self, callback: Callable[[], None]) -> None:
+        """Retain a runtime resource until this execution context is released."""
+        self.lease.add_cleanup(callback)
+
+    def release_admission(self, *, preserve_primary_error: bool = False) -> None:
+        """Release resources, optionally preserving an exception propagating through ``finally``."""
+        self.lease.release(primary_error=sys.exception() if preserve_primary_error else None)
+
+    def checkpoint(self, *, label: str, node_id: str | None = None) -> None:
+        self._throw_if_cancelled()
+        self.metrics.record_checkpoint()
+        self._open_stages.record_checkpoint()
+        rss_bytes = (
+            self.budget.sampler()
+            if self.budget.effective_rss_limit_bytes is not None or self._open_stages.stack
+            else None
+        )
+        self._observe_rss(rss_bytes, label=label, node_id=node_id)
+        self._enforce(rss_bytes)
+
+    def remaining_memory_bytes(self) -> int | None:
+        """Return current RSS headroom after enforcing this context's limit."""
+        effective_limit = self.budget.effective_rss_limit_bytes
+        if effective_limit is None:
+            return None
+        sampled = self.budget.sampler()
+        self._observe_rss(sampled)
+        self._enforce(sampled)
+        assert sampled is not None
+        return max(0, effective_limit - sampled)
+
+    def stage(
+        self, name: str, *, node_id: str | None = None
+    ) -> contextlib.AbstractContextManager[None]:
+        """Time a block with RSS sampled and the budget checked at both ends."""
+        return _TimedStage(self, _ActiveStage(name=name, node_id=node_id))
+
+    def record_collect(self) -> None:
+        """Record a Polars materialisation against active execution stages."""
+        self.metrics.record_collect()
+        self._open_stages.record_collect()
+
+    # Recording calls go to the part that owns the record.
+
+    def record_column_widths(
+        self,
+        *,
+        node_id: str,
+        input_width: int | None = None,
+        output_width: int | None = None,
+        requested_width: int | None = None,
+        physically_scanned_width: int | None = None,
+    ) -> None:
+        self.evidence.record_column_widths(
+            node_id=node_id,
+            input_width=input_width,
+            output_width=output_width,
+            requested_width=requested_width,
+            physically_scanned_width=physically_scanned_width,
+        )
+
+    def record_bytes_read(self, byte_count: int) -> None:
+        self.evidence.record_bytes_read(byte_count)
+
+    def record_bytes_written(self, byte_count: int) -> None:
+        self.evidence.record_bytes_written(byte_count)
+
+    def record_chunk(self) -> None:
+        self.evidence.record_chunk()
+
+    def record_cache_proof_hit(self) -> None:
+        self.evidence.record_cache_proof_hit()
+
+    def record_cache_proof_miss(self, reason: ExecutionCacheProofMissReason) -> None:
+        self.evidence.record_cache_proof_miss(reason)
+
+    def record_cache_direct_fallback(self) -> None:
+        self.evidence.record_cache_direct_fallback()
+
+    def record_input_preparation(self, record: Any) -> None:
+        self.provenance.record("input_preparation", record)
+
+    def record_shared_snapshot_seed(self, record: Any) -> None:
+        self.provenance.record("shared_snapshot_seeds", record)
+
+    def record_shared_snapshot_capture(self, record: Any) -> None:
+        self.provenance.record("shared_snapshot_captures", record)
+
+    def record_shared_snapshot_capture_skip(self, record: Any) -> None:
+        self.provenance.record("shared_snapshot_capture_skips", record)
+
+    def record_preview_seed_plan(self, generations: tuple[Any, ...]) -> None:
+        self.provenance.preview_seed_plan = generations
+
+    @property
+    def preview_seed_plan(self) -> tuple[Any, ...]:
+        return self.provenance.preview_seed_plan
+
+    def record_training_write(
+        self, outcome: ChunkedWrite, *, native_reason: str | None = None
+    ) -> None:
+        self.provenance.record_training_write(outcome, native_reason=native_reason)
+
+    def record_data_output_write(
+        self, *, strategy: str, native_reason: str | None = None, input_slices: int | None = None
+    ) -> None:
+        self.provenance.record_data_output_write(
+            strategy=strategy, native_reason=native_reason, input_slices=input_slices
+        )
 
     def record_execution_warning(
         self, code: str, *, node_id: str | None = None, reason: str | None = None
     ) -> None:
-        """Record one non-fatal condition the execution continued past."""
-        with self._evidence_lock:
-            self._execution_warnings.append({"code": code, "node_id": node_id, "reason": reason})
+        self.provenance.record_warning(code, node_id=node_id, reason=reason)
+
+    def worker_evidence(self) -> dict[str, list[dict[str, Any]]]:
+        return self.provenance.worker_evidence()
+
+    def adopt_worker_evidence(self, evidence: Mapping[str, Any]) -> None:
+        self.provenance.adopt(evidence)
+
+    def metrics_with_worker_evidence(self, worker_metrics: Mapping[str, Any]) -> dict[str, Any]:
+        return self.provenance.with_worker_metrics(worker_metrics)
 
     def metrics_summary(
         self,
@@ -1270,315 +1608,36 @@ class ExecutionContext:
             terminal_reason=terminal_reason,
             max_stages=max_stages,
         ).to_dict()
-        payload["memory_limit_bytes"] = self.memory_limit_bytes
-        payload["memory_baseline_bytes"] = self.memory_baseline_bytes
-        payload["rss_limit_bytes"] = self._effective_rss_limit_bytes()
-        payload["admission"] = self.admission.to_dict() if self.admission is not None else None
-        with self._evidence_lock:
-            payload["training_write_strategy"] = self._training_write_strategy
-            payload["training_write_input_slices"] = self._training_write_input_slices
-            payload["training_write_native_reason"] = self._training_write_native_reason
-            payload["training_write_blocking_operator"] = self._training_write_blocking_operator
-            payload["data_output_write_strategy"] = self._data_output_write_strategy
-            payload["data_output_write_input_slices"] = self._data_output_write_input_slices
-            payload["data_output_write_native_reason"] = self._data_output_write_native_reason
-            payload["input_preparation"] = [record.to_dict() for record in self._input_preparation]
-            payload["shared_snapshot_seeds"] = [
-                record.to_dict() for record in self._shared_snapshot_seeds
-            ]
-            payload["shared_snapshot_captures"] = [
-                record.to_dict() for record in self._shared_snapshot_captures
-            ]
-            payload["shared_snapshot_capture_skips"] = [
-                record.to_dict() for record in self._shared_snapshot_capture_skips
-            ]
-            payload["warnings"] = [dict(warning) for warning in self._execution_warnings]
-        projection_plan = self.projection_plan
-        diagnostic = getattr(projection_plan, "diagnostic", None)
+        payload.update(self.budget.payload())
+        payload.update(self.provenance.payload())
+        diagnostic = getattr(self.projection_plan, "diagnostic", None)
         payload["execution_strategy"] = (
             diagnostic.to_dict()
             if diagnostic is not None and hasattr(diagnostic, "to_dict")
             else None
         )
-        payload.update(self._execution_evidence_payload(payload, diagnostic=diagnostic))
-        self._record_estimate_calibration(payload, diagnostic=diagnostic)
-        self._emit_terminal_telemetry(payload)
+        payload.update(
+            self.evidence.payload(
+                payload,
+                diagnostic=diagnostic,
+                memory_baseline_bytes=self.budget.memory_baseline_bytes,
+            )
+        )
+        self.evidence.record_estimate_calibration(
+            payload, profile=self.profile, diagnostic=diagnostic
+        )
+        self.telemetry.emit_terminal(payload)
         return payload
 
-    def _record_estimate_calibration(
-        self,
-        payload: Mapping[str, object],
-        *,
-        diagnostic: Any | None,
-    ) -> None:
-        """Consume one terminal, positive estimate/observation pair at most once."""
-
-        status = payload.get("status")
-        if (
-            not isinstance(status, str)
-            or not status
-            or status.lower() in _TERMINAL_NON_STATES
-            or getattr(getattr(diagnostic, "strategy", None), "value", None)
-            != "materialisation-boundary"
-        ):
-            return
-        raw_estimate = payload.get("raw_estimated_bytes")
-        observed_growth = payload.get("observed_peak_rss_growth_bytes")
-        if (
-            not isinstance(raw_estimate, int)
-            or isinstance(raw_estimate, bool)
-            or raw_estimate <= 0
-            or not isinstance(observed_growth, int)
-            or isinstance(observed_growth, bool)
-            or observed_growth <= 0
-        ):
-            return
-        with self._evidence_lock:
-            if self._estimate_calibration_recorded:
-                return
-            self._estimate_calibration_recorded = True
-
-        from haute._estimate_calibration import observe_materialisation_estimate
-
-        observe_materialisation_estimate(
-            self.profile,
-            estimated_bytes=raw_estimate,
-            observed_growth_bytes=observed_growth,
-        )
-
-    def _emit_terminal_telemetry(self, payload: Mapping[str, object]) -> None:
-        if not self.telemetry_enabled:
-            return
-        status = payload.get("status")
-        if not isinstance(status, str) or not status or status.lower() in _TERMINAL_NON_STATES:
-            return
-        raw_reason = payload.get("terminal_reason")
-        terminal_reason = raw_reason if isinstance(raw_reason, str) else None
-        emission_key = (status, terminal_reason)
-        with self._telemetry_lock:
-            if emission_key in self._telemetry_emitted:
-                return
-            self._telemetry_emitted.add(emission_key)
-
+    def _throw_if_cancelled(self) -> None:
         try:
-            attributes = self._telemetry_attributes(payload)
-            event = ExecutionTelemetryEvent(
-                schema_version=EXECUTION_TELEMETRY_SCHEMA_VERSION,
-                event="execution_terminal",
-                attributes=attributes,
-            )
-            sink = self.telemetry_sink
-            if sink is None:
-                logger.info(
-                    event.event,
-                    schema_version=event.schema_version,
-                    **dict(event.attributes),
-                )
-            else:
-                sink(event)
-        except Exception as exc:
-            logger.warning(
-                "execution_telemetry_sink_failed",
-                error_type=type(exc).__name__,
-            )
+            self.cancellation_token.throw_if_cancelled(self.operation, job_id=self.job_id)
+        except ExecutionCancelledError as exc:
+            self.evidence.record_cancellation_latency(exc.cancellation_latency_ms)
+            raise
 
-    @staticmethod
-    def _telemetry_attributes(
-        payload: Mapping[str, object],
-    ) -> dict[str, str | int | float | bool | None]:
-        strategy = payload.get("execution_strategy")
-        strategy_payload = strategy if isinstance(strategy, Mapping) else {}
-        admission = payload.get("admission")
-        admission_payload = admission if isinstance(admission, Mapping) else {}
-        cache_proof = payload.get("cache_proof")
-        cache_proof_payload = cache_proof if isinstance(cache_proof, Mapping) else {}
-        miss_reasons = cache_proof_payload.get("miss_reason_counts")
-        miss_reason_payload = miss_reasons if isinstance(miss_reasons, Mapping) else {}
-        widths = payload.get("column_widths")
-        widths_payload = widths if isinstance(widths, Mapping) else {}
-        raw_attributes: dict[str, object] = {
-            "profile": payload.get("profile"),
-            "status": payload.get("status"),
-            "total_elapsed_ms": payload.get("total_elapsed_ms"),
-            "rss_start_bytes": payload.get("rss_start_bytes"),
-            "rss_end_bytes": payload.get("rss_end_bytes"),
-            "rss_delta_bytes": payload.get("rss_delta_bytes"),
-            "rss_peak_bytes": payload.get("rss_peak_bytes"),
-            "n_collects": payload.get("n_collects"),
-            "n_checkpoints": payload.get("n_checkpoints"),
-            "checkpoint_count": payload.get("checkpoint_count"),
-            "chunk_count": payload.get("chunk_count"),
-            "bytes_read": payload.get("bytes_read"),
-            "bytes_written": payload.get("bytes_written"),
-            "estimated_bytes": payload.get("estimated_bytes"),
-            "raw_estimated_bytes": payload.get("raw_estimated_bytes"),
-            "observed_peak_rss_bytes": payload.get("observed_peak_rss_bytes"),
-            "observed_peak_rss_growth_bytes": payload.get("observed_peak_rss_growth_bytes"),
-            "estimate_calibration_factor_basis_points": payload.get(
-                "estimate_calibration_factor_basis_points"
-            ),
-            "estimate_admission_basis": payload.get("estimate_admission_basis"),
-            "cancellation_latency_ms": payload.get("cancellation_latency_ms"),
-            "stage_count": payload.get("stage_count"),
-            "stages_truncated": payload.get("stages_truncated"),
-            "memory_pressure_event_count": payload.get("memory_pressure_event_count"),
-            "memory_pressure_events_truncated": payload.get("memory_pressure_events_truncated"),
-            "streamability": payload.get("streamability"),
-            "strategy_status": strategy_payload.get("status"),
-            "strategy": strategy_payload.get("strategy"),
-            "boundedness": strategy_payload.get("boundedness"),
-            "strategy_reason_code": strategy_payload.get("reason_code"),
-            "admission_admitted": admission_payload.get("admitted"),
-            "admission_budget_policy": admission_payload.get("budget_policy"),
-            "admission_headroom_bytes": admission_payload.get("headroom_bytes"),
-            "memory_limit_bytes": payload.get("memory_limit_bytes"),
-            "rss_limit_bytes": payload.get("rss_limit_bytes"),
-            "column_widths_state": widths_payload.get("state"),
-            "requested_column_width_total": payload.get("requested_column_width_total"),
-            "physically_scanned_column_width_total": payload.get(
-                "physically_scanned_column_width_total"
-            ),
-            "cache_proof_hits": cache_proof_payload.get("hits"),
-            "cache_proof_misses": cache_proof_payload.get("misses"),
-            "cache_direct_fallbacks": cache_proof_payload.get("direct_fallbacks"),
-            "cache_miss_metadata_source_mismatch": miss_reason_payload.get(
-                "metadata_source_mismatch"
-            ),
-            "cache_miss_artifact_integrity_schema_failure": miss_reason_payload.get(
-                "artifact_integrity_schema_failure"
-            ),
-            "cache_miss_unreadable_artifact": miss_reason_payload.get("unreadable_artifact"),
-            "cache_miss_proof_unavailable": miss_reason_payload.get("proof_unavailable"),
-        }
-        return _bounded_telemetry_attributes(raw_attributes)
-
-    def _execution_evidence_payload(
-        self,
-        metrics_payload: dict[str, object],
-        *,
-        diagnostic: Any | None,
-    ) -> dict[str, object]:
-        with self._evidence_lock:
-            widths = tuple(self._column_widths[node_id] for node_id in sorted(self._column_widths))
-            bytes_read = self._bytes_read
-            bytes_written = self._bytes_written
-            chunk_count = self._chunk_count
-            observed_peak_rss_bytes = self._observed_peak_rss_bytes
-            cancellation_latency_ms = self._cancellation_latency_ms
-            cache_proof_hits = self._cache_proof_hits
-            cache_proof_misses = self._cache_proof_misses
-            cache_direct_fallbacks = self._cache_direct_fallbacks
-            cache_proof_miss_reason_counts = dict(self._cache_proof_miss_reason_counts)
-
-        retained_widths = widths[:_MAX_RETAINED_COLUMN_WIDTHS]
-        width_state = "truncated" if len(widths) > len(retained_widths) else "available"
-        strategy = getattr(diagnostic, "strategy", None)
-        strategy_value = getattr(strategy, "value", strategy)
-        if strategy_value in {
-            "projected",
-            "schema-all-except",
-            "unprojected-streaming-boundary",
-        }:
-            streamability: str | None = "streaming"
-        elif strategy_value in {
-            "full-width-admitted-eager",
-            "materialisation-boundary",
-            # A conservative run still materialises at its group-by boundary;
-            # only the estimate that would have sized it is missing.
-            "full-width-conservative",
-        }:
-            streamability = "materialising"
-        else:
-            streamability = None
-
-        evidence: list[str] = []
-        reason_code = getattr(diagnostic, "reason_code", None)
-        if isinstance(reason_code, str) and reason_code:
-            evidence.append(reason_code)
-        boundaries = getattr(getattr(diagnostic, "boundaries", None), "items", ())
-        evidence.extend(
-            str(item["boundary_kind"])
-            for item in boundaries
-            if isinstance(item, Mapping) and "boundary_kind" in item
-        )
-        canonical_evidence = tuple(sorted(set(evidence)))
-        retained_evidence = canonical_evidence[:_MAX_STREAMABILITY_EVIDENCE]
-        evidence_state = (
-            "unavailable"
-            if diagnostic is None
-            else "truncated"
-            if len(canonical_evidence) > len(retained_evidence)
-            else "available"
-        )
-        estimated_bytes = getattr(diagnostic, "estimated_peak_bytes", None)
-        raw_estimated_bytes = getattr(diagnostic, "raw_estimated_peak_bytes", None)
-        calibration_factor = getattr(
-            diagnostic,
-            "estimate_calibration_factor_basis_points",
-            None,
-        )
-        estimate_admission_basis = getattr(diagnostic, "estimate_admission_basis", None)
-        baseline = self.memory_baseline_bytes
-        if baseline is None:
-            raw_rss_start = metrics_payload.get("rss_start_bytes")
-            baseline = raw_rss_start if isinstance(raw_rss_start, int) else None
-        observed_peak_rss_growth_bytes = (
-            max(0, observed_peak_rss_bytes - baseline)
-            if observed_peak_rss_bytes is not None and baseline is not None
-            else None
-        )
-        requested_width_total = (
-            sum(cast(int, item.requested_width) for item in widths)
-            if widths and all(item.requested_width is not None for item in widths)
-            else None
-        )
-        scanned_width_total = (
-            sum(cast(int, item.physically_scanned_width) for item in widths)
-            if widths and all(item.physically_scanned_width is not None for item in widths)
-            else None
-        )
-        return {
-            "streamability": streamability,
-            "streamability_evidence": {
-                "state": evidence_state,
-                "total_count": None if evidence_state == "unavailable" else len(canonical_evidence),
-                "items": list(retained_evidence),
-            },
-            "column_widths": {
-                "state": width_state,
-                "total_count": len(widths),
-                "items": [item.to_dict() for item in retained_widths],
-            },
-            "requested_column_width_total": requested_width_total,
-            "physically_scanned_column_width_total": scanned_width_total,
-            "cache_proof": {
-                "hits": cache_proof_hits,
-                "misses": cache_proof_misses,
-                "direct_fallbacks": cache_direct_fallbacks,
-                "miss_reason_counts": {
-                    reason.value: cache_proof_miss_reason_counts[reason]
-                    for reason in ExecutionCacheProofMissReason
-                },
-            },
-            "bytes_read": bytes_read,
-            "bytes_written": bytes_written,
-            "estimated_bytes": estimated_bytes,
-            "raw_estimated_bytes": raw_estimated_bytes,
-            "estimate_calibration_factor_basis_points": calibration_factor,
-            "estimate_admission_basis": estimate_admission_basis,
-            "checkpoint_count": metrics_payload["n_checkpoints"],
-            "chunk_count": chunk_count,
-            "observed_peak_rss_bytes": observed_peak_rss_bytes,
-            "observed_peak_rss_growth_bytes": observed_peak_rss_growth_bytes,
-            "cancellation_latency_ms": cancellation_latency_ms,
-        }
-
-    def _active_stage_stack(self) -> list[_ActiveStage]:
-        stack = getattr(self._stage_local, "stack", None)
-        if stack is None:
-            stack = []
-            self._stage_local.stack = stack
-        return stack
+    def _enforce(self, rss_bytes: int | None) -> None:
+        self.budget.enforce(rss_bytes, operation=self.operation, job_id=self.job_id)
 
     def _observe_rss(
         self,
@@ -1590,151 +1649,105 @@ class ExecutionContext:
     ) -> None:
         if rss_bytes is None:
             return
-        with self._evidence_lock:
-            self._observed_peak_rss_bytes = (
-                rss_bytes
-                if self._observed_peak_rss_bytes is None
-                else max(self._observed_peak_rss_bytes, rss_bytes)
-            )
-        for active_stage in self._active_stage_stack():
-            active_stage.rss_peak_bytes = (
-                rss_bytes
-                if active_stage.rss_peak_bytes is None
-                else max(active_stage.rss_peak_bytes, rss_bytes)
-            )
-        self._record_memory_pressure_events(
-            rss_bytes=rss_bytes,
+        self.evidence.observe_rss(rss_bytes)
+        self._open_stages.observe_rss(rss_bytes)
+        innermost = self._open_stages.innermost
+        for event in self.budget.pressure_events(
+            rss_bytes,
+            operation=self.operation,
+            profile=self.profile,
+            job_id=self.job_id,
+            stage=stage if stage is not None else innermost.name if innermost else None,
+            node_id=node_id if node_id is not None else innermost.node_id if innermost else None,
             label=label,
-            stage=stage,
-            node_id=node_id,
-        )
-
-    def _record_checkpoint(self) -> None:
-        self.metrics.record_checkpoint()
-        for stage in self._active_stage_stack():
-            stage.n_checkpoints += 1
-
-    def _check_memory_budget(
-        self,
-        *,
-        rss_bytes: int | None | object = _RSS_SAMPLE_UNSET,
-    ) -> None:
-        effective_limit = self._effective_rss_limit_bytes()
-        if effective_limit is None:
-            return
-        sampled = (
-            self.memory_sampler() if rss_bytes is _RSS_SAMPLE_UNSET else cast(int | None, rss_bytes)
-        )
-        if sampled is None:
-            raise ExecutionMemoryLimitExceededError(
-                self.operation,
-                job_id=self.job_id,
-                rss_bytes=None,
-                limit_bytes=(
-                    self.memory_limit_bytes
-                    if self.memory_limit_bytes is not None
-                    else effective_limit
-                ),
-                baseline_rss_bytes=self.memory_baseline_bytes,
-                rss_limit_bytes=effective_limit,
-                reason="memory_sampler_unavailable",
-            )
-        if sampled > effective_limit:
-            reason = self._memory_limit_reason(
-                sampled=sampled,
-                effective_limit=effective_limit,
-            )
-            raise ExecutionMemoryLimitExceededError(
-                self.operation,
-                job_id=self.job_id,
-                rss_bytes=sampled,
-                limit_bytes=(
-                    self.memory_limit_bytes
-                    if self.memory_limit_bytes is not None
-                    else effective_limit
-                ),
-                baseline_rss_bytes=self.memory_baseline_bytes,
-                rss_limit_bytes=effective_limit,
-                reason=reason,
-            )
-
-    def _record_memory_pressure_events(
-        self,
-        *,
-        rss_bytes: int,
-        label: str | None,
-        stage: str | None,
-        node_id: str | None,
-    ) -> None:
-        effective_limit = self._effective_rss_limit_bytes()
-        if effective_limit is None or effective_limit <= 0:
-            return
-        baseline = self.memory_baseline_bytes or 0
-        budget_window = effective_limit - baseline
-        if budget_window <= 0:
-            return
-        headroom_used_bytes = max(0, rss_bytes - baseline)
-        active_stack = self._active_stage_stack()
-        active_stage = active_stack[-1] if active_stack else None
-        event_stage = stage if stage is not None else active_stage.name if active_stage else None
-        event_node_id = (
-            node_id if node_id is not None else active_stage.node_id if active_stage else None
-        )
-        admission = self.admission
-        pressure_ratio = round(headroom_used_bytes / budget_window, 6)
-        for threshold in _MEMORY_PRESSURE_THRESHOLDS:
-            threshold_percent = int(threshold * 100)
-            if headroom_used_bytes < math.ceil(budget_window * threshold):
-                continue
-            with self._memory_pressure_lock:
-                if threshold_percent in self._memory_pressure_seen:
-                    continue
-                self._memory_pressure_seen.add(threshold_percent)
-            event = ExecutionMemoryPressureEvent(
-                operation=self.operation,
-                profile=self.profile,
-                job_id=self.job_id,
-                node_id=event_node_id,
-                stage=event_stage,
-                label=label,
-                threshold_ratio=threshold,
-                threshold_percent=threshold_percent,
-                rss_bytes=rss_bytes,
-                rss_limit_bytes=effective_limit,
-                headroom_bytes=effective_limit - rss_bytes,
-                headroom_used_bytes=headroom_used_bytes,
-                rss_peak_bytes=rss_bytes,
-                memory_limit_bytes=self.memory_limit_bytes,
-                memory_baseline_bytes=self.memory_baseline_bytes,
-                baseline_rss_bytes=self.memory_baseline_bytes,
-                budget_policy=admission.budget_policy if admission is not None else None,
-                config_key=admission.config_key if admission is not None else None,
-                available_ram_bytes=(
-                    admission.available_ram_bytes if admission is not None else None
-                ),
-                os_reserve_bytes=(admission.os_reserve_bytes if admission is not None else None),
-                pressure_ratio=pressure_ratio,
-            )
+        ):
             self.metrics.record_memory_pressure_event(event)
             if self.memory_pressure_callback is not None:
                 self.memory_pressure_callback(event)
 
-    def _effective_rss_limit_bytes(self) -> int | None:
-        if self.rss_limit_bytes is not None:
-            return self.rss_limit_bytes
-        if self.memory_limit_bytes is None:
-            return None
-        if self.memory_baseline_bytes is None:
-            return self.memory_limit_bytes
-        return self.memory_baseline_bytes + self.memory_limit_bytes
 
-    def _memory_limit_reason(self, *, sampled: int, effective_limit: int) -> str:
-        if self.memory_baseline_bytes is None or self.memory_limit_bytes is None:
-            return "rss_exceeds_memory_limit"
-        growth_limit = self.memory_baseline_bytes + self.memory_limit_bytes
-        if effective_limit < growth_limit and sampled > effective_limit:
-            return "process_rss_limit_exceeded"
-        return "rss_exceeds_memory_limit"
+class _TimedStage:
+    """One :meth:`ExecutionContext.stage` block.
+
+    Entry checks cancellation and the budget before the block runs, and makes
+    the context current. Exit samples RSS, closes the stage, restores the
+    previous context, and records the stage's metric, collecting every
+    failure so that none hides another: they become notes on an exception the
+    block raised, or else the first is raised with the rest as notes.
+    """
+
+    __slots__ = ("_context", "_stage", "_t0", "_rss_start", "_token")
+
+    def __init__(self, context: ExecutionContext, stage: _ActiveStage) -> None:
+        self._context = context
+        self._stage = stage
+
+    def __enter__(self) -> None:
+        context, stage = self._context, self._stage
+        self._t0 = time.perf_counter()
+        context._throw_if_cancelled()
+        self._rss_start = stage.rss_peak_bytes = context.budget.sampler()
+        context._observe_rss(self._rss_start, stage=stage.name, node_id=stage.node_id)
+        try:
+            context._enforce(self._rss_start)
+        except ExecutionMemoryLimitExceededError:
+            self._record(rss_end=self._rss_start)
+            raise
+        context._open_stages.push(stage)
+        self._token = _CURRENT_EXECUTION_CONTEXT.set(context)
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        primary_error: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        context, stage = self._context, self._stage
+        rss_end = stage.rss_peak_bytes
+        errors: list[BaseException] = []
+        try:
+            rss_end = context.budget.sampler()
+            context._observe_rss(rss_end, stage=stage.name, node_id=stage.node_id)
+        except BaseException as exc:
+            errors.append(exc)
+        for finish in (
+            lambda: context._open_stages.pop(stage),
+            lambda: _CURRENT_EXECUTION_CONTEXT.reset(self._token),
+            lambda: self._record(rss_end=rss_end),
+        ):
+            try:
+                finish()
+            except BaseException as exc:
+                errors.append(exc)
+        if primary_error is None and not errors:
+            context._enforce(rss_end)
+        if not errors:
+            return
+        notes = [f"Execution stage finalization failed: {type(e).__name__}: {e}" for e in errors]
+        if primary_error is not None:
+            primary_error.add_note("\n".join(notes))
+            return
+        for note in notes[1:]:
+            errors[0].add_note(note)
+        raise errors[0]
+
+    def _record(self, *, rss_end: int | None) -> None:
+        context, stage = self._context, self._stage
+        context.metrics.record(
+            ExecutionStageMetric(
+                name=stage.name,
+                elapsed_ms=round((time.perf_counter() - self._t0) * 1000, 3),
+                operation=context.operation,
+                profile=context.profile,
+                node_id=stage.node_id,
+                job_id=context.job_id,
+                rss_start_bytes=self._rss_start,
+                rss_end_bytes=rss_end,
+                rss_peak_bytes=stage.rss_peak_bytes,
+                n_collects=stage.n_collects,
+                n_checkpoints=stage.n_checkpoints,
+            )
+        )
 
 
 def ensure_execution_context(
@@ -1751,6 +1764,128 @@ def ensure_execution_context(
 
 def current_execution_context() -> ExecutionContext | None:
     return _CURRENT_EXECUTION_CONTEXT.get()
+
+
+def _cleanup_failure_note(error: BaseException) -> str:
+    return f"Execution cleanup failed: {type(error).__name__}: {error}"
+
+
+def _require_byte_count(byte_count: int) -> None:
+    if not isinstance(byte_count, int) or isinstance(byte_count, bool) or byte_count < 0:
+        raise ValueError("supported byte counters must be non-negative integers")
+
+
+def _streamability(diagnostic: Any | None) -> str | None:
+    strategy = getattr(diagnostic, "strategy", None)
+    strategy_value = getattr(strategy, "value", strategy)
+    if strategy_value in _STREAMING_STRATEGIES:
+        return "streaming"
+    if strategy_value in _MATERIALISING_STRATEGIES:
+        return "materialising"
+    return None
+
+
+def _streamability_evidence(diagnostic: Any | None) -> dict[str, object]:
+    evidence: list[str] = []
+    reason_code = getattr(diagnostic, "reason_code", None)
+    if isinstance(reason_code, str) and reason_code:
+        evidence.append(reason_code)
+    boundaries = getattr(getattr(diagnostic, "boundaries", None), "items", ())
+    evidence.extend(
+        str(item["boundary_kind"])
+        for item in boundaries
+        if isinstance(item, Mapping) and "boundary_kind" in item
+    )
+    canonical_evidence = tuple(sorted(set(evidence)))
+    retained_evidence = canonical_evidence[:_MAX_STREAMABILITY_EVIDENCE]
+    state = (
+        "unavailable"
+        if diagnostic is None
+        else "truncated"
+        if len(canonical_evidence) > len(retained_evidence)
+        else "available"
+    )
+    return {
+        "state": state,
+        "total_count": None if state == "unavailable" else len(canonical_evidence),
+        "items": list(retained_evidence),
+    }
+
+
+def _width_total(widths: tuple[ExecutionColumnWidths, ...], name: str) -> int | None:
+    """Sum one width over every node, or ``None`` unless every node reported it."""
+    values = [getattr(item, name) for item in widths]
+    if not values or any(value is None for value in values):
+        return None
+    return sum(cast(list[int], values))
+
+
+def _terminal_telemetry_attributes(
+    payload: Mapping[str, object],
+) -> dict[str, str | int | float | bool | None]:
+    strategy = payload.get("execution_strategy")
+    strategy_payload = strategy if isinstance(strategy, Mapping) else {}
+    admission = payload.get("admission")
+    admission_payload = admission if isinstance(admission, Mapping) else {}
+    cache_proof = payload.get("cache_proof")
+    cache_proof_payload = cache_proof if isinstance(cache_proof, Mapping) else {}
+    miss_reasons = cache_proof_payload.get("miss_reason_counts")
+    miss_reason_payload = miss_reasons if isinstance(miss_reasons, Mapping) else {}
+    widths = payload.get("column_widths")
+    widths_payload = widths if isinstance(widths, Mapping) else {}
+    raw_attributes: dict[str, object] = {
+        "profile": payload.get("profile"),
+        "status": payload.get("status"),
+        "total_elapsed_ms": payload.get("total_elapsed_ms"),
+        "rss_start_bytes": payload.get("rss_start_bytes"),
+        "rss_end_bytes": payload.get("rss_end_bytes"),
+        "rss_delta_bytes": payload.get("rss_delta_bytes"),
+        "rss_peak_bytes": payload.get("rss_peak_bytes"),
+        "n_collects": payload.get("n_collects"),
+        "n_checkpoints": payload.get("n_checkpoints"),
+        "checkpoint_count": payload.get("checkpoint_count"),
+        "chunk_count": payload.get("chunk_count"),
+        "bytes_read": payload.get("bytes_read"),
+        "bytes_written": payload.get("bytes_written"),
+        "estimated_bytes": payload.get("estimated_bytes"),
+        "raw_estimated_bytes": payload.get("raw_estimated_bytes"),
+        "observed_peak_rss_bytes": payload.get("observed_peak_rss_bytes"),
+        "observed_peak_rss_growth_bytes": payload.get("observed_peak_rss_growth_bytes"),
+        "estimate_calibration_factor_basis_points": payload.get(
+            "estimate_calibration_factor_basis_points"
+        ),
+        "estimate_admission_basis": payload.get("estimate_admission_basis"),
+        "cancellation_latency_ms": payload.get("cancellation_latency_ms"),
+        "stage_count": payload.get("stage_count"),
+        "stages_truncated": payload.get("stages_truncated"),
+        "memory_pressure_event_count": payload.get("memory_pressure_event_count"),
+        "memory_pressure_events_truncated": payload.get("memory_pressure_events_truncated"),
+        "streamability": payload.get("streamability"),
+        "strategy_status": strategy_payload.get("status"),
+        "strategy": strategy_payload.get("strategy"),
+        "boundedness": strategy_payload.get("boundedness"),
+        "strategy_reason_code": strategy_payload.get("reason_code"),
+        "admission_admitted": admission_payload.get("admitted"),
+        "admission_budget_policy": admission_payload.get("budget_policy"),
+        "admission_headroom_bytes": admission_payload.get("headroom_bytes"),
+        "memory_limit_bytes": payload.get("memory_limit_bytes"),
+        "rss_limit_bytes": payload.get("rss_limit_bytes"),
+        "column_widths_state": widths_payload.get("state"),
+        "requested_column_width_total": payload.get("requested_column_width_total"),
+        "physically_scanned_column_width_total": payload.get(
+            "physically_scanned_column_width_total"
+        ),
+        "cache_proof_hits": cache_proof_payload.get("hits"),
+        "cache_proof_misses": cache_proof_payload.get("misses"),
+        "cache_direct_fallbacks": cache_proof_payload.get("direct_fallbacks"),
+        "cache_miss_metadata_source_mismatch": miss_reason_payload.get("metadata_source_mismatch"),
+        "cache_miss_artifact_integrity_schema_failure": miss_reason_payload.get(
+            "artifact_integrity_schema_failure"
+        ),
+        "cache_miss_unreadable_artifact": miss_reason_payload.get("unreadable_artifact"),
+        "cache_miss_proof_unavailable": miss_reason_payload.get("proof_unavailable"),
+    }
+    return _bounded_telemetry_attributes(raw_attributes)
 
 
 def _round_ms(value: float) -> float:
