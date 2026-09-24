@@ -263,7 +263,7 @@ def _attach_code_from_body(
 def _is_contract_resolve_fallback_exception(exc: BaseException) -> bool:
     """Return whether *exc* should fall back to an opaque parse-time contract.
 
-    Matches ``_execute_lazy`` while avoiding an eager module import of
+    Matches the execution boundary check while avoiding an eager module import of
     MLflow just to populate an ``except`` tuple at import time.
     """
     if isinstance(exc, (ConfigError, OSError, ImportError, RuntimeError)):

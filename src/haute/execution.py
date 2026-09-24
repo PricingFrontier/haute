@@ -1306,7 +1306,7 @@ def execute_lazy_graph(
     write_recipes: dict[str, WriteRecipe] | None = None,
     unshaped_frames: dict[str, pl.LazyFrame] | None = None,
 ) -> LazyExecutionResult:
-    """Execute a graph lazily through the shared production engine.
+    """Execute a graph lazily: one sink walk of the graph walker.
 
     Set ``schema_only`` when the caller resolves schemas through
     ``collect_schema()`` and never collects a frame or invokes a sink; see
@@ -1322,16 +1322,17 @@ def execute_lazy_graph(
     ``unshaped_frames`` receives, for every node that selects or renames its
     columns, its frame before that step.
     """
-    from haute._execute_lazy import _execute_lazy
+    from haute._graph_walker import CollectPolicy, walk_graph
 
-    return _execute_lazy(
+    walked = walk_graph(
         graph,
         build_node_fn,
+        policy=CollectPolicy.sink(),
         target_node_id=target_node_id,
         preamble_ns=preamble_ns,
         source=source,
         enforce_contracts=enforce_contracts,
-        preserve_node_ids=preserve_node_ids,
+        preserve_node_ids=preserve_node_ids or (),
         required_columns_by_node=required_columns_by_node,
         execution_context=execution_context,
         source_by_node=source_by_node,
@@ -1339,10 +1340,14 @@ def execute_lazy_graph(
         runtime_source_frames_by_node=runtime_source_frames_by_node,
         prepare_inputs=prepare_inputs,
         snapshot_plan=snapshot_plan,
-        join_recipes=join_recipes,
-        write_recipes=write_recipes,
-        unshaped_frames=unshaped_frames,
     )
+    if join_recipes is not None:
+        join_recipes.update(walked.join_recipes)
+    if write_recipes is not None:
+        write_recipes.update(walked.write_recipes)
+    if unshaped_frames is not None:
+        unshaped_frames.update(walked.unshaped_frames)
+    return walked.frames, walked.order, walked.parents_of, walked.id_to_name
 
 
 def prune_source_switch_edges(

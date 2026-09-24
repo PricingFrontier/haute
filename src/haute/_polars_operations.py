@@ -696,7 +696,23 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
     _row_local_expr("log", "proof: expr_log"),
     _row_local_expr("not_", "proof: expr_not"),
     _row_local_expr("otherwise", "proof: expr_when_then_otherwise"),
+    _op(
+        _EXPR,
+        "pow",
+        _ROW_LOCAL,
+        _P_ROW_LOCAL,
+        "each row's value raised to a row-local exponent; not chunk-admitted: no "
+        "chunked==full proof yet",
+    ),
     _row_local_expr("replace", "proof: expr_replace (literal mapping only)"),
+    _op(
+        _EXPR,
+        "replace_strict",
+        _ROW_LOCAL,
+        _P_ROW_LOCAL,
+        "each row's value looked up in a literal mapping (call-shape validator), raising for "
+        "an unmapped value without a default; not chunk-admitted: no chunked==full proof yet",
+    ),
     _row_local_expr("round", "proof: expr_round"),
     _row_local_expr("sqrt", "proof: expr_sqrt"),
     _row_local_expr("then", "proof: expr_when_then_otherwise"),
@@ -884,6 +900,7 @@ _ENTRIES: tuple[PolarsOperation, ...] = (
     _unproven_ns("dt", "convert_time_zone"),
     _unproven_ns("dt", "replace_time_zone"),
     _unproven_ns("dt", "round"),
+    _unproven_ns("dt", "total_days"),
     _op(
         _NS,
         "explode",

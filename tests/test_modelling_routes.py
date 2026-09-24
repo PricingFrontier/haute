@@ -2878,10 +2878,10 @@ class TestTrainingProjection:
 
 
 class TestExecuteAndSinkPlanCleanup:
-    """Verify the seed plan is closed even when _execute_lazy raises."""
+    """Verify the seed plan is closed even when the lazy execution raises."""
 
     def test_seed_plan_closed_on_error(self, tmp_path):
-        """If _execute_lazy raises, the plan's leases and staging are released."""
+        """If the lazy execution raises, the plan's leases and staging are released."""
         from haute.routes._training_preparation import (
             TrainingPreparationRequest,
             prepare_training_data,

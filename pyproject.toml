@@ -223,6 +223,10 @@ select = [
     "PTH119",  # os.path.basename  -> Path.name
     "PTH120",  # os.path.dirname   -> Path.parent
     "PTH201",  # Path(".") / Path("") -> Path()
+    # Cyclomatic complexity. The graph walker holds every execution's walk, so
+    # its functions stay at 15 or below (EXEC-R05); the rule is scoped to that
+    # module by the per-file ignore below.
+    "C901",
 ]
 
 [tool.ruff.lint.flake8-pytest-style]
@@ -234,8 +238,12 @@ select = [
 # thing to do; it is just not something CI should demand.
 raises-require-match-for = ["BaseException", "Exception"]
 
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
 [tool.ruff.lint.per-file-ignores]
 "src/haute/schemas.py" = ["N815"]  # camelCase fields match frontend JSON API
+"!src/haute/_graph_walker.py" = ["C901"]  # the complexity limit covers the walker only
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -288,6 +296,7 @@ paths = [
     "src/haute/_execution_admission.py",
     "src/haute/_execution_context.py",
     "src/haute/_explore_cache.py",
+    "src/haute/_graph_walker.py",
     "src/haute/_file_lock.py",
     "src/haute/_interactive_workers.py",
     "src/haute/_io.py",

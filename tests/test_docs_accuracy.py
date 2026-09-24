@@ -141,7 +141,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "background-jobs-api",
     "caching",
     "engineering-quality",
-    "execution-engine",
     "explore-eda",
     "frontend-shared",
     "mlflow-model-registry",

@@ -48,9 +48,8 @@ exports stay visible.
 unreferenced production code beyond a reviewed allowlist; the training facade
 is gone; tests import the owning modules.
 
-**Dependencies:** None. `EXEC-R03` (execution engine) removes the chunked
-runner if `OPT-P15` retires its consumer; this package does not wait for it,
-and the reviewed allowlist covers the runner while it remains live.
+**Dependencies:** None. The chunked runner stays live (`OPT-P15` kept its
+consumer), so the reviewed allowlist covers it.
 
 **Evidence:** `src/haute/_execution_context.py::ensure_execution_context`;
 `src/haute/_rating.py::_rating_table_materialises`;

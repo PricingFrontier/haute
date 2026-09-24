@@ -36,10 +36,12 @@ from haute._execution_context import (
     ExecutionTelemetryEvent,
     _bounded_telemetry_attributes,
 )
+from haute._graph_walker import CollectPolicy, walk_graph
 from haute._pipeline_recovery import pipeline_document_fingerprint
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.errors import ContractMismatchError, SchemaMismatchError
-from haute.graph_utils import NodeType, _execute_eager_core, _execute_lazy
+from haute.execution import execute_lazy_graph
+from haute.graph_utils import NodeType
 from haute.schemas import ExecutionMetricsPayload
 from tests._execution_faults import ExecutionFaultPoint, FaultInjectingExecutionContext
 from tests.conftest import (
@@ -2773,6 +2775,25 @@ def test_background_job_registry_uses_caller_execution_token() -> None:
     assert supplied_token.cancelled
 
 
+def _run_eager(
+    graph: Any,
+    build_node_fn: Any,
+    *,
+    target_node_id: str,
+    swallow_errors: bool = False,
+    execution_context: ExecutionContext | None = None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """One eager execution: a display walk, recording node failures when asked."""
+    walked = walk_graph(
+        graph,
+        build_node_fn,
+        policy=CollectPolicy.display(record_failures=swallow_errors),
+        target_node_id=target_node_id,
+        execution_context=execution_context,
+    )
+    return walked.collected, walked.errors
+
+
 def test_eager_graph_execution_records_collect_stages() -> None:
     graph = make_graph(
         {
@@ -2812,14 +2833,11 @@ def test_eager_graph_execution_records_collect_stages() -> None:
             False,
         )
 
-    result = _execute_eager_core(
-        graph,
-        build_node_fn,
-        target_node_id="derived",
-        execution_context=context,
+    outputs, _errors = _run_eager(
+        graph, build_node_fn, target_node_id="derived", execution_context=context
     )
 
-    assert result.outputs["derived"]["b"].to_list() == [2, 3]
+    assert outputs["derived"]["b"].to_list() == [2, 3]
     metrics = context.metrics.snapshot()
     assert [metric.node_id for metric in metrics] == ["source", "derived"]
     assert {metric.name for metric in metrics} == {"eager_collect"}
@@ -2853,7 +2871,7 @@ def test_eager_graph_execution_does_not_swallow_memory_budget_failures() -> None
         return node.id, lambda: pl.DataFrame({"a": [1, 2]}).lazy(), True
 
     with pytest.raises(ExecutionMemoryLimitExceededError):
-        _execute_eager_core(
+        _run_eager(
             graph,
             build_node_fn,
             target_node_id="source",
@@ -2888,7 +2906,7 @@ def test_eager_graph_execution_does_not_swallow_cancellation() -> None:
         return node.id, lambda: pl.DataFrame({"a": [1, 2]}).lazy(), True
 
     with pytest.raises(ExecutionCancelledError):
-        _execute_eager_core(
+        _run_eager(
             graph,
             build_node_fn,
             target_node_id="source",
@@ -2928,12 +2946,7 @@ def test_eager_graph_execution_does_not_swallow_mismatches(error: Exception) -> 
         return node.id, raise_mismatch, True
 
     with pytest.raises(type(error), match=error.message):
-        _execute_eager_core(
-            graph,
-            build_node_fn,
-            target_node_id="source",
-            swallow_errors=True,
-        )
+        _run_eager(graph, build_node_fn, target_node_id="source", swallow_errors=True)
 
 
 def test_eager_graph_execution_swallows_ordinary_node_errors() -> None:
@@ -2959,15 +2972,10 @@ def test_eager_graph_execution_swallows_ordinary_node_errors() -> None:
 
         return node.id, raise_runtime_error, True
 
-    result = _execute_eager_core(
-        graph,
-        build_node_fn,
-        target_node_id="source",
-        swallow_errors=True,
-    )
+    outputs, errors = _run_eager(graph, build_node_fn, target_node_id="source", swallow_errors=True)
 
-    assert result.errors == {"source": "ordinary node failure"}
-    assert result.outputs == {"source": None}
+    assert errors == {"source": "ordinary node failure"}
+    assert outputs == {"source": None}
 
 
 def test_lazy_graph_execution_checks_cancellation_before_node_work() -> None:
@@ -2993,7 +3001,7 @@ def test_lazy_graph_execution_checks_cancellation_before_node_work() -> None:
         raise AssertionError("cancelled execution should not build node functions")
 
     with pytest.raises(ExecutionCancelledError):
-        _execute_lazy(graph, build_node_fn, execution_context=context)
+        execute_lazy_graph(graph, build_node_fn, execution_context=context)
 
 
 def test_lazy_graph_execution_records_build_and_capture_stages(tmp_path) -> None:
@@ -3075,7 +3083,7 @@ def test_lazy_graph_execution_records_build_and_capture_stages(tmp_path) -> None
         profile=ExecutionProfile.LAZY_SINK,
     )
     with open_resolved_seed_plan(request, store=NodeSnapshotStore(tmp_path)) as plan:
-        outputs, *_ = _execute_lazy(
+        outputs, *_ = execute_lazy_graph(
             graph,
             build_node_fn,
             target_node_id="both",
@@ -3126,9 +3134,11 @@ def test_execute_sink_forwards_execution_context_to_lazy_executor(tmp_path) -> N
 
     def fake_execute_lazy(*_args, **kwargs):
         captured.update(kwargs)
-        return {"sink": pl.DataFrame({"a": [1]}).lazy()}, ["sink"], {}, {}
+        from haute._graph_walker import WalkResult
 
-    with patch("haute.executor._execute_lazy", side_effect=fake_execute_lazy):
+        return WalkResult(frames={"sink": pl.DataFrame({"a": [1]}).lazy()})
+
+    with patch("haute.executor.walk_graph", side_effect=fake_execute_lazy):
         result = write_data_output(graph, "sink", execution_context=context)
 
     assert result.status == "ok"

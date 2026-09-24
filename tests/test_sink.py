@@ -18,6 +18,7 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
+from haute._graph_walker import WalkResult
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.schemas import WriteOutputResponse
 from tests.conftest import make_file_output_config
@@ -119,13 +120,13 @@ class TestExecuteSinkParquet:
             edges=[_e("s", "sink")],
         )
 
-        # Mock _build_node_fn and _execute_lazy to return a simple LazyFrame
+        # Mock the graph walk to return a simple LazyFrame
         lf = pl.DataFrame({"x": [1, 2, 3], "y": [4, 5, 6]}).lazy()
         mock_outputs = {"sink": lf}
 
         with patch(
-            "haute.executor._execute_lazy",
-            return_value=(mock_outputs, ["s", "sink"], {}, {}),
+            "haute.executor.walk_graph",
+            return_value=WalkResult(frames=mock_outputs),
         ):
             result = write_data_output(graph, "sink", project_root=tmp_path)
 
@@ -165,12 +166,12 @@ class TestExecuteSinkParquet:
         )
         captured_kwargs = {}
 
-        def mock_execute_lazy(graph, build_fn, **kwargs):
+        def mock_walk(graph, build_fn, **kwargs):
             captured_kwargs.update(kwargs)
             lf = pl.DataFrame({"x": [1], "y": [2], "z": [3]}).lazy()
-            return {"sink": lf}, ["s", "sink"], {}, {}
+            return WalkResult(frames={"sink": lf})
 
-        with patch("haute.executor._execute_lazy", side_effect=mock_execute_lazy):
+        with patch("haute.executor.walk_graph", side_effect=mock_walk):
             write_data_output(graph, "sink", project_root=tmp_path)
 
         assert captured_kwargs["required_columns_by_node"] == {"sink": frozenset({"x", "z"})}
@@ -200,8 +201,8 @@ class TestExecuteSinkCSV:
         mock_outputs = {"sink": lf}
 
         with patch(
-            "haute.executor._execute_lazy",
-            return_value=(mock_outputs, ["s", "sink"], {}, {}),
+            "haute.executor.walk_graph",
+            return_value=WalkResult(frames=mock_outputs),
         ):
             result = write_data_output(graph, "sink", project_root=tmp_path)
 
@@ -234,8 +235,8 @@ class TestExecuteSinkDirectoryCreation:
 
         lf = pl.DataFrame({"x": [1]}).lazy()
         with patch(
-            "haute.executor._execute_lazy",
-            return_value=({"sink": lf}, ["s", "sink"], {}, {}),
+            "haute.executor.walk_graph",
+            return_value=WalkResult(frames={"sink": lf}),
         ):
             result = write_data_output(graph, "sink", project_root=tmp_path)
 
@@ -261,12 +262,12 @@ class TestExecuteSinkScenario:
 
         captured_kwargs = {}
 
-        def mock_execute_lazy(graph, build_fn, **kwargs):
+        def mock_walk(graph, build_fn, **kwargs):
             captured_kwargs.update(kwargs)
             lf = pl.DataFrame({"x": [1]}).lazy()
-            return {"sink": lf}, ["s", "sink"], {}, {}
+            return WalkResult(frames={"sink": lf})
 
-        with patch("haute.executor._execute_lazy", side_effect=mock_execute_lazy):
+        with patch("haute.executor.walk_graph", side_effect=mock_walk):
             write_data_output(
                 graph,
                 "sink",
@@ -292,12 +293,12 @@ class TestExecuteSinkScenario:
 
         captured_kwargs = {}
 
-        def mock_execute_lazy(graph, build_fn, **kwargs):
+        def mock_walk(graph, build_fn, **kwargs):
             captured_kwargs.update(kwargs)
             lf = pl.DataFrame({"x": [1]}).lazy()
-            return {"sink": lf}, ["s", "sink"], {}, {}
+            return WalkResult(frames={"sink": lf})
 
-        with patch("haute.executor._execute_lazy", side_effect=mock_execute_lazy):
+        with patch("haute.executor.walk_graph", side_effect=mock_walk):
             write_data_output(
                 graph,
                 "sink",
@@ -326,8 +327,8 @@ class TestExecuteSinkComputeFailure:
 
         # Return empty outputs (missing the sink node)
         with patch(
-            "haute.executor._execute_lazy",
-            return_value=({}, ["s", "sink"], {}, {}),
+            "haute.executor.walk_graph",
+            return_value=WalkResult(frames={}),
         ):
             with pytest.raises(RuntimeError, match="Failed to compute Data Output input"):
                 write_data_output(graph, "sink", project_root=tmp_path)
@@ -351,8 +352,8 @@ class TestExecuteSinkResponse:
 
         lf = pl.DataFrame({"x": list(range(1000))}).lazy()
         with patch(
-            "haute.executor._execute_lazy",
-            return_value=({"sink": lf}, ["s", "sink"], {}, {}),
+            "haute.executor.walk_graph",
+            return_value=WalkResult(frames={"sink": lf}),
         ):
             result = write_data_output(graph, "sink", project_root=tmp_path)
 

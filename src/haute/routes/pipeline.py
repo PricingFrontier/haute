@@ -1508,8 +1508,8 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
         logger.warning("preview_public_contract_error", **contract_error_payload(e))
         raise contract_error_http_exception(e) from None
     except (ContractMismatchError, SchemaMismatchError) as e:
-        # ``_execute_eager_core`` re-raises contract and schema mismatches even
-        # with ``swallow_errors=True`` (API-level violations, not per-node
+        # The preview's display walk re-raises contract and schema mismatches even
+        # while it records node failures (API-level violations, not per-node
         # transient failures), so the preview path can receive one here.
         # Surface the node + column diagnostic from ``str(e)`` via the
         # target node's ``NodeResult.error`` — the frontend renders that

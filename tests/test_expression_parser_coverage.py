@@ -1668,26 +1668,25 @@ class TestExprEvaluatorCall:
         assert isinstance(result.result_value, float) and math.isnan(result.result_value)
 
     def test_replace_strict_eval(self):
-        """replace_strict is not registered as row-local."""
+        """A literal mapping is row-local: the row's value is looked up."""
         code = 'df = df.with_columns(pl.col("x").replace_strict({"a": 1, "b": 2}).alias("r"))'
         result = evaluate_expression(code, "r", {"x": "a"})
-        assert result.result_value is None
-        assert result.not_computable_reason == "not_row_local: replace_strict"
+        assert result.result_value == 1
+        assert result.not_computable_reason is None
 
     def test_replace_strict_default(self):
         code = 'df = df.with_columns(pl.col("x").replace_strict({"a": 1}, default=0).alias("r"))'
         result = evaluate_expression(code, "r", {"x": "b"})
-        assert result.result_value is None
-        assert result.not_computable_reason == "not_row_local: replace_strict"
+        assert result.result_value == 0
 
     def test_replace_strict_variable_dict(self):
+        """A mapping bound to a literal in the node's code is inlined as that literal."""
         code = (
             'mapping = {"a": 1, "b": 2}\n'
             'df = df.with_columns(pl.col("x").replace_strict(mapping).alias("r"))'
         )
         result = evaluate_expression(code, "r", {"x": "a"})
-        assert result.result_value is None
-        assert result.not_computable_reason == "not_row_local: replace_strict"
+        assert result.result_value == 1
 
     def test_replace_method_eval(self):
         """Non-strict .replace() keeps the column's original dtype, so the
@@ -2207,21 +2206,20 @@ class TestEvaluatorReplaceEdges:
     """Cover replace edge cases (lines 2033–2061)."""
 
     def test_replace_no_args(self):
-        """replace_strict is not registered as row-local, even with no args."""
+        """replace_strict without a literal mapping is not proven row-local."""
         code = 'df = df.with_columns(pl.col("x").replace_strict().alias("r"))'
         result = evaluate_expression(code, "r", {"x": "a"})
         assert result.result_value is None
         assert result.not_computable_reason == "not_row_local: replace_strict"
 
     def test_replace_variable_not_found(self):
-        """replace_strict is not registered as row-local regardless of the mapping."""
+        """An unmapped value without a default raises, as Polars does for the column."""
         code = (
             'mapping = {"a": 1}\n'
             'df = df.with_columns(pl.col("x").replace_strict(mapping).alias("r"))'
         )
-        result = evaluate_expression(code, "r", {"x": "z"})
-        assert result.result_value is None
-        assert result.not_computable_reason == "not_row_local: replace_strict"
+        with pytest.raises(pl.exceptions.InvalidOperationError, match="incomplete mapping"):
+            evaluate_expression(code, "r", {"x": "z"})
 
     def test_replace_variable_with_default(self):
         code = (
@@ -2229,8 +2227,7 @@ class TestEvaluatorReplaceEdges:
             'df = df.with_columns(pl.col("x").replace_strict(mapping, default=0).alias("r"))'
         )
         result = evaluate_expression(code, "r", {"x": "z"})
-        assert result.result_value is None
-        assert result.not_computable_reason == "not_row_local: replace_strict"
+        assert result.result_value == 0
 
 
 class TestBranchTrackingNestedCheck:
@@ -2582,13 +2579,13 @@ class TestEvaluatorDtTotalDays:
     """Cover dt.total_days() (lines 1814-1816)."""
 
     def test_dt_total_days(self):
-        """dt.total_days is not registered as row-local."""
+        """dt.total_days is row-local: a duration's whole days."""
         from datetime import timedelta
 
         code = 'df = df.with_columns(pl.col("dur").dt.total_days().alias("days"))'
         result = evaluate_expression(code, "days", {"dur": timedelta(days=30)})
-        assert result.result_value is None
-        assert result.not_computable_reason == "not_row_local: dt.total_days"
+        assert result.result_value == 30
+        assert result.not_computable_reason is None
 
 
 class TestEvaluatorStrContainsNoArgs:
@@ -3075,12 +3072,10 @@ class TestEvaluatorReplaceMapping:
     """Cover replace mapping default fallback (line 2048)."""
 
     def test_replace_strict_no_match_no_default(self):
-        """replace_strict is not registered as row-local, so it never reaches
-        Polars for a single row and never raises for an incomplete mapping."""
+        """An unmapped value without a default raises, as it does for the column."""
         code = 'df = df.with_columns(pl.col("x").replace_strict({"a": 1, "b": 2}).alias("r"))'
-        result = evaluate_expression(code, "r", {"x": "c"})
-        assert result.result_value is None
-        assert result.not_computable_reason == "not_row_local: replace_strict"
+        with pytest.raises(pl.exceptions.InvalidOperationError, match="incomplete mapping"):
+            evaluate_expression(code, "r", {"x": "c"})
 
 
 class TestComputeResultNoMatch:

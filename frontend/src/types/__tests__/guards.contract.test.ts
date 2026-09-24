@@ -1566,6 +1566,11 @@ describe("API response guards", () => {
       ...fixture,
       trace: { ...trace, execution_origin: "unknown_cache" },
     })).toThrow(/execution_origin/i)
+    // A trace never reads the preview cache, so that origin is not a value.
+    expect(() => parseTraceResponse({
+      ...fixture,
+      trace: { ...trace, execution_origin: "preview_cache" },
+    })).toThrow(/execution_origin/i)
     expect(() => parseTraceResponse({
       ...fixture,
       trace: {
