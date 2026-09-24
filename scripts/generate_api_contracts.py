@@ -65,6 +65,8 @@ from haute.schemas import (
     SchemaListResponse,
     TableListResponse,
     TrainEstimateResponse,
+    TrainResponse,
+    TrainStatusResponse,
     UtilityDeleteResponse,
     UtilityListResponse,
     UtilityReadResponse,
@@ -140,6 +142,10 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         GitForkStorageResponse,
         GitUpstreamStatusResponse,
     ),
+    "training": (
+        TrainResponse,
+        TrainStatusResponse,
+    ),
 }
 
 
@@ -191,6 +197,66 @@ def _merge_definition(
     previous = definitions.setdefault(name, candidate)
     if previous != candidate:
         raise RuntimeError(f"conflicting generated JSON Schema definition: {name}")
+
+
+_SERIALIZED_SUFFIX = "Output"
+
+
+def _renamed_ref(reference: str, renames: Mapping[str, str]) -> str:
+    name = reference.removeprefix("#/$defs/")
+    return f"#/$defs/{renames.get(name, name)}"
+
+
+def _with_renamed_refs(value: Any, renames: Mapping[str, str]) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: (
+                _renamed_ref(item, renames)
+                if key == "$ref" and isinstance(item, str) and item.startswith("#/$defs/")
+                else _with_renamed_refs(item, renames)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_with_renamed_refs(item, renames) for item in value]
+    return value
+
+
+def _serialized_definitions(
+    response_definitions: Mapping[str, Any],
+    bundle_definitions: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Name a response's serialization-mode copies apart from validation-mode ones.
+
+    A model shared with a validation-mode contract (the execution-strategy
+    pilot, whose other routes omit its defaulted fields) serializes with every
+    field required, so it is a different contract and gets its own
+    ``<Name>Output`` definition. Anything that refers to a renamed definition
+    differs too and is renamed with it.
+    """
+    renames: dict[str, str] = {}
+    while True:
+        rewritten = {
+            name: _with_renamed_refs(definition, renames)
+            for name, definition in response_definitions.items()
+        }
+        conflicting = {
+            name
+            for name, definition in rewritten.items()
+            if name not in renames
+            and name in bundle_definitions
+            and bundle_definitions[name] != definition
+        }
+        if not conflicting:
+            break
+        renames.update({name: f"{name}{_SERIALIZED_SUFFIX}" for name in conflicting})
+    serialized: dict[str, Any] = {}
+    for name, definition in rewritten.items():
+        new_name = renames.get(name, name)
+        if new_name != name and definition.get("title") == name:
+            definition = {**definition, "title": new_name}
+        serialized[new_name] = definition
+    return serialized
 
 
 def _definitions_for(
@@ -255,11 +321,16 @@ def build_contract_bundle() -> dict[str, Any]:
         if re.fullmatch(r"[a-z][a-z0-9-]*", group) is None or not models:
             raise RuntimeError(f"invalid response contract group: {group!r}")
         for response_model in models:
-            response_definitions = _definitions_for(
-                response_model,
-                mode="serialization",
-                schema_generator=_ResponseJsonSchema,
+            response_definitions = _serialized_definitions(
+                _definitions_for(
+                    response_model,
+                    mode="serialization",
+                    schema_generator=_ResponseJsonSchema,
+                ),
+                definitions,
             )
+            if response_model.__name__ not in response_definitions:
+                raise RuntimeError(f"response root was renamed: {response_model.__name__}")
             for name, definition in response_definitions.items():
                 _merge_definition(definitions, name=name, value=definition)
             root = response_model.__name__

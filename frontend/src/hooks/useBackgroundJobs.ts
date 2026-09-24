@@ -140,7 +140,7 @@ export default function useBackgroundJobs() {
   const failTrainJob = useNodeResultsStore((s) => s.failTrainJob)
 
   const trainPollFn = useCallback(
-    (jobId: string, signal: AbortSignal) => getTrainStatus<TrainProgress>(jobId, { signal }),
+    (jobId: string, signal: AbortSignal) => getTrainStatus(jobId, { signal }),
     [],
   )
   const trainOnComplete = useCallback(

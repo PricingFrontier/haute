@@ -2236,12 +2236,6 @@ class EvaluationMetricSummaryPayload(_StrictPublicTrainingPayload):
     def _validate_finite(cls, value: Any) -> float:
         return _finite_number(value, field="evaluation summary value")
 
-    @model_validator(mode="after")
-    def _validate_range(self) -> EvaluationMetricSummaryPayload:
-        if self.min > self.max:
-            raise ValueError("evaluation metric min must not exceed max")
-        return self
-
 
 class EvaluationSummaryPayload(_StrictPublicTrainingPayload):
     development_rows: int = Field(strict=True, ge=1)
@@ -2254,6 +2248,10 @@ class EvaluationSummaryPayload(_StrictPublicTrainingPayload):
 
 
 class EvaluationReportPayload(_StrictPublicTrainingPayload):
+    """The evaluation run as published; its invariants are checked where the
+    plan, results and report artifacts are produced and reloaded
+    (``haute.modelling._evaluation``), not here."""
+
     schema_version: Literal[1]
     strategy: Literal["random", "group", "temporal"]
     validation_method: Literal["none", "single", "cross_validation"]
@@ -2270,103 +2268,6 @@ class EvaluationReportPayload(_StrictPublicTrainingPayload):
     results_path: str = Field(min_length=1)
     report_path: str = Field(min_length=1)
     summary: EvaluationSummaryPayload
-
-    @model_validator(mode="after")
-    def _validate_report(self) -> EvaluationReportPayload:
-        expected_validation_count = (
-            0
-            if self.validation_method == "none"
-            else 1
-            if self.validation_method == "single"
-            else self.validation_fit_count
-        )
-        if self.validation_fit_count != expected_validation_count:
-            raise ValueError("validation_fit_count is inconsistent with validation_method")
-        if self.validation_method == "cross_validation" and not (
-            2 <= self.validation_fit_count <= 10
-        ):
-            raise ValueError("cross-validation requires 2 to 10 selection fits")
-        if len(self.selection_fits) != self.validation_fit_count:
-            raise ValueError("validation_fit_count must equal the number of selection_fits")
-        if [fit.fit_index for fit in self.selection_fits] != list(range(self.validation_fit_count)):
-            raise ValueError("selection fit indices must be contiguous and ascending")
-        if not self.refit_on_development and self.validation_method != "single":
-            raise ValueError("Skipping the final refit requires holdout validation")
-        if self.summary.development_rows != self.development_rows:
-            raise ValueError("summary development_rows must equal report development_rows")
-        if self.summary.test_rows != self.final_test_rows:
-            raise ValueError("summary test_rows must equal report final_test_rows")
-        if self.summary.validation_fit_count != self.validation_fit_count:
-            raise ValueError("summary validation_fit_count must equal report validation_fit_count")
-        strategy_counts = {
-            "group": (
-                self.summary.development_group_count,
-                self.summary.test_group_count,
-            ),
-            "temporal": (
-                self.summary.development_date_count,
-                self.summary.test_date_count,
-            ),
-        }
-        active_counts = strategy_counts.get(self.strategy)
-        all_counts = (
-            self.summary.development_group_count,
-            self.summary.test_group_count,
-            self.summary.development_date_count,
-            self.summary.test_date_count,
-        )
-        if active_counts is None:
-            if any(value is not None for value in all_counts):
-                raise ValueError("random evaluation summary must not contain group/date counts")
-        else:
-            if any(value is None for value in active_counts):
-                raise ValueError(f"{self.strategy} evaluation summary requires its strategy counts")
-            inactive_counts = all_counts[2:] if self.strategy == "group" else all_counts[:2]
-            if any(value is not None for value in inactive_counts):
-                raise ValueError(
-                    f"{self.strategy} evaluation summary has incompatible strategy counts"
-                )
-            if bool(self.final_test_rows) != bool(active_counts[1]):
-                raise ValueError("evaluation summary test count disagrees with final_test_rows")
-        metric_names = set(self.selection_metrics)
-        if self.validation_fit_count == 0:
-            if metric_names:
-                raise ValueError("selection_metrics must be empty without validation")
-            return self
-        if not metric_names:
-            raise ValueError("selection_metrics are required when validation is enabled")
-        if any(set(fit.metrics) != metric_names for fit in self.selection_fits):
-            raise ValueError("selection fit metric names must exactly match selection_metrics")
-        total_rows = sum(fit.validation_rows for fit in self.selection_fits)
-        for name, summary in self.selection_metrics.items():
-            if summary.fit_count != self.validation_fit_count:
-                raise ValueError(f"{name} fit_count must equal validation_fit_count")
-            if summary.validation_rows != total_rows:
-                raise ValueError(f"{name} validation_rows must equal selection fit row total")
-            values = [fit.metrics[name] for fit in self.selection_fits]
-            weights = [fit.validation_rows for fit in self.selection_fits]
-            mean = (
-                sum(value * weight for value, weight in zip(values, weights, strict=True))
-                / total_rows
-            )
-            variance = (
-                sum(
-                    weight * (value - mean) ** 2
-                    for value, weight in zip(values, weights, strict=True)
-                )
-                / total_rows
-            )
-            for field, expected in {
-                "mean": mean,
-                "stddev": math.sqrt(variance),
-                "min": min(values),
-                "max": max(values),
-            }.items():
-                if not math.isclose(
-                    getattr(summary, field), expected, rel_tol=1e-12, abs_tol=1e-12
-                ):
-                    raise ValueError(f"{name} {field} does not match the persisted selection fits")
-        return self
 
 
 class TuningTrialPayload(_StrictPublicTrainingPayload):
@@ -2397,6 +2298,10 @@ class TuningTrialPayload(_StrictPublicTrainingPayload):
 
 
 class TuningReportPayload(_StrictPublicTrainingPayload):
+    """The tuning study as published; its invariants are checked where the
+    plan, trials and report artifacts are produced and reloaded
+    (``haute.modelling._tuning``), not here."""
+
     schema_version: Literal[1]
     plan_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     trials_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -2429,119 +2334,6 @@ class TuningReportPayload(_StrictPublicTrainingPayload):
     def _validate_params(cls, value: Any, info: Any) -> dict[str, Any]:
         return _finite_json_object(value, field=info.field_name)
 
-    @model_validator(mode="after")
-    def _validate_report(self) -> TuningReportPayload:
-        from haute.modelling._tuning import metric_direction
-
-        try:
-            expected_direction = metric_direction(self.metric)
-        except ValueError as exc:
-            raise ValueError(f"tuning metric direction is unsupported: {exc}") from exc
-        if self.direction != expected_direction:
-            raise ValueError(
-                f"tuning metric direction must be {expected_direction} for {self.metric!r}"
-            )
-        if len(self.trials) != self.trial_count:
-            raise ValueError("trial_count must equal the number of trials")
-        if [trial.trial_index for trial in self.trials] != list(range(self.trial_count)):
-            raise ValueError("trial indices must be contiguous and ascending")
-        baseline = self.trials[0]
-        if baseline.label != "baseline" or baseline.sampled_params:
-            raise ValueError("trial 0 must be the baseline with empty sampled_params")
-        if any(trial.label != "sampled" or not trial.sampled_params for trial in self.trials[1:]):
-            raise ValueError("trials after baseline must contain sampled parameters")
-        for trial in self.trials:
-            expected_resolved = dict(baseline.resolved_params)
-            expected_resolved.update(trial.sampled_params)
-            if trial.resolved_params != expected_resolved:
-                raise ValueError(
-                    "trial resolved parameters must equal baseline plus sampled parameters"
-                )
-        if any(
-            set(trial.aggregate_metrics) != set(baseline.aggregate_metrics) for trial in self.trials
-        ):
-            raise ValueError("trial aggregate metric names must exactly match")
-        fit_count = len(baseline.fits)
-        if any(
-            len(trial.fits) != fit_count
-            or [fit.fit_index for fit in trial.fits] != list(range(fit_count))
-            for trial in self.trials
-        ):
-            raise ValueError("each tuning trial must use the same contiguous evaluation fits")
-        aggregate_metric_names = set(baseline.aggregate_metrics)
-        for trial in self.trials:
-            if any(set(fit.metrics) != aggregate_metric_names for fit in trial.fits):
-                raise ValueError("tuning trial fit metric names must match aggregate metrics")
-            total_validation_rows = sum(fit.validation_rows for fit in trial.fits)
-            for name, aggregate in trial.aggregate_metrics.items():
-                weighted_mean = (
-                    sum(fit.metrics[name] * fit.validation_rows for fit in trial.fits)
-                    / total_validation_rows
-                )
-                if not math.isclose(
-                    aggregate,
-                    weighted_mean,
-                    rel_tol=1e-12,
-                    abs_tol=1e-12,
-                ):
-                    raise ValueError(
-                        f"trial aggregate metric {name!r} does not match its validation fits"
-                    )
-        if self.metric not in baseline.aggregate_metrics:
-            raise ValueError("tuning metric must be present in aggregate_metrics")
-        if any(
-            not math.isclose(
-                trial.aggregate_metrics[self.metric], trial.objective, rel_tol=1e-12, abs_tol=1e-12
-            )
-            for trial in self.trials
-        ):
-            raise ValueError("trial objective must equal its aggregate metric")
-        if not math.isclose(
-            self.baseline_objective, baseline.objective, rel_tol=1e-12, abs_tol=1e-12
-        ):
-            raise ValueError("baseline_objective must equal the baseline objective")
-        winner = (
-            max(self.trials, key=lambda trial: (trial.objective, -trial.trial_index))
-            if self.direction == "maximize"
-            else min(self.trials, key=lambda trial: (trial.objective, trial.trial_index))
-        )
-        if self.winner_trial_index != winner.trial_index or not math.isclose(
-            self.winner_objective, winner.objective, rel_tol=1e-12, abs_tol=1e-12
-        ):
-            raise ValueError("winner must be selected deterministically from trial objectives")
-        if self.best_sampled_params != winner.sampled_params:
-            raise ValueError(
-                "best sampled parameters must equal the winning trial sampled parameters"
-            )
-        from haute.modelling._descriptors import tuning_family
-        from haute.modelling._tuning import tuning_final_projection
-
-        # A HauteValidationError is a ValueError, so pydantic reports it as such.
-        expected_final_params, expected_tree_count = tuning_final_projection(
-            tuning_family(self.final_params),
-            winner.resolved_params,
-            [(fit.best_iteration, fit.validation_rows) for fit in winner.fits],
-        )
-        if (
-            self.final_tree_count != expected_tree_count
-            or self.final_params != expected_final_params
-        ):
-            raise ValueError(
-                "final parameter projection must be derived from the winning validation fits"
-            )
-        expected_improvement = (
-            winner.objective - baseline.objective
-            if self.direction == "maximize"
-            else baseline.objective - winner.objective
-        )
-        if not math.isclose(self.improvement, expected_improvement, rel_tol=1e-12, abs_tol=1e-12):
-            raise ValueError("improvement must equal winner versus baseline")
-        if self.trial_fit_count != sum(len(trial.fits) for trial in self.trials):
-            raise ValueError("trial_fit_count must equal all trial fits")
-        if self.total_fit_count != self.trial_fit_count + 1:
-            raise ValueError("total_fit_count must equal trial_fit_count + final fit")
-        return self
-
 
 class GpuFamilyStatus(BaseModel):
     """Whether one family can train on a GPU in this server process."""
@@ -2571,9 +2363,9 @@ class FitEvidencePayload(BaseModel):
     rounds_fitted: int | None = Field(default=None, strict=True, ge=0)
     stopping_reason: Literal["none", "validation", "native_exhaustion"] | None = None
     #: EBM's native best_iteration_: term updates per boosting stage, never rounds.
-    term_update_steps: list[int] | None = None
+    term_update_steps: list[Annotated[int, Field(ge=0)]] | None = None
     #: The device a GPU fit actually trained on (``cuda:0``).
-    device: str | None = None
+    device: str | None = Field(default=None, min_length=1)
 
 
 class TrainResponse(BaseModel):
@@ -2635,61 +2427,6 @@ class TrainResponse(BaseModel):
         if value == {}:
             return {}
         return _strict_finite_metric_mapping(value, field=info.field_name)
-
-    @model_validator(mode="after")
-    def _validate_evaluation_status(self) -> TrainResponse:
-        if self.status != "completed":
-            if self.evaluation is not None or self.tuning is not None:
-                raise ValueError("evaluation and tuning are present only for completed training")
-            return self
-        if self.evaluation is None:
-            raise ValueError("completed training requires evaluation")
-        if not self.diagnostic_metrics:
-            raise ValueError("completed training requires diagnostic_metrics")
-        if self.development_rows != self.evaluation.development_rows:
-            raise ValueError("development_rows must equal evaluation development_rows")
-        if self.final_test_rows != self.evaluation.final_test_rows:
-            raise ValueError("final_test_rows must equal evaluation final_test_rows")
-        if self.final_test_rows:
-            if self.diagnostic_metrics != self.final_test_metrics:
-                raise ValueError(
-                    "diagnostic_metrics must equal final_test_metrics when a final test exists"
-                )
-            if self.diagnostics_set != "final_test":
-                raise ValueError(
-                    "completed training diagnostics_set must be final_test when a test exists"
-                )
-        else:
-            if self.final_test_metrics:
-                raise ValueError("final_test_metrics must be empty without a final test")
-            expected_diagnostics = (
-                "development" if self.evaluation.refit_on_development else "validation"
-            )
-            if self.diagnostics_set != expected_diagnostics:
-                raise ValueError(
-                    f"completed training diagnostics_set must be "
-                    f"{expected_diagnostics} without a test"
-                )
-        if self.tuning is None:
-            expected_fits = self.evaluation.validation_fit_count + int(
-                self.evaluation.refit_on_development
-            )
-            if self.evaluation.fit_count != expected_fits:
-                if self.evaluation.refit_on_development:
-                    raise ValueError(
-                        "evaluation fit_count must equal validation_fit_count + final fit"
-                    )
-                raise ValueError(
-                    "evaluation fit_count must equal validation_fit_count without refit"
-                )
-        else:
-            if not self.evaluation.refit_on_development:
-                raise ValueError("parameter tuning requires a final refit")
-            if self.evaluation.fit_count != self.tuning.total_fit_count:
-                raise ValueError("evaluation fit_count must equal tuning total_fit_count")
-            if self.tuning.evaluation_plan_sha256 != self.evaluation.plan_sha256:
-                raise ValueError("tuning evaluation plan digest must match evaluation")
-        return self
 
 
 class MlflowExportReceipt(BaseModel):

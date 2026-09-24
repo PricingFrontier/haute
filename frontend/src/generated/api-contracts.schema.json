@@ -566,6 +566,104 @@
       "title": "EvaluationDateRangePayload",
       "type": "object"
     },
+    "EvaluationFitPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "best_iteration": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Best Iteration"
+        },
+        "fit_index": {
+          "maximum": 9,
+          "minimum": 0,
+          "title": "Fit Index",
+          "type": "integer"
+        },
+        "metrics": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Metrics",
+          "type": "object"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "train_rows": {
+          "minimum": 1,
+          "title": "Train Rows",
+          "type": "integer"
+        },
+        "validation_rows": {
+          "minimum": 1,
+          "title": "Validation Rows",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "fit_index",
+        "train_rows",
+        "validation_rows",
+        "metrics",
+        "best_iteration"
+      ],
+      "title": "EvaluationFitPayload",
+      "type": "object"
+    },
+    "EvaluationMetricSummaryPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "fit_count": {
+          "minimum": 1,
+          "title": "Fit Count",
+          "type": "integer"
+        },
+        "max": {
+          "title": "Max",
+          "type": "number"
+        },
+        "mean": {
+          "title": "Mean",
+          "type": "number"
+        },
+        "min": {
+          "title": "Min",
+          "type": "number"
+        },
+        "stddev": {
+          "minimum": 0,
+          "title": "Stddev",
+          "type": "number"
+        },
+        "validation_rows": {
+          "minimum": 1,
+          "title": "Validation Rows",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "mean",
+        "stddev",
+        "min",
+        "max",
+        "fit_count",
+        "validation_rows"
+      ],
+      "title": "EvaluationMetricSummaryPayload",
+      "type": "object"
+    },
     "EvaluationPreviewPayload": {
       "additionalProperties": false,
       "description": "Bounded, result-free summary of the exact preflight evaluation plan.",
@@ -655,6 +753,1544 @@
         "validation_fit_count"
       ],
       "title": "EvaluationPreviewPayload",
+      "type": "object"
+    },
+    "EvaluationReportPayload": {
+      "additionalProperties": false,
+      "description": "The evaluation run as published; its invariants are checked where the\nplan, results and report artifacts are produced and reloaded\n(``haute.modelling._evaluation``), not here.",
+      "properties": {
+        "development_rows": {
+          "minimum": 1,
+          "title": "Development Rows",
+          "type": "integer"
+        },
+        "final_test_rows": {
+          "minimum": 0,
+          "title": "Final Test Rows",
+          "type": "integer"
+        },
+        "fit_count": {
+          "maximum": 201,
+          "minimum": 1,
+          "title": "Fit Count",
+          "type": "integer"
+        },
+        "plan_path": {
+          "minLength": 1,
+          "title": "Plan Path",
+          "type": "string"
+        },
+        "plan_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Plan Sha256",
+          "type": "string"
+        },
+        "refit_on_development": {
+          "default": true,
+          "title": "Refit On Development",
+          "type": "boolean"
+        },
+        "report_path": {
+          "minLength": 1,
+          "title": "Report Path",
+          "type": "string"
+        },
+        "results_path": {
+          "minLength": 1,
+          "title": "Results Path",
+          "type": "string"
+        },
+        "results_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Results Sha256",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "selection_fits": {
+          "items": {
+            "$ref": "#/$defs/EvaluationFitPayload"
+          },
+          "maxItems": 10,
+          "title": "Selection Fits",
+          "type": "array"
+        },
+        "selection_metrics": {
+          "additionalProperties": {
+            "$ref": "#/$defs/EvaluationMetricSummaryPayload"
+          },
+          "title": "Selection Metrics",
+          "type": "object"
+        },
+        "strategy": {
+          "enum": [
+            "random",
+            "group",
+            "temporal"
+          ],
+          "title": "Strategy",
+          "type": "string"
+        },
+        "summary": {
+          "$ref": "#/$defs/EvaluationSummaryPayload"
+        },
+        "validation_fit_count": {
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Validation Fit Count",
+          "type": "integer"
+        },
+        "validation_method": {
+          "enum": [
+            "none",
+            "single",
+            "cross_validation"
+          ],
+          "title": "Validation Method",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "strategy",
+        "validation_method",
+        "validation_fit_count",
+        "fit_count",
+        "refit_on_development",
+        "development_rows",
+        "final_test_rows",
+        "selection_fits",
+        "selection_metrics",
+        "plan_sha256",
+        "results_sha256",
+        "plan_path",
+        "results_path",
+        "report_path",
+        "summary"
+      ],
+      "title": "EvaluationReportPayload",
+      "type": "object"
+    },
+    "EvaluationSummaryPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "development_date_count": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Development Date Count"
+        },
+        "development_group_count": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Development Group Count"
+        },
+        "development_rows": {
+          "minimum": 1,
+          "title": "Development Rows",
+          "type": "integer"
+        },
+        "test_date_count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Test Date Count"
+        },
+        "test_group_count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Test Group Count"
+        },
+        "test_rows": {
+          "minimum": 0,
+          "title": "Test Rows",
+          "type": "integer"
+        },
+        "validation_fit_count": {
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Validation Fit Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "development_rows",
+        "test_rows",
+        "validation_fit_count",
+        "development_group_count",
+        "test_group_count",
+        "development_date_count",
+        "test_date_count"
+      ],
+      "title": "EvaluationSummaryPayload",
+      "type": "object"
+    },
+    "ExecutionAdmissionPayload": {
+      "properties": {
+        "admitted": {
+          "default": true,
+          "title": "Admitted",
+          "type": "boolean"
+        },
+        "available_ram_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Available Ram Bytes"
+        },
+        "budget_policy": {
+          "default": "fixed_default",
+          "title": "Budget Policy",
+          "type": "string"
+        },
+        "config_key": {
+          "default": "",
+          "title": "Config Key",
+          "type": "string"
+        },
+        "headroom_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Headroom Bytes"
+        },
+        "memory_limit_bytes": {
+          "default": 0,
+          "title": "Memory Limit Bytes",
+          "type": "integer"
+        },
+        "operation": {
+          "default": "",
+          "title": "Operation",
+          "type": "string"
+        },
+        "os_reserve_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Os Reserve Bytes"
+        },
+        "process_rss_limit_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Process Rss Limit Bytes"
+        },
+        "profile": {
+          "default": "",
+          "title": "Profile",
+          "type": "string"
+        },
+        "reason": {
+          "default": "",
+          "title": "Reason",
+          "type": "string"
+        },
+        "rss_at_admission_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rss At Admission Bytes"
+        },
+        "rss_limit_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rss Limit Bytes"
+        }
+      },
+      "required": [
+        "admitted",
+        "operation",
+        "profile",
+        "memory_limit_bytes",
+        "rss_at_admission_bytes",
+        "rss_limit_bytes",
+        "process_rss_limit_bytes",
+        "headroom_bytes",
+        "config_key",
+        "budget_policy",
+        "available_ram_bytes",
+        "os_reserve_bytes",
+        "reason"
+      ],
+      "title": "ExecutionAdmissionPayload",
+      "type": "object"
+    },
+    "ExecutionCacheProofMissReasonCountsPayload": {
+      "properties": {
+        "artifact_integrity_schema_failure": {
+          "minimum": 0,
+          "title": "Artifact Integrity Schema Failure",
+          "type": "integer"
+        },
+        "metadata_source_mismatch": {
+          "minimum": 0,
+          "title": "Metadata Source Mismatch",
+          "type": "integer"
+        },
+        "proof_unavailable": {
+          "minimum": 0,
+          "title": "Proof Unavailable",
+          "type": "integer"
+        },
+        "unreadable_artifact": {
+          "minimum": 0,
+          "title": "Unreadable Artifact",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "metadata_source_mismatch",
+        "artifact_integrity_schema_failure",
+        "unreadable_artifact",
+        "proof_unavailable"
+      ],
+      "title": "ExecutionCacheProofMissReasonCountsPayload",
+      "type": "object"
+    },
+    "ExecutionCacheProofPayload": {
+      "properties": {
+        "direct_fallbacks": {
+          "minimum": 0,
+          "title": "Direct Fallbacks",
+          "type": "integer"
+        },
+        "hits": {
+          "minimum": 0,
+          "title": "Hits",
+          "type": "integer"
+        },
+        "miss_reason_counts": {
+          "$ref": "#/$defs/ExecutionCacheProofMissReasonCountsPayload"
+        },
+        "misses": {
+          "minimum": 0,
+          "title": "Misses",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hits",
+        "misses",
+        "direct_fallbacks",
+        "miss_reason_counts"
+      ],
+      "title": "ExecutionCacheProofPayload",
+      "type": "object"
+    },
+    "ExecutionColumnWidthsCollectionPayload": {
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ExecutionColumnWidthsPayload"
+          },
+          "maxItems": 128,
+          "title": "Items",
+          "type": "array"
+        },
+        "state": {
+          "default": "available",
+          "enum": [
+            "available",
+            "truncated"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "total_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Total Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "state",
+        "total_count",
+        "items"
+      ],
+      "title": "ExecutionColumnWidthsCollectionPayload",
+      "type": "object"
+    },
+    "ExecutionColumnWidthsPayload": {
+      "properties": {
+        "input_width": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Width"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "output_width": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Width"
+        },
+        "physically_scanned_width": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Physically Scanned Width"
+        },
+        "requested_width": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requested Width"
+        }
+      },
+      "required": [
+        "node_id",
+        "input_width",
+        "output_width",
+        "requested_width",
+        "physically_scanned_width"
+      ],
+      "title": "ExecutionColumnWidthsPayload",
+      "type": "object"
+    },
+    "ExecutionMemoryPressureEventPayload": {
+      "properties": {
+        "available_ram_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Available Ram Bytes"
+        },
+        "baseline_rss_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Baseline Rss Bytes"
+        },
+        "budget_policy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Budget Policy"
+        },
+        "config_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Config Key"
+        },
+        "event": {
+          "const": "memory_pressure",
+          "default": "memory_pressure",
+          "title": "Event",
+          "type": "string"
+        },
+        "headroom_bytes": {
+          "default": 0,
+          "title": "Headroom Bytes",
+          "type": "integer"
+        },
+        "headroom_used_bytes": {
+          "default": 0,
+          "title": "Headroom Used Bytes",
+          "type": "integer"
+        },
+        "job_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job Id"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "memory_baseline_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Memory Baseline Bytes"
+        },
+        "memory_limit_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Memory Limit Bytes"
+        },
+        "node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Node Id"
+        },
+        "operation": {
+          "default": "",
+          "title": "Operation",
+          "type": "string"
+        },
+        "os_reserve_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Os Reserve Bytes"
+        },
+        "pressure_ratio": {
+          "default": 0.0,
+          "title": "Pressure Ratio",
+          "type": "number"
+        },
+        "profile": {
+          "default": "",
+          "title": "Profile",
+          "type": "string"
+        },
+        "rss_bytes": {
+          "default": 0,
+          "title": "Rss Bytes",
+          "type": "integer"
+        },
+        "rss_limit_bytes": {
+          "default": 0,
+          "title": "Rss Limit Bytes",
+          "type": "integer"
+        },
+        "rss_peak_bytes": {
+          "default": 0,
+          "title": "Rss Peak Bytes",
+          "type": "integer"
+        },
+        "schema_version": {
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "stage": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stage"
+        },
+        "threshold_percent": {
+          "default": 0,
+          "title": "Threshold Percent",
+          "type": "integer"
+        },
+        "threshold_ratio": {
+          "default": 0.0,
+          "title": "Threshold Ratio",
+          "type": "number"
+        }
+      },
+      "required": [
+        "schema_version",
+        "event",
+        "operation",
+        "profile",
+        "job_id",
+        "node_id",
+        "stage",
+        "label",
+        "threshold_ratio",
+        "threshold_percent",
+        "rss_bytes",
+        "rss_limit_bytes",
+        "headroom_bytes",
+        "headroom_used_bytes",
+        "rss_peak_bytes",
+        "memory_limit_bytes",
+        "memory_baseline_bytes",
+        "baseline_rss_bytes",
+        "budget_policy",
+        "config_key",
+        "available_ram_bytes",
+        "os_reserve_bytes",
+        "pressure_ratio"
+      ],
+      "title": "ExecutionMemoryPressureEventPayload",
+      "type": "object"
+    },
+    "ExecutionMetricsPayload": {
+      "properties": {
+        "admission": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionAdmissionPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "bytes_read": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bytes Read"
+        },
+        "bytes_written": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bytes Written"
+        },
+        "cache_proof": {
+          "$ref": "#/$defs/ExecutionCacheProofPayload"
+        },
+        "cancellation_latency_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cancellation Latency Ms"
+        },
+        "checkpoint_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Checkpoint Count",
+          "type": "integer"
+        },
+        "chunk_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Chunk Count",
+          "type": "integer"
+        },
+        "column_widths": {
+          "$ref": "#/$defs/ExecutionColumnWidthsCollectionPayload"
+        },
+        "data_output_write_input_slices": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Output Write Input Slices"
+        },
+        "data_output_write_native_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Output Write Native Reason"
+        },
+        "data_output_write_strategy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Output Write Strategy"
+        },
+        "estimate_admission_basis": {
+          "anyOf": [
+            {
+              "enum": [
+                "provided",
+                "projected_columns",
+                "complete_width_fallback"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimate Admission Basis"
+        },
+        "estimate_calibration_factor_basis_points": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimate Calibration Factor Basis Points"
+        },
+        "estimated_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimated Bytes"
+        },
+        "execution_strategy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionStrategyDiagnosticPayloadOutput"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "input_preparation": {
+          "items": {
+            "$ref": "#/$defs/InputPreparationRecordPayload"
+          },
+          "title": "Input Preparation",
+          "type": "array"
+        },
+        "job_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job Id"
+        },
+        "max_rss_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Rss Bytes"
+        },
+        "memory_baseline_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Memory Baseline Bytes"
+        },
+        "memory_limit_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Memory Limit Bytes"
+        },
+        "memory_pressure_event_count": {
+          "default": 0,
+          "title": "Memory Pressure Event Count",
+          "type": "integer"
+        },
+        "memory_pressure_events": {
+          "items": {
+            "$ref": "#/$defs/ExecutionMemoryPressureEventPayload"
+          },
+          "title": "Memory Pressure Events",
+          "type": "array"
+        },
+        "memory_pressure_events_truncated": {
+          "default": false,
+          "title": "Memory Pressure Events Truncated",
+          "type": "boolean"
+        },
+        "n_checkpoints": {
+          "default": 0,
+          "title": "N Checkpoints",
+          "type": "integer"
+        },
+        "n_collects": {
+          "default": 0,
+          "title": "N Collects",
+          "type": "integer"
+        },
+        "node_elapsed_ms": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Node Elapsed Ms",
+          "type": "object"
+        },
+        "observed_peak_rss_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observed Peak Rss Bytes"
+        },
+        "observed_peak_rss_growth_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observed Peak Rss Growth Bytes"
+        },
+        "operation": {
+          "default": "",
+          "title": "Operation",
+          "type": "string"
+        },
+        "physically_scanned_column_width_total": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Physically Scanned Column Width Total"
+        },
+        "profile": {
+          "default": "",
+          "title": "Profile",
+          "type": "string"
+        },
+        "raw_estimated_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Estimated Bytes"
+        },
+        "requested_column_width_total": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requested Column Width Total"
+        },
+        "retained_memory_pressure_event_count": {
+          "default": 0,
+          "title": "Retained Memory Pressure Event Count",
+          "type": "integer"
+        },
+        "retained_stage_count": {
+          "default": 0,
+          "title": "Retained Stage Count",
+          "type": "integer"
+        },
+        "rss_delta_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rss Delta Bytes"
+        },
+        "rss_end_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rss End Bytes"
+        },
+        "rss_limit_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rss Limit Bytes"
+        },
+        "rss_peak_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rss Peak Bytes"
+        },
+        "rss_start_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rss Start Bytes"
+        },
+        "schema_version": {
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "shared_snapshot_capture_skips": {
+          "items": {
+            "$ref": "#/$defs/SharedSnapshotCaptureSkipPayload"
+          },
+          "title": "Shared Snapshot Capture Skips",
+          "type": "array"
+        },
+        "shared_snapshot_captures": {
+          "items": {
+            "$ref": "#/$defs/SharedSnapshotCapturePayload"
+          },
+          "title": "Shared Snapshot Captures",
+          "type": "array"
+        },
+        "shared_snapshot_seeds": {
+          "items": {
+            "$ref": "#/$defs/SharedSnapshotSeedPayload"
+          },
+          "title": "Shared Snapshot Seeds",
+          "type": "array"
+        },
+        "stage_count": {
+          "default": 0,
+          "title": "Stage Count",
+          "type": "integer"
+        },
+        "stage_elapsed_ms": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Stage Elapsed Ms",
+          "type": "object"
+        },
+        "stages": {
+          "items": {
+            "$ref": "#/$defs/ExecutionStageMetricsPayload"
+          },
+          "title": "Stages",
+          "type": "array"
+        },
+        "stages_truncated": {
+          "default": false,
+          "title": "Stages Truncated",
+          "type": "boolean"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        },
+        "streamability": {
+          "anyOf": [
+            {
+              "enum": [
+                "streaming",
+                "materialising"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Streamability"
+        },
+        "streamability_evidence": {
+          "$ref": "#/$defs/ExecutionStreamabilityEvidencePayload"
+        },
+        "terminal_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Terminal Reason"
+        },
+        "total_elapsed_ms": {
+          "default": 0.0,
+          "title": "Total Elapsed Ms",
+          "type": "number"
+        },
+        "training_write_blocking_operator": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Training Write Blocking Operator"
+        },
+        "training_write_input_slices": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Training Write Input Slices"
+        },
+        "training_write_native_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Training Write Native Reason"
+        },
+        "training_write_strategy": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Training Write Strategy"
+        },
+        "truncated_memory_pressure_event_count": {
+          "default": 0,
+          "title": "Truncated Memory Pressure Event Count",
+          "type": "integer"
+        },
+        "truncated_stage_count": {
+          "default": 0,
+          "title": "Truncated Stage Count",
+          "type": "integer"
+        },
+        "warnings": {
+          "items": {
+            "$ref": "#/$defs/ExecutionWarningPayload"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "schema_version",
+        "operation",
+        "profile",
+        "job_id",
+        "status",
+        "terminal_reason",
+        "stage_count",
+        "retained_stage_count",
+        "truncated_stage_count",
+        "stages_truncated",
+        "total_elapsed_ms",
+        "node_elapsed_ms",
+        "stage_elapsed_ms",
+        "rss_start_bytes",
+        "rss_end_bytes",
+        "rss_delta_bytes",
+        "rss_peak_bytes",
+        "max_rss_bytes",
+        "n_collects",
+        "n_checkpoints",
+        "memory_pressure_event_count",
+        "retained_memory_pressure_event_count",
+        "truncated_memory_pressure_event_count",
+        "memory_pressure_events_truncated",
+        "memory_limit_bytes",
+        "memory_baseline_bytes",
+        "rss_limit_bytes",
+        "admission",
+        "stages",
+        "memory_pressure_events",
+        "execution_strategy",
+        "streamability",
+        "streamability_evidence",
+        "column_widths",
+        "requested_column_width_total",
+        "physically_scanned_column_width_total",
+        "cache_proof",
+        "bytes_read",
+        "bytes_written",
+        "estimated_bytes",
+        "raw_estimated_bytes",
+        "estimate_calibration_factor_basis_points",
+        "estimate_admission_basis",
+        "checkpoint_count",
+        "chunk_count",
+        "observed_peak_rss_bytes",
+        "observed_peak_rss_growth_bytes",
+        "cancellation_latency_ms",
+        "input_preparation",
+        "shared_snapshot_seeds",
+        "shared_snapshot_captures",
+        "shared_snapshot_capture_skips",
+        "warnings",
+        "training_write_strategy",
+        "training_write_input_slices",
+        "training_write_native_reason",
+        "training_write_blocking_operator",
+        "data_output_write_strategy",
+        "data_output_write_input_slices",
+        "data_output_write_native_reason"
+      ],
+      "title": "ExecutionMetricsPayload",
+      "type": "object"
+    },
+    "ExecutionStageMetricsPayload": {
+      "properties": {
+        "bytes_read": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bytes Read"
+        },
+        "bytes_written": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bytes Written"
+        },
+        "columns_scanned": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Columns Scanned"
+        },
+        "elapsed_ms": {
+          "default": 0.0,
+          "title": "Elapsed Ms",
+          "type": "number"
+        },
+        "job_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job Id"
+        },
+        "n_checkpoints": {
+          "default": 0,
+          "title": "N Checkpoints",
+          "type": "integer"
+        },
+        "n_collects": {
+          "default": 0,
+          "title": "N Collects",
+          "type": "integer"
+        },
+        "name": {
+          "default": "",
+          "title": "Name",
+          "type": "string"
+        },
+        "node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Node Id"
+        },
+        "operation": {
+          "default": "",
+          "title": "Operation",
+          "type": "string"
+        },
+        "profile": {
+          "default": "",
+          "title": "Profile",
+          "type": "string"
+        },
+        "rows_in": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rows In"
+        },
+        "rows_out": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rows Out"
+        },
+        "rss_delta_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rss Delta Bytes"
+        },
+        "rss_end_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rss End Bytes"
+        },
+        "rss_peak_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rss Peak Bytes"
+        },
+        "rss_start_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rss Start Bytes"
+        },
+        "schema_version": {
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "name",
+        "operation",
+        "profile",
+        "elapsed_ms",
+        "node_id",
+        "job_id",
+        "rss_start_bytes",
+        "rss_end_bytes",
+        "rss_delta_bytes",
+        "rss_peak_bytes",
+        "rows_in",
+        "rows_out",
+        "bytes_read",
+        "bytes_written",
+        "columns_scanned",
+        "n_collects",
+        "n_checkpoints"
+      ],
+      "title": "ExecutionStageMetricsPayload",
       "type": "object"
     },
     "ExecutionStrategyBoundaryCollectionPayload": {
@@ -946,6 +2582,229 @@
       "title": "ExecutionStrategyDiagnosticPayload",
       "type": "object"
     },
+    "ExecutionStrategyDiagnosticPayloadOutput": {
+      "description": "Strict V1 API DTO for one shared execution-planning decision.",
+      "properties": {
+        "assumptions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Assumptions",
+          "type": "array"
+        },
+        "blocking_node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Blocking Node Id"
+        },
+        "blocking_operator": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Blocking Operator"
+        },
+        "boundaries": {
+          "$ref": "#/$defs/ExecutionStrategyBoundaryCollectionPayload"
+        },
+        "boundedness": {
+          "enum": [
+            "bounded",
+            "unbounded",
+            "unknown"
+          ],
+          "title": "Boundedness",
+          "type": "string"
+        },
+        "detail_state": {
+          "enum": [
+            "available",
+            "unavailable",
+            "truncated"
+          ],
+          "title": "Detail State",
+          "type": "string"
+        },
+        "estimate_admission_basis": {
+          "anyOf": [
+            {
+              "enum": [
+                "provided",
+                "projected_columns",
+                "complete_width_fallback"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimate Admission Basis"
+        },
+        "estimate_calibration_factor_basis_points": {
+          "anyOf": [
+            {
+              "maximum": 80000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimate Calibration Factor Basis Points"
+        },
+        "estimated_peak_bytes": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimated Peak Bytes"
+        },
+        "headroom_bytes": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Headroom Bytes"
+        },
+        "profile": {
+          "enum": [
+            "preview_eager",
+            "lazy_sink",
+            "training_prep",
+            "optimiser_setup",
+            "explore_analysis",
+            "auto_range",
+            "deploy_live",
+            "deploy_batch",
+            "chunked_map_reduce",
+            "node_snapshot"
+          ],
+          "title": "Profile",
+          "type": "string"
+        },
+        "provenance": {
+          "$ref": "#/$defs/ExecutionStrategyProvenanceCollectionPayloadOutput"
+        },
+        "raw_estimated_peak_bytes": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Estimated Peak Bytes"
+        },
+        "reason_code": {
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "reasons": {
+          "$ref": "#/$defs/ExecutionStrategyReasonCollectionPayloadOutput"
+        },
+        "remediation": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Remediation"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "projected",
+            "admitted_eager",
+            "boundary",
+            "warned",
+            "rejected",
+            "not_planned"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "strategy": {
+          "enum": [
+            "projected",
+            "schema-all-except",
+            "full-width-admitted-eager",
+            "unprojected-streaming-boundary",
+            "materialisation-boundary",
+            "full-width-conservative",
+            "unsupported",
+            "not-planned"
+          ],
+          "title": "Strategy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "status",
+        "strategy",
+        "profile",
+        "boundedness",
+        "reason_code",
+        "detail_state",
+        "boundaries",
+        "reasons",
+        "provenance",
+        "blocking_node_id",
+        "blocking_operator",
+        "remediation",
+        "estimated_peak_bytes",
+        "raw_estimated_peak_bytes",
+        "estimate_calibration_factor_basis_points",
+        "estimate_admission_basis",
+        "headroom_bytes",
+        "assumptions"
+      ],
+      "title": "ExecutionStrategyDiagnosticPayloadOutput",
+      "type": "object"
+    },
     "ExecutionStrategyProvenanceCollectionPayload": {
       "properties": {
         "items": {
@@ -985,6 +2844,47 @@
         "items"
       ],
       "title": "ExecutionStrategyProvenanceCollectionPayload",
+      "type": "object"
+    },
+    "ExecutionStrategyProvenanceCollectionPayloadOutput": {
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ExecutionStrategyProvenancePayloadOutput"
+          },
+          "maxItems": 128,
+          "title": "Items",
+          "type": "array"
+        },
+        "state": {
+          "enum": [
+            "available",
+            "unavailable",
+            "truncated"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "total_count": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Total Count"
+        }
+      },
+      "required": [
+        "state",
+        "total_count",
+        "items"
+      ],
+      "title": "ExecutionStrategyProvenanceCollectionPayloadOutput",
       "type": "object"
     },
     "ExecutionStrategyProvenancePayload": {
@@ -1036,6 +2936,57 @@
       "title": "ExecutionStrategyProvenancePayload",
       "type": "object"
     },
+    "ExecutionStrategyProvenancePayloadOutput": {
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "origin_kind": {
+          "enum": [
+            "seed",
+            "contract",
+            "expression",
+            "join_key",
+            "conservative_boundary"
+          ],
+          "title": "Origin Kind",
+          "type": "string"
+        },
+        "source_column": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Column"
+        },
+        "source_node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Node Id"
+        }
+      },
+      "required": [
+        "column",
+        "origin_kind",
+        "source_node_id",
+        "source_column"
+      ],
+      "title": "ExecutionStrategyProvenancePayloadOutput",
+      "type": "object"
+    },
     "ExecutionStrategyReasonCollectionPayload": {
       "properties": {
         "items": {
@@ -1075,6 +3026,47 @@
         "items"
       ],
       "title": "ExecutionStrategyReasonCollectionPayload",
+      "type": "object"
+    },
+    "ExecutionStrategyReasonCollectionPayloadOutput": {
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ExecutionStrategyReasonPayloadOutput"
+          },
+          "maxItems": 32,
+          "title": "Items",
+          "type": "array"
+        },
+        "state": {
+          "enum": [
+            "available",
+            "unavailable",
+            "truncated"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "total_count": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Total Count"
+        }
+      },
+      "required": [
+        "state",
+        "total_count",
+        "items"
+      ],
+      "title": "ExecutionStrategyReasonCollectionPayloadOutput",
       "type": "object"
     },
     "ExecutionStrategyReasonPayload": {
@@ -1151,6 +3143,168 @@
         "reason_code"
       ],
       "title": "ExecutionStrategyReasonPayload",
+      "type": "object"
+    },
+    "ExecutionStrategyReasonPayloadOutput": {
+      "properties": {
+        "message": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Node Id"
+        },
+        "operator": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operator"
+        },
+        "parent_node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Node Id"
+        },
+        "reason_code": {
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "topological_rank": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Topological Rank"
+        }
+      },
+      "required": [
+        "reason_code",
+        "topological_rank",
+        "node_id",
+        "operator",
+        "message",
+        "parent_node_id"
+      ],
+      "title": "ExecutionStrategyReasonPayloadOutput",
+      "type": "object"
+    },
+    "ExecutionStreamabilityEvidencePayload": {
+      "properties": {
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Items",
+          "type": "array"
+        },
+        "state": {
+          "default": "unavailable",
+          "enum": [
+            "available",
+            "unavailable",
+            "truncated"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "total_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Count"
+        }
+      },
+      "required": [
+        "state",
+        "total_count",
+        "items"
+      ],
+      "title": "ExecutionStreamabilityEvidencePayload",
+      "type": "object"
+    },
+    "ExecutionWarningPayload": {
+      "description": "A non-fatal condition an execution continued past.",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Node Id"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "code",
+        "node_id",
+        "reason"
+      ],
+      "title": "ExecutionWarningPayload",
       "type": "object"
     },
     "ExploreChartConfig": {
@@ -1253,6 +3407,99 @@
       },
       "title": "ExploreChartsConfig",
       "type": "array"
+    },
+    "FitEvidencePayload": {
+      "additionalProperties": false,
+      "description": "The final fit's thread allotment, round ceiling, fitted rounds, and stop reason.",
+      "properties": {
+        "device": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Device"
+        },
+        "rounds_configured": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rounds Configured"
+        },
+        "rounds_fitted": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rounds Fitted"
+        },
+        "stopping_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "validation",
+                "native_exhaustion"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stopping Reason"
+        },
+        "term_update_steps": {
+          "anyOf": [
+            {
+              "items": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Term Update Steps"
+        },
+        "threads": {
+          "minimum": 1,
+          "title": "Threads",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "threads",
+        "rounds_configured",
+        "rounds_fitted",
+        "stopping_reason",
+        "term_update_steps",
+        "device"
+      ],
+      "title": "FitEvidencePayload",
+      "type": "object"
     },
     "GitArchiveResponse": {
       "properties": {
@@ -2727,6 +4974,120 @@
       "title": "GpuFamilyStatus",
       "type": "object"
     },
+    "InputPreparationRecordPayload": {
+      "description": "One Data Input's automatic preparation record: digests and counts only.",
+      "properties": {
+        "action": {
+          "enum": [
+            "reused",
+            "built",
+            "refreshed"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "build_class": {
+          "title": "Build Class",
+          "type": "string"
+        },
+        "elapsed_seconds": {
+          "default": 0.0,
+          "title": "Elapsed Seconds",
+          "type": "number"
+        },
+        "execution": {
+          "enum": [
+            "in_process",
+            "worker"
+          ],
+          "title": "Execution",
+          "type": "string"
+        },
+        "generation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Generation Id"
+        },
+        "identity_digest": {
+          "title": "Identity Digest",
+          "type": "string"
+        },
+        "memory_limit_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Memory Limit Bytes"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "row_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Row Count"
+        },
+        "size_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Size Bytes"
+        },
+        "warning_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Warning Code"
+        }
+      },
+      "required": [
+        "node_id",
+        "identity_digest",
+        "action",
+        "build_class",
+        "execution",
+        "memory_limit_bytes",
+        "elapsed_seconds",
+        "row_count",
+        "size_bytes",
+        "generation_id",
+        "warning_code"
+      ],
+      "title": "InputPreparationRecordPayload",
+      "type": "object"
+    },
     "JsonValue": {
       "anyOf": [
         {
@@ -2990,6 +5351,70 @@
       "title": "MlflowExperimentSummary",
       "type": "object"
     },
+    "MlflowExportReceipt": {
+      "description": "A completed log of a training job to MLflow.",
+      "properties": {
+        "backend": {
+          "title": "Backend",
+          "type": "string"
+        },
+        "destination": {
+          "enum": [
+            "",
+            "databricks",
+            "server",
+            "local"
+          ],
+          "title": "Destination",
+          "type": "string"
+        },
+        "experiment_name": {
+          "title": "Experiment Name",
+          "type": "string"
+        },
+        "logged_at": {
+          "title": "Logged At",
+          "type": "string"
+        },
+        "operation_id": {
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "run_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Url"
+        },
+        "tracking_uri": {
+          "default": "",
+          "title": "Tracking Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_id",
+        "destination",
+        "backend",
+        "experiment_name",
+        "run_id",
+        "run_url",
+        "tracking_uri",
+        "logged_at"
+      ],
+      "title": "MlflowExportReceipt",
+      "type": "object"
+    },
     "MlflowModelList": {
       "description": "``GET /api/mlflow/models``.",
       "items": {
@@ -3247,6 +5672,30 @@
       "title": "MlflowVersionBrief",
       "type": "object"
     },
+    "ModelFileExportReceipt": {
+      "description": "A completed save of a training job's model to a project file.",
+      "properties": {
+        "feature_contract_path": {
+          "title": "Feature Contract Path",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "saved_at": {
+          "title": "Saved At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "feature_contract_path",
+        "saved_at"
+      ],
+      "title": "ModelFileExportReceipt",
+      "type": "object"
+    },
     "ModelSaveDestinationResponse": {
       "properties": {
         "path": {
@@ -3336,6 +5785,239 @@
         "schemas"
       ],
       "title": "SchemaListResponse",
+      "type": "object"
+    },
+    "SharedSnapshotCapturePayload": {
+      "description": "One full-data materialisation an execution wrote to shared snapshots.\n\n``published`` names the generation the execution continued from; otherwise\nit continued from its own staged artifact and ``generation_id`` is null.",
+      "properties": {
+        "columns": {
+          "anyOf": [
+            {
+              "const": "all",
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "title": "Columns"
+        },
+        "generation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Generation Id"
+        },
+        "identity_digest": {
+          "title": "Identity Digest",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "structural",
+            "materialising",
+            "model_score",
+            "consumed"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "published",
+            "superseded"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "write_blocking_operator": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Write Blocking Operator"
+        },
+        "write_chunk_rows": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Write Chunk Rows"
+        },
+        "write_input_slices": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Write Input Slices"
+        },
+        "write_native_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Write Native Reason"
+        },
+        "write_parts": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Write Parts"
+        },
+        "write_staged_inputs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Write Staged Inputs"
+        },
+        "write_strategy": {
+          "anyOf": [
+            {
+              "enum": [
+                "chunked_join",
+                "sliced",
+                "input_sliced",
+                "native",
+                "prewritten"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Write Strategy"
+        }
+      },
+      "required": [
+        "node_id",
+        "identity_digest",
+        "kind",
+        "outcome",
+        "generation_id",
+        "columns",
+        "write_strategy",
+        "write_parts",
+        "write_chunk_rows",
+        "write_staged_inputs",
+        "write_input_slices",
+        "write_native_reason",
+        "write_blocking_operator"
+      ],
+      "title": "SharedSnapshotCapturePayload",
+      "type": "object"
+    },
+    "SharedSnapshotCaptureSkipPayload": {
+      "description": "One candidate capture point skipped under cost gating.",
+      "properties": {
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "cheap_segment",
+            "slice_transparent_feeder"
+          ],
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id",
+        "reason"
+      ],
+      "title": "SharedSnapshotCaptureSkipPayload",
+      "type": "object"
+    },
+    "SharedSnapshotSeedPayload": {
+      "description": "One node output an execution read from a shared snapshot generation.",
+      "properties": {
+        "columns": {
+          "anyOf": [
+            {
+              "const": "all",
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ],
+          "title": "Columns"
+        },
+        "generation_id": {
+          "title": "Generation Id",
+          "type": "string"
+        },
+        "identity_digest": {
+          "title": "Identity Digest",
+          "type": "string"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id",
+        "identity_digest",
+        "generation_id",
+        "columns"
+      ],
+      "title": "SharedSnapshotSeedPayload",
       "type": "object"
     },
     "TableItem": {
@@ -3559,6 +6241,1092 @@
         "blocking_node_id"
       ],
       "title": "TrainEstimateUnavailable",
+      "type": "object"
+    },
+    "TrainExportReceipts": {
+      "description": "Where a completed training result has been exported, oldest first.",
+      "properties": {
+        "mlflow": {
+          "items": {
+            "$ref": "#/$defs/MlflowExportReceipt"
+          },
+          "title": "Mlflow",
+          "type": "array"
+        },
+        "model_files": {
+          "items": {
+            "$ref": "#/$defs/ModelFileExportReceipt"
+          },
+          "title": "Model Files",
+          "type": "array"
+        }
+      },
+      "required": [
+        "mlflow",
+        "model_files"
+      ],
+      "title": "TrainExportReceipts",
+      "type": "object"
+    },
+    "TrainResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "actual_vs_predicted": {
+          "items": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "title": "Actual Vs Predicted",
+          "type": "array"
+        },
+        "ave_per_feature": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Ave Per Feature",
+          "type": "array"
+        },
+        "best_iteration": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Best Iteration"
+        },
+        "cat_features": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Cat Features",
+          "type": "array"
+        },
+        "development_rows": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Development Rows",
+          "type": "integer"
+        },
+        "diagnostic_metrics": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Diagnostic Metrics",
+          "type": "object"
+        },
+        "diagnostics_errors": {
+          "items": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "title": "Diagnostics Errors",
+          "type": "array"
+        },
+        "diagnostics_set": {
+          "default": "development",
+          "enum": [
+            "development",
+            "validation",
+            "final_test"
+          ],
+          "title": "Diagnostics Set",
+          "type": "string"
+        },
+        "double_lift": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Double Lift",
+          "type": "array"
+        },
+        "ebm_terms": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Ebm Terms",
+          "type": "array"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "evaluation": {
+          "$ref": "#/$defs/EvaluationReportPayload"
+        },
+        "feature_importance": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Feature Importance",
+          "type": "array"
+        },
+        "feature_importance_loss": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Feature Importance Loss",
+          "type": "array"
+        },
+        "feature_selection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrainingFeatureSelectionDiagnosticPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "features": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Features",
+          "type": "array"
+        },
+        "final_test_metrics": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Final Test Metrics",
+          "type": "object"
+        },
+        "final_test_rows": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Final Test Rows",
+          "type": "integer"
+        },
+        "final_tree_count": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Final Tree Count"
+        },
+        "fit_evidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FitEvidencePayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "glm_coefficients": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Glm Coefficients",
+          "type": "array"
+        },
+        "glm_fit_statistics": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Glm Fit Statistics",
+          "type": "object"
+        },
+        "glm_inference": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Glm Inference"
+        },
+        "glm_regularization": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Glm Regularization"
+        },
+        "glm_relativities": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Glm Relativities",
+          "type": "array"
+        },
+        "glm_smooth_terms": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Glm Smooth Terms",
+          "type": "array"
+        },
+        "job_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job Id"
+        },
+        "lorenz_curve": {
+          "items": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "title": "Lorenz Curve",
+          "type": "array"
+        },
+        "lorenz_curve_perfect": {
+          "items": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "title": "Lorenz Curve Perfect",
+          "type": "array"
+        },
+        "loss_history": {
+          "items": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "title": "Loss History",
+          "type": "array"
+        },
+        "loss_history_truncated": {
+          "default": false,
+          "title": "Loss History Truncated",
+          "type": "boolean"
+        },
+        "model_path": {
+          "default": "",
+          "title": "Model Path",
+          "type": "string"
+        },
+        "pdp_data": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Pdp Data",
+          "type": "array"
+        },
+        "residuals_histogram": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Residuals Histogram",
+          "type": "array"
+        },
+        "residuals_stats": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Residuals Stats",
+          "type": "object"
+        },
+        "shap_summary": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Shap Summary",
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "started",
+            "completed",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "total_source_rows": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Source Rows"
+        },
+        "tuning": {
+          "$ref": "#/$defs/TuningReportPayload"
+        },
+        "warning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Warning"
+        }
+      },
+      "required": [
+        "status",
+        "job_id",
+        "diagnostic_metrics",
+        "final_test_metrics",
+        "feature_importance",
+        "model_path",
+        "development_rows",
+        "final_test_rows",
+        "diagnostics_set",
+        "features",
+        "cat_features",
+        "error",
+        "best_iteration",
+        "final_tree_count",
+        "fit_evidence",
+        "loss_history",
+        "loss_history_truncated",
+        "double_lift",
+        "shap_summary",
+        "feature_importance_loss",
+        "ave_per_feature",
+        "residuals_histogram",
+        "residuals_stats",
+        "actual_vs_predicted",
+        "lorenz_curve",
+        "lorenz_curve_perfect",
+        "pdp_data",
+        "glm_coefficients",
+        "glm_relativities",
+        "glm_fit_statistics",
+        "glm_inference",
+        "glm_smooth_terms",
+        "glm_regularization",
+        "ebm_terms",
+        "diagnostics_errors",
+        "warning",
+        "total_source_rows",
+        "feature_selection"
+      ],
+      "title": "TrainResponse",
+      "type": "object"
+    },
+    "TrainStatusResponse": {
+      "properties": {
+        "best_objective": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Best Objective"
+        },
+        "completed_fits": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completed Fits"
+        },
+        "elapsed_seconds": {
+          "default": 0.0,
+          "title": "Elapsed Seconds",
+          "type": "number"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        },
+        "error_detail": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Detail"
+        },
+        "execution_metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionMetricsPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "export_receipts": {
+          "$ref": "#/$defs/TrainExportReceipts"
+        },
+        "feature_selection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrainingFeatureSelectionDiagnosticPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "fold_count": {
+          "anyOf": [
+            {
+              "maximum": 10,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fold Count"
+        },
+        "fold_index": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fold Index"
+        },
+        "http_status_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Http Status Code"
+        },
+        "iteration": {
+          "default": 0,
+          "title": "Iteration",
+          "type": "integer"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "enum": [
+                "planning",
+                "trial_fit",
+                "trial_complete",
+                "final_fit",
+                "publication",
+                "completed"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Phase"
+        },
+        "progress": {
+          "default": 0.0,
+          "title": "Progress",
+          "type": "number"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrainResponse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "enum": [
+            "running",
+            "completed",
+            "error",
+            "cancelled",
+            "superseded",
+            "timed_out",
+            "memory_limited",
+            "contract_error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "terminal_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Terminal Reason"
+        },
+        "total_fits": {
+          "anyOf": [
+            {
+              "maximum": 201,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Fits"
+        },
+        "total_iterations": {
+          "default": 0,
+          "title": "Total Iterations",
+          "type": "integer"
+        },
+        "train_loss": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Train Loss",
+          "type": "object"
+        },
+        "train_loss_history": {
+          "items": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "title": "Train Loss History",
+          "type": "array"
+        },
+        "train_loss_history_truncated": {
+          "default": false,
+          "title": "Train Loss History Truncated",
+          "type": "boolean"
+        },
+        "trial_count": {
+          "anyOf": [
+            {
+              "maximum": 50,
+              "minimum": 5,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trial Count"
+        },
+        "trial_index": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trial Index"
+        },
+        "warning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Warning"
+        }
+      },
+      "required": [
+        "status",
+        "progress",
+        "message",
+        "iteration",
+        "total_iterations",
+        "train_loss",
+        "train_loss_history",
+        "train_loss_history_truncated",
+        "elapsed_seconds",
+        "result",
+        "warning",
+        "terminal_reason",
+        "execution_metrics",
+        "feature_selection",
+        "error_code",
+        "http_status_code",
+        "error_detail",
+        "phase",
+        "trial_index",
+        "trial_count",
+        "fold_index",
+        "fold_count",
+        "completed_fits",
+        "total_fits",
+        "best_objective",
+        "export_receipts"
+      ],
+      "title": "TrainStatusResponse",
+      "type": "object"
+    },
+    "TrainingFeatureColumnReasonCollectionPayload": {
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/TrainingFeatureColumnReasonPayload"
+          },
+          "maxItems": 128,
+          "title": "Items",
+          "type": "array"
+        },
+        "state": {
+          "enum": [
+            "available",
+            "truncated"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "total_count": {
+          "minimum": 0,
+          "title": "Total Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "state",
+        "total_count",
+        "items"
+      ],
+      "title": "TrainingFeatureColumnReasonCollectionPayload",
+      "type": "object"
+    },
+    "TrainingFeatureColumnReasonPayload": {
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "target",
+            "weight",
+            "offset",
+            "fold",
+            "identifier",
+            "evaluation",
+            "configured_exclusion",
+            "not_selected",
+            "not_in_formula"
+          ],
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "column",
+        "reason"
+      ],
+      "title": "TrainingFeatureColumnReasonPayload",
+      "type": "object"
+    },
+    "TrainingFeatureNameCollectionPayload": {
+      "properties": {
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 128,
+          "title": "Items",
+          "type": "array"
+        },
+        "state": {
+          "enum": [
+            "available",
+            "truncated"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "total_count": {
+          "minimum": 0,
+          "title": "Total Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "state",
+        "total_count",
+        "items"
+      ],
+      "title": "TrainingFeatureNameCollectionPayload",
+      "type": "object"
+    },
+    "TrainingFeatureSelectionDiagnosticPayload": {
+      "properties": {
+        "detail_state": {
+          "enum": [
+            "available",
+            "truncated"
+          ],
+          "title": "Detail State",
+          "type": "string"
+        },
+        "excluded_columns": {
+          "$ref": "#/$defs/TrainingFeatureColumnReasonCollectionPayload"
+        },
+        "feature_count": {
+          "minimum": 0,
+          "title": "Feature Count",
+          "type": "integer"
+        },
+        "features": {
+          "$ref": "#/$defs/TrainingFeatureNameCollectionPayload"
+        },
+        "mode": {
+          "enum": [
+            "explicit",
+            "all_except",
+            "glm_terms"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "retained_metadata": {
+          "$ref": "#/$defs/TrainingFeatureColumnReasonCollectionPayload"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "mode",
+        "feature_count",
+        "detail_state",
+        "features",
+        "retained_metadata",
+        "excluded_columns"
+      ],
+      "title": "TrainingFeatureSelectionDiagnosticPayload",
+      "type": "object"
+    },
+    "TuningReportPayload": {
+      "additionalProperties": false,
+      "description": "The tuning study as published; its invariants are checked where the\nplan, trials and report artifacts are produced and reloaded\n(``haute.modelling._tuning``), not here.",
+      "properties": {
+        "baseline_objective": {
+          "title": "Baseline Objective",
+          "type": "number"
+        },
+        "best_sampled_params": {
+          "additionalProperties": true,
+          "title": "Best Sampled Params",
+          "type": "object"
+        },
+        "direction": {
+          "enum": [
+            "maximize",
+            "minimize"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "evaluation_plan_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Evaluation Plan Sha256",
+          "type": "string"
+        },
+        "final_params": {
+          "additionalProperties": true,
+          "title": "Final Params",
+          "type": "object"
+        },
+        "final_tree_count": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Final Tree Count"
+        },
+        "improvement": {
+          "minimum": 0,
+          "title": "Improvement",
+          "type": "number"
+        },
+        "metric": {
+          "minLength": 1,
+          "title": "Metric",
+          "type": "string"
+        },
+        "plan_path": {
+          "minLength": 1,
+          "title": "Plan Path",
+          "type": "string"
+        },
+        "plan_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Plan Sha256",
+          "type": "string"
+        },
+        "report_path": {
+          "minLength": 1,
+          "title": "Report Path",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "total_fit_count": {
+          "maximum": 201,
+          "minimum": 6,
+          "title": "Total Fit Count",
+          "type": "integer"
+        },
+        "trial_count": {
+          "maximum": 50,
+          "minimum": 5,
+          "title": "Trial Count",
+          "type": "integer"
+        },
+        "trial_fit_count": {
+          "maximum": 200,
+          "minimum": 5,
+          "title": "Trial Fit Count",
+          "type": "integer"
+        },
+        "trials": {
+          "items": {
+            "$ref": "#/$defs/TuningTrialPayload"
+          },
+          "maxItems": 50,
+          "minItems": 5,
+          "title": "Trials",
+          "type": "array"
+        },
+        "trials_path": {
+          "minLength": 1,
+          "title": "Trials Path",
+          "type": "string"
+        },
+        "trials_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Trials Sha256",
+          "type": "string"
+        },
+        "winner_objective": {
+          "title": "Winner Objective",
+          "type": "number"
+        },
+        "winner_trial_index": {
+          "maximum": 199,
+          "minimum": 0,
+          "title": "Winner Trial Index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "plan_sha256",
+        "trials_sha256",
+        "evaluation_plan_sha256",
+        "metric",
+        "direction",
+        "baseline_objective",
+        "winner_trial_index",
+        "winner_objective",
+        "improvement",
+        "best_sampled_params",
+        "final_params",
+        "final_tree_count",
+        "trial_count",
+        "trial_fit_count",
+        "total_fit_count",
+        "trials",
+        "plan_path",
+        "trials_path",
+        "report_path"
+      ],
+      "title": "TuningReportPayload",
+      "type": "object"
+    },
+    "TuningTrialPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "aggregate_metrics": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Aggregate Metrics",
+          "type": "object"
+        },
+        "elapsed_seconds": {
+          "minimum": 0,
+          "title": "Elapsed Seconds",
+          "type": "number"
+        },
+        "fits": {
+          "items": {
+            "$ref": "#/$defs/EvaluationFitPayload"
+          },
+          "maxItems": 10,
+          "minItems": 1,
+          "title": "Fits",
+          "type": "array"
+        },
+        "label": {
+          "enum": [
+            "baseline",
+            "sampled"
+          ],
+          "title": "Label",
+          "type": "string"
+        },
+        "objective": {
+          "title": "Objective",
+          "type": "number"
+        },
+        "resolved_params": {
+          "additionalProperties": true,
+          "title": "Resolved Params",
+          "type": "object"
+        },
+        "sampled_params": {
+          "additionalProperties": true,
+          "title": "Sampled Params",
+          "type": "object"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "trial_index": {
+          "maximum": 199,
+          "minimum": 0,
+          "title": "Trial Index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "trial_index",
+        "label",
+        "sampled_params",
+        "resolved_params",
+        "fits",
+        "aggregate_metrics",
+        "objective",
+        "elapsed_seconds"
+      ],
+      "title": "TuningTrialPayload",
       "type": "object"
     },
     "UtilityDeleteResponse": {
@@ -3870,6 +7638,12 @@
     "TrainEstimateResponse": {
       "$ref": "#/$defs/TrainEstimateResponse"
     },
+    "TrainResponse": {
+      "$ref": "#/$defs/TrainResponse"
+    },
+    "TrainStatusResponse": {
+      "$ref": "#/$defs/TrainStatusResponse"
+    },
     "UtilityDeleteResponse": {
       "$ref": "#/$defs/UtilityDeleteResponse"
     },
@@ -3939,7 +7713,9 @@
     "GitBranchAwayResponse",
     "GitBindStorageResponse",
     "GitForkStorageResponse",
-    "GitUpstreamStatusResponse"
+    "GitUpstreamStatusResponse",
+    "TrainResponse",
+    "TrainStatusResponse"
   ],
   "title": "HauteApiContractBundle",
   "type": "object",
@@ -3992,6 +7768,10 @@
       "LogExperimentResponse",
       "ModelSaveDestinationResponse",
       "SaveModelResponse"
+    ],
+    "training": [
+      "TrainResponse",
+      "TrainStatusResponse"
     ],
     "utility": [
       "UtilityListResponse",

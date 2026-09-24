@@ -393,6 +393,55 @@ def _with_worker_failure_metrics(
     )
 
 
+def _require_consistent_completed_response(response: TrainResponse) -> None:
+    """Check a completed response against its own evaluation and tuning.
+
+    The evaluation and tuning reports are validated where their artifacts are
+    produced and reloaded; this links them to the fields the job itself reports,
+    which no artifact records.
+    """
+    evaluation = response.evaluation
+    if evaluation is None:
+        raise ValueError("completed training requires evaluation")
+    if not response.diagnostic_metrics:
+        raise ValueError("completed training requires diagnostic_metrics")
+    if response.development_rows != evaluation.development_rows:
+        raise ValueError("development_rows must equal evaluation development_rows")
+    if response.final_test_rows != evaluation.final_test_rows:
+        raise ValueError("final_test_rows must equal evaluation final_test_rows")
+    if response.final_test_rows:
+        if response.diagnostic_metrics != response.final_test_metrics:
+            raise ValueError(
+                "diagnostic_metrics must equal final_test_metrics when a final test exists"
+            )
+        if response.diagnostics_set != "final_test":
+            raise ValueError(
+                "completed training diagnostics_set must be final_test when a test exists"
+            )
+    else:
+        if response.final_test_metrics:
+            raise ValueError("final_test_metrics must be empty without a final test")
+        expected_diagnostics = "development" if evaluation.refit_on_development else "validation"
+        if response.diagnostics_set != expected_diagnostics:
+            raise ValueError(
+                f"completed training diagnostics_set must be {expected_diagnostics} without a test"
+            )
+    tuning = response.tuning
+    if tuning is None:
+        expected_fits = evaluation.validation_fit_count + int(evaluation.refit_on_development)
+        if evaluation.fit_count != expected_fits:
+            if evaluation.refit_on_development:
+                raise ValueError("evaluation fit_count must equal validation_fit_count + final fit")
+            raise ValueError("evaluation fit_count must equal validation_fit_count without refit")
+        return
+    if not evaluation.refit_on_development:
+        raise ValueError("parameter tuning requires a final refit")
+    if evaluation.fit_count != tuning.total_fit_count:
+        raise ValueError("evaluation fit_count must equal tuning total_fit_count")
+    if tuning.evaluation_plan_sha256 != evaluation.plan_sha256:
+        raise ValueError("tuning evaluation plan digest must match evaluation")
+
+
 def _training_response_payload(
     train_result: Any,
     *,
@@ -450,6 +499,7 @@ def _training_response_payload(
         evaluation=evaluation_payload,
         tuning=tuning_payload,
     )
+    _require_consistent_completed_response(response)
     _assert_json_finite(response)
     return response.model_dump(mode="json", exclude_none=True)
 

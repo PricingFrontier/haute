@@ -201,24 +201,14 @@ class TestEvaluationResponseContract:
                 "less than or equal to 10",
             ),
             (
-                lambda payload: payload["selection_fits"].reverse(),
-                "ascending",
-            ),
-            (
-                lambda payload: payload["selection_metrics"]["rmse"].update(validation_rows=5),
-                "validation_rows",
-            ),
-            (
-                lambda payload: payload["selection_fits"][0]["metrics"].update(mae=1.0),
-                "metric names",
-            ),
-            (
                 lambda payload: payload.update(plan_sha256="not-a-digest"),
                 "plan_sha256",
             ),
         ],
     )
     def test_completed_response_rejects_malformed_report(self, mutate, message: str) -> None:
+        # Structure only: the report's invariants are checked where its
+        # artifacts are produced (tests/test_evaluation.py).
         from haute.schemas import TrainResponse
 
         payload = _evaluation_response_payload()

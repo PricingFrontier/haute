@@ -138,7 +138,7 @@ export type TrainProgress = {
   train_loss_history?: Array<{ iteration: number; [key: string]: number }>
   train_loss_history_truncated?: boolean
   elapsed_seconds: number
-  result?: TrainResult
+  result?: TrainResult | null
   warning?: string | null
   terminal_reason?: string | null
   error_code?: string | null
@@ -1055,7 +1055,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const { [nodeId]: _removedJob, ...remainingJobs } = s.trainJobs; void _removedJob
       touchCachedResult(trainResultRecency, nodeId)
       const nextCached: CachedTrainResult = {
-        result: { status: "error", job_id: null, diagnostic_metrics: {}, final_test_metrics: {}, feature_importance: [], model_path: "", development_rows: 0, final_test_rows: 0, diagnostics_set: "development", features: [], cat_features: [], error, best_iteration: null, loss_history: [], loss_history_truncated: false, double_lift: [], shap_summary: [], feature_importance_loss: [], ave_per_feature: [], residuals_histogram: [], residuals_stats: {}, actual_vs_predicted: [], lorenz_curve: [], lorenz_curve_perfect: [], pdp_data: [], warning: null, total_source_rows: null, glm_coefficients: [], glm_relativities: [], glm_fit_statistics: {}, glm_inference: null, glm_smooth_terms: [], glm_regularization: null, ebm_terms: [], diagnostics_errors: [], feature_selection: null },
+        result: { status: "error", job_id: null, diagnostic_metrics: {}, final_test_metrics: {}, feature_importance: [], model_path: "", development_rows: 0, final_test_rows: 0, diagnostics_set: "development", features: [], cat_features: [], error, best_iteration: null, loss_history: [], loss_history_truncated: false, double_lift: [], shap_summary: [], feature_importance_loss: [], ave_per_feature: [], residuals_histogram: [], residuals_stats: {}, actual_vs_predicted: [], lorenz_curve: [], lorenz_curve_perfect: [], pdp_data: [], warning: null, total_source_rows: null, glm_coefficients: [], glm_relativities: [], glm_fit_statistics: {}, glm_inference: null, glm_smooth_terms: [], glm_regularization: null, ebm_terms: [], diagnostics_errors: [], feature_selection: null, final_tree_count: null, fit_evidence: null },
         terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
         configHash: job.configHash,

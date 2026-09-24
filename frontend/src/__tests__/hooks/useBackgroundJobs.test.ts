@@ -25,10 +25,10 @@ import { getExplorePivotStatus, getOptimiserStatus, getTrainStatus } from "../..
 import useNodeResultsStore from "../../stores/useNodeResultsStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useBackgroundJobs from "../../hooks/useBackgroundJobs.ts"
-import { explorePivotResultKey, type ExplorePivotProgress, type SolveProgress, type TrainProgress } from "../../stores/useNodeResultsStore.ts"
-import type { ExplorePivotResult } from "../../api/types.ts"
+import { explorePivotResultKey, type ExplorePivotProgress, type SolveProgress } from "../../stores/useNodeResultsStore.ts"
+import type { ExplorePivotResult, TrainStatusResponse } from "../../api/types.ts"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
-import { makeTrainResult } from "../../test-utils/factories.ts"
+import { makeTrainResult, makeTrainStatus } from "../../test-utils/factories.ts"
 import { ApiResponseValidationError } from "../../api/responseValidation"
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -56,8 +56,8 @@ function makeSolveProgress(overrides: Partial<SolveProgress> = {}): SolveProgres
   }
 }
 
-function makeTrainProgress(overrides: Partial<TrainProgress> = {}): TrainProgress {
-  return {
+function makeTrainProgress(overrides: Partial<TrainStatusResponse> = {}): TrainStatusResponse {
+  return makeTrainStatus({
     status: "running",
     progress: 0.5,
     message: "Training...",
@@ -66,7 +66,7 @@ function makeTrainProgress(overrides: Partial<TrainProgress> = {}): TrainProgres
     train_loss: { rmse: 0.1 },
     elapsed_seconds: 5,
     ...overrides,
-  }
+  })
 }
 
 function makePivotResult(overrides: Partial<ExplorePivotResult> = {}): ExplorePivotResult {

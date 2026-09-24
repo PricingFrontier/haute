@@ -131,6 +131,7 @@ function tunedTrainResponseFixture() {
       validation_method: "single",
       validation_fit_count: 1,
       fit_count: 6,
+      refit_on_development: true,
       development_rows: 100,
       final_test_rows: 10,
       selection_fits: [{
@@ -1728,8 +1729,12 @@ describe("API response guards", () => {
     const parsed = parseTrainResponse(fixture)
 
     expect(parsed.evaluation?.strategy).toBe("random")
-    expect(() => parseTrainResponse({ ...fixture, metrics: { rmse: 1 } })).toThrow(/legacy/i)
-    expect(() => parseTrainResponse({ ...fixture, cross_validation: {} })).toThrow(/legacy/i)
+    expect(() => parseTrainResponse({ ...fixture, metrics: { rmse: 1 } })).toThrow(
+      "TrainResponse: invalid contract at /: additionalProperties",
+    )
+    expect(() => parseTrainResponse({ ...fixture, cross_validation: {} })).toThrow(
+      "TrainResponse: invalid contract at /: additionalProperties",
+    )
   })
 
   it("accepts a saved holdout validation fit without a final refit", () => {
@@ -1761,17 +1766,6 @@ describe("API response guards", () => {
     expect(parsed.tuning?.total_fit_count).toBe(6)
   })
 
-  it("accepts a tuned refit whose winner used a round-count alias (MOD-F01)", () => {
-    const fixture = tunedTrainResponseFixture()
-    for (const trial of fixture.tuning.trials) {
-      Object.assign(trial.resolved_params, { n_estimators: 50, early_stopping_rounds: 5 })
-    }
-    // The backend projection drops every round-count spelling and the
-    // validation-only keys, writing only CatBoost's ``iterations``.
-    const parsed = parseTrainResponse(fixture)
-    expect(parsed.tuning?.final_params).toEqual({ depth: 4, iterations: 7 })
-  })
-
   it("keeps the final fit's evidence (MOD-F01)", () => {
     const fixture = {
       ...tunedTrainResponseFixture(),
@@ -1779,7 +1773,9 @@ describe("API response guards", () => {
         threads: 4,
         rounds_configured: 500,
         rounds_fitted: 120,
+        term_update_steps: null,
         stopping_reason: "validation",
+        device: null,
       },
     }
     expect(parseTrainResponse(fixture).fit_evidence).toEqual({
@@ -1795,7 +1791,7 @@ describe("API response guards", () => {
         ...fixture,
         fit_evidence: { ...fixture.fit_evidence, stopping_reason: "bored" },
       }),
-    ).toThrow(/stopping_reason/)
+    ).toThrow("TrainResponse: invalid contract at /fit_evidence/stopping_reason: enum")
   })
 
   it("parses the XGBoost GPU status (MOD-F06)", () => {
@@ -1807,43 +1803,36 @@ describe("API response guards", () => {
   })
 
   it("keeps the device an XGBoost GPU fit trained on (MOD-F06)", () => {
-    const gpu = parseTrainResponse({
-      ...tunedTrainResponseFixture(),
-      fit_evidence: { threads: 4, rounds_configured: 100, rounds_fitted: 100, stopping_reason: "none", device: "cuda:0" },
-    })
+    const evidence = {
+      threads: 4, rounds_configured: 100, rounds_fitted: 100, term_update_steps: null, stopping_reason: "none", device: "cuda:0",
+    }
+    const gpu = parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: evidence })
     expect(gpu.fit_evidence?.device).toBe("cuda:0")
     expect(() =>
-      parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: { threads: 4, device: "" } }),
-    ).toThrow(/fit_evidence.device/)
+      parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: { ...evidence, device: "" } }),
+    ).toThrow("TrainResponse: invalid contract at /fit_evidence/device: minLength")
   })
 
-  it("accepts fit evidence whose null fields the backend dropped (MOD-F04)", () => {
-    // A GLM's evidence arrives as its thread allotment alone.
-    const glm = parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: { threads: 4 } })
-    expect(glm.fit_evidence).toEqual({
-      threads: 4,
-      rounds_configured: null,
-      rounds_fitted: null,
-      term_update_steps: null,
-      stopping_reason: null,
-      device: null,
-    })
+  it("requires fit evidence to carry its null fields (MOD-F04)", () => {
+    // The server sends every evidence field; a GLM's is its thread allotment and nulls.
+    const glmEvidence = {
+      threads: 4, rounds_configured: null, rounds_fitted: null, term_update_steps: null, stopping_reason: null, device: null,
+    }
+    expect(parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: glmEvidence }).fit_evidence).toEqual(glmEvidence)
     const ebm = parseTrainResponse({
       ...tunedTrainResponseFixture(),
-      fit_evidence: {
-        threads: 1,
-        rounds_configured: 200,
-        stopping_reason: "none",
-        term_update_steps: [400, 200],
-      },
+      fit_evidence: { ...glmEvidence, threads: 1, rounds_configured: 200, stopping_reason: "none", term_update_steps: [400, 200] },
     })
     expect(ebm.fit_evidence?.term_update_steps).toEqual([400, 200])
     expect(() =>
-      parseTrainResponse({
-        ...tunedTrainResponseFixture(),
-        fit_evidence: { threads: 1, trees: 3 },
-      }),
-    ).toThrow(/fit_evidence has unexpected or missing fields/)
+      parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: { threads: 4 } }),
+    ).toThrow("TrainResponse: invalid contract at /fit_evidence/rounds_configured: required")
+    expect(() =>
+      parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: { ...glmEvidence, trees: 3 } }),
+    ).toThrow("TrainResponse: invalid contract at /fit_evidence: additionalProperties")
+    expect(() =>
+      parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: { ...glmEvidence, term_update_steps: [-1] } }),
+    ).toThrow("TrainResponse: invalid contract at /fit_evidence/term_update_steps/0: minimum")
   })
 
   it("accepts an EBM study that refits with the winning budget and no tree count (MOD-F04)", () => {
@@ -1858,29 +1847,19 @@ describe("API response guards", () => {
       trial.sampled_params = index === 0 ? {} : { max_rounds: 100 * (index + 1) }
       for (const fit of trial.fits) Object.assign(fit, { best_iteration: null })
     }
-    const { final_tree_count: _dropped, ...tuning } = fixture.tuning
-    void _dropped
+    // A fixed-budget refit has no tree count; the server sends null.
     const ebm = {
       ...fixture,
       tuning: {
-        ...tuning,
+        ...fixture.tuning,
+        final_tree_count: null,
         best_sampled_params: { max_rounds: 200 },
         final_params: { max_rounds: 200, interactions: 0 },
       },
     }
     const parsed = parseTrainResponse(ebm)
     expect(parsed.tuning?.final_params).toEqual({ max_rounds: 200, interactions: 0 })
-    expect(parsed.tuning?.final_tree_count).toBeUndefined()
-    // A fixed-budget refit reuses the winner's parameters exactly, with no tree count.
-    expect(() =>
-      parseTrainResponse({ ...ebm, tuning: { ...ebm.tuning, final_tree_count: 7 } }),
-    ).toThrow(/final parameter projection/)
-    expect(() =>
-      parseTrainResponse({
-        ...ebm,
-        tuning: { ...ebm.tuning, final_params: { max_rounds: 300, interactions: 0 } },
-      }),
-    ).toThrow(/final parameter projection/)
+    expect(parsed.tuning?.final_tree_count).toBeNull()
   })
 
   it("parses EBM term shapes and surfaces and rejects scores that miss their axes (MOD-F04)", () => {
@@ -1915,52 +1894,6 @@ describe("API response guards", () => {
         ebm_terms: [{ ...terms[1], scores: [[0, 0.1], [0.3, 0.4]] }],
       }),
     ).toThrow(/scores must match its axes/)
-  })
-
-  it("rejects evaluation summaries that disagree with persisted selection fits", () => {
-    const fixture = tunedTrainResponseFixture()
-    fixture.evaluation.selection_metrics.rmse.mean = 0.6
-
-    expect(() => parseTrainResponse(fixture)).toThrow(/aggregate.*selection fits/i)
-  })
-
-  it("rejects tuning evidence with non-finite or inconsistent trial results", () => {
-    const nonFinite = tunedTrainResponseFixture()
-    nonFinite.tuning.trials[1]!.objective = Number.POSITIVE_INFINITY
-    expect(() => parseTrainResponse(nonFinite)).toThrow(/objective.*finite/i)
-
-    const inconsistentAggregate = tunedTrainResponseFixture()
-    inconsistentAggregate.tuning.trials[1]!.aggregate_metrics.rmse = 0.41
-    expect(() => parseTrainResponse(inconsistentAggregate)).toThrow(
-      /aggregate.*validation fits/i,
-    )
-
-    const wrongWinner = tunedTrainResponseFixture()
-    wrongWinner.tuning.winner_trial_index = 2
-    expect(() => parseTrainResponse(wrongWinner)).toThrow(
-      /baseline, winner, or improvement/i,
-    )
-
-    const wrongSampledProjection = tunedTrainResponseFixture()
-    wrongSampledProjection.tuning.best_sampled_params = { depth: 99 }
-    expect(() => parseTrainResponse(wrongSampledProjection)).toThrow(
-      /sampled parameters/i,
-    )
-
-    const wrongFinalProjection = tunedTrainResponseFixture()
-    wrongFinalProjection.tuning.final_params = { depth: 99, iterations: 7 }
-    expect(() => parseTrainResponse(wrongFinalProjection)).toThrow(
-      /final parameter projection/i,
-    )
-
-    const wrongDirection = tunedTrainResponseFixture()
-    wrongDirection.tuning.direction = "maximize"
-    wrongDirection.tuning.winner_trial_index = 3
-    wrongDirection.tuning.winner_objective = 0.6
-    wrongDirection.tuning.improvement = 0.1
-    wrongDirection.tuning.best_sampled_params = { depth: 6 }
-    wrongDirection.tuning.final_params = { depth: 6, iterations: 7 }
-    expect(() => parseTrainResponse(wrongDirection)).toThrow(/metric direction/i)
   })
 
   it("preserves per-feature PDP diagnostic errors", () => {
@@ -2075,7 +2008,7 @@ describe("API response guards", () => {
     expect(parsed.train_loss.learn).toBe(0.1)
   })
 
-  it("strictly validates bounded tuning progress", () => {
+  it("validates the bounds of tuning progress", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>(
       "train_status_response",
     )
@@ -2092,32 +2025,20 @@ describe("API response guards", () => {
     }
     expect(parseTrainStatusResponse(progress).phase).toBe("trial_fit")
 
-    expect(() => parseTrainStatusResponse({
-      ...progress,
-      phase: "publication",
-      trial_index: 1,
-      fold_index: null,
-    })).toThrow(/must not contain trial\/fold indices/i)
-    expect(() => parseTrainStatusResponse({
-      ...progress,
-      trial_index: 6,
-    })).toThrow(/index exceeds its count/i)
-    expect(() => parseTrainStatusResponse({
-      ...progress,
-      best_objective: Number.POSITIVE_INFINITY,
-    })).toThrow(/best_objective.*finite/i)
+    // The phase/index relationships are the server's (TrainStatusResponse);
+    // the browser checks the generated bounds.
     expect(() => parseTrainStatusResponse({
       ...progress,
       trial_count: 4,
-    })).toThrow(/trial_count.*bounds/i)
+    })).toThrow("TrainStatusResponse: invalid contract at /trial_count: minimum")
     expect(() => parseTrainStatusResponse({
       ...progress,
       fold_count: 11,
-    })).toThrow(/fold_count.*bounds/i)
+    })).toThrow("TrainStatusResponse: invalid contract at /fold_count: maximum")
     expect(() => parseTrainStatusResponse({
       ...progress,
-      total_fits: 12,
-    })).toThrow(/total_fits.*fit count/i)
+      phase: "stalled",
+    })).toThrow("TrainStatusResponse: invalid contract at /phase: enum")
   })
 
   it("retains the authoritative live loss-history snapshot and truncation flag", () => {
@@ -2137,16 +2058,15 @@ describe("API response guards", () => {
     expect(parsed.train_loss_history_truncated).toBe(true)
   })
 
-  it("leaves absent live loss history absent", () => {
+  it("requires the live loss history the server always sends", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>(
       "train_status_response",
     )
     delete fixture.train_loss_history
-    delete fixture.train_loss_history_truncated
-    const parsed = parseTrainStatusResponse(fixture)
 
-    expect(parsed.train_loss_history).toBeUndefined()
-    expect(parsed.train_loss_history_truncated).toBeUndefined()
+    expect(() => parseTrainStatusResponse(fixture)).toThrow(
+      "TrainStatusResponse: invalid contract at /train_loss_history: required",
+    )
   })
 
   it.each([
@@ -2741,10 +2661,7 @@ describe("API response guards", () => {
   })
 
   it("preserves typed execution metrics on train status responses", () => {
-    const parsed = parseTrainStatusResponse({
-      ...loadUiContractFixture<Record<string, unknown>>("train_status_response"),
-      execution_metrics: executionMetricsFixture(),
-    })
+    const parsed = parseTrainStatusResponse(loadUiContractFixture("train_status_metrics_response"))
 
     expect(parsed.execution_metrics?.admission?.budget_policy).toBe("adaptive_local")
     expect(parsed.execution_metrics?.memory_pressure_events[0]?.threshold_percent).toBe(75)

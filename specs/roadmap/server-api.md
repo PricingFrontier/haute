@@ -106,11 +106,10 @@ shapes.
 **Delivered:** utility; Databricks listings; MLflow settings, destinations,
 test connection and discovery lists; modelling GPU status, training estimate,
 dispersion start and status, training MLflow log and model save; every git
-success response.
+success response; the training responses (`TrainResponse`,
+`TrainStatusResponse`), with `MOD-T10`.
 
-**Remaining:** the training responses (`TrainResponse`, `TrainStatusResponse`,
-best taken with `MOD-T10`, whose browser semantic re-checks would otherwise be
-rewritten only to be deleted); optimiser, including its MLflow log (still on
+**Remaining:** optimiser, including its MLflow log (still on
 the hand-written `parseMlflowLogResponse`); pipeline load and save, preview,
 trace and submodel responses (they carry node configs, so after `PCFG-R07`);
 recovery and repair; node data, cache, JSON cache and input cache; Explore
@@ -127,8 +126,7 @@ edits one Python model plus a regeneration.
 
 **Dependencies:** None. It covers the response models that exist today, and
 later packages build on it: `PCFG-R07` (pipeline config) adds the node-config
-models to the generated set, and `MOD-T10` (modelling) then reduces the
-tuning and evaluation response models to structure.
+models to the generated set.
 
 **Evidence:** `scripts/generate_api_contracts.py`;
 `frontend/src/generated/api-contracts.schema.json`;

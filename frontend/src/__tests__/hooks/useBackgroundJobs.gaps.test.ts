@@ -17,7 +17,7 @@ import { getOptimiserStatus, getTrainStatus } from "../../api/client.ts"
 import useNodeResultsStore from "../../stores/useNodeResultsStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useBackgroundJobs from "../../hooks/useBackgroundJobs.ts"
-import { makeTrainResult } from "../../test-utils/factories.ts"
+import { makeTrainResult, makeTrainStatus } from "../../test-utils/factories.ts"
 
 function resetStores() {
   useNodeResultsStore.setState({
@@ -92,7 +92,7 @@ describe("useBackgroundJobs - gap tests", () => {
       })
 
       // Train: running → completed
-      mockTrain.mockResolvedValueOnce({
+      mockTrain.mockResolvedValueOnce(makeTrainStatus({
         status: "running",
         progress: 0.3,
         message: "Training...",
@@ -100,8 +100,8 @@ describe("useBackgroundJobs - gap tests", () => {
         total_iterations: 100,
         train_loss: { rmse: 0.5 },
         elapsed_seconds: 2,
-      })
-      mockTrain.mockResolvedValueOnce({
+      }))
+      mockTrain.mockResolvedValueOnce(makeTrainStatus({
         status: "completed",
         progress: 1.0,
         message: "Done",
@@ -110,7 +110,7 @@ describe("useBackgroundJobs - gap tests", () => {
         train_loss: { rmse: 0.01 },
         elapsed_seconds: 10,
         result: trainResult,
-      })
+      }))
 
       // Start both jobs
       act(() => {
@@ -201,7 +201,7 @@ describe("useBackgroundJobs - gap tests", () => {
       // the onFail callback didn't fire, training failures would be
       // silently swallowed with no user feedback.
       const mockTrain = vi.mocked(getTrainStatus)
-      mockTrain.mockResolvedValueOnce({
+      mockTrain.mockResolvedValueOnce(makeTrainStatus({
         status: "error",
         progress: 0,
         message: "CUDA out of memory",
@@ -209,7 +209,7 @@ describe("useBackgroundJobs - gap tests", () => {
         total_iterations: 100,
         train_loss: {},
         elapsed_seconds: 30,
-      })
+      }))
 
       act(() => {
         useNodeResultsStore.getState().startTrainJob("t1", "tj-1", "GLM Node", "th", "live", 0)

@@ -17,6 +17,8 @@ import type {
   MlflowDestinationEntry as GeneratedMlflowDestinationEntry,
   MlflowTestConnectionResponse as GeneratedMlflowTestConnectionResponse,
   TrainEstimateResponse as GeneratedTrainEstimateResponse,
+  TrainResponse as GeneratedTrainResponse,
+  TrainStatusResponse as GeneratedTrainStatusResponse,
 } from "../generated/api-contracts.generated"
 import type {
   ExecutionStrategyBoundaryCollectionPayload as GeneratedExecutionStrategyCollection,
@@ -892,89 +894,6 @@ export interface TrainFeatureSelection {
   excluded_columns: TrainFeatureSelectionCollection<TrainFeatureSelectionExcludedColumn>
 }
 
-export interface EvaluationFit {
-  schema_version: 1
-  fit_index: number
-  train_rows: number
-  validation_rows: number
-  metrics: Record<string, number>
-  best_iteration: number | null
-}
-
-export interface EvaluationMetricSummary {
-  mean: number
-  stddev: number
-  min: number
-  max: number
-  fit_count: number
-  validation_rows: number
-}
-
-export interface EvaluationSummary {
-  development_rows: number
-  test_rows: number
-  validation_fit_count: number
-  development_group_count: number | null
-  test_group_count: number | null
-  development_date_count: number | null
-  test_date_count: number | null
-}
-
-export interface EvaluationReport {
-  schema_version: 1
-  strategy: "random" | "group" | "temporal"
-  validation_method: "none" | "single" | "cross_validation"
-  validation_fit_count: number
-  fit_count: number
-  refit_on_development?: boolean
-  development_rows: number
-  final_test_rows: number
-  selection_fits: EvaluationFit[]
-  selection_metrics: Record<string, EvaluationMetricSummary>
-  plan_sha256: string
-  results_sha256: string
-  plan_path: string
-  results_path: string
-  report_path: string
-  summary: EvaluationSummary
-}
-
-export interface TuningTrial {
-  schema_version: 1
-  trial_index: number
-  label: "baseline" | "sampled"
-  sampled_params: Record<string, unknown>
-  resolved_params: Record<string, unknown>
-  fits: EvaluationFit[]
-  aggregate_metrics: Record<string, number>
-  objective: number
-  elapsed_seconds: number
-}
-
-export interface TuningReport {
-  schema_version: 1
-  plan_sha256: string
-  trials_sha256: string
-  evaluation_plan_sha256: string
-  metric: string
-  direction: "maximize" | "minimize"
-  baseline_objective: number
-  winner_trial_index: number
-  winner_objective: number
-  improvement: number
-  best_sampled_params: Record<string, unknown>
-  final_params: Record<string, unknown>
-  /** Absent for a fixed-budget family (EBM), whose refit reuses the winning budget. */
-  final_tree_count?: number
-  trial_count: number
-  trial_fit_count: number
-  total_fit_count: number
-  trials: TuningTrial[]
-  plan_path: string
-  trials_path: string
-  report_path: string
-}
-
 /** One axis of an EBM term: the missing bin first, then categories or value bins. */
 export interface EbmTermAxis {
   feature: string
@@ -993,110 +912,56 @@ export interface EbmTerm {
   scores: number[] | number[][]
 }
 
-export interface TrainResponse {
-  status: "started" | "completed" | "error"
-  job_id: string | null
-  diagnostic_metrics: Record<string, number>
-  final_test_metrics: Record<string, number>
+// The training contracts are generated (scripts/generate_api_contracts.py).
+export type {
+  EvaluationFitPayload as EvaluationFit,
+  EvaluationMetricSummaryPayload as EvaluationMetricSummary,
+  EvaluationReportPayload as EvaluationReport,
+  EvaluationSummaryPayload as EvaluationSummary,
+  MlflowExportReceipt,
+  ModelFileExportReceipt,
+  TrainExportReceipts,
+  TuningReportPayload as TuningReport,
+  TuningTrialPayload as TuningTrial,
+} from "../generated/api-contracts.generated"
+
+/**
+ * Fields the server model leaves as open objects (diagnostic rows, loss history)
+ * or that the UI reshapes (feature selection); `parseTrainResponse` gives them
+ * these shapes on top of the generated structure.
+ */
+type TrainResponseUiFields = {
   feature_importance: TrainFeatureImportanceRow[]
-  model_path: string
-  development_rows: number
-  final_test_rows: number
-  diagnostics_set: "development" | "validation" | "final_test"
-  features: string[]
-  cat_features: string[]
-  error: string | null
-  best_iteration: number | null
-  final_tree_count?: number | null
-  fit_evidence?: {
-    threads: number
-    rounds_configured: number | null
-    rounds_fitted: number | null
-    /** EBM's native best_iteration_: term updates per stage, never rounds. */
-    term_update_steps: number[] | null
-    stopping_reason: "none" | "validation" | "native_exhaustion" | null
-    /** The device XGBoost actually trained on (``cuda:0``) for a GPU fit. */
-    device?: string | null
-  } | null
   loss_history: Array<{ iteration: number; [key: string]: number }>
-  loss_history_truncated: boolean
   double_lift: TrainDoubleLiftRow[]
   shap_summary: TrainShapSummaryRow[]
   feature_importance_loss: TrainFeatureImportanceRow[]
   ave_per_feature: TrainAvePerFeatureRow[]
   residuals_histogram: TrainResidualHistogramRow[]
-  residuals_stats: Record<string, number>
   actual_vs_predicted: ActualVsPredictedRow[]
   lorenz_curve: LorenzCurvePoint[]
   lorenz_curve_perfect: LorenzCurvePoint[]
   pdp_data: PdpFeatureRow[]
-  warning: string | null
-  total_source_rows: number | null
   glm_coefficients: GlmCoefficientRow[]
   glm_relativities: GlmRelativityRow[]
-  glm_fit_statistics: Record<string, number>
   glm_inference: GlmInference | null
   glm_smooth_terms: GlmSmoothTerm[]
   glm_regularization: GlmRegularization | null
   ebm_terms: EbmTerm[]
   diagnostics_errors: TrainDiagnosticsError[]
   feature_selection: TrainFeatureSelection | null
-  evaluation?: EvaluationReport
-  tuning?: TuningReport
 }
 
-export interface TrainStatusResponse {
-  status: JobStatus
-  progress: number
-  message: string
-  iteration: number
-  total_iterations: number
-  train_loss: Record<string, number>
-  train_loss_history?: Array<{ iteration: number; [key: string]: number }>
-  train_loss_history_truncated?: boolean
-  elapsed_seconds: number
-  result?: TrainResponse | null
-  warning?: string | null
-  terminal_reason?: string | null
-  error_code?: string | null
-  http_status_code?: number | null
-  error_detail?: unknown
-  execution_metrics?: ExecutionMetrics | null
-  feature_selection?: TrainFeatureSelection | null
-  phase?: "planning" | "trial_fit" | "trial_complete" | "final_fit" | "publication" | "completed" | null
-  trial_index?: number | null
-  trial_count?: number | null
-  fold_index?: number | null
-  fold_count?: number | null
-  completed_fits?: number | null
-  total_fits?: number | null
-  best_objective?: number | null
-  /** Where the completed result has been exported, oldest first. */
-  export_receipts?: TrainExportReceipts
+export type TrainResponse = Omit<GeneratedTrainResponse, keyof TrainResponseUiFields> & TrainResponseUiFields
+
+type TrainStatusUiFields = {
+  train_loss_history: Array<{ iteration: number; [key: string]: number }>
+  result: TrainResponse | null
+  execution_metrics: ExecutionMetrics | null
+  feature_selection: TrainFeatureSelection | null
 }
 
-export interface MlflowExportReceipt {
-  operation_id: string
-  /** The request's destination: `""` is the local folder. */
-  destination: "" | MlflowDestinationKey
-  backend: string
-  experiment_name: string
-  run_id: string
-  run_url: string | null
-  tracking_uri: string
-  logged_at: string
-}
-
-export interface ModelFileExportReceipt {
-  path: string
-  feature_contract_path: string
-  saved_at: string
-}
-
-export interface TrainExportReceipts {
-  mlflow: MlflowExportReceipt[]
-  model_files: ModelFileExportReceipt[]
-}
+export type TrainStatusResponse = Omit<GeneratedTrainStatusResponse, keyof TrainStatusUiFields> & TrainStatusUiFields
 
 // ---------------------------------------------------------------------------
 // Explore types

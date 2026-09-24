@@ -54,7 +54,12 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // group's first response; the startup bundle shrinks (289.8 KiB). With the
 // utility, Databricks, MLflow, modelling and git groups the complete production
 // bundle is 1,431.7 KiB; 1,442 KiB restores about 10 KiB of aggregate headroom.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1442
+// The training group replaces the hand-written training guards (8.8 KiB) with
+// its validators inside the lazy trainGuards chunk (26.9 KiB); a group compiles
+// each shared definition once, but the train responses carry the evaluation,
+// tuning and execution-metrics contracts. The complete production bundle is
+// 1,453.2 KiB; 1,463 KiB restores about 10 KiB of aggregate headroom.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1463
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

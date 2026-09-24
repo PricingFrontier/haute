@@ -1,4 +1,9 @@
-"""Strict public response contracts for evaluation and tuning."""
+"""Public response contracts for evaluation and tuning.
+
+The report invariants are checked where their artifacts are produced and
+reloaded (tests/test_evaluation.py, tests/test_tuning.py); a completed
+response's links to its reports are checked once, by the worker that builds it.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,7 @@ import copy
 import pytest
 from pydantic import ValidationError
 
+from haute.routes._training_worker import _require_consistent_completed_response
 from haute.schemas import (
     EvaluationFitPayload,
     EvaluationMetricSummaryPayload,
@@ -89,6 +95,10 @@ def completed_response() -> dict:
     }
 
 
+def check_completed(raw: dict) -> None:
+    _require_consistent_completed_response(TrainResponse.model_validate(raw))
+
+
 def test_completed_response_uses_only_canonical_result_labels() -> None:
     response = TrainResponse.model_validate(completed_response())
     dumped = response.model_dump(mode="json", exclude_none=True)
@@ -118,27 +128,16 @@ def test_completed_response_preserves_final_tree_count() -> None:
             TrainResponse.model_validate({**raw, "final_tree_count": invalid})
 
 
-def test_evaluation_report_recomputes_weighted_metrics_and_rejects_drift() -> None:
-    bad = completed_response()
-    bad["evaluation"]["selection_metrics"]["gini"]["mean"] = 0.1
-    with pytest.raises(ValidationError, match="mean"):
-        TrainResponse.model_validate(bad)
-
-    bad = completed_response()
-    bad["evaluation"]["selection_fits"][0]["validation_rows"] = 3
-    with pytest.raises(ValidationError, match="validation_rows"):
-        TrainResponse.model_validate(bad)
-
-
 def test_final_test_and_diagnostics_labels_are_consistent() -> None:
+    check_completed(completed_response())
     bad = completed_response()
     bad["final_test_rows"] = 0
-    with pytest.raises(ValidationError, match="final_test"):
-        TrainResponse.model_validate(bad)
+    with pytest.raises(ValueError, match="final_test_rows must equal evaluation"):
+        check_completed(bad)
     bad = completed_response()
     bad["diagnostics_set"] = "development"
-    with pytest.raises(ValidationError, match="diagnostics_set"):
-        TrainResponse.model_validate(bad)
+    with pytest.raises(ValueError, match="diagnostics_set must be final_test"):
+        check_completed(bad)
 
 
 def tuning_payload() -> dict:
@@ -189,7 +188,7 @@ def tuning_payload() -> dict:
     }
 
 
-def test_tuning_response_links_plan_counts_baseline_and_winner() -> None:
+def test_tuning_response_links_to_its_evaluation() -> None:
     raw = completed_response()
     raw["evaluation"]["fit_count"] = 11
     raw["tuning"] = tuning_payload()
@@ -197,42 +196,12 @@ def test_tuning_response_links_plan_counts_baseline_and_winner() -> None:
     assert parsed.tuning is not None
     assert parsed.tuning.trials[0].label == "baseline"
     assert parsed.tuning.winner_trial_index == 1
+    check_completed(raw)
 
     bad = copy.deepcopy(raw)
-    bad["tuning"]["winner_trial_index"] = 2
-    with pytest.raises(ValidationError, match="winner"):
-        TrainResponse.model_validate(bad)
-    bad = copy.deepcopy(raw)
     bad["tuning"]["evaluation_plan_sha256"] = "e" * 64
-    with pytest.raises(ValidationError, match="evaluation"):
-        TrainResponse.model_validate(bad)
-    bad = copy.deepcopy(raw)
-    bad["tuning"]["trials"][0]["aggregate_metrics"]["gini"] = 0.9
-    bad["tuning"]["trials"][0]["objective"] = 0.9
-    bad["tuning"]["baseline_objective"] = 0.9
-    with pytest.raises(ValidationError, match="validation fits"):
-        TrainResponse.model_validate(bad)
-    bad = copy.deepcopy(raw)
-    bad["tuning"]["best_sampled_params"] = {"depth": 99}
-    with pytest.raises(ValidationError, match="sampled parameters"):
-        TrainResponse.model_validate(bad)
-    bad = copy.deepcopy(raw)
-    bad["tuning"]["final_params"] = {"iterations": 10, "depth": 99}
-    with pytest.raises(ValidationError, match="final parameter projection"):
-        TrainResponse.model_validate(bad)
-    bad = copy.deepcopy(raw)
-    bad["tuning"].update(
-        {
-            "direction": "minimize",
-            "winner_trial_index": 0,
-            "winner_objective": 0.4,
-            "improvement": 0.0,
-            "best_sampled_params": {},
-            "final_params": {"iterations": 10, "depth": 4},
-        }
-    )
-    with pytest.raises(ValidationError, match="metric direction"):
-        TrainResponse.model_validate(bad)
+    with pytest.raises(ValueError, match="tuning evaluation plan digest must match"):
+        check_completed(bad)
 
 
 def test_tuning_progress_fields_are_all_or_none_and_monotonic_shape() -> None:
@@ -307,6 +276,7 @@ def test_completed_response_supports_no_validation_and_no_final_test() -> None:
     assert parsed.diagnostics_set == "development"
     assert parsed.evaluation is not None
     assert parsed.evaluation.selection_fits == []
+    check_completed(raw)
 
 
 def saved_holdout_response() -> dict:
@@ -355,28 +325,21 @@ def test_completed_response_supports_saved_holdout_fit_without_refit() -> None:
     assert parsed.evaluation is not None
     assert parsed.evaluation.refit_on_development is False
     assert parsed.diagnostics_set == "validation"
-
-
-def test_skipped_refit_requires_holdout_validation() -> None:
-    raw = completed_response()
-    assert raw["evaluation"]["validation_method"] == "cross_validation"
-    raw["evaluation"]["refit_on_development"] = False
-    with pytest.raises(ValidationError, match="requires holdout validation"):
-        TrainResponse.model_validate(raw)
+    check_completed(saved_holdout_response())
 
 
 def test_skipped_refit_counts_only_the_saved_validation_fit() -> None:
     raw = saved_holdout_response()
     raw["evaluation"]["fit_count"] = 2
-    with pytest.raises(ValidationError, match="validation_fit_count without refit"):
-        TrainResponse.model_validate(raw)
+    with pytest.raises(ValueError, match="validation_fit_count without refit"):
+        check_completed(raw)
 
 
 def test_tuned_response_requires_a_final_refit() -> None:
     raw = saved_holdout_response()
     raw["tuning"] = tuning_payload()
-    with pytest.raises(ValidationError, match="parameter tuning requires a final refit"):
-        TrainResponse.model_validate(raw)
+    with pytest.raises(ValueError, match="parameter tuning requires a final refit"):
+        check_completed(raw)
 
 
 def test_evaluation_response_supports_single_validation_and_strategy_summary() -> None:
@@ -507,7 +470,7 @@ def test_evaluation_fit_rejects_noncanonical_metrics(payload: dict, message: str
         EvaluationFitPayload.model_validate(payload)
 
 
-def test_evaluation_summary_rejects_nonfinite_and_inverted_ranges() -> None:
+def test_evaluation_summary_rejects_nonfinite_values() -> None:
     with pytest.raises(ValidationError, match="finite number"):
         EvaluationMetricSummaryPayload.model_validate(
             {
@@ -519,99 +482,6 @@ def test_evaluation_summary_rejects_nonfinite_and_inverted_ranges() -> None:
                 "validation_rows": 1,
             }
         )
-    with pytest.raises(ValidationError, match="must not exceed"):
-        EvaluationMetricSummaryPayload.model_validate(
-            {"mean": 0, "stddev": 0, "min": 2, "max": 1, "fit_count": 1, "validation_rows": 1}
-        )
-
-
-@pytest.mark.parametrize(
-    ("mutate", "message"),
-    [
-        (
-            lambda raw: raw["evaluation"].update(validation_method="none"),
-            "validation_fit_count is inconsistent",
-        ),
-        (
-            lambda raw: raw["evaluation"].update(
-                validation_method="cross_validation", validation_fit_count=1
-            ),
-            "cross-validation requires",
-        ),
-        (
-            lambda raw: raw["evaluation"].update(
-                selection_fits=[raw["evaluation"]["selection_fits"][0]]
-            ),
-            "number of selection_fits",
-        ),
-        (lambda raw: raw["evaluation"]["selection_fits"][1].update(fit_index=3), "contiguous"),
-        (
-            lambda raw: raw["evaluation"]["summary"].update(development_rows=7),
-            "summary development_rows",
-        ),
-        (lambda raw: raw["evaluation"]["summary"].update(test_rows=1), "summary test_rows"),
-        (
-            lambda raw: raw["evaluation"]["summary"].update(validation_fit_count=1),
-            "summary validation_fit_count",
-        ),
-        (
-            lambda raw: raw["evaluation"]["summary"].update(development_group_count=1),
-            "random evaluation summary",
-        ),
-        (
-            lambda raw: raw["evaluation"].update(selection_metrics={}),
-            "selection_metrics are required",
-        ),
-        (
-            lambda raw: raw["evaluation"]["selection_metrics"]["gini"].update(fit_count=1),
-            "fit_count must equal",
-        ),
-    ],
-)
-def test_evaluation_report_rejects_incoherent_shape(mutate, message: str) -> None:
-    raw = completed_response()
-    mutate(raw)
-    with pytest.raises(ValidationError, match=message):
-        TrainResponse.model_validate(raw)
-
-
-def test_evaluation_report_rejects_strategy_counts_and_no_validation_metrics() -> None:
-    raw = completed_response()
-    raw["evaluation"].update(strategy="group")
-    with pytest.raises(ValidationError, match="requires its strategy counts"):
-        TrainResponse.model_validate(raw)
-    raw = completed_response()
-    raw["evaluation"].update(
-        strategy="temporal",
-        summary={
-            **raw["evaluation"]["summary"],
-            "development_date_count": 2,
-            "test_date_count": 1,
-            "development_group_count": 1,
-        },
-    )
-    with pytest.raises(ValidationError, match="incompatible strategy"):
-        TrainResponse.model_validate(raw)
-    raw = completed_response()
-    raw["evaluation"].update(
-        validation_method="none",
-        validation_fit_count=0,
-        fit_count=1,
-        selection_fits=[],
-        selection_metrics={
-            "gini": {
-                "mean": 0,
-                "stddev": 0,
-                "min": 0,
-                "max": 0,
-                "fit_count": 1,
-                "validation_rows": 1,
-            }
-        },
-        summary={"development_rows": 8, "test_rows": 2, "validation_fit_count": 0},
-    )
-    with pytest.raises(ValidationError, match="must be empty"):
-        TrainResponse.model_validate(raw)
 
 
 @pytest.mark.parametrize(
@@ -631,54 +501,8 @@ def test_tuning_trial_rejects_nonfinite_or_nonjson_parameters(params: object, me
 
 
 @pytest.mark.parametrize(
-    ("mutate", "message"),
-    [
-        (lambda tuning: tuning.update(metric="not-a-metric"), "unsupported"),
-        (lambda tuning: tuning.update(trial_count=6), "number of trials"),
-        (lambda tuning: tuning["trials"][1].update(trial_index=3), "indices must be contiguous"),
-        (lambda tuning: tuning["trials"][0].update(label="sampled"), "baseline"),
-        (lambda tuning: tuning["trials"][1].update(sampled_params={}), "sampled parameters"),
-        (
-            lambda tuning: tuning["trials"][1].update(resolved_params={"iterations": 100}),
-            "resolved parameters",
-        ),
-        (
-            lambda tuning: tuning["trials"][1].update(aggregate_metrics={"gini": 0.5}),
-            "metric names",
-        ),
-        (
-            lambda tuning: tuning["trials"][1].update(fits=[tuning["trials"][1]["fits"][0]]),
-            "same contiguous",
-        ),
-        (
-            lambda tuning: tuning["trials"][1]["fits"][0].update(metrics={"gini": 0.5}),
-            "fit metric names",
-        ),
-        (lambda tuning: tuning.update(metric="mae", direction="minimize"), "must be present"),
-        (lambda tuning: tuning["trials"][1].update(objective=0.2), "objective must equal"),
-        (lambda tuning: tuning.update(baseline_objective=0.2), "baseline_objective"),
-        (
-            lambda tuning: tuning["trials"][1]["fits"][0].update(best_iteration=None),
-            "positive CatBoost iterations",
-        ),
-        (lambda tuning: tuning.update(improvement=0.2), "improvement must equal"),
-        (lambda tuning: tuning.update(trial_fit_count=9), "trial_fit_count"),
-        (lambda tuning: tuning.update(total_fit_count=12), "total_fit_count"),
-    ],
-)
-def test_tuning_report_rejects_incoherent_trials(mutate, message: str) -> None:
-    raw = completed_response()
-    raw["evaluation"]["fit_count"] = 11
-    raw["tuning"] = tuning_payload()
-    mutate(raw["tuning"])
-    with pytest.raises(ValidationError, match=message):
-        TrainResponse.model_validate(raw)
-
-
-@pytest.mark.parametrize(
     ("raw", "message"),
     [
-        ({"status": "started", "evaluation": evaluation_payload()}, "only for completed"),
         ({**completed_response(), "evaluation": None}, "requires evaluation"),
         ({**completed_response(), "diagnostic_metrics": {}}, "requires diagnostic_metrics"),
         ({**completed_response(), "development_rows": 7}, "development_rows must equal"),
@@ -689,8 +513,8 @@ def test_tuning_report_rejects_incoherent_trials(mutate, message: str) -> None:
     ],
 )
 def test_train_response_rejects_status_and_result_inconsistency(raw: dict, message: str) -> None:
-    with pytest.raises(ValidationError, match=message):
-        TrainResponse.model_validate(raw)
+    with pytest.raises(ValueError, match=message):
+        check_completed(raw)
 
 
 def test_train_response_rejects_no_test_and_fit_count_inconsistency() -> None:
@@ -701,12 +525,12 @@ def test_train_response_rejects_no_test_and_fit_count_inconsistency() -> None:
         summary={"development_rows": 8, "test_rows": 0, "validation_fit_count": 2},
     )
     raw["diagnostics_set"] = "final_test"
-    with pytest.raises(ValidationError, match="development without a test"):
-        TrainResponse.model_validate(raw)
+    with pytest.raises(ValueError, match="development without a test"):
+        check_completed(raw)
     raw["diagnostics_set"] = "development"
     raw["evaluation"]["fit_count"] = 2
-    with pytest.raises(ValidationError, match=r"validation_fit_count \+ final fit"):
-        TrainResponse.model_validate(raw)
+    with pytest.raises(ValueError, match=r"validation_fit_count \+ final fit"):
+        check_completed(raw)
 
 
 @pytest.mark.parametrize(
@@ -780,24 +604,6 @@ def test_tuning_progress_rejects_invalid_phase_shapes(payload: dict, message: st
         TrainStatusResponse.model_validate(payload)
 
 
-def test_evaluation_report_rejects_metric_names_and_strategy_test_count_mismatch() -> None:
-    raw = completed_response()
-    raw["evaluation"]["selection_fits"][0]["metrics"] = {"gini": 0.4}
-    with pytest.raises(ValidationError, match="metric names"):
-        TrainResponse.model_validate(raw)
-    raw = completed_response()
-    raw["evaluation"].update(
-        strategy="group",
-        summary={
-            **raw["evaluation"]["summary"],
-            "development_group_count": 4,
-            "test_group_count": 0,
-        },
-    )
-    with pytest.raises(ValidationError, match="test count disagrees"):
-        TrainResponse.model_validate(raw)
-
-
 def test_train_response_covers_noncompleted_and_remaining_completed_invariants() -> None:
     assert TrainResponse.model_validate({"status": "started"}).status == "started"
     raw = completed_response()
@@ -806,13 +612,13 @@ def test_train_response_covers_noncompleted_and_remaining_completed_invariants()
         final_test_rows=0,
         summary={"development_rows": 8, "test_rows": 0, "validation_fit_count": 2},
     )
-    with pytest.raises(ValidationError, match="must be empty without a final test"):
-        TrainResponse.model_validate(raw)
+    with pytest.raises(ValueError, match="must be empty without a final test"):
+        check_completed(raw)
     raw = completed_response()
     raw["evaluation"]["fit_count"] = 10
     raw["tuning"] = tuning_payload()
-    with pytest.raises(ValidationError, match="tuning total_fit_count"):
-        TrainResponse.model_validate(raw)
+    with pytest.raises(ValueError, match="tuning total_fit_count"):
+        check_completed(raw)
 
 
 def test_tuning_progress_and_preview_cover_remaining_boundaries() -> None:

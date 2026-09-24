@@ -1409,26 +1409,26 @@ export function fetchModellingGpuStatus(
 }
 
 
-export function getTrainStatus<T extends TrainStatusResponse = TrainStatusResponse>(
+export function getTrainStatus(
   jobId: string,
   options?: { signal?: AbortSignal },
-): Promise<T> {
+): Promise<TrainStatusResponse> {
   return request<unknown>(`/api/modelling/train/status/${encodeURIComponent(jobId)}`, options)
     .then(async (data) => {
       const { parseTrainStatusResponse } = await import("../types/trainGuards")
-      return validateApiResponse("Could not read training status", () => parseTrainStatusResponse(data) as T)
+      return validateApiResponse("Could not read training status", () => parseTrainStatusResponse(data))
     })
 }
 
-export function cancelTrain<T extends TrainStatusResponse = TrainStatusResponse>(
+export function cancelTrain(
   jobId: string,
   options?: { signal?: AbortSignal },
-): Promise<T> {
+): Promise<TrainStatusResponse> {
   return post<unknown>(
     `/api/modelling/train/cancel/${encodeURIComponent(jobId)}`,
     undefined,
     options,
-  ).then(async (data) => (await import("../types/trainGuards")).parseTrainStatusResponse(data) as T)
+  ).then(async (data) => (await import("../types/trainGuards")).parseTrainStatusResponse(data))
 }
 
 export interface TrainModelArgs {

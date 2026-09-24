@@ -596,6 +596,9 @@ def test_evaluation_results_aggregate_weighted_metrics_from_exact_plan() -> None
         aggregate_evaluation_results(
             plan, results, ["rmse"], results_sha256="1" * 64, refit_on_development=False
         )
+    # Fits with metrics cannot aggregate to a report without them.
+    with pytest.raises(ValueError, match="metric names do not match configured metrics"):
+        aggregate_evaluation_results(plan, results, [], results_sha256="1" * 64)
 
 
 @pytest.mark.parametrize(("refit_on_development", "fit_count"), [(True, 2), (False, 1)])
