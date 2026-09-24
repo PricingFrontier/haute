@@ -1674,6 +1674,7 @@ describe("no request carries streaming_chunk_size", () => {
 
   it("estimateOptimiserSolve body omits streaming_chunk_size", async () => {
     const { estimateOptimiserSolve } = await import("../client")
+    mockFetch.mockReturnValue(jsonResponse(loadUiContractFixture("optimiser_estimate_response")))
     await estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt1" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")

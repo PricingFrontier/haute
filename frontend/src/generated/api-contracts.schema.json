@@ -1542,6 +1542,149 @@
       "title": "ExecutionColumnWidthsPayload",
       "type": "object"
     },
+    "ExecutionMemoryLimitErrorPayload": {
+      "properties": {
+        "baseline_rss_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Baseline Rss Bytes"
+        },
+        "error_code": {
+          "const": "memory_limit",
+          "title": "Error Code",
+          "type": "string"
+        },
+        "headroom_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Headroom Bytes"
+        },
+        "job_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job Id"
+        },
+        "memory_limit_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Memory Limit Bytes"
+        },
+        "operation": {
+          "default": "",
+          "title": "Operation",
+          "type": "string"
+        },
+        "process_rss_limit_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Process Rss Limit Bytes"
+        },
+        "profile": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Profile"
+        },
+        "reason": {
+          "default": "",
+          "title": "Reason",
+          "type": "string"
+        },
+        "rss_at_admission_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rss At Admission Bytes"
+        },
+        "rss_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rss Bytes"
+        },
+        "rss_limit_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rss Limit Bytes"
+        }
+      },
+      "required": [
+        "error_code",
+        "operation",
+        "profile",
+        "job_id",
+        "memory_limit_bytes",
+        "rss_bytes",
+        "rss_at_admission_bytes",
+        "baseline_rss_bytes",
+        "rss_limit_bytes",
+        "process_rss_limit_bytes",
+        "headroom_bytes",
+        "reason"
+      ],
+      "title": "ExecutionMemoryLimitErrorPayload",
+      "type": "object"
+    },
     "ExecutionMemoryPressureEventPayload": {
       "properties": {
         "available_ram_bytes": {
@@ -7932,6 +8075,1654 @@
       "title": "NodeDataProfileResponse",
       "type": "object"
     },
+    "OptimiserApplyResponse": {
+      "properties": {
+        "constraints": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Constraints",
+          "type": "object"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "from_artifact": {
+          "default": false,
+          "title": "From Artifact",
+          "type": "boolean"
+        },
+        "preview": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Preview",
+          "type": "array"
+        },
+        "preview_row_count": {
+          "default": 0,
+          "title": "Preview Row Count",
+          "type": "integer"
+        },
+        "preview_row_limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preview Row Limit"
+        },
+        "preview_truncated": {
+          "default": false,
+          "title": "Preview Truncated",
+          "type": "boolean"
+        },
+        "row_count": {
+          "default": 0,
+          "title": "Row Count",
+          "type": "integer"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "total_objective": {
+          "default": 0.0,
+          "title": "Total Objective",
+          "type": "number"
+        }
+      },
+      "required": [
+        "status",
+        "total_objective",
+        "constraints",
+        "from_artifact",
+        "preview",
+        "row_count",
+        "preview_row_count",
+        "preview_row_limit",
+        "preview_truncated",
+        "error"
+      ],
+      "title": "OptimiserApplyResponse",
+      "type": "object"
+    },
+    "OptimiserChunkFallback": {
+      "description": "A lost chunk optimisation recorded on an auto-range job.\n\nChunk ineligibility never fails the request, so this record is the only\nplace the reason survives; typing it keeps the emitted keys and the three\nstable codes part of the API contract.",
+      "properties": {
+        "code": {
+          "enum": [
+            "chunk_user_code_ineligible",
+            "model_score_ineligible",
+            "chunk_plan_unsupported"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "column": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Column"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Node Id"
+        },
+        "operator": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operator"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "code",
+        "node_id",
+        "operator",
+        "reason",
+        "line",
+        "column",
+        "message"
+      ],
+      "title": "OptimiserChunkFallback",
+      "type": "object"
+    },
+    "OptimiserEstimateResponse": {
+      "description": "Result shape for ``POST /api/optimiser/estimate``.",
+      "properties": {
+        "expanded_row_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expanded Row Count"
+        },
+        "quote_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quote Count"
+        },
+        "scenarios_per_quote_max": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scenarios Per Quote Max"
+        },
+        "scenarios_per_quote_mean": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scenarios Per Quote Mean"
+        },
+        "scenarios_per_quote_min": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scenarios Per Quote Min"
+        },
+        "total_rows": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Rows"
+        }
+      },
+      "required": [
+        "total_rows",
+        "quote_count",
+        "scenarios_per_quote_min",
+        "scenarios_per_quote_max",
+        "scenarios_per_quote_mean",
+        "expanded_row_count"
+      ],
+      "title": "OptimiserEstimateResponse",
+      "type": "object"
+    },
+    "OptimiserFrontierAutoRangeResponse": {
+      "properties": {
+        "chunk_fallback": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserChunkFallback"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "method": {
+          "default": "scenario_envelope",
+          "title": "Method",
+          "type": "string"
+        },
+        "ranges": {
+          "additionalProperties": {
+            "$ref": "#/$defs/OptimiserFrontierRange"
+          },
+          "title": "Ranges",
+          "type": "object"
+        },
+        "status": {
+          "default": "ok",
+          "title": "Status",
+          "type": "string"
+        },
+        "warning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Warning"
+        }
+      },
+      "required": [
+        "status",
+        "ranges",
+        "method",
+        "warning",
+        "chunk_fallback"
+      ],
+      "title": "OptimiserFrontierAutoRangeResponse",
+      "type": "object"
+    },
+    "OptimiserFrontierAutoRangeStartResponse": {
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "job_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job Id"
+        },
+        "status": {
+          "enum": [
+            "started",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "job_id",
+        "error"
+      ],
+      "title": "OptimiserFrontierAutoRangeStartResponse",
+      "type": "object"
+    },
+    "OptimiserFrontierAutoRangeStatusResponse": {
+      "properties": {
+        "elapsed_seconds": {
+          "default": 0.0,
+          "title": "Elapsed Seconds",
+          "type": "number"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        },
+        "error_detail": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionMemoryLimitErrorPayload"
+            },
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Detail"
+        },
+        "execution_metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionMetricsPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "http_status_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Http Status Code"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "progress": {
+          "default": 0.0,
+          "title": "Progress",
+          "type": "number"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserFrontierAutoRangeResponse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "enum": [
+            "running",
+            "completed",
+            "error",
+            "cancelled",
+            "superseded",
+            "timed_out",
+            "memory_limited",
+            "contract_error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "terminal_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Terminal Reason"
+        }
+      },
+      "required": [
+        "status",
+        "progress",
+        "message",
+        "elapsed_seconds",
+        "result",
+        "terminal_reason",
+        "error_code",
+        "http_status_code",
+        "error_detail",
+        "execution_metrics"
+      ],
+      "title": "OptimiserFrontierAutoRangeStatusResponse",
+      "type": "object"
+    },
+    "OptimiserFrontierPointSummary": {
+      "description": "Every result field of one frontier point that differs from its solve.\n\n``None`` means the point has no such field: applying the summary to the\nsolve's result removes it.",
+      "properties": {
+        "cd_iterations": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cd Iterations"
+        },
+        "clamp_rate": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Clamp Rate"
+        },
+        "constraints": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Constraints",
+          "type": "object"
+        },
+        "converged": {
+          "title": "Converged",
+          "type": "boolean"
+        },
+        "factor_tables": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Factor Tables"
+        },
+        "frontier_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Frontier Error"
+        },
+        "history": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/OptimiserHistoryEntry"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "History"
+        },
+        "iterations": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Iterations"
+        },
+        "lambdas": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Lambdas",
+          "type": "object"
+        },
+        "scenario_value_histogram": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserScenarioValueHistogram"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scenario_value_stats": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserScenarioValueStats"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "total_objective": {
+          "title": "Total Objective",
+          "type": "number"
+        },
+        "warning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Warning"
+        }
+      },
+      "required": [
+        "total_objective",
+        "constraints",
+        "lambdas",
+        "converged",
+        "iterations",
+        "cd_iterations",
+        "clamp_rate",
+        "history",
+        "scenario_value_stats",
+        "scenario_value_histogram",
+        "factor_tables",
+        "warning",
+        "frontier_error"
+      ],
+      "title": "OptimiserFrontierPointSummary",
+      "type": "object"
+    },
+    "OptimiserFrontierRange": {
+      "properties": {
+        "max": {
+          "title": "Max",
+          "type": "number"
+        },
+        "min": {
+          "title": "Min",
+          "type": "number"
+        }
+      },
+      "required": [
+        "min",
+        "max"
+      ],
+      "title": "OptimiserFrontierRange",
+      "type": "object"
+    },
+    "OptimiserFrontierResponse": {
+      "properties": {
+        "constraint_names": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Constraint Names",
+          "type": "array"
+        },
+        "job_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job Id"
+        },
+        "n_points": {
+          "default": 0,
+          "title": "N Points",
+          "type": "integer"
+        },
+        "point_summaries": {
+          "items": {
+            "$ref": "#/$defs/OptimiserFrontierPointSummary"
+          },
+          "title": "Point Summaries",
+          "type": "array"
+        },
+        "points": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Points",
+          "type": "array"
+        },
+        "points_limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Points Limit"
+        },
+        "points_returned": {
+          "default": 0,
+          "title": "Points Returned",
+          "type": "integer"
+        },
+        "points_truncated": {
+          "default": false,
+          "title": "Points Truncated",
+          "type": "boolean"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "points",
+        "point_summaries",
+        "n_points",
+        "points_returned",
+        "constraint_names",
+        "points_limit",
+        "points_truncated",
+        "job_id"
+      ],
+      "title": "OptimiserFrontierResponse",
+      "type": "object"
+    },
+    "OptimiserFrontierSelectResponse": {
+      "properties": {
+        "baseline_constraints": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Baseline Constraints",
+          "type": "object"
+        },
+        "baseline_objective": {
+          "default": 0.0,
+          "title": "Baseline Objective",
+          "type": "number"
+        },
+        "cd_iterations": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cd Iterations"
+        },
+        "clamp_rate": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clamp Rate"
+        },
+        "constraints": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Constraints",
+          "type": "object"
+        },
+        "converged": {
+          "default": true,
+          "title": "Converged",
+          "type": "boolean"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "factor_tables": {
+          "additionalProperties": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "title": "Factor Tables",
+          "type": "object"
+        },
+        "history": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/OptimiserHistoryEntry"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "History"
+        },
+        "iterations": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Iterations"
+        },
+        "lambdas": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Lambdas",
+          "type": "object"
+        },
+        "point_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Point Index"
+        },
+        "scenario_value_histogram": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserScenarioValueHistogram"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "scenario_value_stats": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserScenarioValueStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "total_objective": {
+          "default": 0.0,
+          "title": "Total Objective",
+          "type": "number"
+        },
+        "warning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Warning"
+        }
+      },
+      "required": [
+        "status",
+        "point_index",
+        "total_objective",
+        "constraints",
+        "baseline_objective",
+        "baseline_constraints",
+        "lambdas",
+        "converged",
+        "iterations",
+        "cd_iterations",
+        "factor_tables",
+        "history",
+        "warning",
+        "scenario_value_stats",
+        "scenario_value_histogram",
+        "clamp_rate",
+        "error"
+      ],
+      "title": "OptimiserFrontierSelectResponse",
+      "type": "object"
+    },
+    "OptimiserFrontierStatusResponse": {
+      "properties": {
+        "elapsed_seconds": {
+          "default": 0.0,
+          "title": "Elapsed Seconds",
+          "type": "number"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        },
+        "error_detail": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionMemoryLimitErrorPayload"
+            },
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Detail"
+        },
+        "execution_metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionMetricsPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "http_status_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Http Status Code"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "progress": {
+          "default": 0.0,
+          "title": "Progress",
+          "type": "number"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserFrontierResponse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "enum": [
+            "running",
+            "completed",
+            "error",
+            "cancelled",
+            "superseded",
+            "timed_out",
+            "memory_limited",
+            "contract_error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "terminal_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Terminal Reason"
+        }
+      },
+      "required": [
+        "status",
+        "progress",
+        "message",
+        "elapsed_seconds",
+        "result",
+        "terminal_reason",
+        "error_code",
+        "http_status_code",
+        "error_detail",
+        "execution_metrics"
+      ],
+      "title": "OptimiserFrontierStatusResponse",
+      "type": "object"
+    },
+    "OptimiserHistoryEntry": {
+      "properties": {
+        "all_constraints_satisfied": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "All Constraints Satisfied"
+        },
+        "iteration": {
+          "title": "Iteration",
+          "type": "integer"
+        },
+        "lambdas": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Lambdas",
+          "type": "object"
+        },
+        "max_lambda_change": {
+          "title": "Max Lambda Change",
+          "type": "number"
+        },
+        "total_constraints": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Total Constraints",
+          "type": "object"
+        },
+        "total_objective": {
+          "title": "Total Objective",
+          "type": "number"
+        }
+      },
+      "required": [
+        "iteration",
+        "total_objective",
+        "max_lambda_change",
+        "all_constraints_satisfied",
+        "lambdas",
+        "total_constraints"
+      ],
+      "title": "OptimiserHistoryEntry",
+      "type": "object"
+    },
+    "OptimiserMlflowLogResponse": {
+      "properties": {
+        "backend": {
+          "default": "",
+          "title": "Backend",
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "experiment_name": {
+          "default": "",
+          "title": "Experiment Name",
+          "type": "string"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "run_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Url"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "tracking_uri": {
+          "default": "",
+          "title": "Tracking Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "backend",
+        "experiment_name",
+        "run_id",
+        "run_url",
+        "tracking_uri",
+        "error"
+      ],
+      "title": "OptimiserMlflowLogResponse",
+      "type": "object"
+    },
+    "OptimiserSaveResponse": {
+      "properties": {
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "path",
+        "message"
+      ],
+      "title": "OptimiserSaveResponse",
+      "type": "object"
+    },
+    "OptimiserScenarioValueHistogram": {
+      "properties": {
+        "counts": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Counts",
+          "type": "array"
+        },
+        "edges": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Edges",
+          "type": "array"
+        }
+      },
+      "required": [
+        "counts",
+        "edges"
+      ],
+      "title": "OptimiserScenarioValueHistogram",
+      "type": "object"
+    },
+    "OptimiserScenarioValueStats": {
+      "properties": {
+        "max": {
+          "title": "Max",
+          "type": "number"
+        },
+        "mean": {
+          "title": "Mean",
+          "type": "number"
+        },
+        "min": {
+          "title": "Min",
+          "type": "number"
+        },
+        "p25": {
+          "title": "P25",
+          "type": "number"
+        },
+        "p5": {
+          "title": "P5",
+          "type": "number"
+        },
+        "p50": {
+          "title": "P50",
+          "type": "number"
+        },
+        "p75": {
+          "title": "P75",
+          "type": "number"
+        },
+        "p95": {
+          "title": "P95",
+          "type": "number"
+        },
+        "pct_decrease": {
+          "title": "Pct Decrease",
+          "type": "number"
+        },
+        "pct_increase": {
+          "title": "Pct Increase",
+          "type": "number"
+        },
+        "std": {
+          "title": "Std",
+          "type": "number"
+        }
+      },
+      "required": [
+        "mean",
+        "std",
+        "min",
+        "max",
+        "p5",
+        "p25",
+        "p50",
+        "p75",
+        "p95",
+        "pct_increase",
+        "pct_decrease"
+      ],
+      "title": "OptimiserScenarioValueStats",
+      "type": "object"
+    },
+    "OptimiserSolveResponse": {
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "job_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job Id"
+        },
+        "status": {
+          "enum": [
+            "started",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "job_id",
+        "error"
+      ],
+      "title": "OptimiserSolveResponse",
+      "type": "object"
+    },
+    "OptimiserSolveResult": {
+      "properties": {
+        "baseline_constraints": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Baseline Constraints",
+          "type": "object"
+        },
+        "baseline_objective": {
+          "title": "Baseline Objective",
+          "type": "number"
+        },
+        "cd_iterations": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cd Iterations"
+        },
+        "clamp_rate": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clamp Rate"
+        },
+        "constraints": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Constraints",
+          "type": "object"
+        },
+        "converged": {
+          "title": "Converged",
+          "type": "boolean"
+        },
+        "factor_tables": {
+          "additionalProperties": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "title": "Factor Tables",
+          "type": "object"
+        },
+        "frontier": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserFrontierResponse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "frontier_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Frontier Error"
+        },
+        "history": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/OptimiserHistoryEntry"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "History"
+        },
+        "iterations": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Iterations"
+        },
+        "lambdas": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Lambdas",
+          "type": "object"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mode"
+        },
+        "n_quotes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "N Quotes"
+        },
+        "n_steps": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "N Steps"
+        },
+        "scenario_value_histogram": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserScenarioValueHistogram"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "scenario_value_stats": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserScenarioValueStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "selected_frontier_point": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selected Frontier Point"
+        },
+        "total_objective": {
+          "title": "Total Objective",
+          "type": "number"
+        },
+        "warning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Warning"
+        }
+      },
+      "required": [
+        "mode",
+        "total_objective",
+        "baseline_objective",
+        "constraints",
+        "baseline_constraints",
+        "lambdas",
+        "converged",
+        "iterations",
+        "n_quotes",
+        "n_steps",
+        "cd_iterations",
+        "factor_tables",
+        "history",
+        "warning",
+        "scenario_value_stats",
+        "scenario_value_histogram",
+        "clamp_rate",
+        "frontier",
+        "frontier_error",
+        "selected_frontier_point"
+      ],
+      "title": "OptimiserSolveResult",
+      "type": "object"
+    },
+    "OptimiserStatusResponse": {
+      "properties": {
+        "elapsed_seconds": {
+          "default": 0.0,
+          "title": "Elapsed Seconds",
+          "type": "number"
+        },
+        "execution_metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionMetricsPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "frontier": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserFrontierResponse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "progress": {
+          "default": 0.0,
+          "title": "Progress",
+          "type": "number"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserSolveResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "enum": [
+            "running",
+            "completed",
+            "error",
+            "cancelled",
+            "superseded",
+            "timed_out",
+            "memory_limited",
+            "contract_error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "terminal_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Terminal Reason"
+        }
+      },
+      "required": [
+        "status",
+        "progress",
+        "message",
+        "elapsed_seconds",
+        "result",
+        "frontier",
+        "terminal_reason",
+        "execution_metrics"
+      ],
+      "title": "OptimiserStatusResponse",
+      "type": "object"
+    },
     "PolarsStepsRenderResponse": {
       "description": "Either the rendered code with per-step line ranges or the failing step.\n\nA step validation failure is data (``ok`` false with ``step_index`` and\n``message``), never a transport error, so a half-built step list renders\nas an editor message rather than a failed request.",
       "properties": {
@@ -10030,6 +11821,36 @@
     "NodeDataProfileResponse": {
       "$ref": "#/$defs/NodeDataProfileResponse"
     },
+    "OptimiserApplyResponse": {
+      "$ref": "#/$defs/OptimiserApplyResponse"
+    },
+    "OptimiserEstimateResponse": {
+      "$ref": "#/$defs/OptimiserEstimateResponse"
+    },
+    "OptimiserFrontierAutoRangeStartResponse": {
+      "$ref": "#/$defs/OptimiserFrontierAutoRangeStartResponse"
+    },
+    "OptimiserFrontierAutoRangeStatusResponse": {
+      "$ref": "#/$defs/OptimiserFrontierAutoRangeStatusResponse"
+    },
+    "OptimiserFrontierSelectResponse": {
+      "$ref": "#/$defs/OptimiserFrontierSelectResponse"
+    },
+    "OptimiserFrontierStatusResponse": {
+      "$ref": "#/$defs/OptimiserFrontierStatusResponse"
+    },
+    "OptimiserMlflowLogResponse": {
+      "$ref": "#/$defs/OptimiserMlflowLogResponse"
+    },
+    "OptimiserSaveResponse": {
+      "$ref": "#/$defs/OptimiserSaveResponse"
+    },
+    "OptimiserSolveResponse": {
+      "$ref": "#/$defs/OptimiserSolveResponse"
+    },
+    "OptimiserStatusResponse": {
+      "$ref": "#/$defs/OptimiserStatusResponse"
+    },
     "PolarsStepsRenderResponse": {
       "$ref": "#/$defs/PolarsStepsRenderResponse"
     },
@@ -10142,7 +11963,17 @@
     "BrowseFilesResponse",
     "EditorIdentitiesResponse",
     "PolarsStepsRenderResponse",
-    "ExecutionSettings"
+    "ExecutionSettings",
+    "OptimiserSolveResponse",
+    "OptimiserEstimateResponse",
+    "OptimiserStatusResponse",
+    "OptimiserApplyResponse",
+    "OptimiserSaveResponse",
+    "OptimiserMlflowLogResponse",
+    "OptimiserFrontierStatusResponse",
+    "OptimiserFrontierAutoRangeStartResponse",
+    "OptimiserFrontierAutoRangeStatusResponse",
+    "OptimiserFrontierSelectResponse"
   ],
   "title": "HauteApiContractBundle",
   "type": "object",
@@ -10215,6 +12046,18 @@
       "LogExperimentResponse",
       "ModelSaveDestinationResponse",
       "SaveModelResponse"
+    ],
+    "optimiser": [
+      "OptimiserSolveResponse",
+      "OptimiserEstimateResponse",
+      "OptimiserStatusResponse",
+      "OptimiserApplyResponse",
+      "OptimiserSaveResponse",
+      "OptimiserMlflowLogResponse",
+      "OptimiserFrontierStatusResponse",
+      "OptimiserFrontierAutoRangeStartResponse",
+      "OptimiserFrontierAutoRangeStatusResponse",
+      "OptimiserFrontierSelectResponse"
     ],
     "session": [
       "SessionStatusResponse",

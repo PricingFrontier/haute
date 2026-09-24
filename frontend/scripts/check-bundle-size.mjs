@@ -63,7 +63,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // lazy validator modules of 20.4 and 3.7 KiB; about 13 KiB of the explore one
 // is the execution-metrics contract the training chunk also carries. The
 // complete production bundle is 1,476.5 KiB; 1,487 KiB restores about 10 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1487
+// The io, session and editor groups fit inside that. The optimiser group adds
+// a 21.1 KiB lazy module, about 13 KiB of it the execution-metrics contract
+// again, while its hand guards leave the startup chunk (286.9 KiB). The
+// complete production bundle is 1,500.5 KiB; 1,511 KiB restores about 10 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1511
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

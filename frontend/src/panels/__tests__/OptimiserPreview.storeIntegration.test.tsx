@@ -6,6 +6,7 @@ import useNodeResultsStore, {
   resetNodeResultsDerivedCaches,
 } from "../../stores/useNodeResultsStore"
 import useGraphStore from "../../stores/useGraphStore"
+import { makeSolveResult as makeSolveResultFactory, makeFrontier } from "../../test-utils/factories"
 
 const mockSelectFrontierPoint = vi.fn()
 
@@ -87,7 +88,7 @@ function resetStore() {
 function makeSolveResult(
   overrides: Partial<OptimiserSolveResult> = {},
 ): OptimiserSolveResult {
-  return {
+  return makeSolveResultFactory({
     total_objective: 100,
     baseline_objective: 80,
     constraints: { loss_ratio: 0.6 },
@@ -95,7 +96,7 @@ function makeSolveResult(
     lambdas: { loss_ratio: 0.1 },
     converged: true,
     ...overrides,
-  }
+  })
 }
 
 describe("OptimiserPreview store integration", () => {
@@ -115,7 +116,7 @@ describe("OptimiserPreview store integration", () => {
     store.completeSolveJob(
       "opt_1",
       makeSolveResult({
-        frontier: {
+        frontier: makeFrontier({
           status: "ok",
           points: Array.from({ length: 5 }, (_, i) => ({
             total_objective: 120 + i,
@@ -133,7 +134,7 @@ describe("OptimiserPreview store integration", () => {
           constraint_names: ["loss_ratio"],
           points_limit: 2000,
           points_truncated: false,
-        },
+        }),
       }),
     )
 
@@ -175,7 +176,7 @@ describe("OptimiserPreview store integration", () => {
         factor_tables: {
           region: [{ __factor_group__: "Base", optimal_scenario_value: 1.0 }],
         },
-        frontier: {
+        frontier: makeFrontier({
           status: "ok",
           points: [
             {
@@ -191,7 +192,7 @@ describe("OptimiserPreview store integration", () => {
           constraint_names: ["volume"],
           points_limit: 2000,
           points_truncated: false,
-        },
+        }),
       }),
     )
 
@@ -240,7 +241,7 @@ describe("OptimiserPreview store integration", () => {
       "opt_1",
       makeSolveResult({
         mode: "ratebook",
-        frontier: {
+        frontier: makeFrontier({
           status: "ok",
           points: [
             {
@@ -256,7 +257,7 @@ describe("OptimiserPreview store integration", () => {
           constraint_names: ["volume"],
           points_limit: 2000,
           points_truncated: false,
-        },
+        }),
       }),
     )
 
@@ -317,7 +318,7 @@ describe("OptimiserPreview store integration", () => {
         factor_tables: {
           region: [{ __factor_group__: "Base", optimal_scenario_value: 1.0 }],
         },
-        frontier: {
+        frontier: makeFrontier({
           status: "ok",
           points: [
             {
@@ -333,7 +334,7 @@ describe("OptimiserPreview store integration", () => {
           constraint_names: ["volume"],
           points_limit: 2000,
           points_truncated: false,
-        },
+        }),
       }),
     )
 
@@ -375,7 +376,7 @@ describe("OptimiserPreview store integration", () => {
         factor_tables: {
           region: [{ __factor_group__: "Base", optimal_scenario_value: 1.0 }],
         },
-        frontier: {
+        frontier: makeFrontier({
           status: "ok",
           points: [
             {
@@ -391,7 +392,7 @@ describe("OptimiserPreview store integration", () => {
           constraint_names: ["volume"],
           points_limit: 2000,
           points_truncated: false,
-        },
+        }),
       }),
     )
 
@@ -417,7 +418,7 @@ describe("OptimiserPreview store integration", () => {
       "opt_1",
       makeSolveResult({
         mode: "ratebook",
-        frontier: {
+        frontier: makeFrontier({
           status: "ok",
           points: [
             {
@@ -433,7 +434,7 @@ describe("OptimiserPreview store integration", () => {
           constraint_names: ["volume"],
           points_limit: 2000,
           points_truncated: false,
-        },
+        }),
       }),
     )
 
@@ -503,7 +504,7 @@ describe("OptimiserPreview store integration", () => {
       "opt_1",
       makeSolveResult({
         mode: "ratebook",
-        frontier: {
+        frontier: makeFrontier({
           status: "ok",
           points: [
             {
@@ -528,7 +529,7 @@ describe("OptimiserPreview store integration", () => {
           constraint_names: ["volume"],
           points_limit: 2000,
           points_truncated: false,
-        },
+        }),
       }),
     )
 

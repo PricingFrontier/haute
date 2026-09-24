@@ -23,6 +23,12 @@ import type {
   MlflowDestinationEntry as GeneratedMlflowDestinationEntry,
   MlflowTestConnectionResponse as GeneratedMlflowTestConnectionResponse,
   NodeDataProfileResponse as GeneratedNodeDataProfileResponse,
+  OptimiserFrontierAutoRangeStatusResponse as GeneratedOptimiserFrontierAutoRangeStatusResponse,
+  OptimiserFrontierResponse as GeneratedOptimiserFrontierResponse,
+  OptimiserFrontierStatusResponse as GeneratedOptimiserFrontierStatusResponse,
+  OptimiserSolveResponse as GeneratedOptimiserSolveResponse,
+  OptimiserSolveResult as GeneratedOptimiserSolveResult,
+  OptimiserStatusResponse as GeneratedOptimiserStatusResponse,
   RatingLevelsResponse as GeneratedRatingLevelsResponse,
   TrainEstimateResponse as GeneratedTrainEstimateResponse,
   TrainResponse as GeneratedTrainResponse,
@@ -1183,19 +1189,6 @@ export type ExplorePivotMembersResponse = Omit<GeneratedExplorePivotMembersRespo
   members: ExplorePivotMemberOption[]
 }
 
-export interface MlflowLogResponse {
-  status: string
-  backend: string
-  experiment_name: string
-  run_id: string | null
-  run_url: string | null
-  tracking_uri: string
-  error: string | null
-  /** The logged operation (training logs only); a retry with it returns this run. */
-  operation_id?: string | null
-  logged_at?: string | null
-}
-
 export interface ModelSaveDestinationRequest {
   /** A bare filename saves under models/; paths are project-root-relative. */
   output_path: string
@@ -1214,57 +1207,36 @@ export interface SaveModelRequest {
 // Optimiser types
 // ---------------------------------------------------------------------------
 
-export interface OptimiserSolveResponse {
-  status: string
-  job_id: string | null
-  error: string | null
-}
+// The optimiser responses are generated. A frontier keeps the UI's typed view of
+// its open point objects, and the status responses parse execution metrics with
+// the shared parser.
+export type {
+  OptimiserApplyResponse as ApplyOptimiserResponse,
+  OptimiserEstimateResponse as OptimiserEstimate,
+  OptimiserFrontierAutoRangeResponse as FrontierAutoRangeResponse,
+  OptimiserFrontierAutoRangeStartResponse as FrontierAutoRangeStartResponse,
+  OptimiserFrontierPointSummary as FrontierPointSummary,
+  OptimiserFrontierRange as FrontierRange,
+  OptimiserFrontierSelectResponse as FrontierSelectResponse,
+  OptimiserHistoryEntry,
+  OptimiserMlflowLogResponse as MlflowLogResponse,
+  OptimiserSaveResponse as SaveOptimiserResponse,
+  OptimiserScenarioValueHistogram,
+  OptimiserScenarioValueStats,
+  OptimiserSolveResponse,
+} from "../generated/api-contracts.generated"
 
-export type SolveOptimiserResponse = OptimiserSolveResponse
-
-export interface OptimiserEstimate {
-  /** Raw ancestor source row count from parquet metadata, or null when unreadable. */
-  total_rows: number | null
-  /** Distinct quotes in the optimiser input after scenario expansion. */
-  quote_count?: number | null
-  /** Minimum scenario rows per quote in the optimiser input. */
-  scenarios_per_quote_min?: number | null
-  /** Maximum scenario rows per quote in the optimiser input. */
-  scenarios_per_quote_max?: number | null
-  /** Mean scenario rows per quote in the optimiser input. */
-  scenarios_per_quote_mean?: number | null
-  /** Total rows in the optimiser input after scenario expansion. */
-  expanded_row_count?: number | null
-}
+export type SolveOptimiserResponse = GeneratedOptimiserSolveResponse
 
 export interface ApplyOptimiserRequest {
   job_id: string
   point_index?: number
 }
 
-export interface ApplyOptimiserResponse {
-  status: string
-  total_objective: number
-  constraints: Record<string, number>
-  from_artifact: boolean
-  preview: Record<string, unknown>[]
-  row_count: number
-  preview_row_count: number
-  preview_row_limit: number | null
-  preview_truncated: boolean
-  error: string | null
-}
-
 export interface SaveOptimiserRequest {
   job_id: string
   output_path: string
   point_index?: number
-}
-
-export interface SaveOptimiserResponse {
-  status: string
-  path: string | null
-  message: string
 }
 
 export interface LogOptimiserToMlflowRequest {
@@ -1282,46 +1254,12 @@ export type FrontierPoint = Record<string, unknown> & {
   lambdas?: Record<string, number>
 }
 
-/** The server's summary of one frontier point: every result field that
- *  differs from its solve, `null` where the point has none (applying it
- *  clears that field). Mirrors `OptimiserFrontierPointSummary` in
- *  `src/haute/schemas.py`. */
-export interface FrontierPointSummary {
-  total_objective: number
-  constraints: Record<string, number>
-  lambdas: Record<string, number>
-  converged: boolean
-  iterations: number | null
-  cd_iterations: number | null
-  clamp_rate: number | null
-  history: OptimiserHistoryEntry[] | null
-  scenario_value_stats: OptimiserScenarioValueStats | null
-  scenario_value_histogram: OptimiserScenarioValueHistogram | null
-  factor_tables: Record<string, Record<string, unknown>[]> | null
-  warning: string | null
-  frontier_error: string | null
-}
-
-export interface FrontierResponse {
-  status: string
+export type FrontierResponse = Omit<GeneratedOptimiserFrontierResponse, "points"> & {
   points: FrontierPoint[]
-  /** One server summary per point, in point order. */
-  point_summaries: FrontierPointSummary[]
-  n_points: number
-  points_returned: number
-  constraint_names: string[]
-  points_limit: number | null
-  points_truncated: boolean
-  /** Pollable frontier job handle when `status === "started"`. */
-  job_id?: string | null
 }
 
-export type FrontierData = Omit<FrontierResponse, 'status'>
-
-export interface FrontierRange {
-  min: number
-  max: number
-}
+/** A solve's frontier as the results store keeps it. */
+export type FrontierData = Omit<FrontierResponse, "status" | "job_id">
 
 export const JOB_STATUS_VALUES = [
   "running",
@@ -1350,128 +1288,32 @@ export const TERMINAL_JOB_STATUSES: ReadonlySet<JobStatus> = new Set([
   ...FAILED_JOB_STATUSES,
 ])
 
-export interface FrontierAutoRangeResponse {
-  status: string
-  ranges: Record<string, FrontierRange>
-  method: string
-  warning: string | null
-}
-
-export interface FrontierAutoRangeStartResponse {
-  status: "started" | "error"
-  job_id: string | null
-  error: string | null
-}
-
-export interface FrontierStatusResponse {
-  status: JobStatus
-  progress: number
-  message: string
-  elapsed_seconds: number
+export type FrontierStatusResponse = Omit<
+  GeneratedOptimiserFrontierStatusResponse,
+  "result" | "execution_metrics"
+> & {
   result: FrontierResponse | null
-  terminal_reason?: string | null
-  error_code?: string | null
-  http_status_code?: number | null
-  error_detail?: unknown
-  execution_metrics?: ExecutionMetrics | null
+  execution_metrics: ExecutionMetrics | null
 }
 
-export interface FrontierAutoRangeStatusResponse {
-  status: JobStatus
-  progress: number
-  message: string
-  elapsed_seconds: number
-  result: FrontierAutoRangeResponse | null
-  terminal_reason?: string | null
-  error_code?: string | null
-  http_status_code?: number | null
-  error_detail?: unknown
-  execution_metrics?: ExecutionMetrics | null
+export type FrontierAutoRangeStatusResponse = Omit<
+  GeneratedOptimiserFrontierAutoRangeStatusResponse,
+  "execution_metrics"
+> & {
+  execution_metrics: ExecutionMetrics | null
 }
 
-export interface OptimiserHistoryEntry {
-  iteration: number
-  total_objective: number
-  max_lambda_change: number
-  all_constraints_satisfied?: boolean
-  lambdas?: Record<string, number>
-  total_constraints?: Record<string, number>
+export type OptimiserSolveResult = Omit<GeneratedOptimiserSolveResult, "frontier"> & {
+  frontier: FrontierResponse | null
 }
 
-export interface OptimiserScenarioValueStats {
-  mean: number
-  std: number
-  min: number
-  max: number
-  p5: number
-  p25: number
-  p50: number
-  p75: number
-  p95: number
-  pct_increase: number
-  pct_decrease: number
-}
-
-export interface OptimiserScenarioValueHistogram {
-  counts: number[]
-  edges: number[]
-}
-
-export interface OptimiserSolveResult {
-  mode?: string | null
-  total_objective: number
-  baseline_objective: number
-  constraints: Record<string, number>
-  baseline_constraints: Record<string, number>
-  lambdas: Record<string, number>
-  converged: boolean
-  iterations?: number | null
-  n_quotes?: number | null
-  n_steps?: number | null
-  cd_iterations?: number | null
-  factor_tables?: Record<string, Record<string, unknown>[]>
-  history?: OptimiserHistoryEntry[] | null
-  warning?: string | null
-  frontier_error?: string | null
-  scenario_value_stats?: OptimiserScenarioValueStats
-  scenario_value_histogram?: OptimiserScenarioValueHistogram
-  clamp_rate?: number | null
-  frontier?: FrontierResponse | null
-  /** Index of the frontier point the backend auto-selected for this solve,
-   *  or null when none. Mirrors `OptimiserSolveResult.selected_frontier_point`
-   *  in `src/haute/schemas.py`. */
-  selected_frontier_point?: number | null
-}
-
-export interface OptimiserStatusResponse {
-  status: JobStatus
-  progress: number
-  message?: string
-  elapsed_seconds: number
-  result?: OptimiserSolveResult | null
-  frontier?: FrontierResponse | null
-  terminal_reason?: string | null
-  execution_metrics?: ExecutionMetrics | null
-}
-
-export interface FrontierSelectResponse {
-  status: string
-  point_index?: number | null
-  total_objective: number
-  constraints: Record<string, number>
-  baseline_objective: number
-  baseline_constraints: Record<string, number>
-  lambdas: Record<string, number>
-  converged: boolean
-  iterations?: number | null
-  cd_iterations?: number | null
-  factor_tables?: Record<string, Record<string, unknown>[]>
-  history?: OptimiserHistoryEntry[] | null
-  warning?: string | null
-  scenario_value_stats?: OptimiserScenarioValueStats
-  scenario_value_histogram?: OptimiserScenarioValueHistogram
-  clamp_rate?: number | null
-  error: string | null
+export type OptimiserStatusResponse = Omit<
+  GeneratedOptimiserStatusResponse,
+  "result" | "frontier" | "execution_metrics"
+> & {
+  result: OptimiserSolveResult | null
+  frontier: FrontierResponse | null
+  execution_metrics: ExecutionMetrics | null
 }
 
 // ---------------------------------------------------------------------------

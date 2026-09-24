@@ -112,15 +112,19 @@ members, and the data profile; banding stats and rating levels; I/O
 capabilities; the session check and file listing; editor identities, Polars
 step rendering and execution settings; the git 409 advisory bodies
 (`GitPushRejection`, `GitMilestoneFork`), whose storage-claim reader had no
-caller left and is deleted.
+caller left and is deleted; the optimiser responses (solve, estimate, status,
+apply, save, MLflow log, frontier status, auto-range start and status, frontier
+select).
 
-**Remaining:** optimiser, including its MLflow log (still on
-the hand-written `parseMlflowLogResponse`); pipeline load and save, preview,
+**Remaining:** pipeline load and save, preview,
 trace and submodel responses (they carry node configs, so after `PCFG-R07`);
 recovery and repair; node data, cache, JSON cache and input cache (the
 converted Explore, banding and rating responses keep the node-data point and
 profile on their hand types until then); output write, destination and assemble
-dry run.
+dry run; and the shared execution-metrics parser, which the converted status
+responses still apply after their generated check (each group's validator
+carries its own copy of the metrics contract, about 13 KiB gzip; one shared
+execution-metrics validator module would remove both).
 
 **Acceptance:** Every response the client parses is validated by generated
 code; `guards.ts`, `trainGuards.ts` and `api/types.ts` contain no structural

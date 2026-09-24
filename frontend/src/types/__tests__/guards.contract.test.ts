@@ -3,29 +3,22 @@ import { describe, expect, it } from "vitest"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import { makeTrainResult } from "../../test-utils/factories"
 import {
-  parseApplyOptimiserResponse,
   parsePreviewInputsResponse,
   parseDissolveSubmodelResponse,
   explorePivotMembersFromContract,
   explorePivotRunFromContract,
   explorePivotStatusFromContract,
-  parseFrontierAutoRangeResponse,
-  parseFrontierAutoRangeStatusResponse,
-  parseFrontierResponse,
-  parseFrontierSelectResponse,
+  frontierAutoRangeStatusFromContract,
+  frontierStatusFromContract,
+  optimiserStatusFromContract,
   parseInputCacheSnapshotResponse,
   parseJsonCacheSchemaInferenceResponse,
-  parseMlflowLogResponse,
   parseOutputAssembleDryRunResponse,
-  parseOptimiserEstimateResponse,
-  parseOptimiserStatusResponse,
   parsePreviewNodeResponse,
   parseSavePipelineResponse,
-  parseSaveOptimiserResponse,
   parseTraceResponse,
   parseSubmodelCreateResponse,
   parseSubmodelGraphResponse,
-  parseSolveOptimiserResponse,
   parseExecutionStrategyDiagnostic,
   parseNodeDataProfile,
 } from "../guards"
@@ -41,6 +34,17 @@ import {
   validateSessionStatusResponse,
 } from "../../generated/api-contracts.session.validators.mjs"
 import { parseGitMilestoneFork, parseGitPushRejection } from "../../api/client"
+import {
+  validateOptimiserApplyResponse,
+  validateOptimiserEstimateResponse,
+  validateOptimiserFrontierAutoRangeStatusResponse,
+  validateOptimiserFrontierSelectResponse,
+  validateOptimiserFrontierStatusResponse,
+  validateOptimiserMlflowLogResponse,
+  validateOptimiserSaveResponse,
+  validateOptimiserSolveResponse,
+  validateOptimiserStatusResponse,
+} from "../../generated/api-contracts.optimiser.validators.mjs"
 import {
   validateMlflowDestinationsResponse,
   validateMlflowExperimentList,
@@ -338,6 +342,60 @@ const parseNodeDataProfileResponse = (value: unknown) =>
   expectGeneratedContract("NodeDataProfileResponse", validateNodeDataProfileResponse, value)
 const parseRatingLevelsResponse = (value: unknown) =>
   expectGeneratedContract("RatingLevelsResponse", validateRatingLevelsResponse, value)
+
+// Optimiser responses are checked by their generated validators (API-R03);
+// the UI then keeps one summary per frontier point and parses execution
+// metrics with the shared parser. A frontier and an auto-range result reach
+// the browser inside their job status, so they are checked through it.
+const parseOptimiserStatusResponse = (value: unknown) =>
+  optimiserStatusFromContract(
+    expectGeneratedContract("OptimiserStatusResponse", validateOptimiserStatusResponse, value),
+  )
+const parseSolveOptimiserResponse = (value: unknown) =>
+  expectGeneratedContract("OptimiserSolveResponse", validateOptimiserSolveResponse, value)
+const parseOptimiserEstimateResponse = (value: unknown) =>
+  expectGeneratedContract("OptimiserEstimateResponse", validateOptimiserEstimateResponse, value)
+const parseApplyOptimiserResponse = (value: unknown) =>
+  expectGeneratedContract("OptimiserApplyResponse", validateOptimiserApplyResponse, value)
+const parseFrontierSelectResponse = (value: unknown) =>
+  expectGeneratedContract("OptimiserFrontierSelectResponse", validateOptimiserFrontierSelectResponse, value)
+const parseSaveOptimiserResponse = (value: unknown) =>
+  expectGeneratedContract("OptimiserSaveResponse", validateOptimiserSaveResponse, value)
+const parseMlflowLogResponse = (value: unknown) =>
+  expectGeneratedContract("OptimiserMlflowLogResponse", validateOptimiserMlflowLogResponse, value)
+const parseFrontierAutoRangeStatusResponse = (value: unknown) =>
+  frontierAutoRangeStatusFromContract(
+    expectGeneratedContract(
+      "OptimiserFrontierAutoRangeStatusResponse",
+      validateOptimiserFrontierAutoRangeStatusResponse,
+      value,
+    ),
+  )
+const completedJob = (result: unknown) => ({
+  status: "completed",
+  progress: 1,
+  message: "",
+  elapsed_seconds: 0,
+  result,
+  terminal_reason: null,
+  error_code: null,
+  http_status_code: null,
+  error_detail: null,
+  execution_metrics: null,
+})
+const parseFrontierResponse = (value: unknown) =>
+  frontierStatusFromContract(
+    expectGeneratedContract(
+      "OptimiserFrontierStatusResponse",
+      validateOptimiserFrontierStatusResponse,
+      completedJob(value),
+    ),
+  ).result!
+const parseFrontierAutoRangeResponse = (value: unknown) =>
+  parseFrontierAutoRangeStatusResponse(completedJob(value)).result!
+// A complete execution-metrics payload, as the server sends it.
+const completeExecutionMetrics = () =>
+  loadUiContractFixture<Record<string, unknown>>("train_status_metrics_response").execution_metrics
 
 const sessionStatus = (value: unknown) =>
   expectGeneratedContract("SessionStatusResponse", validateSessionStatusResponse, value)
@@ -2754,7 +2812,7 @@ describe("API response guards", () => {
   it("preserves typed execution metrics on optimiser status responses", () => {
     const parsed = parseOptimiserStatusResponse({
       ...loadUiContractFixture<Record<string, unknown>>("optimiser_status_response"),
-      execution_metrics: executionMetricsFixture(),
+      execution_metrics: completeExecutionMetrics(),
     })
 
     expect(parsed.execution_metrics?.admission?.os_reserve_bytes).toBe(2000)
@@ -3003,6 +3061,10 @@ describe("API response guards", () => {
     expect(apply.preview[0]?.scenario).toBe("A")
     const parsedApply = parseApplyOptimiserResponse({
       status: "ok",
+      total_objective: 0,
+      constraints: {},
+      from_artifact: false,
+      error: null,
       preview: [{ scenario: "A" }],
       row_count: 200,
       preview_row_count: 100,
@@ -3019,7 +3081,11 @@ describe("API response guards", () => {
       message: "Superseded by a newer request.",
       elapsed_seconds: 1.5,
       result: null,
-      execution_metrics: executionMetricsFixture(),
+      terminal_reason: "superseded",
+      error_code: null,
+      http_status_code: null,
+      error_detail: null,
+      execution_metrics: completeExecutionMetrics(),
     }).status).toBe("superseded")
     const contractErrorStatus = parseFrontierAutoRangeStatusResponse({
       status: "contract_error",
@@ -3031,6 +3097,7 @@ describe("API response guards", () => {
       error_code: "contract_error",
       http_status_code: 422,
       error_detail: "Fan-in projection contract does not cover columns required by the node.",
+      execution_metrics: null,
     })
     expect(contractErrorStatus.status).toBe("contract_error")
     expect(contractErrorStatus.terminal_reason).toBe("contract_error")
@@ -3042,7 +3109,11 @@ describe("API response guards", () => {
       message: "done",
       elapsed_seconds: 2.5,
       result: loadUiContractFixture("optimiser_frontier_auto_range_response"),
-      execution_metrics: executionMetricsFixture(),
+      terminal_reason: null,
+      error_code: null,
+      http_status_code: null,
+      error_detail: null,
+      execution_metrics: completeExecutionMetrics(),
     }).execution_metrics?.admission?.budget_policy).toBe("adaptive_local")
     expect(parseFrontierResponse({
       status: "ok",
@@ -3067,6 +3138,7 @@ describe("API response guards", () => {
       constraint_names: ["loss"],
       points_limit: 2000,
       points_truncated: true,
+      job_id: null,
     }).points_truncated).toBe(true)
     expect(selected.lambdas.loss).toBe(0.3)
     expect(saved.path).toBe("optimiser_output.py")
@@ -3098,8 +3170,11 @@ describe("API response guards", () => {
         constraint_names: ["loss"],
         points_limit: 2000,
         points_truncated: false,
+        job_id: null,
       }),
-    ).toThrow(/one summary per point, got 1 for 2 points/)
+    ).toThrow(
+      "parseOptimiserStatusResponse: expected result.point_summaries to hold one summary per point, got 1 for 2 points",
+    )
   })
 
   it("rejects a frontier point summary missing a field but accepts it as null", () => {
@@ -3127,9 +3202,12 @@ describe("API response guards", () => {
       constraint_names: ["loss"],
       points_limit: 2000,
       points_truncated: false,
+      job_id: null,
     })
     const { warning: _warning, ...withoutWarning } = summary; void _warning
-    expect(() => parseFrontierResponse(payload(withoutWarning))).toThrow(/point_summaries`\[0\]\.warning to be present/)
+    expect(() => parseFrontierResponse(payload(withoutWarning))).toThrow(
+      "OptimiserFrontierStatusResponse: invalid contract at /result/point_summaries/0/warning: required",
+    )
     expect(parseFrontierResponse(payload(summary)).point_summaries[0]?.warning).toBeNull()
   })
 
@@ -3146,7 +3224,10 @@ describe("API response guards", () => {
       iterations: 19,
       cd_iterations: 4,
       clamp_rate: 0.01,
-      history: [{ iteration: 1, total_objective: 150, max_lambda_change: 0.1 }],
+      history: [{
+        iteration: 1, total_objective: 150, max_lambda_change: 0.1,
+        all_constraints_satisfied: null, lambdas: {}, total_constraints: {},
+      }],
       scenario_value_stats: stats,
       scenario_value_histogram: { counts: [1, 2], edges: [0.9, 1.0, 1.1] },
       factor_tables: { region: [{ __factor_group__: "North", optimal_scenario_value: 1.05 }] },
@@ -3162,12 +3243,10 @@ describe("API response guards", () => {
       constraint_names: ["loss"],
       points_limit: 2000,
       points_truncated: false,
+      job_id: null,
     }).point_summaries[0]
 
-    expect(parsed).toMatchObject({
-      ...summary,
-      history: [{ iteration: 1, total_objective: 150, max_lambda_change: 0.1 }],
-    })
+    expect(parsed).toEqual(summary)
     expect(() =>
       parseFrontierResponse({
         status: "ok",
@@ -3178,8 +3257,11 @@ describe("API response guards", () => {
         constraint_names: ["loss"],
         points_limit: 2000,
         points_truncated: false,
+        job_id: null,
       }),
-    ).toThrow(/scenario_value_histogram\.counts\[0\]/)
+    ).toThrow(
+      "OptimiserFrontierStatusResponse: invalid contract at /result/point_summaries/0/scenario_value_histogram/counts/0: type",
+    )
   })
 
   it("rejects malformed execution metric pressure and admission fields", () => {
@@ -3198,20 +3280,23 @@ describe("API response guards", () => {
       }),
     ).toThrow(/budget_policy/i)
 
+    const completeMetrics = completeExecutionMetrics() as typeof metrics
     expect(() =>
       parseOptimiserStatusResponse({
         ...loadUiContractFixture<Record<string, unknown>>("optimiser_status_response"),
         execution_metrics: {
-          ...metrics,
+          ...completeMetrics,
           memory_pressure_events: [
             {
-              ...metrics.memory_pressure_events[0],
+              ...completeMetrics.memory_pressure_events[0],
               pressure_ratio: "high",
             },
           ],
         },
       }),
-    ).toThrow(/pressure_ratio/i)
+    ).toThrow(
+      "OptimiserStatusResponse: invalid contract at /execution_metrics/memory_pressure_events/0/pressure_ratio: type",
+    )
   })
 
   it("parses git action payloads", () => {
@@ -3226,32 +3311,31 @@ describe("API response guards", () => {
     // CLAUDE.md: do not silently fall back.  A present histogram object
     // missing one of its required arrays is a contract violation; throw so
     // we surface the bug instead of rendering with empty arrays.
+    const selected = {
+      status: "ok",
+      point_index: 0,
+      total_objective: 1,
+      constraints: { loss: 1 },
+      baseline_objective: 1,
+      baseline_constraints: { loss: 1 },
+      lambdas: { loss: 0.1 },
+      converged: true,
+      iterations: null,
+      cd_iterations: null,
+      factor_tables: {},
+      history: null,
+      warning: null,
+      scenario_value_stats: null,
+      scenario_value_histogram: null,
+      clamp_rate: null,
+      error: null,
+    }
     expect(() =>
-      parseFrontierSelectResponse({
-        status: "ok",
-        point_index: 0,
-        total_objective: 1,
-        constraints: { loss: 1 },
-        baseline_objective: 1,
-        baseline_constraints: { loss: 1 },
-        lambdas: { loss: 0.1 },
-        converged: true,
-        scenario_value_histogram: { counts: [1, 2] },
-      }),
-    ).toThrow(/scenario_value_histogram\.edges/)
+      parseFrontierSelectResponse({ ...selected, scenario_value_histogram: { counts: [1, 2] } }),
+    ).toThrow("OptimiserFrontierSelectResponse: invalid contract at /scenario_value_histogram/edges: required")
     expect(() =>
-      parseFrontierSelectResponse({
-        status: "ok",
-        point_index: 0,
-        total_objective: 1,
-        constraints: { loss: 1 },
-        baseline_objective: 1,
-        baseline_constraints: { loss: 1 },
-        lambdas: { loss: 0.1 },
-        converged: true,
-        scenario_value_histogram: { edges: [0, 1, 2] },
-      }),
-    ).toThrow(/scenario_value_histogram\.counts/)
+      parseFrontierSelectResponse({ ...selected, scenario_value_histogram: { edges: [0, 1, 2] } }),
+    ).toThrow("OptimiserFrontierSelectResponse: invalid contract at /scenario_value_histogram/counts: required")
   })
 
   it("rejects malformed optimiser lambda maps", () => {
@@ -3266,7 +3350,7 @@ describe("API response guards", () => {
           lambdas: { loss: "bad" },
         },
       }),
-    ).toThrow(/lambdas/i)
+    ).toThrow("OptimiserStatusResponse: invalid contract at /result/lambdas/loss: type")
   })
 
   it("parses a Data Input input-cache snapshot with tables null", () => {

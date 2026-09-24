@@ -115,31 +115,24 @@ import type {
   SessionStatusResponse,
 } from "./types"
 import {
-  parseApplyOptimiserResponse,
   parseCacheClearResponse,
   parseCacheNodesResponse,
   parseDissolveSubmodelResponse,
   explorePivotMembersFromContract,
+  frontierAutoRangeStatusFromContract,
+  frontierStatusFromContract,
+  optimiserStatusFromContract,
   explorePivotRunFromContract,
   explorePivotStatusFromContract,
   parseNodeDataClearResponse,
   parseNodeDataPointResponse,
   parseNodeDataRunResponse,
   parseNodeDataStatusResponse,
-  parseFrontierAutoRangeStartResponse,
-  parseFrontierAutoRangeStatusResponse,
-  parseFrontierStatusResponse,
-  parseFrontierSelectResponse,
   parseInputCacheBuildResponse,
   parseInputCacheCancelResponse,
   parseInputCacheJobStatusResponse,
   parseInputCacheSnapshotResponse,
   parseJsonCacheSchemaInferenceResponse,
-  parseMlflowLogResponse,
-  parseOptimiserEstimateResponse,
-  parseSaveOptimiserResponse,
-  parseSolveOptimiserResponse,
-  parseOptimiserStatusResponse,
   parseOutputDestinationResponse,
   parseOutputAssembleDryRunResponse,
   parsePipelineResponse,
@@ -165,6 +158,7 @@ const gitValidators = () => import("../generated/api-contracts.git.validators.mj
 const ioValidators = () => import("../generated/api-contracts.io.validators.mjs")
 const mlflowValidators = () => import("../generated/api-contracts.mlflow.validators.mjs")
 const modellingValidators = () => import("../generated/api-contracts.modelling.validators.mjs")
+const optimiserValidators = () => import("../generated/api-contracts.optimiser.validators.mjs")
 const sessionValidators = () => import("../generated/api-contracts.session.validators.mjs")
 const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
 import {
@@ -1521,7 +1515,7 @@ export interface SolveOptimiserArgs {
 export function solveOptimiser(args: SolveOptimiserArgs): Promise<OptimiserSolveResponse> {
   const { signal, timeout = 300_000, ...payload } = args
   return post<unknown>("/api/optimiser/solve", payload, { signal, timeout })
-    .then(parseSolveOptimiserResponse)
+    .then(async (data) => expectGeneratedContract("OptimiserSolveResponse", (await optimiserValidators()).validateOptimiserSolveResponse, data))
 }
 
 export interface EstimateOptimiserSolveArgs {
@@ -1543,15 +1537,20 @@ export function estimateOptimiserSolve(
       source: payload.source ?? "live",
     },
     { signal, timeout },
-  ).then(parseOptimiserEstimateResponse)
+  ).then(async (data) => expectGeneratedContract("OptimiserEstimateResponse", (await optimiserValidators()).validateOptimiserEstimateResponse, data))
 }
 
-export function getOptimiserStatus<T extends OptimiserStatusResponse = OptimiserStatusResponse>(
+export function getOptimiserStatus(
   jobId: string,
   options?: { signal?: AbortSignal },
-): Promise<T> {
+): Promise<OptimiserStatusResponse> {
   return request<unknown>(`/api/optimiser/solve/status/${encodeURIComponent(jobId)}`, options)
-    .then((data) => validateApiResponse("Could not read optimiser status", () => parseOptimiserStatusResponse(data) as T))
+    .then(async (data) => {
+      const { validateOptimiserStatusResponse } = await optimiserValidators()
+      return validateApiResponse("Could not read optimiser status", () => optimiserStatusFromContract(
+        expectGeneratedContract("OptimiserStatusResponse", validateOptimiserStatusResponse, data),
+      ))
+    })
 }
 
 export function applyOptimiser(
@@ -1559,21 +1558,21 @@ export function applyOptimiser(
   options?: { signal?: AbortSignal },
 ): Promise<ApplyOptimiserResponse> {
   return post<unknown>("/api/optimiser/apply", payload, { timeout: 120_000, ...options })
-    .then(parseApplyOptimiserResponse)
+    .then(async (data) => expectGeneratedContract("OptimiserApplyResponse", (await optimiserValidators()).validateOptimiserApplyResponse, data))
 }
 
 export function saveOptimiser(
   payload: SaveOptimiserRequest,
   options?: { signal?: AbortSignal },
 ): Promise<SaveOptimiserResponse> {
-  return post<unknown>("/api/optimiser/save", payload, options).then(parseSaveOptimiserResponse)
+  return post<unknown>("/api/optimiser/save", payload, options).then(async (data) => expectGeneratedContract("OptimiserSaveResponse", (await optimiserValidators()).validateOptimiserSaveResponse, data))
 }
 
 export function logOptimiserToMlflow(
   payload: LogOptimiserToMlflowRequest,
   options?: { signal?: AbortSignal },
 ): Promise<MlflowLogResponse> {
-  return post<unknown>("/api/optimiser/mlflow/log", payload, options).then(parseMlflowLogResponse)
+  return post<unknown>("/api/optimiser/mlflow/log", payload, options).then(async (data) => expectGeneratedContract("OptimiserMlflowLogResponse", (await optimiserValidators()).validateOptimiserMlflowLogResponse, data))
 }
 
 export function getFrontierStatus(
@@ -1583,7 +1582,9 @@ export function getFrontierStatus(
   return request<unknown>(
     `/api/optimiser/frontier/status/${encodeURIComponent(jobId)}`,
     options,
-  ).then(parseFrontierStatusResponse)
+  ).then(async (data) => frontierStatusFromContract(
+    expectGeneratedContract("OptimiserFrontierStatusResponse", (await optimiserValidators()).validateOptimiserFrontierStatusResponse, data),
+  ))
 }
 
 export interface StartOptimiserFrontierAutoRangeArgs {
@@ -1598,7 +1599,7 @@ export function startOptimiserFrontierAutoRange(
 ): Promise<FrontierAutoRangeStartResponse> {
   const { signal, timeout, ...payload } = args
   return post<unknown>("/api/optimiser/frontier/auto-range/start", payload, { signal, timeout })
-    .then(parseFrontierAutoRangeStartResponse)
+    .then(async (data) => expectGeneratedContract("OptimiserFrontierAutoRangeStartResponse", (await optimiserValidators()).validateOptimiserFrontierAutoRangeStartResponse, data))
 }
 
 export function getOptimiserFrontierAutoRangeStatus(
@@ -1608,7 +1609,9 @@ export function getOptimiserFrontierAutoRangeStatus(
   return request<unknown>(
     `/api/optimiser/frontier/auto-range/status/${encodeURIComponent(jobId)}`,
     options,
-  ).then(parseFrontierAutoRangeStatusResponse)
+  ).then(async (data) => frontierAutoRangeStatusFromContract(
+    expectGeneratedContract("OptimiserFrontierAutoRangeStatusResponse", (await optimiserValidators()).validateOptimiserFrontierAutoRangeStatusResponse, data),
+  ))
 }
 
 export function cancelOptimiserFrontierAutoRange(
@@ -1619,14 +1622,16 @@ export function cancelOptimiserFrontierAutoRange(
     `/api/optimiser/frontier/auto-range/cancel/${encodeURIComponent(jobId)}`,
     {},
     options,
-  ).then(parseFrontierAutoRangeStatusResponse)
+  ).then(async (data) => frontierAutoRangeStatusFromContract(
+    expectGeneratedContract("OptimiserFrontierAutoRangeStatusResponse", (await optimiserValidators()).validateOptimiserFrontierAutoRangeStatusResponse, data),
+  ))
 }
 
 export function selectFrontierPoint(
   payload: { job_id: string; point_index: number; include_ratebook_tables?: boolean },
   options?: { signal?: AbortSignal },
 ): Promise<FrontierSelectResponse> {
-  return post<unknown>("/api/optimiser/frontier/select", payload, options).then(parseFrontierSelectResponse)
+  return post<unknown>("/api/optimiser/frontier/select", payload, options).then(async (data) => expectGeneratedContract("OptimiserFrontierSelectResponse", (await optimiserValidators()).validateOptimiserFrontierSelectResponse, data))
 }
 
 // ---------------------------------------------------------------------------

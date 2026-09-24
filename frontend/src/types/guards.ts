@@ -13,6 +13,12 @@ import {
   validateExecutionStrategyDiagnostic,
 } from "../generated/api-contracts.execution-strategy-diagnostic.validators.mjs"
 import type {
+  OptimiserFrontierAutoRangeStatusResponse as GeneratedOptimiserFrontierAutoRangeStatusResponse,
+  OptimiserFrontierResponse as GeneratedOptimiserFrontierResponse,
+  OptimiserFrontierStatusResponse as GeneratedOptimiserFrontierStatusResponse,
+  OptimiserStatusResponse as GeneratedOptimiserStatusResponse,
+} from "../generated/api-contracts.generated"
+import type {
   ExplorePivotMembersResponse as GeneratedExplorePivotMembersResponse,
   ExplorePivotPath as GeneratedExplorePivotPath,
   ExplorePivotResult as GeneratedExplorePivotResult,
@@ -56,14 +62,10 @@ import type {
   ExplorePivotResult,
   ExplorePivotRunResponse,
   ExplorePivotStatusResponse,
-  FrontierAutoRangeResponse,
-  FrontierAutoRangeStartResponse,
   FrontierAutoRangeStatusResponse,
   FrontierStatusResponse,
   FrontierPoint,
-  FrontierPointSummary,
   FrontierResponse,
-  FrontierSelectResponse,
   OutputDestinationResponse,
   InputCacheBuildResponse,
   InputCacheCancelResponse,
@@ -72,25 +74,16 @@ import type {
   InputCacheProgress,
   InputCacheSnapshotResponse,
   InputCacheTableStatus,
-  MlflowLogResponse,
   NodeDataClearResponse,
   NodeDataColumns,
   NodeDataPointResponse,
   NodeDataProfile,
   NodeDataRunResponse,
   NodeDataStatusResponse,
-  OptimiserHistoryEntry,
-  OptimiserScenarioValueHistogram,
-  OptimiserScenarioValueStats,
-  OptimiserEstimate,
-  OptimiserSolveResponse,
-  OptimiserSolveResult,
   OptimiserStatusResponse,
   PreviewInputsResponse,
   PreviewNodeResponse,
   PreviewSeedPlanEntry,
-  ApplyOptimiserResponse,
-  SaveOptimiserResponse,
   SavePipelineResponse,
   SchemaResult,
   WriteOutputResponse,
@@ -366,21 +359,6 @@ function optionalPlainObjectArray(
 ): Record<string, unknown>[] {
   const value = obj[key]
   return value === undefined ? defaultValue : parsePlainObjectArray(parser, value, `field \`${key}\``)
-}
-
-function optionalFactorTables(
-  parser: string,
-  obj: Record<string, unknown>,
-  key: string,
-): OptimiserSolveResult["factor_tables"] {
-  const rawFactorTables = optionalNullableObject(parser, obj, key)
-  if (rawFactorTables === null) return undefined
-
-  const factorTables: NonNullable<OptimiserSolveResult["factor_tables"]> = {}
-  for (const [factorName, rows] of Object.entries(rawFactorTables)) {
-    factorTables[factorName] = parsePlainObjectArray(parser, rows, `field \`${key}.${factorName}\``)
-  }
-  return factorTables
 }
 
 function parseNumberRecord(
@@ -2448,367 +2426,88 @@ export function explorePivotMembersFromContract(
   }
 }
 
-export function parseMlflowLogResponse(value: unknown): MlflowLogResponse {
-  const obj = expectPlainObject("parseMlflowLogResponse", value)
-  return {
-    status: expectStringLiteral("parseMlflowLogResponse", obj.status, "field `status`", ["ok", "error"]),
-    backend: optionalString("parseMlflowLogResponse", obj, "backend"),
-    experiment_name: optionalString("parseMlflowLogResponse", obj, "experiment_name"),
-    run_id: optionalNullableString("parseMlflowLogResponse", obj, "run_id"),
-    run_url: optionalNullableString("parseMlflowLogResponse", obj, "run_url"),
-    tracking_uri: optionalString("parseMlflowLogResponse", obj, "tracking_uri"),
-    error: optionalNullableString("parseMlflowLogResponse", obj, "error"),
-    ...(obj.operation_id === undefined
-      ? {}
-      : { operation_id: optionalNullableString("parseMlflowLogResponse", obj, "operation_id") }),
-    ...(obj.logged_at === undefined
-      ? {}
-      : { logged_at: optionalNullableString("parseMlflowLogResponse", obj, "logged_at") }),
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Optimiser contracts
 // ---------------------------------------------------------------------------
 
-function parseOptimiserHistoryEntry(value: unknown, field: string): OptimiserHistoryEntry {
-  const obj = expectPlainObject("parseOptimiserStatusResponse", value, field)
-  return {
-    iteration: expectNumber("parseOptimiserStatusResponse", obj.iteration, `${field}.iteration`),
-    total_objective: expectNumber("parseOptimiserStatusResponse", obj.total_objective, `${field}.total_objective`),
-    max_lambda_change: expectNumber("parseOptimiserStatusResponse", obj.max_lambda_change, `${field}.max_lambda_change`),
-    all_constraints_satisfied: obj.all_constraints_satisfied === undefined ? undefined : expectBoolean("parseOptimiserStatusResponse", obj.all_constraints_satisfied, `${field}.all_constraints_satisfied`),
-    lambdas: obj.lambdas === undefined ? undefined : parseNumberRecord("parseOptimiserStatusResponse", obj.lambdas, `${field}.lambdas`),
-    total_constraints: obj.total_constraints === undefined ? undefined : parseNumberRecord("parseOptimiserStatusResponse", obj.total_constraints, `${field}.total_constraints`),
-  }
-}
-
-export function parseSolveOptimiserResponse(value: unknown): OptimiserSolveResponse {
-  const obj = expectPlainObject("parseSolveOptimiserResponse", value)
-  return {
-    status: expectStringLiteral("parseSolveOptimiserResponse", obj.status, "field `status`", ["started", "error"]),
-    job_id: optionalNullableString("parseSolveOptimiserResponse", obj, "job_id"),
-    error: optionalNullableString("parseSolveOptimiserResponse", obj, "error"),
-  }
-}
-
-export function parseOptimiserEstimateResponse(value: unknown): OptimiserEstimate {
-  const obj = expectPlainObject("parseOptimiserEstimateResponse", value)
-  return {
-    total_rows: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "total_rows"),
-    quote_count: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "quote_count"),
-    scenarios_per_quote_min: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "scenarios_per_quote_min"),
-    scenarios_per_quote_max: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "scenarios_per_quote_max"),
-    scenarios_per_quote_mean: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "scenarios_per_quote_mean"),
-    expanded_row_count: optionalNullableNumber("parseOptimiserEstimateResponse", obj, "expanded_row_count"),
-  }
-}
-
-function parseScenarioValueStats(parser: string, value: unknown, field: string): OptimiserScenarioValueStats {
-  const stats = expectPlainObject(parser, value, field)
-  const stat = (key: keyof OptimiserScenarioValueStats) => expectNumber(parser, stats[key], `${field}.${key}`)
-  return {
-    mean: stat("mean"),
-    std: stat("std"),
-    min: stat("min"),
-    max: stat("max"),
-    p5: stat("p5"),
-    p25: stat("p25"),
-    p50: stat("p50"),
-    p75: stat("p75"),
-    p95: stat("p95"),
-    pct_increase: stat("pct_increase"),
-    pct_decrease: stat("pct_decrease"),
-  }
-}
-
-function parseScenarioValueHistogram(parser: string, value: unknown, field: string): OptimiserScenarioValueHistogram {
-  const histogram = expectPlainObject(parser, value, field)
-  const numbers = (key: "counts" | "edges") =>
-    parseArray(parser, histogram[key], `${field}.${key}`, (item, itemField) => expectNumber(parser, item, itemField))
-  return { counts: numbers("counts"), edges: numbers("edges") }
-}
-
-function parseFrontierPointSummary(value: unknown, field: string): FrontierPointSummary {
+// The generated optimiser validators own the responses' structure. The server
+// leaves each frontier point an open object, so the UI types the fields it
+// reads; it keeps one summary per point (it applies a point's summary by
+// index) and parses execution metrics with the shared parser.
+function parseFrontierPoint(value: Record<string, unknown>, field: string): FrontierPoint {
   const parser = "parseOptimiserStatusResponse"
-  const obj = expectPlainObject(parser, value, field)
-  // Every field is always sent; null means the point has none.
-  const nullable = <T>(key: keyof FrontierPointSummary, parse: (item: unknown, itemField: string) => T): T | null => {
-    if (!(key in obj)) throw new Error(`${parser}: expected ${field}.${key} to be present`)
-    return obj[key] === null ? null : parse(obj[key], `${field}.${key}`)
-  }
-  const number = (item: unknown, itemField: string) => expectNumber(parser, item, itemField)
-  const text = (item: unknown, itemField: string) => expectString(parser, item, itemField)
   return {
-    total_objective: expectNumber(parser, obj.total_objective, `${field}.total_objective`),
-    constraints: parseNumberRecord(parser, obj.constraints, `${field}.constraints`),
-    lambdas: parseNumberRecord(parser, obj.lambdas, `${field}.lambdas`),
-    converged: expectBoolean(parser, obj.converged, `${field}.converged`),
-    iterations: nullable("iterations", number),
-    cd_iterations: nullable("cd_iterations", number),
-    clamp_rate: nullable("clamp_rate", number),
-    history: nullable("history", (item, itemField) => parseArray(parser, item, itemField, parseOptimiserHistoryEntry)),
-    scenario_value_stats: nullable("scenario_value_stats", (item, itemField) => parseScenarioValueStats(parser, item, itemField)),
-    scenario_value_histogram: nullable("scenario_value_histogram", (item, itemField) => parseScenarioValueHistogram(parser, item, itemField)),
-    factor_tables: nullable("factor_tables", (item, itemField) =>
-      Object.fromEntries(
-        Object.entries(expectPlainObject(parser, item, itemField)).map(([name, rows]) => [
-          name,
-          parsePlainObjectArray(parser, rows, `${itemField}.${name}`),
-        ]),
-      ),
-    ),
-    warning: nullable("warning", text),
-    frontier_error: nullable("frontier_error", text),
+    ...value,
+    index: value.index === undefined ? undefined : expectNumber(parser, value.index, `${field}.index`),
+    total_objective: value.total_objective === undefined
+      ? undefined
+      : expectNumber(parser, value.total_objective, `${field}.total_objective`),
+    constraints: value.constraints === undefined
+      ? undefined
+      : parseNumberRecord(parser, value.constraints, `${field}.constraints`),
+    lambdas: value.lambdas === undefined
+      ? undefined
+      : parseNumberRecord(parser, value.lambdas, `${field}.lambdas`),
   }
 }
 
-export function parseFrontierResponse(value: unknown, field = "object"): FrontierResponse {
-  const obj = expectPlainObject("parseOptimiserStatusResponse", value, field)
-  const points = optionalArray("parseOptimiserStatusResponse", obj, "points", parseFrontierPoint)
-  const pointSummaries = optionalArray("parseOptimiserStatusResponse", obj, "point_summaries", parseFrontierPointSummary)
-  if (pointSummaries.length !== points.length) {
+function frontierFromContract(
+  frontier: GeneratedOptimiserFrontierResponse,
+  field: string,
+): FrontierResponse {
+  if (frontier.point_summaries.length !== frontier.points.length) {
     throw new Error(
-      `parseOptimiserStatusResponse: expected ${field}.point_summaries to hold one summary per point, got ${pointSummaries.length} for ${points.length} points`,
+      `parseOptimiserStatusResponse: expected ${field}.point_summaries to hold one summary per point, got ${frontier.point_summaries.length} for ${frontier.points.length} points`,
     )
   }
   return {
-    status: expectString("parseOptimiserStatusResponse", obj.status, `${field}.status`),
-    points,
-    point_summaries: pointSummaries,
-    n_points: optionalNumber("parseOptimiserStatusResponse", obj, "n_points"),
-    points_returned: optionalNumber("parseOptimiserStatusResponse", obj, "points_returned"),
-    constraint_names: optionalStringArray("parseOptimiserStatusResponse", obj, "constraint_names"),
-    points_limit: optionalNullableNumber("parseOptimiserStatusResponse", obj, "points_limit"),
-    points_truncated: optionalBoolean("parseOptimiserStatusResponse", obj, "points_truncated"),
-    job_id: optionalNullableString("parseOptimiserStatusResponse", obj, "job_id"),
+    ...frontier,
+    points: frontier.points.map((point, index) => parseFrontierPoint(point, `${field}.points[${index}]`)),
   }
 }
 
-export function parseFrontierStatusResponse(value: unknown): FrontierStatusResponse {
-  const obj = expectPlainObject("parseFrontierStatusResponse", value)
+export function optimiserStatusFromContract(
+  response: GeneratedOptimiserStatusResponse,
+): OptimiserStatusResponse {
+  const result = response.result
   return {
-    status: expectStringLiteral(
+    ...response,
+    result: result === null
+      ? null
+      : {
+          ...result,
+          frontier: result.frontier === null ? null : frontierFromContract(result.frontier, "result.frontier"),
+        },
+    frontier: response.frontier === null ? null : frontierFromContract(response.frontier, "frontier"),
+    execution_metrics: optionalExecutionMetrics(
+      "parseOptimiserStatusResponse",
+      { execution_metrics: response.execution_metrics },
+    ),
+  }
+}
+
+export function frontierStatusFromContract(
+  response: GeneratedOptimiserFrontierStatusResponse,
+): FrontierStatusResponse {
+  return {
+    ...response,
+    result: response.result === null ? null : frontierFromContract(response.result, "result"),
+    execution_metrics: optionalExecutionMetrics(
       "parseFrontierStatusResponse",
-      obj.status,
-      "field `status`",
-      JOB_STATUS_VALUES,
+      { execution_metrics: response.execution_metrics },
     ),
-    progress: optionalNumber("parseFrontierStatusResponse", obj, "progress"),
-    message: optionalString("parseFrontierStatusResponse", obj, "message"),
-    elapsed_seconds: optionalNumber("parseFrontierStatusResponse", obj, "elapsed_seconds"),
-    result: obj.result == null ? null : parseFrontierResponse(obj.result, "result"),
-    terminal_reason: optionalNullableString("parseFrontierStatusResponse", obj, "terminal_reason"),
-    error_code: optionalNullableString("parseFrontierStatusResponse", obj, "error_code"),
-    http_status_code: optionalNullableNumber("parseFrontierStatusResponse", obj, "http_status_code"),
-    error_detail: obj.error_detail,
-    execution_metrics: optionalExecutionMetrics("parseFrontierStatusResponse", obj, "execution_metrics"),
   }
 }
 
-function parseFrontierPoint(value: unknown, field: string): FrontierPoint {
-  const obj = expectPlainObject("parseOptimiserStatusResponse", value, field)
+export function frontierAutoRangeStatusFromContract(
+  response: GeneratedOptimiserFrontierAutoRangeStatusResponse,
+): FrontierAutoRangeStatusResponse {
   return {
-    ...obj,
-    index: obj.index === undefined ? undefined : expectNumber("parseOptimiserStatusResponse", obj.index, `${field}.index`),
-    total_objective: obj.total_objective === undefined
-      ? undefined
-      : expectNumber("parseOptimiserStatusResponse", obj.total_objective, `${field}.total_objective`),
-    constraints: obj.constraints === undefined
-      ? undefined
-      : parseNumberRecord("parseOptimiserStatusResponse", obj.constraints, `${field}.constraints`),
-    lambdas: obj.lambdas === undefined
-      ? undefined
-      : parseNumberRecord("parseOptimiserStatusResponse", obj.lambdas, `${field}.lambdas`),
-  }
-}
-
-export function parseFrontierAutoRangeResponse(value: unknown): FrontierAutoRangeResponse {
-  const obj = expectPlainObject("parseFrontierAutoRangeResponse", value)
-  const rawRanges = expectPlainObject("parseFrontierAutoRangeResponse", obj.ranges, "field `ranges`")
-  const ranges: FrontierAutoRangeResponse["ranges"] = {}
-  for (const [key, item] of Object.entries(rawRanges)) {
-    const range = expectPlainObject(
-      "parseFrontierAutoRangeResponse",
-      item,
-      `field \`ranges.${key}\``,
-    )
-    ranges[key] = {
-      min: expectNumber("parseFrontierAutoRangeResponse", range.min, `field \`ranges.${key}.min\``),
-      max: expectNumber("parseFrontierAutoRangeResponse", range.max, `field \`ranges.${key}.max\``),
-    }
-  }
-  return {
-    status: expectString("parseFrontierAutoRangeResponse", obj.status, "field `status`"),
-    ranges,
-    method: expectString("parseFrontierAutoRangeResponse", obj.method, "field `method`"),
-    warning: optionalNullableString("parseFrontierAutoRangeResponse", obj, "warning"),
-  }
-}
-
-export function parseFrontierAutoRangeStartResponse(value: unknown): FrontierAutoRangeStartResponse {
-  const obj = expectPlainObject("parseFrontierAutoRangeStartResponse", value)
-  return {
-    status: expectStringLiteral(
-      "parseFrontierAutoRangeStartResponse",
-      obj.status,
-      "field `status`",
-      ["started", "error"],
-    ),
-    job_id: optionalNullableString("parseFrontierAutoRangeStartResponse", obj, "job_id"),
-    error: optionalNullableString("parseFrontierAutoRangeStartResponse", obj, "error"),
-  }
-}
-
-export function parseFrontierAutoRangeStatusResponse(value: unknown): FrontierAutoRangeStatusResponse {
-  const obj = expectPlainObject("parseFrontierAutoRangeStatusResponse", value)
-  return {
-    status: expectStringLiteral(
+    ...response,
+    execution_metrics: optionalExecutionMetrics(
       "parseFrontierAutoRangeStatusResponse",
-      obj.status,
-      "field `status`",
-      JOB_STATUS_VALUES,
+      { execution_metrics: response.execution_metrics },
     ),
-    progress: optionalNumber("parseFrontierAutoRangeStatusResponse", obj, "progress"),
-    message: optionalString("parseFrontierAutoRangeStatusResponse", obj, "message"),
-    elapsed_seconds: optionalNumber("parseFrontierAutoRangeStatusResponse", obj, "elapsed_seconds"),
-    result: obj.result == null ? null : parseFrontierAutoRangeResponse(obj.result),
-    terminal_reason: optionalNullableString("parseFrontierAutoRangeStatusResponse", obj, "terminal_reason"),
-    error_code: optionalNullableString("parseFrontierAutoRangeStatusResponse", obj, "error_code"),
-    http_status_code: optionalNullableNumber("parseFrontierAutoRangeStatusResponse", obj, "http_status_code"),
-    error_detail: obj.error_detail,
-    execution_metrics: optionalExecutionMetrics("parseFrontierAutoRangeStatusResponse", obj, "execution_metrics"),
-  }
-}
-
-function parseOptimiserSolveResult(value: unknown, field: string): OptimiserSolveResult {
-  const obj = expectPlainObject("parseOptimiserStatusResponse", value, field)
-  const stats = optionalNullableObject("parseOptimiserStatusResponse", obj, "scenario_value_stats")
-  const histogram = optionalNullableObject("parseOptimiserStatusResponse", obj, "scenario_value_histogram")
-  const factorTables = optionalFactorTables("parseOptimiserStatusResponse", obj, "factor_tables")
-
-  return {
-    mode: obj.mode === undefined ? undefined : optionalNullableString("parseOptimiserStatusResponse", obj, "mode"),
-    total_objective: expectNumber("parseOptimiserStatusResponse", obj.total_objective, `${field}.total_objective`),
-    baseline_objective: expectNumber("parseOptimiserStatusResponse", obj.baseline_objective, `${field}.baseline_objective`),
-    constraints: obj.constraints === undefined ? {} : parseNumberRecord("parseOptimiserStatusResponse", obj.constraints, `${field}.constraints`),
-    baseline_constraints: obj.baseline_constraints === undefined ? {} : parseNumberRecord("parseOptimiserStatusResponse", obj.baseline_constraints, `${field}.baseline_constraints`),
-    lambdas: obj.lambdas === undefined ? {} : parseNumberRecord("parseOptimiserStatusResponse", obj.lambdas, `${field}.lambdas`),
-    converged: expectBoolean("parseOptimiserStatusResponse", obj.converged, `${field}.converged`),
-    iterations: obj.iterations === undefined ? undefined : optionalNullableNumber("parseOptimiserStatusResponse", obj, "iterations"),
-    n_quotes: obj.n_quotes === undefined ? undefined : optionalNullableNumber("parseOptimiserStatusResponse", obj, "n_quotes"),
-    n_steps: obj.n_steps === undefined ? undefined : optionalNullableNumber("parseOptimiserStatusResponse", obj, "n_steps"),
-    cd_iterations: obj.cd_iterations === undefined ? undefined : optionalNullableNumber("parseOptimiserStatusResponse", obj, "cd_iterations"),
-    factor_tables: factorTables,
-    history: obj.history === undefined || obj.history === null ? null : parseArray("parseOptimiserStatusResponse", obj.history, `${field}.history`, parseOptimiserHistoryEntry),
-    warning: obj.warning === undefined ? undefined : optionalNullableString("parseOptimiserStatusResponse", obj, "warning"),
-    frontier_error: obj.frontier_error === undefined ? undefined : optionalNullableString("parseOptimiserStatusResponse", obj, "frontier_error"),
-    scenario_value_stats: stats === null
-      ? undefined
-      : {
-          mean: expectNumber("parseOptimiserStatusResponse", stats.mean, "field `scenario_value_stats.mean`"),
-          std: expectNumber("parseOptimiserStatusResponse", stats.std, "field `scenario_value_stats.std`"),
-          min: expectNumber("parseOptimiserStatusResponse", stats.min, "field `scenario_value_stats.min`"),
-          max: expectNumber("parseOptimiserStatusResponse", stats.max, "field `scenario_value_stats.max`"),
-          p5: expectNumber("parseOptimiserStatusResponse", stats.p5, "field `scenario_value_stats.p5`"),
-          p25: expectNumber("parseOptimiserStatusResponse", stats.p25, "field `scenario_value_stats.p25`"),
-          p50: expectNumber("parseOptimiserStatusResponse", stats.p50, "field `scenario_value_stats.p50`"),
-          p75: expectNumber("parseOptimiserStatusResponse", stats.p75, "field `scenario_value_stats.p75`"),
-          p95: expectNumber("parseOptimiserStatusResponse", stats.p95, "field `scenario_value_stats.p95`"),
-          pct_increase: expectNumber("parseOptimiserStatusResponse", stats.pct_increase, "field `scenario_value_stats.pct_increase`"),
-          pct_decrease: expectNumber("parseOptimiserStatusResponse", stats.pct_decrease, "field `scenario_value_stats.pct_decrease`"),
-        },
-    scenario_value_histogram: histogram === null
-      ? undefined
-      : {
-          counts: parseArray("parseOptimiserStatusResponse", histogram.counts, "field `scenario_value_histogram.counts`", (item, itemField) => expectNumber("parseOptimiserStatusResponse", item, itemField)),
-          edges: parseArray("parseOptimiserStatusResponse", histogram.edges, "field `scenario_value_histogram.edges`", (item, itemField) => expectNumber("parseOptimiserStatusResponse", item, itemField)),
-        },
-    clamp_rate: obj.clamp_rate === undefined ? undefined : obj.clamp_rate === null ? null : expectNumber("parseOptimiserStatusResponse", obj.clamp_rate, `${field}.clamp_rate`),
-    frontier: obj.frontier === undefined || obj.frontier === null ? null : parseFrontierResponse(obj.frontier, `${field}.frontier`),
-  }
-}
-
-export function parseApplyOptimiserResponse(value: unknown): ApplyOptimiserResponse {
-  const obj = expectPlainObject("parseApplyOptimiserResponse", value)
-  return {
-    status: expectString("parseApplyOptimiserResponse", obj.status, "field `status`"),
-    total_objective: optionalNumber("parseApplyOptimiserResponse", obj, "total_objective"),
-    constraints: optionalNumberRecord("parseApplyOptimiserResponse", obj, "constraints"),
-    from_artifact: optionalBoolean("parseApplyOptimiserResponse", obj, "from_artifact"),
-    preview: optionalPlainObjectArray("parseApplyOptimiserResponse", obj, "preview"),
-    row_count: optionalNumber("parseApplyOptimiserResponse", obj, "row_count"),
-    preview_row_count: optionalNumber("parseApplyOptimiserResponse", obj, "preview_row_count"),
-    preview_row_limit: optionalNullableNumber("parseApplyOptimiserResponse", obj, "preview_row_limit"),
-    preview_truncated: optionalBoolean("parseApplyOptimiserResponse", obj, "preview_truncated"),
-    error: optionalNullableString("parseApplyOptimiserResponse", obj, "error"),
-  }
-}
-
-export function parseFrontierSelectResponse(value: unknown): FrontierSelectResponse {
-  const obj = expectPlainObject("parseFrontierSelectResponse", value)
-  const stats = optionalNullableObject("parseFrontierSelectResponse", obj, "scenario_value_stats")
-  const histogram = optionalNullableObject("parseFrontierSelectResponse", obj, "scenario_value_histogram")
-  return {
-    status: expectString("parseFrontierSelectResponse", obj.status, "field `status`"),
-    point_index: obj.point_index === undefined ? undefined : optionalNullableNumber("parseFrontierSelectResponse", obj, "point_index"),
-    total_objective: optionalNumber("parseFrontierSelectResponse", obj, "total_objective"),
-    constraints: optionalNumberRecord("parseFrontierSelectResponse", obj, "constraints"),
-    baseline_objective: optionalNumber("parseFrontierSelectResponse", obj, "baseline_objective"),
-    baseline_constraints: optionalNumberRecord("parseFrontierSelectResponse", obj, "baseline_constraints"),
-    lambdas: optionalNumberRecord("parseFrontierSelectResponse", obj, "lambdas"),
-    converged: optionalBoolean("parseFrontierSelectResponse", obj, "converged", true),
-    iterations: obj.iterations === undefined ? undefined : optionalNullableNumber("parseFrontierSelectResponse", obj, "iterations"),
-    cd_iterations: obj.cd_iterations === undefined ? undefined : optionalNullableNumber("parseFrontierSelectResponse", obj, "cd_iterations"),
-    factor_tables: optionalFactorTables("parseFrontierSelectResponse", obj, "factor_tables"),
-    history: obj.history === undefined || obj.history === null ? null : parseArray("parseFrontierSelectResponse", obj.history, "field `history`", parseOptimiserHistoryEntry),
-    warning: obj.warning === undefined ? undefined : optionalNullableString("parseFrontierSelectResponse", obj, "warning"),
-    scenario_value_stats: stats === null
-      ? undefined
-      : {
-          mean: expectNumber("parseFrontierSelectResponse", stats.mean, "field `scenario_value_stats.mean`"),
-          std: expectNumber("parseFrontierSelectResponse", stats.std, "field `scenario_value_stats.std`"),
-          min: expectNumber("parseFrontierSelectResponse", stats.min, "field `scenario_value_stats.min`"),
-          max: expectNumber("parseFrontierSelectResponse", stats.max, "field `scenario_value_stats.max`"),
-          p5: expectNumber("parseFrontierSelectResponse", stats.p5, "field `scenario_value_stats.p5`"),
-          p25: expectNumber("parseFrontierSelectResponse", stats.p25, "field `scenario_value_stats.p25`"),
-          p50: expectNumber("parseFrontierSelectResponse", stats.p50, "field `scenario_value_stats.p50`"),
-          p75: expectNumber("parseFrontierSelectResponse", stats.p75, "field `scenario_value_stats.p75`"),
-          p95: expectNumber("parseFrontierSelectResponse", stats.p95, "field `scenario_value_stats.p95`"),
-          pct_increase: expectNumber("parseFrontierSelectResponse", stats.pct_increase, "field `scenario_value_stats.pct_increase`"),
-          pct_decrease: expectNumber("parseFrontierSelectResponse", stats.pct_decrease, "field `scenario_value_stats.pct_decrease`"),
-        },
-    scenario_value_histogram: histogram === null
-      ? undefined
-      : {
-          counts: parseArray("parseFrontierSelectResponse", histogram.counts, "field `scenario_value_histogram.counts`", (item, itemField) => expectNumber("parseFrontierSelectResponse", item, itemField)),
-          edges: parseArray("parseFrontierSelectResponse", histogram.edges, "field `scenario_value_histogram.edges`", (item, itemField) => expectNumber("parseFrontierSelectResponse", item, itemField)),
-        },
-    clamp_rate: obj.clamp_rate === undefined ? undefined : obj.clamp_rate === null ? null : expectNumber("parseFrontierSelectResponse", obj.clamp_rate, "field `clamp_rate`"),
-    error: optionalNullableString("parseFrontierSelectResponse", obj, "error"),
-  }
-}
-
-export function parseSaveOptimiserResponse(value: unknown): SaveOptimiserResponse {
-  const obj = expectPlainObject("parseSaveOptimiserResponse", value)
-  return {
-    status: expectString("parseSaveOptimiserResponse", obj.status, "field `status`"),
-    path: optionalNullableString("parseSaveOptimiserResponse", obj, "path"),
-    message: optionalString("parseSaveOptimiserResponse", obj, "message"),
-  }
-}
-
-export function parseOptimiserStatusResponse(value: unknown): OptimiserStatusResponse {
-  const obj = expectPlainObject("parseOptimiserStatusResponse", value)
-  return {
-    status: expectStringLiteral("parseOptimiserStatusResponse", obj.status, "field `status`", JOB_STATUS_VALUES),
-    progress: optionalNumber("parseOptimiserStatusResponse", obj, "progress"),
-    message: optionalString("parseOptimiserStatusResponse", obj, "message"),
-    elapsed_seconds: optionalNumber("parseOptimiserStatusResponse", obj, "elapsed_seconds"),
-    result: obj.result === undefined || obj.result === null ? null : parseOptimiserSolveResult(obj.result, "field `result`"),
-    frontier: obj.frontier === undefined || obj.frontier === null ? null : parseFrontierResponse(obj.frontier, "field `frontier`"),
-    terminal_reason: optionalNullableString("parseOptimiserStatusResponse", obj, "terminal_reason"),
-    execution_metrics: optionalExecutionMetrics("parseOptimiserStatusResponse", obj, "execution_metrics"),
   }
 }
 

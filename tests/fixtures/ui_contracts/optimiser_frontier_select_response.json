@@ -1,5 +1,6 @@
 {
   "status": "ok",
+  "point_index": null,
   "total_objective": 120.0,
   "constraints": {
     "loss": 0.9
@@ -12,5 +13,13 @@
     "loss": 0.3
   },
   "converged": true,
+  "iterations": null,
+  "cd_iterations": null,
+  "factor_tables": {},
+  "history": null,
+  "warning": null,
+  "scenario_value_stats": null,
+  "scenario_value_histogram": null,
+  "clamp_rate": null,
   "error": null
 }

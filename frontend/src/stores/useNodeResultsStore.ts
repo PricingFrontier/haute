@@ -121,7 +121,7 @@ export type SolveProgress = {
   progress: number
   message: string
   elapsed_seconds: number
-  result?: OptimiserSolveResult
+  result?: OptimiserSolveResult | null
   terminal_reason?: string | null
   execution_metrics?: ExecutionMetrics | null
 }
@@ -424,6 +424,30 @@ function cacheOptimiserPreview(nodeId: string, cached: CachedSolveResult): void 
 function readOptimiserPreview(nodeId: string, cached: CachedSolveResult): OptimiserPreviewData {
   const prev = _optimiserPreviewCache[nodeId]
   return prev && prev.source === cached ? prev.result : buildOptimiserPreview(cached)
+}
+
+/** The result a failed solve with no earlier result is cached with. */
+const FAILED_SOLVE_RESULT: OptimiserSolveResult = {
+  mode: null,
+  total_objective: 0,
+  baseline_objective: 0,
+  constraints: {},
+  baseline_constraints: {},
+  lambdas: {},
+  converged: false,
+  iterations: null,
+  n_quotes: null,
+  n_steps: null,
+  cd_iterations: null,
+  factor_tables: {},
+  history: null,
+  warning: null,
+  scenario_value_stats: null,
+  scenario_value_histogram: null,
+  clamp_rate: null,
+  frontier: null,
+  frontier_error: null,
+  selected_frontier_point: null,
 }
 
 /** The as-solved result with a frontier point's server summary applied; a
@@ -829,8 +853,8 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       touchCachedResult(solveResultRecency, nodeId)
       const nextCached: CachedSolveResult = {
         ...(s.solveResults[nodeId] ?? {
-          result: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as OptimiserSolveResult,
-          originalResult: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as OptimiserSolveResult,
+          result: FAILED_SOLVE_RESULT,
+          originalResult: FAILED_SOLVE_RESULT,
         }),
         terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,

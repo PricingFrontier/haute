@@ -1328,6 +1328,281 @@ export interface SaveModelResponse {
   path: string;
   status: 'ok';
 }
+export interface OptimiserSolveResponse {
+  error: string | null;
+  job_id: string | null;
+  status: 'started' | 'error';
+}
+/**
+ * Result shape for ``POST /api/optimiser/estimate``.
+ */
+export interface OptimiserEstimateResponse {
+  expanded_row_count: number | null;
+  quote_count: number | null;
+  scenarios_per_quote_max: number | null;
+  scenarios_per_quote_mean: number | null;
+  scenarios_per_quote_min: number | null;
+  total_rows: number | null;
+}
+export interface OptimiserStatusResponse {
+  elapsed_seconds: number;
+  execution_metrics: ExecutionMetricsPayload | null;
+  frontier: OptimiserFrontierResponse | null;
+  message: string;
+  progress: number;
+  result: OptimiserSolveResult | null;
+  status:
+    'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
+  terminal_reason: string | null;
+}
+export interface OptimiserFrontierResponse {
+  constraint_names: string[];
+  job_id: string | null;
+  n_points: number;
+  point_summaries: OptimiserFrontierPointSummary[];
+  points: {
+    [k: string]: unknown;
+  }[];
+  points_limit: number | null;
+  points_returned: number;
+  points_truncated: boolean;
+  status: string;
+}
+/**
+ * Every result field of one frontier point that differs from its solve.
+ *
+ * ``None`` means the point has no such field: applying the summary to the
+ * solve's result removes it.
+ */
+export interface OptimiserFrontierPointSummary {
+  cd_iterations: number | null;
+  clamp_rate: number | null;
+  constraints: {
+    [k: string]: number;
+  };
+  converged: boolean;
+  factor_tables: {
+    [k: string]: {
+      [k: string]: unknown;
+    }[];
+  } | null;
+  frontier_error: string | null;
+  history: OptimiserHistoryEntry[] | null;
+  iterations: number | null;
+  lambdas: {
+    [k: string]: number;
+  };
+  scenario_value_histogram: OptimiserScenarioValueHistogram | null;
+  scenario_value_stats: OptimiserScenarioValueStats | null;
+  total_objective: number;
+  warning: string | null;
+}
+export interface OptimiserHistoryEntry {
+  all_constraints_satisfied: boolean | null;
+  iteration: number;
+  lambdas: {
+    [k: string]: number;
+  };
+  max_lambda_change: number;
+  total_constraints: {
+    [k: string]: number;
+  };
+  total_objective: number;
+}
+export interface OptimiserScenarioValueHistogram {
+  counts: number[];
+  edges: number[];
+}
+export interface OptimiserScenarioValueStats {
+  max: number;
+  mean: number;
+  min: number;
+  p25: number;
+  p5: number;
+  p50: number;
+  p75: number;
+  p95: number;
+  pct_decrease: number;
+  pct_increase: number;
+  std: number;
+}
+export interface OptimiserSolveResult {
+  baseline_constraints: {
+    [k: string]: number;
+  };
+  baseline_objective: number;
+  cd_iterations: number | null;
+  clamp_rate: number | null;
+  constraints: {
+    [k: string]: number;
+  };
+  converged: boolean;
+  factor_tables: {
+    [k: string]: {
+      [k: string]: unknown;
+    }[];
+  };
+  frontier: OptimiserFrontierResponse | null;
+  frontier_error: string | null;
+  history: OptimiserHistoryEntry[] | null;
+  iterations: number | null;
+  lambdas: {
+    [k: string]: number;
+  };
+  mode: string | null;
+  n_quotes: number | null;
+  n_steps: number | null;
+  scenario_value_histogram: OptimiserScenarioValueHistogram | null;
+  scenario_value_stats: OptimiserScenarioValueStats | null;
+  selected_frontier_point: number | null;
+  total_objective: number;
+  warning: string | null;
+}
+export interface OptimiserApplyResponse {
+  constraints: {
+    [k: string]: number;
+  };
+  error: string | null;
+  from_artifact: boolean;
+  preview: {
+    [k: string]: unknown;
+  }[];
+  preview_row_count: number;
+  preview_row_limit: number | null;
+  preview_truncated: boolean;
+  row_count: number;
+  status: string;
+  total_objective: number;
+}
+export interface OptimiserSaveResponse {
+  message: string;
+  path: string | null;
+  status: string;
+}
+export interface OptimiserMlflowLogResponse {
+  backend: string;
+  error: string | null;
+  experiment_name: string;
+  run_id: string | null;
+  run_url: string | null;
+  status: 'ok' | 'error';
+  tracking_uri: string;
+}
+export interface OptimiserFrontierStatusResponse {
+  elapsed_seconds: number;
+  error_code: string | null;
+  error_detail:
+    | ExecutionMemoryLimitErrorPayload
+    | {
+        [k: string]: unknown;
+      }
+    | string
+    | null;
+  execution_metrics: ExecutionMetricsPayload | null;
+  http_status_code: number | null;
+  message: string;
+  progress: number;
+  result: OptimiserFrontierResponse | null;
+  status:
+    'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
+  terminal_reason: string | null;
+}
+export interface ExecutionMemoryLimitErrorPayload {
+  baseline_rss_bytes: number | null;
+  error_code: 'memory_limit';
+  headroom_bytes: number | null;
+  job_id: string | null;
+  memory_limit_bytes: number | null;
+  operation: string;
+  process_rss_limit_bytes: number | null;
+  profile: string | null;
+  reason: string;
+  rss_at_admission_bytes: number | null;
+  rss_bytes: number | null;
+  rss_limit_bytes: number | null;
+}
+export interface OptimiserFrontierAutoRangeStartResponse {
+  error: string | null;
+  job_id: string | null;
+  status: 'started' | 'error';
+}
+export interface OptimiserFrontierAutoRangeStatusResponse {
+  elapsed_seconds: number;
+  error_code: string | null;
+  error_detail:
+    | ExecutionMemoryLimitErrorPayload
+    | {
+        [k: string]: unknown;
+      }
+    | string
+    | null;
+  execution_metrics: ExecutionMetricsPayload | null;
+  http_status_code: number | null;
+  message: string;
+  progress: number;
+  result: OptimiserFrontierAutoRangeResponse | null;
+  status:
+    'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
+  terminal_reason: string | null;
+}
+export interface OptimiserFrontierAutoRangeResponse {
+  chunk_fallback: OptimiserChunkFallback | null;
+  method: string;
+  ranges: {
+    [k: string]: OptimiserFrontierRange;
+  };
+  status: string;
+  warning: string | null;
+}
+/**
+ * A lost chunk optimisation recorded on an auto-range job.
+ *
+ * Chunk ineligibility never fails the request, so this record is the only
+ * place the reason survives; typing it keeps the emitted keys and the three
+ * stable codes part of the API contract.
+ */
+export interface OptimiserChunkFallback {
+  code: 'chunk_user_code_ineligible' | 'model_score_ineligible' | 'chunk_plan_unsupported';
+  column: number | null;
+  line: number | null;
+  message: string;
+  node_id: string | null;
+  operator: string | null;
+  reason: string | null;
+}
+export interface OptimiserFrontierRange {
+  max: number;
+  min: number;
+}
+export interface OptimiserFrontierSelectResponse {
+  baseline_constraints: {
+    [k: string]: number;
+  };
+  baseline_objective: number;
+  cd_iterations: number | null;
+  clamp_rate: number | null;
+  constraints: {
+    [k: string]: number;
+  };
+  converged: boolean;
+  error: string | null;
+  factor_tables: {
+    [k: string]: {
+      [k: string]: unknown;
+    }[];
+  };
+  history: OptimiserHistoryEntry[] | null;
+  iterations: number | null;
+  lambdas: {
+    [k: string]: number;
+  };
+  point_index: number | null;
+  scenario_value_histogram: OptimiserScenarioValueHistogram | null;
+  scenario_value_stats: OptimiserScenarioValueStats | null;
+  status: string;
+  total_objective: number;
+  warning: string | null;
+}
 export interface SessionStatusResponse {
   ok: boolean;
 }

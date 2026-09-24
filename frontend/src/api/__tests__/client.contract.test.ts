@@ -36,6 +36,7 @@ import {
   getExplorePivotStatus,
   getMilestones,
   getMilestoneSaves,
+  getFrontierStatus,
   getOptimiserFrontierAutoRangeStatus,
   getOptimiserStatus,
   getPendingSaves,
@@ -762,7 +763,7 @@ describe("client runtime contracts", () => {
 
     await expect(getOptimiserStatus("job-1")).rejects.toMatchObject({
       name: "ApiResponseValidationError",
-      message: expect.stringMatching(/could not read optimiser status.*parseOptimiserStatusResponse/i),
+      message: "Could not read optimiser status: OptimiserStatusResponse: invalid contract at /result/lambdas/loss: type",
       cause: expect.any(Error),
     })
     await expect(getOptimiserStatus("job-1")).rejects.toBeInstanceOf(ApiResponseValidationError)
@@ -794,6 +795,42 @@ describe("client runtime contracts", () => {
     })
   })
 
+  it("getFrontierStatus checks the frontier job and its one summary per point", async () => {
+    const frontier = loadUiContractFixture<Record<string, unknown>>("optimiser_frontier_response")
+    const status = (result: unknown) => ({
+      status: "completed",
+      progress: 1,
+      message: "Frontier ready",
+      elapsed_seconds: 3,
+      result,
+      terminal_reason: null,
+      error_code: null,
+      http_status_code: null,
+      error_detail: null,
+      execution_metrics: null,
+    })
+
+    mockFetch.mockReturnValue(jsonResponse(status(frontier)))
+    const parsed = await getFrontierStatus("frontier-job-1")
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/optimiser/frontier/status/frontier-job-1")
+    expect(parsed.result?.points[0]?.total_objective).toBe(125)
+    expect(parsed.result?.point_summaries[0]?.lambdas).toEqual({ loss: 0.3 })
+
+    const summaries = frontier.point_summaries as Record<string, unknown>[]
+    mockFetch.mockReturnValue(jsonResponse(status({
+      ...frontier,
+      point_summaries: [{ ...summaries[0], converged: "yes" }],
+    })))
+    await expect(getFrontierStatus("frontier-job-1")).rejects.toThrow(
+      "OptimiserFrontierStatusResponse: invalid contract at /result/point_summaries/0/converged: type",
+    )
+
+    mockFetch.mockReturnValue(jsonResponse(status({ ...frontier, point_summaries: [] })))
+    await expect(getFrontierStatus("frontier-job-1")).rejects.toThrow(
+      "parseOptimiserStatusResponse: expected result.point_summaries to hold one summary per point, got 0 for 1 points",
+    )
+  })
+
   it("preserves optimiser auto-range start contract metadata", async () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "range-job-1", error: null }))
 
@@ -811,6 +848,11 @@ describe("client runtime contracts", () => {
         message: "Completed",
         elapsed_seconds: 2.5,
         result: loadUiContractFixture("optimiser_frontier_auto_range_response"),
+        terminal_reason: null,
+        error_code: null,
+        http_status_code: null,
+        error_detail: null,
+        execution_metrics: null,
       }),
     )
 
@@ -825,6 +867,11 @@ describe("client runtime contracts", () => {
         message: "Cancelled",
         elapsed_seconds: 2.5,
         result: null,
+        terminal_reason: null,
+        error_code: null,
+        http_status_code: null,
+        error_detail: null,
+        execution_metrics: null,
       }),
     )
 
@@ -1051,37 +1098,37 @@ describe("next-wave client runtime contracts", () => {
       name: "solveOptimiser",
       response: { ...loadUiContractFixture<Record<string, unknown>>("solve_optimiser_response"), job_id: 42 },
       call: () => solveOptimiser({ graph: dummyGraph, node_id: "opt1" }),
-      error: /parseSolveOptimiserResponse/i,
+      error: "OptimiserSolveResponse: invalid contract at /job_id: type",
     },
     {
       name: "estimateOptimiserSolve",
       response: { ...loadUiContractFixture<Record<string, unknown>>("optimiser_estimate_response"), total_rows: "bad" },
       call: () => estimateOptimiserSolve({ graph: dummyGraph, node_id: "opt1" }),
-      error: /parseOptimiserEstimateResponse/i,
+      error: "OptimiserEstimateResponse: invalid contract at /total_rows: type",
     },
     {
       name: "applyOptimiser",
       response: { ...loadUiContractFixture<Record<string, unknown>>("optimiser_apply_response"), constraints: { loss: "bad" } },
       call: () => applyOptimiser({ job_id: "opt-job-1" }),
-      error: /parseApplyOptimiserResponse/i,
+      error: "OptimiserApplyResponse: invalid contract at /constraints/loss: type",
     },
     {
       name: "saveOptimiser",
       response: { ...loadUiContractFixture<Record<string, unknown>>("optimiser_save_response"), message: 42 },
       call: () => saveOptimiser({ job_id: "opt-job-1", output_path: "output.py" }),
-      error: /parseSaveOptimiserResponse/i,
+      error: "OptimiserSaveResponse: invalid contract at /message: type",
     },
     {
       name: "logOptimiserToMlflow",
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_log_response"), tracking_uri: 42 },
       call: () => logOptimiserToMlflow({ job_id: "opt-job-1", destination: "" }),
-      error: /parseMlflowLogResponse/i,
+      error: "OptimiserMlflowLogResponse: invalid contract at /tracking_uri: type",
     },
     {
       name: "startOptimiserFrontierAutoRange",
       response: { status: "started", job_id: 42, error: null },
       call: () => startOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" }),
-      error: /parseFrontierAutoRangeStartResponse/i,
+      error: "OptimiserFrontierAutoRangeStartResponse: invalid contract at /job_id: type",
     },
     {
       name: "getOptimiserFrontierAutoRangeStatus",
@@ -1094,9 +1141,14 @@ describe("next-wave client runtime contracts", () => {
           ...loadUiContractFixture<Record<string, unknown>>("optimiser_frontier_auto_range_response"),
           ranges: { expected_margin: { min: "bad", max: 39 } },
         },
+        terminal_reason: null,
+        error_code: null,
+        http_status_code: null,
+        error_detail: null,
+        execution_metrics: null,
       },
       call: () => getOptimiserFrontierAutoRangeStatus("range-job-1"),
-      error: /parseFrontierAutoRangeResponse/i,
+      error: "OptimiserFrontierAutoRangeStatusResponse: invalid contract at /result/ranges/expected_margin/min: type",
     },
     {
       name: "cancelOptimiserFrontierAutoRange",
@@ -1106,15 +1158,20 @@ describe("next-wave client runtime contracts", () => {
         message: "Cancelled",
         elapsed_seconds: "bad",
         result: null,
+        terminal_reason: null,
+        error_code: null,
+        http_status_code: null,
+        error_detail: null,
+        execution_metrics: null,
       },
       call: () => cancelOptimiserFrontierAutoRange("range-job-1"),
-      error: /elapsed_seconds/i,
+      error: "OptimiserFrontierAutoRangeStatusResponse: invalid contract at /elapsed_seconds: type",
     },
     {
       name: "selectFrontierPoint",
       response: { ...loadUiContractFixture<Record<string, unknown>>("optimiser_frontier_select_response"), lambdas: { loss: "bad" } },
       call: () => selectFrontierPoint({ job_id: "opt-job-1", point_index: 0 }),
-      error: /parseFrontierSelectResponse/i,
+      error: "OptimiserFrontierSelectResponse: invalid contract at /lambdas/loss: type",
     },
     {
       name: "listUtilityFiles",
