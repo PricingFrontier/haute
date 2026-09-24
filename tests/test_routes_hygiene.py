@@ -874,10 +874,49 @@ class TestNoNewPrivateEngineImports:
         "haute._execute_lazy": None,
         "haute.projection": None,
         "haute.graph_utils": {
-            "_execute_lazy",
+            "_execute_eager_core",
             "_prune_live_switch_edges",
         },
     }
+    # Modules whose every name is private to the engine: routes and deploy
+    # reach them only through the execution facade.
+    _ENGINE_ONLY_MODULES = frozenset({"haute._graph_walker"})
+
+    @classmethod
+    def _private_engine_imports(cls, source: str, rel_path: str) -> list[tuple[str, str, str, int]]:
+        found: list[tuple[str, str, str, int]] = []
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            engine_only = node.module in cls._ENGINE_ONLY_MODULES
+            if not engine_only and node.module not in cls._PRIVATE_ENGINE_IMPORTS_BY_MODULE:
+                continue
+            tracked_imports = cls._PRIVATE_ENGINE_IMPORTS_BY_MODULE.get(node.module or "")
+            for alias in node.names:
+                if not engine_only:
+                    if not alias.name.startswith("_"):
+                        continue
+                    if tracked_imports is not None and alias.name not in tracked_imports:
+                        continue
+                found.append((rel_path, node.module or "", alias.name, node.lineno))
+        return found
+
+    def test_engine_only_modules_are_refused_whatever_the_name(self) -> None:
+        source = "\n".join(
+            [
+                "from haute._graph_walker import CollectPolicy, walk_graph",
+                "from haute._execute_lazy import _build_funcs",
+                "from haute.execution import execute_lazy_graph",
+            ]
+        )
+
+        found = self._private_engine_imports(source, "src/haute/routes/example.py")
+
+        assert [(module, name) for _path, module, name, _line in found] == [
+            ("haute._graph_walker", "CollectPolicy"),
+            ("haute._graph_walker", "walk_graph"),
+            ("haute._execute_lazy", "_build_funcs"),
+        ]
 
     def test_no_new_private_execution_helper_imports_in_routes_or_deploy(self) -> None:
         offenders: list[tuple[str, str, str, int]] = []
@@ -887,25 +926,15 @@ class TestNoNewPrivateEngineImports:
             for py_file in _iter_python_sources(root):
                 if py_file.name == "__init__.py":
                     continue
-                tree = ast.parse(py_file.read_text(encoding="utf-8"))
                 rel_path = str(py_file.relative_to(_REPO_ROOT)).replace("\\", "/")
-
-                for node in ast.walk(tree):
-                    if not isinstance(node, ast.ImportFrom):
+                for path, module, name, line in self._private_engine_imports(
+                    py_file.read_text(encoding="utf-8"), rel_path
+                ):
+                    key = (path, module, name)
+                    seen_private_imports.add(key)
+                    if key in self._PRIVATE_ENGINE_IMPORT_ALLOWLIST:
                         continue
-                    if node.module not in self._PRIVATE_ENGINE_IMPORTS_BY_MODULE:
-                        continue
-                    tracked_imports = self._PRIVATE_ENGINE_IMPORTS_BY_MODULE[node.module]
-                    for alias in node.names:
-                        if not alias.name.startswith("_"):
-                            continue
-                        if tracked_imports is not None and alias.name not in tracked_imports:
-                            continue
-                        private_import = (rel_path, node.module, alias.name)
-                        seen_private_imports.add(private_import)
-                        if private_import in self._PRIVATE_ENGINE_IMPORT_ALLOWLIST:
-                            continue
-                        offenders.append((*private_import, node.lineno))
+                    offenders.append((*key, line))
 
         assert offenders == [], (
             "New private execution-helper imports found in routes/deploy. "
@@ -924,13 +953,11 @@ class TestNoNewPrivateEngineImports:
 class TestExecutionBoundaryGuardrails:
     """Static guardrails for the shared execution/projection architecture."""
 
-    def test_execute_lazy_call_sites_make_execution_context_decision(self) -> None:
+    def test_graph_walk_call_sites_make_execution_context_decision(self) -> None:
         offenders: list[tuple[str, int, str]] = []
 
         for py_file in _iter_python_sources(_REPO_ROOT / "src" / "haute"):
             rel_path = str(py_file.relative_to(_REPO_ROOT)).replace("\\", "/")
-            if rel_path == "src/haute/_execute_lazy.py":
-                continue
             tree = ast.parse(py_file.read_text(encoding="utf-8"))
 
             for node in ast.walk(tree):
@@ -942,14 +969,14 @@ class TestExecutionBoundaryGuardrails:
                     call_name = func.id
                 elif isinstance(func, ast.Attribute):
                     call_name = func.attr
-                if call_name != "_execute_lazy":
+                if call_name != "walk_graph":
                     continue
                 if any(keyword.arg == "execution_context" for keyword in node.keywords):
                     continue
                 offenders.append((rel_path, node.lineno, ast.unparse(node)))
 
         assert offenders == [], (
-            "Every production _execute_lazy call site must explicitly pass "
+            "Every production walk_graph call site must explicitly pass "
             "execution_context=... (including None only if the caller has made "
             f"that decision deliberately). Offenders: {offenders}"
         )

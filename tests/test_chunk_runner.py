@@ -11,7 +11,6 @@ import polars as pl
 import polars.testing as plt
 import pytest
 
-from haute._execute_lazy import _execute_lazy
 from haute._execution_context import (
     ExecutionCancelledError,
     ExecutionContext,
@@ -29,6 +28,7 @@ from haute.chunking import (
     run_chunked_reduce,
 )
 from haute.errors import ChunkPlanUnsupportedError
+from haute.execution import execute_lazy_graph
 from haute.executor import _build_node_fn
 from tests.conftest import make_edge, make_graph, make_output_config
 
@@ -152,7 +152,7 @@ def _full_lazy_output(
     *,
     required_columns: frozenset[str] | None = None,
 ) -> pl.DataFrame:
-    outputs, *_ = _execute_lazy(
+    outputs, *_ = execute_lazy_graph(
         graph,
         _build_node_fn,
         target_node_id="out",
@@ -364,7 +364,7 @@ def test_chunk_runner_bounds_output_rows_by_expansion_adjusted_source_batches(
 
 def test_chunk_runner_can_start_from_proven_intermediate_frame(tmp_path: Path) -> None:
     graph = _chunk_safe_graph(_write_source(tmp_path))
-    base_outputs, *_ = _execute_lazy(
+    base_outputs, *_ = execute_lazy_graph(
         graph,
         _build_node_fn,
         target_node_id="age_band",

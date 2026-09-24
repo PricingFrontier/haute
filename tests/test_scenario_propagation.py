@@ -18,7 +18,6 @@ from haute._builders import resolve_instance_node
 from haute._execute_lazy import (
     _build_funcs,
     _execute_eager_core,
-    _execute_lazy,
     _prune_live_switch_edges,
 )
 from haute._types import (
@@ -28,6 +27,7 @@ from haute._types import (
     NodeType,
     PipelineGraph,
 )
+from haute.execution import execute_lazy_graph
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -123,7 +123,7 @@ class TestScenarioForwardingToBuilders:
             nodes=[_source_node("s"), _transform_node("t")],
             edges=[_e("s", "t")],
         )
-        _execute_lazy(g, _scenario_tracking_build_fn(captured), source="nb_batch")
+        execute_lazy_graph(g, _scenario_tracking_build_fn(captured), source="nb_batch")
         assert captured["s"] == "nb_batch"
         assert captured["t"] == "nb_batch"
 

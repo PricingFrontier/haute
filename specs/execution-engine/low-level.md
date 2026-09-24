@@ -8,8 +8,8 @@
 | `src/haute/executor.py` | GUI-facing eager entry point: `execute_graph()` (preview, with the `_preview_cache` `LRUCache`), `write_data_output()` (batch/data-output writes), preamble compilation + single-flight cache (`_compile_preamble`), preview-column projection/schema-warning assembly, and output-destination containment. |
 | `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points (and `plan_projection`, the projection half of `plan_execution_strategy`, for a caller that needs another execution's per-node column demand without planning or admitting it), runtime-input fingerprints, `preview_lineage_cache_key`, and `PREVIEW_EXECUTION_SEMANTICS_VERSION`. It is the stable application import boundary, but is not currently a thin re-export module. |
 | `src/haute/_path_resolution.py` | Cross-component dependency owned by [sandbox-security](../sandbox-security/low-level.md); canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
-| `src/haute/_execute_lazy.py` | The shared execution core: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), `_execute_lazy` (lazy plan + seed-plan seeding and capture), and `_execute_eager_core`/`EagerResult` (eager materialisation and preview error adaptation). |
-| `src/haute/_graph_walker.py` | The graph walker: `walk_graph(graph, build_node_fn, *, policy: CollectPolicy, ...)` walks a graph once and returns a `WalkResult` (each built node's frame, the prepared order, parents, names, and the join and write recipes and pre-shaping frames it built). `WalkRequest` holds the execution-independent inputs, `CollectPolicy` what the walk collects and how it treats each node's frame (`WalkPurpose.SINK`). The Data Output sink walks through it. No function in the module exceeds a cyclomatic complexity of 15, held by ruff's C901 rule scoped to this module alone. |
+| `src/haute/_execute_lazy.py` | Node-boundary machinery the graph walker uses: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), `_PlannedCaptures` (seed-plan closures and captures), and `_execute_eager_core`/`EagerResult` (eager materialisation and preview error adaptation). |
+| `src/haute/_graph_walker.py` | The graph walker: `walk_graph(graph, build_node_fn, *, policy: CollectPolicy, ...)` walks a graph once and returns a `WalkResult` (each built node's frame, the prepared order, parents, names, and the join and write recipes and pre-shaping frames it built). `WalkRequest` holds the execution-independent inputs, `CollectPolicy` what the walk collects and how it treats each node's frame (`WalkPurpose.SINK`). The Data Output sink and every lazy execution through the execution facade walk through it. No function in the module exceeds a cyclomatic complexity of 15, held by ruff's C901 rule scoped to this module alone. |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
 | `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, profile-independent projection decisions, fan-in edge demands, materialisation/opaque boundaries, derivation of each code node's recompute facts (`recompute_facts_by_node(...)`), demand-only source-scan projection (a node's configured column selection bounds what may be demanded but is never pushed into or validated against a physical read), and bounded strategy diagnostics. |
@@ -380,7 +380,7 @@ labels fail clearly and never fall back to an arbitrary first frame.
 
 Before fingerprinting or building functions,
 `canonical_dataframe_execution_graph()` resolves every local runtime input field
-with `enforce_project_root=True`. `_execute_eager_core` and `_execute_lazy` are
+with `enforce_project_root=True`. `_execute_eager_core` and `walk_graph` are
 wrapped by `runtime_project_root_scoped`; its wrapper resolves the declared
 `graph` argument from either positional or keyword calls and fails clearly when
 the value is not a `PipelineGraph`. `_resolve_runtime_data_path` therefore
@@ -706,21 +706,23 @@ prepares the graph (`_prepare_execution`), checks a seed plan against the execut
 (`_check_snapshot_plan`), prepares inputs, binds each seed's leased generation, plans the
 strategy and column demand, builds the functions of every node it will invoke (not
 seeds, not pass-through nodes), and visits `run_order` — the prepared order, restricted
-under a plan to its seeds and executed nodes. A sink walk (`CollectPolicy.sink()`) has
-exactly the semantics of the lazy engine described next, with one difference in how a
-planned walk starts: every source is built (invoked, shaped and contract-checked) before
-the walk, then the plan's inputs are verified, and the walk then visits `run_order` as
-written, so a captured source is captured in walk order after the check and records its
-pre-shaping columns like any other capture. `WalkResult.order` is the prepared order,
-as `_execute_lazy` returned it. The Data Output sink (`prepare_data_output`) runs
-through `walk_graph`, and slices its own write by `WalkResult.write_recipes`.
+under a plan to its seeds and executed nodes. A sink walk (`CollectPolicy.sink()`) is the
+lazy execution described next; under a plan every source is built (invoked, shaped and
+contract-checked) before the walk, the plan's inputs are verified, and the walk then
+visits `run_order` as written, so a captured source is captured in walk order after the
+check and records its pre-shaping columns like any other capture. `WalkResult.order` is
+the prepared order. The Data Output sink (`prepare_data_output`) runs through
+`walk_graph` and slices its own write by `WalkResult.write_recipes`;
+`execution.execute_lazy_graph` returns the walk's frames, order, parents and names, and
+copies its join and write recipes and pre-shaping frames into the caller's dictionaries
+once the walk has finished.
 
-**Sink/lazy execution (`execution.execute_lazy_graph` → `_execute_lazy._execute_lazy`).**
+**Sink/lazy execution (`execution.execute_lazy_graph` → a sink walk of `walk_graph`).**
 Consumes the same `PreparedExecution` and `NodeBoundaryRunner` as eager execution,
 plus: a fuller backward projection analysis (a seed plan, a
 non-live source, or explicit required columns triggers it; the execution profile
 never does), then `_build_funcs()` for the nodes still needing construction. Each node's lazy
-frame is built by `_build_lazy_node()` (contract-checked the same way as eager) and —
+frame is built by the walk's node step (contract-checked the same way as eager) and —
 under a seed plan — captured when it is one of the plan's capture points (below), after
 which `_release_consumed_parents()` drops parent frames with no remaining consumer (a
 source, a preserved output, or a captured or seeded node — a cheap scan of a held file — is
@@ -738,7 +740,7 @@ capture-only column never fails otherwise-valid runtime execution; a missing
 runtime-required column still raises the typed contract mismatch at the first proven
 boundary.
 
-**Planned executions (`snapshot_plan`).** `_execute_lazy` given a leased
+**Planned executions (`snapshot_plan`).** A sink walk given a leased
 [seed plan](../caching/low-level.md#seed-plans) runs exactly that plan. The plan must have
 been resolved for this target, source, profile, and lineage fingerprint (`ValueError`
 otherwise). Planning demand is the plan's negotiated demand, handled as above: a negotiated
@@ -1404,7 +1406,7 @@ present a structural or schema result as execution evidence.
   edge its sanitised source label — in the same edge-declaration order the frames
   are bound in, so parameter i's name always describes frame i. `_build_funcs`
   requires incoming-edge metadata together with the complete graph's edge and node
-  maps; `_execute_lazy` (lazy and eager cores),
+  maps; the graph walker, the eager core,
   `executor.py`'s preview path, `execution.py`'s linear/optimiser execution, and
   `chunking.py`'s chunked runner all pass their node's incoming edges through the
   same derivation. There is no parent-name reconstruction path.
@@ -2443,7 +2445,7 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
 
 - **`test_execute_lazy.py`** — the core suite: `_prune_live_switch_edges`, shared
   `PreparedExecution`/`NodeBoundaryRunner` preparation and routing parity,
-  `_execute_lazy`, `_build_funcs`, `_execute_eager_core` (swallow
+  lazy execution through `execute_lazy_graph`, `_build_funcs`, `_execute_eager_core` (swallow
   vs. raise, timings, memory accounting), `_apply_selected_columns`, `EagerResult`
   shape, and full-versus-planned equivalence for every admitted boundary operator —
   a graph executed through the real admitted executor equals the plain lazy result on
@@ -2545,7 +2547,7 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
 - **`test_topo.py`**, **`test_topo_contracts.py`** — strict topological sort ordering,
   unknown-endpoint failure, explicit filtered-traversal evidence, cycle
   detection/reporting, and ancestor traversal.
-- **`test_graph_utils.py`** — `_execute_lazy` re-export surface,
+- **`test_graph_utils.py`** — lazy execution through `execute_lazy_graph`,
   `_sanitize_func_name`, `ancestors`/`topo_sort_ids`
   via the `graph_utils` facade.
 - **`test_host_memory.py`** — RAM/VRAM probing: a real availability reading,

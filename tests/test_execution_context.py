@@ -39,7 +39,8 @@ from haute._execution_context import (
 from haute._pipeline_recovery import pipeline_document_fingerprint
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.errors import ContractMismatchError, SchemaMismatchError
-from haute.graph_utils import NodeType, _execute_eager_core, _execute_lazy
+from haute.execution import execute_lazy_graph
+from haute.graph_utils import NodeType, _execute_eager_core
 from haute.schemas import ExecutionMetricsPayload
 from tests._execution_faults import ExecutionFaultPoint, FaultInjectingExecutionContext
 from tests.conftest import (
@@ -2993,7 +2994,7 @@ def test_lazy_graph_execution_checks_cancellation_before_node_work() -> None:
         raise AssertionError("cancelled execution should not build node functions")
 
     with pytest.raises(ExecutionCancelledError):
-        _execute_lazy(graph, build_node_fn, execution_context=context)
+        execute_lazy_graph(graph, build_node_fn, execution_context=context)
 
 
 def test_lazy_graph_execution_records_build_and_capture_stages(tmp_path) -> None:
@@ -3075,7 +3076,7 @@ def test_lazy_graph_execution_records_build_and_capture_stages(tmp_path) -> None
         profile=ExecutionProfile.LAZY_SINK,
     )
     with open_resolved_seed_plan(request, store=NodeSnapshotStore(tmp_path)) as plan:
-        outputs, *_ = _execute_lazy(
+        outputs, *_ = execute_lazy_graph(
             graph,
             build_node_fn,
             target_node_id="both",

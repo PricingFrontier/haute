@@ -25,7 +25,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
 **In scope:**
 - Turning a `PipelineGraph` (nodes + edges) into an executable order and running it,
   both eagerly (`executor.execute_graph`, `_execute_lazy._execute_eager_core`) and
-  lazily (`execution.execute_lazy_graph`, `_execute_lazy._execute_lazy`).
+  lazily (`execution.execute_lazy_graph`, a sink walk of `_graph_walker.walk_graph`).
 - The GUI preview cache — reusing materialised node outputs across clicks on the same
   graph, extending the cache when a new target requires more of the graph, and
   discarding entries once source data or graph shape changes.
@@ -509,7 +509,7 @@ keep reporting the failing line so the editor can name the failing step.
   for capped surfaces, and once the optimiser runs in capped workers whether the
   remaining uncapped surfaces still justify it is decided again.
 - **Two execution strategies, one shared node-building step.** Eager execution
-  (`_execute_eager_core`) and lazy execution (`_execute_lazy`) both call
+  (`_execute_eager_core`) and lazy execution (the graph walker's sink walk) both call
   `_build_funcs`, which asks each node's `NODE_REGISTRY` builder for the same
   `(name, callable, is_source)` triple. This is deliberate: the GUI preview and a
   batch sink run *the same per-node logic*, differing only in when the result is
@@ -517,8 +517,10 @@ keep reporting the failing line so the editor can name the failing step.
   produces" would otherwise be a permanent trust problem for users.
 - **One graph walker.** `_graph_walker.walk_graph` walks a graph once under a
   `CollectPolicy` that says what the walk collects and how it treats each node's frame.
-  The Data Output sink runs on it; preview, trace, deploy scoring and the other lazy
-  callers still run on the cores above until each moves (`EXEC-R05`). Two decisions
+  The Data Output sink and every lazy execution (`execution.execute_lazy_graph`: deploy
+  scoring, training, the optimiser, node data, the assistant) run on it; preview and trace
+  still run on the eager core, and the chunked runner on its own loop, until each moves
+  (`EXEC-R05`). Two decisions
   bound it. Its functions stay at a cyclomatic complexity of 15 or below, held by ruff's
   C901 rule scoped to the walker module only; the rest of the package is not held to
   that limit. And the decorator pipeline's `Pipeline.run`/`score` keeps its own loop over
@@ -656,7 +658,7 @@ keep reporting the failing line so the editor can name the failing step.
 - [pipeline-config](../pipeline-config/high-level.md): owns node schemas, sidecar
   validation, and registry/configuration contracts. Execution-engine owns the runtime
   builder implementations and interception seam registered behind those contracts.
-- [caching](../caching/high-level.md): the seed plans `_execute_lazy` runs, plus
+- [caching](../caching/high-level.md): the seed plans the graph walker runs, plus
   `_cache.lineage_cache_key()`, which
   `execution.preview_lineage_cache_key()` uses with
   `PREVIEW_EXECUTION_SEMANTICS_VERSION` and the complete selected-lineage payload as

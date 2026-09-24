@@ -22,13 +22,14 @@ import polars as pl
 import pytest
 
 from haute._builders import _build_node_fn
-from haute._execute_lazy import _execute_eager_core, _execute_lazy
+from haute._execute_lazy import _execute_eager_core
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionProfile
 from haute._io import read_source
 from haute._polars_utils import bounded_collect_batches, bounded_sink
 from haute._types import PipelineGraph
 from haute.errors import BoundedMemoryUnsupportedError
+from haute.execution import execute_lazy_graph
 from tests.conftest import make_edge, make_graph
 
 # Every profile that writes or reads a `bounded` snapshot. If this list and
@@ -154,7 +155,7 @@ def _bounded_frame(
         operation="profile_semantics_proof", profile=profile
     )
     try:
-        outputs, _order, _parents, _names = _execute_lazy(
+        outputs, _order, _parents, _names = execute_lazy_graph(
             PipelineGraph.model_validate(graph),
             _build_node_fn,
             target_node_id=target,

@@ -3,7 +3,7 @@
 Covers:
   - _prune_live_switch_edges  — scenario-based edge pruning
   - prepare_graph             — topo sort, parent building, id_to_name
-  - _execute_lazy             — lazy execution path
+  - execute_lazy_graph        — lazy execution path (the walker's sink walk)
   - _build_funcs              — function building for eager execution
   - _execute_eager_core       — eager execution with swallow_errors, timings, memory
   - _apply_selected_columns   — shared column-filter helper (D4)
@@ -16,6 +16,7 @@ import polars as pl
 import pytest
 
 import haute._execute_lazy as execution_core
+import haute._graph_walker as graph_walker
 import haute.projection as projection_planner
 from haute._execute_lazy import (
     EagerResult,
@@ -24,7 +25,6 @@ from haute._execute_lazy import (
     _apply_selected_columns,
     _build_funcs,
     _execute_eager_core,
-    _execute_lazy,
     _extract_error_line,
     _prepare_execution,
     _prune_live_switch_edges,
@@ -37,6 +37,7 @@ from haute._types import (
     NodeType,
     PipelineGraph,
 )
+from haute.execution import execute_lazy_graph
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -401,8 +402,9 @@ class TestPreparedExecution:
             return prepare(request)
 
         monkeypatch.setattr(execution_core, "_prepare_execution", capture)
+        monkeypatch.setattr(graph_walker, "_prepare_execution", capture)
 
-        execution_core._execute_lazy(graph, _simple_build_fn)
+        execute_lazy_graph(graph, _simple_build_fn)
         execution_core._execute_eager_core(graph, _simple_build_fn)
 
         assert requests == [
@@ -422,7 +424,7 @@ class TestExecuteLazy:
             nodes=[_source_node("src"), _transform_node("t")],
             edges=[_e("src", "t")],
         )
-        outputs, order, parents, id_to_name = _execute_lazy(g, _simple_build_fn)
+        outputs, order, parents, id_to_name = execute_lazy_graph(g, _simple_build_fn)
         assert isinstance(outputs["t"], pl.LazyFrame)
         df = outputs["t"].collect()
         assert "y" in df.columns
@@ -438,7 +440,7 @@ class TestExecuteLazy:
             nodes=[_source_node("src"), _transform_node("t")],
             edges=[_e("src", "t")],
         )
-        outputs, _, _, _ = _execute_lazy(g, build_fn)
+        outputs, _, _, _ = execute_lazy_graph(g, build_fn)
         assert isinstance(outputs["src"], pl.LazyFrame)
 
     def test_non_source_with_no_input_raises(self):
@@ -450,14 +452,14 @@ class TestExecuteLazy:
             edges=[],
         )
         with pytest.raises(ValueError, match="No input data available"):
-            _execute_lazy(g, build_fn)
+            execute_lazy_graph(g, build_fn)
 
     def test_target_node_filters_execution(self):
         g = PipelineGraph(
             nodes=[_source_node("a"), _transform_node("b"), _transform_node("c")],
             edges=[_e("a", "b"), _e("b", "c")],
         )
-        outputs, _, _, _ = _execute_lazy(g, _simple_build_fn, target_node_id="b")
+        outputs, _, _, _ = execute_lazy_graph(g, _simple_build_fn, target_node_id="b")
         assert "b" in outputs
         assert "c" not in outputs
 
@@ -475,7 +477,7 @@ class TestExecuteLazy:
             nodes=[_source_node("s")],
             edges=[],
         )
-        _execute_lazy(g, build_fn, preamble_ns={"helper": lambda x: x})
+        execute_lazy_graph(g, build_fn, preamble_ns={"helper": lambda x: x})
         assert "preamble_ns" in captured
 
 
@@ -914,7 +916,7 @@ class TestJoinsAndFanOuts:
             ],
         )
 
-        outputs, *_ = _execute_lazy(
+        outputs, *_ = execute_lazy_graph(
             g,
             build_fn,
             target_node_id="opt",
@@ -929,7 +931,7 @@ class TestJoinsAndFanOuts:
             nodes=[_source_node("s1"), _source_node("s2"), _transform_node("j")],
             edges=[_e("s1", "j"), _e("s2", "j")],
         )
-        outputs, *_ = _execute_lazy(g, _join_build_fn)
+        outputs, *_ = execute_lazy_graph(g, _join_build_fn)
 
         df = outputs["j"].collect()
         assert set(df.columns) >= {"key", "a", "b"}
@@ -967,7 +969,7 @@ class TestJoinsAndFanOuts:
         )
 
         eager = _execute_eager_core(g, build_fn, enforce_contracts=True).outputs["t"]
-        lazy_outputs, *_ = _execute_lazy(g, build_fn, enforce_contracts=True)
+        lazy_outputs, *_ = execute_lazy_graph(g, build_fn, enforce_contracts=True)
         lazy = lazy_outputs["t"].collect()
 
         assert eager["b2"].to_list() == [60]
@@ -990,7 +992,7 @@ class TestJoinsAndFanOuts:
                 _e("s3", "j2"),
             ],
         )
-        outputs, *_ = _execute_lazy(g, _join_build_fn)
+        outputs, *_ = execute_lazy_graph(g, _join_build_fn)
 
         df = outputs["j2"].collect()
         assert set(df.columns) >= {"key", "a", "b", "c"}
@@ -1006,7 +1008,7 @@ class TestJoinsAndFanOuts:
             ],
             edges=[_e("s1", "j"), _e("s2", "j")],
         )
-        outputs, *_ = _execute_lazy(g, _join_build_fn)
+        outputs, *_ = execute_lazy_graph(g, _join_build_fn)
 
         df = outputs["j"].collect()
         assert df.columns == ["key", "a"]
@@ -1022,7 +1024,7 @@ class TestJoinsAndFanOuts:
             ],
             edges=[_e("s1", "mid"), _e("mid", "c1"), _e("mid", "c2")],
         )
-        outputs, *_ = _execute_lazy(g, _simple_build_fn)
+        outputs, *_ = execute_lazy_graph(g, _simple_build_fn)
 
         df_c1 = outputs["c1"].collect()
         df_c2 = outputs["c2"].collect()
@@ -1040,7 +1042,7 @@ class TestJoinsAndFanOuts:
             ],
             edges=[_e("s1", "t"), _e("t", "join"), _e("s2", "join")],
         )
-        outputs, *_ = _execute_lazy(g, _join_build_fn)
+        outputs, *_ = execute_lazy_graph(g, _join_build_fn)
 
         df = outputs["join"].collect()
         assert "key" in df.columns
@@ -1133,7 +1135,7 @@ class TestExecuteLazyDelegatesToBuildFuncs:
             nodes=[_source_node("src")],
             edges=[],
         )
-        _execute_lazy(g, build_fn)
+        execute_lazy_graph(g, build_fn)
         # _build_funcs always passes row_limit — lazy path sends None
         assert captured["src"]["row_limit"] is None
 
@@ -1151,7 +1153,7 @@ class TestExecuteLazyDelegatesToBuildFuncs:
             nodes=[_source_node("src"), _transform_node("t")],
             edges=[_e("src", "t")],
         )
-        _execute_lazy(g, build_fn)
+        execute_lazy_graph(g, build_fn)
         # node_map should always be passed (not conditionally)
         assert "node_map" in captured["src"]
         assert "node_map" in captured["t"]
@@ -1168,7 +1170,7 @@ class TestExecuteLazyDelegatesToBuildFuncs:
             nodes=[_source_node("src")],
             edges=[],
         )
-        _execute_lazy(g, build_fn, preamble_ns=None)
+        execute_lazy_graph(g, build_fn, preamble_ns=None)
         # preamble_ns is always forwarded (even if None)
         assert "preamble_ns" in captured["src"]
 
@@ -1184,7 +1186,7 @@ class TestExecuteLazyDelegatesToBuildFuncs:
             nodes=[_source_node("src")],
             edges=[],
         )
-        _execute_lazy(g, build_fn, source="test_batch")
+        execute_lazy_graph(g, build_fn, source="test_batch")
         assert captured["src"]["source"] == "test_batch"
 
     def test_lazy_execution_still_works_after_refactor(self):
@@ -1193,7 +1195,7 @@ class TestExecuteLazyDelegatesToBuildFuncs:
             nodes=[_source_node("s"), _transform_node("t")],
             edges=[_e("s", "t")],
         )
-        outputs, order, parents, id_to_name = _execute_lazy(g, _simple_build_fn)
+        outputs, order, parents, id_to_name = execute_lazy_graph(g, _simple_build_fn)
         df = outputs["t"].collect()
         assert "y" in df.columns
         assert df["y"].to_list() == [2, 4, 6]
@@ -1216,7 +1218,7 @@ class TestSelectedColumnsInPaths:
             ],
             edges=[_e("s", "t")],
         )
-        outputs, *_ = _execute_lazy(g, _simple_build_fn)
+        outputs, *_ = execute_lazy_graph(g, _simple_build_fn)
         df = outputs["t"].collect()
         # Only "x" should survive (not "y" which is added by transform)
         assert df.columns == ["x"]

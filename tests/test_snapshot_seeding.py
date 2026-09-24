@@ -15,6 +15,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 import haute._execute_lazy as execute_lazy_module
+import haute._graph_walker as graph_walker_module
 import haute._source_cache as source_cache_module
 from haute._data_points import DataPointResolver
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
@@ -935,7 +936,7 @@ def test_equivalent_cloned_passthrough_frame_retains_its_write_recipe(
         ],
         [("src", "A"), ("A", "T")],
     )
-    real_select = execute_lazy_module.select_edge_source_output
+    real_select = graph_walker_module.select_edge_source_output
     clones: list[pl.LazyFrame] = []
 
     def cloned(frame: Any, edge: GraphEdge) -> Any:
@@ -945,7 +946,7 @@ def test_equivalent_cloned_passthrough_frame_retains_its_write_recipe(
             clones.append(selected)
         return selected
 
-    monkeypatch.setattr(execute_lazy_module, "select_edge_source_output", cloned)
+    monkeypatch.setattr(graph_walker_module, "select_edge_source_output", cloned)
     recipes: dict[str, WriteRecipe] = {}
     with _planned(graph, store) as (plan, context, _):
         outputs, *_ = execute_lazy_graph(

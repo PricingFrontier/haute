@@ -8074,7 +8074,7 @@ class TestExecutePipelineArgs:
         }
 
     def test_execute_pipeline_passes_scenario_and_seed_plan(self, scored_data):
-        """_execute_lazy receives scenario != 'live', the run's seed plan, and preamble_ns."""
+        """The lazy execution receives scenario != 'live', the run's seed plan, and preamble_ns."""
 
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
@@ -8087,7 +8087,7 @@ class TestExecutePipelineArgs:
         service = OptimiserSolveService(store)
         job_id = store.create_job({"status": "running"})
 
-        # Capture the kwargs _execute_lazy is called with.
+        # Capture the kwargs the lazy execution is called with.
         captured = {}
 
         def fake_execute_lazy(*args, **kwargs):
@@ -8500,7 +8500,7 @@ class TestExecutePipelineCleanup:
         assert "checkpoint_dir" not in captured
 
     def test_execute_pipeline_error_leaves_its_plan_on_the_callers_stack(self, scored_data):
-        """When _execute_lazy raises, the caller's stack still closes the plan it opened."""
+        """When the lazy execution raises, the caller's stack still closes the plan it opened."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import OptimiserSolveService
         from haute.schemas import OptimiserSolveRequest
@@ -15376,7 +15376,7 @@ class TestExecutePipelineHTTPExceptionPassthrough:
     """Test that HTTPException raised inside _execute_pipeline is re-raised directly."""
 
     def test_http_exception_passthrough(self, scored_data):
-        """HTTPException from _execute_lazy is re-raised, not wrapped."""
+        """HTTPException from the lazy execution is re-raised, not wrapped."""
         from fastapi import HTTPException
 
         from haute.routes._job_store import JobStore
