@@ -420,6 +420,48 @@ def test_preview_worker_returns_public_graph_contract_error_and_releases_context
     assert released == [True]
 
 
+def test_preview_worker_reraises_a_public_config_rejection_and_releases_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A public contract error that is also a ConfigError leaves the worker with
+    its payload instead of flattening into a node result."""
+    import haute.routes.pipeline as pipeline_mod
+    from haute._flatten import flatten_graph
+    from haute.errors import NodeConfigError
+    from haute.schemas import PreviewNodeRequest
+
+    released: list[bool] = []
+
+    class Context:
+        def release_admission(self, *, preserve_primary_error: bool = False) -> None:
+            released.append(preserve_primary_error)
+
+    body = PreviewNodeRequest.model_validate(
+        {"graph": _file_input_graph(), "node_id": "source", "row_limit": 2}
+    )
+    rejection = NodeConfigError("stepCount is required", setting="stepCount")
+    monkeypatch.setattr(
+        pipeline_mod,
+        "create_isolated_execution_context",
+        lambda _budget: Context(),
+    )
+    monkeypatch.setattr(
+        pipeline_mod,
+        "execute_graph",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(rejection),
+    )
+
+    with pytest.raises(NodeConfigError) as raised:
+        pipeline_mod._execute_preview_worker(
+            flatten_graph(body.graph),
+            body,
+            _isolated_budget(),
+        )
+
+    assert raised.value is rejection
+    assert released == [True]
+
+
 class _RaisingCoordinator:
     def __init__(self, error: Exception) -> None:
         self.error = error
