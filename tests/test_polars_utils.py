@@ -1112,13 +1112,59 @@ class TestAtomicWrite:
         assert not dest.exists()
         assert not tmp.exists()
 
-    def test_temp_suffix(self, tmp_path: Path):
-        """The temp path has .parquet.tmp suffix."""
+    def test_a_caller_that_owns_the_parent_can_skip_creating_it(self, tmp_path: Path):
+        """``ensure_parent=False`` writes into an existing parent and never creates one."""
         dest = tmp_path / "out.parquet"
-        with atomic_write(dest) as tmp:
-            assert tmp.suffix == ".tmp"
-            assert tmp.stem == "out.parquet"
+        with atomic_write(dest, ensure_parent=False) as tmp:
             pl.DataFrame({"a": [1]}).write_parquet(tmp)
+        assert pl.read_parquet(dest)["a"].to_list() == [1]
+
+        missing = tmp_path / "absent" / "out.parquet"
+        with pytest.raises(FileNotFoundError):
+            with atomic_write(missing, ensure_parent=False) as tmp:
+                pl.DataFrame({"a": [1]}).write_parquet(tmp)
+        assert not missing.parent.exists()
+
+    def test_each_write_stages_to_its_own_sibling(self, tmp_path: Path):
+        """Staging is a unique sibling of the destination, whatever its format."""
+        dest = tmp_path / "out.csv"
+        with atomic_write(dest) as first, atomic_write(dest) as second:
+            assert first != second
+            assert {first.parent, second.parent} == {tmp_path}
+            assert first.name.startswith("out.") and first.suffix == ".tmp"
+            assert ".parquet" not in first.name
+            pl.DataFrame({"a": [1]}).write_csv(first)
+            pl.DataFrame({"a": [2]}).write_csv(second)
+        assert pl.read_csv(dest)["a"].to_list() == [1]
+        assert sorted(tmp_path.iterdir()) == [dest]
+
+    def test_concurrent_writers_leave_one_complete_file_and_no_staging(self, tmp_path: Path):
+        """Two writers to one destination: one whole payload wins, nothing strays."""
+        import threading
+
+        dest = tmp_path / "out.parquet"
+        both_staged = threading.Barrier(2, timeout=10)
+        errors: list[BaseException] = []
+
+        def write(value: int) -> None:
+            try:
+                with atomic_write(dest) as tmp:
+                    pl.DataFrame({"v": [value] * 50_000}).write_parquet(tmp)
+                    both_staged.wait()
+            except BaseException as exc:  # noqa: BLE001 - surfaced below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=write, args=(value,)) for value in (1, 2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        assert errors == []
+        values = pl.read_parquet(dest)["v"]
+        assert values.len() == 50_000
+        assert values.n_unique() == 1 and values[0] in (1, 2)
+        assert sorted(tmp_path.iterdir()) == [dest]
 
     def test_overwrite_existing(self, tmp_path: Path):
         """atomic_write can overwrite an existing destination file."""
@@ -1397,7 +1443,7 @@ class TestAtomicWriteEdgeCases:
     def test_atomic_rename(self, tmp_path: Path):
         dest = tmp_path / "atomic.parquet"
         with atomic_write(dest) as tmp:
-            assert tmp.name == "atomic.parquet.tmp"
+            assert tmp.name.startswith("atomic.") and tmp.suffix == ".tmp"
             pl.DataFrame({"x": [1]}).write_parquet(tmp)
             assert tmp.exists()
             assert not dest.exists()

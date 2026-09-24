@@ -20,9 +20,9 @@ from pathlib import Path
 
 import orjson
 
+from haute import _file_lock
 from haute._env import int_env
-from haute._json_shred import _publication
-from haute._json_shred._publication import JsonCacheRecoveryError
+from haute._file_lock import UnsafeCachePathError
 from haute._logging import get_logger
 from haute._process_memory import process_is_alive
 
@@ -171,9 +171,9 @@ def _recover_runtime_storage_parent(
     if not runtime_parent.exists() and not runtime_parent.is_symlink():
         return report
     try:
-        _publication._plain_directory_stat(runtime_parent)
+        _file_lock._plain_directory_stat(runtime_parent)
         children = tuple(runtime_parent.iterdir())
-    except (OSError, JsonCacheRecoveryError) as exc:
+    except (OSError, UnsafeCachePathError) as exc:
         logger.warning(
             "json_runtime_storage_parent_preserved",
             path=str(runtime_parent),
@@ -186,8 +186,8 @@ def _recover_runtime_storage_parent(
     for owner_dir in children:
         report["inspected"] += 1
         try:
-            _publication._plain_directory_stat(owner_dir)
-        except (OSError, JsonCacheRecoveryError) as exc:
+            _file_lock._plain_directory_stat(owner_dir)
+        except (OSError, UnsafeCachePathError) as exc:
             report["preserved"] += 1
             logger.warning(
                 "json_runtime_storage_owner_preserved",
@@ -212,7 +212,7 @@ def _recover_runtime_storage_parent(
         if process_is_alive(pid):
             report["preserved"] += 1
             continue
-        _publication._remove_plain_cache_directory(owner_dir)
+        _file_lock._remove_plain_cache_directory(owner_dir)
         report["removed"] += 1
         logger.info(
             "json_runtime_storage_owner_reaped",
@@ -251,8 +251,8 @@ def recover_json_runtime_storage(
     aggregate = {"inspected": 0, "removed": 0, "preserved": 0}
     if root.exists() or root.is_symlink():
         try:
-            _publication._plain_directory_stat(root)
-        except (OSError, JsonCacheRecoveryError) as exc:
+            _file_lock._plain_directory_stat(root)
+        except (OSError, UnsafeCachePathError) as exc:
             logger.warning(
                 "json_runtime_storage_root_preserved",
                 path=str(root),
@@ -285,11 +285,11 @@ def _runtime_storage_usage_bytes(cache_root: Path) -> int:
     def _visit(directory: Path) -> None:
         nonlocal total
         try:
-            _publication._plain_directory_stat(directory)
+            _file_lock._plain_directory_stat(directory)
             children = tuple(directory.iterdir())
         except FileNotFoundError:
             return
-        except (OSError, JsonCacheRecoveryError) as exc:
+        except (OSError, UnsafeCachePathError) as exc:
             raise JsonRuntimeStorageIntegrityError(
                 path=directory,
                 reason="a non-plain or unreadable directory",
@@ -304,7 +304,7 @@ def _runtime_storage_usage_bytes(cache_root: Path) -> int:
                     path=child,
                     reason="unreadable",
                 ) from exc
-            if stat_module.S_ISDIR(child_stat.st_mode) and not _publication._is_reparse_point(
+            if stat_module.S_ISDIR(child_stat.st_mode) and not _file_lock._is_reparse_point(
                 child_stat
             ):
                 _visit(child)
@@ -312,7 +312,7 @@ def _runtime_storage_usage_bytes(cache_root: Path) -> int:
             if (
                 not stat_module.S_ISREG(child_stat.st_mode)
                 or stat_module.S_ISLNK(child_stat.st_mode)
-                or _publication._is_reparse_point(child_stat)
+                or _file_lock._is_reparse_point(child_stat)
             ):
                 raise JsonRuntimeStorageIntegrityError(
                     path=child,
@@ -357,7 +357,7 @@ def _runtime_disk_budget_transaction(
         "HAUTE_JSON_RUNTIME_DISK_BUDGET_BYTES",
         _RUNTIME_STORAGE_BUDGET_DEFAULT_BYTES,
     )
-    with _publication._build_lock_for(root / ".runtime-storage-budget"):
+    with _file_lock.file_lock_for(root / ".runtime-storage-budget.lock"):
         _recover_runtime_storage_once(root)
         used_before = _runtime_storage_usage_bytes(root)
         if used_before > budget_bytes and not allow_existing_excess:

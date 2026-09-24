@@ -21,7 +21,7 @@ from haute._execution_context import (
     ExecutionProfile,
     current_execution_context,
 )
-from haute._file_ops import ensure_disk_headroom
+from haute._file_ops import atomic_path, ensure_disk_headroom
 from haute._hashing import HashingWriter
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
@@ -808,9 +808,10 @@ def bounded_hashed_sink(
 def atomic_write(dest: Path, *, ensure_parent: bool = True) -> Generator[Path, None, None]:
     """Context manager for atomic file writes via temp-then-rename.
 
-    Yields a temporary path (``dest`` with ``.parquet.tmp`` suffix).
-    On successful exit, atomically renames the temp file to *dest*.
-    On exception, cleans up the temp file and re-raises.
+    Yields a unique sibling staging path (see :func:`haute._file_ops.atomic_path`),
+    so concurrent writers to one destination never share a stage and the
+    destination ends as one complete file. On successful exit the staging file
+    is renamed onto *dest*; on exception it is removed and the error re-raised.
     Callers that create a shared parent once before a write loop may pass
     ``ensure_parent=False`` to avoid repeating the directory operation.
 
@@ -822,13 +823,8 @@ def atomic_write(dest: Path, *, ensure_parent: bool = True) -> Generator[Path, N
     """
     if ensure_parent:
         dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(".parquet.tmp")
-    try:
+    with atomic_path(dest) as tmp:
         yield tmp
-        tmp.replace(dest)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
 
 
 # ---------------------------------------------------------------------------

@@ -23,13 +23,16 @@ from haute._cache import CacheConsumer, canonical_json, checked_cache_inputs
 from haute._chunked_writes import is_part_name, part_name, part_paths, scan_parts, write_parts
 from haute._credential_security import is_credential_name, validate_credential_free_uri
 from haute._env import float_env
-from haute._file_lock import _acquire_file_lock, _release_file_lock
+from haute._file_lock import (
+    FileLock,
+    _acquire_file_lock,
+    _assert_path_ancestors_plain,
+    _is_reparse_point,
+    _open_lock_file,
+    _release_file_lock,
+)
 from haute._file_ops import atomic_write_text, ensure_disk_headroom
 from haute._hashing import content_hash
-from haute._json_shred._publication import (
-    _assert_cache_path_ancestors_plain,
-    _open_cache_lock_file,
-)
 from haute._logging import get_logger
 
 if TYPE_CHECKING:
@@ -395,66 +398,17 @@ class SourceCacheStatus:
     generation: SourceCacheGeneration | None = None
 
 
-class _StoreFileLock:
-    """Thread-reentrant, cross-process exclusive lock on one plain lock file."""
-
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._thread_lock = threading.RLock()
-        self._depth = 0
-        self._handle: Any | None = None
-
-    def __enter__(self) -> _StoreFileLock:
-        self._thread_lock.acquire()
-        if self._depth:
-            self._depth += 1
-            return self
-        handle: Any | None = None
-        try:
-            _assert_cache_path_ancestors_plain(self._path)
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            handle = _open_cache_lock_file(self._path)
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                handle.write(b"\0")
-                handle.flush()
-            _acquire_file_lock(handle)
-            self._handle = handle
-            self._depth = 1
-            return self
-        except BaseException:
-            if handle is not None:
-                handle.close()
-            self._thread_lock.release()
-            raise
-
-    def __exit__(self, *exc_info: object) -> None:
-        try:
-            self._depth -= 1
-            if self._depth:
-                return
-            handle, self._handle = self._handle, None
-            if handle is None:
-                raise RuntimeError("source-cache lock lost its file handle")
-            try:
-                _release_file_lock(handle)
-            finally:
-                handle.close()
-        finally:
-            self._thread_lock.release()
-
-
 @dataclass(slots=True)
 class _SourceCacheCoordination:
     """Process-local locks and leases shared by every handle to one cache root."""
 
-    lease_lock: _StoreFileLock
+    lease_lock: FileLock
     lock: threading.RLock = field(default_factory=threading.RLock)
     identity_locks: dict[str, threading.RLock] = field(default_factory=dict)
     leases: dict[tuple[str, str], int] = field(default_factory=dict)
     verified_generations: set[_VerifiedGeneration] = field(default_factory=set)
     guard: threading.Lock = field(default_factory=threading.Lock)
-    publication_locks: dict[str, _StoreFileLock] = field(default_factory=dict)
+    publication_locks: dict[str, FileLock] = field(default_factory=dict)
     token: str | None = None
     token_handle: Any | None = None
     retired_cleaned: bool = False
@@ -475,10 +429,6 @@ def _verification_key(
             for part, part_stat in zip(parts, part_stats, strict=True)
         ),
     )
-
-
-def _is_reparse_point(path_stat: os.stat_result) -> bool:
-    return bool(getattr(path_stat, "st_file_attributes", 0) & 0x400)
 
 
 def _validate_generation_files(generation_dir: Path, *artifacts: Path) -> None:
@@ -588,7 +538,7 @@ class SourceCacheStore:
             coordination = self._coordination_by_root.get(coordination_key)
             if coordination is None:
                 coordination = _SourceCacheCoordination(
-                    lease_lock=_StoreFileLock(self._locks_dir / "leases.lock")
+                    lease_lock=FileLock(self._locks_dir / "leases.lock")
                 )
                 self._coordination_by_root[coordination_key] = coordination
         self._coordination = coordination
@@ -645,9 +595,9 @@ class SourceCacheStore:
             if coordination.token is None:
                 token = uuid.uuid4().hex[:_TOKEN_LENGTH]
                 path = self._processes_dir / f"{token}.lock"
-                _assert_cache_path_ancestors_plain(path)
+                _assert_path_ancestors_plain(path)
                 path.parent.mkdir(parents=True, exist_ok=True)
-                handle = _open_cache_lock_file(path)
+                handle = _open_lock_file(path)
                 try:
                     handle.write(b"\0")
                     handle.flush()
@@ -670,7 +620,7 @@ class SourceCacheStore:
         path = self._processes_dir / f"{token}.lock"
         if not path.exists():
             return False
-        handle = _open_cache_lock_file(path)
+        handle = _open_lock_file(path)
         try:
             if not _acquire_file_lock(handle, blocking=False):
                 return True

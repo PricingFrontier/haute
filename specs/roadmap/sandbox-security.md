@@ -31,8 +31,8 @@ that cannot happen for resolved paths. They differ in one guard:
 outside the project, before resolving it, so an absolute path that only
 resolves back inside (`<outside>/../<project>/file`) is refused there and
 accepted by `validate_project_path`. `validate_safe_path` also raises an
-`HTTPException` from a helper. `safe_path` and the JSON-cache publication code
-check symlinks and Windows junctions themselves, and the save service splits
+`HTTPException` from a helper. `safe_path` and the file-lock helper's plain-path
+checks check symlinks and Windows junctions themselves, and the save service splits
 path parts to reject traversal on its own. No escape is known; the cost is
 five places to keep a security check right.
 
@@ -55,7 +55,7 @@ path-traversal suites pass.
 **Evidence:** `src/haute/routes/_helpers.py::validate_safe_path`;
 `src/haute/_sandbox.py::validate_project_path`;
 `src/haute/_artifact_paths.py::safe_path`;
-`src/haute/_json_shred/_publication.py`;
+`src/haute/_file_lock.py::_assert_path_ancestors_plain`;
 `src/haute/routes/_save_pipeline.py::_validate_output_rel_path`;
 `tests/test_path_traversal_fixes.py`.
 

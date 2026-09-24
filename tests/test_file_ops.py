@@ -258,13 +258,8 @@ class TestAtomicWriteBytes:
 
         atomic_write_bytes(target, b"payload")
 
-        # Any sibling whose name starts with the target stem and ends in .tmp
-        # is considered stray. Be permissive about exact suffix format.
-        strays = [
-            p
-            for p in tmp_path.iterdir()
-            if p != target and p.name.startswith(target.name) and p.suffix == ".tmp"
-        ]
+        # Any sibling ending in .tmp is considered stray, whatever its prefix.
+        strays = [p for p in tmp_path.iterdir() if p != target and p.suffix == ".tmp"]
         assert strays == [], f"Unexpected leftover temp files: {strays}"
 
 

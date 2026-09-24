@@ -21,7 +21,6 @@ the server (see [IO layer](../io-layer/low-level.md#automatic-preparation)).
 | `src/haute/_json_shred/_records.py` | Streaming JSON/JSONL/XML record iteration, the shared bounded record limit, byte-range tiling with its parallelism policy, and the parallel-worker failure transport. |
 | `src/haute/_json_shred/_shred.py` | Table specs, leaf resolution, the single-pass record walk, and root-conservation accounting. |
 | `src/haute/_json_shred/_writer.py` | Aggregate-bounded Parquet row-group emission for table-snapshot builds and leased runtime spill bundles, plus parallel chunk execution. |
-| `src/haute/_json_shred/_publication.py` | Cross-process file locks (thread-reentrant OS lock per canonical path) and the plain-path checks that refuse a cache root or lock file reached through a link or reparse point. |
 | `src/haute/_json_shred/_source_proof.py` | The one source-freshness proof for every local file, not only structured sources: native file revisions (Windows USN/file-id, POSIX stat), the settled-stat fallback, and the shared in-process content signature behind them. |
 | `src/haute/_json_shred/_runtime_storage.py` | Process-owned runtime storage for generated standalone code: the disk budget and spill-directory leases, with start-up recovery of dead processes' spills. |
 | `src/haute/_json_shred/_inference.py` | v2 schema inference from data: bounded sampling, type widening, and deterministic column naming. |
@@ -434,13 +433,13 @@ read_snapshots=False, store=None)`:
    `_pick_source_frame`), and adding or removing a sibling frame never changes
    the shape a consumer receives.
 
-**File locks.** `_build_lock_for` is re-entrant within a thread and combines a
-per-process `RLock` with an OS advisory lock on a stable sibling lock file (`flock`
-on POSIX, one-byte `msvcrt.locking` on Windows). An existing lock path must be a
-plain regular file; symlinks, reparse points, and file-identity swaps are rejected
-before the lock is trusted. The runtime storage budget serialises on one, and the
-shared input-snapshot store opens its lock files through the same
-`_open_cache_lock_file` and `_assert_cache_path_ancestors_plain` checks.
+**File locks.** The runtime storage budget serialises on
+`_file_lock.file_lock_for(<cache root>/.runtime-storage-budget.lock)`, the one
+cross-process lock helper the [IO layer](../io-layer/low-level.md) specifies: re-entrant
+within a thread, a per-process `RLock` combined with an OS advisory lock (`flock` on
+POSIX, one-byte `msvcrt.locking` on Windows), and a lock path that must be a plain
+regular file (symlinks, reparse points, and file-identity swaps are rejected before
+the lock is trusted).
 
 **Runtime storage budget.** `.runtime-spills` lives below the project cache root and
 uses owner directories named by PID plus a random token. Owner
@@ -762,7 +761,6 @@ Shred / inference / table snapshots (the `_json_shred/` package):
 - `tests/test_json_shred_mut_*.py` (`parser`, `shred`, `validity`, `records`,
   `infer`, `stragglers`) and
   `tests/test_json_shred_mutation_witnesses.py`,
-  `tests/test_json_shred_lock_mutation.py`,
   `tests/test_json_shred_native_revision_mutation.py`,
   `tests/test_json_shred_publication_mutation.py`,
   `tests/test_json_shred_runtime_control_mutation.py`,

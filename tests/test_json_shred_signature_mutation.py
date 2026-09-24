@@ -8,7 +8,8 @@ from pathlib import Path
 import orjson
 import pytest
 
-from haute._json_shred import _publication, _runtime_storage
+from haute import _file_lock
+from haute._json_shred import _runtime_storage
 
 
 @pytest.mark.parametrize(
@@ -74,7 +75,7 @@ def test_runtime_budget_boundaries_and_transaction_order(
         yield
 
     measurements = iter((before, after))
-    monkeypatch.setattr(_publication, "_build_lock_for", lock)
+    monkeypatch.setattr(_file_lock, "file_lock_for", lock)
     monkeypatch.setattr(
         _runtime_storage, "_recover_runtime_storage_once", lambda _root: events.append("recover")
     )
@@ -104,7 +105,7 @@ def test_runtime_budget_boundaries_and_transaction_order(
 def test_runtime_budget_default_rejects_preexisting_excess(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(_publication, "_build_lock_for", lambda _path: nullcontext())
+    monkeypatch.setattr(_file_lock, "file_lock_for", lambda _path: nullcontext())
     monkeypatch.setattr(_runtime_storage, "_recover_runtime_storage_once", lambda _root: None)
     monkeypatch.setattr(_runtime_storage, "_runtime_storage_usage_bytes", lambda _root: 11)
     monkeypatch.setattr(_runtime_storage, "int_env", lambda *_args: 10)

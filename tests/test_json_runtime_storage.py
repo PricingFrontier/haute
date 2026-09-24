@@ -9,7 +9,8 @@ from typing import Any
 import orjson
 import pytest
 
-from haute._json_shred import _cache, _publication, _runtime_storage
+from haute import _file_lock
+from haute._json_shred import _cache, _runtime_storage
 
 
 @pytest.fixture(autouse=True)
@@ -224,14 +225,14 @@ def test_runtime_budget_blocks_allocation_for_non_plain_preserved_entry(
     runtime_parent.mkdir(parents=True)
     marker = runtime_parent / "must-survive"
     marker.write_text("owned elsewhere", encoding="utf-8")
-    original_plain_directory_stat = _publication._plain_directory_stat
+    original_plain_directory_stat = _file_lock._plain_directory_stat
 
     def reject_runtime_parent(path: Path) -> Any:
         if path == runtime_parent:
-            raise _publication.JsonCacheRecoveryError("simulated non-plain runtime entry")
+            raise _file_lock.UnsafeCachePathError("simulated non-plain runtime entry")
         return original_plain_directory_stat(path)
 
-    monkeypatch.setattr(_publication, "_plain_directory_stat", reject_runtime_parent)
+    monkeypatch.setattr(_file_lock, "_plain_directory_stat", reject_runtime_parent)
 
     with pytest.raises(
         _runtime_storage.JsonRuntimeStorageIntegrityError,
@@ -303,9 +304,9 @@ def test_runtime_recovery_fails_closed_for_unreadable_parent_and_bad_owner_metad
     report = _runtime_storage.recover_json_runtime_storage(root, now=100.0)
     assert report["preserved"] == 1 and owner.exists()
 
-    original = _publication._plain_directory_stat
+    original = _file_lock._plain_directory_stat
     monkeypatch.setattr(
-        _publication,
+        _file_lock,
         "_plain_directory_stat",
         lambda path: (_ for _ in ()).throw(OSError("denied")) if path == parent else original(path),
     )
@@ -318,12 +319,12 @@ def test_runtime_recovery_preserves_non_plain_root(
 ) -> None:
     root = tmp_path / ".haute_cache"
     root.mkdir()
-    original = _publication._plain_directory_stat
+    original = _file_lock._plain_directory_stat
     monkeypatch.setattr(
-        _publication,
+        _file_lock,
         "_plain_directory_stat",
         lambda path: (
-            (_ for _ in ()).throw(_publication.JsonCacheRecoveryError("hostile"))
+            (_ for _ in ()).throw(_file_lock.UnsafeCachePathError("hostile"))
             if path == root
             else original(path)
         ),

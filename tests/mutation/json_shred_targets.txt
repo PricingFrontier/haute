@@ -5,7 +5,6 @@
 tests/test_json_shred_native_revision_mutation.py
 tests/test_json_shred_mut_validity.py
 tests/test_source_freshness.py
-tests/test_json_shred_lock_mutation.py
 tests/test_json_shred_stream_mutation.py
 tests/test_json_shred_signature_mutation.py
 tests/test_json_shred_runtime_control_mutation.py

@@ -3,11 +3,12 @@
 Implements Foundation tasks F2 (``atomic_write_bytes`` /
 ``atomic_write_text``) and F6 (``Writer`` with self-write callback).
 
-All writes follow the temp-then-rename pattern proven in
-``haute._polars_utils.atomic_write``: payload is staged to a sibling
-``.tmp`` file in the same directory as the target (so ``Path.replace``
-is a same-filesystem rename), then renamed onto the target. On any
-failure the temp file is unlinked and the original is left intact.
+Every atomic write goes through :func:`atomic_path`: the payload is staged
+to a unique sibling ``.tmp`` file in the same directory as the target (so
+``Path.replace`` is a same-filesystem rename), then renamed onto the target.
+On any failure the temp file is unlinked and the original is left intact.
+``atomic_write_bytes`` and ``haute._polars_utils.atomic_write`` are built on
+it.
 
 Cross-OS guarantee (be precise — these differ):
 
@@ -26,9 +27,9 @@ Cross-OS guarantee (be precise — these differ):
   handles without introducing a non-atomic fallback. An exhausted retry
   still fails loudly and leaves the old complete payload intact.
 
-Temp filenames embed the process pid and a uuid4 fragment so that
-concurrent writers to the same target never collide on the staging
-file. The committed target is still last-rename-wins (one full payload).
+Temp filenames embed a random uuid4 fragment so that concurrent writers
+to the same target never collide on the staging file. The committed
+target is still last-rename-wins (one full payload).
 
 The parent directory is never silently created — callers must ensure
 the target directory exists. Failing loudly is preferable to a silent
@@ -42,7 +43,8 @@ import os
 import shutil
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
 
@@ -74,11 +76,13 @@ def ensure_disk_headroom(directory: Path, additional_bytes: int = 0) -> None:
 def _temp_path_for(target: Path) -> Path:
     """Return a unique sibling temp path for *target*.
 
-    Uniqueness is provided by the process pid and a uuid4 hex fragment,
-    so that concurrent writers from different threads or processes do
-    not clobber each other's staging files.
+    Uniqueness is a random uuid4 fragment, so concurrent writers from
+    different threads or processes do not clobber each other's staging files.
+    The name replaces the target's last suffix rather than extending it: a
+    staging file sits beside deep store paths, and Windows' traditional
+    260-character path limit applies to it too.
     """
-    return target.with_name(f"{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    return target.with_name(f"{target.stem}.{uuid.uuid4().hex[:8]}.tmp")
 
 
 def _replace_with_windows_contention_retry(source: Path, target: Path) -> None:
@@ -120,12 +124,17 @@ def remove_tree(path: Path) -> bool:
     return not path.exists()
 
 
-def atomic_write_bytes(path: Path, data: bytes) -> None:
-    """Atomically write *data* to *path*.
+@contextmanager
+def atomic_path(path: Path) -> Iterator[Path]:
+    """Yield a unique staging path for *path*; publish it when the block exits.
 
-    Stages bytes in a sibling temp file then renames onto *path*.  On
-    any failure the temp file is unlinked and the original *path* is
-    untouched.  The parent directory of *path* must already exist.
+    The caller writes the complete payload to the yielded path by any means (a
+    Parquet or CSV writer, ``write_bytes``). A clean exit renames it onto
+    *path*; an exception unlinks it and leaves the original *path* untouched
+    (a block that wrote nothing raises ``FileNotFoundError`` the same way). The
+    staging name embeds a random fragment, so concurrent writers to one target
+    never share a stage and the target ends as one complete payload (last
+    rename wins). The parent directory of *path* must already exist.
 
     A reader never observes torn/partial bytes on any OS. On POSIX the
     rename also always succeeds under concurrent readers. On Windows a
@@ -136,7 +145,7 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
     """
     tmp = _temp_path_for(path)
     try:
-        tmp.write_bytes(data)
+        yield tmp
         _replace_with_windows_contention_retry(tmp, path)
     except BaseException as exc:
         try:
@@ -144,6 +153,12 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
         except BaseException as cleanup_exc:
             exc.add_note(f"atomic-write staging cleanup failed: {cleanup_exc}")
         raise
+
+
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Atomically write *data* to *path* (see :func:`atomic_path`)."""
+    with atomic_path(path) as tmp:
+        tmp.write_bytes(data)
 
 
 def atomic_copy_files(pairs: Sequence[tuple[Path, Path]]) -> None:

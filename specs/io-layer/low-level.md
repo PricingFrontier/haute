@@ -16,7 +16,7 @@
 | `src/haute/_polars_io_arguments.json` | Generated Polars callable signature data checked against the pinned Polars version. |
 | `src/haute/_polars_dtypes.py` | Struct-capable dtype JSON codec used by registry schema arguments. |
 | `src/haute/_polars_utils.py` | Shared context-aware automatic/streaming collection, bounded/atomic sink, Parquet metadata, chunk-size scope, and allocator trim helpers. |
-| `src/haute/_file_ops.py` | Atomic byte/text writers used for pointer and metadata publication. |
+| `src/haute/_file_ops.py` | The one atomic-write primitive (`atomic_path`) and the byte/text writers built on it, used for pointer and metadata publication and, through `_polars_utils.atomic_write`, for every Parquet/CSV write-then-rename. |
 | `src/haute/_path_resolution.py` | Shared runtime path containment/resolution owned by [sandbox-security](../sandbox-security/low-level.md) and consumed by I/O. |
 | `src/haute/_path_case_audit.py` | Cross-platform case-ambiguity warnings for user-facing paths. |
 | `src/haute/discovery.py` | Pipeline-file discovery used by file-facing workflows. |
@@ -80,9 +80,16 @@ relationship is recorded in `specs/ownership.toml`.
 
 ### Atomic pointer and metadata publication
 
-`atomic_write_bytes` / `atomic_write_text` stage a uniquely named sibling file and atomically
-replace the target, so readers observe either the complete old payload or the complete new
-payload. The parent directory must already exist. A failed write or exhausted publication
+Every atomic write goes through `_file_ops.atomic_path(target)`: it yields a uniquely named
+sibling staging path (`<target stem>.<8 random hex>.tmp`, short so a stage beside a deep
+store path stays within Windows' traditional path limit), the caller writes the complete
+payload there by any means, and a clean exit renames it onto the target. `atomic_write_bytes`
+/ `atomic_write_text` and `_polars_utils.atomic_write` (every Parquet or CSV write-then-rename)
+are built on it, so concurrent writers to one target never share a stage and the target ends
+as one complete payload (the last rename wins); readers observe either the complete old payload
+or the complete new payload. The parent directory must already exist (`atomic_write` creates
+it unless its caller passes `ensure_parent=False`). Staged files are not flushed with `fsync`
+before the rename. A failed write or exhausted publication
 attempt removes the private staging file and preserves the old target. If that exact-file
 cleanup also fails, the publication error remains primary, the cleanup failure is attached as
 an exception note, and the uniquely named stage remains visible for diagnosis. Windows antivirus,
@@ -355,7 +362,8 @@ generations to their owners when readable. Inventory takes no lock and mutates n
   `.haute_cache/inputs/.node-slots/<slot digest>.json` (identities and the pinned
   identity), rewritten atomically under the lease lock. Locks live in
   `.haute_cache/inputs/.locks/` (`publication-<identity digest>.lock`,
-  `leases.lock`) and process tokens in `.haute_cache/inputs/.processes/<token>.lock`.
+  `leases.lock`, each a `_file_lock.FileLock`) and process tokens in
+  `.haute_cache/inputs/.processes/<token>.lock`.
   Lease markers are `.lease-<12-hex token>` files directly in the generation
   directory, and last use is the `meta.json` modification time; both keep the
   deepest path inside the traditional Windows limit beneath long temporary roots.

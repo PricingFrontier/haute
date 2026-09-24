@@ -6,7 +6,6 @@ its concern name and there are no aggregating re-exports:
 - ``_records`` — streaming JSON/JSONL/XML record iteration and range tiling.
 - ``_shred`` — table specs and the single-pass record walk.
 - ``_writer`` — bounded Parquet row-group emission and spill bundles.
-- ``_publication`` — cross-process file locks and plain-path checks.
 - ``_source_proof`` — the one source-freshness proof for every local file: native
   revisions, the settled-stat fallback, and the shared content signature.
 - ``_runtime_storage`` — disk budget and standalone spill leases.

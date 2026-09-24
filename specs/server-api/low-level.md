@@ -42,8 +42,8 @@
 | `src/haute/_artifact_paths.py` | Contained project-relative artifact paths (traversal/alias/reparse-point rejection) and bounded artifact reads shared by recovery and the mutation lock. |
 | `src/haute/_recovery_sources.py` | Raw authored settings/code evidence and scaffold matching for the recover action. For a stepped node type it reconciles the recovered `steps` against the extracted body through the parser's own `_reconcile_steps`, so a hand-edited body is never regenerated from stale steps when the candidate materialises; a discarded list is reported as a `/steps` `removed` change. A step list the parser rejects outright (a malformed container, or a list beside an `inputMapping` an edges surface refuses) is dropped with the same change record rather than propagated, because recovery never raises on a bad field and the route would otherwise answer HTTP 500; the key is removed rather than defaulted to `[]`, which would materialise as empty code and discard the authored body. |
 | `src/haute/_recovery_schemas.py` | Engine field-outcome and issue types. |
-| `src/haute/_project_mutation_lock.py` | Cross-process project writer lock. |
-| `src/haute/_file_lock.py` | Shared OS file-lock primitives. |
+| `src/haute/_project_mutation_lock.py` | Cross-process project writer lock: an `asyncio.Lock` plus a `FileLock` of its own, polled without blocking so cancellation never strands it. |
+| `src/haute/_file_lock.py` | The one cross-process lock helper (`FileLock`) and the OS file-lock primitives beneath it. |
 | `src/haute/node_defaults.json` | Shared palette/reset defaults. |
 
 ## Key types and data structures

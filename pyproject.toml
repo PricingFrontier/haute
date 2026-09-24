@@ -288,11 +288,11 @@ paths = [
     "src/haute/_execution_admission.py",
     "src/haute/_execution_context.py",
     "src/haute/_explore_cache.py",
+    "src/haute/_file_lock.py",
     "src/haute/_interactive_workers.py",
     "src/haute/_io.py",
     "src/haute/_json_shred/_cache.py",
     "src/haute/_json_shred/_inference.py",
-    "src/haute/_json_shred/_publication.py",
     "src/haute/_json_shred/_records.py",
     "src/haute/_json_shred/_runtime_storage.py",
     "src/haute/_json_shred/_shred.py",
@@ -341,10 +341,10 @@ min_statement_coverage = 90.0
 min_branch_coverage = 85.0
 rationale = "Bounded Parquet emission is the memory boundary for table-snapshot builds and spills. (Split from the former single-module gate; same thresholds pending a remeasure.)"
 [[tool.haute.critical_coverage.files]]
-path = "src/haute/_json_shred/_publication.py"
+path = "src/haute/_file_lock.py"
 min_statement_coverage = 90.0
 min_branch_coverage = 85.0
-rationale = "Cross-process file locks and plain-path checks guard the runtime storage budget and the input-snapshot store's lock files. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+rationale = "The one cross-process file-lock helper and its plain-path checks guard the project mutation lock, the input-snapshot store's lease and publication locks, and the runtime storage budget."
 [[tool.haute.critical_coverage.files]]
 path = "src/haute/_json_shred/_source_proof.py"
 min_statement_coverage = 90.0
