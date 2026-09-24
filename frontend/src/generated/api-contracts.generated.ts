@@ -12,6 +12,22 @@ export type JsonValue =
  * Complete ordered chart-card collection.
  */
 export type ExploreChartsConfig = ExploreChartConfig[];
+/**
+ * ``GET /api/mlflow/experiments``.
+ */
+export type MlflowExperimentList = MlflowExperimentSummary[];
+/**
+ * ``GET /api/mlflow/runs``.
+ */
+export type MlflowRunList = MlflowRunSummary[];
+/**
+ * ``GET /api/mlflow/models``.
+ */
+export type MlflowModelList = MlflowModelSummary[];
+/**
+ * ``GET /api/mlflow/model-versions``.
+ */
+export type MlflowModelVersionList = MlflowModelVersionSummary[];
 
 /**
  * Strict V1 API DTO for one shared execution-planning decision.
@@ -204,6 +220,104 @@ export interface ChartValueEncoding {
   stack_normalize: boolean;
   value_id: string;
   [k: string]: JsonValue | 'primary' | 'secondary' | string | null | boolean | 'column' | 'line' | 'area';
+}
+export interface WarehouseListResponse {
+  warehouses: WarehouseItem[];
+}
+export interface WarehouseItem {
+  http_path: string;
+  id: string;
+  name: string;
+  size: string;
+  state: string;
+}
+export interface CatalogListResponse {
+  catalogs: CatalogItem[];
+}
+export interface CatalogItem {
+  comment: string;
+  name: string;
+}
+export interface SchemaListResponse {
+  schemas: SchemaItem[];
+}
+export interface SchemaItem {
+  comment: string;
+  name: string;
+}
+export interface TableListResponse {
+  tables: TableItem[];
+}
+export interface TableItem {
+  comment: string;
+  full_name: string;
+  name: string;
+  table_type: string;
+}
+export interface MlflowDestinationsResponse {
+  destinations: MlflowDestinationEntry[];
+  detail: string;
+  mlflow_importable: boolean;
+  mlflow_installed: boolean;
+}
+export interface MlflowDestinationEntry {
+  category: '' | 'authentication' | 'permission' | 'missing_resource' | 'connectivity' | 'configuration' | 'unknown';
+  config_source: '' | 'toml' | 'env' | 'default';
+  configured: boolean;
+  destination: string;
+  detail: string;
+  key: 'databricks' | 'server' | 'local';
+  ok: boolean;
+  probed: boolean;
+}
+export interface MlflowSettingsResponse {
+  detail: string;
+  folder: string;
+  resolved_folder: string;
+  section_present: boolean;
+  tracking_uri: string;
+}
+export interface MlflowTestConnectionResponse {
+  category: '' | 'authentication' | 'permission' | 'missing_resource' | 'connectivity' | 'configuration' | 'unknown';
+  detail: string;
+  ok: boolean;
+}
+export interface MlflowExperimentSummary {
+  experiment_id: string;
+  name: string;
+}
+export interface MlflowRunSummary {
+  artifacts: string[];
+  metrics: {
+    [k: string]: number;
+  };
+  params: {
+    [k: string]: string;
+  };
+  run_id: string;
+  run_name: string;
+  start_time: number | null;
+  status: string;
+}
+export interface MlflowModelSummary {
+  latest_versions: MlflowVersionBrief[];
+  name: string;
+}
+export interface MlflowVersionBrief {
+  run_id: string;
+  status: string;
+  version: string;
+}
+export interface MlflowModelVersionSummary {
+  aliases: string[];
+  creation_timestamp: number | null;
+  description: string;
+  params: {
+    [k: string]: string;
+  };
+  run_id: string;
+  status: string;
+  version: string;
 }
 export interface UtilityListResponse {
   files: UtilityFileItem[];

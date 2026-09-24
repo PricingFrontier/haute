@@ -963,19 +963,19 @@ describe("next-wave client runtime contracts", () => {
       name: "getMlflowDestinations",
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_destinations_response"), destinations: "none" },
       call: () => getMlflowDestinations(true),
-      error: /parseMlflowDestinationsResponse/i,
+      error: /MlflowDestinationsResponse: invalid contract/,
     },
     {
       name: "getMlflowSettings",
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_settings_response"), section_present: "yes" },
       call: () => getMlflowSettings(),
-      error: /parseMlflowSettingsResponse/i,
+      error: /MlflowSettingsResponse: invalid contract/,
     },
     {
       name: "testMlflowConnection",
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_test_connection_response"), ok: "no" },
       call: () => testMlflowConnection(),
-      error: /parseMlflowTestConnectionResponse/i,
+      error: /MlflowTestConnectionResponse: invalid contract/,
     },
     {
       name: "estimateTrainingRam",
@@ -1142,15 +1142,17 @@ describe("shared client trust-boundary endpoints", () => {
     url: string
     method?: string
     malformed: unknown
+    /** The exact failure, when a generated validator checks the response. */
+    malformedError?: string
   }> = [
     { name: "checkHauteSession", body: { ok: true }, call: () => checkHauteSession(), url: "/api/session", malformed: { ok: "yes" } },
     { name: "outputAssembleDryRun", body: { status: "ok", document: [], row_count: 0, error: null }, call: () => outputAssembleDryRun({ graph: dummyGraph, nodeId: "out", outputMapping: [] }), url: "/api/output-assemble/dry-run", method: "POST", malformed: { status: "ok", document: [], row_count: "1" } },
     { name: "deleteJsonCache", body: { cached: false, data_path: "cache/data" }, call: () => deleteJsonCache("/data/input.json"), url: "/api/json-cache?path=%2Fdata%2Finput.json", method: "DELETE", malformed: { cached: false } },
     { name: "inferJsonCacheSchema", body: { tables: [{ name: "drivers" }] }, call: () => inferJsonCacheSchema({ path: "/data/input.json" }), url: "/api/json-cache/infer", method: "POST", malformed: { tables: ["bad"] } },
-    { name: "getExperiments", body: [{ experiment_id: "1", name: "pricing" }], call: () => getExperiments(""), url: "/api/mlflow/experiments", malformed: [{ experiment_id: "1" }] },
-    { name: "getRuns", body: [{ run_id: "r", run_name: "baseline", metrics: { auc: 0.9 }, artifacts: [] }], call: () => getRuns("exp", "model", ""), url: "/api/mlflow/runs?experiment_id=exp&artifact_filter=model", malformed: [{ run_id: "r", run_name: "baseline", metrics: {}, artifacts: [1] }] },
-    { name: "getModels", body: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "r" }] }], call: () => getModels(""), url: "/api/mlflow/models", malformed: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY" }] }] },
-    { name: "getModelVersions", body: [{ version: "1", run_id: "r", status: "READY", description: "baseline" }], call: () => getModelVersions("pricing model", ""), url: "/api/mlflow/model-versions?model_name=pricing%20model", malformed: [{ version: "1", run_id: "r", status: "READY" }] },
+    { name: "getExperiments", body: [{ experiment_id: "1", name: "pricing" }], call: () => getExperiments(""), url: "/api/mlflow/experiments", malformed: [{ experiment_id: "1" }], malformedError: "MlflowExperimentList: invalid contract at /0/name: required" },
+    { name: "getRuns", body: [{ run_id: "r", run_name: "baseline", status: "FINISHED", start_time: null, metrics: { auc: 0.9 }, params: {}, artifacts: [] }], call: () => getRuns("exp", "model", ""), url: "/api/mlflow/runs?experiment_id=exp&artifact_filter=model", malformed: [{ run_id: "r", run_name: "baseline", status: "FINISHED", start_time: null, metrics: {}, params: {}, artifacts: [1] }], malformedError: "MlflowRunList: invalid contract at /0/artifacts/0: type" },
+    { name: "getModels", body: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "r" }] }], call: () => getModels(""), url: "/api/mlflow/models", malformed: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY" }] }], malformedError: "MlflowModelList: invalid contract at /0/latest_versions/0/run_id: required" },
+    { name: "getModelVersions", body: [{ version: "1", run_id: "r", status: "READY", creation_timestamp: null, description: "baseline", params: {}, aliases: [] }], call: () => getModelVersions("pricing model", ""), url: "/api/mlflow/model-versions?model_name=pricing%20model", malformed: [{ version: "1", run_id: "r", status: "READY", creation_timestamp: null, params: {}, aliases: [] }], malformedError: "MlflowModelVersionList: invalid contract at /0/description: required" },
     { name: "listFiles", body: { items: [{ name: "data", path: "/data", type: "directory" }] }, call: () => listFiles("/data", ".json"), url: "/api/files?dir=%2Fdata&extensions=.json", malformed: { items: [{ name: "data", path: "/data", type: "other" }] } },
     { name: "getGitGraph", body: validGitGraph, call: () => getGitGraph(5), url: "/api/git/graph?limit=5", malformed: { ...validGitGraph, branches: [{ ...validGitGraph.branches[0], entries: [{ ...validGitGraph.branches[0].entries[0], parents: [1] }] }] } },
   ]
@@ -1165,7 +1167,7 @@ describe("shared client trust-boundary endpoints", () => {
 
     it(`${testCase.name} rejects malformed successful payloads`, async () => {
       mockFetch.mockReturnValue(jsonResponse(testCase.malformed))
-      await expect(testCase.call()).rejects.toThrow()
+      await expect(testCase.call()).rejects.toThrow(testCase.malformedError)
     })
   }
 })

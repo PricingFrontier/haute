@@ -36,16 +36,9 @@ import {
   parseJsonCacheStatusResponse,
   parseJsonCacheSchemaInferenceResponse,
   parseFileListResponse,
-  parseMlflowExperiments,
-  parseMlflowDestinationsResponse,
-  parseMlflowSettingsResponse,
-  parseMlflowTestConnectionResponse,
   parseMlflowLogResponse,
   parseModelSaveDestinationResponse,
   parseSaveModelResponse,
-  parseMlflowModels,
-  parseMlflowModelVersions,
-  parseMlflowRuns,
   parseOutputAssembleDryRunResponse,
   parseOptimiserEstimateResponse,
   parseOptimiserStatusResponse,
@@ -60,6 +53,16 @@ import {
   parseNodeDataProfileResponse,
   parseRatingLevelsResponse,
 } from "../guards"
+import {
+  validateMlflowDestinationsResponse,
+  validateMlflowExperimentList,
+  validateMlflowModelList,
+  validateMlflowModelVersionList,
+  validateMlflowRunList,
+  validateMlflowSettingsResponse,
+  validateMlflowTestConnectionResponse,
+} from "../../generated/api-contracts.mlflow.validators.mjs"
+import { expectGeneratedContract } from "../generatedContractValidation"
 import {
   parseTrainEstimateResponse,
   parseTrainFeatureSelection,
@@ -306,6 +309,22 @@ function executionMetricsFixture() {
     },
   }
 }
+
+// MLflow responses are checked by their generated validators (API-R03).
+const mlflowDestinations = (value: unknown) =>
+  expectGeneratedContract("MlflowDestinationsResponse", validateMlflowDestinationsResponse, value)
+const mlflowSettings = (value: unknown) =>
+  expectGeneratedContract("MlflowSettingsResponse", validateMlflowSettingsResponse, value)
+const mlflowTestConnection = (value: unknown) =>
+  expectGeneratedContract("MlflowTestConnectionResponse", validateMlflowTestConnectionResponse, value)
+const mlflowExperiments = (value: unknown) =>
+  expectGeneratedContract("MlflowExperimentList", validateMlflowExperimentList, value)
+const mlflowRuns = (value: unknown) =>
+  expectGeneratedContract("MlflowRunList", validateMlflowRunList, value)
+const mlflowModels = (value: unknown) =>
+  expectGeneratedContract("MlflowModelList", validateMlflowModelList, value)
+const mlflowModelVersions = (value: unknown) =>
+  expectGeneratedContract("MlflowModelVersionList", validateMlflowModelVersionList, value)
 
 describe("parseExecutionStrategyDiagnostic", () => {
   it.each([
@@ -2680,7 +2699,7 @@ describe("API response guards", () => {
   })
 
   it("parses modelling preflight payloads", () => {
-    const mlflow = parseMlflowDestinationsResponse(
+    const mlflow = mlflowDestinations(
       loadUiContractFixture("mlflow_destinations_response"),
     )
     const estimate = parseTrainEstimateResponse(loadUiContractFixture("train_estimate_response"))
@@ -3176,14 +3195,14 @@ describe("API response guards", () => {
   })
 
   it("parses mlflow settings and test-connection payloads", () => {
-    const settings = parseMlflowSettingsResponse(loadUiContractFixture("mlflow_settings_response"))
+    const settings = mlflowSettings(loadUiContractFixture("mlflow_settings_response"))
     expect(settings.section_present).toBe(true)
     expect(settings.tracking_uri).toBe("http://localhost:5000")
     expect(settings.folder).toBe("team-runs")
     expect(settings.resolved_folder).toBe("C:/proj/team-runs")
     expect(settings.detail).toBe("")
 
-    const probe = parseMlflowTestConnectionResponse(
+    const probe = mlflowTestConnection(
       loadUiContractFixture("mlflow_test_connection_response"),
     )
     expect(probe.ok).toBe(false)
@@ -3193,18 +3212,18 @@ describe("API response guards", () => {
   it("rejects malformed mlflow settings and test-connection payloads", () => {
     const settings = loadUiContractFixture<Record<string, unknown>>("mlflow_settings_response")
     expect(() =>
-      parseMlflowSettingsResponse({ ...settings, section_present: "yes" }),
+      mlflowSettings({ ...settings, section_present: "yes" }),
     ).toThrow(/section_present/i)
     expect(() =>
-      parseMlflowSettingsResponse({ ...settings, resolved_folder: 42 }),
+      mlflowSettings({ ...settings, resolved_folder: 42 }),
     ).toThrow(/resolved_folder/i)
 
     const probe = loadUiContractFixture<Record<string, unknown>>(
       "mlflow_test_connection_response",
     )
-    expect(() => parseMlflowTestConnectionResponse({ ...probe, ok: "no" })).toThrow(/`ok`/i)
+    expect(() => mlflowTestConnection({ ...probe, ok: "no" })).toThrow(/\/ok: type/)
     expect(() =>
-      parseMlflowTestConnectionResponse({ ...probe, category: "offline" }),
+      mlflowTestConnection({ ...probe, category: "offline" }),
     ).toThrow(/category/i)
   })
 
@@ -3219,37 +3238,37 @@ describe("API response guards", () => {
     })
 
     expect(() =>
-      parseMlflowDestinationsResponse({
+      mlflowDestinations({
         ...fixture,
         mlflow_installed: "yes",
       }),
     ).toThrow(/mlflow_installed/i)
 
     expect(() =>
-      parseMlflowDestinationsResponse({
+      mlflowDestinations({
         ...fixture,
         destinations: "none",
       }),
-    ).toThrow(/parseMlflowDestinationsResponse/i)
+    ).toThrow(/MlflowDestinationsResponse: invalid contract at \/destinations: type/)
 
-    expect(() => parseMlflowDestinationsResponse(withFirstEntry({ key: "file" }))).toThrow(
+    expect(() => mlflowDestinations(withFirstEntry({ key: "file" }))).toThrow(
       /key/i,
     )
 
-    expect(() => parseMlflowDestinationsResponse(withFirstEntry({ probed: "yes" }))).toThrow(
+    expect(() => mlflowDestinations(withFirstEntry({ probed: "yes" }))).toThrow(
       /probed/i,
     )
 
-    expect(() => parseMlflowDestinationsResponse(withFirstEntry({ configured: "yes" }))).toThrow(
+    expect(() => mlflowDestinations(withFirstEntry({ configured: "yes" }))).toThrow(
       /configured/i,
     )
 
     expect(() =>
-      parseMlflowDestinationsResponse(withFirstEntry({ config_source: "registry" })),
+      mlflowDestinations(withFirstEntry({ config_source: "registry" })),
     ).toThrow(/config_source/i)
 
     expect(() =>
-      parseMlflowDestinationsResponse(withFirstEntry({ category: "offline" })),
+      mlflowDestinations(withFirstEntry({ category: "offline" })),
     ).toThrow(/category/i)
   })
 
@@ -3608,17 +3627,17 @@ describe("API response guards", () => {
     expect(parseOutputAssembleDryRunResponse({ status: "ok", document: [{ premium: 1 }], row_count: 1, error: null })).toMatchObject({ status: "ok", row_count: 1 })
     expect(parseJsonCacheDeleteResponse({ cached: false, data_path: "cache/data.parquet" })).toEqual({ cached: false, data_path: "cache/data.parquet" })
     expect(parseJsonCacheSchemaInferenceResponse({ tables: [{ name: "drivers" }] }).tables).toEqual([{ name: "drivers" }])
-    expect(parseMlflowExperiments([{ experiment_id: "1", name: "pricing" }])[0]?.name).toBe("pricing")
-    expect(parseMlflowRuns([{ run_id: "run-1", run_name: "baseline", metrics: { auc: 0.9 }, artifacts: ["model"] }])[0]?.metrics.auc).toBe(0.9)
-    expect(parseMlflowModels([{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "run-1" }] }])[0]?.latest_versions).toHaveLength(1)
-    expect(parseMlflowModelVersions([{ version: "1", run_id: "run-1", status: "READY", description: "baseline" }])[0]?.description).toBe("baseline")
+    expect(mlflowExperiments([{ experiment_id: "1", name: "pricing" }])[0]?.name).toBe("pricing")
+    expect(mlflowRuns([{ run_id: "run-1", run_name: "baseline", status: "FINISHED", start_time: null, metrics: { auc: 0.9 }, params: {}, artifacts: ["model"] }])[0]?.metrics.auc).toBe(0.9)
+    expect(mlflowModels([{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "run-1" }] }])[0]?.latest_versions).toHaveLength(1)
+    expect(mlflowModelVersions([{ version: "1", run_id: "run-1", status: "READY", creation_timestamp: null, description: "baseline", params: {}, aliases: [] }])[0]?.description).toBe("baseline")
     expect(
-      parseMlflowModelVersions([
-        { version: "1", run_id: "run-1", status: "READY", description: "", aliases: ["champion"] },
+      mlflowModelVersions([
+        { version: "1", run_id: "run-1", status: "READY", creation_timestamp: 1, description: "", params: {}, aliases: ["champion"] },
       ])[0]?.aliases,
     ).toEqual(["champion"])
     expect(() =>
-      parseMlflowModelVersions([{ version: "1", run_id: "r", status: "READY", description: "", aliases: [1] }]),
+      mlflowModelVersions([{ version: "1", run_id: "r", status: "READY", creation_timestamp: null, description: "", params: {}, aliases: [1] }]),
     ).toThrow(/aliases/)
     expect(parseFileListResponse({ items: [{ name: "data", path: "/data", type: "directory" }] }).items?.[0]?.type).toBe("directory")
     expect(parseFileListResponse({ items: [{ name: "data", path: "/data", type: "directory", size: null }] }).items?.[0]?.size).toBeNull()
@@ -3634,14 +3653,33 @@ describe("API response guards", () => {
     ["output document", () => parseOutputAssembleDryRunResponse({ status: "ok", document: {}, row_count: 1 })],
     ["cache deletion path", () => parseJsonCacheDeleteResponse({ cached: true })],
     ["inferred nested table", () => parseJsonCacheSchemaInferenceResponse({ tables: ["bad"] })],
-    ["experiment required name", () => parseMlflowExperiments([{ experiment_id: "1" }])],
-    ["run nested metric", () => parseMlflowRuns([{ run_id: "r", run_name: "n", metrics: { auc: "high" }, artifacts: [] }])],
-    ["model nested version", () => parseMlflowModels([{ name: "m", latest_versions: [{ version: "1", status: "READY" }] }])],
-    ["model version description", () => parseMlflowModelVersions([{ version: "1", run_id: "r", status: "READY" }])],
     ["file item type", () => parseFileListResponse({ items: [{ name: "x", path: "/x", type: "link" }] })],
     ["git graph nested parents", () => parseGitGraphResponse({ working_branch: null, order: [], branches: [{ name: "main", is_archived: false, is_current: true, tip_sha: "a", fork_point_sha: null, fork_of: null, fork_source_sha: null, fork_credit_sha: null, truncated: false, entries: [{ sha: "a", short_sha: "a", message: "init", timestamp: "today", version_label: null, parents: [1] }] }] })],
   ])("rejects malformed shared client payload: %s", (_name, parse) => {
     expect(parse).toThrow()
+  })
+
+  it("rejects a malformed MLflow discovery listing at the offending field", () => {
+    // Each payload is complete except for the one field under test.
+    const run = { run_id: "r", run_name: "n", status: "FINISHED", start_time: null, metrics: { auc: 0.9 }, params: {}, artifacts: [] }
+    const version = { version: "1", run_id: "r", status: "READY", creation_timestamp: null, description: "", params: {}, aliases: [] }
+    const { description: _description, ...versionWithoutDescription } = version
+
+    expect(() => mlflowExperiments([{ experiment_id: "1" }])).toThrow(
+      "MlflowExperimentList: invalid contract at /0/name: required",
+    )
+    expect(() => mlflowRuns([{ ...run, metrics: { auc: "high" } }])).toThrow(
+      "MlflowRunList: invalid contract at /0/metrics/auc: type",
+    )
+    expect(() => mlflowRuns([{ ...run, artifacts: [1] }])).toThrow(
+      "MlflowRunList: invalid contract at /0/artifacts/0: type",
+    )
+    expect(() => mlflowModels([{ name: "m", latest_versions: [{ version: "1", status: "READY" }] }])).toThrow(
+      "MlflowModelList: invalid contract at /0/latest_versions/0/run_id: required",
+    )
+    expect(() => mlflowModelVersions([versionWithoutDescription])).toThrow(
+      "MlflowModelVersionList: invalid contract at /0/description: required",
+    )
   })
 
 })

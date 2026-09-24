@@ -402,37 +402,25 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
     "/api/mlflow/experiments": {
         "GET": {
             "request_ref": None,
-            "success_schema": {
-                "type": "array",
-                "items": {"$ref": "#/components/schemas/MlflowExperimentSummary"},
-            },
+            "success_schema": {"$ref": "#/components/schemas/MlflowExperimentList"},
         },
     },
     "/api/mlflow/model-versions": {
         "GET": {
             "request_ref": None,
-            "success_schema": {
-                "type": "array",
-                "items": {"$ref": "#/components/schemas/MlflowModelVersionSummary"},
-            },
+            "success_schema": {"$ref": "#/components/schemas/MlflowModelVersionList"},
         },
     },
     "/api/mlflow/models": {
         "GET": {
             "request_ref": None,
-            "success_schema": {
-                "type": "array",
-                "items": {"$ref": "#/components/schemas/MlflowModelSummary"},
-            },
+            "success_schema": {"$ref": "#/components/schemas/MlflowModelList"},
         },
     },
     "/api/mlflow/runs": {
         "GET": {
             "request_ref": None,
-            "success_schema": {
-                "type": "array",
-                "items": {"$ref": "#/components/schemas/MlflowRunSummary"},
-            },
+            "success_schema": {"$ref": "#/components/schemas/MlflowRunList"},
         },
     },
     "/api/modelling/dispersion/cancel/{job_id}": {

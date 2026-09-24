@@ -17,10 +17,6 @@ import type {
   CacheNodeEntry,
   CacheNodesResponse,
   CacheOwnerEntry,
-  DatabricksCatalogsResponse,
-  DatabricksSchemasResponse,
-  DatabricksTablesResponse,
-  DatabricksWarehousesResponse,
   DissolveSubmodelResponse,
   EditorIdentityBatchResponse,
   ExecutionAdmission,
@@ -118,18 +114,10 @@ import type {
   FileListItem,
   JsonCacheProgressResponse,
   JsonCacheStatusResponse,
-  MlflowDestinationEntry,
-  MlflowDestinationsResponse,
   ExecutionSettings,
-  MlflowSettingsResponse,
-  MlflowTestConnectionResponse,
-  MlflowExperiment,
   MlflowLogResponse,
   ModelSaveDestinationResponse,
   SaveModelResponse,
-  MlflowModel,
-  MlflowModelVersion,
-  MlflowRun,
   NodeDataClearResponse,
   NodeDataColumns,
   NodeDataPointResponse,
@@ -2866,86 +2854,11 @@ export function parseExplorePivotMembersResponse(value: unknown): ExplorePivotMe
   }
 }
 
-const MLFLOW_DESTINATION_KEYS = ["databricks", "server", "local"] as const
-const MLFLOW_CONFIG_SOURCES = ["", "toml", "env", "default"] as const
-const MLFLOW_TEST_CATEGORIES = [
-  "",
-  "authentication",
-  "permission",
-  "missing_resource",
-  "connectivity",
-  "configuration",
-  "unknown",
-] as const
-
-function parseMlflowDestinationEntry(value: unknown, field: string): MlflowDestinationEntry {
-  const p = "parseMlflowDestinationsResponse"
-  const obj = expectPlainObject(p, value, field)
-  return {
-    key: expectStringLiteral(p, obj.key, `${field}.key`, MLFLOW_DESTINATION_KEYS),
-    configured: expectBoolean(p, obj.configured, `${field}.configured`),
-    destination: expectString(p, obj.destination, `${field}.destination`),
-    config_source: expectStringLiteral(
-      p,
-      obj.config_source,
-      `${field}.config_source`,
-      MLFLOW_CONFIG_SOURCES,
-    ),
-    detail: expectString(p, obj.detail, `${field}.detail`),
-    probed: expectBoolean(p, obj.probed, `${field}.probed`),
-    ok: expectBoolean(p, obj.ok, `${field}.ok`),
-    category: expectStringLiteral(p, obj.category, `${field}.category`, MLFLOW_TEST_CATEGORIES),
-  }
-}
-
-export function parseMlflowDestinationsResponse(value: unknown): MlflowDestinationsResponse {
-  const p = "parseMlflowDestinationsResponse"
-  const obj = expectPlainObject(p, value)
-  return {
-    mlflow_installed: expectBoolean(p, obj.mlflow_installed, "field `mlflow_installed`"),
-    mlflow_importable: expectBoolean(p, obj.mlflow_importable, "field `mlflow_importable`"),
-    destinations: parseArray(
-      p,
-      obj.destinations,
-      "field `destinations`",
-      parseMlflowDestinationEntry,
-    ),
-    detail: expectString(p, obj.detail, "field `detail`"),
-  }
-}
-
 export function parseExecutionSettings(value: unknown): ExecutionSettings {
   const p = "parseExecutionSettings"
   const obj = expectPlainObject(p, value)
   return {
     streaming_chunk_size: expectPositiveInteger(p, obj.streaming_chunk_size, "field `streaming_chunk_size`"),
-  }
-}
-
-export function parseMlflowSettingsResponse(value: unknown): MlflowSettingsResponse {
-  const p = "parseMlflowSettingsResponse"
-  const obj = expectPlainObject(p, value)
-  return {
-    section_present: expectBoolean(p, obj.section_present, "field `section_present`"),
-    tracking_uri: expectString(p, obj.tracking_uri, "field `tracking_uri`"),
-    folder: expectString(p, obj.folder, "field `folder`"),
-    resolved_folder: expectString(p, obj.resolved_folder, "field `resolved_folder`"),
-    detail: expectString(p, obj.detail, "field `detail`"),
-  }
-}
-
-export function parseMlflowTestConnectionResponse(value: unknown): MlflowTestConnectionResponse {
-  const obj = expectPlainObject("parseMlflowTestConnectionResponse", value)
-  const category = optionalString("parseMlflowTestConnectionResponse", obj, "category")
-  if (!(MLFLOW_TEST_CATEGORIES as readonly string[]).includes(category)) {
-    throw new Error(
-      `parseMlflowTestConnectionResponse: unexpected category \`${category}\``,
-    )
-  }
-  return {
-    ok: expectBoolean("parseMlflowTestConnectionResponse", obj.ok, "field `ok`"),
-    category: category as MlflowTestConnectionResponse["category"],
-    detail: optionalString("parseMlflowTestConnectionResponse", obj, "detail"),
   }
 }
 
@@ -3342,71 +3255,6 @@ export function parseOptimiserStatusResponse(value: unknown): OptimiserStatusRes
 // Databricks / cache / git contracts
 // ---------------------------------------------------------------------------
 
-function parseWarehouse(value: unknown, field: string): DatabricksWarehousesResponse["warehouses"][number] {
-  const obj = expectPlainObject("parseDatabricksWarehousesResponse", value, field)
-  return {
-    id: expectString("parseDatabricksWarehousesResponse", obj.id, `${field}.id`),
-    name: expectString("parseDatabricksWarehousesResponse", obj.name, `${field}.name`),
-    http_path: expectString("parseDatabricksWarehousesResponse", obj.http_path, `${field}.http_path`),
-    state: expectString("parseDatabricksWarehousesResponse", obj.state, `${field}.state`),
-    size: optionalString("parseDatabricksWarehousesResponse", obj, "size"),
-  }
-}
-
-function parseCatalog(value: unknown, field: string): DatabricksCatalogsResponse["catalogs"][number] {
-  const obj = expectPlainObject("parseDatabricksCatalogsResponse", value, field)
-  return {
-    name: expectString("parseDatabricksCatalogsResponse", obj.name, `${field}.name`),
-    comment: optionalString("parseDatabricksCatalogsResponse", obj, "comment"),
-  }
-}
-
-function parseSchemaItem(value: unknown, field: string): DatabricksSchemasResponse["schemas"][number] {
-  const obj = expectPlainObject("parseDatabricksSchemasResponse", value, field)
-  return {
-    name: expectString("parseDatabricksSchemasResponse", obj.name, `${field}.name`),
-    comment: optionalString("parseDatabricksSchemasResponse", obj, "comment"),
-  }
-}
-
-function parseTableItem(value: unknown, field: string): DatabricksTablesResponse["tables"][number] {
-  const obj = expectPlainObject("parseDatabricksTablesResponse", value, field)
-  return {
-    name: expectString("parseDatabricksTablesResponse", obj.name, `${field}.name`),
-    full_name: expectString("parseDatabricksTablesResponse", obj.full_name, `${field}.full_name`),
-    table_type: optionalString("parseDatabricksTablesResponse", obj, "table_type"),
-    comment: optionalString("parseDatabricksTablesResponse", obj, "comment"),
-  }
-}
-
-export function parseDatabricksWarehousesResponse(value: unknown): DatabricksWarehousesResponse {
-  const obj = expectPlainObject("parseDatabricksWarehousesResponse", value)
-  return {
-    warehouses: optionalArray("parseDatabricksWarehousesResponse", obj, "warehouses", parseWarehouse),
-  }
-}
-
-export function parseDatabricksCatalogsResponse(value: unknown): DatabricksCatalogsResponse {
-  const obj = expectPlainObject("parseDatabricksCatalogsResponse", value)
-  return {
-    catalogs: optionalArray("parseDatabricksCatalogsResponse", obj, "catalogs", parseCatalog),
-  }
-}
-
-export function parseDatabricksSchemasResponse(value: unknown): DatabricksSchemasResponse {
-  const obj = expectPlainObject("parseDatabricksSchemasResponse", value)
-  return {
-    schemas: optionalArray("parseDatabricksSchemasResponse", obj, "schemas", parseSchemaItem),
-  }
-}
-
-export function parseDatabricksTablesResponse(value: unknown): DatabricksTablesResponse {
-  const obj = expectPlainObject("parseDatabricksTablesResponse", value)
-  return {
-    tables: optionalArray("parseDatabricksTablesResponse", obj, "tables", parseTableItem),
-  }
-}
-
 export function parseJsonCacheBuildResponse(value: unknown): JsonCacheBuildResponse {
   const obj = expectPlainObject("parseJsonCacheBuildResponse", value)
   return {
@@ -3479,68 +3327,6 @@ export function parseJsonCacheDeleteResponse(value: unknown): { cached: boolean;
 export function parseJsonCacheSchemaInferenceResponse(value: unknown): { tables: Array<Record<string, unknown>> } {
   const obj = expectPlainObject("parseJsonCacheSchemaInferenceResponse", value)
   return { tables: parsePlainObjectArray("parseJsonCacheSchemaInferenceResponse", obj.tables, "field `tables`") }
-}
-
-export function parseMlflowExperiments(value: unknown): MlflowExperiment[] {
-  return parseArray("parseMlflowExperiments", value, "response", (item, field) => {
-    const obj = expectPlainObject("parseMlflowExperiments", item, field)
-    return {
-      experiment_id: expectString("parseMlflowExperiments", obj.experiment_id, `${field}.experiment_id`),
-      name: expectString("parseMlflowExperiments", obj.name, `${field}.name`),
-    }
-  })
-}
-
-export function parseMlflowRuns(value: unknown): MlflowRun[] {
-  return parseArray("parseMlflowRuns", value, "response", (item, field) => {
-    const obj = expectPlainObject("parseMlflowRuns", item, field)
-    return {
-      run_id: expectString("parseMlflowRuns", obj.run_id, `${field}.run_id`),
-      run_name: expectString("parseMlflowRuns", obj.run_name, `${field}.run_name`),
-      metrics: parseNumberRecord("parseMlflowRuns", obj.metrics, `${field}.metrics`),
-      artifacts: parseStringArray("parseMlflowRuns", obj.artifacts, `${field}.artifacts`),
-      ...(obj.status === undefined ? {} : { status: expectString("parseMlflowRuns", obj.status, `${field}.status`) }),
-      ...(obj.start_time === undefined ? {} : { start_time: expectNullableNumber("parseMlflowRuns", obj.start_time, `${field}.start_time`) }),
-      ...(obj.params === undefined ? {} : { params: parseStringRecord("parseMlflowRuns", obj.params, `${field}.params`) }),
-    }
-  })
-}
-
-export function parseMlflowModels(value: unknown): MlflowModel[] {
-  return parseArray("parseMlflowModels", value, "response", (item, field) => {
-    const obj = expectPlainObject("parseMlflowModels", item, field)
-    return {
-      name: expectString("parseMlflowModels", obj.name, `${field}.name`),
-      latest_versions: parseArray("parseMlflowModels", obj.latest_versions, `${field}.latest_versions`, (version, versionField) => {
-        const versionObj = expectPlainObject("parseMlflowModels", version, versionField)
-        return {
-          version: expectString("parseMlflowModels", versionObj.version, `${versionField}.version`),
-          status: expectString("parseMlflowModels", versionObj.status, `${versionField}.status`),
-          run_id: expectString("parseMlflowModels", versionObj.run_id, `${versionField}.run_id`),
-        }
-      }),
-    }
-  })
-}
-
-export function parseMlflowModelVersions(value: unknown): MlflowModelVersion[] {
-  return parseArray("parseMlflowModelVersions", value, "response", (item, field) => {
-    const obj = expectPlainObject("parseMlflowModelVersions", item, field)
-    return {
-      version: expectString("parseMlflowModelVersions", obj.version, `${field}.version`),
-      run_id: expectString("parseMlflowModelVersions", obj.run_id, `${field}.run_id`),
-      status: expectString("parseMlflowModelVersions", obj.status, `${field}.status`),
-      description: expectString("parseMlflowModelVersions", obj.description, `${field}.description`),
-      ...(obj.params === undefined ? {} : { params: parseStringRecord("parseMlflowModelVersions", obj.params, `${field}.params`) }),
-      ...(obj.creation_timestamp === undefined ? {} : { creation_timestamp: expectNullableNumber("parseMlflowModelVersions", obj.creation_timestamp, `${field}.creation_timestamp`) }),
-      ...(obj.aliases === undefined
-        ? {}
-        : {
-          aliases: parseArray("parseMlflowModelVersions", obj.aliases, `${field}.aliases`, (alias, aliasField) =>
-            expectString("parseMlflowModelVersions", alias, aliasField)),
-        }),
-    }
-  })
 }
 
 export function parseFileListResponse(value: unknown): { items?: FileListItem[] } {

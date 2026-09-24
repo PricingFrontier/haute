@@ -9,6 +9,10 @@ import type {
   PipelineGraph,
 } from "../types/node"
 import type {
+  MlflowDestinationEntry as GeneratedMlflowDestinationEntry,
+  MlflowTestConnectionResponse as GeneratedMlflowTestConnectionResponse,
+} from "../generated/api-contracts.generated"
+import type {
   ExecutionStrategyBoundaryCollectionPayload as GeneratedExecutionStrategyCollection,
   ExecutionStrategyBoundaryPayload as GeneratedExecutionStrategyBoundary,
   ExecutionStrategyDiagnosticPayload as GeneratedExecutionStrategyDiagnostic,
@@ -684,47 +688,25 @@ export interface OutputAssembleDryRunResponse {
 // Modelling types
 // ---------------------------------------------------------------------------
 
+// Generated from the backend response models (scripts/generate_api_contracts.py).
+export type {
+  MlflowDestinationEntry,
+  MlflowDestinationsResponse,
+  MlflowExperimentSummary as MlflowExperiment,
+  MlflowModelSummary as MlflowModel,
+  MlflowModelVersionSummary as MlflowModelVersion,
+  MlflowRunSummary as MlflowRun,
+  MlflowSettingsResponse,
+  MlflowTestConnectionResponse,
+} from "../generated/api-contracts.generated"
+
 /** The three tracking destinations; a request's `""` means the local folder. */
-export type MlflowDestinationKey = "databricks" | "server" | "local"
+export type MlflowDestinationKey = GeneratedMlflowDestinationEntry["key"]
 
-export type MlflowProbeCategory =
-  | ""
-  | "authentication"
-  | "permission"
-  | "missing_resource"
-  | "connectivity"
-  | "configuration"
-  | "unknown"
-
-export interface MlflowDestinationEntry {
-  key: MlflowDestinationKey
-  configured: boolean
-  /** Secret-free display form of what the key resolves to. */
-  destination: string
-  config_source: "" | "toml" | "env" | "default"
-  detail: string
-  probed: boolean
-  ok: boolean
-  category: MlflowProbeCategory
-}
-
-export interface MlflowDestinationsResponse {
-  mlflow_installed: boolean
-  mlflow_importable: boolean
-  destinations: MlflowDestinationEntry[]
-  detail: string
-}
+export type MlflowProbeCategory = GeneratedMlflowTestConnectionResponse["category"]
 
 export interface ExecutionSettings {
   streaming_chunk_size: number
-}
-
-export interface MlflowSettingsResponse {
-  section_present: boolean
-  tracking_uri: string
-  folder: string
-  resolved_folder: string
-  detail: string
 }
 
 export interface MlflowSettingsUpdateRequest {
@@ -737,12 +719,6 @@ export interface MlflowTestConnectionRequest {
   destination: "" | MlflowDestinationKey
   tracking_uri?: string
   folder?: string
-}
-
-export interface MlflowTestConnectionResponse {
-  ok: boolean
-  category: MlflowProbeCategory
-  detail?: string
 }
 
 export interface EvaluationDateRange {
@@ -1772,46 +1748,17 @@ export interface FrontierSelectResponse {
 // Databricks types
 // ---------------------------------------------------------------------------
 
-export interface DatabricksWarehouse {
-  id: string
-  name: string
-  http_path: string
-  state: string
-  size: string
-}
-
-export interface DatabricksCatalog {
-  name: string
-  comment: string
-}
-
-export interface DatabricksSchema {
-  name: string
-  comment: string
-}
-
-export interface DatabricksTable {
-  name: string
-  full_name: string
-  table_type: string
-  comment: string
-}
-
-export interface DatabricksWarehousesResponse {
-  warehouses: DatabricksWarehouse[]
-}
-
-export interface DatabricksCatalogsResponse {
-  catalogs: DatabricksCatalog[]
-}
-
-export interface DatabricksSchemasResponse {
-  schemas: DatabricksSchema[]
-}
-
-export interface DatabricksTablesResponse {
-  tables: DatabricksTable[]
-}
+// Generated from the backend response models (scripts/generate_api_contracts.py).
+export type {
+  CatalogItem as DatabricksCatalog,
+  CatalogListResponse as DatabricksCatalogsResponse,
+  SchemaItem as DatabricksSchema,
+  SchemaListResponse as DatabricksSchemasResponse,
+  TableItem as DatabricksTable,
+  TableListResponse as DatabricksTablesResponse,
+  WarehouseItem as DatabricksWarehouse,
+  WarehouseListResponse as DatabricksWarehousesResponse,
+} from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------
 // JSON cache types
@@ -1853,37 +1800,6 @@ export interface JsonCacheStatusResponse {
 // ---------------------------------------------------------------------------
 // MLflow browser types
 // ---------------------------------------------------------------------------
-
-export interface MlflowExperiment {
-  experiment_id: string
-  name: string
-}
-
-export interface MlflowRun {
-  run_id: string
-  run_name: string
-  metrics: Record<string, number>
-  artifacts: string[]
-  status?: string
-  start_time?: number | null
-  params?: Record<string, string>
-}
-
-export interface MlflowModel {
-  name: string
-  latest_versions: { version: string; status: string; run_id: string }[]
-}
-
-export interface MlflowModelVersion {
-  version: string
-  run_id: string
-  status: string
-  description: string
-  params?: Record<string, string>
-  creation_timestamp?: number | null
-  /** Registered model aliases currently targeting this version. */
-  aliases?: string[]
-}
 
 // ---------------------------------------------------------------------------
 // File browsing types

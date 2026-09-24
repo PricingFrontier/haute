@@ -116,10 +116,6 @@ import {
   parseApplyOptimiserResponse,
   parseCacheClearResponse,
   parseCacheNodesResponse,
-  parseDatabricksCatalogsResponse,
-  parseDatabricksSchemasResponse,
-  parseDatabricksTablesResponse,
-  parseDatabricksWarehousesResponse,
   parseDissolveSubmodelResponse,
   parseEditorNodeIdentityBatchResponse,
   parseExplorePivotMembersResponse,
@@ -170,17 +166,10 @@ import {
   parseJsonCacheProgressResponse,
   parseJsonCacheSchemaInferenceResponse,
   parseJsonCacheStatusResponse,
-  parseMlflowDestinationsResponse,
   parseExecutionSettings,
-  parseMlflowSettingsResponse,
-  parseMlflowTestConnectionResponse,
-  parseMlflowExperiments,
   parseMlflowLogResponse,
   parseModelSaveDestinationResponse,
   parseSaveModelResponse,
-  parseMlflowModels,
-  parseMlflowModelVersions,
-  parseMlflowRuns,
   parseFileListResponse,
   parseHauteSessionResponse,
   parseOptimiserEstimateResponse,
@@ -201,6 +190,12 @@ import {
   parseTraceResponse,
 } from "../types/guards"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
+
+// Generated response validators load with their first response, so none of
+// them reaches the initial bundle.
+const databricksValidators = () => import("../generated/api-contracts.databricks.validators.mjs")
+const mlflowValidators = () => import("../generated/api-contracts.mlflow.validators.mjs")
+const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
 import {
   parseRemoveUnavailableNodeApplyResponse,
   parseRemoveUnavailableNodeDryRunResponse,
@@ -1657,14 +1652,14 @@ export function getWarehouses(
   options?: { signal?: AbortSignal },
 ): Promise<DatabricksWarehousesResponse> {
   return request<unknown>("/api/databricks/warehouses", options)
-    .then((data) => parseDatabricksWarehousesResponse(data) as DatabricksWarehousesResponse)
+    .then(async (data) => expectGeneratedContract("WarehouseListResponse", (await databricksValidators()).validateWarehouseListResponse, data))
 }
 
 export function getCatalogs(
   options?: { signal?: AbortSignal },
 ): Promise<DatabricksCatalogsResponse> {
   return request<unknown>("/api/databricks/catalogs", options)
-    .then((data) => parseDatabricksCatalogsResponse(data) as DatabricksCatalogsResponse)
+    .then(async (data) => expectGeneratedContract("CatalogListResponse", (await databricksValidators()).validateCatalogListResponse, data))
 }
 
 export function getSchemas(
@@ -1672,7 +1667,7 @@ export function getSchemas(
   options?: { signal?: AbortSignal },
 ): Promise<DatabricksSchemasResponse> {
   return request<unknown>(`/api/databricks/schemas?catalog=${encodeURIComponent(catalog)}`, options)
-    .then((data) => parseDatabricksSchemasResponse(data) as DatabricksSchemasResponse)
+    .then(async (data) => expectGeneratedContract("SchemaListResponse", (await databricksValidators()).validateSchemaListResponse, data))
 }
 
 export function getTables(
@@ -1681,7 +1676,7 @@ export function getTables(
   options?: { signal?: AbortSignal },
 ): Promise<DatabricksTablesResponse> {
   return request<unknown>(`/api/databricks/tables?catalog=${encodeURIComponent(catalog)}&schema=${encodeURIComponent(schema)}`, options)
-    .then((data) => parseDatabricksTablesResponse(data) as DatabricksTablesResponse)
+    .then(async (data) => expectGeneratedContract("TableListResponse", (await databricksValidators()).validateTableListResponse, data))
 }
 
 // ---------------------------------------------------------------------------
@@ -1783,13 +1778,13 @@ export function getMlflowDestinations(
   options?: { signal?: AbortSignal },
 ): Promise<MlflowDestinationsResponse> {
   return request<unknown>(`/api/mlflow/destinations?probe=${probe ? "true" : "false"}`, options)
-    .then(parseMlflowDestinationsResponse)
+    .then(async (data) => expectGeneratedContract("MlflowDestinationsResponse", (await mlflowValidators()).validateMlflowDestinationsResponse, data))
 }
 
 export function getMlflowSettings(
   options?: { signal?: AbortSignal },
 ): Promise<MlflowSettingsResponse> {
-  return request<unknown>("/api/mlflow/settings", options).then(parseMlflowSettingsResponse)
+  return request<unknown>("/api/mlflow/settings", options).then(async (data) => expectGeneratedContract("MlflowSettingsResponse", (await mlflowValidators()).validateMlflowSettingsResponse, data))
 }
 
 export function putMlflowSettings(
@@ -1801,7 +1796,7 @@ export function putMlflowSettings(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
     ...options,
-  }).then(parseMlflowSettingsResponse)
+  }).then(async (data) => expectGeneratedContract("MlflowSettingsResponse", (await mlflowValidators()).validateMlflowSettingsResponse, data))
 }
 
 export function testMlflowConnection(
@@ -1809,7 +1804,7 @@ export function testMlflowConnection(
   options?: { signal?: AbortSignal },
 ): Promise<MlflowTestConnectionResponse> {
   return post<unknown>("/api/mlflow/test-connection", payload, options ?? {})
-    .then(parseMlflowTestConnectionResponse)
+    .then(async (data) => expectGeneratedContract("MlflowTestConnectionResponse", (await mlflowValidators()).validateMlflowTestConnectionResponse, data))
 }
 
 // Discovery is destination-scoped: `""` means the local folder and is sent as
@@ -1824,7 +1819,7 @@ export function getExperiments(
 ): Promise<MlflowExperiment[]> {
   const query = destinationQuery(destination)
   return request<unknown>(`/api/mlflow/experiments${query === "" ? "" : `?${query}`}`, options)
-    .then(parseMlflowExperiments)
+    .then(async (data) => expectGeneratedContract("MlflowExperimentList", (await mlflowValidators()).validateMlflowExperimentList, data))
 }
 
 export function getRuns(
@@ -1836,7 +1831,7 @@ export function getRuns(
   const params = new URLSearchParams({ experiment_id: experimentId })
   if (artifactFilter) params.set("artifact_filter", artifactFilter)
   if (destination !== "") params.set("destination", destination)
-  return request<unknown>(`/api/mlflow/runs?${params.toString()}`, options).then(parseMlflowRuns)
+  return request<unknown>(`/api/mlflow/runs?${params.toString()}`, options).then(async (data) => expectGeneratedContract("MlflowRunList", (await mlflowValidators()).validateMlflowRunList, data))
 }
 
 export function getModels(
@@ -1845,7 +1840,7 @@ export function getModels(
 ): Promise<MlflowModel[]> {
   const query = destinationQuery(destination)
   return request<unknown>(`/api/mlflow/models${query === "" ? "" : `?${query}`}`, options)
-    .then(parseMlflowModels)
+    .then(async (data) => expectGeneratedContract("MlflowModelList", (await mlflowValidators()).validateMlflowModelList, data))
 }
 
 export function getModelVersions(
@@ -1857,7 +1852,7 @@ export function getModelVersions(
   return request<unknown>(
     `/api/mlflow/model-versions?model_name=${encodeURIComponent(modelName)}${query === "" ? "" : `&${query}`}`,
     options,
-  ).then(parseMlflowModelVersions)
+  ).then(async (data) => expectGeneratedContract("MlflowModelVersionList", (await mlflowValidators()).validateMlflowModelVersionList, data))
 }
 
 // ---------------------------------------------------------------------------
@@ -1868,9 +1863,6 @@ export function getModelVersions(
 // Utility endpoints
 // ---------------------------------------------------------------------------
 
-// Generated response validators load with their first response, so none of
-// them reaches the initial bundle.
-const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
 
 export function listUtilityFiles(
   options?: { signal?: AbortSignal },

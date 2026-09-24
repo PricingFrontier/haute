@@ -90,8 +90,12 @@ test(
         if (module.allErrors) {
           assert.equal(typeof error.schemaPath, "string");
         } else {
-          assert.equal(error.keyword, "required");
-          assert.equal(typeof error.params.missingProperty, "string");
+          // An object root misses a property; a list root rejects the object.
+          if (error.keyword === "required") {
+            assert.equal(typeof error.params.missingProperty, "string");
+          } else {
+            assert.equal(error.keyword, "type");
+          }
           assert.equal(Object.hasOwn(error, "schemaPath"), false);
         }
       }

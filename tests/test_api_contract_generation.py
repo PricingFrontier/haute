@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from haute._estimate_calibration import CALIBRATION_MAX_BASIS_POINTS
 from haute._execution_schemas import MAX_JSON_SAFE_INTEGER
@@ -31,6 +32,25 @@ def _non_null_branch(schema: dict[str, object]) -> dict[str, object]:
     ]
     assert len(branches) == 1
     return branches[0]
+
+
+def _reachable_definitions(bundle: dict[str, Any]) -> set[str]:
+    definitions = bundle["$defs"]
+    reached: set[str] = set()
+    pending: list[object] = list(bundle["properties"].values())
+    while pending:
+        node = pending.pop()
+        if isinstance(node, dict):
+            reference = node.get("$ref")
+            if isinstance(reference, str) and reference.startswith("#/$defs/"):
+                name = reference.removeprefix("#/$defs/")
+                if name not in reached:
+                    reached.add(name)
+                    pending.append(definitions[name])
+            pending.extend(value for key, value in node.items() if key != "$ref")
+        elif isinstance(node, list):
+            pending.extend(node)
+    return reached
 
 
 def test_committed_contract_bundle_is_current_and_byte_stable() -> None:
@@ -69,7 +89,9 @@ def test_contract_bundle_contains_closed_contract_roots() -> None:
 
     definitions = bundle["$defs"]
     assert set(definitions) >= set(response_roots)
-    assert set(definitions) - set(response_roots) - {"UtilityFileItem"} == {
+    # Every definition belongs to some contract root: nothing is orphaned.
+    assert _reachable_definitions(bundle) == set(definitions)
+    assert set(definitions) >= {
         "ChartAxes",
         "ChartAxisConfig",
         "ChartCategory",

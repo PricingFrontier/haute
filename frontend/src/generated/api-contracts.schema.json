@@ -1,5 +1,40 @@
 {
   "$defs": {
+    "CatalogItem": {
+      "properties": {
+        "comment": {
+          "default": "",
+          "title": "Comment",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "comment"
+      ],
+      "title": "CatalogItem",
+      "type": "object"
+    },
+    "CatalogListResponse": {
+      "properties": {
+        "catalogs": {
+          "items": {
+            "$ref": "#/$defs/CatalogItem"
+          },
+          "title": "Catalogs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "catalogs"
+      ],
+      "title": "CatalogListResponse",
+      "type": "object"
+    },
     "ChartAxes": {
       "additionalProperties": {
         "$ref": "#/$defs/JsonValue"
@@ -1000,6 +1035,476 @@
         }
       ]
     },
+    "MlflowDestinationEntry": {
+      "properties": {
+        "category": {
+          "default": "",
+          "enum": [
+            "",
+            "authentication",
+            "permission",
+            "missing_resource",
+            "connectivity",
+            "configuration",
+            "unknown"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "config_source": {
+          "default": "",
+          "enum": [
+            "",
+            "toml",
+            "env",
+            "default"
+          ],
+          "title": "Config Source",
+          "type": "string"
+        },
+        "configured": {
+          "title": "Configured",
+          "type": "boolean"
+        },
+        "destination": {
+          "default": "",
+          "title": "Destination",
+          "type": "string"
+        },
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        },
+        "key": {
+          "enum": [
+            "databricks",
+            "server",
+            "local"
+          ],
+          "title": "Key",
+          "type": "string"
+        },
+        "ok": {
+          "default": false,
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "probed": {
+          "default": false,
+          "title": "Probed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key",
+        "configured",
+        "destination",
+        "config_source",
+        "detail",
+        "probed",
+        "ok",
+        "category"
+      ],
+      "title": "MlflowDestinationEntry",
+      "type": "object"
+    },
+    "MlflowDestinationsResponse": {
+      "properties": {
+        "destinations": {
+          "items": {
+            "$ref": "#/$defs/MlflowDestinationEntry"
+          },
+          "title": "Destinations",
+          "type": "array"
+        },
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        },
+        "mlflow_importable": {
+          "title": "Mlflow Importable",
+          "type": "boolean"
+        },
+        "mlflow_installed": {
+          "title": "Mlflow Installed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "mlflow_installed",
+        "mlflow_importable",
+        "destinations",
+        "detail"
+      ],
+      "title": "MlflowDestinationsResponse",
+      "type": "object"
+    },
+    "MlflowExperimentList": {
+      "description": "``GET /api/mlflow/experiments``.",
+      "items": {
+        "$ref": "#/$defs/MlflowExperimentSummary"
+      },
+      "title": "MlflowExperimentList",
+      "type": "array"
+    },
+    "MlflowExperimentSummary": {
+      "properties": {
+        "experiment_id": {
+          "title": "Experiment Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "experiment_id",
+        "name"
+      ],
+      "title": "MlflowExperimentSummary",
+      "type": "object"
+    },
+    "MlflowModelList": {
+      "description": "``GET /api/mlflow/models``.",
+      "items": {
+        "$ref": "#/$defs/MlflowModelSummary"
+      },
+      "title": "MlflowModelList",
+      "type": "array"
+    },
+    "MlflowModelSummary": {
+      "properties": {
+        "latest_versions": {
+          "items": {
+            "$ref": "#/$defs/MlflowVersionBrief"
+          },
+          "title": "Latest Versions",
+          "type": "array"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "latest_versions"
+      ],
+      "title": "MlflowModelSummary",
+      "type": "object"
+    },
+    "MlflowModelVersionList": {
+      "description": "``GET /api/mlflow/model-versions``.",
+      "items": {
+        "$ref": "#/$defs/MlflowModelVersionSummary"
+      },
+      "title": "MlflowModelVersionList",
+      "type": "array"
+    },
+    "MlflowModelVersionSummary": {
+      "properties": {
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "creation_timestamp": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Creation Timestamp"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Params",
+          "type": "object"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "run_id",
+        "status",
+        "creation_timestamp",
+        "description",
+        "params",
+        "aliases"
+      ],
+      "title": "MlflowModelVersionSummary",
+      "type": "object"
+    },
+    "MlflowRunList": {
+      "description": "``GET /api/mlflow/runs``.",
+      "items": {
+        "$ref": "#/$defs/MlflowRunSummary"
+      },
+      "title": "MlflowRunList",
+      "type": "array"
+    },
+    "MlflowRunSummary": {
+      "properties": {
+        "artifacts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Artifacts",
+          "type": "array"
+        },
+        "metrics": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Metrics",
+          "type": "object"
+        },
+        "params": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Params",
+          "type": "object"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "run_name": {
+          "title": "Run Name",
+          "type": "string"
+        },
+        "start_time": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Time"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "run_name",
+        "status",
+        "start_time",
+        "metrics",
+        "params",
+        "artifacts"
+      ],
+      "title": "MlflowRunSummary",
+      "type": "object"
+    },
+    "MlflowSettingsResponse": {
+      "properties": {
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        },
+        "folder": {
+          "default": "",
+          "title": "Folder",
+          "type": "string"
+        },
+        "resolved_folder": {
+          "default": "",
+          "title": "Resolved Folder",
+          "type": "string"
+        },
+        "section_present": {
+          "title": "Section Present",
+          "type": "boolean"
+        },
+        "tracking_uri": {
+          "default": "",
+          "title": "Tracking Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "section_present",
+        "tracking_uri",
+        "folder",
+        "resolved_folder",
+        "detail"
+      ],
+      "title": "MlflowSettingsResponse",
+      "type": "object"
+    },
+    "MlflowTestConnectionResponse": {
+      "properties": {
+        "category": {
+          "default": "",
+          "enum": [
+            "",
+            "authentication",
+            "permission",
+            "missing_resource",
+            "connectivity",
+            "configuration",
+            "unknown"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        },
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok",
+        "category",
+        "detail"
+      ],
+      "title": "MlflowTestConnectionResponse",
+      "type": "object"
+    },
+    "MlflowVersionBrief": {
+      "properties": {
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "status",
+        "run_id"
+      ],
+      "title": "MlflowVersionBrief",
+      "type": "object"
+    },
+    "SchemaItem": {
+      "properties": {
+        "comment": {
+          "default": "",
+          "title": "Comment",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "comment"
+      ],
+      "title": "SchemaItem",
+      "type": "object"
+    },
+    "SchemaListResponse": {
+      "properties": {
+        "schemas": {
+          "items": {
+            "$ref": "#/$defs/SchemaItem"
+          },
+          "title": "Schemas",
+          "type": "array"
+        }
+      },
+      "required": [
+        "schemas"
+      ],
+      "title": "SchemaListResponse",
+      "type": "object"
+    },
+    "TableItem": {
+      "properties": {
+        "comment": {
+          "default": "",
+          "title": "Comment",
+          "type": "string"
+        },
+        "full_name": {
+          "title": "Full Name",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "table_type": {
+          "default": "",
+          "title": "Table Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "full_name",
+        "table_type",
+        "comment"
+      ],
+      "title": "TableItem",
+      "type": "object"
+    },
+    "TableListResponse": {
+      "properties": {
+        "tables": {
+          "items": {
+            "$ref": "#/$defs/TableItem"
+          },
+          "title": "Tables",
+          "type": "array"
+        }
+      },
+      "required": [
+        "tables"
+      ],
+      "title": "TableListResponse",
+      "type": "object"
+    },
     "UtilityDeleteResponse": {
       "properties": {
         "module": {
@@ -1133,12 +1638,92 @@
       ],
       "title": "UtilityWriteResponse",
       "type": "object"
+    },
+    "WarehouseItem": {
+      "properties": {
+        "http_path": {
+          "title": "Http Path",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "size": {
+          "default": "",
+          "title": "Size",
+          "type": "string"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "http_path",
+        "state",
+        "size"
+      ],
+      "title": "WarehouseItem",
+      "type": "object"
+    },
+    "WarehouseListResponse": {
+      "properties": {
+        "warehouses": {
+          "items": {
+            "$ref": "#/$defs/WarehouseItem"
+          },
+          "title": "Warehouses",
+          "type": "array"
+        }
+      },
+      "required": [
+        "warehouses"
+      ],
+      "title": "WarehouseListResponse",
+      "type": "object"
     }
   },
   "$id": "https://haute.dev/schemas/api-contracts.v1.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "CatalogListResponse": {
+      "$ref": "#/$defs/CatalogListResponse"
+    },
+    "MlflowDestinationsResponse": {
+      "$ref": "#/$defs/MlflowDestinationsResponse"
+    },
+    "MlflowExperimentList": {
+      "$ref": "#/$defs/MlflowExperimentList"
+    },
+    "MlflowModelList": {
+      "$ref": "#/$defs/MlflowModelList"
+    },
+    "MlflowModelVersionList": {
+      "$ref": "#/$defs/MlflowModelVersionList"
+    },
+    "MlflowRunList": {
+      "$ref": "#/$defs/MlflowRunList"
+    },
+    "MlflowSettingsResponse": {
+      "$ref": "#/$defs/MlflowSettingsResponse"
+    },
+    "MlflowTestConnectionResponse": {
+      "$ref": "#/$defs/MlflowTestConnectionResponse"
+    },
+    "SchemaListResponse": {
+      "$ref": "#/$defs/SchemaListResponse"
+    },
+    "TableListResponse": {
+      "$ref": "#/$defs/TableListResponse"
+    },
     "UtilityDeleteResponse": {
       "$ref": "#/$defs/UtilityDeleteResponse"
     },
@@ -1150,6 +1735,9 @@
     },
     "UtilityWriteResponse": {
       "$ref": "#/$defs/UtilityWriteResponse"
+    },
+    "WarehouseListResponse": {
+      "$ref": "#/$defs/WarehouseListResponse"
     },
     "execution_strategy_diagnostic": {
       "$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"
@@ -1164,11 +1752,37 @@
     "UtilityListResponse",
     "UtilityReadResponse",
     "UtilityWriteResponse",
-    "UtilityDeleteResponse"
+    "UtilityDeleteResponse",
+    "WarehouseListResponse",
+    "CatalogListResponse",
+    "SchemaListResponse",
+    "TableListResponse",
+    "MlflowDestinationsResponse",
+    "MlflowSettingsResponse",
+    "MlflowTestConnectionResponse",
+    "MlflowExperimentList",
+    "MlflowRunList",
+    "MlflowModelList",
+    "MlflowModelVersionList"
   ],
   "title": "HauteApiContractBundle",
   "type": "object",
   "x-haute-response-groups": {
+    "databricks": [
+      "WarehouseListResponse",
+      "CatalogListResponse",
+      "SchemaListResponse",
+      "TableListResponse"
+    ],
+    "mlflow": [
+      "MlflowDestinationsResponse",
+      "MlflowSettingsResponse",
+      "MlflowTestConnectionResponse",
+      "MlflowExperimentList",
+      "MlflowRunList",
+      "MlflowModelList",
+      "MlflowModelVersionList"
+    ],
     "utility": [
       "UtilityListResponse",
       "UtilityReadResponse",

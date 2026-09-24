@@ -49,7 +49,12 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // summary, column selector and pane readiness) is lazy modelling-panel code and
 // brings the complete production bundle to 1,412.8 KiB; 1,423 KiB restores
 // about 10 KiB of aggregate headroom with the startup and vendor caps unchanged.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1423
+// Generated API response validators (API-R03) replace hand-written guards with
+// lazy standalone Ajv modules, one per converted module group, loaded with the
+// group's first response; the startup bundle shrinks. With the utility,
+// Databricks and MLflow groups the complete production bundle is 1,423.4 KiB;
+// 1,434 KiB restores about 10 KiB of aggregate headroom.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1434
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

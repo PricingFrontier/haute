@@ -3160,6 +3160,22 @@ class MlflowModelVersionSummary(BaseModel):
     aliases: list[str] = Field(default_factory=list)
 
 
+class MlflowExperimentList(RootModel[list[MlflowExperimentSummary]]):
+    """``GET /api/mlflow/experiments``."""
+
+
+class MlflowRunList(RootModel[list[MlflowRunSummary]]):
+    """``GET /api/mlflow/runs``."""
+
+
+class MlflowModelList(RootModel[list[MlflowModelSummary]]):
+    """``GET /api/mlflow/models``."""
+
+
+class MlflowModelVersionList(RootModel[list[MlflowModelVersionSummary]]):
+    """``GET /api/mlflow/model-versions``."""
+
+
 # ---------------------------------------------------------------------------
 # /api/optimiser/*
 # ---------------------------------------------------------------------------

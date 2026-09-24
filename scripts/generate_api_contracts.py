@@ -25,10 +25,21 @@ from pydantic_core import core_schema
 from haute._execution_schemas import ExecutionStrategyDiagnosticPayload
 from haute._explore_chart_contracts import ExploreChartsConfig
 from haute.schemas import (
+    CatalogListResponse,
+    MlflowDestinationsResponse,
+    MlflowExperimentList,
+    MlflowModelList,
+    MlflowModelVersionList,
+    MlflowRunList,
+    MlflowSettingsResponse,
+    MlflowTestConnectionResponse,
+    SchemaListResponse,
+    TableListResponse,
     UtilityDeleteResponse,
     UtilityListResponse,
     UtilityReadResponse,
     UtilityWriteResponse,
+    WarehouseListResponse,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +60,21 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         UtilityReadResponse,
         UtilityWriteResponse,
         UtilityDeleteResponse,
+    ),
+    "databricks": (
+        WarehouseListResponse,
+        CatalogListResponse,
+        SchemaListResponse,
+        TableListResponse,
+    ),
+    "mlflow": (
+        MlflowDestinationsResponse,
+        MlflowSettingsResponse,
+        MlflowTestConnectionResponse,
+        MlflowExperimentList,
+        MlflowRunList,
+        MlflowModelList,
+        MlflowModelVersionList,
     ),
 }
 

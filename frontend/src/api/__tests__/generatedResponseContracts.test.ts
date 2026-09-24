@@ -6,6 +6,12 @@ import {
   validateUtilityReadResponse,
   validateUtilityWriteResponse,
 } from "../../generated/api-contracts.utility.validators.mjs"
+import {
+  validateCatalogListResponse,
+  validateSchemaListResponse,
+  validateTableListResponse,
+  validateWarehouseListResponse,
+} from "../../generated/api-contracts.databricks.validators.mjs"
 import { expectGeneratedContract } from "../../types/generatedContractValidation"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 
@@ -60,5 +66,35 @@ describe("generated response contracts", () => {
         files: [{ name: "helpers" }],
       }),
     ).toThrow("UtilityListResponse: invalid contract at /files/0/module: required")
+  })
+
+  it("accept complete Databricks listings and reject a missing or mistyped field", () => {
+    const warehouses = expectGeneratedContract("WarehouseListResponse", validateWarehouseListResponse, {
+      warehouses: [{ id: "w1", name: "Shared", http_path: "/sql/1.0/warehouses/w1", state: "RUNNING", size: "" }],
+    })
+    const catalogs = expectGeneratedContract("CatalogListResponse", validateCatalogListResponse, {
+      catalogs: [{ name: "main", comment: "" }],
+    })
+    const schemas = expectGeneratedContract("SchemaListResponse", validateSchemaListResponse, {
+      schemas: [{ name: "pricing", comment: "quotes" }],
+    })
+    const tables = expectGeneratedContract("TableListResponse", validateTableListResponse, {
+      tables: [{ name: "quotes", full_name: "main.pricing.quotes", table_type: "MANAGED", comment: "" }],
+    })
+
+    expect(warehouses.warehouses[0]?.http_path).toBe("/sql/1.0/warehouses/w1")
+    expect(catalogs.catalogs[0]?.name).toBe("main")
+    expect(schemas.schemas[0]?.comment).toBe("quotes")
+    expect(tables.tables[0]?.full_name).toBe("main.pricing.quotes")
+    expect(() =>
+      expectGeneratedContract("TableListResponse", validateTableListResponse, {
+        tables: [{ name: "quotes", full_name: "main.pricing.quotes", comment: "" }],
+      }),
+    ).toThrow("TableListResponse: invalid contract at /tables/0/table_type: required")
+    expect(() =>
+      expectGeneratedContract("WarehouseListResponse", validateWarehouseListResponse, {
+        warehouses: [{ id: 1, name: "Shared", http_path: "/p", state: "RUNNING", size: "" }],
+      }),
+    ).toThrow("WarehouseListResponse: invalid contract at /warehouses/0/id: type")
   })
 })
