@@ -433,3 +433,45 @@ def frontier_result(
     result = status.get("result")
     assert isinstance(result, dict)
     return result
+
+
+def use_local_mlflow_store(tmp_path: Any, monkeypatch: Any) -> Any:
+    """Point MLflow logging at a local store under *tmp_path*; return a client to read it.
+
+    The optimiser's MLflow log resolves the empty destination to the project's
+    local folder, so the project root moves to *tmp_path* and every Databricks,
+    server and environment tracking setting is cleared.
+    """
+    from mlflow.tracking import MlflowClient
+
+    from haute._sandbox import set_project_root
+
+    for name in (
+        "DATABRICKS_HOST",
+        "DATABRICKS_TOKEN",
+        "DATABRICKS_MLFLOW_HOST",
+        "DATABRICKS_MLFLOW_TOKEN",
+        "MLFLOW_TRACKING_URI",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
+    return MlflowClient(tracking_uri=(tmp_path / "mlruns").as_uri())
+
+
+def logged_json_artifacts(store: Any, run_id: str, destination: Any) -> dict[str, Any]:
+    """Every top-level JSON artifact of *run_id*, downloaded under *destination*."""
+    import json
+    from pathlib import Path
+
+    destination.mkdir(parents=True, exist_ok=True)
+    return {
+        artifact.path: json.loads(
+            Path(store.download_artifacts(run_id, artifact.path, str(destination))).read_text(
+                encoding="utf-8"
+            )
+        )
+        for artifact in store.list_artifacts(run_id)
+        if artifact.path.endswith(".json")
+    }

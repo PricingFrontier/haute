@@ -131,12 +131,12 @@ def every_path(
     """
     import mlflow
 
-    from haute._mlflow_utils import mlflow_fluent_operation
+    from haute._mlflow_utils import mlflow_fluent_operation, set_tracking_uri_preserving_env
     from haute._model_scorer import ModelScorer
     from haute._sandbox import set_project_root
     from haute.deploy._scorer import _clear_deploy_artifact_caches, score_graph
     from haute.modelling._feature_contract import CONTRACT_FILENAME
-    from haute.modelling._mlflow_log import configure_mlflow_tracking
+    from haute.modelling._mlflow_log import resolve_tracking_backend
     from haute.modelling._native_pyfunc import NativePyfuncModel, package_native_model
 
     model_path = Path(result.model_path)
@@ -194,7 +194,7 @@ def every_path(
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
     monkeypatch.chdir(model_path.parent)
     with mlflow_fluent_operation():
-        configure_mlflow_tracking("")
+        set_tracking_uri_preserving_env(mlflow, resolve_tracking_backend("")[0])
         with mlflow.start_run() as run:
             mlflow.log_artifact(str(model_path))
             mlflow.log_artifact(str(contract))

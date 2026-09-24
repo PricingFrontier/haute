@@ -144,7 +144,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "engineering-quality",
     "explore-eda",
     "frontend-shared",
-    "mlflow-model-registry",
     "optimiser",
     "pipeline-config",
     "sandbox-security",

@@ -10,7 +10,6 @@ Current behaviour is specified in [the optimiser specification](../optimiser/low
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| OPT-P13 | Planned | P2 | The store-coupled setup steps become free functions that raise typed failures, so the service keeps only orchestration. |
 | OPT-P06 | Planned | P2 | Benchmark bounded frontier parallelism after input isolation. |
 | OPT-P12 | Planned | P2 | Extract the frontier domain service after the scaling decision. |
 | OPT-P14 | Planned | P2 | Complete solver/result publication extraction. |
@@ -18,9 +17,10 @@ Current behaviour is specified in [the optimiser specification](../optimiser/low
 
 ## Planned improvements
 
-Delivery order is `OPT-P13` → the `OPT-P06` performance
-decision → `OPT-P12` → `OPT-P14`; later packages must not bypass those
-isolation boundaries. `OPT-P16`, from the
+The setup steps are free functions in `_optimiser_input.py` that raise typed
+failures (`OptimiserSetupError`); the service records them. Delivery order is
+the `OPT-P06` performance decision → `OPT-P12` → `OPT-P14`; later packages
+must not bypass those isolation boundaries. `OPT-P16`, from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md), is
 independent of that order: it is a step towards `ROAD-WORKER-04` that needs
 no solver persistence.
@@ -28,8 +28,8 @@ no solver persistence.
 ### OPT-P06 — Frontier compute scaling
 **Why:** Frontier calculation misses safe bounded parallelism.
 
-**Plan:** Start only after OPT-P13 has made each frontier point's solver inputs
-immutable and isolated. Benchmark serial execution against a fixed bounded
+**Plan:** Each frontier point's solver inputs are immutable and isolated now
+that the setup steps are free functions. Benchmark serial execution against a fixed bounded
 worker count over representative small and large frontiers. Implement
 parallelism only when median wall-clock improves by at least 20% without
 raising peak memory, weakening admission/cancellation, or changing ordering or
@@ -41,7 +41,7 @@ stable point ordering, cancellation latency, and the implement/no-change
 decision. If implemented, concurrency-bound tests cover serial and parallel
 execution and prove admission is released exactly once.
 
-**Dependencies:** OPT-P13 and the current typed failure-classification and job-admission
+**Dependencies:** The current typed failure-classification and job-admission
 contracts.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_routes_real_library.py`.
@@ -60,39 +60,11 @@ state lock. Keep FastAPI response assembly in `src/haute/routes/optimiser.py`.
 materialisation, artifact-cap, and unrelated-parent concurrency regressions remain green at each
 extraction step.
 
-**Dependencies:** OPT-P13 and the OPT-P06 implement/no-change
+**Dependencies:** The OPT-P06 implement/no-change
 decision, plus the current frontier apply and interruptibility contracts.
 
 **Evidence:** `src/haute/routes/optimiser.py`; `src/haute/routes/_optimiser_service.py`;
 `tests/test_optimiser_frontier_materialisation.py`; `tests/test_optimiser_routes.py`.
-
-### OPT-P13 — Extract the store-coupled setup steps
-**Why:** Projection planning, retained-input resolution, the value-contract
-checks and their details, solver-input chunk sizing and resident-grid
-admission live in `src/haute/routes/_optimiser_input.py`. The setup steps
-that run them — data-input resolution, validation and projection (solve and
-auto-range), ratebook-factor extraction, the solver-input write and the grid
-build — are still `OptimiserSolveService` methods, because each records its
-own failure on the job before it raises, and grid construction records chunk
-provenance on the job.
-
-**Plan:** Make those steps free functions in `_optimiser_input.py` that raise
-typed failures carrying what is recorded today (including the contract-error
-fields `contract_error_job_fields` supplies) and return chunk provenance; the
-service's failure mappings record them, so `OptimiserSolveService` retains only
-orchestration calls. Preserve `ExecutionContext` checkpoints and typed
-contract errors.
-
-**Acceptance:** Projection, bounded-memory, multi-input, null/non-finite, chunk
-provenance, and grid ordering tests pass without fixture rewrites; every setup
-failure's job record is unchanged.
-
-**Dependencies:** The current constraint-validation and scan-bounding
-contracts.
-
-**Evidence:** `src/haute/routes/_optimiser_service.py::OptimiserSolveService`;
-`src/haute/routes/_optimiser_input.py`; `tests/test_optimiser_service_coverage.py`;
-`tests/test_optimiser_service_validation.py`.
 
 ### OPT-P14 — Extract solver execution and result publication
 **Why:** Online/ratebook construction, `SolveContext`, result normalisation, inline frontier
@@ -106,7 +78,7 @@ setup/worker composition. Retain the worker-context guard at the extracted publi
 dtype, and save/apply agreement suites pass; `_optimiser_service.py` is an orchestration module
 rather than a mixed domain/utilities module.
 
-**Dependencies:** OPT-P12, OPT-P13 and the OPT-P06 scaling decision.
+**Dependencies:** OPT-P12 and the OPT-P06 scaling decision.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_routes.py`;
 `tests/test_optimiser_golden.py`; `tests/test_optimiser_ratebook_apply_agreement.py`.

@@ -11,9 +11,14 @@ import polars as pl
 import pytest
 from fastapi import HTTPException
 
+from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from tests.job_store_support import discard_corrupt_job, seed_job
+from tests.optimiser_fixtures import (
+    logged_json_artifacts,
+    run_frontier_and_wait,
+    use_local_mlflow_store,
+)
 from tests.optimiser_fixtures import make_select_job as _make_select_job
-from tests.optimiser_fixtures import run_frontier_and_wait
 
 # ``clean_job_store`` lives in tests/conftest.py — single source of truth.
 
@@ -452,21 +457,23 @@ def test_frontier_apply_cleans_new_artifact_after_unexpected_store_failure(
             "atomic_update_if_heavy_present",
             side_effect=RuntimeError("store write failed"),
         ),
-        patch("haute.routes.optimiser.logger.error") as log_error,
+        patch("haute.server.logger.error") as log_error,
     ):
         resp = client.post(
             "/api/optimiser/apply",
             json={"job_id": "select_store_failure", "point_index": 0},
         )
 
-    assert resp.status_code == 500
+    # The request-created artifact is removed before the failure propagates.
     assert not orphan_path.exists()
     assert not orphan_dir.exists()
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
+    # The application handler logs it; the route no longer catches it.
     log_error.assert_called_once()
-    assert log_error.call_args.args == ("frontier_apply_materialise_failed",)
-    assert log_error.call_args.kwargs["error"] == "store write failed"
-    assert log_error.call_args.kwargs["job_id"] == "select_store_failure"
-    assert log_error.call_args.kwargs["exc_info"] is True
+    assert log_error.call_args.args == ("unhandled_exception",)
+    assert log_error.call_args.kwargs["error_class"] == "RuntimeError"
+    assert log_error.call_args.kwargs["path"] == "/api/optimiser/apply"
 
 
 def test_save_rechecks_solve_result_after_touch(client, clean_job_store, tmp_path: Path):
@@ -686,8 +693,6 @@ def test_frontier_select_unhandled_exception_logged_and_500(
     """Unexpected errors in select must be logged (with traceback) and
     returned as a generic 500 — never bubbling internal state to the
     client."""
-    from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
-    from haute.routes.optimiser import logger as optimiser_logger
 
     seed_job(clean_job_store, "select_boom", _make_select_job())
 
@@ -697,7 +702,7 @@ def test_frontier_select_unhandled_exception_logged_and_500(
             "haute.routes.optimiser._frontier_point_result_dict",
             side_effect=ZeroDivisionError("kaboom"),
         ),
-        patch.object(optimiser_logger, "error") as log_error,
+        patch("haute.server.logger.error") as log_error,
     ):
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -706,12 +711,11 @@ def test_frontier_select_unhandled_exception_logged_and_500(
 
     assert resp.status_code == 500
     assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
-    # The cause was logged with full context so it can be triaged.
-    assert log_error.call_count == 1
-    assert log_error.call_args.args == ("frontier_select_failed",)
-    assert log_error.call_args.kwargs["job_id"] == "select_boom"
-    assert log_error.call_args.kwargs["error"] == "kaboom"
-    assert log_error.call_args.kwargs["exc_info"] is True
+    # The application handler logs it; the route no longer catches it.
+    log_error.assert_called_once()
+    assert log_error.call_args.args == ("unhandled_exception",)
+    assert log_error.call_args.kwargs["error_class"] == "ZeroDivisionError"
+    assert log_error.call_args.kwargs["path"] == "/api/optimiser/frontier/select"
 
 
 # ---------------------------------------------------------------------------
@@ -1144,6 +1148,8 @@ def test_apply_cleans_up_orphan_artifact_when_atomic_update_loses_race(
 def test_mlflow_log_ratebook_falls_back_to_solve_result_factor_tables(
     client,
     clean_job_store,
+    tmp_path,
+    monkeypatch,
 ):
     """The artifact payload prefers ``result.factor_tables`` but falls
     back to ``solve_result.factor_tables`` when the result has been
@@ -1196,45 +1202,19 @@ def test_mlflow_log_ratebook_falls_back_to_solve_result_factor_tables(
         },
     )
 
-    captured_payloads: list[str] = []
+    store = use_local_mlflow_store(tmp_path, monkeypatch)
 
-    def _capture_log_artifact(artifact_path: str, *args, **kwargs) -> None:
-        # ``mlflow_log`` writes the JSON payload to a tempfile and then
-        # asks mlflow to log it; capture the file content so we can
-        # inspect what would have shipped to MLflow.
-        if artifact_path.endswith("optimiser_result.json"):
-            captured_payloads.append(Path(artifact_path).read_text(encoding="utf-8"))
-
-    fake_mlflow = MagicMock()
-    fake_run = MagicMock()
-    fake_run.info.run_id = "run-x"
-    fake_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=fake_run)
-    fake_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
-    fake_mlflow.log_artifact.side_effect = _capture_log_artifact
-
-    with (
-        patch.dict("sys.modules", {"mlflow": fake_mlflow}),
-        patch(
-            "haute.modelling._mlflow_log.configure_mlflow_tracking",
-            return_value=("file:///tmp", "local"),
-        ),
-        patch("haute.modelling._mlflow_log.resolve_experiment_name", return_value="haute-opt"),
-        patch("haute.modelling._mlflow_log.build_run_url", return_value="http://run-x"),
-        patch.object(clean_job_store, "touch_heavy_objects", return_value=True),
-    ):
+    with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
         resp = client.post(
             "/api/optimiser/mlflow/log",
             json={"job_id": "mlflow_fallback"},
         )
 
     assert resp.status_code == 200
-    assert resp.json()["run_id"] == "run-x"
-    # The captured payload reflects the fallback: factor_tables came from
+    # The logged payload reflects the fallback: factor_tables came from
     # solve_result, not the (slimmed) result dict.
-    import json as _json
-
-    assert captured_payloads, "expected optimiser_result.json to be logged"
-    payload = _json.loads(captured_payloads[-1])
+    logged = logged_json_artifacts(store, resp.json()["run_id"], tmp_path / "logged")
+    payload = logged["optimiser_result.json"]
     assert payload["factor_tables"] == factor_tables
     assert payload["factor_dtypes"] == factor_dtypes
     assert payload["clamp_rate"] == 0.02

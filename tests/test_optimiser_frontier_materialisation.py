@@ -21,17 +21,9 @@ from tests.optimiser_fixtures import (
 from tests.optimiser_fixtures import (
     make_online_frontier_job as _online_frontier_job,
 )
+from tests.optimiser_fixtures import use_local_mlflow_store
 
 # ``clean_job_store`` lives in tests/conftest.py — single source of truth.
-
-
-def _mlflow_mock() -> MagicMock:
-    mock_mlflow = MagicMock()
-    mock_run = MagicMock()
-    mock_run.info.run_id = "run-frontier"
-    mock_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-    mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
-    return mock_mlflow
 
 
 def test_select_frontier_point_uses_stored_summary_without_solver(
@@ -214,36 +206,22 @@ def test_save_selected_frontier_point_does_not_use_stale_solve_result(
 def test_mlflow_log_explicit_frontier_point_without_solver_or_solve_result(
     client,
     clean_job_store,
+    tmp_path,
+    monkeypatch,
 ):
     seed_job(clean_job_store, "mlflow_point", _online_frontier_job())
-    mock_mlflow = _mlflow_mock()
+    store = use_local_mlflow_store(tmp_path, monkeypatch)
 
-    with (
-        patch.dict("sys.modules", {"mlflow": mock_mlflow}),
-        patch(
-            "haute.modelling._mlflow_log.configure_mlflow_tracking",
-            return_value=("http://localhost:5000", "local"),
-        ),
-        patch(
-            "haute.modelling._mlflow_log.resolve_experiment_name",
-            return_value="/frontier",
-        ),
-        patch(
-            "haute.modelling._mlflow_log.build_run_url",
-            return_value="http://localhost:5000/run-frontier",
-        ),
-    ):
-        resp = client.post(
-            "/api/optimiser/mlflow/log",
-            json={"job_id": "mlflow_point", "point_index": 0},
-        )
+    resp = client.post(
+        "/api/optimiser/mlflow/log",
+        json={"job_id": "mlflow_point", "point_index": 0},
+    )
 
     assert resp.status_code == 200
-    assert resp.json()["run_id"] == "run-frontier"
-    mock_mlflow.set_tag.assert_any_call("frontier.selected_point_index", "0")
-    logged_metrics = mock_mlflow.log_metrics.call_args.args[0]
-    assert logged_metrics["total_objective"] == 123.0
-    assert logged_metrics["constraint.volume"] == 0.91
+    run = store.get_run(resp.json()["run_id"])
+    assert run.data.tags["frontier.selected_point_index"] == "0"
+    assert run.data.metrics["total_objective"] == 123.0
+    assert run.data.metrics["constraint.volume"] == 0.91
 
 
 def test_apply_explicit_frontier_point_materialises_online_result_to_disk(

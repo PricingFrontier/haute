@@ -5,8 +5,8 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/routes/optimiser.py` | FastAPI router (`/api/optimiser/*`). Owns request/response assembly, frontier-point selection, artifact-payload building/validation for save and MLflow log, and the module-level `_store`/`_solve_service` singletons. |
-| `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService` and its supporting free functions: pipeline execution, schema/value-contract validation, quote-grid construction, solver dispatch (online and ratebook), background frontier-auto-range estimation, and ratebook factor-table canonicalisation/serialisation. It owns no filesystem deletion. |
-| `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`, `_solve_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the value-contract expressions and their failure details, solver-input chunk sizing (`_chunk_size_decision_for_parquet`), resident-grid admission (`_admit_resident_grid`), the projected-parquet borrow check, and `_find_optimiser_node`. The service's setup steps call them. |
+| `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService` and its supporting free functions: pipeline execution, setup orchestration, solver dispatch (online and ratebook), background frontier-auto-range estimation, and ratebook factor-table canonicalisation/serialisation. Each setup step is one orchestration method over a free step in `_optimiser_input.py`: `_recorded_setup_failures` records an `OptimiserSetupError` on the job as its terminal state and answers the matching `HTTPException`; chunk provenance is recorded by `_record_setup_chunking`; a ratebook factor-extraction refusal is recorded by the setup failure mapping instead. It owns no filesystem deletion. |
+| `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`, `_solve_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the value-contract expressions and their failure details, solver-input chunk sizing (`_chunk_size_decision_for_parquet`), resident-grid admission (`_admit_resident_grid`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `write_solver_input`, `grid_chunk_decision` (returns the chunk size and its provenance) and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. |
 | `src/haute/routes/_optimiser_artifacts.py` | The owned artifact lifecycle: the two ownership-marked artifact families (apply result, ratebook factors) — their roots, handle validation, persistence, loading, job-store cleaners, orphan cleanup and stale-startup reaping (`reap_stale_optimiser_artifacts`) — and setup's temporary files (the solver-input parquet, a worker's ratebook factors directory, the range reducer's spill directory). |
 | `src/haute/routes/_optimiser_worker.py` | The hard-capped spawn workers that materialise optimiser inputs in process mode: `materialise_solve_input_worker` (solve setup's execute/validate/project/factor-extraction and the solver-input parquet) and `frontier_auto_range_worker` (the auto-range totals), their plain-data requests and outcomes, `SolveInput`, and `OptimiserWorkerFailure`, the child's terminal failure record that the parent replays onto the real job (raised there as `OptimiserWorkerFailureError`). |
 | `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT`, `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_apply_preview_payload`, `limited_frontier_payload`. |
@@ -297,7 +297,10 @@ HTTP 422; the 422 mapping remains for bounded streaming-collect failures.
   already running (unlike
   `start()`'s stricter conflict behaviour), otherwise creates a cancellable job, registers it,
   and spawns a worker thread.
-- `_run_frontier_auto_range_job` is the one auto-range job. It owns admission, cancellation,
+- `_run_frontier_auto_range_job` is the one auto-range job. It owns admission (entered
+  without a context, as the background launcher enters it, it admits its own and releases it on
+  every exit, so a failed job never leaves its memory reservation to garbage collection),
+  cancellation,
   completion (the result's `warning` and `chunk_fallback` come from the recorded fallback) and a
   single failure classification, and takes its range batches from one of two sources:
   `_chunked_frontier_ranges` (execute to the streaming plan's base node, then
@@ -443,9 +446,15 @@ mapping, a missing total objective, missing or malformed ratebook factor-table/d
 atomically write it to disk
 (`atomic_write_text`, with `allow_nan=False` as a defence-in-depth backstop behind the explicit
 validation) or attach it as an MLflow run artifact alongside metrics/params and (if present) a
-frontier-points CSV. Tracking-URI/registry setup and experiment-name resolution for `mlflow_log`
-go through the same shared `configure_mlflow_tracking(destination)` / `resolve_experiment_name()` /
-`build_run_url()` helpers in `haute.modelling._mlflow_log` that `routes/modelling.py` uses
+frontier-points CSV. `mlflow_log` logs through an `MlflowClient` bound to the destination
+`resolve_tracking_backend(destination)` resolves (registry from `registry_uri_for_tracking`),
+selects the experiment with `ensure_experiment`, creates the run with `client.create_run`,
+logs parameters, metrics, tags and artifacts through the client, and terminates the run
+as `FINISHED` or, in a `finally`, `FAILED`. It logs no model, so it never enters
+`mlflow_fluent_operation()`, never waits for another log, and never writes the tracking URI
+into the environment. Experiment-name resolution and the run URL use the same shared
+`resolve_experiment_name()` / `build_run_url(..., tracking_uri=...)` helpers in
+`haute.modelling._mlflow_log` that `routes/modelling.py` uses
 (see [modelling low-level](../modelling/low-level.md#shared-mlflow-trackingexperiment-name-resolution))
 without calling `log_experiment()` itself, since the optimiser's artifact shape (solver params, frontier CSV,
 `optimiser_result.json`) doesn't fit `log_experiment()`'s model-diagnostics-shaped signature.
@@ -714,7 +723,7 @@ returned as a generic `status: "error"` payload.
   otherwise crash the subsequent numeric cast; `0.0` is treated as the true population value for
   a singleton, not a fabricated fallback.
 - **Non-finite value validation happens post-cast, at Float32 precision.** The solver consumes
-  Float32; `_validate_input_value_contracts` checks for NaN/Inf *after* the Float32 cast
+  Float32; `validate_input_value_contracts` checks for NaN/Inf *after* the Float32 cast
   specifically so a Float64 value that only overflows to ±Infinity once down-cast is still caught
   as a contract violation, not silently passed through.
 - **Null-value validation spans every dtype; non-finite validation is float-only.**
@@ -780,11 +789,15 @@ returned as a generic `status: "error"` payload.
   worker thread failing to even start; a generic/unclassified pipeline or grid failure; an
   invalid server-owned artifact handle; a corrupt persisted artifact), 507
   (`ExecutionAdmissionError`/`ExecutionMemoryLimitExceededError`
-  wrapped via `_memory_limit_http_exception`, whose payload `message` is the
+  mapped by the shared `memory_limit_http_exception(exc, operation_noun="Auto-range")`,
+  whose payload `message` is the
   shared curated wording from `routes/_memory_messages.memory_limit_user_message`
   — the same shape training and the input-snapshot build use — and the
   memory-limited job's terminal message reuses it rather than the generic
-  exceeded-its-memory-budget fallback). This applies to `POST /frontier` only up through its
+  exceeded-its-memory-budget fallback). Any other exception a request handler raises is not
+  caught in the route: it reaches the application handler, which logs it as
+  `unhandled_exception` and answers the sanitized 500. The frontier apply path first
+  removes the apply artifact that request created, then re-raises. This applies to `POST /frontier` only up through its
   synchronous validation phase (runtime resolution, compute budget, already-running-sweep check);
   once validation and worker launch succeed, the request returns 200 with a `status: "started"`
   body.

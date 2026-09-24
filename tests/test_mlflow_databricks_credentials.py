@@ -276,34 +276,13 @@ def _experiment_payload() -> dict[str, Any]:
     }
 
 
-def _set_bound_databricks_experiment() -> Any:
-    import mlflow
+def _ensure_bound_databricks_experiment() -> str:
+    from mlflow.tracking import MlflowClient
 
-    mlflow.set_tracking_uri(resolve_backend("databricks").tracking_uri)
-    return _mlflow_utils.set_experiment_creating_workspace_folder(mlflow, _NEW_EXPERIMENT_NAME)
-
-
-def test_new_experiment_creates_its_missing_workspace_folder_first(
-    databricks: FakeDatabricks,
-) -> None:
-    databricks.respond_json(
-        *_GET_EXPERIMENT_BY_NAME,
-        {"error_code": "RESOURCE_DOES_NOT_EXIST", "message": "Node not found"},
-        status=404,
+    tracking_uri = resolve_backend("databricks").tracking_uri
+    return _mlflow_utils.ensure_experiment(
+        MlflowClient(tracking_uri=tracking_uri), tracking_uri, _NEW_EXPERIMENT_NAME
     )
-    databricks.respond_json(*_WORKSPACE_MKDIRS, {})
-    databricks.respond_json(*_CREATE_EXPERIMENT, {"experiment_id": EXPERIMENT_ID})
-    databricks.respond_json(*_GET_EXPERIMENT, _experiment_payload())
-
-    experiment = _set_bound_databricks_experiment()
-
-    assert experiment.experiment_id == EXPERIMENT_ID
-    endpoints = [(r.method, urlsplit(r.url).path) for r in databricks.requests]
-    assert _WORKSPACE_MKDIRS in endpoints
-    assert endpoints.index(_WORKSPACE_MKDIRS) < endpoints.index(_CREATE_EXPERIMENT)
-    mkdirs = next(r for r in databricks.requests if urlsplit(r.url).path == _WORKSPACE_MKDIRS[1])
-    assert json.loads(mkdirs.body or b"{}") == {"path": "/Shared/haute"}
-    databricks.assert_bound_to_mlflow_pair()
 
 
 def test_client_bound_new_experiment_creates_its_missing_workspace_folder_first(
@@ -338,9 +317,7 @@ def test_existing_experiment_does_not_touch_workspace_folders(
 ) -> None:
     databricks.respond_json(*_GET_EXPERIMENT_BY_NAME, _experiment_payload())
 
-    experiment = _set_bound_databricks_experiment()
-
-    assert experiment.experiment_id == EXPERIMENT_ID
+    assert _ensure_bound_databricks_experiment() == EXPERIMENT_ID
     assert _WORKSPACE_MKDIRS not in [(r.method, urlsplit(r.url).path) for r in databricks.requests]
     databricks.assert_bound_to_mlflow_pair()
 
@@ -360,7 +337,7 @@ def test_uncreatable_workspace_folder_names_the_folder_and_creates_no_experiment
     )
 
     with pytest.raises(MlflowRemoteError, match="denied permission.*/Shared/haute") as raised:
-        _set_bound_databricks_experiment()
+        _ensure_bound_databricks_experiment()
 
     assert raised.value.category == "permission"
     assert "Model_Training_14" in str(raised.value)
@@ -371,16 +348,17 @@ def test_uncreatable_workspace_folder_names_the_folder_and_creates_no_experiment
 def test_local_experiments_never_call_the_workspace_api(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import mlflow
+    from mlflow.tracking import MlflowClient
 
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-    mlflow.set_tracking_uri((tmp_path / "mlruns").as_uri())
+    tracking_uri = (tmp_path / "mlruns").as_uri()
     http_request = MagicMock(name="http_request")
     monkeypatch.setattr("mlflow.utils.rest_utils.http_request", http_request)
+    client = MlflowClient(tracking_uri=tracking_uri)
 
-    experiment = _mlflow_utils.set_experiment_creating_workspace_folder(mlflow, "pricing/frequency")
+    experiment_id = _mlflow_utils.ensure_experiment(client, tracking_uri, "pricing/frequency")
 
-    assert experiment.name == "pricing/frequency"
+    assert client.get_experiment(experiment_id).name == "pricing/frequency"
     http_request.assert_not_called()
 
 

@@ -484,45 +484,20 @@ class TestBuildRunUrl:
 
 
 class TestRegistryUriFollowsDestination:
-    def test_databricks_registry_retains_profile(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        from haute._sandbox import set_project_root
-        from haute.modelling._mlflow_log import configure_mlflow_tracking
+    def test_databricks_registry_retains_profile(self) -> None:
+        from haute._mlflow_utils import registry_uri_for_tracking
 
-        set_project_root(tmp_path)
-        monkeypatch.setenv("MLFLOW_TRACKING_URI", "databricks://team-profile")
-        with patch("mlflow.set_tracking_uri"), patch("mlflow.set_registry_uri") as registry:
-            configure_mlflow_tracking("databricks")
-        registry.assert_called_once_with("databricks-uc://team-profile")
+        assert (
+            registry_uri_for_tracking("databricks://team-profile") == "databricks-uc://team-profile"
+        )
+        assert registry_uri_for_tracking("databricks") == "databricks-uc"
 
-    def test_leaving_databricks_resets_the_registry_uri(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """The process-global registry URI must never stay on Unity Catalog
-        after the destination switches away from Databricks."""
-        from haute._sandbox import set_project_root
+    def test_a_local_store_is_its_own_registry(self, tmp_path: Path) -> None:
+        """A Unity Catalog registry can never capture a local registration."""
+        from haute._mlflow_utils import registry_uri_for_tracking
 
-        set_project_root(tmp_path)
-        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
-
-        from haute.modelling._mlflow_log import configure_mlflow_tracking
-
-        with (
-            patch("mlflow.set_tracking_uri"),
-            patch("mlflow.set_registry_uri") as m_registry,
-        ):
-            monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://adb.example.net")
-            monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi-token")
-            configure_mlflow_tracking("databricks")
-            assert m_registry.call_args_list[-1].args == ("databricks-uc",)
-
-            tracking_uri, backend = configure_mlflow_tracking("local")
-            assert backend == "local"
-            # The registry explicitly follows the local tracking store.
-            assert m_registry.call_args_list[-1].args == (tracking_uri,)
+        uri = (tmp_path / "mlruns").as_uri()
+        assert registry_uri_for_tracking(uri) == uri
 
 
 class TestLocalRegistrationEndToEnd:
@@ -1005,55 +980,16 @@ class TestBuildRunUrlExtra:
         client.return_value.get_experiment_by_name.assert_called_once_with("/Shared/haute/freq")
 
 
-class TestConfigureMlflowTracking:
-    def test_local_tracking(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Local backend should set tracking URI to file:// path."""
-        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
-        monkeypatch.delenv("DATABRICKS_MLFLOW_HOST", raising=False)
-        monkeypatch.delenv("DATABRICKS_MLFLOW_TOKEN", raising=False)
-
-        with (
-            patch("mlflow.set_tracking_uri") as m_tracking,
-            patch("mlflow.set_registry_uri") as m_registry,
-        ):
-            from haute.modelling._mlflow_log import configure_mlflow_tracking
-
-            uri, backend = configure_mlflow_tracking()
-            assert backend == "local"
-            assert uri.startswith("file://")
-            m_tracking.assert_called_once_with(uri)
-            # The registry explicitly follows the tracking store, so a
-            # leftover databricks-uc registry URI can never capture local
-            # registrations.
-            m_registry.assert_called_once_with(uri)
-
-    def test_databricks_tracking(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Databricks backend should set both tracking and registry URIs."""
-        monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://myhost.databricks.com")
-        monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi_test")
-
-        with (
-            patch("mlflow.set_tracking_uri") as m_tracking,
-            patch("mlflow.set_registry_uri") as m_registry,
-        ):
-            from haute.modelling._mlflow_log import configure_mlflow_tracking
-
-            uri, backend = configure_mlflow_tracking("databricks")
-            assert backend == "databricks"
-            assert uri == "databricks"
-            m_tracking.assert_called_once_with("databricks")
-            m_registry.assert_called_once_with("databricks-uc")
-
+class TestDestinationBoundClient:
     def test_cold_process_logging_binds_the_selected_profile_not_the_environment(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Cold-process logging binds profile credentials over conflicting environment."""
-        import mlflow
+        """A destination-bound client uses the profile's credentials over a
+        conflicting environment."""
         import requests
+        from mlflow.tracking import MlflowClient
 
-        from haute._mlflow_utils import mlflow_fluent_operation
-        from haute.modelling._mlflow_log import configure_mlflow_tracking
+        from haute.modelling._mlflow_log import resolve_tracking_backend
 
         cfg = tmp_path / "databrickscfg"
         cfg.write_text(
@@ -1077,9 +1013,8 @@ class TestConfigureMlflowTracking:
             return resp
 
         with patch("requests.Session.request", new=fake_request):
-            with mlflow_fluent_operation():
-                configure_mlflow_tracking("databricks")
-                mlflow.search_experiments(max_results=1)
+            tracking_uri, _backend = resolve_tracking_backend("databricks")
+            MlflowClient(tracking_uri=tracking_uri).search_experiments(max_results=1)
 
         assert str(captured["url"]).startswith("https://profile-host.example.net/")
         assert captured["auth"] == "Bearer profile-token-value"

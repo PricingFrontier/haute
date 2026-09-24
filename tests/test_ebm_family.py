@@ -553,9 +553,9 @@ def test_an_mlflow_run_artifact_loads_with_the_contract_logged_beside_it(
     import mlflow
 
     from haute._mlflow_io import load_mlflow_model
-    from haute._mlflow_utils import mlflow_fluent_operation
+    from haute._mlflow_utils import mlflow_fluent_operation, set_tracking_uri_preserving_env
     from haute._sandbox import set_project_root
-    from haute.modelling._mlflow_log import configure_mlflow_tracking
+    from haute.modelling._mlflow_log import resolve_tracking_backend
 
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
     monkeypatch.chdir(tmp_path)
@@ -564,7 +564,7 @@ def test_an_mlflow_run_artifact_loads_with_the_contract_logged_beside_it(
     _job, result = train(tmp_path / "train", target="severity", loss="RMSE")
     model_path = Path(result.model_path)
     with mlflow_fluent_operation():
-        configure_mlflow_tracking("")
+        set_tracking_uri_preserving_env(mlflow, resolve_tracking_backend("")[0])
         with mlflow.start_run() as run:
             mlflow.log_artifact(str(model_path))
             mlflow.log_artifact(str(model_path.parent / model_contract_filename("ebm")))
@@ -742,9 +742,13 @@ def test_the_mlflow_cache_reloads_when_only_the_run_contract_changes(
         _model_cache,
         load_mlflow_model,
     )
-    from haute._mlflow_utils import mlflow_fluent_operation, resolve_backend
+    from haute._mlflow_utils import (
+        mlflow_fluent_operation,
+        resolve_backend,
+        set_tracking_uri_preserving_env,
+    )
     from haute._sandbox import set_project_root
-    from haute.modelling._mlflow_log import configure_mlflow_tracking
+    from haute.modelling._mlflow_log import resolve_tracking_backend
 
     monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
     monkeypatch.chdir(tmp_path)
@@ -752,7 +756,7 @@ def test_the_mlflow_cache_reloads_when_only_the_run_contract_changes(
     _job, result = train(tmp_path / "train", target="severity", loss="RMSE")
     model_path = Path(result.model_path)
     with mlflow_fluent_operation():
-        configure_mlflow_tracking("")
+        set_tracking_uri_preserving_env(mlflow, resolve_tracking_backend("")[0])
         with mlflow.start_run() as run:
             mlflow.log_artifact(str(model_path))
             mlflow.log_artifact(str(model_path.parent / model_contract_filename("ebm")))

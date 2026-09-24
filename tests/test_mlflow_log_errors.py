@@ -20,6 +20,7 @@ from haute._mlflow_errors import (
 from haute.modelling._feature_contract import build_contract, save_contract
 from haute.schemas import TrainResponse
 from tests.job_store_support import seed_job
+from tests.optimiser_fixtures import use_local_mlflow_store
 from tests.training_artifacts_support import publish_trained_job
 
 
@@ -300,31 +301,19 @@ class TestOptimiserLogRoute:
         )
 
     def test_a_cleared_experiment_logs_to_the_default_not_the_solve_snapshot(
-        self, client, clean_job_store
+        self, client, clean_job_store, tmp_path, monkeypatch
     ) -> None:
         self._seed(clean_job_store)
-        with (
-            patch(
-                "haute.modelling._mlflow_log.configure_mlflow_tracking",
-                return_value=("file:/x", "local"),
-            ),
-            patch("haute.routes.optimiser.set_experiment_creating_workspace_folder") as folder,
-            patch("mlflow.start_run") as start_run,
-            patch("mlflow.log_params"),
-            patch("mlflow.log_metrics"),
-            patch("mlflow.log_artifact"),
-            patch("haute.routes.optimiser._build_artifact_payload", return_value={}),
-        ):
-            start_run.return_value.__enter__ = MagicMock(
-                return_value=SimpleNamespace(info=SimpleNamespace(run_id="r"))
-            )
-            start_run.return_value.__exit__ = MagicMock(return_value=False)
+        store = use_local_mlflow_store(tmp_path, monkeypatch)
+        with patch("haute.routes.optimiser._build_artifact_payload", return_value={}):
             response = client.post(
                 "/api/optimiser/mlflow/log", json={"job_id": "opt_job", "experiment_name": ""}
             )
         assert response.status_code == 200, response.text
-        assert folder.call_args.args[1] == "opt"
         assert response.json()["experiment_name"] == "opt"
+        run = store.get_run(response.json()["run_id"])
+        assert store.get_experiment(run.info.experiment_id).name == "opt"
+        assert store.get_experiment_by_name("/snapshot/at/solve") is None
 
     def test_a_connection_failure_is_classified_like_the_training_route(
         self, client, clean_job_store
@@ -332,11 +321,11 @@ class TestOptimiserLogRoute:
         self._seed(clean_job_store)
         with (
             patch(
-                "haute.modelling._mlflow_log.configure_mlflow_tracking",
+                "haute.modelling._mlflow_log.resolve_tracking_backend",
                 return_value=("http://mlflow.invalid", "server"),
             ),
             patch(
-                "haute.routes.optimiser.set_experiment_creating_workspace_folder",
+                "haute.routes.optimiser.ensure_experiment",
                 side_effect=_wrapped(requests.exceptions.ConnectionError("refused")),
             ),
         ):

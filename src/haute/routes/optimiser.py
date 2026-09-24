@@ -23,8 +23,9 @@ from haute._execution_context import (
 from haute._file_ops import atomic_write_text
 from haute._logging import get_logger
 from haute._mlflow_utils import (
-    mlflow_fluent_operation,
-    set_experiment_creating_workspace_folder,
+    allow_file_store_if_local,
+    ensure_experiment,
+    registry_uri_for_tracking,
 )
 from haute._polars_utils import streaming_collect
 from haute._rating import is_rating_dtype_descriptor
@@ -192,8 +193,8 @@ def _dataframe_or_raise(result: Any, *, context: str) -> Any:
     """Read ``.dataframe`` from a solver/apply result, with a typed error.
 
     The Protocol-cast at call sites is a pure type-checker hint and gives
-    no runtime guarantee.  Without this guard a missing attribute is masked
-    by the broad ``except Exception`` and surfaces as an opaque 500.
+    no runtime guarantee.  Without this guard a missing attribute surfaces as
+    an ``AttributeError`` and an opaque 500 from the application handler.
     """
     if not hasattr(result, "dataframe"):
         raise HTTPException(
@@ -1159,21 +1160,12 @@ def _materialise_frontier_point_apply(
                 event="frontier_apply_artifact_cap_cleanup_failed",
             )
         return df, result_dict, False
-    except HTTPException:
+    except Exception:
+        # A request-created apply artifact is removed on any failure; the
+        # failure itself propagates to the application handlers.
         if owns_new_handle and new_handle is not None:
             _cleanup_orphan_apply_artifact(new_handle, job_id=job_id)
         raise
-    except Exception as exc:
-        if owns_new_handle and new_handle is not None:
-            _cleanup_orphan_apply_artifact(new_handle, job_id=job_id)
-        logger.error(
-            "frontier_apply_materialise_failed",
-            error=str(exc),
-            job_id=job_id,
-            point_index=point_index,
-            exc_info=True,
-        )
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 
 @router.post("/solve", response_model=OptimiserSolveResponse)
@@ -1345,69 +1337,63 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
     job: Mapping[str, Any] = _store.require_completed_job(body.job_id)
     _reject_ratebook_apply_detail(job)
 
-    try:
-        target_point_index = _selected_or_requested_frontier_point(job, body.point_index)
-        if target_point_index is not None:
-            df, result, from_artifact = _materialise_frontier_point_apply(
-                body.job_id,
-                target_point_index,
-            )
-            response = OptimiserApplyResponse(
-                status="ok",
-                total_objective=result["total_objective"],
-                constraints=result["constraints"],
-                from_artifact=from_artifact,
-                **limited_apply_preview_payload(df),
-            )
-            _store.clear_result_data(body.job_id)
-            return response
-
-        solve_result = job.get("solve_result")
-        from_artifact = False
-        if solve_result is not None and not hasattr(solve_result, "dataframe"):
-            _dataframe_or_raise(solve_result, context="Job solve_result")
-        if solve_result is not None and getattr(solve_result, "dataframe", None) is not None:
-            typed_solve_result = cast(SolveResultLike, solve_result)
-            df = _dataframe_or_raise(solve_result, context="Job solve_result")
-            total_objective = typed_solve_result.total_objective
-            constraints = typed_solve_result.total_constraints
-        else:
-            from_artifact = True
-            artifact_handles = _artifact_handles_or_raise(job)
-            apply_handle = artifact_handles.get(_APPLY_RESULT_HANDLE_KEY)
-            if not isinstance(apply_handle, dict):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Job has no apply artifact handle. Re-run the solve to regenerate it.",
-                )
-            df = _load_apply_result_artifact(apply_handle)
-            job_result: object = job.get("result")
-            if not isinstance(job_result, dict):
-                raise HTTPException(status_code=500, detail="Job summary is missing")
-            raw_total_objective = job_result.get("total_objective")
-            raw_constraints = job_result.get("constraints", {})
-            if not isinstance(raw_total_objective, (int, float)) or not isinstance(
-                raw_constraints,
-                dict,
-            ):
-                raise HTTPException(status_code=500, detail="Job summary is incomplete")
-            total_objective = float(raw_total_objective)
-            constraints = cast(dict[str, float], raw_constraints)
-
+    target_point_index = _selected_or_requested_frontier_point(job, body.point_index)
+    if target_point_index is not None:
+        df, result, from_artifact = _materialise_frontier_point_apply(
+            body.job_id,
+            target_point_index,
+        )
         response = OptimiserApplyResponse(
             status="ok",
-            total_objective=total_objective,
-            constraints=constraints,
+            total_objective=result["total_objective"],
+            constraints=result["constraints"],
             from_artifact=from_artifact,
             **limited_apply_preview_payload(df),
         )
-        _clear_result_data_after_user_action(body.job_id)
+        _store.clear_result_data(body.job_id)
         return response
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("apply_failed", error=str(exc), job_id=body.job_id, exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+    solve_result = job.get("solve_result")
+    from_artifact = False
+    if solve_result is not None and not hasattr(solve_result, "dataframe"):
+        _dataframe_or_raise(solve_result, context="Job solve_result")
+    if solve_result is not None and getattr(solve_result, "dataframe", None) is not None:
+        typed_solve_result = cast(SolveResultLike, solve_result)
+        df = _dataframe_or_raise(solve_result, context="Job solve_result")
+        total_objective = typed_solve_result.total_objective
+        constraints = typed_solve_result.total_constraints
+    else:
+        from_artifact = True
+        artifact_handles = _artifact_handles_or_raise(job)
+        apply_handle = artifact_handles.get(_APPLY_RESULT_HANDLE_KEY)
+        if not isinstance(apply_handle, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="Job has no apply artifact handle. Re-run the solve to regenerate it.",
+            )
+        df = _load_apply_result_artifact(apply_handle)
+        job_result: object = job.get("result")
+        if not isinstance(job_result, dict):
+            raise HTTPException(status_code=500, detail="Job summary is missing")
+        raw_total_objective = job_result.get("total_objective")
+        raw_constraints = job_result.get("constraints", {})
+        if not isinstance(raw_total_objective, (int, float)) or not isinstance(
+            raw_constraints,
+            dict,
+        ):
+            raise HTTPException(status_code=500, detail="Job summary is incomplete")
+        total_objective = float(raw_total_objective)
+        constraints = cast(dict[str, float], raw_constraints)
+
+    response = OptimiserApplyResponse(
+        status="ok",
+        total_objective=total_objective,
+        constraints=constraints,
+        from_artifact=from_artifact,
+        **limited_apply_preview_payload(df),
+    )
+    _clear_result_data_after_user_action(body.job_id)
+    return response
 
 
 _frontier_lifecycle = JobLifecycle(_store)
@@ -1617,24 +1603,18 @@ def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
         if solver is None or quote_grid is None:
             raise HTTPException(status_code=400, detail=missing_runtime_detail)
 
+    base_result = _base_result_for_frontier_recompute(job)
+    ranges = _frontier_ranges_for_request(body, job)
     try:
-        base_result = _base_result_for_frontier_recompute(job)
-        ranges = _frontier_ranges_for_request(body, job)
-        try:
-            enforce_frontier_compute_budget(
-                n_points_per_dim=body.n_points_per_dim,
-                n_constraints=len(ranges),
-            )
-        except FrontierComputeBudgetExceededError as exc:
-            # 422: the request is well-formed but its projected solver
-            # workload exceeds the library cap; the message names both the
-            # projection and the cap.
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("frontier_failed", error=str(exc), job_id=body.job_id, exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+        enforce_frontier_compute_budget(
+            n_points_per_dim=body.n_points_per_dim,
+            n_constraints=len(ranges),
+        )
+    except FrontierComputeBudgetExceededError as exc:
+        # 422: the request is well-formed but its projected solver
+        # workload exceeds the library cap; the message names both the
+        # projection and the cap.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     with _frontier_state_lock:
         if _has_running_frontier_job(body.job_id):
@@ -1768,73 +1748,67 @@ def select_frontier_point(body: OptimiserFrontierSelectRequest) -> OptimiserFron
     """Select a frontier summary point without re-solving the optimiser."""
     job = _store.require_completed_job(body.job_id)
 
-    try:
+    if (
+        body.point_index is not None
+        and job.get("selected_frontier_point") == body.point_index
+        and isinstance(job.get("result"), dict)
+        and _cached_result_matches_frontier_selection(job["result"], body.point_index)
+        and not _job_has_frontier_points(job)
+    ):
+        return _frontier_select_response(job["result"])
+
+    existing_base_result = job.get("base_result")
+    base_result = (
+        existing_base_result
+        if isinstance(existing_base_result, dict)
+        else dict(job.get("result", {}))
+    )
+    if body.point_index is None:
+        result_dict = dict(base_result)
+        result_dict.pop("selected_frontier_point", None)
+        selected_point: int | None = None
+    else:
+        result_dict = _frontier_point_result_dict(
+            {**job, "base_result": base_result},
+            body.point_index,
+        )
+        selected_point = body.point_index
         if (
-            body.point_index is not None
-            and job.get("selected_frontier_point") == body.point_index
-            and isinstance(job.get("result"), dict)
-            and _cached_result_matches_frontier_selection(job["result"], body.point_index)
-            and not _job_has_frontier_points(job)
+            body.include_ratebook_tables
+            and _result_mode({**job, "base_result": base_result}, result_dict) == "ratebook"
         ):
-            return _frontier_select_response(job["result"])
-
-        existing_base_result = job.get("base_result")
-        base_result = (
-            existing_base_result
-            if isinstance(existing_base_result, dict)
-            else dict(job.get("result", {}))
-        )
-        if body.point_index is None:
-            result_dict = dict(base_result)
-            result_dict.pop("selected_frontier_point", None)
-            selected_point: int | None = None
-        else:
-            result_dict = _frontier_point_result_dict(
-                {**job, "base_result": base_result},
-                body.point_index,
-            )
-            selected_point = body.point_index
-            if (
-                body.include_ratebook_tables
-                and _result_mode({**job, "base_result": base_result}, result_dict) == "ratebook"
-            ):
-                _materialised_job, materialised_result, _solve_result = (
-                    _materialise_ratebook_frontier_point(
-                        body.job_id,
-                        selected_point,
-                        result_dict,
-                    )
+            _materialised_job, materialised_result, _solve_result = (
+                _materialise_ratebook_frontier_point(
+                    body.job_id,
+                    selected_point,
+                    result_dict,
                 )
-                _store.clear_result_data(body.job_id, keys=("solve_result",))
-                return _frontier_select_response(materialised_result)
-
-        updated_job = _store.atomic_update(
-            body.job_id,
-            {
-                "base_result": base_result,
-                "selected_frontier_point": selected_point,
-                "result": result_dict,
-            },
-            expected_status="completed",
-        )
-        if updated_job is None:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Optimiser job state changed while selecting the frontier point. "
-                    "Re-run the solve to select a new point."
-                ),
             )
-
-        if selected_point is not None:
             _store.clear_result_data(body.job_id, keys=("solve_result",))
+            return _frontier_select_response(materialised_result)
 
-        return _frontier_select_response(result_dict)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("frontier_select_failed", error=str(exc), job_id=body.job_id, exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+    updated_job = _store.atomic_update(
+        body.job_id,
+        {
+            "base_result": base_result,
+            "selected_frontier_point": selected_point,
+            "result": result_dict,
+        },
+        expected_status="completed",
+    )
+    if updated_job is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Optimiser job state changed while selecting the frontier point. "
+                "Re-run the solve to select a new point."
+            ),
+        )
+
+    if selected_point is not None:
+        _store.clear_result_data(body.job_id, keys=("solve_result",))
+
+    return _frontier_select_response(result_dict)
 
 
 def _build_artifact_payload(
@@ -2092,17 +2066,12 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
         )
         _clear_result_data_after_user_action(body.job_id)
         return response
-    except HTTPException:
-        raise
     except OSError as exc:
         logger.error("save_failed", error=str(exc), job_id=body.job_id, exc_info=True)
         raise HTTPException(
             status_code=500,
             detail="Filesystem error saving optimiser result. Check the server logs for details.",
         )
-    except Exception as exc:
-        logger.error("save_failed", error=str(exc), job_id=body.job_id, exc_info=True)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 
 @router.post("/mlflow/log", response_model=OptimiserMlflowLogResponse)
@@ -2149,108 +2118,135 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
                 ),
             )
 
-    import mlflow
-
     try:
-        with mlflow_fluent_operation():
-            from haute.modelling._mlflow_log import (
-                build_run_url,
-                configure_mlflow_tracking,
-                resolve_experiment_name,
-            )
-
-            tracking_uri, backend = configure_mlflow_tracking(body.destination)
-
-            node_label = job.get("node_label", "optimiser")
-            # Invariant from the setup at the top of this function:
-            #   ``selected_frontier_point is None`` IFF ``selected_result is None``
-            # When that's the case, ``solver`` is non-None — the ``else`` branch
-            # above validated it (lines 1421-1441).  mypy doesn't track the
-            # cross-branch invariant, so cast through ``Any`` rather than adding
-            # runtime "fail-loudly" guards that double-check what the surrounding
-            # code already enforces.
-            if selected_frontier_point is None:
-                summary = cast(Any, solver).summary(solve_result)
-            else:
-                summary = _frontier_point_mlflow_summary(
-                    job,
-                    cast(dict[str, Any], selected_result),
-                    selected_frontier_point,
-                )
-
-            # The request carries the node's current setting; the job's
-            # solve-time config snapshot is never a fallback.
-            experiment_name = resolve_experiment_name(
-                explicit=body.experiment_name,
-                node_label=node_label,
-                backend=backend,
-            )
-            set_experiment_creating_workspace_folder(mlflow, experiment_name)
-
-            with mlflow.start_run(run_name=node_label) as run:
-                mlflow.log_params(summary["params"])
-                mlflow.log_metrics(summary["metrics"])
-
-                # Log artifacts as JSON files
-                import tempfile
-
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    artifacts = summary.get("artifacts", {})
-                    for name, data in artifacts.items():
-                        if data is None:
-                            continue
-                        artifact_path = Path(tmpdir) / f"{name}.json"
-                        artifact_path.write_text(json.dumps(data, indent=2, default=str))
-                        mlflow.log_artifact(str(artifact_path))
-
-                    # Also log the complete artifact used by OPTIMISER_APPLY
-                    complete_payload = _build_artifact_payload(
-                        job,
-                        solve_result,
-                        selected_frontier_point=selected_frontier_point,
-                    )
-                    complete_path = Path(tmpdir) / "optimiser_result.json"
-                    complete_path.write_text(json.dumps(complete_payload, indent=2, default=str))
-                    mlflow.log_artifact(str(complete_path))
-
-                    # Log frontier CSV artifact + provenance tags
-                    frontier_data = job.get("frontier_data")
-                    if frontier_data and frontier_data.get("points"):
-                        import csv
-                        import io
-
-                        points = frontier_data["points"]
-                        buf = io.StringIO()
-                        writer = csv.DictWriter(buf, fieldnames=points[0].keys())
-                        writer.writeheader()
-                        writer.writerows(points)
-                        frontier_path = Path(tmpdir) / "frontier.csv"
-                        frontier_path.write_text(buf.getvalue())
-                        mlflow.log_artifact(str(frontier_path))
-                        mlflow.set_tag("frontier.n_points", str(frontier_data["n_points"]))
-
-                    selected_idx = (
-                        selected_frontier_point
-                        if selected_frontier_point is not None
-                        else job.get("selected_frontier_point")
-                    )
-                    if selected_idx is not None:
-                        mlflow.set_tag("frontier.selected_point_index", str(selected_idx))
-
-                run_id = run.info.run_id
-                run_url = build_run_url(backend, experiment_name, run_id)
-
-            response = OptimiserMlflowLogResponse(
-                status="ok",
-                backend=backend,
-                experiment_name=experiment_name,
-                run_id=run_id,
-                run_url=run_url,
-                tracking_uri=tracking_uri,
-            )
-            _clear_result_data_after_user_action(body.job_id)
-            return response
+        response = _log_optimiser_run(
+            body,
+            job,
+            solve_result=solve_result,
+            solver=solver,
+            selected_result=selected_result,
+            selected_frontier_point=selected_frontier_point,
+        )
     except HTTPException:
         raise
     except Exception as exc:
         raise mlflow_log_http_exception(exc, job_id=body.job_id) from None
+    _clear_result_data_after_user_action(body.job_id)
+    return response
+
+
+def _log_optimiser_run(
+    body: OptimiserMlflowLogRequest,
+    job: Mapping[str, Any],
+    *,
+    solve_result: SolveResultLike,
+    solver: Any | None,
+    selected_result: dict[str, Any] | None,
+    selected_frontier_point: int | None,
+) -> OptimiserMlflowLogResponse:
+    """Log one optimiser run through a client bound to the resolved destination.
+
+    The run logs no model, so no call touches MLflow's process-global tracking
+    state: logs to different destinations proceed concurrently, and the
+    tracking URI never reaches the environment.
+    """
+    import csv
+    import io
+    import tempfile
+    import time
+
+    from mlflow.entities import Metric, Param
+    from mlflow.tracking import MlflowClient
+
+    from haute.modelling._mlflow_log import (
+        build_run_url,
+        resolve_experiment_name,
+        resolve_tracking_backend,
+    )
+
+    tracking_uri, backend = resolve_tracking_backend(body.destination)
+    allow_file_store_if_local(tracking_uri, backend)
+    client = MlflowClient(
+        tracking_uri=tracking_uri, registry_uri=registry_uri_for_tracking(tracking_uri)
+    )
+
+    node_label = job.get("node_label", "optimiser")
+    # ``selected_frontier_point is None`` IFF ``selected_result is None``; in
+    # that case the caller has already required a non-None ``solver``.
+    if selected_frontier_point is None:
+        summary = cast(Any, solver).summary(solve_result)
+    else:
+        summary = _frontier_point_mlflow_summary(
+            job,
+            cast(dict[str, Any], selected_result),
+            selected_frontier_point,
+        )
+
+    # The request carries the node's current setting; the job's solve-time
+    # config snapshot is never a fallback.
+    experiment_name = resolve_experiment_name(
+        explicit=body.experiment_name,
+        node_label=node_label,
+        backend=backend,
+    )
+    experiment_id = ensure_experiment(client, tracking_uri, experiment_name)
+    run_id = client.create_run(experiment_id, run_name=node_label).info.run_id
+    status = "FAILED"
+    try:
+        timestamp = int(time.time() * 1000)
+        client.log_batch(
+            run_id,
+            metrics=[Metric(key, value, timestamp, 0) for key, value in summary["metrics"].items()],
+            params=[Param(key, str(value)) for key, value in summary["params"].items()],
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for name, data in summary.get("artifacts", {}).items():
+                if data is None:
+                    continue
+                artifact_path = Path(tmpdir) / f"{name}.json"
+                artifact_path.write_text(json.dumps(data, indent=2, default=str))
+                client.log_artifact(run_id, str(artifact_path))
+
+            # The complete artifact OPTIMISER_APPLY reads.
+            complete_payload = _build_artifact_payload(
+                job,
+                solve_result,
+                selected_frontier_point=selected_frontier_point,
+            )
+            complete_path = Path(tmpdir) / "optimiser_result.json"
+            complete_path.write_text(json.dumps(complete_payload, indent=2, default=str))
+            client.log_artifact(run_id, str(complete_path))
+
+            # The frontier CSV and its provenance tags.
+            frontier_data = job.get("frontier_data")
+            if frontier_data and frontier_data.get("points"):
+                points = frontier_data["points"]
+                buffer = io.StringIO()
+                writer = csv.DictWriter(buffer, fieldnames=points[0].keys())
+                writer.writeheader()
+                writer.writerows(points)
+                frontier_path = Path(tmpdir) / "frontier.csv"
+                frontier_path.write_text(buffer.getvalue())
+                client.log_artifact(run_id, str(frontier_path))
+                client.set_tag(run_id, "frontier.n_points", str(frontier_data["n_points"]))
+
+            selected_index = (
+                selected_frontier_point
+                if selected_frontier_point is not None
+                else job.get("selected_frontier_point")
+            )
+            if selected_index is not None:
+                client.set_tag(run_id, "frontier.selected_point_index", str(selected_index))
+        status = "FINISHED"
+    finally:
+        client.set_terminated(run_id, status)
+
+    return OptimiserMlflowLogResponse(
+        status="ok",
+        backend=backend,
+        experiment_name=experiment_name,
+        run_id=run_id,
+        run_url=build_run_url(backend, experiment_name, run_id, tracking_uri=tracking_uri),
+        tracking_uri=tracking_uri,
+    )

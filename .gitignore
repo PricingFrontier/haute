@@ -279,12 +279,10 @@ WTW_RADAR_REPORT.md
 READ_AND_DESTROY.md
 PLANNED_WORK.md
 
-# Claude Code workspace — everything ignored except the shared delegation
-# config: agent definitions and skills (their runtime state stays ignored)
-.claude/*
-!.claude/agents/
-!.claude/skills/
-.claude/skills/*/state/
+# Local Claude Code and Codex workspaces. The shared instructions, including
+# how to run a Codex review, live in AGENTS.md and CLAUDE.md.
+.claude/
+.codex/
 
 # Installed packages and their tool caches, wherever a tool creates them
 # (Vitest run from the repository root writes node_modules/.vite/).

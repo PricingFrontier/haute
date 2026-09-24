@@ -12,50 +12,15 @@ come from the [23 September 2026 codebase review](codebase-review-2026-09-23.md)
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| API-R01 | Planned | P2 | The optimiser routes join the application exception handlers. |
 | API-R02 | Planned | P3 | Domain services raise domain errors; only routes speak HTTP. |
 | API-R03 | Planned | P2 | Every browser type and response parser is generated from the Pydantic models. |
 
 ## Planned improvements
 
 `API-R03` has the largest payoff: the hand-maintained contract files are the
-most-changed files in the repository. The application exception handlers
-from `API-R01` are in place; what remains of it sits in the optimiser's route
-and service files and lands with the optimiser work, before `API-R02`.
-
-### API-R01 — Translate errors once at the application edge
-**Why:** The application exception handlers exist (`routes/_error_handlers.py`:
-public contract errors, memory refusals and overruns, the `GitError`
-family; `_RequestIdMiddleware` answers anything unclaimed with
-`_INTERNAL_ERROR_DETAIL`), and the git, pipeline, files, Databricks,
-modelling, OUTPUT dry-run and JSON-cache routes no longer catch `Exception`
-to log it and answer 500. The optimiser's files were left alone:
-`routes/optimiser.py` still has five catch-log-500 blocks (one also cleans
-up an orphaned apply artifact first), and
-`_optimiser_service._memory_limit_http_exception` is a second copy of the
-memory-limit mapping. Turning an `HTTPException` detail into a job failure
-record is still implemented twice, in `_optimiser_service._http_error_job_update`
-and `_training_preparation._http_failure_job_parts`.
-
-**Plan:** Delete the remaining catch-log-500 blocks, keeping the frontier
-apply cleanup and re-raising after it. Replace the optimiser's memory-limit
-helper with `memory_limit_http_exception(exc, operation_noun="Auto-range")`.
-Fold the job-failure-record duplication into `API-R02`, where background
-jobs stop carrying HTTP types at all.
-
-**Acceptance:** No route contains a generic `except Exception` that only logs
-and returns the internal-error detail; `memory_limit_http_exception` is the
-only memory-limit mapping; the optimiser status-code and sanitised-error tests
-pass unchanged.
-
-**Dependencies:** None; best taken with `API-R02` in the optimiser work.
-
-**Evidence:** `src/haute/routes/optimiser.py` (`apply_lambdas`,
-`run_frontier`, `select_frontier_point`, `save_result`,
-`_materialise_frontier_point_apply`);
-`src/haute/routes/_optimiser_service.py::_memory_limit_http_exception`;
-`src/haute/routes/_optimiser_service.py::_http_error_job_update`;
-`src/haute/routes/_training_preparation.py::_http_failure_job_parts`.
+most-changed files in the repository. Every route, the optimiser's included,
+now leaves unexpected exceptions to the application handlers; `API-R02`
+moves the services onto domain errors.
 
 ### API-R02 — Services raise domain errors
 **Why:** Service modules raise FastAPI's `HTTPException` directly: the
@@ -66,14 +31,18 @@ failure and raises an HTTP 500. The assistant, a non-HTTP caller of the save
 service, unwraps `HTTPException.detail` to recover messages.
 
 **Plan:** Replace `HTTPException` in services with typed domain errors from
-the `HauteError` hierarchy, mapped by the `API-R01` handlers. Background jobs
-record failures in the job store and never raise HTTP types.
+the `HauteError` hierarchy, mapped by the application exception handlers in
+`routes/_error_handlers.py`. Background jobs record failures in the job store
+and never raise HTTP types, which also removes the two conversions of an
+`HTTPException` detail into a job failure record
+(`_optimiser_service._http_error_job_update` and
+`_training_preparation._http_failure_job_parts`).
 
 **Acceptance:** No module outside `routes/` route handlers and the application
 handlers imports `HTTPException`; the assistant catches domain errors, not
 HTTP ones; route status-code tests pass unchanged.
 
-**Dependencies:** `API-R01`.
+**Dependencies:** None.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py::_execute_pipeline`;
 `src/haute/routes/_save_pipeline.py`; `src/haute/routes/_training_lifecycle.py`;

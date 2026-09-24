@@ -74,9 +74,10 @@ performance, coverage, build, and browser gate.
 # Before a pull request
 
 1. Run the affected tests and checks for the whole change (above).
-2. Have Codex review the whole branch diff once (`codex-code-review`). Resolve or
-   rebut each finding, rerun only the tests the fixes touch, and resume the same
-   review thread to confirm. Do not review each commit or package separately.
+2. Have Codex review the whole branch diff once ("Code review with Codex" below).
+   Resolve or rebut each finding, rerun only the tests the fixes touch, and
+   resume the same review thread to confirm. Do not review each commit or
+   package separately.
 3. Open the PR, or push to the existing one, then watch its checks with `gh`
    until they finish. On a failure, read the failing job's log, reproduce only
    that test locally if the cause is unclear, fix it, and push again. Rerun an
@@ -90,3 +91,97 @@ Useful commands:
 - Touched Python files: `uv run ruff check <files>` and `uv run ruff format --check <files>`
 - Affected backend typing: `uv run mypy src/haute/`
 - Frontend static checks: `npm --prefix frontend run typecheck` and `npm --prefix frontend run lint`
+
+# Code review with Codex
+
+Reviews use Codex, a different model family from the author, in a read-only
+sandbox: `gpt-6-astra` at `xhigh` effort. Keep review state (event log, thread id,
+review text) in a scratch directory outside the repository.
+
+- **Start:** `codex exec --json --sandbox read-only --skip-git-repo-check -c model=gpt-6-astra -c model_reasoning_effort=xhigh "<prompt>" < /dev/null > review.ndjson`.
+  The thread id is in the `thread.started` event; the review is the text of the
+  last `item.completed` event whose item type is `agent_message`.
+- **Resume after fixes:** `codex exec --sandbox read-only -c model=gpt-6-astra -c model_reasoning_effort=xhigh resume <thread-id> --json --skip-git-repo-check "<prompt>" < /dev/null`.
+  Say what changed and why any finding was rebutted, and ask Codex to state for
+  each prior finding whether it is addressed, flag new issues, and not re-flag
+  a finding rebutted with a reason.
+- **The prompt** names the diff (`git diff origin/main...HEAD` for a branch),
+  the intent or package entries, the specifications changed, and the
+  verification already run with its results. It asks for a review against the
+  checklist below, citing `file:line`, with a severity for each finding and one
+  final tag on its own line: `APPROVED`, `REQUEST_CHANGES`, or `NEEDS_REWORK`
+  (structural problems).
+
+Review priorities, in order: correctness (wrong results, data loss, silent
+failure); security and safety; conformance to the changed specifications, where
+drift between spec and code in either direction is a finding; test quality;
+practical concerns (performance on real inputs, messages a user can act on).
+Not priorities: documentation compliance for its own sake when the change
+updates the document, environment limitations, annotation style beyond what
+mypy and tsc require, theoretical edge cases real inputs do not produce, and
+repeating a finding already addressed or rebutted.
+
+Checklist:
+
+1. **Function:** the logic matches the requirements and specifications; error
+   scenarios and edge cases are handled.
+2. **Code quality:** typed (mypy-clean in `src/haute/`, tsc-clean in `frontend/`);
+   no duplication, and existing helpers are reused; no needless complexity;
+   clear names; comments explain constraints rather than narrate; no unused
+   imports; no oversized modules.
+3. **Architecture:** follows the patterns in the `specs/` component
+   specifications; the code and the specification deltas agree; concerns are
+   separated.
+4. **Haute design:** the `.py` file is canonical, with layout in the `.haute.json`
+   sidecar and pipelines runnable without the GUI; one parser, executor and
+   codegen path; the same pipeline in every context; Polars-native and lazy (no
+   premature `.collect()`, no pandas); fail loud, with no fallback or default
+   that masks an error.
+5. **Error handling:** deliberate propagation beats a wrong fallback; messages
+   are clear and actionable; no empty catches, broad excepts that hide real
+   errors, or error-shaped 200 responses; logging is neither noisy nor silent.
+6. **Security:** input is validated; no sensitive data is exposed; path
+   resolution and the write sandbox are respected; user-built pipelines cannot
+   inject SQL or expressions.
+7. **Performance:** resources are cleaned up; data structures fit the job;
+   nothing unnecessary runs in hot paths (executor, projection, lazy execution).
+8. **Tests, reviewed as code:** they assert observable behaviour rather than
+   wiring, and a test that would pass against a buggy implementation is a Major
+   finding; the specification's Testing scenarios and failure modes are covered;
+   behaviour touching authentication, deletion, persistence, the sandbox, or an
+   external request shape has a behavioural test; no coverage gaming (ignore
+   comments, exclusions, lowered gates), and a new skip or xfail is registered in
+   `tests/test_test_debt.py`; no tower of mocks where a real seam exists.
+
+Severity: **Critical** blocks a merge (security hole, data corruption or silently
+wrong results, breaking interface change, sandbox or auth bypass); **Major** must
+be fixed (wrong logic, significant slowdown, missing error handling or a silent
+failure path, build errors); **Minor** should be fixed (style, missing
+documentation, duplication, a missed edge case); **Suggestion** is optional.
+
+Approval gate: the requirements are implemented; no Critical or Major finding is
+open; the build passes; the affected tests pass; new logic has behavioural
+tests; and the affected specifications are updated, with
+`tests/test_docs_accuracy.py` passing.
+
+Handling a review: read the code at each cited `file:line`; fix the legitimate
+findings; rebut an incorrect one with the reason; weigh each finding's cost
+against its risk and push back on one that grows the scope without matching
+risk. Rerun only the tests the fixes touch, then resume the thread once. Bring
+`NEEDS_REWORK` to the user before making large changes.
+
+**Plan or specification review** uses the same command. Codex reviews the
+specification deltas (`git diff origin/main -- specs/`) together with the plan
+for correctness (fail loud, one execution engine, Polars lazy), whether a
+developer can build it from the low-level specifications without guessing,
+whether an engineer independent of the implementer could write the failing tests
+from the Testing scenarios, agreement between the high-level and low-level
+specifications, and practical risks. Findings are tagged P1 (blocks
+implementation) or P2, and the review ends with a tag.
+
+**A second opinion** on a design choice, a stuck bug, or a conclusion about to be
+presented also uses the same command. The prompt gives the question and your
+draft position and asks Codex to disagree where warranted, separating what it
+verified in the repository from what it inferred, and to end with a short bottom
+line. It is advisory: no tags, and nothing is gated on the answer. Don't use it
+for a question only the user can answer. When Codex disagrees, tell the user.

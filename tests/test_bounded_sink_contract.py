@@ -17,7 +17,7 @@ BOUNDED_WRITE_CALLERS: dict[Path, tuple[str, ...]] = {
     Path("src/haute/_source_cache.py"): ("write_parts(",),
     Path("src/haute/routes/_node_data_service.py"): ("write_parts(",),
     Path("src/haute/modelling/_training_job.py"): ("bounded_sink(",),
-    Path("src/haute/routes/_optimiser_service.py"): ("bounded_sink(",),
+    Path("src/haute/routes/_optimiser_input.py"): ("bounded_sink(",),
     # Training's write goes through the single-file chunked writer, which slices
     # where it can and falls back to bounded_sink itself (covered by the entry
     # for _chunked_writes.py above).

@@ -5215,7 +5215,7 @@ def test_optimiser_build_grid_preserves_memory_limit_error() -> None:
         rss_limit_bytes=513,
     )
 
-    with patch("haute.routes._optimiser_service.bounded_sink", side_effect=memory_error):
+    with patch("haute.routes._optimiser_input.bounded_sink", side_effect=memory_error):
         with pytest.raises(ExecutionMemoryLimitExceededError):
             service._build_grid(
                 pl.LazyFrame({"quote_id": ["q1"], "scenario_index": [0]}),

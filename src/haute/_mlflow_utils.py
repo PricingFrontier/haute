@@ -281,11 +281,12 @@ def _experiment_creation_lock(experiment_name: str) -> Iterator[None]:
 def ensure_experiment(client: MlflowClient, tracking_uri: str, experiment_name: str) -> str:
     """The id of *experiment_name* at *client*'s destination, creating it when missing.
 
-    The client-bound counterpart of :func:`set_experiment_creating_workspace_folder`
-    for callers that log through a destination-bound client instead of MLflow's
-    process-global fluent state: a new Databricks experiment's workspace folder is
-    created first, with the same credentials MLflow's own requests use for
-    *tracking_uri*. A deleted experiment is refused exactly as
+    A Databricks experiment is a workspace object, and creating one fails with
+    ``NOT_FOUND: Parent directory does not exist`` when its folder is missing, as
+    ``/Shared/haute`` is in a fresh workspace, so a new Databricks experiment's
+    folder (and its ancestors) is created first, with the same credentials
+    MLflow's own requests use for *tracking_uri*. Other backends, and existing
+    experiments, never call the Workspace API. A deleted experiment is refused exactly as
     ``mlflow.set_experiment`` refuses it.
 
     Raises:
@@ -320,37 +321,6 @@ def ensure_experiment(client: MlflowClient, tracking_uri: str, experiment_name: 
             error_code=INVALID_PARAMETER_VALUE,
         )
     return str(experiment.experiment_id)
-
-
-def set_experiment_creating_workspace_folder(mlflow: Any, experiment_name: str) -> Any:
-    """``mlflow.set_experiment``, first creating a new Databricks experiment's folder.
-
-    A Databricks experiment is a workspace object, and creating one fails with
-    ``NOT_FOUND: Parent directory does not exist`` when its folder is missing — as
-    ``/Shared/haute`` is in a fresh workspace. When the fluent tracking URI is
-    Databricks and the experiment does not exist yet, the parent folder (and its
-    ancestors) is created first through the Workspace API, with the same credentials
-    MLflow's own requests use. Other backends, and existing experiments, go straight
-    to ``set_experiment``.
-
-    Raises:
-        MlflowRemoteError: MLflow refused to create the folder (permission, a
-            missing parent, or an unclassified refusal); the message names the
-            folder and experiment so the user can create it or pick another path.
-        MlflowException: authentication and connectivity failures propagate
-            unchanged, for the caller to classify with its own copy.
-    """
-    tracking_uri = mlflow.get_tracking_uri()
-    folder = experiment_name.rpartition("/")[0]
-    with _experiment_creation_lock(experiment_name):
-        if (
-            _is_databricks_tracking(tracking_uri)
-            and experiment_name.startswith("/")
-            and folder
-            and mlflow.get_experiment_by_name(experiment_name) is None
-        ):
-            _create_databricks_workspace_folder(tracking_uri, folder, experiment_name)
-        return mlflow.set_experiment(experiment_name)
 
 
 def _create_databricks_workspace_folder(
