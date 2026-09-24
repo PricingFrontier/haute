@@ -520,7 +520,10 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   no poisoned batch is retained and no unbounded retry chain is scheduled.
 - **WebSocket sends never block the broadcaster indefinitely**: each client send has a hard
   1-second timeout; a stalled client is force-closed and dropped from the client set rather
-  than stalling the fan-out to every other connected canvas.
+  than stalling the fan-out to every other connected canvas. A broadcast drops a client only
+  then, or when its send raises; the canvas reconnects. The timeout is wall clock, so a server
+  starved of CPU for longer than it can drop a live but slow client too; concurrent
+  broadcasts and disconnects never drop a client on their own.
 
 **Missing-key configuration policy.** `routes/_helpers.py::pipeline_dir()`
 parses `[project].pipeline` with `_project._toml_configured_pipeline`, the

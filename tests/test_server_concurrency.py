@@ -189,6 +189,7 @@ class TestWsClientsConcurrentMutation:
     def test_concurrent_broadcast_while_client_disconnects(
         self,
         _isolated_ws_clients,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Reproduce the async corruption pattern: broadcast iterates
         ws_clients and may try to discard dead clients, while a
@@ -199,10 +200,18 @@ class TestWsClientsConcurrentMutation:
 
         A proper fix exposes a shared lock or uses a thread-safe
         container; we verify by stress-testing the pattern.
+
+        The hard send timeout is pinned well above any runner stall: this
+        test is about set mutation, and on a loaded runner a starved thread
+        could otherwise hold a live client's send past the specified 1 s,
+        which drops it as stalled by design (see the stalled-client test).
         """
         from unittest.mock import AsyncMock, MagicMock
 
+        import haute.routes._helpers as helpers
         from haute.routes._helpers import broadcast, ws_clients
+
+        monkeypatch.setattr(helpers, "_WS_SEND_TIMEOUT_SECONDS", 60.0)
 
         # 50 clients, half of which are "dead" (raise on send_text)
         dead_clients = []
@@ -260,6 +269,42 @@ class TestWsClientsConcurrentMutation:
             assert c not in ws_clients, "#6: dead client leaked back into ws_clients"
         for c in live_clients:
             assert c in ws_clients, "#6: live client was accidentally removed"
+
+    def test_a_live_client_whose_send_stalls_past_the_timeout_is_closed_and_dropped(
+        self,
+        _isolated_ws_clients,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A send that does not finish within the hard timeout drops the client.
+
+        This is the specified rule a slow runner used to trip in the race test
+        above: the client is force-closed and removed, and the other clients
+        still receive the broadcast.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+
+        import haute.routes._helpers as helpers
+        from haute.routes._helpers import broadcast, ws_clients
+
+        monkeypatch.setattr(helpers, "_WS_SEND_TIMEOUT_SECONDS", 0.05)
+
+        async def never_finishes(_payload: str) -> None:
+            await asyncio.Event().wait()
+
+        stalled = MagicMock()
+        stalled.send_text = never_finishes
+        stalled.close = AsyncMock()
+        healthy = MagicMock()
+        healthy.send_text = AsyncMock()
+        ws_clients.add(stalled)
+        ws_clients.add(healthy)
+
+        asyncio.run(broadcast({"type": "upd"}))
+
+        assert stalled not in ws_clients
+        stalled.close.assert_awaited_once()
+        assert healthy in ws_clients
+        healthy.send_text.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
