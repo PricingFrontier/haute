@@ -2091,8 +2091,6 @@ def _estimate_scenario_frontier_ranges(
     temporary parquet files so quotes split across read batches are recombined
     without one global per-quote aggregate table.
     """
-    import polars as pl
-
     if not constraint_cols:
         return {}
 
@@ -2101,13 +2099,50 @@ def _estimate_scenario_frontier_ranges(
     chunk_size = _positive_int(ctx.chunk_size, field="chunk_size")
     partition_count = _positive_int(ctx.partition_count, field="partition_count")
     execution_context = ctx.execution_context
-    selected_lf = scored_lf.select(
-        [
-            pl.col(quote_id_col).cast(pl.String).alias(quote_id_col),
-            *[pl.col(cname) for cname in constraint_cols],
-        ]
+    selected_lf = scored_lf.select(_frontier_range_batch_columns(quote_id_col, constraint_cols))
+    # ``chunk_size`` is the per-batch row count for the auto-range reducer;
+    # the underlying scan and collect stream at the process chunk size.
+    return _reduce_frontier_range_batches(
+        bounded_collect_batches(
+            selected_lf,
+            chunk_size=chunk_size,
+            maintain_order=False,
+            execution_context=execution_context,
+            stage_name="frontier_range_collect_batch",
+        ),
+        quote_id_col=quote_id_col,
+        constraint_cols=constraint_cols,
+        partition_count=partition_count,
+        check_cancelled=check_cancelled,
+        execution_context=execution_context,
     )
 
+
+def _frontier_range_batch_columns(quote_id_col: str, constraint_cols: list[str]) -> list[Any]:
+    """The columns one range batch carries: the quote id as text, then each constraint."""
+    import polars as pl
+
+    return [
+        pl.col(quote_id_col).cast(pl.String).alias(quote_id_col),
+        *[pl.col(cname) for cname in constraint_cols],
+    ]
+
+
+def _reduce_frontier_range_batches(
+    batches: Iterable[pl.DataFrame],
+    *,
+    quote_id_col: str,
+    constraint_cols: list[str],
+    partition_count: int,
+    check_cancelled: Callable[[], None] | None = None,
+    execution_context: ExecutionContext | None = None,
+) -> dict[str, dict[str, float]]:
+    """Reduce range batches, whichever path produced them, to exact range totals.
+
+    Each batch is reduced to per-quote extrema and hash-partitioned to
+    temporary parquet parts, so a quote split across batches is recombined in
+    ``finish()`` without one global per-quote aggregate table.
+    """
     with tempfile.TemporaryDirectory(prefix="haute_frontier_range_parts_") as raw_dir:
         accumulator = _ScenarioFrontierRangeAccumulator(
             quote_id_col=quote_id_col,
@@ -2115,17 +2150,7 @@ def _estimate_scenario_frontier_ranges(
             partition_count=partition_count,
             parts_root=Path(raw_dir),
         )
-        # ``chunk_size`` is the per-batch row count for the auto-range reducer;
-        # the underlying scan and collect stream at the process chunk size.
-        for batch_index, batch in enumerate(
-            bounded_collect_batches(
-                selected_lf,
-                chunk_size=chunk_size,
-                maintain_order=False,
-                execution_context=execution_context,
-                stage_name="frontier_range_collect_batch",
-            )
-        ):
+        for batch_index, batch in enumerate(batches):
             if check_cancelled is not None:
                 check_cancelled()
             _add_frontier_range_batch(
@@ -3967,6 +3992,11 @@ class OptimiserSolveService:
         chunk_fallback: dict[str, Any] | None = None,
         execution_context: ExecutionContext | None = None,
     ) -> OptimiserFrontierAutoRangeResponse:
+        """Run one auto-range job: chunk by chunk when a plan was proven, else whole-frame.
+
+        Both paths feed the same range reducer; the job owns admission,
+        cancellation, completion and failure classification for either.
+        """
         del node, mode, timeout
         if execution_context is None:
             # A job entered without a caller-owned context still runs under
@@ -3976,101 +4006,50 @@ class OptimiserSolveService:
                 profile=ExecutionProfile.AUTO_RANGE,
                 job_id=job_id,
             )
+            bind_running_execution_metrics_publisher(
+                self._store,
+                job_id,
+                execution_context,
+            )
         try:
             execution_context.checkpoint(label="frontier_auto_range_start")
         except ExecutionCancelledError as exc:
             status = str(self._store.require_job(job_id).get("status", "running"))
             raise BackgroundJobStoppedError(job_id, status) from exc
         self._raise_if_frontier_auto_range_stopped(job_id)
-        if streaming_plan is not None:
-            return self._run_streaming_frontier_auto_range_job(
-                body,
-                job_id,
-                config=config,
-                chunk_size=chunk_size,
-                partition_count=partition_count,
-                streaming_plan=streaming_plan,
-                execution_context=execution_context,
-            )
+        chunked = streaming_plan is not None
 
         # The seed plan entered on this stack is released on every exit.
         try:
             with contextlib.ExitStack() as resources:
-                self._store.atomic_update(
-                    job_id,
-                    {
-                        "message": "Executing pipeline",
-                        "progress": 0.05,
-                        "elapsed_seconds": self._job_elapsed(job_id),
-                    },
-                    expected_status="running",
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                lazy_outputs = self._execute_pipeline(
-                    body,
-                    job_id,
-                    resources,
-                    required_columns_by_node=required_columns_by_node,
-                    execution_context=execution_context,
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                self._store.atomic_update(
-                    job_id,
-                    {
-                        "message": "Projecting auto-range columns",
-                        "progress": 0.65,
-                        "elapsed_seconds": self._job_elapsed(job_id),
-                    },
-                    expected_status="running",
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                source_lf = self._resolve_data_input_frame(
-                    lazy_outputs,
-                    body.graph,
-                    config,
-                    body.node_id,
-                    job_id,
-                    execution_context=execution_context,
-                )
-                constraint_cols, scored_lf = self._validate_and_project_auto_range(
-                    source_lf,
-                    config,
-                    job_id,
-                    execution_context=execution_context,
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                del lazy_outputs
-                gc.collect()
-
-                self._store.atomic_update(
-                    job_id,
-                    {
-                        "message": "Aggregating scenario envelope",
-                        "progress": 0.75,
-                        "elapsed_seconds": self._job_elapsed(job_id),
-                    },
-                    expected_status="running",
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                ranges = _estimate_scenario_frontier_ranges(
-                    FrontierAutoRangeContext(
+                if streaming_plan is not None:
+                    ranges = self._chunked_frontier_ranges(
+                        body,
+                        job_id,
+                        resources,
+                        config=config,
+                        partition_count=partition_count,
+                        streaming_plan=streaming_plan,
+                        execution_context=execution_context,
+                    )
+                else:
+                    ranges = self._full_frame_frontier_ranges(
+                        body,
+                        job_id,
+                        resources,
+                        config=config,
                         chunk_size=chunk_size,
                         partition_count=partition_count,
+                        required_columns_by_node=required_columns_by_node,
                         execution_context=execution_context,
-                    ),
-                    scored_lf=scored_lf,
-                    quote_id_col=str(config.get("quote_id", "quote_id")),
-                    constraint_cols=constraint_cols,
-                    check_cancelled=lambda: self._raise_if_frontier_auto_range_stopped(job_id),
-                )
+                    )
                 self._raise_if_frontier_auto_range_stopped(job_id)
-                response_ranges = {
-                    name: OptimiserFrontierRange(min=value["min"], max=value["max"])
-                    for name, value in ranges.items()
-                }
                 response = OptimiserFrontierAutoRangeResponse(
                     status="ok",
-                    ranges=response_ranges,
+                    ranges={
+                        name: OptimiserFrontierRange(min=value["min"], max=value["max"])
+                        for name, value in ranges.items()
+                    },
                     warning=(
                         str(chunk_fallback["message"]) if chunk_fallback is not None else None
                     ),
@@ -4153,6 +4132,7 @@ class OptimiserSolveService:
                 error=str(exc),
                 node_id=body.node_id,
                 job_id=job_id,
+                chunked=chunked,
             )
             self._lifecycle.transition(
                 job_id,
@@ -4185,6 +4165,7 @@ class OptimiserSolveService:
                 "frontier_auto_range_failed",
                 error=str(exc),
                 node_id=body.node_id,
+                chunked=chunked,
                 exc_info=True,
             )
             self._lifecycle.transition(
@@ -4201,309 +4182,223 @@ class OptimiserSolveService:
                 detail="Frontier auto range failed. Check the server logs for details.",
             ) from exc
 
-    def _run_streaming_frontier_auto_range_job(
+    def _full_frame_frontier_ranges(
         self,
         body: OptimiserFrontierAutoRangeRequest,
         job_id: str,
+        resources: contextlib.ExitStack,
         *,
         config: dict[str, Any],
         chunk_size: int,
         partition_count: int,
+        required_columns_by_node: Mapping[str, Iterable[str]],
+        execution_context: ExecutionContext,
+    ) -> dict[str, dict[str, float]]:
+        """Execute the whole pipeline to the data input and reduce it in bounded batches."""
+        self._store.atomic_update(
+            job_id,
+            {
+                "message": "Executing pipeline",
+                "progress": 0.05,
+                "elapsed_seconds": self._job_elapsed(job_id),
+            },
+            expected_status="running",
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        lazy_outputs = self._execute_pipeline(
+            body,
+            job_id,
+            resources,
+            required_columns_by_node=required_columns_by_node,
+            execution_context=execution_context,
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        self._store.atomic_update(
+            job_id,
+            {
+                "message": "Projecting auto-range columns",
+                "progress": 0.65,
+                "elapsed_seconds": self._job_elapsed(job_id),
+            },
+            expected_status="running",
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        source_lf = self._resolve_data_input_frame(
+            lazy_outputs,
+            body.graph,
+            config,
+            body.node_id,
+            job_id,
+            execution_context=execution_context,
+        )
+        constraint_cols, scored_lf = self._validate_and_project_auto_range(
+            source_lf,
+            config,
+            job_id,
+            execution_context=execution_context,
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        del lazy_outputs
+        gc.collect()
+
+        self._store.atomic_update(
+            job_id,
+            {
+                "message": "Aggregating scenario envelope",
+                "progress": 0.75,
+                "elapsed_seconds": self._job_elapsed(job_id),
+            },
+            expected_status="running",
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        return _estimate_scenario_frontier_ranges(
+            FrontierAutoRangeContext(
+                chunk_size=chunk_size,
+                partition_count=partition_count,
+                execution_context=execution_context,
+            ),
+            scored_lf=scored_lf,
+            quote_id_col=str(config.get("quote_id", "quote_id")),
+            constraint_cols=constraint_cols,
+            check_cancelled=lambda: self._raise_if_frontier_auto_range_stopped(job_id),
+        )
+
+    def _chunked_frontier_ranges(
+        self,
+        body: OptimiserFrontierAutoRangeRequest,
+        job_id: str,
+        resources: contextlib.ExitStack,
+        *,
+        config: dict[str, Any],
+        partition_count: int,
         streaming_plan: _StreamingAutoRangePlan,
-        execution_context: ExecutionContext | None = None,
-    ) -> OptimiserFrontierAutoRangeResponse:
+        execution_context: ExecutionContext,
+    ) -> dict[str, dict[str, float]]:
+        """Execute to the base node, then expand, score and reduce one base chunk at a time."""
         import polars as pl
 
-        if execution_context is None:
-            execution_context = create_admitted_execution_context(
-                operation="frontier_auto_range_streaming",
-                profile=ExecutionProfile.AUTO_RANGE,
-                job_id=job_id,
-            )
-            bind_running_execution_metrics_publisher(
-                self._store,
-                job_id,
-                execution_context,
-            )
-        try:
-            self._raise_if_frontier_auto_range_stopped(job_id)
-            with (
-                contextlib.ExitStack() as resources,
-                tempfile.TemporaryDirectory(prefix="haute_frontier_range_parts_") as parts_dir,
-            ):
-                self._store.atomic_update(
-                    job_id,
-                    {
-                        "message": "Executing base pipeline",
-                        "progress": 0.05,
-                        "elapsed_seconds": self._job_elapsed(job_id),
-                    },
-                    expected_status="running",
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                base_required = None
-                if streaming_plan.base_required_columns is not None:
-                    base_required = {
-                        streaming_plan.base_node_id: streaming_plan.base_required_columns,
-                    }
-                from haute._cache import preamble_execution_fingerprint
-                from haute.executor import _pipeline_dir
+        from haute._cache import preamble_execution_fingerprint
+        from haute.chunking import ChunkRunnerRequest, iter_chunked_frames
+        from haute.executor import _compile_preamble, _pipeline_dir
 
-                pinned = preamble_execution_fingerprint(
-                    body.graph.preamble or "",
-                    pipeline_dir=_pipeline_dir(body.graph),
-                )
-                lazy_outputs = self._execute_pipeline(
-                    body,
+        self._store.atomic_update(
+            job_id,
+            {
+                "message": "Executing base pipeline",
+                "progress": 0.05,
+                "elapsed_seconds": self._job_elapsed(job_id),
+            },
+            expected_status="running",
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        base_required = None
+        if streaming_plan.base_required_columns is not None:
+            base_required = {
+                streaming_plan.base_node_id: streaming_plan.base_required_columns,
+            }
+        pinned = preamble_execution_fingerprint(
+            body.graph.preamble or "",
+            pipeline_dir=_pipeline_dir(body.graph),
+        )
+        lazy_outputs = self._execute_pipeline(
+            body,
+            job_id,
+            resources,
+            required_columns_by_node=base_required,
+            target_node_id=streaming_plan.base_node_id,
+            execution_context=execution_context,
+            preamble_fingerprint=pinned,
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        base_lf = lazy_outputs.get(streaming_plan.base_node_id)
+        if base_lf is None:
+            raise ValueError(
+                "Streaming auto-range base node did not produce a dataframe: "
+                f"{streaming_plan.base_node_id!r}."
+            )
+
+        qid_col = str(config.get("quote_id", "quote_id"))
+        constraints = config.get("constraints")
+        constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []
+        self._store.atomic_update(
+            job_id,
+            {
+                "message": "Streaming scenario chunks",
+                "progress": 0.30,
+                "elapsed_seconds": self._job_elapsed(job_id),
+            },
+            expected_status="running",
+        )
+        self._raise_if_frontier_auto_range_stopped(job_id)
+        preamble_ns = (
+            _compile_preamble(
+                body.graph.preamble or "",
+                pipeline_dir=_pipeline_dir(body.graph),
+                execution_fingerprint=pinned,
+            )
+            or None
+        )
+        chunk_frames = iter_chunked_frames(
+            ChunkRunnerRequest(
+                graph=body.graph,
+                plan=streaming_plan.chunk_plan,
+                build_node_fn=_build_node_fn,
+                preamble_ns=preamble_ns,
+                execution_context=execution_context,
+                start_frame=(base_lf if isinstance(base_lf, pl.LazyFrame) else base_lf.lazy()),
+            )
+        )
+
+        def scored_chunk_batches() -> Iterator[pl.DataFrame]:
+            for chunk_index, chunk in enumerate(chunk_frames, start=1):
+                self._raise_if_frontier_auto_range_stopped(job_id)
+                validated_constraints, scored_lf = self._validate_and_project_auto_range(
+                    chunk.frame.lazy(),
+                    config,
                     job_id,
-                    resources,
-                    required_columns_by_node=base_required,
-                    target_node_id=streaming_plan.base_node_id,
                     execution_context=execution_context,
-                    preamble_fingerprint=pinned,
                 )
                 self._raise_if_frontier_auto_range_stopped(job_id)
-                base_lf = lazy_outputs.get(streaming_plan.base_node_id)
-                if base_lf is None:
-                    raise ValueError(
-                        "Streaming auto-range base node did not produce a dataframe: "
-                        f"{streaming_plan.base_node_id!r}."
-                    )
-
-                qid_col = str(config.get("quote_id", "quote_id"))
-                constraint_cols = (
-                    list(config["constraints"].keys())
-                    if isinstance(config.get("constraints"), dict)
-                    else []
-                )
-                accumulator = _ScenarioFrontierRangeAccumulator(
-                    quote_id_col=qid_col,
-                    constraint_cols=constraint_cols,
-                    partition_count=partition_count,
-                    parts_root=Path(parts_dir),
-                )
-
-                self._store.atomic_update(
-                    job_id,
-                    {
-                        "message": "Streaming scenario chunks",
-                        "progress": 0.30,
-                        "elapsed_seconds": self._job_elapsed(job_id),
-                    },
-                    expected_status="running",
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                chunk_index = 0
-                from haute.chunking import ChunkRunnerRequest, iter_chunked_frames
-                from haute.executor import _compile_preamble
-
-                preamble_ns = (
-                    _compile_preamble(
-                        body.graph.preamble or "",
-                        pipeline_dir=_pipeline_dir(body.graph),
-                        execution_fingerprint=pinned,
-                    )
-                    or None
-                )
-                chunk_batches = iter_chunked_frames(
-                    ChunkRunnerRequest(
-                        graph=body.graph,
-                        plan=streaming_plan.chunk_plan,
-                        build_node_fn=_build_node_fn,
-                        preamble_ns=preamble_ns,
+                if validated_constraints != constraint_cols:
+                    raise ValueError("Streaming auto-range constraint columns changed.")
+                with execution_context.stage(
+                    "frontier_stream_score_collect",
+                    node_id=streaming_plan.scenario_node_id,
+                ):
+                    batch = streaming_collect(
+                        scored_lf.select(_frontier_range_batch_columns(qid_col, constraint_cols)),
                         execution_context=execution_context,
-                        start_frame=(
-                            base_lf if isinstance(base_lf, pl.LazyFrame) else base_lf.lazy()
-                        ),
                     )
-                )
-                for chunk in chunk_batches:
-                    self._raise_if_frontier_auto_range_stopped(job_id)
-                    validated_constraints, scored_lf = self._validate_and_project_auto_range(
-                        chunk.frame.lazy(),
-                        config,
+                yield batch
+                if chunk_index % 10 == 0:
+                    self._store.atomic_update(
                         job_id,
-                        execution_context=execution_context,
+                        {
+                            "message": f"Streaming scenario chunks ({chunk_index})",
+                            "progress": 0.30,
+                            "elapsed_seconds": self._job_elapsed(job_id),
+                        },
+                        expected_status="running",
                     )
-                    self._raise_if_frontier_auto_range_stopped(job_id)
-                    if validated_constraints != constraint_cols:
-                        raise ValueError("Streaming auto-range constraint columns changed.")
-                    with execution_context.stage(
-                        "frontier_stream_score_collect",
-                        node_id=streaming_plan.scenario_node_id,
-                    ):
-                        batch = streaming_collect(
-                            scored_lf.select(
-                                [
-                                    pl.col(qid_col).cast(pl.String).alias(qid_col),
-                                    *[pl.col(cname) for cname in constraint_cols],
-                                ]
-                            ),
-                            execution_context=execution_context,
-                        )
-                    self._raise_if_frontier_auto_range_stopped(job_id)
-                    _add_frontier_range_batch(
-                        accumulator,
-                        batch,
-                        batch_index=chunk_index,
-                        execution_context=execution_context,
-                    )
-                    chunk_index += 1
-                    if chunk_index % 10 == 0:
-                        self._store.atomic_update(
-                            job_id,
-                            {
-                                "message": f"Streaming scenario chunks ({chunk_index})",
-                                "progress": 0.30,
-                                "elapsed_seconds": self._job_elapsed(job_id),
-                            },
-                            expected_status="running",
-                        )
-
-                self._store.atomic_update(
-                    job_id,
-                    {
-                        "message": "Combining scenario envelope",
-                        "progress": 0.85,
-                        "elapsed_seconds": self._job_elapsed(job_id),
-                    },
-                    expected_status="running",
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                ranges = accumulator.finish(
-                    check_cancelled=lambda: self._raise_if_frontier_auto_range_stopped(job_id),
-                    execution_context=execution_context,
-                )
-                self._raise_if_frontier_auto_range_stopped(job_id)
-                response_ranges = {
-                    name: OptimiserFrontierRange(min=value["min"], max=value["max"])
-                    for name, value in ranges.items()
-                }
-                response = OptimiserFrontierAutoRangeResponse(
-                    status="ok",
-                    ranges=response_ranges,
-                    warning=None,
-                )
-                self._lifecycle.transition(
-                    job_id,
-                    to="completed",
-                    message="Completed",
-                    fields={
-                        "progress": 1.0,
-                        "elapsed_seconds": self._job_elapsed(job_id),
-                        "result": response.model_dump(),
-                        "execution_metrics": execution_context.metrics_payload(status="completed"),
-                    },
-                )
-                return response
-        except BackgroundJobStoppedError:
-            raise
-        except ExecutionCancelledError as exc:
-            reason = self._jobs.cancellation_reason(job_id) or "cancelled"
-            raise BackgroundJobStoppedError(job_id, reason) from exc
-        except ExecutionMemoryLimitExceededError as exc:
-            http_exc = _memory_limit_http_exception(exc)
-            self._lifecycle.transition(
+            self._store.atomic_update(
                 job_id,
-                to="memory_limited",
-                fields=_memory_limit_job_update(
-                    detail=http_exc.detail,
-                    elapsed_seconds=self._job_elapsed(job_id),
-                    execution_context=execution_context,
-                ),
-            )
-            raise http_exc from None
-        except HTTPException as exc:
-            if _is_memory_limit_http_exception(exc):
-                self._lifecycle.transition(
-                    job_id,
-                    to="memory_limited",
-                    fields=_memory_limit_job_update(
-                        detail=exc.detail,
-                        elapsed_seconds=self._job_elapsed(job_id),
-                        execution_context=execution_context,
-                    ),
-                )
-                raise
-            terminal_reason: TerminalReason = (
-                "contract_error" if exc.status_code in (400, 422) else "error"
-            )
-            self._lifecycle.transition(
-                job_id,
-                to=terminal_reason,
-                fields=_http_exception_job_update(
-                    exc=exc,
-                    elapsed_seconds=self._job_elapsed(job_id),
-                    execution_context=execution_context,
-                    terminal_reason=terminal_reason,
-                ),
-            )
-            raise
-        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-            elapsed_seconds = self._job_elapsed(job_id)
-            contract_reason = contract_error_terminal_reason(exc)
-            fields = contract_error_job_fields(exc)
-            fields["elapsed_seconds"] = elapsed_seconds
-            fields["execution_metrics"] = execution_context.metrics_payload(
-                status=contract_reason,
-                terminal_reason=contract_reason,
-            )
-            self._lifecycle.transition(job_id, to=contract_reason, fields=fields)
-            raise contract_error_http_exception(exc) from None
-        except BoundedMemoryUnsupportedError as exc:
-            detail = f"Frontier auto range cannot run in bounded streaming mode: {exc}"
-            logger.warning(
-                "frontier_auto_range_streaming_bounded_streaming_unsupported",
-                error=str(exc),
-                node_id=body.node_id,
-                job_id=job_id,
-            )
-            self._lifecycle.transition(
-                job_id,
-                to="contract_error",
-                fields=_http_error_job_update(
-                    status_code=422,
-                    detail=detail,
-                    elapsed_seconds=self._job_elapsed(job_id),
-                    execution_context=execution_context,
-                    terminal_reason="contract_error",
-                ),
-            )
-            raise HTTPException(status_code=422, detail=detail) from exc
-        except ValueError as exc:
-            detail = str(exc)
-            self._lifecycle.transition(
-                job_id,
-                to="contract_error",
-                fields=_http_error_job_update(
-                    status_code=400,
-                    detail=detail,
-                    elapsed_seconds=self._job_elapsed(job_id),
-                    execution_context=execution_context,
-                    terminal_reason="contract_error",
-                ),
-            )
-            raise HTTPException(status_code=400, detail=detail) from exc
-        except Exception as exc:
-            logger.error(
-                "frontier_auto_range_streaming_failed",
-                error=str(exc),
-                node_id=body.node_id,
-                exc_info=True,
-            )
-            self._lifecycle.transition(
-                job_id,
-                to="error",
-                fields={
-                    "message": f"Streaming frontier auto range failed: {exc}",
+                {
+                    "message": "Combining scenario envelope",
+                    "progress": 0.85,
                     "elapsed_seconds": self._job_elapsed(job_id),
-                    "execution_metrics": execution_context.metrics_payload(status="error"),
                 },
+                expected_status="running",
             )
-            raise HTTPException(
-                status_code=500,
-                detail="Frontier auto range failed. Check the server logs for details.",
-            ) from exc
+            self._raise_if_frontier_auto_range_stopped(job_id)
+
+        return _reduce_frontier_range_batches(
+            scored_chunk_batches(),
+            quote_id_col=qid_col,
+            constraint_cols=constraint_cols,
+            partition_count=partition_count,
+            check_cancelled=lambda: self._raise_if_frontier_auto_range_stopped(job_id),
+            execution_context=execution_context,
+        )
 
     def _launch_frontier_auto_range_background(
         self,

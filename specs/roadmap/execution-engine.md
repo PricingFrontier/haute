@@ -58,7 +58,7 @@ execution and trace correlation keep using it.
 **Evidence:** `src/haute/chunking.py::chunk_plan`;
 `src/haute/chunking.py::iter_chunked_frames`;
 `src/haute/chunking.py::classify_chunk_local_polars_code`;
-`src/haute/routes/_optimiser_service.py::_run_streaming_frontier_auto_range_job`;
+`src/haute/routes/_optimiser_service.py::_chunked_frontier_ranges`;
 `tests/test_chunk_plan.py`; `tests/test_chunk_runner.py`;
 `tests/test_chunk_whitelist_proofs.py`.
 

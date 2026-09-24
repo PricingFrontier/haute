@@ -3068,14 +3068,7 @@ class TestEstimateRoute:
 
         monkeypatch.setattr(haute.executor, "_compile_preamble", recording_compile)
 
-        service._run_streaming_frontier_auto_range_job(
-            body,
-            streaming_job_id,
-            config=prepared["config"],
-            chunk_size=prepared["chunk_size"],
-            partition_count=prepared["partition_count"],
-            streaming_plan=prepared["streaming_plan"],
-        )
+        service._run_frontier_auto_range_job(body, streaming_job_id, **prepared)
 
         assert len(recorded_fingerprints) >= 2
         assert len(set(recorded_fingerprints)) == 1

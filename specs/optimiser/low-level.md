@@ -256,10 +256,16 @@ HTTP 422; the 422 mapping remains for bounded streaming-collect failures.
   already running (unlike
   `start()`'s stricter conflict behaviour), otherwise creates a cancellable job, registers it,
   and spawns a worker thread.
-- `_run_frontier_auto_range_job` dispatches to `_run_streaming_frontier_auto_range_job`
-  (chunk-by-chunk via `iter_chunked_frames`, only reached when a streaming plan was
-  proven) or the classic path (execute pipeline → resolve source → validate/project → batched
-  collection into `_ScenarioFrontierRangeAccumulator` → `finish()`).
+- `_run_frontier_auto_range_job` is the one auto-range job. It owns admission, cancellation,
+  completion (the result's `warning` and `chunk_fallback` come from the recorded fallback) and a
+  single failure classification, and takes its range batches from one of two sources:
+  `_chunked_frontier_ranges` (execute to the streaming plan's base node, then
+  `iter_chunked_frames` expands and scores one base chunk at a time, each chunk validated,
+  projected and collected before the next; only reached when a streaming plan was proven) or
+  `_full_frame_frontier_ranges` (execute pipeline → resolve source → validate/project →
+  `_estimate_scenario_frontier_ranges`' bounded batches). Both feed
+  `_reduce_frontier_range_batches`, which reduces every batch into
+  `_ScenarioFrontierRangeAccumulator` and calls `finish()`.
 - `frontier_auto_range_status` enforces the job's timeout lazily, on poll — solve, frontier-sweep,
   and auto-range timeouts are all enforced lazily on their respective status polls (`solve_status`,
   `frontier_status`, `frontier_auto_range_status`), with auto-range additionally checking elapsed
@@ -896,6 +902,11 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   the cap against the polled `result`, since the sweep itself now runs off the request thread), and
   that completed optimiser jobs get their heavy runtime objects slimmed and owned artifacts
   evicted (a job-store/memory-discipline test, not a wall-clock benchmark).
+- **`tests/performance/test_auto_range_memory.py`** — the chunked auto-range memory bound on the
+  representative fixture (200,000 quotes, a scenario expander and real CatBoost scoring between
+  the base and the optimiser): at a fixed chunk size, 20 scenarios peak within one and a half
+  times the 5-scenario peak plus 64 MiB, each run measured in a fresh interpreter by
+  `tests/performance/_auto_range_memory_probe.py`.
 
 - **`tests/test_optimiser_level_tie_properties.py`** — the generated level-tie family
   (ENG-T11, ledger W09-S03): for generated Int64, Float64, Float32 and String levels, single

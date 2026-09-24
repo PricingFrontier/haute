@@ -186,11 +186,18 @@ before the sink, so the temporary Parquet file stays narrow regardless of how ma
 pipeline produces upstream.
 
 Frontier auto-range and frontier compute share the same schema validation and column-projection
-logic as the main solve, and the auto-range estimate can itself run either as a classic
-single-pass estimate or — when the upstream pipeline chain is provably row-local — as a
-streaming, chunk-by-chunk estimate that never materialises the fully expanded scenario frame.
-This keeps large-scenario-count solves from requiring a full-memory pass just to suggest
-frontier ranges.
+logic as the main solve. One auto-range job produces the estimate. When the upstream pipeline
+chain is provably row-local it runs chunk by chunk: the pipeline executes up to the node below the
+scenario expander, and each base chunk is expanded, scored and reduced before the next, so the
+fully expanded scenario frame is never materialised. Its peak memory follows the chunk size
+rather than the expanded frame: at a fixed chunk size, four times the scenarios raises the job's
+peak memory by at most half, plus 64 MiB. A chain that cannot be proven row-local runs the same
+job over the whole frame in bounded batches and records why chunking was lost. This keeps
+large-scenario-count solves from requiring a full-memory pass just to suggest frontier ranges.
+One streaming `group_by(quote).agg(min, max)` over the whole frame was measured as the
+alternative and rejected: scenario expansion (an `explode`) and batch model scoring materialise
+the expanded frame ahead of it, so its peak grew about threefold with four times the scenarios
+and exceeded the default 2 GiB auto-range budget where the chunked job stayed near 1 GiB.
 
 Frontier ranges are expressed as absolute threshold values, not multipliers of a baseline —
 multiplier semantics are ambiguous once constraints have different natural scales, and the
