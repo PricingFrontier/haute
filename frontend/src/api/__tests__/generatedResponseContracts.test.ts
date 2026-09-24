@@ -12,6 +12,10 @@ import {
   validateTableListResponse,
   validateWarehouseListResponse,
 } from "../../generated/api-contracts.databricks.validators.mjs"
+import {
+  validateLogExperimentResponse,
+  validateModellingGpuStatusResponse,
+} from "../../generated/api-contracts.modelling.validators.mjs"
 import { expectGeneratedContract } from "../../types/generatedContractValidation"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 
@@ -96,5 +100,27 @@ describe("generated response contracts", () => {
         warehouses: [{ id: 1, name: "Shared", http_path: "/p", state: "RUNNING", size: "" }],
       }),
     ).toThrow("WarehouseListResponse: invalid contract at /warehouses/0/id: type")
+  })
+
+  it("accept a training MLflow log receipt and require its operation fields", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("train_mlflow_log_response")
+    const logged = expectGeneratedContract("LogExperimentResponse", validateLogExperimentResponse, fixture)
+    const { operation_id: _operationId, ...withoutOperation } = fixture
+
+    expect(logged.operation_id).toBe("op-7f3a")
+    expect(() =>
+      expectGeneratedContract("LogExperimentResponse", validateLogExperimentResponse, withoutOperation),
+    ).toThrow("LogExperimentResponse: invalid contract at /operation_id: required")
+    expect(() =>
+      expectGeneratedContract("LogExperimentResponse", validateLogExperimentResponse, { ...fixture, status: "partial" }),
+    ).toThrow("LogExperimentResponse: invalid contract at /status: enum")
+  })
+
+  it("reject an XGBoost GPU status without its device field", () => {
+    expect(() =>
+      expectGeneratedContract("ModellingGpuStatusResponse", validateModellingGpuStatusResponse, {
+        xgboost: { available: true, detail: "" },
+      }),
+    ).toThrow("ModellingGpuStatusResponse: invalid contract at /xgboost/device: required")
   })
 })

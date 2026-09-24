@@ -97,7 +97,6 @@ import type {
   GitStorageSync,
   GitWorkingBranchResponse,
   IoCapabilitiesResponse,
-  ModellingGpuStatusResponse,
   IoCapabilityGroup,
   OutputDestinationResponse,
   IoFieldCapability,
@@ -116,8 +115,6 @@ import type {
   JsonCacheStatusResponse,
   ExecutionSettings,
   MlflowLogResponse,
-  ModelSaveDestinationResponse,
-  SaveModelResponse,
   NodeDataClearResponse,
   NodeDataColumns,
   NodeDataPointResponse,
@@ -1976,19 +1973,6 @@ function parseIoCapabilityGroup(value: unknown, field: string): IoCapabilityGrou
   return { name: expectStringLiteral(p, obj.name, `${field}.name`, IO_GROUPS), label: expectString(p, obj.label, `${field}.label`), input_available: expectBoolean(p, obj.input_available, `${field}.input_available`), output_available: expectBoolean(p, obj.output_available, `${field}.output_available`), cache_modes: parseArray(p, obj.cache_modes, `${field}.cache_modes`, (v, f) => expectStringLiteral(p, v, f, IO_CACHE_MODES)), input_fields: parseArray(p, obj.input_fields, `${field}.input_fields`, parseIoFieldCapability), output_fields: parseArray(p, obj.output_fields, `${field}.output_fields`, parseIoFieldCapability), formats: parseArray(p, obj.formats, `${field}.formats`, parseIoFormatCapability) }
 }
 
-export function parseModellingGpuStatusResponse(value: unknown): ModellingGpuStatusResponse {
-  const p = "parseModellingGpuStatusResponse"
-  const obj = expectPlainObject(p, value)
-  const xgboost = expectPlainObject(p, obj.xgboost, "field `xgboost`")
-  return {
-    xgboost: {
-      available: expectBoolean(p, xgboost.available, "xgboost.available"),
-      detail: expectString(p, xgboost.detail, "xgboost.detail"),
-      device: expectNullableString(p, xgboost.device ?? null, "xgboost.device"),
-    },
-  }
-}
-
 export function parseIoCapabilitiesResponse(value: unknown): IoCapabilitiesResponse {
   const p = "parseIoCapabilitiesResponse"
   const obj = expectPlainObject(p, value)
@@ -2878,31 +2862,6 @@ export function parseMlflowLogResponse(value: unknown): MlflowLogResponse {
     ...(obj.logged_at === undefined
       ? {}
       : { logged_at: optionalNullableString("parseMlflowLogResponse", obj, "logged_at") }),
-  }
-}
-
-export function parseModelSaveDestinationResponse(value: unknown): ModelSaveDestinationResponse {
-  const obj = expectPlainObject("parseModelSaveDestinationResponse", value)
-  return {
-    path: expectString("parseModelSaveDestinationResponse", obj.path, "field `path`"),
-    suffix_mismatch: expectBoolean(
-      "parseModelSaveDestinationResponse",
-      obj.suffix_mismatch,
-      "field `suffix_mismatch`",
-    ),
-  }
-}
-
-export function parseSaveModelResponse(value: unknown): SaveModelResponse {
-  const obj = expectPlainObject("parseSaveModelResponse", value)
-  return {
-    status: expectStringLiteral("parseSaveModelResponse", obj.status, "field `status`", ["ok"]),
-    path: expectString("parseSaveModelResponse", obj.path, "field `path`"),
-    feature_contract_path: expectString(
-      "parseSaveModelResponse",
-      obj.feature_contract_path,
-      "field `feature_contract_path`",
-    ),
   }
 }
 

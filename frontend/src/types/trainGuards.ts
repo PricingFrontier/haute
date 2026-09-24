@@ -12,10 +12,12 @@ import type {
   TrainStatusResponse,
 } from "../api/types"
 import { JOB_STATUS_VALUES } from "../api/types"
+import type { TrainEstimateResponse } from "../generated/api-contracts.generated"
+import { validateTrainEstimateResponse } from "../generated/api-contracts.modelling.validators.mjs"
+import { expectGeneratedContract } from "./generatedContractValidation"
 import {
   expectArray,
   expectBoolean,
-  expectExactKeys,
   expectInteger,
   expectNullableNumber,
   expectNullableString,
@@ -25,7 +27,6 @@ import {
   expectString,
   expectStringLiteral,
   isPlainObject,
-  optionalBoolean,
   optionalExecutionMetrics,
   optionalNullableNumber,
   optionalNullableObject,
@@ -1522,199 +1523,93 @@ function parseTrainExportReceipts(value: unknown): TrainExportReceipts {
 // ---------------------------------------------------------------------------
 
 
+// The generated validator owns the estimate's structure; these are the
+// cross-field rules the UI relies on (TrainEstimateResponse and
+// EvaluationPreviewPayload enforce the same ones on the server).
+function checkEvaluationPreview(preview: EvaluationPreview): void {
+  const selectionBounds = [
+    preview.min_selection_train_rows,
+    preview.max_selection_train_rows,
+    preview.min_selection_validation_rows,
+    preview.max_selection_validation_rows,
+  ]
+  if (preview.validation_method === "none") {
+    if (preview.validation_fit_count !== 0 || selectionBounds.some((value) => value !== undefined)) {
+      throw new Error("parseTrainEstimateResponse: no-validation preview must not contain selection bounds")
+    }
+  } else {
+    const expectedCount = preview.validation_method === "single" ? 1 : preview.validation_fit_count
+    if (
+      preview.validation_fit_count !== expectedCount
+      || (preview.validation_method === "cross_validation" && preview.validation_fit_count < 2)
+      || selectionBounds.some((value) => value === undefined)
+    ) {
+      throw new Error("parseTrainEstimateResponse: validated preview has inconsistent fit count or row bounds")
+    }
+    if (
+      preview.min_selection_train_rows! > preview.max_selection_train_rows!
+      || preview.min_selection_validation_rows! > preview.max_selection_validation_rows!
+    ) {
+      throw new Error("parseTrainEstimateResponse: evaluation preview minimums must not exceed maximums")
+    }
+  }
+
+  if (preview.strategy === "group") {
+    if (preview.development_group_count === undefined || preview.final_test_group_count === undefined) {
+      throw new Error("parseTrainEstimateResponse: group preview requires group counts")
+    }
+  } else if (preview.development_group_count !== undefined || preview.final_test_group_count !== undefined) {
+    throw new Error("parseTrainEstimateResponse: only group preview may contain group counts")
+  }
+
+  if (preview.strategy === "temporal") {
+    if (
+      preview.development_date_range === undefined
+      || (preview.final_test_rows > 0) !== (preview.final_test_date_range !== undefined)
+    ) {
+      throw new Error("parseTrainEstimateResponse: temporal preview has inconsistent date ranges")
+    }
+  } else if (preview.development_date_range !== undefined || preview.final_test_date_range !== undefined) {
+    throw new Error("parseTrainEstimateResponse: only temporal preview may contain date ranges")
+  }
+}
+
+function checkUnavailable(
+  unavailable: TrainEstimateResponse["unavailable"],
+): TrainEstimateUnavailable | null {
+  if (unavailable === null) return null
+  const { reason, blocking_node_id: blockingNodeId } = unavailable
+  if (reason === "row_count_unprovable") {
+    if (!blockingNodeId) {
+      throw new Error("parseTrainEstimateResponse: row_count_unprovable names the blocking node")
+    }
+    return { reason, blocking_node_id: blockingNodeId }
+  }
+  if (blockingNodeId !== null) {
+    throw new Error("parseTrainEstimateResponse: schema_unresolvable names no blocking node")
+  }
+  return { reason, blocking_node_id: null }
+}
+
 export function parseTrainEstimateResponse(value: unknown): TrainEstimate {
-  const obj = expectPlainObject("parseTrainEstimateResponse", value)
-  const parseDateRange = (range: unknown, field: string) => {
-    const rangeObj = expectPlainObject("parseTrainEstimateResponse", range, field)
-    expectExactKeys("parseTrainEstimateResponse", rangeObj, field, ["start", "end"])
-    const start = expectString("parseTrainEstimateResponse", rangeObj.start, `${field}.start`)
-    const end = expectString("parseTrainEstimateResponse", rangeObj.end, `${field}.end`)
-    if (start.length === 0 || end.length === 0) {
-      throw new Error(`parseTrainEstimateResponse: ${field} boundaries must not be empty`)
-    }
-    return {
-      start,
-      end,
-    }
-  }
-  const parseEvaluationPreview = (preview: unknown): EvaluationPreview => {
-    const previewObj = expectPlainObject("parseTrainEstimateResponse", preview, "evaluation_preview")
-    const optionalKeys = [
-      "min_selection_train_rows",
-      "max_selection_train_rows",
-      "min_selection_validation_rows",
-      "max_selection_validation_rows",
-      "development_group_count",
-      "final_test_group_count",
-      "development_date_range",
-      "final_test_date_range",
-    ] as const
-    const boundedInteger = (
-      value: unknown,
-      field: string,
-      minimum: number,
-      maximum?: number,
-    ): number => {
-      if (
-        typeof value !== "number"
-        || !Number.isSafeInteger(value)
-        || value < minimum
-        || (maximum !== undefined && value > maximum)
-      ) {
-        throw new Error(
-          `parseTrainEstimateResponse: ${field} must be an integer from ${minimum}`
-          + (maximum === undefined ? "" : ` through ${maximum}`),
-        )
-      }
-      return value
-    }
-    expectExactKeys("parseTrainEstimateResponse", previewObj, "evaluation_preview", [
-      "schema_version",
-      "strategy",
-      "validation_method",
-      "development_rows",
-      "final_test_rows",
-      "validation_fit_count",
-      ...optionalKeys.filter((key) => previewObj[key] !== undefined),
-    ])
-    const strategy = expectStringLiteral(
-      "parseTrainEstimateResponse",
-      previewObj.strategy,
-      "evaluation_preview.strategy",
-      ["random", "group", "temporal"],
-    )
-    const validationMethod = expectStringLiteral(
-      "parseTrainEstimateResponse",
-      previewObj.validation_method,
-      "evaluation_preview.validation_method",
-      ["none", "single", "cross_validation"],
-    )
-    const result: EvaluationPreview = {
-      schema_version: expectSchemaVersionOne("parseTrainEstimateResponse", previewObj.schema_version, "evaluation_preview.schema_version"),
-      strategy,
-      validation_method: validationMethod,
-      development_rows: boundedInteger(previewObj.development_rows, "evaluation_preview.development_rows", 1),
-      final_test_rows: boundedInteger(previewObj.final_test_rows, "evaluation_preview.final_test_rows", 0),
-      validation_fit_count: boundedInteger(previewObj.validation_fit_count, "evaluation_preview.validation_fit_count", 0, 10),
-    }
-    if (previewObj.min_selection_train_rows !== undefined) result.min_selection_train_rows = boundedInteger(previewObj.min_selection_train_rows, "evaluation_preview.min_selection_train_rows", 1)
-    if (previewObj.max_selection_train_rows !== undefined) result.max_selection_train_rows = boundedInteger(previewObj.max_selection_train_rows, "evaluation_preview.max_selection_train_rows", 1)
-    if (previewObj.min_selection_validation_rows !== undefined) result.min_selection_validation_rows = boundedInteger(previewObj.min_selection_validation_rows, "evaluation_preview.min_selection_validation_rows", 1)
-    if (previewObj.max_selection_validation_rows !== undefined) result.max_selection_validation_rows = boundedInteger(previewObj.max_selection_validation_rows, "evaluation_preview.max_selection_validation_rows", 1)
-    if (previewObj.development_group_count !== undefined) result.development_group_count = boundedInteger(previewObj.development_group_count, "evaluation_preview.development_group_count", 1)
-    if (previewObj.final_test_group_count !== undefined) result.final_test_group_count = boundedInteger(previewObj.final_test_group_count, "evaluation_preview.final_test_group_count", 0)
-    if (previewObj.development_date_range !== undefined) result.development_date_range = parseDateRange(previewObj.development_date_range, "evaluation_preview.development_date_range")
-    if (previewObj.final_test_date_range !== undefined) result.final_test_date_range = parseDateRange(previewObj.final_test_date_range, "evaluation_preview.final_test_date_range")
-
-    const selectionBounds = [
-      result.min_selection_train_rows,
-      result.max_selection_train_rows,
-      result.min_selection_validation_rows,
-      result.max_selection_validation_rows,
-    ]
-    if (validationMethod === "none") {
-      if (result.validation_fit_count !== 0 || selectionBounds.some((value) => value !== undefined)) {
-        throw new Error("parseTrainEstimateResponse: no-validation preview must not contain selection bounds")
-      }
-    } else {
-      const expectedCount = validationMethod === "single" ? 1 : result.validation_fit_count
-      if (
-        result.validation_fit_count !== expectedCount
-        || (validationMethod === "cross_validation" && result.validation_fit_count < 2)
-        || selectionBounds.some((value) => value === undefined)
-      ) {
-        throw new Error("parseTrainEstimateResponse: validated preview has inconsistent fit count or row bounds")
-      }
-      if (
-        result.min_selection_train_rows! > result.max_selection_train_rows!
-        || result.min_selection_validation_rows! > result.max_selection_validation_rows!
-      ) {
-        throw new Error("parseTrainEstimateResponse: evaluation preview minimums must not exceed maximums")
-      }
-    }
-
-    if (strategy === "group") {
-      if (
-        result.development_group_count === undefined
-        || result.final_test_group_count === undefined
-      ) {
-        throw new Error("parseTrainEstimateResponse: group preview requires group counts")
-      }
-    } else if (
-      result.development_group_count !== undefined
-      || result.final_test_group_count !== undefined
-    ) {
-      throw new Error("parseTrainEstimateResponse: only group preview may contain group counts")
-    }
-
-    if (strategy === "temporal") {
-      if (
-        result.development_date_range === undefined
-        || (result.final_test_rows > 0) !== (result.final_test_date_range !== undefined)
-      ) {
-        throw new Error("parseTrainEstimateResponse: temporal preview has inconsistent date ranges")
-      }
-    } else if (
-      result.development_date_range !== undefined
-      || result.final_test_date_range !== undefined
-    ) {
-      throw new Error("parseTrainEstimateResponse: only temporal preview may contain date ranges")
-    }
-    return result
-  }
-  const parseUnavailable = (value: unknown): TrainEstimateUnavailable | null => {
-    if (value === null) return null
-    const unavailableObj = expectPlainObject("parseTrainEstimateResponse", value, "unavailable")
-    expectExactKeys("parseTrainEstimateResponse", unavailableObj, "unavailable", ["reason", "blocking_node_id"])
-    const reason = expectStringLiteral(
-      "parseTrainEstimateResponse",
-      unavailableObj.reason,
-      "unavailable.reason",
-      ["row_count_unprovable", "schema_unresolvable"] as const,
-    )
-    const blockingNodeId = expectNullableString(
-      "parseTrainEstimateResponse",
-      unavailableObj.blocking_node_id,
-      "unavailable.blocking_node_id",
-    )
-    if (reason === "row_count_unprovable") {
-      if (!blockingNodeId) {
-        throw new Error("parseTrainEstimateResponse: row_count_unprovable names the blocking node")
-      }
-      return { reason, blocking_node_id: blockingNodeId }
-    }
-    if (blockingNodeId !== null) {
-      throw new Error("parseTrainEstimateResponse: schema_unresolvable names no blocking node")
-    }
-    return { reason, blocking_node_id: null }
-  }
+  const response = expectGeneratedContract("TrainEstimateResponse", validateTrainEstimateResponse, value)
+  const preview = response.evaluation_preview ?? null
+  if (preview !== null) checkEvaluationPreview(preview)
   const estimate: TrainEstimate = {
-    total_rows: expectNullableNumber("parseTrainEstimateResponse", obj.total_rows, "total_rows"),
-    safe_row_limit: optionalNullableNumber("parseTrainEstimateResponse", obj, "safe_row_limit"),
-    estimated_mb: expectNullableNumber("parseTrainEstimateResponse", obj.estimated_mb, "estimated_mb"),
-    training_mb: expectNullableNumber("parseTrainEstimateResponse", obj.training_mb, "training_mb"),
-    available_mb: expectNumber("parseTrainEstimateResponse", obj.available_mb, "available_mb"),
-    bytes_per_row: expectNullableNumber("parseTrainEstimateResponse", obj.bytes_per_row, "bytes_per_row"),
-    was_downsampled: optionalBoolean("parseTrainEstimateResponse", obj, "was_downsampled"),
-    warning: optionalNullableString("parseTrainEstimateResponse", obj, "warning"),
-    gpu_vram_estimated_mb: optionalNullableNumber("parseTrainEstimateResponse", obj, "gpu_vram_estimated_mb"),
-    gpu_vram_available_mb: optionalNullableNumber("parseTrainEstimateResponse", obj, "gpu_vram_available_mb"),
-    gpu_warning: optionalNullableString("parseTrainEstimateResponse", obj, "gpu_warning"),
-    unavailable: parseUnavailable(obj.unavailable),
-    evaluation_preview: obj.evaluation_preview === undefined || obj.evaluation_preview === null
-      ? null
-      : parseEvaluationPreview(obj.evaluation_preview),
+    ...response,
+    unavailable: checkUnavailable(response.unavailable),
+    evaluation_preview: preview,
   }
-  // Mirrors TrainEstimateResponse: an estimate that cannot size its input has
-  // no memory figure to misread, and an available one has every figure.
+  // An estimate that cannot size its input has no memory figure to misread,
+  // and an available one has every figure.
   const figures = [estimate.estimated_mb, estimate.training_mb, estimate.bytes_per_row]
   if (estimate.unavailable === null) {
-    if (estimate.total_rows === null || figures.some((value) => value === null)) {
+    if (estimate.total_rows === null || figures.some((figure) => figure === null)) {
       throw new Error("parseTrainEstimateResponse: an available estimate requires a row total and memory figures")
     }
     return estimate
   }
-  if (figures.some((value) => value !== null)) {
+  if (figures.some((figure) => figure !== null)) {
     throw new Error("parseTrainEstimateResponse: an unavailable estimate has no memory figures")
   }
   if (estimate.was_downsampled || estimate.warning !== null) {

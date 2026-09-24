@@ -70,6 +70,7 @@ import type {
   MlflowTestConnectionRequest,
   MlflowTestConnectionResponse,
   MlflowExperiment,
+  LogExperimentResponse,
   MlflowLogResponse,
   ModelSaveDestinationRequest,
   ModelSaveDestinationResponse,
@@ -156,7 +157,6 @@ import {
   parseGitSetWorkingBranchResponse,
   parseGitWorkingBranchResponse,
   parseIoCapabilitiesResponse,
-  parseModellingGpuStatusResponse,
   parseInputCacheBuildResponse,
   parseInputCacheCancelResponse,
   parseInputCacheJobStatusResponse,
@@ -168,8 +168,6 @@ import {
   parseJsonCacheStatusResponse,
   parseExecutionSettings,
   parseMlflowLogResponse,
-  parseModelSaveDestinationResponse,
-  parseSaveModelResponse,
   parseFileListResponse,
   parseHauteSessionResponse,
   parseOptimiserEstimateResponse,
@@ -195,6 +193,7 @@ import { expectGeneratedContract } from "../types/generatedContractValidation"
 // them reaches the initial bundle.
 const databricksValidators = () => import("../generated/api-contracts.databricks.validators.mjs")
 const mlflowValidators = () => import("../generated/api-contracts.mlflow.validators.mjs")
+const modellingValidators = () => import("../generated/api-contracts.modelling.validators.mjs")
 const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
 import {
   parseRemoveUnavailableNodeApplyResponse,
@@ -1434,7 +1433,7 @@ export function fetchExplorePivotMembers(
 export function fetchModellingGpuStatus(
   options?: { signal?: AbortSignal },
 ): Promise<ModellingGpuStatusResponse> {
-  return request<unknown>("/api/modelling/gpu", options).then(parseModellingGpuStatusResponse)
+  return request<unknown>("/api/modelling/gpu", options).then(async (data) => expectGeneratedContract("ModellingGpuStatusResponse", (await modellingValidators()).validateModellingGpuStatusResponse, data))
 }
 
 
@@ -1499,9 +1498,9 @@ export function logToMlflow(
     operation_id?: string
   },
   options?: { signal?: AbortSignal },
-): Promise<MlflowLogResponse> {
+): Promise<LogExperimentResponse> {
   return post<unknown>("/api/modelling/mlflow/log", payload, { timeout: 600_000, ...options })
-    .then(parseMlflowLogResponse)
+    .then(async (data) => expectGeneratedContract("LogExperimentResponse", (await modellingValidators()).validateLogExperimentResponse, data))
 }
 
 /** Resolves where "Save model to file" would write, without writing. */
@@ -1510,7 +1509,7 @@ export function resolveModelSaveDestination(
   options?: { signal?: AbortSignal },
 ): Promise<ModelSaveDestinationResponse> {
   return post<unknown>("/api/modelling/save/destination", payload, { timeout: 30_000, ...options })
-    .then(parseModelSaveDestinationResponse)
+    .then(async (data) => expectGeneratedContract("ModelSaveDestinationResponse", (await modellingValidators()).validateModelSaveDestinationResponse, data))
 }
 
 /** Copies a completed training job's model and feature contract to a project file. */
@@ -1519,7 +1518,7 @@ export function saveTrainedModel(
   options?: { signal?: AbortSignal },
 ): Promise<SaveModelResponse> {
   return post<unknown>("/api/modelling/save", payload, { timeout: 600_000, ...options })
-    .then(parseSaveModelResponse)
+    .then(async (data) => expectGeneratedContract("SaveModelResponse", (await modellingValidators()).validateSaveModelResponse, data))
 }
 
 // ---------------------------------------------------------------------------

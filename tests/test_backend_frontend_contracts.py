@@ -95,7 +95,7 @@ _FIXTURE_MODELS: list[tuple[str, type[Any]]] = [
     ("mlflow_test_connection_response", MlflowTestConnectionResponse),
     ("train_estimate_response", TrainEstimateResponse),
     ("train_estimate_unavailable_response", TrainEstimateResponse),
-    ("mlflow_log_response", LogExperimentResponse),
+    ("train_mlflow_log_response", LogExperimentResponse),
     ("mlflow_log_response", OptimiserMlflowLogResponse),
     ("solve_optimiser_response", OptimiserSolveResponse),
     ("optimiser_estimate_response", OptimiserEstimateResponse),

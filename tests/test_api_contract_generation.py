@@ -210,6 +210,29 @@ def test_response_contracts_require_every_field_the_server_sends() -> None:
     assert "was_downsampled" in estimate["required"]
 
 
+def test_a_field_omitted_when_none_admits_no_null() -> None:
+    definitions = build_contract_bundle()["$defs"]
+    preview = definitions["EvaluationPreviewPayload"]
+
+    # exclude_if drops these whenever they are None, so null is never sent.
+    assert preview["properties"]["min_selection_train_rows"] == {
+        "minimum": 1,
+        "title": "Min Selection Train Rows",
+        "type": "integer",
+    }
+    assert preview["properties"]["development_date_range"] == {
+        "$ref": "#/$defs/EvaluationDateRangePayload"
+    }
+    assert "min_selection_train_rows" not in preview["required"]
+    assert definitions["TrainEstimateResponse"]["properties"]["evaluation_preview"] == {
+        "$ref": "#/$defs/EvaluationPreviewPayload"
+    }
+    # A nullable field the server always sends keeps its null branch.
+    assert {"type": "null"} in definitions["TrainEstimateResponse"]["properties"]["unavailable"][
+        "anyOf"
+    ]
+
+
 def test_frontend_contract_generators_are_direct_exact_pins() -> None:
     package = json.loads((REPO_ROOT / "frontend" / "package.json").read_text(encoding="utf-8"))
 

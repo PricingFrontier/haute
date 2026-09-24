@@ -898,7 +898,7 @@ describe("next-wave client runtime contracts", () => {
     name: string
     response: Record<string, unknown>
     call: () => Promise<unknown>
-    error: RegExp
+    error: RegExp | string
   }> = [
     {
       name: "getNodeDataPoint",
@@ -963,43 +963,43 @@ describe("next-wave client runtime contracts", () => {
       name: "getMlflowDestinations",
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_destinations_response"), destinations: "none" },
       call: () => getMlflowDestinations(true),
-      error: /MlflowDestinationsResponse: invalid contract/,
+      error: "MlflowDestinationsResponse: invalid contract at /destinations: type",
     },
     {
       name: "getMlflowSettings",
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_settings_response"), section_present: "yes" },
       call: () => getMlflowSettings(),
-      error: /MlflowSettingsResponse: invalid contract/,
+      error: "MlflowSettingsResponse: invalid contract at /section_present: type",
     },
     {
       name: "testMlflowConnection",
       response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_test_connection_response"), ok: "no" },
       call: () => testMlflowConnection(),
-      error: /MlflowTestConnectionResponse: invalid contract/,
+      error: "MlflowTestConnectionResponse: invalid contract at /ok: type",
     },
     {
       name: "estimateTrainingRam",
       response: { ...loadUiContractFixture<Record<string, unknown>>("train_estimate_response"), estimated_mb: "bad" },
       call: () => estimateTrainingRam({ graph: dummyGraph, node_id: "model1" }),
-      error: /parseTrainEstimateResponse/i,
+      error: "TrainEstimateResponse: invalid contract at /estimated_mb: type",
     },
     {
       name: "logToMlflow",
-      response: { ...loadUiContractFixture<Record<string, unknown>>("mlflow_log_response"), run_id: 42 },
+      response: { ...loadUiContractFixture<Record<string, unknown>>("train_mlflow_log_response"), run_id: 42 },
       call: () => logToMlflow({ job_id: "job-1", destination: "" }),
-      error: /parseMlflowLogResponse/i,
+      error: "LogExperimentResponse: invalid contract at /run_id: type",
     },
     {
       name: "saveTrainedModel",
       response: { ...loadUiContractFixture<Record<string, unknown>>("model_save_response"), path: 42 },
       call: () => saveTrainedModel({ job_id: "job-1", output_path: "frequency", overwrite: false }),
-      error: /parseSaveModelResponse/i,
+      error: "SaveModelResponse: invalid contract at /path: type",
     },
     {
       name: "resolveModelSaveDestination",
       response: { ...loadUiContractFixture<Record<string, unknown>>("model_save_destination_response"), suffix_mismatch: 1 },
       call: () => resolveModelSaveDestination({ output_path: "frequency", algorithm: "catboost" }),
-      error: /parseModelSaveDestinationResponse/i,
+      error: "ModelSaveDestinationResponse: invalid contract at /suffix_mismatch: type",
     },
     {
       name: "solveOptimiser",

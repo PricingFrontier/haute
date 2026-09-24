@@ -4,7 +4,6 @@ import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import { makeTrainResult } from "../../test-utils/factories"
 import {
   parseApplyOptimiserResponse,
-  parseModellingGpuStatusResponse,
   parsePreviewInputsResponse,
   parseDissolveSubmodelResponse,
   parseExplorePivotMembersResponse,
@@ -37,8 +36,6 @@ import {
   parseJsonCacheSchemaInferenceResponse,
   parseFileListResponse,
   parseMlflowLogResponse,
-  parseModelSaveDestinationResponse,
-  parseSaveModelResponse,
   parseOutputAssembleDryRunResponse,
   parseOptimiserEstimateResponse,
   parseOptimiserStatusResponse,
@@ -62,6 +59,11 @@ import {
   validateMlflowSettingsResponse,
   validateMlflowTestConnectionResponse,
 } from "../../generated/api-contracts.mlflow.validators.mjs"
+import {
+  validateModelSaveDestinationResponse,
+  validateModellingGpuStatusResponse,
+  validateSaveModelResponse,
+} from "../../generated/api-contracts.modelling.validators.mjs"
 import { expectGeneratedContract } from "../generatedContractValidation"
 import {
   parseTrainEstimateResponse,
@@ -323,6 +325,12 @@ const mlflowRuns = (value: unknown) =>
   expectGeneratedContract("MlflowRunList", validateMlflowRunList, value)
 const mlflowModels = (value: unknown) =>
   expectGeneratedContract("MlflowModelList", validateMlflowModelList, value)
+const modellingGpuStatus = (value: unknown) =>
+  expectGeneratedContract("ModellingGpuStatusResponse", validateModellingGpuStatusResponse, value)
+const modelSaveDestination = (value: unknown) =>
+  expectGeneratedContract("ModelSaveDestinationResponse", validateModelSaveDestinationResponse, value)
+const savedModel = (value: unknown) =>
+  expectGeneratedContract("SaveModelResponse", validateSaveModelResponse, value)
 const mlflowModelVersions = (value: unknown) =>
   expectGeneratedContract("MlflowModelVersionList", validateMlflowModelVersionList, value)
 
@@ -1728,11 +1736,11 @@ describe("API response guards", () => {
   })
 
   it("parses the XGBoost GPU status (MOD-F06)", () => {
-    expect(parseModellingGpuStatusResponse({
+    expect(modellingGpuStatus({
       xgboost: { available: false, detail: "Run `haute gpu-setup`.", device: null },
     })).toEqual({ xgboost: { available: false, detail: "Run `haute gpu-setup`.", device: null } })
-    expect(() => parseModellingGpuStatusResponse({ xgboost: { available: "yes", detail: "", device: null } }))
-      .toThrow(/xgboost.available/)
+    expect(() => modellingGpuStatus({ xgboost: { available: "yes", detail: "", device: null } }))
+      .toThrow("ModellingGpuStatusResponse: invalid contract at /xgboost/available: type")
   })
 
   it("keeps the device an XGBoost GPU fit trained on (MOD-F06)", () => {
@@ -2704,8 +2712,8 @@ describe("API response guards", () => {
     )
     const estimate = parseTrainEstimateResponse(loadUiContractFixture("train_estimate_response"))
     const log = parseMlflowLogResponse(loadUiContractFixture("mlflow_log_response"))
-    const saved = parseSaveModelResponse(loadUiContractFixture("model_save_response"))
-    const destination = parseModelSaveDestinationResponse(
+    const saved = savedModel(loadUiContractFixture("model_save_response"))
+    const destination = modelSaveDestination(
       loadUiContractFixture("model_save_destination_response"),
     )
 
@@ -2733,12 +2741,14 @@ describe("API response guards", () => {
       feature_contract_path: "models/frequency.feature_contract.json",
     })
     expect(destination).toEqual({ path: "models/frequency.cbm", suffix_mismatch: false })
-    expect(() => parseModelSaveDestinationResponse({ ...destination, suffix_mismatch: "no" })).toThrow(
-      /parseModelSaveDestinationResponse/,
+    expect(() => modelSaveDestination({ ...destination, suffix_mismatch: "no" })).toThrow(
+      "ModelSaveDestinationResponse: invalid contract at /suffix_mismatch: type",
     )
-    expect(() => parseSaveModelResponse({ ...saved, status: "error" })).toThrow(/parseSaveModelResponse/)
-    expect(() => parseSaveModelResponse({ ...saved, feature_contract_path: null })).toThrow(
-      /parseSaveModelResponse/,
+    expect(() => savedModel({ ...saved, status: "error" })).toThrow(
+      "SaveModelResponse: invalid contract at /status: const",
+    )
+    expect(() => savedModel({ ...saved, feature_contract_path: null })).toThrow(
+      "SaveModelResponse: invalid contract at /feature_contract_path: type",
     )
   })
 
@@ -2807,8 +2817,8 @@ describe("API response guards", () => {
         /names the blocking node/,
       ],
       [{ ...blank, unavailable: { ...schema, blocking_node_id: "join" } }, /names no blocking node/],
-      [{ ...blank, unavailable: { ...schema, extra: true } }, /unexpected or missing fields/],
-      [{ ...blank, unavailable: { reason: "cardinality", blocking_node_id: null } }, /unavailable\.reason/],
+      [{ ...blank, unavailable: { ...schema, extra: true } }, /\/unavailable: additionalProperties/],
+      [{ ...blank, unavailable: { reason: "cardinality", blocking_node_id: null } }, /\/unavailable\/reason: enum/],
     ]
     for (const [overrides, error] of rejected) {
       expect(() => parseTrainEstimateResponse({ ...sized, ...overrides })).toThrow(error)
@@ -2829,7 +2839,7 @@ describe("API response guards", () => {
         development_rows: 800, final_test_rows: 200, validation_fit_count: 1,
         unexpected: true,
       },
-    })).toThrow(/evaluation_preview.*unexpected or missing fields/i)
+    })).toThrow("TrainEstimateResponse: invalid contract at /evaluation_preview: additionalProperties")
     expect(() => parseTrainEstimateResponse({
       ...estimate,
       evaluation_preview: {

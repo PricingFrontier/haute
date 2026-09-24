@@ -319,6 +319,102 @@ export interface MlflowModelVersionSummary {
   status: string;
   version: string;
 }
+/**
+ * GPU training capability per GPU-capable family (XGBoost CUDA).
+ */
+export interface ModellingGpuStatusResponse {
+  xgboost: GpuFamilyStatus;
+}
+/**
+ * Whether one family can train on a GPU in this server process.
+ */
+export interface GpuFamilyStatus {
+  available: boolean;
+  detail: string;
+  device: string | null;
+}
+export interface TrainEstimateResponse {
+  available_mb: number;
+  bytes_per_row: number | null;
+  estimated_mb: number | null;
+  evaluation_preview?: EvaluationPreviewPayload;
+  gpu_vram_available_mb: number | null;
+  gpu_vram_estimated_mb: number | null;
+  gpu_warning: string | null;
+  safe_row_limit: number | null;
+  total_rows: number | null;
+  training_mb: number | null;
+  unavailable: TrainEstimateUnavailable | null;
+  warning: string | null;
+  was_downsampled: boolean;
+}
+/**
+ * Bounded, result-free summary of the exact preflight evaluation plan.
+ */
+export interface EvaluationPreviewPayload {
+  development_date_range?: EvaluationDateRangePayload;
+  development_group_count?: number;
+  development_rows: number;
+  final_test_date_range?: EvaluationDateRangePayload;
+  final_test_group_count?: number;
+  final_test_rows: number;
+  max_selection_train_rows?: number;
+  max_selection_validation_rows?: number;
+  min_selection_train_rows?: number;
+  min_selection_validation_rows?: number;
+  schema_version: 1;
+  strategy: 'random' | 'group' | 'temporal';
+  validation_fit_count: number;
+  validation_method: 'none' | 'single' | 'cross_validation';
+}
+export interface EvaluationDateRangePayload {
+  end: string;
+  start: string;
+}
+/**
+ * Why a training estimate cannot size its input: one reason from a closed set.
+ */
+export interface TrainEstimateUnavailable {
+  blocking_node_id: string | null;
+  reason: 'row_count_unprovable' | 'schema_unresolvable';
+}
+export interface DispersionEstimateResponse {
+  job_id: string;
+  status: 'started';
+}
+export interface DispersionEstimateStatusResponse {
+  elapsed_seconds: number;
+  error: string | null;
+  llf: number | null;
+  message: string;
+  n_fits: number | null;
+  param: string | null;
+  progress: number;
+  status:
+    'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
+  terminal_reason: string | null;
+  value: number | null;
+}
+export interface LogExperimentResponse {
+  backend: string;
+  error: string | null;
+  experiment_name: string;
+  logged_at: string | null;
+  operation_id: string | null;
+  run_id: string | null;
+  run_url: string | null;
+  status: 'ok' | 'error';
+  tracking_uri: string;
+}
+export interface ModelSaveDestinationResponse {
+  path: string;
+  suffix_mismatch: boolean;
+}
+export interface SaveModelResponse {
+  feature_contract_path: string;
+  path: string;
+  status: 'ok';
+}
 export interface UtilityListResponse {
   files: UtilityFileItem[];
 }

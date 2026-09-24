@@ -19,13 +19,16 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, RootModel
-from pydantic.json_schema import GenerateJsonSchema, JsonSchemaMode
+from pydantic.json_schema import GenerateJsonSchema, JsonSchemaMode, JsonSchemaValue
 from pydantic_core import core_schema
 
 from haute._execution_schemas import ExecutionStrategyDiagnosticPayload
 from haute._explore_chart_contracts import ExploreChartsConfig
 from haute.schemas import (
     CatalogListResponse,
+    DispersionEstimateResponse,
+    DispersionEstimateStatusResponse,
+    LogExperimentResponse,
     MlflowDestinationsResponse,
     MlflowExperimentList,
     MlflowModelList,
@@ -33,8 +36,12 @@ from haute.schemas import (
     MlflowRunList,
     MlflowSettingsResponse,
     MlflowTestConnectionResponse,
+    ModellingGpuStatusResponse,
+    ModelSaveDestinationResponse,
+    SaveModelResponse,
     SchemaListResponse,
     TableListResponse,
+    TrainEstimateResponse,
     UtilityDeleteResponse,
     UtilityListResponse,
     UtilityReadResponse,
@@ -76,6 +83,15 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         MlflowModelList,
         MlflowModelVersionList,
     ),
+    "modelling": (
+        ModellingGpuStatusResponse,
+        TrainEstimateResponse,
+        DispersionEstimateResponse,
+        DispersionEstimateStatusResponse,
+        LogExperimentResponse,
+        ModelSaveDestinationResponse,
+        SaveModelResponse,
+    ),
 }
 
 
@@ -95,6 +111,26 @@ class _ResponseJsonSchema(GenerateJsonSchema):
         if field["type"] == "typed-dict-field":
             return super().field_is_required(field, total)
         return field.get("serialization_exclude_if") is None
+
+    def model_field_schema(self, schema: core_schema.ModelField) -> JsonSchemaValue:
+        json_schema = super().model_field_schema(schema)
+        exclude_if = schema.get("serialization_exclude_if")
+        if self.mode != "serialization" or exclude_if is None or not exclude_if(None):
+            return json_schema
+        # The field is dropped from the output whenever it is None, so the
+        # response never carries null for it.
+        return _without_null_branch(json_schema)
+
+
+def _without_null_branch(json_schema: JsonSchemaValue) -> JsonSchemaValue:
+    alternatives = json_schema.get("anyOf")
+    if not isinstance(alternatives, list) or {"type": "null"} not in alternatives:
+        return json_schema
+    kept = [alternative for alternative in alternatives if alternative != {"type": "null"}]
+    rest = {key: value for key, value in json_schema.items() if key not in {"anyOf", "default"}}
+    if len(kept) == 1:
+        return {**kept[0], **rest}
+    return {**rest, "anyOf": kept}
 
 
 def _merge_definition(

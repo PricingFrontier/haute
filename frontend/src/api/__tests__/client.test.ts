@@ -305,7 +305,6 @@ function makeTrainEstimateResponse(overrides: Record<string, unknown> = {}) {
     gpu_vram_available_mb: null,
     gpu_warning: null,
     unavailable: null,
-    evaluation_preview: null,
     ...overrides,
   }
 }

@@ -407,6 +407,256 @@
       "title": "ChartValueEncoding",
       "type": "object"
     },
+    "DispersionEstimateResponse": {
+      "properties": {
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        },
+        "status": {
+          "const": "started",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "job_id"
+      ],
+      "title": "DispersionEstimateResponse",
+      "type": "object"
+    },
+    "DispersionEstimateStatusResponse": {
+      "properties": {
+        "elapsed_seconds": {
+          "default": 0.0,
+          "title": "Elapsed Seconds",
+          "type": "number"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "llf": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Llf"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "n_fits": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "N Fits"
+        },
+        "param": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Param"
+        },
+        "progress": {
+          "default": 0.0,
+          "title": "Progress",
+          "type": "number"
+        },
+        "status": {
+          "enum": [
+            "running",
+            "completed",
+            "error",
+            "cancelled",
+            "superseded",
+            "timed_out",
+            "memory_limited",
+            "contract_error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "terminal_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Terminal Reason"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "status",
+        "progress",
+        "message",
+        "elapsed_seconds",
+        "param",
+        "value",
+        "llf",
+        "n_fits",
+        "error",
+        "terminal_reason"
+      ],
+      "title": "DispersionEstimateStatusResponse",
+      "type": "object"
+    },
+    "EvaluationDateRangePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "end": {
+          "minLength": 1,
+          "title": "End",
+          "type": "string"
+        },
+        "start": {
+          "minLength": 1,
+          "title": "Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "EvaluationDateRangePayload",
+      "type": "object"
+    },
+    "EvaluationPreviewPayload": {
+      "additionalProperties": false,
+      "description": "Bounded, result-free summary of the exact preflight evaluation plan.",
+      "properties": {
+        "development_date_range": {
+          "$ref": "#/$defs/EvaluationDateRangePayload"
+        },
+        "development_group_count": {
+          "minimum": 1,
+          "title": "Development Group Count",
+          "type": "integer"
+        },
+        "development_rows": {
+          "minimum": 1,
+          "title": "Development Rows",
+          "type": "integer"
+        },
+        "final_test_date_range": {
+          "$ref": "#/$defs/EvaluationDateRangePayload"
+        },
+        "final_test_group_count": {
+          "minimum": 0,
+          "title": "Final Test Group Count",
+          "type": "integer"
+        },
+        "final_test_rows": {
+          "minimum": 0,
+          "title": "Final Test Rows",
+          "type": "integer"
+        },
+        "max_selection_train_rows": {
+          "minimum": 1,
+          "title": "Max Selection Train Rows",
+          "type": "integer"
+        },
+        "max_selection_validation_rows": {
+          "minimum": 1,
+          "title": "Max Selection Validation Rows",
+          "type": "integer"
+        },
+        "min_selection_train_rows": {
+          "minimum": 1,
+          "title": "Min Selection Train Rows",
+          "type": "integer"
+        },
+        "min_selection_validation_rows": {
+          "minimum": 1,
+          "title": "Min Selection Validation Rows",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "strategy": {
+          "enum": [
+            "random",
+            "group",
+            "temporal"
+          ],
+          "title": "Strategy",
+          "type": "string"
+        },
+        "validation_fit_count": {
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Validation Fit Count",
+          "type": "integer"
+        },
+        "validation_method": {
+          "enum": [
+            "none",
+            "single",
+            "cross_validation"
+          ],
+          "title": "Validation Method",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "strategy",
+        "validation_method",
+        "development_rows",
+        "final_test_rows",
+        "validation_fit_count"
+      ],
+      "title": "EvaluationPreviewPayload",
+      "type": "object"
+    },
     "ExecutionStrategyBoundaryCollectionPayload": {
       "properties": {
         "items": {
@@ -1004,6 +1254,39 @@
       "title": "ExploreChartsConfig",
       "type": "array"
     },
+    "GpuFamilyStatus": {
+      "additionalProperties": false,
+      "description": "Whether one family can train on a GPU in this server process.",
+      "properties": {
+        "available": {
+          "title": "Available",
+          "type": "boolean"
+        },
+        "detail": {
+          "title": "Detail",
+          "type": "string"
+        },
+        "device": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Device"
+        }
+      },
+      "required": [
+        "available",
+        "detail",
+        "device"
+      ],
+      "title": "GpuFamilyStatus",
+      "type": "object"
+    },
     "JsonValue": {
       "anyOf": [
         {
@@ -1034,6 +1317,106 @@
           "type": "object"
         }
       ]
+    },
+    "LogExperimentResponse": {
+      "properties": {
+        "backend": {
+          "default": "",
+          "title": "Backend",
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "experiment_name": {
+          "default": "",
+          "title": "Experiment Name",
+          "type": "string"
+        },
+        "logged_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Logged At"
+        },
+        "operation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operation Id"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "run_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Url"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "tracking_uri": {
+          "default": "",
+          "title": "Tracking Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "backend",
+        "experiment_name",
+        "run_id",
+        "run_url",
+        "tracking_uri",
+        "error",
+        "operation_id",
+        "logged_at"
+      ],
+      "title": "LogExperimentResponse",
+      "type": "object"
     },
     "MlflowDestinationEntry": {
       "properties": {
@@ -1424,6 +1807,62 @@
       "title": "MlflowVersionBrief",
       "type": "object"
     },
+    "ModelSaveDestinationResponse": {
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "suffix_mismatch": {
+          "title": "Suffix Mismatch",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "suffix_mismatch"
+      ],
+      "title": "ModelSaveDestinationResponse",
+      "type": "object"
+    },
+    "ModellingGpuStatusResponse": {
+      "additionalProperties": false,
+      "description": "GPU training capability per GPU-capable family (XGBoost CUDA).",
+      "properties": {
+        "xgboost": {
+          "$ref": "#/$defs/GpuFamilyStatus"
+        }
+      },
+      "required": [
+        "xgboost"
+      ],
+      "title": "ModellingGpuStatusResponse",
+      "type": "object"
+    },
+    "SaveModelResponse": {
+      "properties": {
+        "feature_contract_path": {
+          "title": "Feature Contract Path",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "status": {
+          "const": "ok",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "path",
+        "feature_contract_path"
+      ],
+      "title": "SaveModelResponse",
+      "type": "object"
+    },
     "SchemaItem": {
       "properties": {
         "comment": {
@@ -1503,6 +1942,183 @@
         "tables"
       ],
       "title": "TableListResponse",
+      "type": "object"
+    },
+    "TrainEstimateResponse": {
+      "properties": {
+        "available_mb": {
+          "title": "Available Mb",
+          "type": "number"
+        },
+        "bytes_per_row": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Bytes Per Row"
+        },
+        "estimated_mb": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Estimated Mb"
+        },
+        "evaluation_preview": {
+          "$ref": "#/$defs/EvaluationPreviewPayload"
+        },
+        "gpu_vram_available_mb": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gpu Vram Available Mb"
+        },
+        "gpu_vram_estimated_mb": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gpu Vram Estimated Mb"
+        },
+        "gpu_warning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gpu Warning"
+        },
+        "safe_row_limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Safe Row Limit"
+        },
+        "total_rows": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Total Rows"
+        },
+        "training_mb": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Training Mb"
+        },
+        "unavailable": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrainEstimateUnavailable"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "warning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Warning"
+        },
+        "was_downsampled": {
+          "default": false,
+          "title": "Was Downsampled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "total_rows",
+        "safe_row_limit",
+        "estimated_mb",
+        "training_mb",
+        "available_mb",
+        "bytes_per_row",
+        "was_downsampled",
+        "warning",
+        "gpu_vram_estimated_mb",
+        "gpu_vram_available_mb",
+        "gpu_warning",
+        "unavailable"
+      ],
+      "title": "TrainEstimateResponse",
+      "type": "object"
+    },
+    "TrainEstimateUnavailable": {
+      "additionalProperties": false,
+      "description": "Why a training estimate cannot size its input: one reason from a closed set.",
+      "properties": {
+        "blocking_node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Blocking Node Id"
+        },
+        "reason": {
+          "enum": [
+            "row_count_unprovable",
+            "schema_unresolvable"
+          ],
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason",
+        "blocking_node_id"
+      ],
+      "title": "TrainEstimateUnavailable",
       "type": "object"
     },
     "UtilityDeleteResponse": {
@@ -1697,6 +2313,15 @@
     "CatalogListResponse": {
       "$ref": "#/$defs/CatalogListResponse"
     },
+    "DispersionEstimateResponse": {
+      "$ref": "#/$defs/DispersionEstimateResponse"
+    },
+    "DispersionEstimateStatusResponse": {
+      "$ref": "#/$defs/DispersionEstimateStatusResponse"
+    },
+    "LogExperimentResponse": {
+      "$ref": "#/$defs/LogExperimentResponse"
+    },
     "MlflowDestinationsResponse": {
       "$ref": "#/$defs/MlflowDestinationsResponse"
     },
@@ -1718,11 +2343,23 @@
     "MlflowTestConnectionResponse": {
       "$ref": "#/$defs/MlflowTestConnectionResponse"
     },
+    "ModelSaveDestinationResponse": {
+      "$ref": "#/$defs/ModelSaveDestinationResponse"
+    },
+    "ModellingGpuStatusResponse": {
+      "$ref": "#/$defs/ModellingGpuStatusResponse"
+    },
+    "SaveModelResponse": {
+      "$ref": "#/$defs/SaveModelResponse"
+    },
     "SchemaListResponse": {
       "$ref": "#/$defs/SchemaListResponse"
     },
     "TableListResponse": {
       "$ref": "#/$defs/TableListResponse"
+    },
+    "TrainEstimateResponse": {
+      "$ref": "#/$defs/TrainEstimateResponse"
     },
     "UtilityDeleteResponse": {
       "$ref": "#/$defs/UtilityDeleteResponse"
@@ -1763,7 +2400,14 @@
     "MlflowExperimentList",
     "MlflowRunList",
     "MlflowModelList",
-    "MlflowModelVersionList"
+    "MlflowModelVersionList",
+    "ModellingGpuStatusResponse",
+    "TrainEstimateResponse",
+    "DispersionEstimateResponse",
+    "DispersionEstimateStatusResponse",
+    "LogExperimentResponse",
+    "ModelSaveDestinationResponse",
+    "SaveModelResponse"
   ],
   "title": "HauteApiContractBundle",
   "type": "object",
@@ -1782,6 +2426,15 @@
       "MlflowRunList",
       "MlflowModelList",
       "MlflowModelVersionList"
+    ],
+    "modelling": [
+      "ModellingGpuStatusResponse",
+      "TrainEstimateResponse",
+      "DispersionEstimateResponse",
+      "DispersionEstimateStatusResponse",
+      "LogExperimentResponse",
+      "ModelSaveDestinationResponse",
+      "SaveModelResponse"
     ],
     "utility": [
       "UtilityListResponse",

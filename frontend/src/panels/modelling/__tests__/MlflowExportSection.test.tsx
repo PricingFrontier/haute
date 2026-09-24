@@ -160,7 +160,7 @@ describe("MlflowExportSection", () => {
   // ── Log request ────────────────────────────────────────────────
 
   it("sends the node's explicit destination with the log request", async () => {
-    mockLogToMlflow.mockResolvedValue({ status: "ok", backend: "local", experiment_name: "freq", run_id: "r1", run_url: null, tracking_uri: "file:///C:/proj/mlruns", error: null })
+    mockLogToMlflow.mockResolvedValue({ operation_id: null, logged_at: null, status: "ok", backend: "local", experiment_name: "freq", run_id: "r1", run_url: null, tracking_uri: "file:///C:/proj/mlruns", error: null })
     render(<MlflowExportSection {...makeProps({ config: { mlflow_destination: "databricks" } })} />)
     fireEvent.click(logButton())
     await waitFor(() =>
@@ -171,7 +171,7 @@ describe("MlflowExportSection", () => {
   })
 
   it("never sends a registry name: haute logs candidate runs only", async () => {
-    mockLogToMlflow.mockResolvedValue({ status: "ok", backend: "local", experiment_name: "freq", run_id: "r1", run_url: null, tracking_uri: "file:///C:/proj/mlruns", error: null })
+    mockLogToMlflow.mockResolvedValue({ operation_id: null, logged_at: null, status: "ok", backend: "local", experiment_name: "freq", run_id: "r1", run_url: null, tracking_uri: "file:///C:/proj/mlruns", error: null })
     render(<MlflowExportSection {...makeProps({ config: { mlflow_experiment: "freq" } })} />)
     fireEvent.click(logButton())
     await waitFor(() => expect(mockLogToMlflow).toHaveBeenCalledTimes(1))
@@ -181,7 +181,7 @@ describe("MlflowExportSection", () => {
   })
 
   it("sends an empty destination for the local folder", async () => {
-    mockLogToMlflow.mockResolvedValue({ status: "ok", backend: "databricks", experiment_name: "e", run_id: null, run_url: null, tracking_uri: "", error: null })
+    mockLogToMlflow.mockResolvedValue({ operation_id: null, logged_at: null, status: "ok", backend: "databricks", experiment_name: "e", run_id: null, run_url: null, tracking_uri: "", error: null })
     render(<MlflowExportSection {...makeProps()} />)
     fireEvent.click(logButton())
     await waitFor(() =>
@@ -192,7 +192,7 @@ describe("MlflowExportSection", () => {
   })
 
   it("follows a config flip back to the local folder after the first log", async () => {
-    mockLogToMlflow.mockResolvedValue({ status: "ok", backend: "local", experiment_name: "freq", run_id: "r1", run_url: null, tracking_uri: "file:///C:/proj/mlruns", error: null })
+    mockLogToMlflow.mockResolvedValue({ operation_id: null, logged_at: null, status: "ok", backend: "local", experiment_name: "freq", run_id: "r1", run_url: null, tracking_uri: "file:///C:/proj/mlruns", error: null })
     const { rerender } = render(
       <MlflowExportSection {...makeProps({ config: { mlflow_destination: "databricks" } })} />,
     )
@@ -213,7 +213,7 @@ describe("MlflowExportSection", () => {
   })
 
   it("clicking the action logs the job", async () => {
-    mockLogToMlflow.mockResolvedValue({ status: "ok", backend: "databricks", experiment_name: "test_exp", run_id: null, run_url: null, tracking_uri: "", error: null })
+    mockLogToMlflow.mockResolvedValue({ operation_id: null, logged_at: null, status: "ok", backend: "databricks", experiment_name: "test_exp", run_id: null, run_url: null, tracking_uri: "", error: null })
     render(<MlflowExportSection {...makeProps()} />)
     fireEvent.click(logButton())
     await waitFor(() => expect(mockLogToMlflow).toHaveBeenCalledOnce())
@@ -233,7 +233,7 @@ describe("MlflowExportSection", () => {
   }
 
   it("shows just the run ID for a local log", async () => {
-    mockLogToMlflow.mockResolvedValue({
+    mockLogToMlflow.mockResolvedValue({ operation_id: null, logged_at: null,
       status: "ok",
       backend: "local",
       experiment_name: "freq",
@@ -253,7 +253,7 @@ describe("MlflowExportSection", () => {
   })
 
   it("shows the run ID and the Databricks run link", async () => {
-    mockLogToMlflow.mockResolvedValue({
+    mockLogToMlflow.mockResolvedValue({ operation_id: null, logged_at: null,
       status: "ok",
       backend: "databricks",
       experiment_name: "pricing_model",
@@ -273,7 +273,7 @@ describe("MlflowExportSection", () => {
   })
 
   it("shows the run ID and a generic run link for a server backend", async () => {
-    mockLogToMlflow.mockResolvedValue({
+    mockLogToMlflow.mockResolvedValue({ operation_id: null, logged_at: null,
       status: "ok",
       backend: "server",
       experiment_name: "pricing_model",
@@ -290,7 +290,7 @@ describe("MlflowExportSection", () => {
   })
 
   it("shows just the run ID for a remote log without a run link", async () => {
-    mockLogToMlflow.mockResolvedValue({
+    mockLogToMlflow.mockResolvedValue({ operation_id: null, logged_at: null,
       status: "ok",
       backend: "server",
       experiment_name: "freq",
@@ -308,7 +308,7 @@ describe("MlflowExportSection", () => {
   })
 
   it("shows error result on failure", async () => {
-    mockLogToMlflow.mockResolvedValue({ status: "error", backend: "databricks", experiment_name: "", run_id: null, run_url: null, tracking_uri: "", error: "Experiment not found" })
+    mockLogToMlflow.mockResolvedValue({ operation_id: null, logged_at: null, status: "error", backend: "databricks", experiment_name: "", run_id: null, run_url: null, tracking_uri: "", error: "Experiment not found" })
     render(<MlflowExportSection {...makeProps()} />)
     fireEvent.click(logButton())
     await waitFor(() => {
@@ -364,7 +364,7 @@ describe("MlflowExportSection", () => {
     const firstOperation = mockLogToMlflow.mock.calls[0][0].operation_id
     expect(onLogAttempted).toHaveBeenCalledTimes(1)
 
-    mockLogToMlflow.mockResolvedValueOnce({ status: "ok", backend: "local", experiment_name: "freq", run_id: "r1", run_url: null, tracking_uri: "file:///C:/proj/mlruns", error: null })
+    mockLogToMlflow.mockResolvedValueOnce({ operation_id: null, logged_at: null, status: "ok", backend: "local", experiment_name: "freq", run_id: "r1", run_url: null, tracking_uri: "file:///C:/proj/mlruns", error: null })
     fireEvent.click(retry)
     await waitFor(() => expect(mockLogToMlflow).toHaveBeenCalledTimes(2))
     expect(mockLogToMlflow.mock.calls[1][0].operation_id).toBe(firstOperation)
@@ -394,7 +394,7 @@ describe("MlflowExportSection", () => {
 
   it("calls onMlflowResult callback with result", async () => {
     const onResult = vi.fn()
-    mockLogToMlflow.mockResolvedValue({ status: "ok", backend: "databricks", experiment_name: "test", run_id: null, run_url: null, tracking_uri: "", error: null })
+    mockLogToMlflow.mockResolvedValue({ operation_id: null, logged_at: null, status: "ok", backend: "databricks", experiment_name: "test", run_id: null, run_url: null, tracking_uri: "", error: null })
     render(<MlflowExportSection {...makeProps({ onMlflowResult: onResult })} />)
     fireEvent.click(logButton())
     await waitFor(() => {

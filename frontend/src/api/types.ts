@@ -9,8 +9,10 @@ import type {
   PipelineGraph,
 } from "../types/node"
 import type {
+  EvaluationPreviewPayload as EvaluationPreview,
   MlflowDestinationEntry as GeneratedMlflowDestinationEntry,
   MlflowTestConnectionResponse as GeneratedMlflowTestConnectionResponse,
+  TrainEstimateResponse as GeneratedTrainEstimateResponse,
 } from "../generated/api-contracts.generated"
 import type {
   ExecutionStrategyBoundaryCollectionPayload as GeneratedExecutionStrategyCollection,
@@ -512,17 +514,6 @@ export interface IoCapabilitiesResponse {
   groups: IoCapabilityGroup[]
 }
 
-/** Whether one family can train on a GPU in the running server. */
-export interface GpuFamilyStatus {
-  available: boolean
-  detail: string
-  device: string | null
-}
-
-export interface ModellingGpuStatusResponse {
-  xgboost: GpuFamilyStatus
-}
-
 // ---------------------------------------------------------------------------
 // Cache-inventory contracts (/api/cache)
 // ---------------------------------------------------------------------------
@@ -690,6 +681,17 @@ export interface OutputAssembleDryRunResponse {
 
 // Generated from the backend response models (scripts/generate_api_contracts.py).
 export type {
+  DispersionEstimateResponse as DispersionEstimateStart,
+  DispersionEstimateStatusResponse as DispersionEstimateStatus,
+  EvaluationDateRangePayload as EvaluationDateRange,
+  EvaluationPreviewPayload as EvaluationPreview,
+  GpuFamilyStatus,
+  LogExperimentResponse,
+  ModellingGpuStatusResponse,
+  ModelSaveDestinationResponse,
+  SaveModelResponse,
+} from "../generated/api-contracts.generated"
+export type {
   MlflowDestinationEntry,
   MlflowDestinationsResponse,
   MlflowExperimentSummary as MlflowExperiment,
@@ -721,71 +723,23 @@ export interface MlflowTestConnectionRequest {
   folder?: string
 }
 
-export interface EvaluationDateRange {
-  start: string
-  end: string
-}
-
-export interface EvaluationPreview {
-  schema_version: 1
-  strategy: "random" | "group" | "temporal"
-  validation_method: "none" | "single" | "cross_validation"
-  development_rows: number
-  final_test_rows: number
-  validation_fit_count: number
-  min_selection_train_rows?: number
-  max_selection_train_rows?: number
-  min_selection_validation_rows?: number
-  max_selection_validation_rows?: number
-  development_group_count?: number
-  final_test_group_count?: number
-  development_date_range?: EvaluationDateRange
-  final_test_date_range?: EvaluationDateRange
-}
-
 /** Why a training estimate cannot size its input: one reason from a closed set. */
 export type TrainEstimateUnavailable =
   | { reason: "row_count_unprovable"; blocking_node_id: string }
   | { reason: "schema_unresolvable"; blocking_node_id: null }
 
-export interface TrainEstimate {
-  /** Null only for a `row_count_unprovable` estimate. */
-  total_rows: number | null
-  safe_row_limit: number | null
-  /** The memory figures are null exactly when `unavailable` is set. */
-  estimated_mb: number | null
-  training_mb: number | null
-  available_mb: number
-  bytes_per_row: number | null
-  was_downsampled: boolean
-  warning: string | null
-  // GPU VRAM estimation (only populated when task_type is GPU)
-  gpu_vram_estimated_mb: number | null
-  gpu_vram_available_mb: number | null
-  gpu_warning: string | null
+/**
+ * The generated estimate with its cross-field rules applied by
+ * `parseTrainEstimateResponse`: the reason is the discriminated union above,
+ * and an omitted evaluation preview is null. Memory figures are null exactly
+ * when `unavailable` is set; `total_rows` only for `row_count_unprovable`.
+ */
+export type TrainEstimate = Omit<GeneratedTrainEstimateResponse, "unavailable" | "evaluation_preview"> & {
   unavailable: TrainEstimateUnavailable | null
   evaluation_preview: EvaluationPreview | null
 }
 
 export type DispersionParam = "theta" | "var_power"
-
-export interface DispersionEstimateStart {
-  status: "started"
-  job_id: string
-}
-
-export interface DispersionEstimateStatus {
-  status: JobStatus
-  progress: number
-  message: string
-  elapsed_seconds: number
-  param: string | null
-  value: number | null
-  llf: number | null
-  n_fits: number | null
-  error: string | null
-  terminal_reason: string | null
-}
 
 export interface TrainFeatureImportanceRow {
   feature: string
@@ -1461,23 +1415,12 @@ export interface ModelSaveDestinationRequest {
   algorithm: "catboost" | "glm" | "xgboost" | "lightgbm" | "ebm"
 }
 
-export interface ModelSaveDestinationResponse {
-  path: string
-  suffix_mismatch: boolean
-}
-
 export interface SaveModelRequest {
   job_id: string
   /** A bare filename saves under models/; paths are project-root-relative. */
   output_path: string
   /** Replace an existing destination; without it the server answers 409. */
   overwrite: boolean
-}
-
-export interface SaveModelResponse {
-  status: "ok"
-  path: string
-  feature_contract_path: string
 }
 
 // ---------------------------------------------------------------------------
