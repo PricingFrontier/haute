@@ -26,6 +26,7 @@ from haute._sandbox import (
     validate_project_path,
     validate_user_code,
 )
+from haute.errors import PathOutsideProjectError
 
 
 class TestSafeGlobals:
@@ -130,12 +131,12 @@ class TestValidateProjectPath:
 
     def test_path_outside_root_raises(self, tmp_path: Path):
         set_project_root(tmp_path / "subdir")
-        with pytest.raises(ValueError, match="outside.*project root"):
+        with pytest.raises(PathOutsideProjectError, match="outside.*project root"):
             validate_project_path("/etc/passwd")
 
     def test_traversal_attack_blocked(self, tmp_path: Path):
         set_project_root(tmp_path)
-        with pytest.raises(ValueError, match="outside.*project root"):
+        with pytest.raises(PathOutsideProjectError, match="outside.*project root"):
             validate_project_path(str(tmp_path / ".." / ".." / "etc" / "passwd"))
 
 
@@ -169,7 +170,7 @@ class TestSafeUnpickle:
         set_project_root(tmp_path / "safe_dir")
         f = tmp_path / "outside.pkl"
         f.write_bytes(pickle.dumps(42))
-        with pytest.raises(ValueError, match="outside.*project root"):
+        with pytest.raises(PathOutsideProjectError, match="outside the project root"):
             safe_unpickle(str(f))
 
     def test_sklearn_version_mismatch_is_an_error_not_a_warning(
@@ -444,7 +445,7 @@ class TestSafeJoblibLoad:
         set_project_root(tmp_path / "safe_dir")
         f = tmp_path / "outside.joblib"
         joblib.dump(42, str(f))
-        with pytest.raises(ValueError, match="outside.*project root"):
+        with pytest.raises(PathOutsideProjectError, match="outside the project root"):
             safe_joblib_load(str(f))
 
     def test_safe_load_does_not_break_subsequent_loads(self, tmp_path: Path):
@@ -916,7 +917,7 @@ class TestValidateProjectPathEdgeCases:
         other.mkdir()
         monkeypatch.chdir(other)
         set_project_root(tmp_path / "restricted")
-        with pytest.raises(ValueError, match="outside.*project root"):
+        with pytest.raises(PathOutsideProjectError, match="outside.*project root"):
             validate_project_path("")
 
     def test_nested_subdirectory_inside_root(self, tmp_path: Path):
@@ -937,7 +938,7 @@ class TestValidateProjectPathEdgeCases:
             link.symlink_to(outside)
         except OSError:
             pytest.skip("symlinks not supported")
-        with pytest.raises(ValueError, match="outside.*project root"):
+        with pytest.raises(PathOutsideProjectError, match="outside.*project root"):
             validate_project_path(str(link))
 
 
@@ -1097,7 +1098,7 @@ class TestSafeUnpickleEdgeCases:
         set_project_root(tmp_path / "project")
         f = tmp_path / "outside.pkl"
         f.write_bytes(pickle.dumps(42))
-        with pytest.raises(ValueError, match="outside.*project root"):
+        with pytest.raises(PathOutsideProjectError, match="outside the project root"):
             safe_unpickle(str(f))
 
     def test_subprocess_payload_blocked(self, tmp_path: Path):
@@ -1439,32 +1440,8 @@ class TestSafeGlobalsIsolation:
 
 
 class TestCaseInsensitiveContainment:
-    """F740: containment must fold case so a case-variant path on a
-    case-insensitive filesystem cannot slip past ``is_relative_to``."""
-
-    def test_case_variant_root_contained_when_fs_case_insensitive(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ):
-        """Simulate a case-insensitive filesystem by folding case in normcase;
-        a path whose root segment differs only in case must be accepted."""
-        import os as _os
-
-        monkeypatch.setattr(_os.path, "normcase", lambda s: s.lower())
-
-        root = tmp_path / "Project"
-        root.mkdir()
-        set_project_root(root)
-        inside = root / "data.csv"
-        inside.touch()
-
-        # Same file, but the project segment is upper-cased. With the old
-        # case-sensitive is_relative_to this raised ValueError (over-restrictive
-        # / bypass surface); with normcase folding it resolves as contained.
-        variant = str(inside).replace("Project", "PROJECT")
-        result = validate_project_path(variant)
-        assert _os.path.normcase(str(result)) == _os.path.normcase(str(inside))
+    """Containment compares resolved paths component-wise (case-insensitively on
+    Windows); a sibling sharing a name prefix is never contained."""
 
     def test_sibling_prefix_still_rejected(self, tmp_path: Path):
         """A sibling directory sharing a name *prefix* is not contained —
@@ -1476,7 +1453,7 @@ class TestCaseInsensitiveContainment:
         set_project_root(root)
         target = sibling / "secret.csv"
         target.touch()
-        with pytest.raises(ValueError, match="outside.*project root"):
+        with pytest.raises(PathOutsideProjectError, match="outside.*project root"):
             validate_project_path(str(target))
 
 

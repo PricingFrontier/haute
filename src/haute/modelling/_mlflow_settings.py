@@ -265,23 +265,19 @@ def _project_write_target(toml_path: Path, project_root: Path | None) -> Path:
     """Resolve the settings write target and require project containment.
 
     A ``haute.toml`` that is a symlink escaping the project root would let a
-    settings save modify a file outside the project; refuse it instead. The
-    containment check folds case and fully resolves both sides, mirroring
-    ``haute._sandbox.validate_project_path``.
+    settings save modify a file outside the project; refuse it instead, through
+    ``haute._sandbox.contained_path``.
     """
-    root = (project_root if project_root is not None else _project_root_default()).resolve()
-    resolved = toml_path.resolve()
-    root_cmp = os.path.normcase(str(root))
-    target_cmp = os.path.normcase(str(resolved))
+    from haute._sandbox import contained_path
+    from haute.errors import PathOutsideProjectError
+
+    root = project_root if project_root is not None else _project_root_default()
     try:
-        contained = os.path.commonpath([root_cmp, target_cmp]) == root_cmp
-    except ValueError:  # different drives on Windows
-        contained = False
-    if not contained:
+        return contained_path(root, toml_path.resolve())
+    except PathOutsideProjectError:
         raise MlflowConfigError(
             "Refusing to write MLflow settings: haute.toml resolves outside the project root."
-        )
-    return resolved
+        ) from None
 
 
 def _effective_settings(settings: MlflowSettings, project_root: Path | None) -> MlflowSettings:

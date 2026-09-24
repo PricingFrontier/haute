@@ -690,12 +690,14 @@ class TestResolveSourceFile:
         result = svc._resolve_source_file("pipeline.py")
         assert result == (tmp_path / "pipeline.py").resolve()
 
-    def test_traversal_raises_403(self, tmp_path: Path) -> None:
-        """A path that escapes the project root should raise 403."""
+    def test_traversal_is_refused_by_the_containment_check(self, tmp_path: Path) -> None:
+        """An escaping source file is refused by the one containment check; the
+        application handler answers it with 403 (tests/test_path_containment.py)."""
+        from haute.errors import PathOutsideProjectError
+
         svc = SavePipelineService(tmp_path)
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(PathOutsideProjectError):
             svc._resolve_source_file("../../etc/passwd")
-        assert exc_info.value.status_code == 403
 
 
 # ---------------------------------------------------------------------------

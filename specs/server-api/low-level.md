@@ -37,7 +37,7 @@
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview and trace. |
 | `src/haute/routes/output_assemble.py` | `POST /api/output-assemble/dry-run` — validates an unsaved `outputMapping`, swaps it into the target node's in-memory config, executes up to that node, returns the rendered document. |
 | `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching contract-error fields for background jobs. Also owns `memory_limit_http_exception`, the one memory-limit → 507 mapping; a job-backed surface passes its operation noun so the detail also carries the curated message. |
-| `src/haute/routes/_error_handlers.py` | The application exception handlers, installed by `install_exception_handlers(app)`: public contract errors → `contract_error_http_exception`, `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → `memory_limit_http_exception`, `GitError` → `git_error_http_exception`. A handler reached from a WebSocket re-raises, because an HTTP response cannot answer it. |
+| `src/haute/routes/_error_handlers.py` | The application exception handlers, installed by `install_exception_handlers(app)`: public contract errors → `contract_error_http_exception`, `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → `memory_limit_http_exception`, `GitError` → `git_error_http_exception`, `PathOutsideProjectError` / `InvalidPathError` → 403 / 400 with the bare message. A handler reached from a WebSocket re-raises, because an HTTP response cannot answer it. |
 | `src/haute/routes/_runtime_path_errors.py` | Closed HTTP mapping for runtime-path failures: malformed path → 400, project-root escape → 403, selected by concrete exception type rather than message text. |
 | `src/haute/_node_config_recovery.py` | Current contracts and field reconciliation. |
 | `src/haute/_artifact_paths.py` | Contained project-relative artifact paths (traversal/alias/reparse-point rejection) and bounded artifact reads shared by recovery and the mutation lock. |
@@ -891,6 +891,7 @@ later write and cleanup checks still compare against the captured identities.
 | `ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError` | any synchronous route (application handler) | 507 | Payload is `exc.to_payload()`, nested under `detail`, through `memory_limit_http_exception`; training and the optimiser pass an operation noun that adds the curated `message`. |
 | Public contract errors (closed set below) | any synchronous route (application handler) | 422 / 507 / 409 | Routes that also log or order them against a broader clause keep an explicit clause with the same mapping. |
 | `GitError` family | any route (application handler) | 403 / 400 | `git_error_http_exception`: guardrail → 403 verbatim, domain → 400 verbatim, plain `GitError` → 400 sanitized. |
+| `PathOutsideProjectError`, `InvalidPathError` | any route (application handler) | 403 / 400 | Raised by the sandbox's `contained_path` for a request path; detail is the bare message ("Cannot access paths outside the project root" / "Invalid path"), never the refused path. |
 | `InteractiveWorkerCrashedError` (memory-classified), remote `builtins.MemoryError`, remote `NativeMemoryLimitUnsupportedError` | preview, trace, output-assemble dry-run | 507 | Parent-authored data-free detail with `error_code="memory_limit"`, the operation, and a closed reason; a non-memory pool-worker crash stays a redacted 500. Mirrors the write-output worker classification. |
 | `BoundedMemoryUnsupportedError` | output write | 422 | Distinguishes "cannot stream safely" from a hard resource limit. |
 | `DataOutputDestinationExistsError` | `POST /api/pipeline/write-output` | 409 | `overwrite=false` refuses an existing file/table before publication and returns the destination in the detail. |
@@ -1047,7 +1048,7 @@ for route-level tests, and direct unit tests for the pure-function modules.
   correctness: the shared `save_lock` serialises concurrent saves/submodel operations; the
   WebSocket broadcaster's per-client serialization under concurrent rapid sends.
 - **`test_route_helpers.py`** / **`test_route_helpers_contracts.py`** — `SidecarModel`
-  defaults, `validate_safe_path` traversal/absolute-path rejection, the pipeline index's
+  defaults, `contained_path` traversal/absolute-path rejection, the pipeline index's
   double-checked-locking and invalidation contract, module-dependency casefold matching.
 - **`test_save_precondition_properties.py`** — the generated editing/version-state family
   (ENG-T11): 1..6 generated load/edit/save/external-write operations for two clients are

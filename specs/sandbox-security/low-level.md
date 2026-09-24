@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 | --- | --- |
-| `src/haute/_sandbox.py` | The accident guard for project code (`validate_user_code`), the execution namespace (`safe_globals`), project-root path containment (`validate_project_path`), and the restricted pickle/joblib unpicklers (`safe_unpickle`, `safe_joblib_load`). |
+| `src/haute/_sandbox.py` | The accident guard for project code (`validate_user_code`), the execution namespace (`safe_globals`), the one path-containment check (`contained_path`) and its project-root form (`validate_project_path`), and the restricted pickle/joblib unpicklers (`safe_unpickle`, `safe_joblib_load`). |
 | `src/haute/_user_exec.py` | The single dynamic-execution call site for pipeline node code (`_exec_user_code`): namespace assembly, validation call, execution, and traceback line annotation. |
 | `src/haute/_local_security.py` | Local-session protection for the FastAPI/WebSocket server: session-token generation/comparison, exact authority parsing, loopback/forwarded-header middleware, HttpOnly-cookie bootstrap policy, HTTP middleware, and WebSocket pre-accept rejection helper. |
 | `src/haute/_path_resolution.py` | Cross-platform runtime path normalization, project/pipeline candidate resolution, symlink-aware containment, and the context-local execution root shared by eager/lazy builders. |
@@ -140,14 +140,13 @@ preamble itself may execute, and node code may import those modules itself.
 
 **Restricted pickle/joblib load**
 1. `safe_unpickle(path)` / `safe_joblib_load(path)` call
-   `validate_project_path(path)` first — raises `ValueError` before any file I/O
-   if the resolved path escapes the project root.
-2. `validate_project_path`: `Path(path).resolve()`, then
-   `os.path.commonpath([os.path.normcase(root), os.path.normcase(resolved)])`
-   compared against the normcased root string. A `ValueError` from
-   `commonpath` (different drives / mixed absolute-relative roots) is caught and
-   treated as "not contained," not re-raised — both paths converge on the same
-   `ValueError("... outside the project root ...")`.
+   `validate_project_path(path)` first — raises `PathOutsideProjectError` before any
+   file I/O if the resolved path escapes the project root.
+2. `validate_project_path`: `contained_path(_get_project_root(), Path(path).resolve())`.
+   `contained_path(root, path)`: a NUL byte → `InvalidPathError`; an absolute `path`
+   not lexically under `root.resolve()` → `PathOutsideProjectError`; otherwise
+   `(root.resolve() / path).resolve()` must be `is_relative_to` the resolved root,
+   else `PathOutsideProjectError`.
 3. `safe_unpickle` opens the file and drives `_RestrictedUnpickler(f).load()`
    inside `_estimator_version_mismatch_is_an_error()`. That context manager
    promotes scikit-learn's `InconsistentVersionWarning` — which
@@ -259,12 +258,11 @@ preamble itself may execute, and node code may import those modules itself.
 
 ## Edge cases and invariants
 
-- **Case-insensitive filesystem path containment.** `validate_project_path` folds
-  both the root and the resolved path through `os.path.normcase` before computing
-  `commonpath`, specifically so a case-variant traversal (`PROJECT/../SECRET` on
-  NTFS/APFS) cannot slip past a case-sensitive string-prefix check while still
-  resolving to the same real file on disk. On case-sensitive POSIX filesystems
-  `normcase` is the identity, so behavior is unchanged there.
+- **Containment compares resolved paths.** `contained_path` resolves both sides
+  before `Path.is_relative_to`, which compares components (case-insensitively for
+  Windows paths), so `..` segments, links and a sibling sharing a name prefix
+  (`proj_evil` beside `proj`) cannot pass. A case-variant spelling on a
+  case-insensitive POSIX volume is refused (fail closed), never accepted outside.
 - **Restricted joblib loading is instance-scoped.** The restricted subclass
   preserves concurrent safety without a lock and without exposing a temporary
   process-wide shim to unrelated joblib callers.
@@ -304,10 +302,12 @@ preamble itself may execute, and node code may import those modules itself.
   constants to extend) for every rejected pickle/joblib global. Not caught inside
   this component; propagates to the caller (`_io.load_external_object` and its
   callers).
-- `ValueError` — raised by `validate_project_path` for any path resolving outside
-  the project root (including the `commonpath` mixed-root case), and by
-  `safe_joblib_load` when joblib exposes a legacy string-backed persistence format
-  that cannot use the restricted unpickler. Not caught inside this component.
+- `PathOutsideProjectError` / `InvalidPathError` (`errors.py`) — raised by
+  `contained_path` (and so `validate_project_path`); mapped by
+  `routes/_error_handlers.py` to 403 / 400 with the bare message.
+- `ValueError` — raised by `safe_joblib_load` when joblib exposes a legacy
+  string-backed persistence format that cannot use the restricted unpickler. Not
+  caught inside this component.
 - `RuntimeError` — raised when installed joblib lacks the private
   `NumpyUnpickler`/file-object validation APIs required to enforce the allowlist,
   or when its private unpickler constructor is incompatible with the supported
@@ -406,7 +406,12 @@ preamble itself may execute, and node code may import those modules itself.
   `config_path_for_node`, function-name lookup, and project-path edge cases.
 - `tests/test_path_traversal_fixes.py` — route/config traversal regressions for
   optimiser save, submodel lookup/create/dissolve, dissolve-sidecar files, and the
-  shared `validate_safe_path` boundary.
+  containment check.
+- `tests/test_path_containment.py` — the SBX-R01 acceptance matrix: for every former
+  caller (each route that used the removed route helper, the project-path check before
+  deserialising, recovery artifact paths, the save service's codegen output paths (400),
+  SQLite locators, the MLflow settings write target) a `..` escape and a symlink escape are refused and an in-project path is
+  accepted; plus the check's own policy (NUL byte, absolute input, resolution).
 - `tests/test_write_sandbox_guard.py` and `tests/test_write_sandbox_lint.py` — prove
   restricted tests cannot write outside their per-test roots and statically enforce
   guarded filesystem APIs. `tests/_write_sandbox.py::STRICT_FILES` is the maintained

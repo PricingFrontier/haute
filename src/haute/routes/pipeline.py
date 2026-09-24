@@ -72,7 +72,7 @@ from haute._polars_io_registry import (
 )
 from haute._polars_steps import PolarsStepError, render_polars_steps
 from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
-from haute._sandbox import _get_project_root
+from haute._sandbox import _get_project_root, contained_path
 from haute._seed_plans import (
     ListedSeed,
     ReadGeneration,
@@ -143,7 +143,6 @@ from haute.routes._helpers import (
     pipeline_dir,
     raise_pipeline_not_found,
     save_lock,
-    validate_safe_path,
 )
 from haute.routes._isolated_worker_async import (
     WorkerCancellationGate,
@@ -859,7 +858,7 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
         async with save_lock:
             project_root = Path.cwd().resolve()
             if body.source_file.strip():
-                target = validate_safe_path(project_root, body.source_file)
+                target = contained_path(project_root, body.source_file)
                 if target.is_file():
                     current_document = await run_in_threadpool(
                         load_pipeline_editor_document,
@@ -905,7 +904,7 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
 @router.post("/pipeline/read-json", response_model=ReadJsonResponse)
 async def read_json_file(body: ReadJsonRequest) -> ReadJsonResponse:
     """Read a JSON artifact from the project root and return its object payload."""
-    target = validate_safe_path(_get_project_root(), body.path)
+    target = contained_path(_get_project_root(), body.path)
     if target.suffix.lower() != ".json":
         raise HTTPException(status_code=400, detail="Only .json files are supported")
     if not target.is_file():
@@ -1781,7 +1780,7 @@ async def recovery_preview_node(
     try:
         _ensure_printable_lookup_id(body.target_recovery_id, "target_recovery_id")
         project_root = _get_project_root().resolve()
-        source_path = validate_safe_path(project_root, body.source_file)
+        source_path = contained_path(project_root, body.source_file)
         if not source_path.is_file():
             raise _recovery_preview_error(
                 "pipeline_source_not_found",

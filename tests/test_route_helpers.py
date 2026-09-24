@@ -21,7 +21,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import HTTPException
 
+from haute._sandbox import contained_path
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+from haute.errors import PathOutsideProjectError
 from haute.routes._helpers import (
     _SELF_WRITE_COOLDOWN,
     _WATCHER_PAUSE_SETTLE_SECONDS,
@@ -37,7 +39,6 @@ from haute.routes._helpers import (
     raise_pipeline_not_found,
     raise_validation_error,
     save_sidecar,
-    validate_safe_path,
     watcher_is_paused,
     ws_clients,
 )
@@ -51,41 +52,39 @@ class TestValidateSafePath:
     def test_valid_relative_path(self, tmp_path):
         sub = tmp_path / "subdir"
         sub.mkdir()
-        result = validate_safe_path(tmp_path, "subdir")
+        result = contained_path(tmp_path, "subdir")
         assert result == sub
 
     def test_valid_file_path(self, tmp_path):
         f = tmp_path / "file.txt"
         f.write_text("hello")
-        result = validate_safe_path(tmp_path, "file.txt")
+        result = contained_path(tmp_path, "file.txt")
         assert result == f
 
     def test_traversal_attempt_raises_403(self, tmp_path):
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "../../../etc/passwd")
-        assert exc_info.value.status_code == 403
-        assert "outside the project root" in exc_info.value.detail
+        with pytest.raises(PathOutsideProjectError) as exc_info:
+            contained_path(tmp_path, "../../../etc/passwd")
+        assert "outside the project root" in exc_info.value.message
 
     def test_double_traversal(self, tmp_path):
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "foo/../../..")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, "foo/../../..")
 
     def test_absolute_path_within_base(self, tmp_path):
         """Absolute path that happens to be inside base should work."""
         f = tmp_path / "inner.txt"
         f.write_text("ok")
-        result = validate_safe_path(tmp_path, str(f))
+        result = contained_path(tmp_path, str(f))
         assert result == f
 
     def test_nested_path(self, tmp_path):
         nested = tmp_path / "a" / "b" / "c"
         nested.mkdir(parents=True)
-        result = validate_safe_path(tmp_path, "a/b/c")
+        result = contained_path(tmp_path, "a/b/c")
         assert result == nested
 
     def test_path_object_input(self, tmp_path):
-        result = validate_safe_path(tmp_path, Path("subdir"))
+        result = contained_path(tmp_path, Path("subdir"))
         # The path may not exist but should be resolved
         assert str(result).startswith(str(tmp_path))
 
@@ -98,9 +97,8 @@ class TestValidateSafePath:
             link.symlink_to(outside)
         except OSError:
             pytest.skip("Cannot create symlinks in this environment")
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "sneaky_link")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, "sneaky_link")
 
 
 # ===========================================================================

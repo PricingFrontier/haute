@@ -13,7 +13,8 @@ from haute._api_input_schema import ApiInputSchemaError
 from haute._io import UnsupportedSourceFormatError
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, validate_safe_path
+from haute._sandbox import contained_path
+from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.schemas import BrowseFilesResponse, FileItem, SchemaResponse
 
 if TYPE_CHECKING:
@@ -38,14 +39,14 @@ def _browse_files_request(
     raw_extensions: str | None,
 ) -> BrowseFilesResponse:
     """Resolve and enumerate one browse request off the async event loop."""
-    # Resolve the base: ``validate_safe_path`` returns a *resolved* target and
+    # Resolve the base: ``contained_path`` returns a *resolved* target and
     # ``iterdir()`` yields resolved children, so an unresolved base would break
     # the ``relative_to`` calls below wherever cwd differs from its canonical
     # form — e.g. a Windows 8.3 short path (``C:\Users\RUNNER~1\...``) whose
     # entries come back long-form. (POSIX ``getcwd`` already resolves symlinks,
     # which is why this only bit Windows.)
     base = Path.cwd().resolve()
-    target = validate_safe_path(base, requested_dir)
+    target = contained_path(base, requested_dir)
     ext_list = (
         _installed_input_extensions()
         if raw_extensions is None
@@ -242,7 +243,7 @@ async def get_schema(path: str) -> SchemaResponse:
     # Resolve the base for the same reason as ``browse_files`` — keep cwd in its
     # canonical form so path handling is consistent on Windows short paths.
     base = Path.cwd().resolve()
-    target = validate_safe_path(base, path)
+    target = contained_path(base, path)
     if not target.is_file():
         raise HTTPException(status_code=404, detail=f"File not found: {path}")
 

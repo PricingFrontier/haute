@@ -16,8 +16,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
 
+from haute.errors import InvalidPathError, PathOutsideProjectError
 from tests.conftest import make_file_input_config
 from tests.job_store_support import seed_job
 
@@ -218,14 +218,13 @@ pipeline = haute.Pipeline("main")
     def test_validate_safe_path_blocks_traversal_directly(self, tmp_path):
         """Defense-in-depth: if a name with '..' somehow reaches the endpoint,
         validate_safe_path blocks it at the function level."""
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         modules_dir = tmp_path / "modules"
         modules_dir.mkdir()
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(modules_dir, "../../etc/passwd.py")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(modules_dir, "../../etc/passwd.py")
 
 
 # =========================================================================
@@ -330,73 +329,69 @@ class TestValidateSafePath:
     """
 
     def test_valid_relative(self, tmp_path):
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        result = validate_safe_path(tmp_path, "subdir/file.txt")
+        result = contained_path(tmp_path, "subdir/file.txt")
         assert result == (tmp_path / "subdir" / "file.txt").resolve()
 
     def test_valid_just_filename(self, tmp_path):
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        result = validate_safe_path(tmp_path, "file.txt")
+        result = contained_path(tmp_path, "file.txt")
         assert result == (tmp_path / "file.txt").resolve()
 
     def test_traversal_blocked(self, tmp_path):
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "../../etc/passwd")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, "../../etc/passwd")
 
     def test_prefix_trick_blocked(self, tmp_path):
         """The critical bug: sibling directories with shared prefix."""
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         base = tmp_path / "project"
         base.mkdir()
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(base, "../project_evil/file.txt")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(base, "../project_evil/file.txt")
 
     def test_absolute_path_outside_base_blocked(self, tmp_path):
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "/etc/passwd")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, "/etc/passwd")
 
     def test_dotdot_within_base_allowed(self, tmp_path):
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         # sub/../file.txt resolves to file.txt — still within base
-        result = validate_safe_path(tmp_path, "sub/../file.txt")
+        result = contained_path(tmp_path, "sub/../file.txt")
         assert result == (tmp_path / "file.txt").resolve()
 
     def test_path_object_input(self, tmp_path):
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        result = validate_safe_path(tmp_path, Path("subdir/file.txt"))
+        result = contained_path(tmp_path, Path("subdir/file.txt"))
         assert result == (tmp_path / "subdir" / "file.txt").resolve()
 
     def test_base_itself_allowed(self, tmp_path):
         """Resolving '.' should give back the base itself."""
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        result = validate_safe_path(tmp_path, ".")
+        result = contained_path(tmp_path, ".")
         assert result == tmp_path.resolve()
 
     def test_null_byte_in_path_blocked(self, tmp_path):
         """Null bytes in path components must not bypass validation.
 
-        On Linux, null bytes in filenames raise ValueError from Path.resolve().
-        validate_safe_path should not let this propagate as a 500; the
-        ValueError from pathlib is acceptable (caught before file I/O).
+        The containment check refuses a NUL byte before resolving anything;
+        the API answers 400.
         """
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        with pytest.raises((HTTPException, ValueError)):
-            validate_safe_path(tmp_path, "file\x00.txt")
+        with pytest.raises(InvalidPathError):
+            contained_path(tmp_path, "file\x00.txt")
 
     @pytest.mark.skipif(
         sys.platform == "win32",
@@ -408,7 +403,7 @@ class TestValidateSafePath:
         Even though the path is within the base before resolution,
         resolve() follows symlinks, so the resolved path escapes.
         """
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         # Create a symlink inside base that points outside
         outside = tmp_path / "outside"
@@ -419,9 +414,8 @@ class TestValidateSafePath:
         inside.mkdir()
         (inside / "escape").symlink_to(outside)
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(inside, "escape/secret.txt")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(inside, "escape/secret.txt")
 
     def test_double_encoded_dotdot_blocked(self, tmp_path):
         """Literal %2e%2e in a path segment is not traversal (it's a filename).
@@ -430,28 +424,27 @@ class TestValidateSafePath:
         encoding is irrelevant.  But a literal '%2e%2e' filename should
         resolve safely within the base (it is NOT '..' after decode).
         """
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         # '%2e%2e' is a literal filename, not '..'
-        result = validate_safe_path(tmp_path, "%2e%2e/file.txt")
+        result = contained_path(tmp_path, "%2e%2e/file.txt")
         assert result.is_relative_to(tmp_path)
 
     def test_very_long_path_handled(self, tmp_path):
         """Extremely long paths should not cause unexpected behavior."""
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         long_segment = "a" * 200
         long_path = "/".join([long_segment] * 5) + "/file.txt"
-        result = validate_safe_path(tmp_path, long_path)
+        result = contained_path(tmp_path, long_path)
         assert result.is_relative_to(tmp_path)
 
     def test_dotdot_in_middle_blocked(self, tmp_path):
         """Paths like sub/../../../etc/passwd must be blocked."""
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "sub/../../../etc/passwd")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, "sub/../../../etc/passwd")
 
 
 # =========================================================================

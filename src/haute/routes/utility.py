@@ -15,7 +15,8 @@ from fastapi import APIRouter, HTTPException
 
 from haute._io import read_user_text
 from haute._logging import get_logger
-from haute.routes._helpers import pipeline_dir, validate_safe_path
+from haute._sandbox import contained_path
+from haute.routes._helpers import pipeline_dir
 from haute.schemas import (
     UtilityCreateRequest,
     UtilityDeleteResponse,
@@ -105,7 +106,7 @@ async def read_utility_file(module: str) -> UtilityReadResponse:
     """Read the content of a utility file."""
     _validate_module_name(module)
     base = _utility_dir()
-    target = validate_safe_path(base, f"{module}.py")
+    target = contained_path(base, f"{module}.py")
     if not target.is_file():
         raise HTTPException(status_code=404, detail=f"Utility file not found: {module}.py")
 
@@ -122,7 +123,7 @@ async def create_utility_file(body: UtilityCreateRequest) -> UtilityWriteRespons
     d.mkdir(exist_ok=True)
     _ensure_init(d)
 
-    target = validate_safe_path(d, f"{body.name}.py")
+    target = contained_path(d, f"{body.name}.py")
     if target.exists():
         raise HTTPException(
             status_code=409,
@@ -161,7 +162,7 @@ async def update_utility_file(module: str, body: UtilityWriteRequest) -> Utility
     """Update an existing utility file."""
     _validate_module_name(module)
     base = _utility_dir()
-    target = validate_safe_path(base, f"{module}.py")
+    target = contained_path(base, f"{module}.py")
     if not target.is_file():
         raise HTTPException(status_code=404, detail=f"Utility file not found: {module}.py")
 
@@ -194,7 +195,7 @@ async def delete_utility_file(module: str) -> UtilityDeleteResponse:
     """Delete a utility file."""
     _validate_module_name(module)
     base = _utility_dir()
-    target = validate_safe_path(base, f"{module}.py")
+    target = contained_path(base, f"{module}.py")
     if not target.is_file():
         raise HTTPException(status_code=404, detail=f"Utility file not found: {module}.py")
 

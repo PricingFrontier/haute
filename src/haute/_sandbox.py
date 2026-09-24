@@ -13,8 +13,8 @@ contains it. Its ``exec()``/``eval()`` call sites use two helpers:
 Also provides:
 - ``safe_unpickle(path)`` — a ``RestrictedUnpickler`` that narrows pickle
   globals to expected ML/data libraries (numpy, sklearn, catboost, etc.).
-- ``validate_project_path(path)`` — ensures a path resolves inside the
-  project root directory, preventing directory-traversal attacks.
+- ``contained_path(root, path)`` — the one path-containment check, and
+  ``validate_project_path(path)``, the same check against the project root.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from __future__ import annotations
 import ast
 import builtins
 import itertools
-import os
 import pickle
 import sys
 import warnings
@@ -34,7 +33,7 @@ from typing import Any
 
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
-from haute.errors import HauteError
+from haute.errors import HauteError, InvalidPathError, PathOutsideProjectError
 
 logger = get_logger(component="sandbox")
 
@@ -59,36 +58,55 @@ def set_project_root(root: Path) -> None:
     _PROJECT_ROOT = root.resolve()
 
 
-def validate_project_path(path: str | Path) -> Path:
-    """Resolve *path* and verify it is inside the project root.
+_OUTSIDE_PROJECT = "Cannot access paths outside the project root"
 
-    Containment is checked with ``os.path.commonpath`` over
-    ``os.path.normcase``-folded, fully-resolved paths rather than a raw
-    ``Path.is_relative_to`` string prefix.  ``is_relative_to`` is
-    case-sensitive, so on case-insensitive filesystems (macOS/APFS,
-    Windows/NTFS) a case-variant path such as ``PROJECT/../SECRET`` could
-    slip past a case-sensitive prefix check while still resolving to the
-    same real file.  Folding both sides through ``normcase`` closes that
-    bypass; on case-sensitive POSIX filesystems ``normcase`` is the
-    identity so behaviour there is unchanged.
+
+def contained_path(root: Path, path: str | Path) -> Path:
+    """Return *path* resolved against *root*, refusing one that leaves *root*.
+
+    The one containment check: every caller that must keep a path inside a
+    directory calls this. *path* may be relative (joined to *root*) or
+    absolute. The policy:
+
+    - An absolute *path* that is not lexically inside the resolved *root* is
+      refused before anything resolves it, so a request can never make the
+      process touch an outside location (a network share, a device) just to
+      check it. Such a path is refused even if it would resolve back inside.
+    - Otherwise the joined path is resolved: ``..`` segments collapse and
+      symbolic links and Windows junctions are followed, so a link inside the
+      root that points outside is refused and one that points inside is
+      accepted. Callers that must refuse links altogether check that
+      themselves.
+    - The resolved path must lie under the resolved *root*, compared
+      component-wise: case-insensitively on Windows, case-sensitively
+      elsewhere. On a case-insensitive macOS volume a differently-cased
+      spelling of an inside path can therefore be refused; it can never let an
+      outside path through.
 
     Raises:
-        ValueError: If the path escapes the project directory.
+        InvalidPathError: *path* holds a NUL byte.
+        PathOutsideProjectError: *path* leaves *root*.
     """
-    resolved = Path(path).resolve()
-    root = _get_project_root()
-    root_norm = os.path.normcase(str(root))
-    resolved_norm = os.path.normcase(str(resolved))
-    try:
-        common = os.path.commonpath([root_norm, resolved_norm])
-    except ValueError:
-        # Different drives / mixed absolute-relative — cannot share a root.
-        common = None
-    if common != root_norm:
-        raise ValueError(
-            f"Path '{path}' resolves to '{resolved}' which is outside the project root '{root}'"
-        )
-    return resolved
+    if "\x00" in str(path):
+        raise InvalidPathError("Invalid path")
+    base = root.resolve()
+    raw = Path(path)
+    if raw.is_absolute() and not raw.is_relative_to(base):
+        raise PathOutsideProjectError(_OUTSIDE_PROJECT, path=str(path))
+    target = (base / raw).resolve()
+    if not target.is_relative_to(base):
+        raise PathOutsideProjectError(_OUTSIDE_PROJECT, path=str(path))
+    return target
+
+
+def validate_project_path(path: str | Path) -> Path:
+    """Resolve *path* (relative to the working directory) inside the project root.
+
+    Used before a project file is deserialised. The path comes from project
+    configuration, not from a request, so it is resolved before
+    :func:`contained_path` compares it with :func:`_get_project_root`.
+    """
+    return contained_path(_get_project_root(), Path(path).resolve())
 
 
 # ---------------------------------------------------------------------------

@@ -12,11 +12,11 @@ from unittest.mock import patch
 
 import polars as pl
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from watchfiles import Change
 
 from haute._sandbox import set_project_root
+from haute.errors import PathOutsideProjectError
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from tests.conftest import (
     build_test_input_snapshot,
@@ -4970,22 +4970,21 @@ class TestWebSocketKeepAlive:
 
 class TestValidateSafePath:
     def test_valid_path_succeeds(self, tmp_path: Path):
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        result = validate_safe_path(tmp_path, "subdir/file.txt")
+        result = contained_path(tmp_path, "subdir/file.txt")
         assert result == (tmp_path / "subdir" / "file.txt").resolve()
 
     def test_traversal_raises_403(self, tmp_path: Path):
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "../../etc/passwd")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, "../../etc/passwd")
 
     def test_symlink_escape_raises_403(self, tmp_path: Path):
         import os
 
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         outside = tmp_path.parent / "outside_target"
         outside.mkdir(exist_ok=True)
@@ -4994,9 +4993,8 @@ class TestValidateSafePath:
             os.symlink(outside, link)
         except OSError:
             pytest.skip("symlink creation not supported")
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "escape_link/secret.txt")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, "escape_link/secret.txt")
 
 
 # ---------------------------------------------------------------------------

@@ -12,48 +12,43 @@ These packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| SBX-R01 | Planned | P3 | One path-containment check serves every caller. |
+| SBX-R01 | Planned | P3 | Every containment comparison goes through the one check. |
 
 ## Planned improvements
 
-### SBX-R01 — One path-containment check
-**Why:** Containment is implemented five times. The two general checks make
-the same containment comparison: the route helper `validate_safe_path`
-resolves both paths and uses `Path.is_relative_to`, and `validate_project_path`
-resolves and compares `normcase`-folded paths with `commonpath`. Both compare
-resolved paths, so `..` segments and symlinks are collapsed first and neither
-lets an escape through, and `normcase` folds case only on Windows, where
-`Path` comparison is already case-insensitive. `validate_project_path`'s
-docstring nevertheless justifies its comparison with a case-variant bypass
-that cannot happen for resolved paths. They differ in one guard:
-`validate_safe_path` first refuses an absolute input that is lexically
-outside the project, before resolving it, so an absolute path that only
-resolves back inside (`<outside>/../<project>/file`) is refused there and
-accepted by `validate_project_path`. `validate_safe_path` also raises an
-`HTTPException` from a helper. `safe_path` and the file-lock helper's plain-path
-checks check symlinks and Windows junctions themselves, and the save service splits
-path parts to reject traversal on its own. No escape is known; the cost is
-five places to keep a security check right.
+### SBX-R01 — Every containment comparison goes through the one check
+**Why:** `_sandbox.contained_path` is the one containment check, with its
+case, link and absolute-input policy stated in the sandbox-security
+specification. The route inputs (the former route helper), the check before
+deserialising, recovery artifact paths, the save service's codegen output
+paths, SQLite locators and the MLflow settings write target all use it, and
+`tests/test_path_containment.py` pins them. About forty other comparisons of
+a path against a root still call `Path.is_relative_to` themselves, most in
+modules other work owns: executor output staging, config sidecar paths, the
+runtime path resolution, the recovery and repair document paths, the
+pipeline revision, submodel paths, worker artifacts, the model scorer, the
+MLflow artifact cache, model export and candidate runs, the deploy config,
+optimiser artifacts, the static-file and watcher paths in the server, the
+save service's pipeline-root checks, and the assistant. Some of them are
+containment checks and some are a different predicate (classifying a path
+already known to be resolved, or a lexical check on purpose).
 
-**Plan:** Keep one containment function that resolves and then compares
-common paths, with its case and symlink or reparse-point policy stated.
-Decide whether the unresolved absolute-path guard stays, and state the
-decision, so no former caller changes behaviour silently. The function raises
-a domain error that the route layer maps to 400 or 403. Route every caller
-through it and correct the docstring's rationale.
+**Plan:** For each remaining comparison, either route it through
+`contained_path`, keeping the caller's own error contract, or mark it as a
+different predicate with a one-line reason. The cache's file-lock helper
+(`_file_lock._assert_path_ancestors_plain`) is a link policy, not a
+containment comparison, and stays.
 
-**Acceptance:** One containment implementation remains; under test, on every
-former caller's route, a `..` escape and a symlink escape are rejected and an
-in-project path is accepted; an absolute input that only resolves back inside
-the project is treated as the specification states; the sandbox-security
-specification states the case, link and absolute-input policy; the
-path-traversal suites pass.
+**Acceptance:** Outside `contained_path`, every `is_relative_to` or
+`commonpath` comparison of a path against a root is either gone or marked as
+a different predicate; each converted caller has a `..`-escape and a
+symlink-escape test.
 
-**Dependencies:** `API-R01` (server API) maps the domain error.
+**Dependencies:** None, but most sites are in files the execution, caching,
+optimiser and assistant work own.
 
-**Evidence:** `src/haute/routes/_helpers.py::validate_safe_path`;
-`src/haute/_sandbox.py::validate_project_path`;
-`src/haute/_artifact_paths.py::safe_path`;
-`src/haute/_file_lock.py::_assert_path_ancestors_plain`;
-`src/haute/routes/_save_pipeline.py::_validate_output_rel_path`;
-`tests/test_path_traversal_fixes.py`.
+**Evidence:** `src/haute/_sandbox.py::contained_path`;
+`src/haute/executor.py`; `src/haute/_config_io.py`;
+`src/haute/_path_resolution.py`; `src/haute/_pipeline_recovery.py`;
+`src/haute/_pipeline_repair.py`; `src/haute/_worker_protocol.py`;
+`src/haute/server.py`; `src/haute/assistant/_project_knowledge.py`.

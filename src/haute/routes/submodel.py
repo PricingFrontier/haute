@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 
 from haute._logging import get_logger
+from haute._sandbox import contained_path
 from haute._submodel_paths import (
     MalformedSubmodelPathError,
     SubmodelPathOutsideProjectError,
@@ -22,7 +23,6 @@ from haute.routes._helpers import (
     load_sidecar_positions,
     parse_pipeline_to_graph,
     pipeline_dir,
-    validate_safe_path,
 )
 from haute.schemas import (
     CreateSubmodelRequest,
@@ -48,7 +48,7 @@ def _require_parent_source_file(source_file: str) -> None:
 def _load_parent_document(source_file: str) -> tuple[Path, Path, PipelineGraph]:
     _require_parent_source_file(source_file)
     project_root = Path.cwd().resolve()
-    parent_path = validate_safe_path(project_root, source_file)
+    parent_path = contained_path(project_root, source_file)
     if not parent_path.is_file():
         raise HTTPException(status_code=404, detail="Parent pipeline file not found.")
     editor_document = load_pipeline_editor_document(

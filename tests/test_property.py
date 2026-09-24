@@ -19,6 +19,7 @@ from haute._config_io import is_windows_reserved_filename
 from haute._path_resolution import MalformedRuntimePathError, resolve_runtime_file_path
 from haute._rating import _apply_banding
 from haute.codegen import graph_to_code
+from haute.errors import PathOutsideProjectError
 from haute.graph_utils import (
     GraphEdge,
     GraphNode,
@@ -887,7 +888,7 @@ class TestPathValidation:
         path = root.joinpath(*segments)
         resolved = path.resolve()
         if not resolved.is_relative_to(root.resolve()):
-            with pytest.raises(ValueError, match="outside"):
+            with pytest.raises(PathOutsideProjectError, match="outside"):
                 validate_project_path(path)
         else:
             # Should not raise
@@ -910,7 +911,7 @@ class TestPathValidation:
         escaping = nested / Path(*([".."] * (n_dotdots + 3)))  # enough to escape
         resolved = escaping.resolve()
         if not resolved.is_relative_to(nested.resolve()):
-            with pytest.raises(ValueError, match="outside"):
+            with pytest.raises(PathOutsideProjectError, match="outside"):
                 validate_project_path(escaping)
 
 

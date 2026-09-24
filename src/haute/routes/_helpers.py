@@ -55,33 +55,6 @@ logger = get_logger(component="server")
 # ---------------------------------------------------------------------------
 
 
-def validate_safe_path(base: Path, user_provided: str | Path) -> Path:
-    """Resolve *user_provided* relative to *base* and verify it stays within *base*.
-
-    Returns the resolved ``Path``.  Raises ``HTTPException(400)`` for invalid
-    path bytes and ``HTTPException(403)`` if the resolved path escapes the
-    project root.
-    """
-    if "\x00" in str(user_provided):
-        raise HTTPException(status_code=400, detail="Invalid path")
-
-    base = base.resolve()
-    raw_target = Path(user_provided)
-    if raw_target.is_absolute() and not raw_target.is_relative_to(base):
-        raise HTTPException(
-            status_code=403,
-            detail="Cannot access paths outside the project root",
-        )
-
-    target = (base / raw_target).resolve()
-    if not target.is_relative_to(base):
-        raise HTTPException(
-            status_code=403,
-            detail="Cannot access paths outside the project root",
-        )
-    return target
-
-
 # ---------------------------------------------------------------------------
 # Pipeline directory resolution
 # ---------------------------------------------------------------------------

@@ -32,12 +32,13 @@ from haute._api_input_schema import is_json_api_input_path
 from haute._file_ops import Writer, atomic_write_bytes
 from haute._logging import get_logger
 from haute._pipeline_recovery import load_pipeline_editor_document
+from haute._sandbox import contained_path
 from haute._submodel_paths import (
     MalformedSubmodelPathError,
     SubmodelPathOutsideProjectError,
     resolve_submodel_reference,
 )
-from haute.errors import ConfigError
+from haute.errors import ConfigError, PathOutsideProjectError
 from haute.graph_utils import (
     GraphEdge,
     GraphNode,
@@ -51,7 +52,6 @@ from haute.routes._helpers import (
     load_sidecar,
     mark_self_write,
     save_sidecar,
-    validate_safe_path,
 )
 from haute.schemas import SavePipelineRequest, SavePipelineResponse
 
@@ -976,7 +976,7 @@ class SavePipelineService:
                 detail="source_file is required \u2014 the frontend must track"
                 " and send the original pipeline file path",
             )
-        return validate_safe_path(self._root, source_file)
+        return contained_path(self._root, source_file)
 
     def _validate_source_file_matches_pipeline_root(self, py_path: Path) -> None:
         """Reject saves whose source file does not belong to ``pipeline_root``."""
@@ -1084,8 +1084,11 @@ class SavePipelineService:
         # Defence in depth: even after the prefix check, the resolved path
         # must still sit under the project root.  A symlink inside
         # ``modules/`` pointing outside the repo would bypass the string
-        # check but fail here.
-        if not out_path.is_relative_to(self._root):
+        # check but fail here.  Codegen output is not request input, so this
+        # stays a 400 rather than the containment check's 403.
+        try:
+            contained_path(self._root, out_path)
+        except PathOutsideProjectError:
             logger.warning(
                 "save_reject_output_path_resolve",
                 rel_path=rel_path,
@@ -1094,7 +1097,7 @@ class SavePipelineService:
             raise HTTPException(
                 status_code=400,
                 detail="Codegen output path resolves outside the project root.",
-            )
+            ) from None
         return out_path
 
     def _resolve_module_output_path(self, normalised: str) -> Path | None:
@@ -1105,7 +1108,9 @@ class SavePipelineService:
         else:
             out_path = (self._root / normalised).resolve()
 
-        if not out_path.is_relative_to(self._root):
+        try:
+            contained_path(self._root, out_path)
+        except PathOutsideProjectError:
             return None
         try:
             relative_to_modules = out_path.relative_to(modules_dir)

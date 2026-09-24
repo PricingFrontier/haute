@@ -809,8 +809,8 @@ default `mlruns`), so saving an unchanged env-derived local configuration (a
 discovery to `./mlruns` — and the runs already logged in that folder stay
 discoverable through `/api/mlflow/experiments` after the save.
 Before writing, the resolved target path must remain inside the project
-root (case-folded, fully resolved containment, mirroring
-`haute._sandbox.validate_project_path`): a `haute.toml` that is a symlink
+root (checked by `haute._sandbox.contained_path` on the resolved target): a
+`haute.toml` that is a symlink
 escaping the project is refused with `MlflowConfigError`, and the external
 target is left untouched. When no explicit `project_root` is passed, every
 entry point (load/save/resolve) uses `haute._sandbox._get_project_root()`,

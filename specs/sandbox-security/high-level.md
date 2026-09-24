@@ -32,8 +32,13 @@ In scope:
 - The actual `exec()` call sites for pipeline node code and its namespace assembly
   (`_exec_user_code`).
 - Restricted unpickling for both raw pickle files and joblib archives
-  (`safe_unpickle`, `safe_joblib_load`), and the project-root path containment check
-  used before touching any such file (`validate_project_path`).
+  (`safe_unpickle`, `safe_joblib_load`).
+- The one path-containment check, `contained_path(root, path)`, and its policy. Its
+  callers: the file-browse, schema, read-json, recovery-preview, save, submodel,
+  utility and optimiser-save routes and the assistant's dataset tools (request
+  paths), the check before deserialising a project file (`validate_project_path`),
+  recovery artifact paths (`_artifact_paths.safe_path`), the save service's codegen
+  output paths, SQLite locators and the MLflow settings write target.
 - Canonical runtime-path normalization and symlink-aware containment for eager/lazy
   execution (`_path_resolution.py`), including the context-local execution root.
 - Local-session protection for the FastAPI/WebSocket server (`_local_security.py`):
@@ -55,13 +60,9 @@ Out of scope (owned elsewhere, linked where relevant):
 - Parsing and evaluating the polars/pandas expression strings inside rating tables
   and banding rules — that's [expression-parsing](../expression-parsing/high-level.md);
   this component only gates raw Python source, not expression DSL text.
-- Path-traversal guarding for HTTP route parameters (`validate_safe_path`,
-  null-byte and URL-scheme rejection in file-browse/schema endpoints) — that lives
-  in `routes/_helpers.py`, documented under
-  [server-api](../server-api/high-level.md); this component's path guard
-  (`validate_project_path`) is specifically the pre-deserialization check used by
-  `safe_unpickle`/`safe_joblib_load`/`load_external_object`, not the general HTTP
-  path-parameter guard.
+- The request-shape checks around a route's path input (URL-scheme rejection,
+  module-name validation) — [server-api](../server-api/high-level.md). The
+  containment comparison itself is this component's `contained_path`.
 - SQL-identifier and git-ref-name validation (`_TABLE_NAME_RE`,
   `_validate_ref_name`) — those live in the Databricks I/O and git-integration
   components respectively; they follow the same "reject, don't sanitize" posture
@@ -84,7 +85,7 @@ Out of scope (owned elsewhere, linked where relevant):
   imports freely, and no OS-level sandbox (seccomp, Landlock, restricted token,
   network filter) exists on any supported platform. Only memory caps are enforced.
 - **Project reads and writes.** Haute's own loaders and writers stay inside the
-  project root (`validate_project_path`, the runtime path resolution below); that
+  project root (`contained_path`, the runtime path resolution below); that
   containment protects haute's persistence from confused paths, not the machine
   from the author.
 - **Environment exposure.** The process environment, including any credentials
@@ -155,8 +156,8 @@ Out of scope (owned elsewhere, linked where relevant):
   be a `type` before being trusted. An allowlisted class entry that resolves to a
   non-class callable is rejected, not silently accepted. Every file passed to
   `safe_unpickle`/`safe_joblib_load` must first resolve inside the project root
-  (`validate_project_path`) — a case-insensitive-filesystem-safe containment check,
-  not a raw string-prefix check. `restricted_joblib_load` is the same allowlisted
+  (`validate_project_path`, which resolves the configured path and checks it with
+  `contained_path`). `restricted_joblib_load` is the same allowlisted
   loader without that containment, for model files Haute's own loaders locate (training
   outputs, the MLflow artifact cache, an MLflow pyfunc package).
 - **Exactly two InterpretML classes are trusted:**
@@ -218,6 +219,25 @@ Out of scope (owned elsewhere, linked where relevant):
 
 ## Design rationale
 
+- **One containment check.** `contained_path(root, path)` is the only comparison of
+  a path against the directory it must stay in, so the policy is stated once:
+  - An absolute *path* that is not lexically inside the resolved root is refused
+    before anything resolves it, so a request never makes the process touch an
+    outside location (a network share, a device) just to check it. Such a path is
+    refused even if it would resolve back inside. A caller that holds a trusted,
+    configured path (`validate_project_path`, the SQLite and MLflow checks, the save
+    service's generated paths) resolves it first, so only request input meets this
+    guard.
+  - Otherwise the joined path is resolved: `..` segments collapse and symbolic links
+    and Windows junctions are followed, so a link inside the root that points outside
+    is refused and one that points inside is accepted. Callers that must refuse links
+    altogether (recovery artifacts, the cache's file locks) check that themselves.
+  - The resolved path must lie under the resolved root, compared component-wise:
+    case-insensitively on Windows, case-sensitively elsewhere. On a case-insensitive
+    macOS volume a differently-cased spelling of an inside path can be refused; it
+    can never let an outside path through. (`normcase`/`commonpath` folding added
+    nothing: both sides are resolved paths.)
+
 - **An accident guard, not a sandbox.** Project code is trusted (decision of
   6 September 2026), and Polars' own module graph reaches the operating system, so a
   denylist of escape-shaped syntax protected nothing while rejecting ordinary code
@@ -274,7 +294,9 @@ Out of scope (owned elsewhere, linked where relevant):
 - Depended on by [explore-eda](../explore-eda/high-level.md): `routes/_pivot_service.py`
   imports `validate_user_code` and `safe_globals` directly to validate and `eval()`
   configured pivot formulas without going through `_exec_user_code`.
-- Depended on by the io-layer (`_io.py`) for `validate_project_path`,
+- Depended on by the routes named in Scope, the assistant's dataset tools, recovery
+  artifacts, the save service, `_database_io` and the MLflow settings for
+  `contained_path`, and by the io-layer (`_io.py`) for `validate_project_path`,
   `safe_unpickle`, and `safe_joblib_load` when loading external model/data
   artifacts (`load_external_object`), and by `routes/optimiser.py` and
   `routes/pipeline.py` for `_get_project_root()` when resolving user-supplied
@@ -318,10 +340,13 @@ Out of scope (owned elsewhere, linked where relevant):
   `_ALLOWED_PICKLE_CLASSES`/`_ALLOWED_PICKLE_GLOBALS` as the place to extend the
   allowlist — this is a deliberate "reject and tell the developer how to fix it,"
   not a silent skip.
-- **Path containment failures raise `ValueError`** (`validate_project_path`) rather
-  than returning `None`/a sentinel; every caller in this component either lets that
-  propagate or wraps it into an HTTP 403 at the API boundary (see
-  [server-api](../server-api/high-level.md)).
+- **Path containment failures raise `PathOutsideProjectError`** (and a NUL byte
+  `InvalidPathError`) rather than returning `None`/a sentinel. The application
+  handler answers a request with 403 "Cannot access paths outside the project root"
+  (400 "Invalid path"); the refused path stays out of the response. A caller with
+  its own contract translates it: recovery artifacts → the repair 409, codegen output
+  paths → 400, SQLite locators → `ValueError`, the MLflow settings write →
+  `MlflowConfigError`.
 - **Local-session/WebSocket rejections fail closed with a structured response**,
   not a silently-accepted connection: HTTP requests get a `403` JSON body from
   `LocalSessionMiddleware`, host-header mismatches get a `400` from

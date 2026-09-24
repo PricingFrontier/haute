@@ -377,8 +377,8 @@ request is a transport error. The endpoint reads and writes no project state.
   document is rejected with a `409` `stale_document_revision` conflict before any artifact
   changes; the client keeps its unsaved work and must reload before saving again. There is
   no unconditional overwrite and no automatic retry.
-- **Path allowlisting at multiple layers.** `validate_safe_path` guards ad-hoc file/schema
-  reads; `SavePipelineService._validate_output_rel_path` separately allowlists *codegen
+- **Path allowlisting at multiple layers.** The sandbox's one containment check,
+  `contained_path`, guards every path a request supplies; `SavePipelineService._validate_output_rel_path` separately allowlists *codegen
   output* paths (only the declared main file or `modules/<name>.py`, no traversal, no
   Windows-reserved device names, casefold-collision-checked) because codegen output paths
   come from a different trust boundary (generated strings, not direct user path input) and
@@ -451,7 +451,8 @@ describes. Stale, changed or already-applied plans fail before
   `collect_node_configs` / `config_path_for_node` to decide which config JSON sidecars a
   save writes, and owns the on-disk config layout under `<pipeline>/config/`.
 - **[sandbox-security](../sandbox-security/high-level.md)** — `_get_project_root()` anchors
-  `validate_safe_path` and the `/pipeline/read-json` route.
+  the `/pipeline/read-json` route, and `contained_path` is the containment check
+  behind every request path.
 - **[frontend-shared](../frontend-shared/high-level.md)** — the sole consumer of every
   schema and route this component (and the routers it hosts) exposes; the WebSocket resync
   protocol and browser call to `/api/session/bootstrap` are frontend-facing contracts owned
@@ -491,7 +492,7 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   workers are terminated and joined before the terminal response or job transition. Parent
   cleanup then removes the exact private staging artifact, and admission is released only after
   both worker termination and cleanup have completed.
-- **Path-safety violations** (`validate_safe_path`, the save-time output-path allowlist,
+- **Path-safety violations** (`contained_path`, the save-time output-path allowlist,
   runtime-input-path validation) return 400 for malformed input (null bytes, empty codegen
   paths, traversal segments) and 403 for a resolved path that escapes its allowed root —
   never a 500, since these are user-input-shaped failures, not internal ones.
