@@ -12,47 +12,49 @@ These packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| MLF-R02 | Decision | P3 | MLflow calls use explicit clients instead of mutating process-global state under locks. |
+| MLF-R02 | Planned | P3 | The optimiser's MLflow log runs on a destination-bound client, outside the fluent lock. |
 
 ## Planned improvements
 
-### MLF-R02 — Explicit MLflow clients
-**Why:** Logging uses MLflow's fluent API, whose tracking and registry URIs are
-process-global, so `mlflow_fluent_operation` serialises every logging
-operation under a global lock and restores the URIs and three environment
-variables afterwards. `runtime_environment_inference` flips two more
-environment variables around each `log_model`. The execution engine avoids
-the same pattern for Polars configuration by holding its streaming chunk size
-as one process setting instead of scoping it per request.
+### MLF-R02 — Explicit MLflow clients for the optimiser log
+**Why:** Training (`log_experiment`) and deploy (`deploy_to_mlflow`) log through
+an `MlflowClient` bound to the resolved destination; only their model log runs
+inside `mlflow_fluent_operation`, as the
+[modelling low-level specification](../modelling/low-level.md) states. The
+optimiser's MLflow log route still runs its whole log, from
+`configure_mlflow_tracking` to the run URL, inside the fluent operation, so it
+serialises against every other MLflow log for its full duration and writes the
+tracking URI into the environment.
 
-**Plan:** Use `MlflowClient` instances bound to the resolved tracking and
-registry URIs for logging, as discovery and downloads already do, and pass
-environment inference options explicitly where MLflow allows. Keep a narrow
-lock only for any MLflow call that still requires fluent state, and state
-which calls those are.
+**Decided (24 September 2026):** option (a). Checked against MLflow 3.15.1,
+`mlflow.<flavor>.log_model` calls `Model.log`, which resolves the global
+tracking URI and the thread's active run; `mlflow.set_tracking_uri` writes
+`MLFLOW_TRACKING_URI` into `os.environ`; and uv-project detection can be
+switched off only through the `MLFLOW_UV_AUTO_DETECT` and `MLFLOW_LOG_UV_FILES`
+environment variables. Model logging therefore keeps the fluent lock and its
+environment switches, and every other MLflow call runs on a destination-bound
+client.
 
-**Decision needed:** Checked against MLflow 3.15.1 on 24 September 2026,
-model logging cannot run on an explicit client. `mlflow.<flavor>.log_model`
-calls `Model.log`, which resolves the global tracking URI and the thread's
-active run; `mlflow.set_tracking_uri` itself writes `MLFLOW_TRACKING_URI`
-into `os.environ`; and MLflow's uv-project detection can be switched off
-only through the `MLFLOW_UV_AUTO_DETECT` and `MLFLOW_LOG_UV_FILES`
-environment variables, not a `log_model` argument. While models are logged
-through MLflow's flavour API, two logs to different destinations cannot run
-concurrently and some production path must write `os.environ`. Choose one:
-(a) narrow the lock: run, parameter, metric, tag and artifact logging on
-destination-bound clients, and only `log_model` with its environment
-switches under the fluent lock, restating the acceptance accordingly;
-(b) log each model in a short-lived worker process, so fluent state is
-per-process and logs run concurrently; or (c) keep the current lock and
-retire the package. Recommended: (a).
+**Plan:** Move the optimiser log route onto the pattern training uses: resolve
+the destination with `resolve_tracking_backend` and `registry_uri_for_tracking`,
+create the experiment and run with `_mlflow_utils.ensure_experiment` and
+`client.create_run`, log parameters, metrics, tags and artifacts through the
+client, terminate the run in a `finally`, and build the URL with
+`build_run_url(..., tracking_uri=...)`. The route logs no model, so it needs no
+fluent operation at all. `configure_mlflow_tracking` and
+`set_experiment_creating_workspace_folder` then have no production caller;
+delete them and their tests.
 
-**Acceptance:** Two logging operations to different destinations can run
-concurrently under test; no production path writes `os.environ`; the
-logging and destination-isolation tests pass.
+**Acceptance:** Two MLflow logs to different destinations, from any of
+training, deploy and the optimiser, run concurrently under test outside their
+model logs; the only code holding `mlflow_fluent_operation` is a model log
+(with its environment switches) and the pyfunc download's nested model lookup;
+the logging and destination-isolation tests pass.
 
-**Dependencies:** None.
+**Dependencies:** None. `src/haute/routes/optimiser.py` belongs to the
+optimiser lane.
 
-**Evidence:** `src/haute/_mlflow_utils.py::mlflow_fluent_operation`;
-`src/haute/_mlflow_utils.py::runtime_environment_inference`;
-`src/haute/modelling/_mlflow_log.py`.
+**Evidence:** `src/haute/routes/optimiser.py`;
+`src/haute/modelling/_mlflow_log.py::configure_mlflow_tracking`;
+`src/haute/_mlflow_utils.py::set_experiment_creating_workspace_folder`;
+`src/haute/_mlflow_utils.py::ensure_experiment`.

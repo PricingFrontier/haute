@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.resources
 import json
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,10 +12,10 @@ from typing import TYPE_CHECKING, Any
 
 from haute._logging import get_logger
 from haute._mlflow_utils import (
+    ensure_experiment,
     mlflow_fluent_operation,
     registry_uri_for_tracking,
     search_versions,
-    set_experiment_creating_workspace_folder,
     set_tracking_uri_preserving_env,
 )
 from haute._polars_dtypes import rendered_dtype_mlflow_type_name
@@ -26,6 +27,11 @@ logger = get_logger(component="deploy.mlflow")
 
 # Resolve the path to the models-from-code script shipped with the package
 _MODEL_CODE_PATH = str(importlib.resources.files("haute.deploy") / "_model_code.py")
+
+# One MLflow deploy at a time in this process: deploys share the pipeline's
+# ``.haute_build`` directory, and each picks the version it registered by
+# searching the registry after logging.
+_DEPLOY_LOCK = threading.Lock()
 
 if TYPE_CHECKING:
     from haute.deploy._config import DeployConfig
@@ -59,7 +65,6 @@ def build_experiment_name(config: DeployConfig) -> str:
     return name
 
 
-@mlflow_fluent_operation()
 def deploy_to_mlflow(
     resolved: ResolvedDeploy,
     progress: Callable[[str], None] | None = None,
@@ -78,13 +83,28 @@ def deploy_to_mlflow(
 
     Returns:
         DeployResult with model URI, version, and endpoint URL.
-    """
 
+    The experiment, the run, the manifest artifact, the run's terminal status and
+    the version lookup go through a client bound to the MLflow destination; only
+    ``mlflow.pyfunc.log_model`` (with its registration) holds MLflow's
+    process-global state, inside :func:`mlflow_fluent_operation`. Deploys run one
+    at a time in the process, because they share the pipeline's build directory
+    and read their registered version back from the registry.
+    """
+    with _DEPLOY_LOCK:
+        return _deploy_to_mlflow(resolved, progress)
+
+
+def _deploy_to_mlflow(
+    resolved: ResolvedDeploy,
+    progress: Callable[[str], None] | None,
+) -> DeployResult:
     def _log(msg: str) -> None:
         if progress:
             progress(msg)
 
     import mlflow
+    from mlflow.tracking import MlflowClient
 
     config = resolved.config
     model_name = config.model_name
@@ -96,8 +116,7 @@ def deploy_to_mlflow(
     tracking_uri, registry_uri = _resolve_mlflow_databricks()
     _log("Connecting to Databricks MLflow...")
     _check_databricks_connectivity(_log)
-    set_tracking_uri_preserving_env(mlflow, tracking_uri)
-    mlflow.set_registry_uri(registry_uri)
+    client = MlflowClient(tracking_uri=tracking_uri, registry_uri=registry_uri)
 
     # Use Unity Catalog three-level namespace: catalog.schema.model_name
     uc_model_name = build_uc_model_name(config)
@@ -122,22 +141,31 @@ def deploy_to_mlflow(
         # 4. Set experiment - append endpoint suffix for staging isolation
         experiment_name = build_experiment_name(config)
         _log(f"Setting experiment: {experiment_name}")
-        set_experiment_creating_workspace_folder(mlflow, experiment_name)
+        experiment_id = ensure_experiment(client, tracking_uri, experiment_name)
 
         # 5. Log the model
         _log("Logging model to MLflow (this may take a minute)...")
-        with mlflow.start_run(run_name=f"deploy-{model_name}"):
-            mlflow.log_dict(manifest, "deploy_manifest.json")
-
-            mlflow.pyfunc.log_model(
-                name="model",
-                registered_model_name=uc_model_name,
-                **model_arguments,
-            )
+        run_id = client.create_run(experiment_id, run_name=f"deploy-{model_name}").info.run_id
+        status = "FAILED"
+        try:
+            client.log_dict(run_id, manifest, "deploy_manifest.json")
+            # The one fluent call: pyfunc.log_model resolves the global tracking
+            # URI and the thread's active run.
+            with mlflow_fluent_operation():
+                set_tracking_uri_preserving_env(mlflow, tracking_uri)
+                mlflow.set_registry_uri(registry_uri)
+                with mlflow.start_run(run_id=run_id):
+                    mlflow.pyfunc.log_model(
+                        name="model",
+                        registered_model_name=uc_model_name,
+                        **model_arguments,
+                    )
+            status = "FINISHED"
+        finally:
+            client.set_terminated(run_id, status)
 
         _log(f"Model logged. Fetching registered version for {uc_model_name}...")
         # 6. Get the registered model version
-        client = mlflow.tracking.MlflowClient()
         versions = search_versions(client, uc_model_name)
         if not versions:
             raise DeployError(

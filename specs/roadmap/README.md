@@ -27,7 +27,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md) | Shared result tabs, target configuration and charts | `FMO-R01` |
 | [Frontend node editors](frontend-node-editors.md) | API Input and Output shared block | `FNE-R01` |
 | [Frontend shared](frontend-shared.md) | Debounce, modal and table bases; results store | `FSH-R02` |
-| [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients | `MLF-R02` |
+| [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients for the optimiser log | `MLF-R02` |
 | [Modelling](modelling.md) | Evaluation and tuning invariants checked once | `MOD-T10` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers, auto-range, input isolation | `OPT-P13` |
 | [Pipeline config](pipeline-config.md) | Repair, save validation, the error a rejected config reports, project context, typed configs, node specification | `PCFG-R01` |

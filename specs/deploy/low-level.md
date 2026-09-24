@@ -361,22 +361,27 @@ working directory on it too. Spawned batch workers inherit the parent's `sys.pat
    and other requests can continue to use the event loop. Plan and spool cleanup run on
    every path.
 
-**Databricks deploy (`_mlflow.py::deploy_to_mlflow`)** — checks Databricks connectivity
-(HTTP GET with a short timeout, distinguishing 403 from unreachable), sets MLflow tracking
-+ registry URI to Databricks/Unity-Catalog, builds the manifest, writes it under
-`<pipeline_dir>/.haute_build/`, builds an MLflow `ModelSignature` from the resolved
-schemas (`Categorical` and parameterised `Enum` map to MLflow string; genuinely
-unrepresentable Polars types fail loudly), sets/creates the experiment
-(suffix-isolated for staging) through `set_experiment_creating_workspace_folder`, so a
-new experiment's missing Databricks workspace folder is created first (see
-[modelling](../modelling/low-level.md)), and inside one
-`mlflow.start_run()` logs `HauteModel` as a `pyfunc` model-from-code with the manifest +
-every bundled artefact attached, the bundled `utility` package as its only MLflow
+**Databricks deploy (`_mlflow.py::deploy_to_mlflow`)** — runs one deploy at a time in
+the process (`_DEPLOY_LOCK`), because deploys share the pipeline's build directory and
+read their registered version back from the registry. It checks Databricks connectivity
+(HTTP GET with a short timeout, distinguishing 403 from unreachable), creates an
+`MlflowClient` bound to the Databricks tracking URI and its Unity Catalog registry URI,
+builds the manifest, writes it under `<pipeline_dir>/.haute_build/`, builds an MLflow
+`ModelSignature` from the resolved schemas (`Categorical` and parameterised `Enum` map to
+MLflow string; genuinely unrepresentable Polars types fail loudly), and selects or creates
+the experiment (suffix-isolated for staging) on that client through
+`ensure_experiment`, so a new experiment's missing Databricks workspace folder is created
+first (see [modelling](../modelling/low-level.md)). The client creates the
+`deploy-<model_name>` run and logs the manifest to it; then, inside
+`mlflow_fluent_operation()` with the destination selected and attached to that run by
+`mlflow.start_run(run_id=...)`, the one fluent call logs `HauteModel` as a `pyfunc`
+model-from-code with the manifest + every bundled artefact attached, the bundled `utility` package as its only MLflow
 `code_paths` entry (MLflow copies it under the model's `code/` directory and puts that on
 `sys.path` when the model loads), a `conda_env` with Python 3.11.11 and Haute exactly
 pinned but `polars>=1.44.2` (Haute's own Polars floor) and optional `catboost>=1.2.8` as lower bounds, and
 `registered_model_name` set to the UC
-three-level name. Fetches the newly registered version, then creates or updates the
+three-level name. The client marks the run `FINISHED`, or `FAILED` when logging
+raised. Fetches the newly registered version through the client, then creates or updates the
 Databricks Model Serving endpoint (`_create_or_update_serving_endpoint`) if
 `effective_endpoint_name` is set. Any exception during this whole block removes the build
 directory before re-raising.

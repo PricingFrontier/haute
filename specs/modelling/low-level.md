@@ -630,12 +630,30 @@ artifact downloads explicitly pinned to the resolved tracking and registry URIs;
 discovery and native downloads never change MLflow's process-global destination.
 Pyfunc downloads share the fluent-operation lock because MLflow's nested
 logged-model lookup still reads global state; they temporarily select the resolved
-destination and restore it on every exit. Fluent logging operations
-are serialized for their complete lifetime (including run termination and URL
-construction), restore their previous tracking/registry state on success or
-failure, and preserve the configured environment URI. Saving settings may proceed
-while an existing log finishes at its original destination; subsequent operations
-resolve the new destination.
+destination and restore it on every exit.
+
+Training (`log_experiment`) and deploy (`deploy_to_mlflow`) log through an
+`MlflowClient` bound to the resolved tracking and registry URIs: the experiment, the
+run, its parameters, metrics, tags and artifacts, the run's terminal status and the
+run URL never touch MLflow's process-global state, so two logs to different
+destinations proceed concurrently. The one fluent call is model logging:
+`mlflow.<flavor>.log_model` resolves the global tracking URI and the thread's active
+run, and MLflow's uv-project detection can be switched off only through environment
+variables (checked against MLflow 3.15.1). That call alone runs inside
+`mlflow_fluent_operation()`: it selects the destination, attaches to the
+client-created run with `mlflow.start_run(run_id=...)`, logs the model (training under
+`runtime_environment_inference()`), and restores the URIs and environment on every
+exit, which serialises only the model log. The operation also clears MLflow's active
+experiment on entry and restores it on exit, so an experiment an earlier
+`set_experiment` selected (the optimiser route's, or a notebook's) never makes MLflow
+refuse to attach to a run in another experiment. `ensure_experiment` and
+`set_experiment_creating_workspace_folder` serialise each experiment name's
+lookup-and-create within the process: MLflow's file store checks that a name is free
+and then creates the experiment under a new id, so two first logs would otherwise
+create two experiments of one name. The optimiser's MLflow log route still runs
+its whole log inside the fluent operation. Saving settings may proceed while an
+existing log finishes at its original destination; subsequent operations resolve the
+new destination.
 
 The Databricks destination is configured by an environment
 `databricks://<profile>` URI (which counts as configured even if the profile's
@@ -836,16 +854,18 @@ where `""` is the local folder and any value outside the three keys is rejected 
   logs to the default the field shows. When `backend` is not supplied it is
   resolved from `destination`, so the default follows the node's effective
   destination.
-- Training `log_experiment`, the optimiser MLflow log route and deploy select
-  their experiment through `_mlflow_utils.set_experiment_creating_workspace_folder`
-  rather than calling `mlflow.set_experiment` directly. A Databricks experiment is a
-  workspace object whose folder must already exist, which `/Shared/haute` does not in
-  a fresh workspace. When the fluent tracking URI is Databricks (`databricks` or
-  `databricks://<profile>`), the name is an absolute workspace path with a parent
-  folder, and `mlflow.get_experiment_by_name` finds no experiment, the helper first
+- Training `log_experiment` and deploy select their experiment through
+  `_mlflow_utils.ensure_experiment(client, tracking_uri, name)` on their bound client,
+  which returns the experiment id and creates a missing experiment; the optimiser
+  MLflow log route uses `_mlflow_utils.set_experiment_creating_workspace_folder`
+  inside its fluent operation. Neither calls `mlflow.set_experiment` directly. A
+  Databricks experiment is a workspace object whose folder must already exist, which
+  `/Shared/haute` does not in a fresh workspace. When the tracking URI is Databricks
+  (`databricks` or `databricks://<profile>`), the name is an absolute workspace path
+  with a parent folder, and no experiment of that name exists, either helper first
   sends `POST /api/2.0/workspace/mkdirs {"path": <parent>}` through MLflow's
   `http_request` with `get_databricks_host_creds(tracking_uri)` — the bound MLflow
-  credentials, never the general pair — then calls `mlflow.set_experiment`. An existing
+  credentials, never the general pair — then creates or selects the experiment. An existing
   experiment and every non-Databricks backend skip the folder request. A failed folder
   request is classified with `classify_mlflow_error` and logs
   `databricks_experiment_folder_create_failed` with the folder, experiment, category and
@@ -863,14 +883,15 @@ where `""` is the local folder and any value outside the three keys is rejected 
   itself for server/local. The SDK's tracking setter must preserve the original
   `MLFLOW_TRACKING_URI` environment value so it cannot overwrite configuration.
   The registry URI is process-global, so a leftover `databricks-uc` from an
-  earlier destination must never capture local/server registrations. The
-  fluent setup runs inside `mlflow_fluent_operation()` for the entire logging
-  lifecycle. Discovery and native artifact downloads use explicitly pinned clients
-  and tracking URIs without changing fluent state; pyfunc downloads use the same
-  operation scope as logging for the SDK's nested model lookup.
-- `build_run_url(backend, experiment_name, run_id)` — resolves the numeric
-  `experiment_id` via `mlflow.get_experiment_by_name` (run URLs require the
-  numeric id, so the name is resolved first) and returns the Databricks
+  earlier destination must never capture local/server registrations. It is the
+  fluent setup of the optimiser route's log, which runs inside
+  `mlflow_fluent_operation()`. Discovery and native artifact downloads use explicitly
+  pinned clients and tracking URIs without changing fluent state; pyfunc downloads use
+  the fluent operation for the SDK's nested model lookup.
+- `build_run_url(backend, experiment_name, run_id, *, tracking_uri=None)` — resolves
+  the numeric `experiment_id` through a client bound to `tracking_uri` (the fluent
+  tracking URI when omitted, as inside the optimiser route's fluent operation; run
+  URLs require the numeric id, so the name is resolved first) and returns the Databricks
   workspace URL for databricks mode, `{tracking_uri}/#/experiments/{id}/runs/{run_id}`
   for server mode — with the tracking URI passed through `redact_uri()`, so
   a credential-bearing env URI never reappears in a displayed run link —
@@ -878,7 +899,8 @@ where `""` is the local folder and any value outside the three keys is rejected 
   raised).
 
 `log_experiment(..., destination="")` resolves its backend through
-`configure_mlflow_tracking(destination)` inside the fluent operation.
+`resolve_tracking_backend(destination)` and logs through a client bound to it; only the
+model log runs inside the fluent operation.
 `src/haute/routes/optimiser.py` calls the naming/setup/url helpers with the
 request's destination; `src/haute/routes/mlflow.py` (mlflow-model-registry)
 consumes the inventory, per-key, and candidate resolvers and `node_destination_key` plus the

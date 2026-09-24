@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 import os
 from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -126,37 +125,39 @@ def _candidate(
     )
 
 
-@contextmanager
-def _mocked_mlflow(run_id: str = "abc123", **extra_patches: Any) -> Iterator[SimpleNamespace]:
-    """Patch every MLflow side effect ``log_experiment`` makes and expose the mocks."""
-    mock_run = MagicMock()
-    mock_run.info.run_id = run_id
-    names = {
-        "tracking": "mlflow.set_tracking_uri",
-        "registry": "mlflow.set_registry_uri",
-        "experiment": "mlflow.set_experiment",
-        "run": "mlflow.start_run",
-        "params": "mlflow.log_params",
-        "metrics": "mlflow.log_metrics",
-        "artifact": "mlflow.log_artifact",
-        "set_tag": "mlflow.set_tag",
-        "catboost_log_model": "mlflow.catboost.log_model",
-        "pyfunc_log_model": "mlflow.pyfunc.log_model",
-        "register": "mlflow.register_model",
-        **extra_patches,
-    }
-    with ExitStack() as stack:
-        mocks = {key: stack.enter_context(patch(target)) for key, target in names.items()}
-        mocks["run"].return_value.__enter__ = MagicMock(return_value=mock_run)
-        mocks["run"].return_value.__exit__ = MagicMock(return_value=False)
-        yield SimpleNamespace(**mocks)
+@pytest.fixture
+def local_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
+    """The local destination as a real file store under a temporary project root.
+
+    Yields a client bound to it; MLflow's fluent URIs are restored afterwards.
+    """
+    import mlflow
+    from mlflow.tracking import MlflowClient
+
+    from haute._sandbox import set_project_root
+    from haute.modelling._mlflow_log import resolve_tracking_backend
+
+    set_project_root(tmp_path)
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    tracking_uri, backend = resolve_tracking_backend()
+    assert backend == "local"
+    previous = mlflow.get_tracking_uri(), mlflow.get_registry_uri()
+    try:
+        yield MlflowClient(tracking_uri=tracking_uri, registry_uri=tracking_uri)
+    finally:
+        mlflow.set_tracking_uri(previous[0])
+        mlflow.set_registry_uri(previous[1])
 
 
-def _artifact_dirs(artifact_mock: MagicMock) -> list[str]:
-    return [
-        call.args[1] if len(call.args) > 1 else call.kwargs.get("artifact_path", "")
-        for call in artifact_mock.call_args_list
-    ]
+def _only_run(client: Any, experiment_name: str) -> Any:
+    experiment = client.get_experiment_by_name(experiment_name)
+    runs = client.search_runs([experiment.experiment_id])
+    assert len(runs) == 1, runs
+    return runs[0]
+
+
+def _artifact_names(client: Any, run_id: str, path: str | None = None) -> set[str]:
+    return {Path(item.path).name for item in client.list_artifacts(run_id, path)}
 
 
 class TestResolveTrackingBackend:
@@ -272,8 +273,6 @@ class TestResolveTrackingBackend:
 
 def test_decimal_signature_error_happens_before_pyfunc_model_logging(tmp_path: Path) -> None:
     """Unsupported Decimal contracts fail before MLflow receives a log_model call."""
-    import mlflow
-
     from haute.modelling._mlflow_log import _log_model_with_signature
 
     model_path = tmp_path / "model.rsglm"
@@ -281,7 +280,10 @@ def test_decimal_signature_error_happens_before_pyfunc_model_logging(tmp_path: P
     with patch("mlflow.pyfunc.log_model") as log_model:
         with pytest.raises(ValueError, match="MLflow 3.x"):
             _log_model_with_signature(
-                mlflow,
+                MagicMock(),
+                "run",
+                tracking_uri=tmp_path.as_uri(),
+                registry_uri=tmp_path.as_uri(),
                 model_path=model_path,
                 contract_path=tmp_path / "unused_contract.json",
                 metadata=ModelCardMetadata(
@@ -375,25 +377,30 @@ class TestResolveExperimentName:
 
 
 class TestBuildRunUrl:
+    @staticmethod
+    def _client_finding(experiment: Any) -> Any:
+        client = MagicMock()
+        client.return_value.get_experiment_by_name.return_value = experiment
+        return patch("mlflow.tracking.MlflowClient", client)
+
     def test_returns_none_for_local(self) -> None:
         from haute.modelling._mlflow_log import build_run_url
 
         assert build_run_url("local", "exp", "run123") is None
 
     def test_returns_url_for_databricks(self) -> None:
-        mock_experiment = MagicMock()
-        mock_experiment.experiment_id = "42"
-
         with (
             patch(
                 "mlflow.utils.databricks_utils.get_databricks_host_creds",
                 return_value=SimpleNamespace(host="https://myhost.databricks.com"),
             ),
-            patch("mlflow.get_experiment_by_name", return_value=mock_experiment),
+            self._client_finding(SimpleNamespace(experiment_id="42")),
         ):
             from haute.modelling._mlflow_log import build_run_url
 
-            url = build_run_url("databricks", "/Shared/haute/freq", "run123")
+            url = build_run_url(
+                "databricks", "/Shared/haute/freq", "run123", tracking_uri="databricks"
+            )
             assert url == "https://myhost.databricks.com/#mlflow/experiments/42/runs/run123"
 
     def test_returns_none_when_experiment_not_found(self) -> None:
@@ -402,11 +409,16 @@ class TestBuildRunUrl:
                 "mlflow.utils.databricks_utils.get_databricks_host_creds",
                 return_value=SimpleNamespace(host="https://myhost.databricks.com"),
             ),
-            patch("mlflow.get_experiment_by_name", return_value=None),
+            self._client_finding(None),
         ):
             from haute.modelling._mlflow_log import build_run_url
 
-            assert build_run_url("databricks", "/Shared/haute/freq", "run123") is None
+            assert (
+                build_run_url(
+                    "databricks", "/Shared/haute/freq", "run123", tracking_uri="databricks"
+                )
+                is None
+            )
 
     def test_returns_none_when_host_missing(self) -> None:
         with patch(
@@ -418,59 +430,62 @@ class TestBuildRunUrl:
             assert build_run_url("databricks", "/Shared/haute/freq", "run123") is None
 
     def test_strips_trailing_slash_from_host(self) -> None:
-        mock_experiment = MagicMock()
-        mock_experiment.experiment_id = "42"
-
         with (
             patch(
                 "mlflow.utils.databricks_utils.get_databricks_host_creds",
                 return_value=SimpleNamespace(host="https://myhost.databricks.com/"),
             ),
-            patch("mlflow.get_experiment_by_name", return_value=mock_experiment),
+            self._client_finding(SimpleNamespace(experiment_id="42")),
         ):
             from haute.modelling._mlflow_log import build_run_url
 
-            url = build_run_url("databricks", "/Shared/haute/freq", "run123")
+            url = build_run_url(
+                "databricks", "/Shared/haute/freq", "run123", tracking_uri="databricks"
+            )
+            assert url is not None
             assert "databricks.com//" not in url  # no double slash
 
     def test_returns_url_for_server(self) -> None:
-        mock_experiment = MagicMock()
-        mock_experiment.experiment_id = "42"
-
-        with (
-            patch("mlflow.get_experiment_by_name", return_value=mock_experiment),
-            patch("mlflow.get_tracking_uri", return_value="http://localhost:5000/"),
-        ):
+        with self._client_finding(SimpleNamespace(experiment_id="42")) as client:
             from haute.modelling._mlflow_log import build_run_url
 
-            url = build_run_url("server", "freq", "run123")
-            assert url == "http://localhost:5000/#/experiments/42/runs/run123"
+            url = build_run_url("server", "freq", "run123", tracking_uri="http://localhost:5000/")
+        assert url == "http://localhost:5000/#/experiments/42/runs/run123"
+        client.assert_called_once_with(tracking_uri="http://localhost:5000/")
 
-    def test_server_returns_none_when_experiment_not_found(self) -> None:
+    def test_without_a_tracking_uri_it_reads_the_fluent_one(self) -> None:
+        # Inside a fluent operation (the optimiser route) the caller passes none.
         with (
-            patch("mlflow.get_experiment_by_name", return_value=None),
+            self._client_finding(SimpleNamespace(experiment_id="42")) as client,
             patch("mlflow.get_tracking_uri", return_value="http://localhost:5000"),
         ):
             from haute.modelling._mlflow_log import build_run_url
 
-            assert build_run_url("server", "freq", "run123") is None
+            url = build_run_url("server", "freq", "run123")
+        assert url == "http://localhost:5000/#/experiments/42/runs/run123"
+        client.assert_called_once_with(tracking_uri="http://localhost:5000")
 
-    def test_server_run_url_redacts_embedded_credentials(self) -> None:
-        mock_experiment = MagicMock()
-        mock_experiment.experiment_id = "42"
-
-        with (
-            patch("mlflow.get_experiment_by_name", return_value=mock_experiment),
-            patch(
-                "mlflow.get_tracking_uri",
-                return_value="https://alice:hunter2xyz@mlflow.example.com:8443",
-            ),
-        ):
+    def test_server_returns_none_when_experiment_not_found(self) -> None:
+        with self._client_finding(None):
             from haute.modelling._mlflow_log import build_run_url
 
-            url = build_run_url("server", "freq", "run123")
-            assert url == "https://mlflow.example.com:8443/#/experiments/42/runs/run123"
-            assert "hunter2xyz" not in url
+            assert (
+                build_run_url("server", "freq", "run123", tracking_uri="http://localhost:5000")
+                is None
+            )
+
+    def test_server_run_url_redacts_embedded_credentials(self) -> None:
+        with self._client_finding(SimpleNamespace(experiment_id="42")):
+            from haute.modelling._mlflow_log import build_run_url
+
+            url = build_run_url(
+                "server",
+                "freq",
+                "run123",
+                tracking_uri="https://alice:hunter2xyz@mlflow.example.com:8443",
+            )
+        assert url == "https://mlflow.example.com:8443/#/experiments/42/runs/run123"
+        assert "hunter2xyz" not in url
 
 
 class TestRegistryUriFollowsDestination:
@@ -610,7 +625,7 @@ class TestLocalRegistrationEndToEnd:
 
 
 class TestLoggingNeverRegisters:
-    """Haute logs candidate runs; registering and promoting them is external."""
+    """Logging creates a candidate run; promotion registers it later, elsewhere."""
 
     def test_log_experiment_has_no_registry_parameter(self) -> None:
         import inspect
@@ -619,53 +634,57 @@ class TestLoggingNeverRegisters:
 
         assert "model_name" not in inspect.signature(log_experiment).parameters
 
-    def test_logging_never_calls_the_registry(self, tmp_path: Path) -> None:
+    def test_logging_never_calls_the_registry(self, tmp_path: Path, local_store: Any) -> None:
         from haute.modelling._mlflow_log import log_experiment
 
-        with _mocked_mlflow(
-            model_card="haute.modelling._mlflow_log._log_model_card",
-            model_logger="haute.modelling._mlflow_log._log_model_with_signature",
-        ) as m:
-            log_experiment(experiment_name="exp", candidate=_candidate(tmp_path))
-        m.register.assert_not_called()
+        with (
+            patch("haute.modelling._mlflow_log._log_model_card"),
+            patch("haute.modelling._mlflow_log._log_model_with_signature"),
+            patch("mlflow.register_model") as register,
+        ):
+            log_experiment(experiment_name="exp", candidate=_candidate(tmp_path / "c"))
+        register.assert_not_called()
+        assert local_store.search_registered_models() == []
 
 
 class TestLogExperiment:
-    def test_logs_the_candidate_run_name_tags_params_and_metrics(self, tmp_path: Path) -> None:
+    def test_logs_the_candidate_run_name_tags_params_and_metrics(
+        self, tmp_path: Path, local_store: Any
+    ) -> None:
         from haute.modelling._mlflow_log import log_experiment
 
         candidate = _candidate(
-            tmp_path,
+            tmp_path / "c",
             params={"algorithm": "catboost", "task": "regression"},
             metrics={"final_test_rmse": 0.5, "selection_gini_mean": 0.8},
             tags={"haute.contract_version": "1", "haute.node_id": "freq"},
         )
-        with _mocked_mlflow(
-            model_card="haute.modelling._mlflow_log._log_model_card",
-            model_logger="haute.modelling._mlflow_log._log_model_with_signature",
-        ) as m:
+        with (
+            patch("haute.modelling._mlflow_log._log_model_card"),
+            patch("haute.modelling._mlflow_log._log_model_with_signature") as model_logger,
+        ):
             result = log_experiment(experiment_name="/test/experiment", candidate=candidate)
 
-        assert "file://" in m.tracking.call_args[0][0]
-        m.registry.assert_called_once()  # registry follows the local tracking store
-        m.experiment.assert_called_once_with("/test/experiment")
-        m.run.assert_called_once_with(
-            run_name="freq · 2026-09-13 08:30 UTC",
-            tags={"haute.contract_version": "1", "haute.node_id": "freq"},
-        )
-        m.params.assert_called_once_with({"algorithm": "catboost", "task": "regression"})
-        m.metrics.assert_called_once_with({"final_test_rmse": 0.5, "selection_gini_mean": 0.8})
-        m.model_logger.assert_called_once()
+        run = local_store.get_run(result.run_id)
+        assert run.info.run_name == "freq · 2026-09-13 08:30 UTC"
+        assert run.info.status == "FINISHED"
+        assert run.data.tags["haute.contract_version"] == "1"
+        assert run.data.tags["haute.node_id"] == "freq"
+        assert run.data.params == {"algorithm": "catboost", "task": "regression"}
+        assert run.data.metrics == {"final_test_rmse": 0.5, "selection_gini_mean": 0.8}
+        assert _only_run(local_store, "/test/experiment").info.run_id == result.run_id
+        model_logger.assert_called_once()
         assert result.backend == "local"
         assert result.experiment_name == "/test/experiment"
-        assert result.run_id == "abc123"
         assert result.run_url is None
 
-    def test_logs_the_feature_contract_and_evaluation_evidence(self, tmp_path: Path) -> None:
+    def test_logs_the_feature_contract_and_evaluation_evidence(
+        self, tmp_path: Path, local_store: Any
+    ) -> None:
         from haute.modelling._mlflow_log import log_experiment
 
-        candidate = _candidate(tmp_path)
-        tuning_plan = tmp_path / "model.tuning-plan.json"
+        candidate = _candidate(tmp_path / "c")
+        tuning_plan = tmp_path / "c" / "model.tuning-plan.json"
         tuning_plan.write_text("{}", encoding="utf-8")
         candidate = replace(
             candidate,
@@ -674,49 +693,54 @@ class TestLogExperiment:
                 evidence={**candidate.artifacts.evidence, "tuning_plan": tuning_plan},
             ),
         )
-        with _mocked_mlflow(
-            model_card="haute.modelling._mlflow_log._log_model_card",
-            model_logger="haute.modelling._mlflow_log._log_model_with_signature",
-        ) as m:
-            log_experiment(experiment_name="exp", candidate=candidate)
+        with (
+            patch("haute.modelling._mlflow_log._log_model_card"),
+            patch("haute.modelling._mlflow_log._log_model_with_signature"),
+        ):
+            result = log_experiment(experiment_name="exp", candidate=candidate)
 
-        logged = list(
-            zip(
-                (Path(call.args[0]).name for call in m.artifact.call_args_list),
-                _artifact_dirs(m.artifact),
-                strict=True,
-            )
+        assert candidate.artifacts.feature_contract.name in _artifact_names(
+            local_store, result.run_id
         )
-        assert (candidate.artifacts.feature_contract.name, "") in logged
+        evaluation = _artifact_names(local_store, result.run_id, "evaluation")
+        tuning = _artifact_names(local_store, result.run_id, "tuning")
         for kind, path in candidate.artifacts.evidence.items():
-            expected_dir = "tuning" if kind == "tuning_plan" else "evaluation"
-            assert (path.name, expected_dir) in logged
+            assert path.name in (tuning if kind == "tuning_plan" else evaluation)
 
-    def test_databricks_sets_registry(
+    def test_databricks_logs_through_a_client_bound_to_the_unity_catalog_registry(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """When Databricks env vars present, set_registry_uri('databricks-uc') is called."""
         monkeypatch.setenv("DATABRICKS_MLFLOW_HOST", "https://myhost.databricks.com")
         monkeypatch.setenv("DATABRICKS_MLFLOW_TOKEN", "dapi_test_token")
-        mock_experiment = MagicMock()
-        mock_experiment.experiment_id = "42"
 
         from haute.modelling._mlflow_log import log_experiment
 
-        with _mocked_mlflow(
-            model_card="haute.modelling._mlflow_log._log_model_card",
-            model_logger="haute.modelling._mlflow_log._log_model_with_signature",
-            get_experiment="mlflow.get_experiment_by_name",
-        ) as m:
-            m.get_experiment.return_value = mock_experiment
+        client_class = MagicMock()
+        client = client_class.return_value
+        client.get_experiment_by_name.return_value = SimpleNamespace(
+            experiment_id="42", lifecycle_stage="active", name="/test/experiment"
+        )
+        client.create_run.return_value.info.run_id = "abc123"
+        with (
+            patch("mlflow.tracking.MlflowClient", client_class),
+            patch("haute.modelling._mlflow_log._log_model_card"),
+            patch("haute.modelling._mlflow_log._log_model_with_signature") as model_logger,
+            patch("mlflow.set_tracking_uri") as fluent_tracking,
+        ):
             result = log_experiment(
                 experiment_name="/test/experiment",
                 candidate=_candidate(tmp_path),
                 destination="databricks",
             )
 
-        m.tracking.assert_called_once_with("databricks")
-        m.registry.assert_called_once_with("databricks-uc")
+        assert client_class.call_args_list[0].kwargs == {
+            "tracking_uri": "databricks",
+            "registry_uri": "databricks-uc",
+        }
+        assert model_logger.call_args.kwargs["tracking_uri"] == "databricks"
+        assert model_logger.call_args.kwargs["registry_uri"] == "databricks-uc"
+        fluent_tracking.assert_not_called()  # only the (patched) model log is fluent
+        client.set_terminated.assert_called_once_with("abc123", "FINISHED")
         assert result.backend == "databricks"
         assert result.run_url is not None
         assert "myhost.databricks.com" in result.run_url
@@ -728,83 +752,92 @@ class TestLogExperiment:
 
         candidate = _candidate(tmp_path)
         candidate.artifacts.feature_contract.unlink()
-        with _mocked_mlflow() as m, pytest.raises(HauteValidationError, match="feature_contract"):
+        with (
+            patch("mlflow.tracking.MlflowClient") as client_class,
+            pytest.raises(HauteValidationError, match="feature_contract"),
+        ):
             log_experiment(experiment_name="exp", candidate=candidate)
-        m.tracking.assert_not_called()
-        m.run.assert_not_called()
+        client_class.assert_not_called()
 
     def test_rustystats_model_is_a_haute_pyfunc_plus_native_root_artifact(
-        self, tmp_path: Path
+        self, tmp_path: Path, local_store: Any
     ) -> None:
         """The GLM logs as a pyfunc whose loader scores with haute, and the native
         file sits at the run root where haute's run discovery looks for it."""
         from haute.modelling._mlflow_log import log_experiment
 
-        candidate = _candidate(tmp_path, suffix=".rsglm", algorithm="glm")
+        candidate = _candidate(tmp_path / "c", suffix=".rsglm", algorithm="glm")
         with (
-            _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m,
+            patch("haute.modelling._mlflow_log._log_model_card"),
             patch("haute.modelling._native_pyfunc.NativePyfuncModel"),
+            patch("mlflow.pyfunc.log_model") as pyfunc_log_model,
         ):
-            log_experiment(experiment_name="/test/glm", candidate=candidate)
+            result = log_experiment(experiment_name="/test/glm", candidate=candidate)
 
-        m.pyfunc_log_model.assert_called_once()
-        kwargs = m.pyfunc_log_model.call_args.kwargs
+        pyfunc_log_model.assert_called_once()
+        kwargs = pyfunc_log_model.call_args.kwargs
         assert kwargs["name"] == "model"
         assert kwargs["loader_module"] == "haute.modelling._native_pyfunc"
         assert Path(kwargs["data_path"]).name == "model"
         assert kwargs["signature"] is not None
-        native = [c for c in m.artifact.call_args_list if Path(c.args[0]).name == "model.rsglm"]
-        assert [c.args for c in native] == [(str(candidate.artifacts.model),)]
+        assert "model.rsglm" in _artifact_names(local_store, result.run_id)
 
     def test_catboost_model_is_the_shared_haute_pyfunc_plus_root_artifact(
-        self, tmp_path: Path
+        self, tmp_path: Path, local_store: Any
     ) -> None:
         from haute.modelling._mlflow_log import log_experiment
 
-        candidate = _candidate(tmp_path, model_file=_real_catboost_model(tmp_path))
-        with _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m:
-            log_experiment(experiment_name="/test/cbm", candidate=candidate)
+        candidate = _candidate(tmp_path / "c", model_file=_real_catboost_model(tmp_path / "c"))
+        with (
+            patch("haute.modelling._mlflow_log._log_model_card"),
+            patch("mlflow.catboost.log_model") as catboost_log_model,
+            patch("mlflow.pyfunc.log_model") as pyfunc_log_model,
+        ):
+            result = log_experiment(experiment_name="/test/cbm", candidate=candidate)
 
-        m.catboost_log_model.assert_not_called()
-        m.pyfunc_log_model.assert_called_once()
-        kwargs = m.pyfunc_log_model.call_args.kwargs
+        catboost_log_model.assert_not_called()
+        pyfunc_log_model.assert_called_once()
+        kwargs = pyfunc_log_model.call_args.kwargs
         # MLflow 3 spelling: the LoggedModel is named, never ``artifact_path``.
         assert kwargs["name"] == "model"
         assert "artifact_path" not in kwargs
         assert kwargs["loader_module"] == "haute.modelling._native_pyfunc"
-        signature = kwargs["signature"]
-        assert signature.inputs.input_names() == ["age"]
-        native = [c for c in m.artifact.call_args_list if Path(c.args[0]).name == "model.cbm"]
-        assert len(native) == 1
+        assert kwargs["signature"].inputs.input_names() == ["age"]
+        assert "model.cbm" in _artifact_names(local_store, result.run_id)
 
-    def test_unloadable_catboost_model_fails_before_log_model(self, tmp_path: Path) -> None:
+    def test_unloadable_catboost_model_fails_before_log_model(
+        self, tmp_path: Path, local_store: Any
+    ) -> None:
         from haute.errors import HauteValidationError
         from haute.modelling._mlflow_log import log_experiment
 
-        candidate = _candidate(tmp_path)  # b"fake-model" is not a CatBoost file
+        candidate = _candidate(tmp_path / "c")  # b"fake-model" is not a CatBoost file
         with (
-            _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m,
+            patch("haute.modelling._mlflow_log._log_model_card"),
+            patch("mlflow.pyfunc.log_model") as pyfunc_log_model,
             pytest.raises(HauteValidationError, match="could not be loaded"),
         ):
             log_experiment(experiment_name="/test/cbm", candidate=candidate)
-        m.pyfunc_log_model.assert_not_called()
+        pyfunc_log_model.assert_not_called()
+        assert _only_run(local_store, "/test/cbm").info.status == "FAILED"
 
-    def test_unknown_model_suffix_is_rejected(self, tmp_path: Path) -> None:
+    def test_unknown_model_suffix_is_rejected(self, tmp_path: Path, local_store: Any) -> None:
         from haute.errors import HauteValidationError
         from haute.modelling._mlflow_log import log_experiment
 
-        candidate = _candidate(tmp_path, suffix=".pkl")
+        candidate = _candidate(tmp_path / "c", suffix=".pkl")
         with (
-            _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m,
+            patch("haute.modelling._mlflow_log._log_model_card"),
+            patch("mlflow.pyfunc.log_model") as pyfunc_log_model,
             pytest.raises(
                 HauteValidationError, match=r"expected one of \.cbm, \.ebm, \.lgbm, \.rsglm, \.ubj"
             ),
         ):
             log_experiment(experiment_name="exp", candidate=candidate)
-        m.catboost_log_model.assert_not_called()
-        m.pyfunc_log_model.assert_not_called()
+        pyfunc_log_model.assert_not_called()
+        assert _only_run(local_store, "exp").info.status == "FAILED"
 
-    def test_diagnostics_are_logged_as_artifacts(self, tmp_path: Path) -> None:
+    def test_diagnostics_are_logged_as_artifacts(self, tmp_path: Path, local_store: Any) -> None:
         from haute.modelling._mlflow_log import log_experiment
 
         diagnostics = ModelDiagnostics(
@@ -818,98 +851,163 @@ class TestLogExperiment:
             glm_coefficients=[{"feature": "x1", "coeff": 0.5}],
             glm_fit_statistics={"aic": 100.0},
         )
-        with _mocked_mlflow(
-            model_logger="haute.modelling._mlflow_log._log_model_with_signature",
-        ) as m:
+        with patch("haute.modelling._mlflow_log._log_model_with_signature"):
             result = log_experiment(
                 experiment_name="/test/all",
-                candidate=_candidate(tmp_path, diagnostics=diagnostics),
+                candidate=_candidate(tmp_path / "c", diagnostics=diagnostics),
             )
 
-        assert result.run_id == "abc123"
-        dirs = _artifact_dirs(m.artifact)
+        dirs = _artifact_names(local_store, result.run_id)
         for expected in ("shap", "importance", "diagnostics", "glm", "model_card"):
             assert expected in dirs, f"Missing artifact dir: {expected}"
         assert "cv" not in dirs
 
-    def test_model_card_failure_is_tagged_not_hidden(self, tmp_path: Path) -> None:
+    def test_model_card_failure_is_tagged_not_hidden(
+        self, tmp_path: Path, local_store: Any
+    ) -> None:
         from haute.modelling._mlflow_log import log_experiment
 
-        with _mocked_mlflow(
-            model_card="haute.modelling._mlflow_log._log_model_card",
-            model_logger="haute.modelling._mlflow_log._log_model_with_signature",
-        ) as m:
-            m.model_card.side_effect = RuntimeError("boom")
-            result = log_experiment(experiment_name="exp", candidate=_candidate(tmp_path))
-        assert result.run_id == "abc123"
-        m.set_tag.assert_called_once_with("haute.model_card", "unavailable")
+        with (
+            patch("haute.modelling._mlflow_log._log_model_card", side_effect=RuntimeError("boom")),
+            patch("haute.modelling._mlflow_log._log_model_with_signature"),
+        ):
+            result = log_experiment(experiment_name="exp", candidate=_candidate(tmp_path / "c"))
+        run = local_store.get_run(result.run_id)
+        assert run.data.tags["haute.model_card"] == "unavailable"
+        assert run.info.status == "FINISHED"
 
-    def test_many_params_batched_and_long_values_truncated(self, tmp_path: Path) -> None:
+    def test_many_params_batched_and_long_values_truncated(
+        self, tmp_path: Path, local_store: Any
+    ) -> None:
+        # A batch carries at most 100 parameters, which the file store enforces.
         from haute.modelling._mlflow_log import log_experiment
 
         params: dict[str, Any] = {f"param_{i}": f"value_{i}" for i in range(149)}
         params["long_param"] = "x" * 1000
-        with _mocked_mlflow(
-            model_card="haute.modelling._mlflow_log._log_model_card",
-            model_logger="haute.modelling._mlflow_log._log_model_with_signature",
-        ) as m:
-            log_experiment(experiment_name="exp", candidate=_candidate(tmp_path, params=params))
-        assert m.params.call_count == 2
-        logged = {k: v for call in m.params.call_args_list for k, v in call.args[0].items()}
+        with (
+            patch("haute.modelling._mlflow_log._log_model_card"),
+            patch("haute.modelling._mlflow_log._log_model_with_signature"),
+        ):
+            result = log_experiment(
+                experiment_name="exp", candidate=_candidate(tmp_path / "c", params=params)
+            )
+        logged = local_store.get_run(result.run_id).data.params
+        assert len(logged) == 150
         assert len(logged["long_param"]) == 500
 
-    def test_rustystats_run_yields_native_artifact_discoverable_end_to_end(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
+    def test_a_log_after_another_experiment_was_selected_attaches_to_its_own_run(
+        self, tmp_path: Path, local_store: Any
     ) -> None:
-        """Against a real file store, the logged GLM run's native ``.rsglm`` is what
-        haute's run-artifact discovery finds."""
+        """The optimiser route selects its experiment with ``mlflow.set_experiment``
+        inside the fluent operation, and a notebook may select one outside it; a
+        training log afterwards still attaches its model log to its own run."""
         import mlflow
 
-        from haute._mlflow_io import _find_model_artifact
-        from haute._sandbox import set_project_root
+        from haute._mlflow_utils import mlflow_fluent_operation
+        from haute.modelling._mlflow_log import log_experiment, resolve_tracking_backend
+
+        tracking_uri, _ = resolve_tracking_backend()
+        with mlflow_fluent_operation():
+            mlflow.set_tracking_uri(tracking_uri)
+            mlflow.set_experiment("optimiser-exp")
+        mlflow.set_tracking_uri(tracking_uri)
+        notebook = mlflow.set_experiment("notebook-exp")
+
+        candidate = _candidate(tmp_path / "c", model_file=_real_catboost_model(tmp_path / "c"))
+        with (
+            patch("haute.modelling._mlflow_log._log_model_card"),
+            patch("mlflow.pyfunc.log_model") as pyfunc_log_model,
+        ):
+            result = log_experiment(experiment_name="training-exp", candidate=candidate)
+
+        pyfunc_log_model.assert_called_once()
+        run = local_store.get_run(result.run_id)
+        assert run.info.status == "FINISHED"
+        training = local_store.get_experiment_by_name("training-exp")
+        assert run.info.experiment_id == training.experiment_id
+        from mlflow.tracking import fluent
+
+        assert fluent._active_experiment_id == notebook.experiment_id
+
+    def test_two_logs_run_concurrently_outside_the_model_log(self, tmp_path: Path) -> None:
+        """Only the model log holds MLflow's process-global state (MLF-R02).
+
+        One log is held inside the fluent operation while it logs its model; a
+        second log to a different destination completes meanwhile, and each
+        run lands in its own store.
+        """
+        import threading
+
+        from mlflow.tracking import MlflowClient
+
+        from haute._mlflow_utils import mlflow_fluent_operation
         from haute.modelling._mlflow_log import log_experiment
 
-        set_project_root(tmp_path)
-        candidate = _candidate(
-            tmp_path / "artifacts",
-            suffix=".rsglm",
-            algorithm="glm",
-            features=("difference_to_market",),
-        )
-        try:
-            # The fake .rsglm is not loadable; this test is about artifact discovery.
-            with patch("haute.modelling._native_pyfunc.NativePyfuncModel"):
-                result = log_experiment(experiment_name="rustystats_e2e", candidate=candidate)
+        stores = {"slow": (tmp_path / "slow").as_uri(), "fast": (tmp_path / "fast").as_uri()}
+        entered, release = threading.Event(), threading.Event()
 
-            from mlflow.tracking import MlflowClient
+        def model_log(client: Any, run_id: str, **_: Any) -> None:
+            if threading.current_thread().name == "slow":
+                with mlflow_fluent_operation():
+                    entered.set()
+                    assert release.wait(30)
 
-            client = MlflowClient(tracking_uri=result.tracking_uri)
-            artifact_path, flavor = _find_model_artifact(client, result.run_id)
-            assert flavor == "rustystats"
-            assert Path(artifact_path).name == "model.rsglm"
-            root = {Path(f.path).name for f in client.list_artifacts(result.run_id)}
-            assert candidate.artifacts.feature_contract.name in root
-            assert client.get_run(result.run_id).data.tags["haute.contract_version"] == "1"
-        finally:
-            mlflow.set_tracking_uri("")
-            mlflow.set_registry_uri(None)
+        def destination(_key: str = "") -> tuple[str, str]:
+            return stores[threading.current_thread().name], "local"
+
+        results: dict[str, Any] = {}
+
+        def log(name: str) -> None:
+            results[name] = log_experiment(
+                experiment_name=f"{name}-exp", candidate=_candidate(tmp_path / name)
+            )
+
+        with (
+            patch("haute.modelling._mlflow_log.resolve_tracking_backend", destination),
+            patch("haute.modelling._mlflow_log._log_model_card"),
+            patch("haute.modelling._mlflow_log._log_model_with_signature", model_log),
+            patch.dict(os.environ, {"MLFLOW_ALLOW_FILE_STORE": "true"}),
+        ):
+            slow = threading.Thread(target=log, args=("slow",), name="slow")
+            slow.start()
+            try:
+                assert entered.wait(30)
+                fast = threading.Thread(target=log, args=("fast",), name="fast")
+                fast.start()
+                fast.join(30)
+                finished_while_held = not fast.is_alive()
+            finally:
+                release.set()
+                slow.join(30)
+
+        assert finished_while_held
+        for name, uri in stores.items():
+            run = MlflowClient(tracking_uri=uri).get_run(results[name].run_id)
+            assert run.info.status == "FINISHED"
+            assert results[name].tracking_uri == uri
 
 
 class TestBuildRunUrlExtra:
     def test_returns_none_on_exception(self) -> None:
-        """When mlflow.get_experiment_by_name raises, return None."""
+        """When the bound client's experiment lookup raises, return None."""
+        client = MagicMock()
+        client.return_value.get_experiment_by_name.side_effect = RuntimeError("boom")
         with (
             patch(
                 "mlflow.utils.databricks_utils.get_databricks_host_creds",
                 return_value=SimpleNamespace(host="https://myhost.databricks.com"),
             ),
-            patch("mlflow.get_experiment_by_name", side_effect=RuntimeError("boom")),
+            patch("mlflow.tracking.MlflowClient", client),
         ):
             from haute.modelling._mlflow_log import build_run_url
 
-            assert build_run_url("databricks", "/Shared/haute/freq", "run123") is None
+            url = build_run_url(
+                "databricks", "/Shared/haute/freq", "run123", tracking_uri="databricks"
+            )
+
+        assert url is None
+        client.assert_called_once_with(tracking_uri="databricks")
+        client.return_value.get_experiment_by_name.assert_called_once_with("/Shared/haute/freq")
 
 
 class TestConfigureMlflowTracking:
@@ -994,38 +1092,41 @@ class TestConfigureMlflowTracking:
 
 class TestLogJsonArtifact:
     def test_writes_and_cleans_up(self) -> None:
-        """_log_json_artifact should write JSON, log it, and delete the file."""
+        """_log_json_artifact should write JSON, log it to the run, and delete the file."""
 
-        mock_mlflow = MagicMock()
+        client = MagicMock()
         from haute.modelling._mlflow_log import _log_json_artifact
 
-        _log_json_artifact(mock_mlflow, {"key": "value"}, "test", "test_dir")
-        mock_mlflow.log_artifact.assert_called_once()
-        logged_path = mock_mlflow.log_artifact.call_args[0][0]
+        _log_json_artifact(client, "run-1", {"key": "value"}, "test", "test_dir")
+        client.log_artifact.assert_called_once()
+        run_id, logged_path, artifact_dir = client.log_artifact.call_args.args
+        assert (run_id, artifact_dir) == ("run-1", "test_dir")
         # File should have been cleaned up
         assert not Path(logged_path).exists()
 
     def test_cleans_up_on_error(self) -> None:
         """Even if log_artifact raises, the temp file should be cleaned up."""
 
-        mock_mlflow = MagicMock()
-        mock_mlflow.log_artifact.side_effect = RuntimeError("boom")
+        client = MagicMock()
+        client.log_artifact.side_effect = RuntimeError("boom")
 
         from haute.modelling._mlflow_log import _log_json_artifact
 
         with pytest.raises(RuntimeError, match="boom"):
-            _log_json_artifact(mock_mlflow, {"key": "value"}, "test", "test_dir")
+            _log_json_artifact(client, "run-1", {"key": "value"}, "test", "test_dir")
+        assert not Path(client.log_artifact.call_args.args[1]).exists()
 
 
 class TestLogModelCard:
     def test_generates_and_logs_html(self) -> None:
-        """_log_model_card should generate HTML and log as artifact."""
+        """_log_model_card should generate HTML and log it to the run."""
 
-        mock_mlflow = MagicMock()
+        client = MagicMock()
         from haute.modelling._mlflow_log import _log_model_card
 
         _log_model_card(
-            mock_mlflow,
+            client,
+            "run-1",
             name="test-model",
             metrics={"rmse": 0.5},
             params={"algo": "catboost"},
@@ -1033,11 +1134,11 @@ class TestLogModelCard:
             metadata=ModelCardMetadata(algorithm="catboost", task="regression"),
         )
 
-        mock_mlflow.log_artifact.assert_called_once()
-        args = mock_mlflow.log_artifact.call_args
-        assert args[0][1] == "model_card"
+        client.log_artifact.assert_called_once()
+        run_id, logged_path, artifact_dir = client.log_artifact.call_args.args
+        assert (run_id, artifact_dir) == ("run-1", "model_card")
         # Temp file should be cleaned up
-        assert not Path(args[0][0]).exists()
+        assert not Path(logged_path).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1079,7 +1180,7 @@ class TestLoggedModelEnvironment:
     """The logged model's environment is the interpreter that trained it."""
 
     def test_non_catboost_flavor_is_logged_as_the_named_model(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, local_store: Any
     ) -> None:
         monkeypatch.delenv("MLFLOW_UV_AUTO_DETECT", raising=False)
         seen: dict[str, Any] = {}
@@ -1093,13 +1194,13 @@ class TestLoggedModelEnvironment:
         from haute.modelling._mlflow_log import log_experiment
 
         with (
-            _mocked_mlflow(model_card="haute.modelling._mlflow_log._log_model_card") as m,
+            patch("haute.modelling._mlflow_log._log_model_card"),
             patch("haute.modelling._native_pyfunc.NativePyfuncModel"),
+            patch("mlflow.pyfunc.log_model", side_effect=_capture),
         ):
-            m.pyfunc_log_model.side_effect = _capture
             log_experiment(
                 experiment_name="/test/rsglm",
-                candidate=_candidate(tmp_path, suffix=".rsglm", algorithm="glm"),
+                candidate=_candidate(tmp_path / "c", suffix=".rsglm", algorithm="glm"),
             )
 
         assert seen["kwargs"] == ["data_path", "loader_module", "name", "signature"]
