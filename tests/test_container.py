@@ -17,8 +17,10 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
+from haute._types import NodeType
 from haute.deploy._config import ContainerConfig, DeployConfig, ResolvedDeploy
 from haute.deploy._container import (
+    _SCORING_RUNTIME_DEPENDENCIES,
     DEFAULT_QUOTE_REQUEST_BODY_LIMIT_BYTES,
     DEFAULT_QUOTE_RESPONSE_ROW_LIMIT,
     ContainerBuildResult,
@@ -136,11 +138,22 @@ class _FakeRequest:
             yield chunk
 
 
-def _dockerfile_pip_install_deps(dockerfile: str) -> list[str]:
+# haute's own dependency marker: the CPU-only XGBoost build except on macOS.
+_EXPECTED_XGBOOST = "xgboost" if sys.platform == "darwin" else "xgboost-cpu"
+
+
+def _dockerfile_install_lines(dockerfile: str) -> tuple[list[str], str]:
+    """The scoring-runtime requirements and the ``--no-deps`` haute requirement."""
     prefix = "RUN pip install --no-cache-dir "
     install_lines = [line for line in dockerfile.splitlines() if line.startswith(prefix)]
-    assert len(install_lines) == 1, "Dockerfile must contain one pip install command"
-    return install_lines[0].removeprefix(prefix).split()
+    assert len(install_lines) == 2, "Dockerfile installs the runtime, then haute"
+    runtime, haute = (line.removeprefix(prefix) for line in install_lines)
+    assert haute.startswith("--no-deps "), haute
+    return runtime.split(), haute.removeprefix("--no-deps ")
+
+
+def _dockerfile_pip_install_deps(dockerfile: str) -> list[str]:
+    return _dockerfile_install_lines(dockerfile)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -968,14 +981,58 @@ class TestGenerateDockerfile:
         resolved = _make_resolved()
         df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
 
-        deps = _dockerfile_pip_install_deps(df)
+        deps, haute = _dockerfile_install_lines(df)
 
-        assert f"haute=={version('haute')}" in deps
+        assert haute == f"haute=={version('haute')}"
         assert f"polars=={version('polars')}" in deps
         assert f"fastapi=={version('fastapi')}" in deps
-        assert "haute" not in deps
         assert "polars" not in deps
         assert "fastapi" not in deps
+
+    def test_installs_haute_without_its_dependencies_and_the_scoring_runtime_only(
+        self,
+    ) -> None:
+        # DEP-R02: haute's own dependencies bring the assistant, tuning, editor
+        # and MLflow stacks; the image installs haute --no-deps plus a pinned
+        # scoring runtime instead.
+        df = _generate_dockerfile("python:3.11-slim", 8080, _make_resolved())
+
+        deps, haute = _dockerfile_install_lines(df)
+        names = {dep.split("==")[0].split("[")[0] for dep in deps}
+
+        assert haute == f"haute=={version('haute')}"
+        assert names == {name for name, _ in _SCORING_RUNTIME_DEPENDENCIES}
+        assert not names & {"anthropic", "openai", "optuna", "libcst", "mlflow", "tomlkit"}
+        assert df.index("--no-deps") > df.index(deps[0])
+
+    @pytest.mark.parametrize(("source_type", "needs_mlflow"), [("run", True), ("file", False)])
+    def test_an_mlflow_sourced_optimiser_apply_adds_mlflow(
+        self, source_type: str, needs_mlflow: bool
+    ) -> None:
+        # MLflow-sourced optimiser artefacts are loaded when the container runs.
+        resolved = make_resolved_deploy(
+            pipeline_file=Path("main.py"),
+            target="container",
+            container=ContainerConfig(base_image="python:3.11.9-slim"),
+            pruned_graph=PipelineGraph(
+                nodes=[
+                    GraphNode(
+                        id="apply",
+                        data=NodeData(
+                            label="apply",
+                            nodeType=NodeType.OPTIMISER_APPLY,
+                            config={"sourceType": source_type},
+                        ),
+                    )
+                ]
+            ),
+        )
+
+        deps = _dockerfile_pip_install_deps(
+            _generate_dockerfile("python:3.11-slim", 8080, resolved)
+        )
+
+        assert (f"mlflow=={version('mlflow')}" in deps) is needs_mlflow
 
     def test_fails_loudly_when_core_dependency_metadata_is_unavailable(
         self,
@@ -1017,15 +1074,16 @@ class TestGenerateDockerfile:
 
     def test_extra_deps_follow_core_deps_in_sorted_order(self) -> None:
         resolved = _make_resolved(
-            artifacts={"sev.pkl": Path("sev.pkl"), "freq.cbm": Path("freq.cbm")}
+            artifacts={"sev.lgbm": Path("sev.lgbm"), "freq.cbm": Path("freq.cbm")}
         )
         df = _generate_dockerfile("python:3.11-slim", 8080, resolved)
 
         deps = _dockerfile_pip_install_deps(df)
 
-        assert deps[-2:] == [
+        assert deps[-3:] == [
             f"catboost=={version('catboost')}",
-            f"scikit-learn=={version('scikit-learn')}",
+            f"lightgbm=={version('lightgbm')}",
+            f"pandas=={version('pandas')}",
         ]
 
     def test_lgb_artifact_without_lightgbm_installed_fails_loudly(
@@ -1067,21 +1125,66 @@ class TestDetectExtraDeps:
         resolved = _make_resolved(artifacts={"m.cbm": Path("m.cbm")})
         assert _detect_extra_deps(resolved) == ["catboost"]
 
-    def test_pkl_maps_to_sklearn(self) -> None:
-        resolved = _make_resolved(artifacts={"m.pkl": Path("m.pkl")})
-        assert _detect_extra_deps(resolved) == ["scikit-learn"]
+    @pytest.mark.parametrize("artifact", ["m.pkl", "m.pickle", "m.joblib"])
+    def test_a_pickle_brings_every_package_the_restricted_unpickler_allows(
+        self, artifact: str
+    ) -> None:
+        # The container unpickles with the same allowlist; every third-party
+        # package it names beyond the scoring runtime must be installed.
+        from haute._sandbox import _ALLOWED_PICKLE_CLASSES, _ALLOWED_PICKLE_GLOBALS
 
-    def test_pickle_maps_to_sklearn(self) -> None:
-        resolved = _make_resolved(artifacts={"m.pickle": Path("m.pickle")})
-        assert _detect_extra_deps(resolved) == ["scikit-learn"]
+        allowed = {module.partition(".")[0] for module, _ in _ALLOWED_PICKLE_CLASSES}
+        allowed |= {module.partition(".")[0] for module, _ in _ALLOWED_PICKLE_GLOBALS}
+        importable_from = {
+            "catboost": "catboost",
+            "interpret": "interpret-core",
+            "lightgbm": "lightgbm",
+            "pandas": "pandas",
+            "sklearn": "scikit-learn",
+            "xgboost": _EXPECTED_XGBOOST,
+        }
+        in_runtime_or_stdlib = {"numpy", "polars", "joblib", *sys.stdlib_module_names}
+
+        assert allowed - in_runtime_or_stdlib == set(importable_from)
+        resolved = _make_resolved(artifacts={artifact: Path(artifact)})
+        assert _detect_extra_deps(resolved) == sorted(importable_from.values())
 
     def test_lgb_maps_to_lightgbm(self) -> None:
         resolved = _make_resolved(artifacts={"m.lgb": Path("m.lgb")})
         assert _detect_extra_deps(resolved) == ["lightgbm"]
 
-    def test_xgb_maps_to_xgboost(self) -> None:
+    def test_xgb_maps_to_the_installed_xgboost_distribution(self) -> None:
         resolved = _make_resolved(artifacts={"m.xgb": Path("m.xgb")})
-        assert _detect_extra_deps(resolved) == ["xgboost"]
+        assert _detect_extra_deps(resolved) == [_EXPECTED_XGBOOST]
+
+    def test_an_xgboost_model_pins_the_distribution_installed_here(self) -> None:
+        # haute depends on xgboost-cpu except on macOS; pinning reads installed
+        # metadata, so naming the wrong distribution fails Dockerfile generation.
+        resolved = _make_resolved(artifacts={"m.ubj": Path("m.ubj")})
+
+        deps = _dockerfile_pip_install_deps(
+            _generate_dockerfile("python:3.11-slim", 8080, resolved)
+        )
+
+        assert f"{_EXPECTED_XGBOOST}=={version(_EXPECTED_XGBOOST)}" in deps
+        assert f"pandas=={version('pandas')}" in deps
+
+    @pytest.mark.parametrize(
+        ("artifact", "expected"),
+        [
+            ("m.ubj", sorted([_EXPECTED_XGBOOST, "pandas"])),
+            ("m.lgbm", ["lightgbm", "pandas"]),
+            ("m.ebm", ["interpret-core", "pandas"]),
+            ("m.rsglm", ["rustystats"]),
+        ],
+    )
+    def test_each_haute_model_family_brings_its_engine(
+        self, artifact: str, expected: list[str]
+    ) -> None:
+        # haute is installed --no-deps, so every exported model format must name
+        # the engine that loads it (and pandas where haute's encoding needs it).
+        resolved = _make_resolved(artifacts={artifact: Path(artifact)})
+        assert _detect_extra_deps(resolved) == expected
 
     def test_onnx_maps_to_onnxruntime(self) -> None:
         resolved = _make_resolved(artifacts={"m.onnx": Path("m.onnx")})
@@ -1100,10 +1203,10 @@ class TestDetectExtraDeps:
             artifacts={
                 "freq.cbm": Path("freq.cbm"),
                 "sev.cbm": Path("sev.cbm"),
-                "scaler.pkl": Path("scaler.pkl"),
+                "glm.rsglm": Path("glm.rsglm"),
             }
         )
-        assert _detect_extra_deps(resolved) == ["catboost", "scikit-learn"]
+        assert _detect_extra_deps(resolved) == ["catboost", "rustystats"]
 
     def test_case_insensitive(self) -> None:
         resolved = _make_resolved(artifacts={"Model.CBM": Path("Model.CBM")})
@@ -1460,9 +1563,10 @@ class TestBuildAndPushImage:
         manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
         assert manifest["container_dependencies"] == [
             f"haute=={version('haute')}",
-            f"polars=={version('polars')}",
-            f"fastapi=={version('fastapi')}",
-            f"uvicorn[standard]=={version('uvicorn')}",
+            *(
+                f"{install_name}=={version(distribution)}"
+                for distribution, install_name in _SCORING_RUNTIME_DEPENDENCIES
+            ),
             f"catboost=={version('catboost')}",
         ]
 

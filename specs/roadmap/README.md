@@ -20,7 +20,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Assistant](assistant.md) | One capability catalogue and example format; harnesses out of the runtime package | `ASSIST-R01` |
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache usage, freshness and retention | `CACHE-S24` |
-| [Deploy](deploy.md) | A slim scoring runtime, offered targets | `DEP-R02` |
+| [Deploy](deploy.md) | Offered targets | `DEP-R03` |
 | [Engineering quality](engineering-quality.md) | Dead code, tracked artifacts, specification drift, coverage gates, test organisation | `ENGQ-R01` |
 | [Execution engine](execution-engine.md) | Chunked runner, one execution walker | `EXEC-R05` |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | — |

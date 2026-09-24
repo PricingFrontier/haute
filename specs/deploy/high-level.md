@@ -146,7 +146,9 @@ provide.
   keep.
 - **Container**: generates a FastAPI app (`POST /quote`, `GET /health`) and a Dockerfile
   pinned to dependency versions actually installed in the build environment, builds the
-  image, and pushes it to a registry if one is configured. `/quote` accepts a single JSON
+  image, and pushes it to a registry if one is configured. The image installs `haute`
+  without its dependencies plus the pinned scoring runtime (see **Scoring runtime**), so
+  it carries no assistant, tuning or editor package. `/quote` accepts a single JSON
   object or an array, enforces a byte limit before materialisation, and either returns a
   stable JSON envelope capped at 1,000 returned rows or streams all rows as ordered NDJSON
   when requested through `Accept`. NDJSON is collected into a bounded-memory spooled
@@ -215,10 +217,10 @@ approving it.
 - **Reproducible container builds.** `container.base_image` must be pinned to an explicit
   patch version or a digest (`src/haute/deploy/_config.py::_validate_base_image_pinning`) — floating tags
   like `python:3.11-slim` are rejected outright, because the image bytes tested today
-  must be the image bytes served tomorrow. Dockerfile dependency versions
-  (`haute`, `polars`, `fastapi`, `uvicorn`) are pinned to whatever is actually installed
-  in the build environment rather than left unpinned or hardcoded, so a build environment
-  drift is caught rather than silently propagated to a fresh, possibly incompatible pull.
+  must be the image bytes served tomorrow. Dockerfile dependency versions (`haute` and
+  every scoring-runtime package) are pinned to whatever is actually installed in the build
+  environment rather than left unpinned or hardcoded, so a build environment drift is
+  caught rather than silently propagated to a fresh, possibly incompatible pull.
 - **Schema-cache identity tracks served bytes, not just graph shape.** The output-schema
   dry-run cache key folds in `artifact_identity_fingerprint()` — the runtime fingerprint
   of every bundled artefact's resolved path, size, mtime, and shared content signature — so retraining a model in
@@ -361,13 +363,33 @@ most: a silent wrong answer here mis-prices real policies.
   non-zero staging value (`src/haute/deploy/_impact.py::_raise_for_non_finite_predictions`,
   `_zero_baseline_change_count`, `_total_percent_change`).
 
+## Scoring runtime
+
+`pip install haute` is unchanged: it brings the editor, assistant, training, tuning and
+MLflow stacks. A container image installs only what scoring imports (decided
+24 September 2026). Its Dockerfile installs a pinned scoring runtime — `polars`,
+`pyarrow`, `numpy`, `pydantic`, `fastapi`, `uvicorn[standard]`, `structlog`, `xxhash`,
+`psutil`, `orjson`, `msgspec`, `joblib` and `price-contour` — then `haute` itself with
+`--no-deps`. To that it adds each bundled artefact's model runtime by file suffix, and
+`mlflow` when the served graph has an optimiser apply that loads its artefact from MLflow
+at run time. Every package is pinned to the version installed in the deploying
+environment. A third-party package that the pipeline's own code imports, and that is
+neither in the runtime nor detected from an artefact, is not installed. A test serves
+the container smoke example in process with every other `haute` dependency made
+unimportable, and the weekly container-smoke lane builds and serves the real image.
+
 ## Model families in deployment
 
-A deployment installs `haute` at the deploying version, whose core dependencies bring each
-model family's engine with the platform marker: `xgboost-cpu` (capped below 3.3) on Linux and
-Windows and `xgboost` on macOS, plus `lightgbm` (below 5) and `interpret-core` (0.7.x), so
-container and Databricks Model Serving images (Linux, Python 3.11.11) score XGBoost, LightGBM
-and EBM on CPU with no extra requirement. Bundling discovers `.ubj`, `.lgbm` and `.ebm`
+A Databricks Model Serving deployment installs `haute` at the deploying version, whose core
+dependencies bring each model family's engine with the platform marker: `xgboost-cpu`
+(capped below 3.3) on Linux and Windows and `xgboost` on macOS, plus `lightgbm` (below 5)
+and `interpret-core` (0.7.x). A container image adds the engine each bundled model needs
+from its suffix instead: `.cbm` → `catboost`, `.ubj` → the installed XGBoost distribution
+plus `pandas`, `.lgbm` → `lightgbm` plus `pandas`, `.ebm` → `interpret-core` plus `pandas`,
+and `.rsglm` → `rustystats`. A pickled or joblib artefact (`.pkl`, `.pickle`, `.joblib`) may
+hold an object of any third-party package haute's restricted unpickler allows, so it adds all
+of them: `catboost`, `interpret-core`, `lightgbm`, `pandas`, `scikit-learn` and XGBoost. Both
+score XGBoost, LightGBM and EBM on CPU with no extra requirement. Bundling discovers `.ubj`, `.lgbm` and `.ebm`
 artifacts with the other native suffixes and carries each model's feature contract; for an
 `.ebm` it fetches the contract the run logged beside the model, and the deployed scorer loads
 the EBM under that bundled contract. A macOS image must provide `libomp`.

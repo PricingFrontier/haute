@@ -256,13 +256,16 @@ container-relative paths, write `deploy_manifest.json`, copy every artefact file
 `artifacts/`, remove any `utility/` or `utility.py` an earlier build left in a reused build
 directory, then copy the bundled `utility` package to `utility/` (or the module to
 `utility.py`) without `__pycache__` directories, generate `app.py` from an f-string template, generate `Dockerfile` (base
-image + core deps + the model-runtime deps auto-detected from artefact file extensions,
-every one pinned through `importlib.metadata` to the version installed in the deploying
-environment — the container unpickles the model, so a runtime resolved fresh at
-image-build time could load it under a different version than wrote it; a runtime the
-artefacts need that is not installed raises `DeployError` naming the artefact and the
-package — with `HAUTE_EXECUTION_MEMORY_POLICY=strict_server`), record the full pinned
-`pip install` list in the manifest as `container_dependencies`, pick
+image; one `pip install` of the scoring runtime `_SCORING_RUNTIME_DEPENDENCIES`, of `mlflow`
+when the pruned graph has an `optimiserApply` node sourced from an MLflow run or registered
+model, and of the model-runtime packages `_ARTIFACT_EXT_TO_DEPS` maps from artefact file
+suffixes; then a second `pip install --no-deps` of `haute` itself; every package pinned
+through `importlib.metadata` to the version installed in the deploying environment — the
+container unpickles the model, so a runtime resolved fresh at image-build time could load it
+under a different version than wrote it; a runtime the artefacts need that is not installed
+raises `DeployError` naming the artefact and the package — with
+`HAUTE_EXECUTION_MEMORY_POLICY=strict_server`), record the full pinned list (`haute` first)
+in the manifest as `container_dependencies`, pick
 an image tag (`<registry>/<model_name>:<git_sha>` or `<model_name>:<git_sha>`; the short
 SHA is read through the git command core's `_run_git_ok`, falling back to `"local"` when
 git is not installed or the directory is not a git repository), `docker build`, then
@@ -645,7 +648,7 @@ what they cover:
   a project module outside `utility`, imported from the preamble or from a `utility` file,
   is refused at validation naming the module and file, and that a pipeline without
   project modules bundles none.
-- **`test_container_smoke_script.py`** — covers the container deployment seam (`prepare_build_directory` writing artefacts and handling custom wheel requirements), `build_and_push_image` build-directory cleanup on Docker failure, and the end-to-end `--serve-check` uvicorn subprocess smoke.
+- **`test_container_smoke_script.py`** — covers the container deployment seam (`prepare_build_directory` writing artefacts and handling custom wheel requirements), `build_and_push_image` build-directory cleanup on Docker failure, the end-to-end `--serve-check` uvicorn subprocess smoke, and the scoring runtime: the generated app scores the smoke example's golden request in a fresh interpreter in which every package haute's dependencies provide and the Dockerfile does not install is unimportable.
 - **`test_deploy_batch_scoring.py`** — the multi-row path end to end: a one-row request
   launching no worker; a two-row request launching exactly one
   `haute-deploy-batch` worker with the budget's memory limit and
