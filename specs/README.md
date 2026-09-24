@@ -151,9 +151,9 @@ The system has three tiers:
 - **Deploy target** — a live scoring endpoint using the same validated scoring contract as the
   editor. Databricks Model Serving is implemented end to end through an MLflow pyfunc model. The
   generic `container` target builds and pushes a FastAPI scoring image but deliberately does not
-  choose a hosting platform. Azure Container Apps, AWS ECS, and GCP Cloud Run currently validate,
-  build, and push that image, then fail loudly before service update because their SDK adapters are
-  not implemented; `haute init` labels them build and push only. SageMaker and Azure ML are named
+  choose a hosting platform. Azure Container Apps, AWS ECS, and GCP Cloud Run validate, build and
+  push that image to their required registry and finish there: updating the service is a manual
+  step until their SDK adapters exist, and `haute init` labels them build and push only. SageMaker and Azure ML are named
   future targets that `haute init` does not offer and deploy rejects. See [deploy](deploy/high-level.md).
 
 **One authored pipeline, one derived deploy graph.** Authors maintain one pipeline. Deployment

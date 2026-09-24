@@ -1,6 +1,6 @@
 # Deployment
 
-Deployment packages a pricing pipeline for a serving target. For **Databricks**, Haute also registers the model and creates or updates a Model Serving endpoint. For the **container** target, Haute builds an image (and pushes it when a registry is configured); your platform team runs that image. The Azure Container Apps, AWS ECS, and GCP Cloud Run adapters currently stop after the image push and require a manual service update.
+Deployment packages a pricing pipeline for a serving target. For **Databricks**, Haute also registers the model and creates or updates a Model Serving endpoint. For the **container** target, Haute builds an image (and pushes it when a registry is configured); your platform team runs that image. For Azure Container Apps, AWS ECS, and GCP Cloud Run, Haute builds and pushes the image to your registry and finishes there; updating the service is a manual step until their adapters exist.
 
 !!! warning "New to Haute? Start here."
     If you haven't installed Haute yet, start with **[Getting Started](../getting-started/index.md)** - it covers installing everything and running your first `haute serve`. If you don't know what a pull request, CI/CD, or staging means, read **[Before You Start](before-you-start.md)** next - it explains every deployment concept in plain English.
@@ -34,7 +34,7 @@ When a CI runner invokes `haute deploy`, Haute:
 3. **Collects artifacts** - finds all the model files (e.g. `.cbm`, `.pkl`) your pipeline references and bundles them, together with your pipeline's `utility/` package
 4. **Validates** - runs your test quotes through the pruned pipeline to make sure it works. Your preamble can import from `utility/`; an import of any other file in your project is refused, because the deployed pipeline would not have it, so keep shared helpers in `utility/`
 5. **Packages and uploads** - wraps everything into the format the selected target expects and uploads it where supported
-6. **Dispatches by target** - Databricks creates or updates Model Serving; `container` returns the image for a separate hosting step; the Azure, ECS, and GCP adapters fail after building/pushing because their service-update integrations are not implemented
+6. **Dispatches by target** - Databricks creates or updates Model Serving; `container` returns the image for a separate hosting step; the Azure, ECS, and GCP targets build and push the image and finish there, because their service-update integrations are not implemented
 
 ---
 
@@ -46,9 +46,9 @@ A **target** is where your pipeline will run in production. Haute supports sever
 |---|---|---|
 | [**Databricks**](targets/databricks.md) | Teams already using Databricks | A Databricks workspace - the simplest option, no containers involved |
 | [**Docker**](targets/docker.md) | Companies without Databricks | IT takes the package and deploys it on their infrastructure |
-| [**AWS ECS**](targets/aws.md) | Teams on AWS (with IT support) | An AWS account and a manual ECS service-update handoff; the built image is pushed before Haute exits with an unimplemented-adapter failure |
-| [**Azure Container Apps**](targets/azure.md) | Teams on Azure (with IT support) | An Azure subscription and a manual Container Apps revision handoff; the built image is pushed before Haute exits with an unimplemented-adapter failure |
-| GCP Cloud Run | Teams on GCP (with IT support) | Config target is recognised, but its service update is not implemented; use the image tag in the failure message for a manual update |
+| [**AWS ECS**](targets/aws.md) | Teams on AWS (with IT support) | An AWS account, a registry and a manual ECS service-update handoff: Haute pushes the image and prints its tag |
+| [**Azure Container Apps**](targets/azure.md) | Teams on Azure (with IT support) | An Azure subscription, a registry and a manual Container Apps revision handoff: Haute pushes the image and prints its tag |
+| GCP Cloud Run | Teams on GCP (with IT support) | A registry and a manual Cloud Run service update: Haute pushes the image and prints its tag |
 | SageMaker / Azure ML | Planned targets | Not offered by `haute init`; a `haute.toml` naming one is rejected before deployment with `NotImplementedError` |
 
 You pick your target once when you set up the project. The command is:

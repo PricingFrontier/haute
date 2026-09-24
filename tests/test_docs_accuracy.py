@@ -140,7 +140,6 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "background-jobs-api",
     "caching",
-    "deploy",
     "engineering-quality",
     "explore-eda",
     "frontend-shared",

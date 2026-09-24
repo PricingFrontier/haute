@@ -19,7 +19,6 @@ or maintenance issue; `P3` opportunistic work.
 |---|---|---|
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache identity | `CACHE-S17` |
-| [Deploy](deploy.md) | Build-and-push-only platform targets | `DEP-R05` |
 | [Engineering quality](engineering-quality.md) | Test hygiene, dead code, coverage gates, test organisation | `ENGQ-R06` |
 | [Explore and EDA](explore-eda.md) | Pivot and chart config validation, advanced pivot and PivotChart parity | `EDA-E25` |
 | [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |

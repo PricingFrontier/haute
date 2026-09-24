@@ -4,7 +4,6 @@ Covers:
   - _check_docker_available: success and CalledProcessError
   - _docker_build: success (returncode 0) and failure (returncode != 0)
   - _git_sha_short: success and exception fallback
-  - _update_service: NotImplementedError for unsupported platform
 
 All subprocess calls are mocked — no Docker or git required.
 """
@@ -126,20 +125,3 @@ class TestGitShaShort:
         ):
             assert _git_sha_short() == "local"
         run_git_ok.assert_not_called()
-
-
-class TestUpdateService:
-    """Tests for _update_service()."""
-
-    def test_raises_not_implemented_for_unsupported_platform(self) -> None:
-        """Any platform target should raise NotImplementedError (not yet built)."""
-        from haute.deploy._container import _update_service
-
-        with pytest.raises(NotImplementedError, match="not yet implemented") as exc_info:
-            _update_service(
-                target="azure-container-apps",
-                image_tag="myregistry/model:abc1234",
-                resolved=MagicMock(),
-            )
-        assert "azure-container-apps" in str(exc_info.value)
-        assert "myregistry/model:abc1234" in str(exc_info.value)

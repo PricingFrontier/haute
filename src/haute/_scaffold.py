@@ -167,7 +167,7 @@ service = "{name}"
 
 
 # Container platforms whose service update is not implemented: ``haute deploy``
-# builds and pushes the image, then stops before updating the service. The same
+# builds and pushes the image and finishes without updating the service. The same
 # set as ``haute.deploy._CONTAINER_PLATFORM_TARGETS`` (a test keeps them equal).
 BUILD_AND_PUSH_ONLY_TARGETS = ("azure-container-apps", "aws-ecs", "gcp-run")
 
@@ -190,10 +190,12 @@ def _build_only_notice(target: str) -> str:
         return ""
     return (
         f"# Build and push only: for {_get_target(target)['label']}, `haute deploy` builds the\n"
-        "# scoring image and pushes it when [deploy.container] names a registry (otherwise\n"
-        "# the image stays local), then stops with an error, because updating the service\n"
-        "# is not implemented yet. Point the service at the image yourself; the error\n"
-        "# message names the image tag.\n"
+        "# scoring image, pushes it to the registry [deploy.container] names (required),\n"
+        "# and finishes without updating the service, which is not implemented yet.\n"
+        "# Point the service at the image yourself; the deploy output names the image tag.\n"
+        "# The generated CI stops after the push: a smoke test or impact analysis would\n"
+        "# test the service before it runs the new image, so run `haute smoke` and\n"
+        "# `haute impact` once it does.\n"
     )
 
 
@@ -400,8 +402,58 @@ def github_deploy_yml(target: str) -> str:
 
     The impact-analysis job outputs the deployed git SHA so the
     production workflow can verify it is deploying exactly what was tested.
+    A build-and-push-only target stops after staging's image push: there is
+    no updated service to smoke-test or compare.
     """
     secrets_env = _github_secrets_env(target)
+    verification_jobs = (
+        ""
+        if target in BUILD_AND_PUSH_ONLY_TARGETS
+        else f"""
+  smoke-test:
+    name: Smoke Test Staging
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - run: uv sync --frozen
+      - name: Score test quotes against staging endpoint
+        env:
+{secrets_env}
+        run: uv run haute smoke --endpoint-suffix "-staging"
+
+  impact-analysis:
+    name: Impact Analysis
+    needs: smoke-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - run: uv sync --frozen
+      - name: Compare staging vs production predictions
+        env:
+{secrets_env}
+        run: uv run haute impact --endpoint-suffix "-staging"
+      - name: Upload impact report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: impact-report
+          path: impact_report.md
+      - name: Record deployed SHA
+        run: >-
+          echo "Staged commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+"""
+    )
 
     return (
         _build_only_notice(target)
@@ -462,50 +514,8 @@ jobs:
         env:
 {secrets_env}
         run: uv run haute deploy --endpoint-suffix "-staging"
-
-  smoke-test:
-    name: Smoke Test Staging
-    needs: deploy-staging
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-          python-version: "3.11"
-      - run: uv sync --frozen
-      - name: Score test quotes against staging endpoint
-        env:
-{secrets_env}
-        run: uv run haute smoke --endpoint-suffix "-staging"
-
-  impact-analysis:
-    name: Impact Analysis
-    needs: smoke-test
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-          python-version: "3.11"
-      - run: uv sync --frozen
-      - name: Compare staging vs production predictions
-        env:
-{secrets_env}
-        run: uv run haute impact --endpoint-suffix "-staging"
-      - name: Upload impact report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: impact-report
-          path: impact_report.md
-      - name: Record deployed SHA
-        run: >-
-          echo "Staged commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
 """
+        + verification_jobs
     )
 
 
@@ -592,6 +602,41 @@ def gitlab_ci_yml(target: str) -> str:
     jobs (protected-branch jobs), not in the MR validation job.
     """
     secrets_env = _gitlab_secrets_env(target)
+    verify = target not in BUILD_AND_PUSH_ONLY_TARGETS
+    verification_stages = "  - smoke-test\n  - impact-analysis\n" if verify else ""
+    verification_jobs = (
+        f"""\
+# ── Smoke test ────────────────────────────────────────────────
+smoke-test:
+  stage: smoke-test
+  timeout: 10 minutes
+  resource_group: deploy
+  variables:
+{secrets_env}
+  script:
+    - uv run haute smoke --endpoint-suffix "-staging"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ── Impact analysis ──────────────────────────────────────────
+impact-analysis:
+  stage: impact-analysis
+  timeout: 10 minutes
+  resource_group: deploy
+  variables:
+{secrets_env}
+  script:
+    - uv run haute impact --endpoint-suffix "-staging"
+  artifacts:
+    paths:
+      - impact_report.md
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+"""
+        if verify
+        else ""
+    )
 
     return (
         _build_only_notice(target)
@@ -599,9 +644,7 @@ def gitlab_ci_yml(target: str) -> str:
 stages:
   - validate
   - deploy-staging
-  - smoke-test
-  - impact-analysis
-  - deploy-production
+{verification_stages}  - deploy-production
 
 default:
   image: python:3.11
@@ -638,34 +681,7 @@ deploy-staging:
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
-# ── Smoke test ────────────────────────────────────────────────
-smoke-test:
-  stage: smoke-test
-  timeout: 10 minutes
-  resource_group: deploy
-  variables:
-{secrets_env}
-  script:
-    - uv run haute smoke --endpoint-suffix "-staging"
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
-# ── Impact analysis ──────────────────────────────────────────
-impact-analysis:
-  stage: impact-analysis
-  timeout: 10 minutes
-  resource_group: deploy
-  variables:
-{secrets_env}
-  script:
-    - uv run haute impact --endpoint-suffix "-staging"
-  artifacts:
-    paths:
-      - impact_report.md
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
-# ── Production (manual approval) ─────────────────────────────
+{verification_jobs}# ── Production (manual approval) ─────────────────────────────
 deploy-production:
   stage: deploy-production
   timeout: 15 minutes
@@ -704,6 +720,65 @@ def azure_devops_yml(target: str) -> str:
     # The DeployProduction deployment strategy nests ``env:`` at 18 spaces, so
     # its secret keys must sit at 20 — deeper than the 14-space job-level block.
     secrets_env_production = _azure_devops_secrets_env(target, indent=" " * 20)
+    verify = target not in BUILD_AND_PUSH_ONLY_TARGETS
+    production_depends_on = "ImpactAnalysis" if verify else "DeployStaging"
+    verification_stages = (
+        f"""\
+  # ── Smoke test staging ───────────────────────────────────────
+  - stage: SmokeTest
+    displayName: Smoke Test Staging
+    dependsOn: DeployStaging
+    variables:
+      - group: haute-credentials
+    jobs:
+      - job: smoke_test
+        displayName: Score test quotes against staging
+        timeoutInMinutes: 10
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.11"
+          - script: pip install "uv>=0.5,<1" && uv sync --frozen
+            displayName: Install dependencies
+          - script: uv run haute smoke --endpoint-suffix "-staging"
+            displayName: Smoke test
+            env:
+{secrets_env}
+
+  # ── Impact analysis ──────────────────────────────────────────
+  - stage: ImpactAnalysis
+    displayName: Impact Analysis
+    dependsOn: SmokeTest
+    variables:
+      - group: haute-credentials
+    jobs:
+      - job: impact
+        displayName: Compare staging vs production
+        timeoutInMinutes: 10
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - checkout: self
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.11"
+          - script: pip install "uv>=0.5,<1" && uv sync --frozen
+            displayName: Install dependencies
+          - script: uv run haute impact --endpoint-suffix "-staging"
+            displayName: Impact analysis
+            env:
+{secrets_env}
+          - publish: impact_report.md
+            artifact: impact-report
+            condition: succeededOrFailed()
+
+"""
+        if verify
+        else ""
+    )
 
     return (
         _build_only_notice(target)
@@ -819,61 +894,10 @@ stages:
             env:
 {secrets_env}
 
-  # ── Smoke test staging ───────────────────────────────────────
-  - stage: SmokeTest
-    displayName: Smoke Test Staging
-    dependsOn: DeployStaging
-    variables:
-      - group: haute-credentials
-    jobs:
-      - job: smoke_test
-        displayName: Score test quotes against staging
-        timeoutInMinutes: 10
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - checkout: self
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "3.11"
-          - script: pip install "uv>=0.5,<1" && uv sync --frozen
-            displayName: Install dependencies
-          - script: uv run haute smoke --endpoint-suffix "-staging"
-            displayName: Smoke test
-            env:
-{secrets_env}
-
-  # ── Impact analysis ──────────────────────────────────────────
-  - stage: ImpactAnalysis
-    displayName: Impact Analysis
-    dependsOn: SmokeTest
-    variables:
-      - group: haute-credentials
-    jobs:
-      - job: impact
-        displayName: Compare staging vs production
-        timeoutInMinutes: 10
-        pool:
-          vmImage: ubuntu-latest
-        steps:
-          - checkout: self
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "3.11"
-          - script: pip install "uv>=0.5,<1" && uv sync --frozen
-            displayName: Install dependencies
-          - script: uv run haute impact --endpoint-suffix "-staging"
-            displayName: Impact analysis
-            env:
-{secrets_env}
-          - publish: impact_report.md
-            artifact: impact-report
-            condition: succeededOrFailed()
-
-  # ── Deploy to production (manual approval) ───────────────────
+{verification_stages}  # ── Deploy to production (manual approval) ───────────────────
   - stage: DeployProduction
     displayName: Deploy → Production
-    dependsOn: ImpactAnalysis
+    dependsOn: {production_depends_on}
     variables:
       - group: haute-credentials
     jobs:

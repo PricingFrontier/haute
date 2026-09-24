@@ -181,9 +181,10 @@ provide.
   platform hard limit; the batch worker's cap is a real one.
 
 Three further container-platform targets (Azure Container Apps, AWS ECS, GCP Cloud Run)
-share the container build step (and push only when `container.registry` is configured),
-but their service-update step is not yet implemented — `deploy()` then raises
-`NotImplementedError` naming the image tag.
+share the container build step and are build and push only: they require
+`container.registry`, push the image there, and finish successfully, reporting that the
+service was not updated and naming the image to point it at. Their service-update SDK
+adapters are not built.
 
 **Impact analysis.** `haute impact` (via `src/haute/deploy/_impact.py`) scores a shared dataset through
 both a staging and a production endpoint (Databricks serving or a container's `/quote`
@@ -353,8 +354,9 @@ most: a silent wrong answer here mis-prices real policies.
   `smoke` and `impact` do not apply that CI guard and can be run wherever their endpoint
   credentials and configured datasets are available.
 - **Platform-container service update** (Azure Container Apps / AWS ECS / GCP Cloud Run)
-  always raises `NotImplementedError` after a successful build and optional configured
-  registry push, naming the image tag so the operator can update the service manually.
+  is manual: the deploy refuses to start without `container.registry` (a local-only image
+  could never reach the service), and after a successful push it succeeds and names the
+  image tag so the operator can update the service. A failed build or push fails the deploy.
 - **Known unsupported deploy inputs** fail rather than being made self-contained: plain
   JSON static sources are not batch-deployable; a project-local import other than the
   `utility` package is refused at validation; bundled local `modelScore` serving supports CatBoost `.cbm` and RustyStats

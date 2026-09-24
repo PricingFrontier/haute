@@ -617,13 +617,17 @@ class TestCompleteYamlParity:
         assert _github_trigger(deploy)["push"]["branches"] == ["main"]
         assert "workflow_dispatch" in _github_trigger(deploy)
         jobs = deploy["jobs"]
-        assert set(jobs) == {"validate", "deploy-staging", "smoke-test", "impact-analysis"}
+        verifies = target not in BUILD_AND_PUSH_ONLY_TARGETS
+        verification = {"smoke-test", "impact-analysis"} if verifies else set()
+        assert set(jobs) == {"validate", "deploy-staging"} | verification
         expected = _target_secrets(target, "${{{{ secrets.{secret} }}}}")
-        for job_name, step_name in (
-            ("deploy-staging", "Deploy to staging"),
-            ("smoke-test", "Score test quotes against staging endpoint"),
-            ("impact-analysis", "Compare staging vs production predictions"),
-        ):
+        secret_steps = [("deploy-staging", "Deploy to staging")]
+        if verifies:
+            secret_steps += [
+                ("smoke-test", "Score test quotes against staging endpoint"),
+                ("impact-analysis", "Compare staging vs production predictions"),
+            ]
+        for job_name, step_name in secret_steps:
             step = next(step for step in jobs[job_name]["steps"] if step.get("name") == step_name)
             assert step["env"] == expected
 
@@ -641,15 +645,17 @@ class TestCompleteYamlParity:
     def test_gitlab_release_structure_and_secret_consumers(self, target: str) -> None:
         document = yaml.safe_load(gitlab_ci_yml(target))
         assert isinstance(document, dict)
+        verification = (
+            ["smoke-test", "impact-analysis"] if target not in BUILD_AND_PUSH_ONLY_TARGETS else []
+        )
         assert document["stages"] == [
             "validate",
             "deploy-staging",
-            "smoke-test",
-            "impact-analysis",
+            *verification,
             "deploy-production",
         ]
         expected = _target_secrets(target, "${secret}")
-        for job_name in ("deploy-staging", "smoke-test", "impact-analysis", "deploy-production"):
+        for job_name in ("deploy-staging", *verification, "deploy-production"):
             job = document[job_name]
             assert job["variables"] == expected
             assert job["rules"] == [{"if": "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"}]
@@ -662,21 +668,16 @@ class TestCompleteYamlParity:
         assert document["trigger"]["branches"]["include"] == ["main"]
         assert document["pr"]["branches"]["include"] == ["main"]
         stages = {stage["stage"]: stage for stage in document["stages"]}
-        assert set(stages) == {
-            "Validate",
-            "DeployStaging",
-            "SmokeTest",
-            "ImpactAnalysis",
-            "DeployProduction",
-        }
+        verifies = target not in BUILD_AND_PUSH_ONLY_TARGETS
+        verification = {"SmokeTest", "ImpactAnalysis"} if verifies else set()
+        assert set(stages) == {"Validate", "DeployStaging", "DeployProduction"} | verification
         assert "refs/heads/main" in stages["DeployStaging"]["condition"]
         assert stages["DeployProduction"]["jobs"][0]["environment"] == "production"
         expected = _target_secrets(target, "$({secret})")
-        for stage_name, display_name in (
-            ("DeployStaging", "Deploy staging"),
-            ("SmokeTest", "Smoke test"),
-            ("ImpactAnalysis", "Impact analysis"),
-        ):
+        secret_steps = [("DeployStaging", "Deploy staging")]
+        if verifies:
+            secret_steps += [("SmokeTest", "Smoke test"), ("ImpactAnalysis", "Impact analysis")]
+        for stage_name, display_name in secret_steps:
             steps = stages[stage_name]["jobs"][0]["steps"]
             step = next(step for step in steps if step.get("displayName") == display_name)
             assert step["env"] == expected
@@ -1056,9 +1057,49 @@ class TestOfferedTargets:
         label = TARGETS[target]["label"]
         for name, content in self._generated_files(target).items():
             assert f"# Build and push only: for {label}," in content, name
-            assert "when [deploy.container] names a registry" in content, name
-            assert "(otherwise\n# the image stays local)" in content, name
-            assert "is not implemented yet" in content, name
+            assert "[deploy.container] names (required)" in content, name
+            assert "finishes without updating the service" in content, name
+            assert "the deploy output names the image tag" in content, name
+
+    @pytest.mark.parametrize("target", BUILD_AND_PUSH_ONLY_TARGETS)
+    def test_build_and_push_only_pipelines_stop_after_the_push(self, target: str) -> None:
+        # No service runs the pushed image yet, so a smoke test or impact
+        # analysis would check the old service.
+        github = yaml.safe_load(github_deploy_yml(target))
+        gitlab = yaml.safe_load(gitlab_ci_yml(target))
+        azure = yaml.safe_load(azure_devops_yml(target))
+
+        assert list(github["jobs"]) == ["validate", "deploy-staging"]
+        assert gitlab["stages"] == ["validate", "deploy-staging", "deploy-production"]
+        assert "smoke-test" not in gitlab and "impact-analysis" not in gitlab
+        assert [(stage["stage"], stage.get("dependsOn")) for stage in azure["stages"]] == [
+            ("Validate", None),
+            ("DeployStaging", "Validate"),
+            ("DeployProduction", "DeployStaging"),
+        ]
+        for content in self._generated_files(target).values():
+            assert "haute smoke" not in content.split("# `haute impact` once it does.")[-1]
+
+    @pytest.mark.parametrize("target", ["databricks", "container"])
+    def test_end_to_end_pipelines_smoke_test_and_compare_staging(self, target: str) -> None:
+        github = yaml.safe_load(github_deploy_yml(target))
+        gitlab = yaml.safe_load(gitlab_ci_yml(target))
+        azure = yaml.safe_load(azure_devops_yml(target))
+
+        assert list(github["jobs"]) == [
+            "validate",
+            "deploy-staging",
+            "smoke-test",
+            "impact-analysis",
+        ]
+        assert gitlab["stages"] == [
+            "validate",
+            "deploy-staging",
+            "smoke-test",
+            "impact-analysis",
+            "deploy-production",
+        ]
+        assert azure["stages"][-1]["dependsOn"] == "ImpactAnalysis"
 
     @pytest.mark.parametrize("target", ["databricks", "container"])
     def test_end_to_end_targets_carry_no_label(self, target: str) -> None:

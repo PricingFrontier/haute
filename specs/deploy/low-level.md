@@ -246,7 +246,13 @@ configured gate.
    what was validated.
 3. `_dispatch_resolved()`: `"databricks"` → `deploy_to_mlflow`; `"container"` →
    `deploy_to_container`; any other `_CONTAINER_BASED_TARGETS` member (`azure-container-apps`,
-   `aws-ecs`, `gcp-run`) → `deploy_to_platform_container`.
+   `aws-ecs`, `gcp-run`) → `deploy_to_platform_container`, which raises `DeployError` before
+   building when `container.registry` is empty, otherwise builds and pushes through
+   `build_and_push_image`, reports through `progress` that the service was not updated and
+   which image to point it at, and returns the `DeployResult` with the image tag as
+   `model_uri` and no `endpoint_url`. `haute deploy` prints the image tag for every
+   container-based target, and for the three platform targets the manual service-update
+   instruction; only a Databricks result prints the `mlflow models serve` hint.
 
 **Container build (`_container.py::build_and_push_image`)** — shared by all
 container-based targets. Creates `.haute_build/` under CWD; on any exception the whole
@@ -603,7 +609,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 | `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` | Raised by the execution-engine's admission layer, invoked via `admit_deploy_execution` | Caught in `/quote` → HTTP 507. |
 | `ExecutionCancelledError` | Execution engine | Caught in `/quote` → HTTP 499 with `job_id`/`operation` context. |
 | Public `HauteError` (`ContractResolutionError`, `PreambleError`, and other errors with a stable `error_code`) | Execution engine or preamble compilation during scoring | Caught in `/quote` → HTTP 422 with `to_payload()`; server routes use the same stable public payload contract. |
-| `NotImplementedError` | `src/haute/deploy/__init__.py::_validate_target` (planned targets: `sagemaker`, `azure-ml`), `_container.py::_update_service` (platform-container service update not yet built) | Uncaught to caller; the `_update_service` message names the built image tag (which is pushed only when a registry was configured). |
+| `NotImplementedError` | `src/haute/deploy/__init__.py::_validate_target` (planned targets: `sagemaker`, `azure-ml`) | Uncaught to caller. |
 | `DeployError` (capped schema dry-run) | `_schema.py::infer_output_schema` when the fallback's worker fails: a `BatchScoreError` from the child, or any `IsolatedWorker*Error` (`IsolatedWorkerMemoryLimitUnsupportedError` on a host without native caps included) | Propagates from `resolve_config()`; names the blocking node/operator from the original group-by rejection and states that the served batch path could not be proven. |
 | `RuntimeError` (startup) | Generated `app.py`'s `_require_fail_closed_batch_enforcement` at module load: a `warned` execution policy with `HAUTE_WORKER_MEMORY_ENFORCEMENT` other than `required`, or `required` on a host where `process_memory_caps_supported()` is `False` | Uncaught — the service refuses to start rather than failing every batch request. |
 | `IsolatedWorkerMemoryLimitUnsupportedError` | `run_isolated_worker` under `required` enforcement on a host that cannot install a native cap | Caught in `_quote_batch` → HTTP 507 with `reason: "native_memory_cap_unavailable"`. |
@@ -747,9 +753,9 @@ Databricks endpoint — the seam between "manifest + artefacts are correct" and 
 generated container actually serves them correctly" is not exercised end-to-end in this
 suite.
 
-**Known gaps**: no test exercises the platform-container (`azure-container-apps`,
-`aws-ecs`, `gcp-run`) service-update path beyond confirming it raises
-`NotImplementedError`, since the implementations don't exist yet. Generated `app.py` is
+**Known gaps**: the platform-container targets (`azure-container-apps`, `aws-ecs`,
+`gcp-run`) have no service-update path to test; their tests cover the registry
+requirement, the push and the manual-update report. Generated `app.py` is
 imported and exercised in-process through `TestClient`, but no test boots a built Docker
 image, contacts a real registry/Databricks workspace, or verifies a cloud service update.
 
