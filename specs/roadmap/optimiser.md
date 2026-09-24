@@ -10,7 +10,7 @@ Current behaviour is specified in [the optimiser specification](../optimiser/low
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| OPT-P13 | Planned | P2 | Isolate immutable solve-input planning and grid construction. |
+| OPT-P13 | Planned | P2 | The store-coupled setup steps become free functions that raise typed failures, so the service keeps only orchestration. |
 | OPT-P06 | Planned | P2 | Benchmark bounded frontier parallelism after input isolation. |
 | OPT-P12 | Planned | P2 | Extract the frontier domain service after the scaling decision. |
 | OPT-P14 | Planned | P2 | Complete solver/result publication extraction. |
@@ -66,22 +66,32 @@ decision, plus the current frontier apply and interruptibility contracts.
 **Evidence:** `src/haute/routes/optimiser.py`; `src/haute/routes/_optimiser_service.py`;
 `tests/test_optimiser_frontier_materialisation.py`; `tests/test_optimiser_routes.py`.
 
-### OPT-P13 — Extract input planning and grid construction
-**Why:** Projection planning, retained-input resolution, schema/value validation, ratebook-factor
-extraction, chunk sizing, and quote-grid construction are one setup pipeline with no need to know
-solver result publication.
+### OPT-P13 — Extract the store-coupled setup steps
+**Why:** Projection planning, retained-input resolution, the value-contract
+checks and their details, solver-input chunk sizing and resident-grid
+admission live in `src/haute/routes/_optimiser_input.py`. The setup steps
+that run them — data-input resolution, validation and projection (solve and
+auto-range), ratebook-factor extraction, the solver-input write and the grid
+build — are still `OptimiserSolveService` methods, because each records its
+own failure on the job before it raises, and grid construction records chunk
+provenance on the job.
 
-**Plan:** Move those functions and their small dataclasses to
-`src/haute/routes/_optimiser_input.py`, preserving `ExecutionContext` checkpoints and typed
-contract errors. `OptimiserSolveService` retains only orchestration calls.
+**Plan:** Make those steps free functions in `_optimiser_input.py` that raise
+typed failures carrying what is recorded today (including the contract-error
+fields `contract_error_job_fields` supplies) and return chunk provenance; the
+service's failure mappings record them, so `OptimiserSolveService` retains only
+orchestration calls. Preserve `ExecutionContext` checkpoints and typed
+contract errors.
 
-**Acceptance:** Projection, bounded-memory, multi-input, null/non-finite, chunk provenance, and
-grid ordering tests pass without fixture rewrites.
+**Acceptance:** Projection, bounded-memory, multi-input, null/non-finite, chunk
+provenance, and grid ordering tests pass without fixture rewrites; every setup
+failure's job record is unchanged.
 
 **Dependencies:** The current constraint-validation and scan-bounding
 contracts.
 
-**Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_service_coverage.py`;
+**Evidence:** `src/haute/routes/_optimiser_service.py::OptimiserSolveService`;
+`src/haute/routes/_optimiser_input.py`; `tests/test_optimiser_service_coverage.py`;
 `tests/test_optimiser_service_validation.py`.
 
 ### OPT-P14 — Extract solver execution and result publication

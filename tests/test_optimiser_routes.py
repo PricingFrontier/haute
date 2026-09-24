@@ -24,6 +24,7 @@ from haute._execution_context import ExecutionProfile
 from haute._sandbox import set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.graph_utils import NodeType
+from haute.routes._optimiser_input import _optimiser_solve_required_columns_by_node
 from haute.routes._optimiser_limits import (
     APPLY_PREVIEW_ROW_LIMIT,
     FRONTIER_POINT_LIMIT,
@@ -38,7 +39,6 @@ from haute.routes._optimiser_service import (
     _default_auto_range_partitions,
     _estimate_scenario_frontier_ranges,
     _looks_chunk_local_user_code,
-    _optimiser_solve_required_columns_by_node,
 )
 from haute.routes.optimiser import _build_artifact_payload
 from tests._projection_helpers import pair_value
@@ -14196,7 +14196,7 @@ class TestBuildGrid:
                 return_value=mock_grid,
             ) as mock_build,
             patch(
-                "haute.routes._optimiser_service._optimiser_setup_target_chunk_bytes",
+                "haute.routes._optimiser_input._optimiser_setup_target_chunk_bytes",
                 return_value=256,
             ),
         ):
@@ -14261,7 +14261,7 @@ class TestBuildGrid:
 
     def test_byte_budget_chunk_size_rejects_empty_parquet(self, tmp_path: Path) -> None:
         """Byte-budgeted setup chunking fails loudly when no rows exist to size."""
-        from haute.routes._optimiser_service import _chunk_size_decision_for_parquet
+        from haute.routes._optimiser_input import _chunk_size_decision_for_parquet
 
         empty_path = tmp_path / "empty.parquet"
         pl.DataFrame({"quote_id": pl.Series([], dtype=pl.Utf8)}).write_parquet(empty_path)
@@ -14310,7 +14310,7 @@ class TestBuildGrid:
                     return_value=MagicMock(),
                 ) as mock_build,
                 patch(
-                    "haute.routes._optimiser_service._optimiser_setup_target_chunk_bytes",
+                    "haute.routes._optimiser_input._optimiser_setup_target_chunk_bytes",
                     return_value=128,
                 ),
             ):

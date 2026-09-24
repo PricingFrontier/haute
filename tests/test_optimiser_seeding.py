@@ -25,10 +25,10 @@ from haute._sandbox import set_project_root
 from haute._types import PipelineGraph
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_artifacts import _cleanup_orphan_apply_result_artifact
+from haute.routes._optimiser_input import _optimiser_solve_required_columns_by_node
 from haute.routes._optimiser_service import (
     OptimiserSolveService,
     _auto_range_required_columns_by_node,
-    _optimiser_solve_required_columns_by_node,
 )
 from haute.schemas import (
     OptimiserEstimateRequest,

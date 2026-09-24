@@ -307,7 +307,7 @@ class TestFindTypedNode:
 
     def test_optimiser_service_uses_find_typed_node(self) -> None:
         """_find_optimiser_node should delegate to find_typed_node."""
-        from haute.routes._optimiser_service import _find_optimiser_node
+        from haute.routes._optimiser_input import _find_optimiser_node
 
         graph = self._make_graph_with_node("optimiser")
         node = _find_optimiser_node(graph, "n1")

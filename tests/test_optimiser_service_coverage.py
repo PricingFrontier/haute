@@ -40,7 +40,7 @@ from haute.routes._optimiser_artifacts import (
     _validate_apply_result_artifact_handle,
     _validate_ratebook_factors_artifact_handle,
 )
-from haute.routes._optimiser_service import _optimiser_side_input_ids
+from haute.routes._optimiser_input import _optimiser_side_input_ids
 
 
 def _handle(**overrides: object) -> dict[str, object]:
