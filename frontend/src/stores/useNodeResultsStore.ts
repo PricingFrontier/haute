@@ -121,7 +121,7 @@ export type SolveProgress = {
   progress: number
   message: string
   elapsed_seconds: number
-  result?: OptimiserSolveResult
+  result?: OptimiserSolveResult | null
   terminal_reason?: string | null
   execution_metrics?: ExecutionMetrics | null
 }
@@ -138,7 +138,7 @@ export type TrainProgress = {
   train_loss_history?: Array<{ iteration: number; [key: string]: number }>
   train_loss_history_truncated?: boolean
   elapsed_seconds: number
-  result?: TrainResult
+  result?: TrainResult | null
   warning?: string | null
   terminal_reason?: string | null
   error_code?: string | null
@@ -424,6 +424,30 @@ function cacheOptimiserPreview(nodeId: string, cached: CachedSolveResult): void 
 function readOptimiserPreview(nodeId: string, cached: CachedSolveResult): OptimiserPreviewData {
   const prev = _optimiserPreviewCache[nodeId]
   return prev && prev.source === cached ? prev.result : buildOptimiserPreview(cached)
+}
+
+/** The result a failed solve with no earlier result is cached with. */
+const FAILED_SOLVE_RESULT: OptimiserSolveResult = {
+  mode: null,
+  total_objective: 0,
+  baseline_objective: 0,
+  constraints: {},
+  baseline_constraints: {},
+  lambdas: {},
+  converged: false,
+  iterations: null,
+  n_quotes: null,
+  n_steps: null,
+  cd_iterations: null,
+  factor_tables: {},
+  history: null,
+  warning: null,
+  scenario_value_stats: null,
+  scenario_value_histogram: null,
+  clamp_rate: null,
+  frontier: null,
+  frontier_error: null,
+  selected_frontier_point: null,
 }
 
 /** The as-solved result with a frontier point's server summary applied; a
@@ -829,8 +853,8 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       touchCachedResult(solveResultRecency, nodeId)
       const nextCached: CachedSolveResult = {
         ...(s.solveResults[nodeId] ?? {
-          result: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as OptimiserSolveResult,
-          originalResult: { status: "error", total_objective: 0, baseline_objective: 0, constraints: {}, baseline_constraints: {}, lambdas: {}, converged: false } as OptimiserSolveResult,
+          result: FAILED_SOLVE_RESULT,
+          originalResult: FAILED_SOLVE_RESULT,
         }),
         terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
@@ -1055,7 +1079,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const { [nodeId]: _removedJob, ...remainingJobs } = s.trainJobs; void _removedJob
       touchCachedResult(trainResultRecency, nodeId)
       const nextCached: CachedTrainResult = {
-        result: { status: "error", job_id: null, diagnostic_metrics: {}, final_test_metrics: {}, feature_importance: [], model_path: "", development_rows: 0, final_test_rows: 0, diagnostics_set: "development", features: [], cat_features: [], error, best_iteration: null, loss_history: [], loss_history_truncated: false, double_lift: [], shap_summary: [], feature_importance_loss: [], ave_per_feature: [], residuals_histogram: [], residuals_stats: {}, actual_vs_predicted: [], lorenz_curve: [], lorenz_curve_perfect: [], pdp_data: [], warning: null, total_source_rows: null, glm_coefficients: [], glm_relativities: [], glm_fit_statistics: {}, glm_inference: null, glm_smooth_terms: [], glm_regularization: null, ebm_terms: [], diagnostics_errors: [], feature_selection: null },
+        result: { status: "error", job_id: null, diagnostic_metrics: {}, final_test_metrics: {}, feature_importance: [], model_path: "", development_rows: 0, final_test_rows: 0, diagnostics_set: "development", features: [], cat_features: [], error, best_iteration: null, loss_history: [], loss_history_truncated: false, double_lift: [], shap_summary: [], feature_importance_loss: [], ave_per_feature: [], residuals_histogram: [], residuals_stats: {}, actual_vs_predicted: [], lorenz_curve: [], lorenz_curve_perfect: [], pdp_data: [], warning: null, total_source_rows: null, glm_coefficients: [], glm_relativities: [], glm_fit_statistics: {}, glm_inference: null, glm_smooth_terms: [], glm_regularization: null, ebm_terms: [], diagnostics_errors: [], feature_selection: null, final_tree_count: null, fit_evidence: null },
         terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
         configHash: job.configHash,

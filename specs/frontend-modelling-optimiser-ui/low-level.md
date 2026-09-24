@@ -534,10 +534,10 @@ The behavioural contract is defined in
   roving focus or layout
   ([frontend-preview-explore](../frontend-preview-explore/low-level.md#modelling-config-panes)).
 - `api/types.ts`, `types/trainGuards.ts`, and the train-progress store type share the backend status
-  contract. `parseTrainStatusResponse` strictly retains present history/truncation and leaves
-  absent history absent. `parseTrainResponse` rejects retired result fields and strictly
-  recomputes evaluation/tuning counts, weighted aggregates, digest links, winner and improvement
-  invariants. `useUIStore.ts` remembers the pane per node.
+  contract. `parseTrainStatusResponse` requires the history and truncation flag the server
+  always sends. `parseTrainResponse` validates the generated structure, which rejects retired
+  result fields; the evaluation/tuning counts, weighted aggregates, digest links, winner and
+  improvement are the server's to check, where the artifacts are produced. `useUIStore.ts` remembers the pane per node.
   `useNodeResultsStore.ts` retains the latest authoritative history snapshot and only the last two
   valid increasing iteration/elapsed samples; it never reconstructs loss history. A new or
   terminal job resets the ETA state

@@ -32,7 +32,7 @@ import useSettingsStore from "../../stores/useSettingsStore.ts"
 // ── Utility imports ──────────────────────────────────────────────
 import { computeNextNodeId, normalizeEdges } from "../../utils/graphHelpers.ts"
 import { buildGraph } from "../../utils/buildGraph.ts"
-import { makeNode, makeEdge, makeSimpleNode, makeSimpleEdge, makeTrainResult } from "../../test-utils/factories.ts"
+import { makeNode, makeEdge, makeSimpleNode, makeSimpleEdge, makeTrainResult, makeSolveResult } from "../../test-utils/factories.ts"
 import { makePreviewData } from "../../utils/makePreviewData.ts"
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -133,14 +133,14 @@ describe("1. API returns unexpected shapes", () => {
       const store = useNodeResultsStore.getState()
       store.startSolveJob("n1", "j1", "Node", {}, "h", "live", 0)
       // Simulate server returning only partial result
-      const minimalResult = {
+      const minimalResult = makeSolveResult({
         total_objective: 0,
         baseline_objective: 0,
         constraints: {},
         baseline_constraints: {},
         lambdas: {},
         converged: false,
-      }
+      })
       expect(() => store.completeSolveJob("n1", minimalResult)).not.toThrow()
       expect(useNodeResultsStore.getState().solveResults["n1"]).toBeDefined()
     })

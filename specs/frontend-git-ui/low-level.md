@@ -328,12 +328,14 @@ or a failed push.
   detail's `message` (both 409 bodies carry a leg-naming one), else a string detail, else an
   ordinary `Error.message`, else the fallback. A structured 409 body that is neither rejection
   is reported by its status, never printed as raw JSON.
-- `parseGitMilestoneFork` / `parseGitPushRejection` (`frontend/src/types/guards.ts`) return
-  `null` only before their status discriminator matches. Once a body declares
-  `would_fork` / `rejected_diverged`, malformed required fields throw and each call site
-  converts that parser failure into a plain error toast instead of crashing the modal.
-- `parseGitPushResponse` treats `default_branch` and `bootstrapped_default` as required and
-  type-checks both. A malformed success body rejects through the normal request promise and
+- `parseGitMilestoneFork` / `parseGitPushRejection` (`frontend/src/api/client.ts`, async
+  because they load the lazy generated git validators) resolve `null` only before their
+  status discriminator matches. Once a body declares `would_fork` / `rejected_diverged`, the
+  generated `GitMilestoneFork` / `GitPushRejection` validator checks it, a malformed body
+  rejects, and each call site converts that failure into a plain error toast instead of
+  crashing the modal.
+- The generated `GitPushResponse` validator requires `default_branch` and
+  `bootstrapped_default` and type-checks both. A malformed success body rejects through the normal request promise and
   reaches `RemotePushControl`'s error toast; the UI must not infer a bootstrap from
   `pushed_refs` or silently substitute `main`.
 - `useGitHistory.refresh()`'s catch only toasts and returns `null` when its own generation is

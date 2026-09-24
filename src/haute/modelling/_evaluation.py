@@ -1034,23 +1034,24 @@ def aggregate_evaluation_results(
         not isinstance(name, str) or not name for name in configured_metrics
     ):
         raise HauteValidationError("metrics must be distinct non-empty names")
+    # Every fit is checked whatever the metric list holds: an empty list would
+    # otherwise skip them and aggregate to an empty report.
+    for i, (result, fit) in enumerate(zip(results.fits, plan.validation_fits, strict=True)):
+        if (
+            result.schema_version != 1
+            or result.fit_index != i
+            or result.train_rows != fit.train_rows
+            or result.validation_rows != fit.validation_rows
+        ):
+            raise HauteValidationError("fit result does not match plan")
+        if set(result.metrics) != set(configured_metrics):
+            raise HauteValidationError("fit result metric names do not match configured metrics")
     report = {}
     total = 0
     for metric in configured_metrics:
         values = []
         weights = []
-        for i, (result, fit) in enumerate(zip(results.fits, plan.validation_fits, strict=True)):
-            if (
-                result.schema_version != 1
-                or result.fit_index != i
-                or result.train_rows != fit.train_rows
-                or result.validation_rows != fit.validation_rows
-            ):
-                raise HauteValidationError("fit result does not match plan")
-            if set(result.metrics) != set(configured_metrics):
-                raise HauteValidationError(
-                    "fit result metric names do not match configured metrics"
-                )
+        for result, fit in zip(results.fits, plan.validation_fits, strict=True):
             value = result.metrics.get(metric)
             if (
                 isinstance(value, bool)

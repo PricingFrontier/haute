@@ -24,7 +24,7 @@ import type {
   ExplorePivotMembersResponse,
   ExplorePivotRunResponse,
   ExplorePivotStatusResponse,
-  FileListItem,
+  BrowseFilesResponse,
   FrontierAutoRangeStartResponse,
   FrontierAutoRangeStatusResponse,
   FrontierSelectResponse,
@@ -111,46 +111,33 @@ import type {
   UtilityListResponse,
   UtilityReadResponse,
   UtilityWriteResult,
+  GitMilestoneFork,
+  GitPushRejection,
+  SessionStatusResponse,
 } from "./types"
 import {
-  parseApplyOptimiserResponse,
   parseCacheClearResponse,
   parseCacheNodesResponse,
   parseCacheUsageResponse,
   parseDissolveSubmodelResponse,
-  parseEditorNodeIdentityBatchResponse,
-  parseExplorePivotMembersResponse,
-  parseExplorePivotRunResponse,
-  parseExplorePivotStatusResponse,
+  explorePivotMembersFromContract,
+  frontierAutoRangeStatusFromContract,
+  frontierStatusFromContract,
+  optimiserStatusFromContract,
+  explorePivotRunFromContract,
+  explorePivotStatusFromContract,
   parseNodeDataClearResponse,
   parseNodeDataPointResponse,
-  parseBandingStatsResponse,
-  parseRatingLevelsResponse,
-  parseNodeDataProfileResponse,
   parseNodeDataRunResponse,
   parseNodeDataStatusResponse,
-  parseFrontierAutoRangeStartResponse,
-  parseFrontierAutoRangeStatusResponse,
-  parseFrontierStatusResponse,
-  parseFrontierSelectResponse,
-  parseIoCapabilitiesResponse,
   parseInputCacheBuildResponse,
   parseInputCacheCancelResponse,
   parseInputCacheJobStatusResponse,
   parseInputCacheSnapshotResponse,
   parseJsonCacheSchemaInferenceResponse,
-  parseExecutionSettings,
-  parseMlflowLogResponse,
-  parseFileListResponse,
-  parseHauteSessionResponse,
-  parseOptimiserEstimateResponse,
-  parseSaveOptimiserResponse,
-  parseSolveOptimiserResponse,
-  parseOptimiserStatusResponse,
   parseOutputDestinationResponse,
   parseOutputAssembleDryRunResponse,
   parsePipelineResponse,
-  parsePolarsStepsRenderResponse,
   parsePreviewInputsResponse,
   parsePreviewNodeResponse,
   parseSavePipelineResponse,
@@ -159,15 +146,22 @@ import {
   parseSubmodelCreateResponse,
   parseSubmodelGraphResponse,
   parseTraceResponse,
+  isPlainObject,
 } from "../types/guards"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
 
 // Generated response validators load with their first response, so none of
 // them reaches the initial bundle.
 const databricksValidators = () => import("../generated/api-contracts.databricks.validators.mjs")
+const editorValidators = () => import("../generated/api-contracts.editor.validators.mjs")
+const exploreValidators = () => import("../generated/api-contracts.explore.validators.mjs")
+const factorsValidators = () => import("../generated/api-contracts.factors.validators.mjs")
 const gitValidators = () => import("../generated/api-contracts.git.validators.mjs")
+const ioValidators = () => import("../generated/api-contracts.io.validators.mjs")
 const mlflowValidators = () => import("../generated/api-contracts.mlflow.validators.mjs")
 const modellingValidators = () => import("../generated/api-contracts.modelling.validators.mjs")
+const optimiserValidators = () => import("../generated/api-contracts.optimiser.validators.mjs")
+const sessionValidators = () => import("../generated/api-contracts.session.validators.mjs")
 const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
 import {
   parseRemoveUnavailableNodeApplyResponse,
@@ -619,12 +613,12 @@ function del<T>(url: string, options: ApiClientOptions = {}): Promise<T> {
   return request<T>(url, { method: "DELETE", ...options })
 }
 
-export function checkHauteSession(options: ApiClientOptions = {}): Promise<{ ok: boolean }> {
+export function checkHauteSession(options: ApiClientOptions = {}): Promise<SessionStatusResponse> {
   return request<unknown>("/api/session", {
     ...options,
     timeout: options.timeout ?? 5_000,
     retry: options.retry ?? { maxRetries: 0, baseDelayMs: 100 },
-  }).then(parseHauteSessionResponse)
+  }).then(async (data) => expectGeneratedContract("SessionStatusResponse", (await sessionValidators()).validateSessionStatusResponse, data))
 }
 
 // ---------------------------------------------------------------------------
@@ -662,8 +656,11 @@ export async function resolveEditorNodeIdentities(
   payload: EditorIdentityBatchRequest,
   options?: MutationOptions,
 ): Promise<EditorIdentityBatchResponse> {
-  const response = parseEditorNodeIdentityBatchResponse(
-    await post<unknown>("/api/pipeline/editor-identities", payload, options),
+  const data = await post<unknown>("/api/pipeline/editor-identities", payload, options)
+  const response = expectGeneratedContract(
+    "EditorIdentitiesResponse",
+    (await editorValidators()).validateEditorIdentitiesResponse,
+    data,
   )
   if (
     response.identities.length !== payload.nodes.length
@@ -878,7 +875,7 @@ export function renderPolarsSteps(args: RenderPolarsStepsArgs): Promise<PolarsSt
     "/api/pipeline/polars-steps/render",
     { steps: args.steps, input_names: args.inputNames, start: args.start },
     { signal: args.signal },
-  ).then((data) => parsePolarsStepsRenderResponse(data))
+  ).then(async (data) => expectGeneratedContract("PolarsStepsRenderResponse", (await editorValidators()).validatePolarsStepsRenderResponse, data))
 }
 
 export interface RecoveryPreviewNodeArgs {
@@ -1133,7 +1130,7 @@ export function fetchSchema(
 export function fetchIoCapabilities(
   options?: { signal?: AbortSignal },
 ): Promise<IoCapabilitiesResponse> {
-  return request<unknown>("/api/io-capabilities", options).then(parseIoCapabilitiesResponse)
+  return request<unknown>("/api/io-capabilities", options).then(async (data) => expectGeneratedContract("IoCapabilitiesResponse", (await ioValidators()).validateIoCapabilitiesResponse, data))
 }
 
 // ---------------------------------------------------------------------------
@@ -1285,7 +1282,7 @@ export function getNodeDataProfile(args: NodeDataArgs): Promise<NodeDataProfileR
       source: payload.source ?? "live",
     },
     { signal },
-  ).then(parseNodeDataProfileResponse)
+  ).then(async (data) => expectGeneratedContract("NodeDataProfileResponse", (await exploreValidators()).validateNodeDataProfileResponse, data))
 }
 
 export interface BandingStatsArgs extends NodeDataArgs {
@@ -1307,7 +1304,7 @@ export function getBandingStats(args: BandingStatsArgs): Promise<BandingStatsRes
       ...(valueLimit === undefined ? {} : { value_limit: valueLimit }),
     },
     { signal },
-  ).then(parseBandingStatsResponse)
+  ).then(async (data) => expectGeneratedContract("BandingStatsResponse", (await factorsValidators()).validateBandingStatsResponse, data))
 }
 
 export interface RatingLevelsArgs {
@@ -1330,7 +1327,7 @@ export function getRatingLevels(args: RatingLevelsArgs): Promise<RatingLevelsRes
       ...(valueLimit === undefined ? {} : { value_limit: valueLimit }),
     },
     { signal },
-  ).then(parseRatingLevelsResponse)
+  ).then(async (data) => expectGeneratedContract("RatingLevelsResponse", (await factorsValidators()).validateRatingLevelsResponse, data))
 }
 
 export function clearNodeData(args: NodeDataArgs): Promise<NodeDataClearResponse> {
@@ -1372,7 +1369,9 @@ export function runExplorePivot(args: RunExplorePivotArgs): Promise<ExplorePivot
   return post<unknown>("/api/explore/pivots/run", {
     ...payload,
     source: payload.source ?? "live",
-  }, { signal, timeout }).then(parseExplorePivotRunResponse)
+  }, { signal, timeout }).then(async (data) => explorePivotRunFromContract(
+    expectGeneratedContract("ExplorePivotRunResponse", (await exploreValidators()).validateExplorePivotRunResponse, data),
+  ))
 }
 
 export function getExplorePivotStatus(
@@ -1380,7 +1379,12 @@ export function getExplorePivotStatus(
   options?: { signal?: AbortSignal },
 ): Promise<ExplorePivotStatusResponse> {
   return request<unknown>(`/api/explore/pivots/status/${encodeURIComponent(jobId)}`, options)
-    .then((data) => validateApiResponse("Could not read pivot status", () => parseExplorePivotStatusResponse(data)))
+    .then(async (data) => {
+      const { validateExplorePivotStatusResponse } = await exploreValidators()
+      return validateApiResponse("Could not read pivot status", () => explorePivotStatusFromContract(
+        expectGeneratedContract("ExplorePivotStatusResponse", validateExplorePivotStatusResponse, data),
+      ))
+    })
 }
 
 export function cancelExplorePivot(
@@ -1388,7 +1392,9 @@ export function cancelExplorePivot(
   options?: { signal?: AbortSignal },
 ): Promise<ExplorePivotStatusResponse> {
   return post<unknown>(`/api/explore/pivots/cancel/${encodeURIComponent(jobId)}`, {}, options)
-    .then(parseExplorePivotStatusResponse)
+    .then(async (data) => explorePivotStatusFromContract(
+      expectGeneratedContract("ExplorePivotStatusResponse", (await exploreValidators()).validateExplorePivotStatusResponse, data),
+    ))
 }
 
 export interface FetchExplorePivotMembersArgs {
@@ -1408,7 +1414,9 @@ export function fetchExplorePivotMembers(
   return post<unknown>("/api/explore/pivots/members", {
     ...payload,
     source: payload.source ?? "live",
-  }, { signal, timeout }).then(parseExplorePivotMembersResponse)
+  }, { signal, timeout }).then(async (data) => explorePivotMembersFromContract(
+    expectGeneratedContract("ExplorePivotMembersResponse", (await exploreValidators()).validateExplorePivotMembersResponse, data),
+  ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1423,26 +1431,26 @@ export function fetchModellingGpuStatus(
 }
 
 
-export function getTrainStatus<T extends TrainStatusResponse = TrainStatusResponse>(
+export function getTrainStatus(
   jobId: string,
   options?: { signal?: AbortSignal },
-): Promise<T> {
+): Promise<TrainStatusResponse> {
   return request<unknown>(`/api/modelling/train/status/${encodeURIComponent(jobId)}`, options)
     .then(async (data) => {
       const { parseTrainStatusResponse } = await import("../types/trainGuards")
-      return validateApiResponse("Could not read training status", () => parseTrainStatusResponse(data) as T)
+      return validateApiResponse("Could not read training status", () => parseTrainStatusResponse(data))
     })
 }
 
-export function cancelTrain<T extends TrainStatusResponse = TrainStatusResponse>(
+export function cancelTrain(
   jobId: string,
   options?: { signal?: AbortSignal },
-): Promise<T> {
+): Promise<TrainStatusResponse> {
   return post<unknown>(
     `/api/modelling/train/cancel/${encodeURIComponent(jobId)}`,
     undefined,
     options,
-  ).then(async (data) => (await import("../types/trainGuards")).parseTrainStatusResponse(data) as T)
+  ).then(async (data) => (await import("../types/trainGuards")).parseTrainStatusResponse(data))
 }
 
 export interface TrainModelArgs {
@@ -1521,7 +1529,7 @@ export interface SolveOptimiserArgs {
 export function solveOptimiser(args: SolveOptimiserArgs): Promise<OptimiserSolveResponse> {
   const { signal, timeout = 300_000, ...payload } = args
   return post<unknown>("/api/optimiser/solve", payload, { signal, timeout })
-    .then(parseSolveOptimiserResponse)
+    .then(async (data) => expectGeneratedContract("OptimiserSolveResponse", (await optimiserValidators()).validateOptimiserSolveResponse, data))
 }
 
 export interface EstimateOptimiserSolveArgs {
@@ -1543,15 +1551,20 @@ export function estimateOptimiserSolve(
       source: payload.source ?? "live",
     },
     { signal, timeout },
-  ).then(parseOptimiserEstimateResponse)
+  ).then(async (data) => expectGeneratedContract("OptimiserEstimateResponse", (await optimiserValidators()).validateOptimiserEstimateResponse, data))
 }
 
-export function getOptimiserStatus<T extends OptimiserStatusResponse = OptimiserStatusResponse>(
+export function getOptimiserStatus(
   jobId: string,
   options?: { signal?: AbortSignal },
-): Promise<T> {
+): Promise<OptimiserStatusResponse> {
   return request<unknown>(`/api/optimiser/solve/status/${encodeURIComponent(jobId)}`, options)
-    .then((data) => validateApiResponse("Could not read optimiser status", () => parseOptimiserStatusResponse(data) as T))
+    .then(async (data) => {
+      const { validateOptimiserStatusResponse } = await optimiserValidators()
+      return validateApiResponse("Could not read optimiser status", () => optimiserStatusFromContract(
+        expectGeneratedContract("OptimiserStatusResponse", validateOptimiserStatusResponse, data),
+      ))
+    })
 }
 
 export function applyOptimiser(
@@ -1559,21 +1572,21 @@ export function applyOptimiser(
   options?: { signal?: AbortSignal },
 ): Promise<ApplyOptimiserResponse> {
   return post<unknown>("/api/optimiser/apply", payload, { timeout: 120_000, ...options })
-    .then(parseApplyOptimiserResponse)
+    .then(async (data) => expectGeneratedContract("OptimiserApplyResponse", (await optimiserValidators()).validateOptimiserApplyResponse, data))
 }
 
 export function saveOptimiser(
   payload: SaveOptimiserRequest,
   options?: { signal?: AbortSignal },
 ): Promise<SaveOptimiserResponse> {
-  return post<unknown>("/api/optimiser/save", payload, options).then(parseSaveOptimiserResponse)
+  return post<unknown>("/api/optimiser/save", payload, options).then(async (data) => expectGeneratedContract("OptimiserSaveResponse", (await optimiserValidators()).validateOptimiserSaveResponse, data))
 }
 
 export function logOptimiserToMlflow(
   payload: LogOptimiserToMlflowRequest,
   options?: { signal?: AbortSignal },
 ): Promise<MlflowLogResponse> {
-  return post<unknown>("/api/optimiser/mlflow/log", payload, options).then(parseMlflowLogResponse)
+  return post<unknown>("/api/optimiser/mlflow/log", payload, options).then(async (data) => expectGeneratedContract("OptimiserMlflowLogResponse", (await optimiserValidators()).validateOptimiserMlflowLogResponse, data))
 }
 
 export function getFrontierStatus(
@@ -1583,7 +1596,9 @@ export function getFrontierStatus(
   return request<unknown>(
     `/api/optimiser/frontier/status/${encodeURIComponent(jobId)}`,
     options,
-  ).then(parseFrontierStatusResponse)
+  ).then(async (data) => frontierStatusFromContract(
+    expectGeneratedContract("OptimiserFrontierStatusResponse", (await optimiserValidators()).validateOptimiserFrontierStatusResponse, data),
+  ))
 }
 
 export interface StartOptimiserFrontierAutoRangeArgs {
@@ -1598,7 +1613,7 @@ export function startOptimiserFrontierAutoRange(
 ): Promise<FrontierAutoRangeStartResponse> {
   const { signal, timeout, ...payload } = args
   return post<unknown>("/api/optimiser/frontier/auto-range/start", payload, { signal, timeout })
-    .then(parseFrontierAutoRangeStartResponse)
+    .then(async (data) => expectGeneratedContract("OptimiserFrontierAutoRangeStartResponse", (await optimiserValidators()).validateOptimiserFrontierAutoRangeStartResponse, data))
 }
 
 export function getOptimiserFrontierAutoRangeStatus(
@@ -1608,7 +1623,9 @@ export function getOptimiserFrontierAutoRangeStatus(
   return request<unknown>(
     `/api/optimiser/frontier/auto-range/status/${encodeURIComponent(jobId)}`,
     options,
-  ).then(parseFrontierAutoRangeStatusResponse)
+  ).then(async (data) => frontierAutoRangeStatusFromContract(
+    expectGeneratedContract("OptimiserFrontierAutoRangeStatusResponse", (await optimiserValidators()).validateOptimiserFrontierAutoRangeStatusResponse, data),
+  ))
 }
 
 export function cancelOptimiserFrontierAutoRange(
@@ -1619,14 +1636,16 @@ export function cancelOptimiserFrontierAutoRange(
     `/api/optimiser/frontier/auto-range/cancel/${encodeURIComponent(jobId)}`,
     {},
     options,
-  ).then(parseFrontierAutoRangeStatusResponse)
+  ).then(async (data) => frontierAutoRangeStatusFromContract(
+    expectGeneratedContract("OptimiserFrontierAutoRangeStatusResponse", (await optimiserValidators()).validateOptimiserFrontierAutoRangeStatusResponse, data),
+  ))
 }
 
 export function selectFrontierPoint(
   payload: { job_id: string; point_index: number; include_ratebook_tables?: boolean },
   options?: { signal?: AbortSignal },
 ): Promise<FrontierSelectResponse> {
-  return post<unknown>("/api/optimiser/frontier/select", payload, options).then(parseFrontierSelectResponse)
+  return post<unknown>("/api/optimiser/frontier/select", payload, options).then(async (data) => expectGeneratedContract("OptimiserFrontierSelectResponse", (await optimiserValidators()).validateOptimiserFrontierSelectResponse, data))
 }
 
 // ---------------------------------------------------------------------------
@@ -1704,7 +1723,7 @@ export function inferJsonCacheSchema(
 export function getExecutionSettings(
   options?: { signal?: AbortSignal },
 ): Promise<ExecutionSettings> {
-  return request<unknown>("/api/execution-settings", options).then(parseExecutionSettings)
+  return request<unknown>("/api/execution-settings", options).then(async (data) => expectGeneratedContract("ExecutionSettings", (await editorValidators()).validateExecutionSettings, data))
 }
 
 export function putExecutionSettings(
@@ -1716,7 +1735,7 @@ export function putExecutionSettings(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ streaming_chunk_size: streamingChunkSize }),
     ...options,
-  }).then(parseExecutionSettings)
+  }).then(async (data) => expectGeneratedContract("ExecutionSettings", (await editorValidators()).validateExecutionSettings, data))
 }
 
 // ---------------------------------------------------------------------------
@@ -1862,10 +1881,10 @@ export function listFiles(
   dir: string,
   extensions?: string,
   options?: { signal?: AbortSignal },
-): Promise<{ items?: FileListItem[] }> {
+): Promise<BrowseFilesResponse> {
   const params = new URLSearchParams({ dir })
   if (extensions) params.set("extensions", extensions)
-  return request<unknown>(`/api/files?${params.toString()}`, options).then(parseFileListResponse)
+  return request<unknown>(`/api/files?${params.toString()}`, options).then(async (data) => expectGeneratedContract("BrowseFilesResponse", (await sessionValidators()).validateBrowseFilesResponse, data))
 }
 
 export function readJson<T = unknown>(
@@ -2084,6 +2103,18 @@ export function getGitRemotes(
   options?: { signal?: AbortSignal },
 ): Promise<GitRemotesResponse> {
   return request<unknown>("/api/git/remotes", options).then(async (data) => expectGeneratedContract("GitRemotesResponse", (await gitValidators()).validateGitRemotesResponse, data))
+}
+
+/** Read a 409 push-rejection body; a body with another discriminator reads as null. */
+export async function parseGitPushRejection(detail: unknown): Promise<GitPushRejection | null> {
+  if (!isPlainObject(detail) || detail.status !== "rejected_diverged") return null
+  return expectGeneratedContract("GitPushRejection", (await gitValidators()).validateGitPushRejection, detail)
+}
+
+/** Read a 409 milestone-fork body; a body with another discriminator reads as null. */
+export async function parseGitMilestoneFork(detail: unknown): Promise<GitMilestoneFork | null> {
+  if (!isPlainObject(detail) || detail.status !== "would_fork") return null
+  return expectGeneratedContract("GitMilestoneFork", (await gitValidators()).validateGitMilestoneFork, detail)
 }
 
 /** Deliberately publish branch history to a remote, bootstrapping its default branch when needed (S16/S33). */
