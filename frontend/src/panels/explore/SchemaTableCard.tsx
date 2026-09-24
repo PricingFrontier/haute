@@ -22,19 +22,11 @@ import DistinctInfoButton from "./DistinctInfoButton"
 import { StatValueCell } from "./StatValueCell"
 import ExploreTableActions from "./ExploreTableActions"
 import type { ExploreDataView } from "./exploreDataView"
+import ExploreTableHead from "./ExploreTableHead"
+import { CELL_CLASS, MUTED_STYLE, PRIMARY_STYLE, ROW_BORDER_STYLE } from "./exploreTableStyles"
 
 interface SchemaTableCardProps {
   report: ExploreDataView
-}
-
-const HEADER_CLASS =
-  "text-[10px] font-bold uppercase tracking-[0.08em] text-left px-2 py-1.5"
-const HEADER_STYLE = {
-  color: "var(--text-secondary)",
-  background: "var(--bg-elevated)",
-  position: "sticky" as const,
-  top: 0,
-  zIndex: 1,
 }
 
 type NullSeverity = "high" | "none" | "normal"
@@ -51,10 +43,6 @@ function safeTestId(name: string): string {
   return name.replace(/[^a-zA-Z0-9_-]/g, "_")
 }
 
-const ROW_BORDER_STYLE = { borderBottom: "1px solid var(--border)" } as const
-const CELL_BASE_CLASS = "px-2 py-1.5"
-const MUTED_STYLE = { color: "var(--text-muted)" } as const
-const PRIMARY_STYLE = { color: "var(--text-primary)" } as const
 const SCHEMA_PAGE_SIZE = 50
 
 function nullPctStyle(nullCount: number, rowCount: number): { color: string } {
@@ -101,19 +89,19 @@ function SchemaRow({
     <tr data-testid={`explore-schema-row-${safeTestId(column.name)}`} style={ROW_BORDER_STYLE}>
       <td
         data-testid="explore-schema-name"
-        className={`${CELL_BASE_CLASS} font-mono max-w-[28ch] truncate`}
+        className={`${CELL_CLASS} font-mono max-w-[28ch] truncate`}
         style={PRIMARY_STYLE}
         title={column.name}
       >
         {column.name}
       </td>
-      <td className={`${CELL_BASE_CLASS} font-mono ${getDtypeColor(column.dtype)}`}>
+      <td className={`${CELL_CLASS} font-mono ${getDtypeColor(column.dtype)}`}>
         {column.dtype}
       </td>
       <td
         data-testid="explore-schema-null-pct"
         data-null-severity={severity}
-        className={CELL_BASE_CLASS}
+        className={CELL_CLASS}
         style={nullStyle}
       >
         {nullPct ?? "-"}
@@ -121,13 +109,13 @@ function SchemaRow({
       <td
         data-testid="explore-schema-nan-pct"
         data-nan-severity={nanSeverity}
-        className={CELL_BASE_CLASS}
+        className={CELL_CLASS}
         style={nanStyle}
       >
         {hasNan ? (nanPct ?? "-") : "-"}
       </td>
       <td
-        className={CELL_BASE_CLASS}
+        className={CELL_CLASS}
         style={column.distinct_count === null ? MUTED_STYLE : PRIMARY_STYLE}
       >
         {column.distinct_count === null
@@ -136,7 +124,7 @@ function SchemaRow({
       </td>
       <StatValueCell testId="explore-schema-min-value" value={column.min_value} />
       <StatValueCell testId="explore-schema-max-value" value={column.max_value} />
-      <td data-testid="explore-schema-profile" className={CELL_BASE_CLASS} style={profileText(column) === "-" ? MUTED_STYLE : PRIMARY_STYLE}>
+      <td data-testid="explore-schema-profile" className={CELL_CLASS} style={profileText(column) === "-" ? MUTED_STYLE : PRIMARY_STYLE}>
         {profileText(column)}
       </td>
     </tr>
@@ -279,43 +267,28 @@ export default function SchemaTableCard({ report }: SchemaTableCardProps) {
 
       <div className="overflow-y-auto" style={{ maxHeight: 400 }}>
         <table className="w-full text-[11px]" aria-labelledby="explore-schema-card-heading">
-          <thead>
-            <tr>
-              <th className={HEADER_CLASS} style={HEADER_STYLE}>
-                Name
-              </th>
-              <th className={HEADER_CLASS} style={HEADER_STYLE}>
-                Type
-              </th>
-              <th className={HEADER_CLASS} style={HEADER_STYLE}>
-                Null %
-              </th>
-              <th className={HEADER_CLASS} style={HEADER_STYLE}>
-                NaN %
-              </th>
-              <th className={HEADER_CLASS} style={HEADER_STYLE}>
+          <ExploreTableHead
+              sticky
+              labels={[
+                "Name",
+                "Type",
+                "Null %",
+                "NaN %",
                 <span className="inline-flex items-center gap-1">
                   Distinct
                   <DistinctInfoButton />
-                </span>
-              </th>
-              <th className={HEADER_CLASS} style={HEADER_STYLE}>
-                Min
-              </th>
-              <th className={HEADER_CLASS} style={HEADER_STYLE}>
-                Max
-              </th>
-              <th className={HEADER_CLASS} style={HEADER_STYLE}>
-                Profile
-              </th>
-            </tr>
-          </thead>
+                </span>,
+                "Min",
+                "Max",
+                "Profile",
+              ]}
+            />
           <tbody>
             {report.columns.length === 0 ? (
               <tr>
                 <td
                   colSpan={8}
-                  className={CELL_BASE_CLASS}
+                  className={CELL_CLASS}
                   style={MUTED_STYLE}
                   data-testid="explore-schema-empty"
                 >
@@ -326,7 +299,7 @@ export default function SchemaTableCard({ report }: SchemaTableCardProps) {
               <tr>
                 <td
                   colSpan={8}
-                  className={CELL_BASE_CLASS}
+                  className={CELL_CLASS}
                   style={MUTED_STYLE}
                   data-testid="explore-schema-empty"
                 >

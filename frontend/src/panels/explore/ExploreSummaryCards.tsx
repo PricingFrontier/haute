@@ -10,19 +10,15 @@ import { distributionText } from "./distribution"
 import { StatValueCell } from "./StatValueCell"
 import ExploreTableActions from "./ExploreTableActions"
 import type { ExploreDataView } from "./exploreDataView"
+import ExploreTableHead from "./ExploreTableHead"
+import { CELL_CLASS, LABEL_CLASS, MUTED_STYLE, PRIMARY_STYLE, SECONDARY_STYLE, ROW_BORDER_STYLE } from "./exploreTableStyles"
 
 interface SummaryCardProps {
   report: ExploreDataView
 }
 
 const CARD_CLASS = "rounded-lg p-3 space-y-3"
-const LABEL_CLASS = "text-[10px] font-bold uppercase tracking-[0.08em]"
 const VALUE_CLASS = "text-base font-semibold"
-const MUTED_STYLE = { color: "var(--text-muted)" } as const
-const PRIMARY_STYLE = { color: "var(--text-primary)" } as const
-const SECONDARY_STYLE = { color: "var(--text-secondary)" } as const
-const ROW_BORDER_STYLE = { borderBottom: "1px solid var(--border)" } as const
-const CELL_CLASS = "px-2 py-1.5"
 const CATEGORICAL_TABLE_COLUMN_COUNT = 5
 
 const CARD_STYLE = {
@@ -224,42 +220,28 @@ export function NumericSummaryCard({ report }: SummaryCardProps) {
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-[11px]" aria-label="Numeric field statistics">
-            <thead>
-              <tr>
-                {[
-                  "Field",
-                  "Type",
-                  "Null %",
-                  "Distinct",
-                  "Distribution",
-                  "Min",
-                  "P25",
-                  "Median",
-                  "Mean",
-                  "P75",
-                  "Max",
-                  "Std",
-                  "Zeros",
-                  "Negatives",
-                  "NaN",
-                ].map((label) => (
-                  <th
-                    key={label}
-                    className="text-[10px] font-bold uppercase tracking-[0.08em] text-left px-2 py-1.5"
-                    style={SECONDARY_STYLE}
-                  >
-                    {label === "Distinct" ? (
-                      <span className="inline-flex items-center gap-1">
-                        {label}
-                        <DistinctInfoButton />
-                      </span>
-                    ) : (
-                      label
-                    )}
-                  </th>
-                ))}
-              </tr>
-            </thead>
+            <ExploreTableHead
+              labels={[
+                "Field",
+                "Type",
+                "Null %",
+                <span className="inline-flex items-center gap-1">
+                  Distinct
+                  <DistinctInfoButton />
+                </span>,
+                "Distribution",
+                "Min",
+                "P25",
+                "Median",
+                "Mean",
+                "P75",
+                "Max",
+                "Std",
+                "Zeros",
+                "Negatives",
+                "NaN",
+              ]}
+            />
             <tbody>
               {numericColumns.map((column) => (
                 <tr key={column.name} data-testid="explore-numeric-summary-row" style={ROW_BORDER_STYLE}>
@@ -375,21 +357,7 @@ export function CategoricalSummaryCard({ report }: SummaryCardProps) {
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-[11px]" aria-label="Categorical field distinct values">
-            <thead>
-              <tr>
-                {["", "Field", "Type", "Null %", "Distinct"].map((label) => (
-                  <th
-                    key={label || "expand"}
-                    scope={label ? "col" : undefined}
-                    aria-hidden={label ? undefined : true}
-                    className="text-[10px] font-bold uppercase tracking-[0.08em] text-left px-2 py-1.5"
-                    style={SECONDARY_STYLE}
-                  >
-                    {label}
-                  </th>
-                ))}
-              </tr>
-            </thead>
+            <ExploreTableHead labels={["", "Field", "Type", "Null %", "Distinct"]} />
             <tbody>
               {profiles.map((profile, index) => {
                 const column = columnByName.get(profile.field)

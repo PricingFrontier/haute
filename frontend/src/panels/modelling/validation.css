@@ -80,6 +80,11 @@
   color: var(--text-muted);
   font-weight: 500;
 }
+/* A row's header cell reads like its values; only column headers are muted. */
+.validation-value-table tbody th {
+  color: inherit;
+  font-weight: inherit;
+}
 .validation-bin-detail {
   min-height: 38px;
   font-size: 12px;

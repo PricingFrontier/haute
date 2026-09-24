@@ -24,7 +24,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Engineering quality](engineering-quality.md) | Dead code, tracked artifacts, specification drift, coverage gates, test organisation | `ENGQ-R01` |
 | [Execution engine](execution-engine.md) | Chunked runner, one execution walker | `EXEC-R05` |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | — |
-| [Frontend shared](frontend-shared.md) | A table base, the repair dialog's error text; results store | `FSH-R02` |
+| [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
 | [JSON shredding](json-shredding.md) | Explicit output nesting | `JSON-R02` |
 | [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients | `MLF-R02` |
 | [Modelling](modelling.md) | Evaluation and tuning invariants checked once | `MOD-T10` |

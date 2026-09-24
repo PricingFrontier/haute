@@ -341,7 +341,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §1.5 Silent config-key drop | `PCFG-R05` ([pipeline config](pipeline-config.md)) |
 | §1.6 Frontier point derived twice | `OPT-P18` ([optimiser](optimiser.md)) |
 | §1.7 Swallowed exceptions | `MLF-R01` ([MLflow model registry](mlflow-model-registry.md)), `MOD-T09` ([modelling](modelling.md)), `OPT-P17` ([optimiser](optimiser.md)) |
-| §1.8 Unbounded poll loop | `FSH-R01` ([frontend shared](frontend-shared.md)) |
+| §1.8 Unbounded poll loop | `FSH-R01` (frontend shared, delivered) |
 | §1.8 Three non-finite float encodings | `JSON-R01` ([JSON shredding](json-shredding.md)) |
 | §1.8 Permissive dtype names; dtype mapping ×7 | `IO-R01` (IO layer, delivered; its roadmap file is retired) |
 | §1.8 Fixed-name atomic write; lock wrappers | `IO-R02` (IO layer, delivered; its roadmap file is retired) |
@@ -361,8 +361,8 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §3.1 Graph traversal ×5 | `EXEC-R08` ([execution engine](execution-engine.md)) |
 | §3.1 Legacy modelling check ×2 | `PCFG-R06` ([pipeline config](pipeline-config.md)) |
 | §3.1 Git outside the chokepoint | `DEP-R04` ([deploy](deploy.md)) |
-| §3.2 Polling | `FSH-R01` ([frontend shared](frontend-shared.md)) |
-| §3.2 Error, format, debounce, modal and table helpers | `FSH-R02` ([frontend shared](frontend-shared.md)) |
+| §3.2 Polling | `FSH-R01` (frontend shared, delivered) |
+| §3.2 Error, format, debounce, modal and table helpers | `FSH-R02` (frontend shared, delivered) |
 | §3.2 Editor clones and the read-only dispatcher | `FNE-R01` (frontend node editors, delivered; its roadmap file is retired) |
 | §3.2 Modelling tab and chart clones | `FMO-R01` (frontend modelling and optimiser UI, delivered; its roadmap file is retired) |
 | §3.2 Results store | `FSH-R03` ([frontend shared](frontend-shared.md)) |
