@@ -8,7 +8,11 @@ from typing import Any
 import polars as pl
 import pytest
 
-from haute._trace_correlation import _correlate_rows_posthoc, _find_matching_row
+from haute._trace_correlation import (
+    _correlate_rows_posthoc,
+    _find_matching_row,
+    _identical_candidate_count,
+)
 from haute._types import GraphNode, NodeData, NodeType
 from haute.trace import execute_trace, trace_result_to_dict
 from tests.conftest import make_edge, make_graph, make_source_node, make_transform_node
@@ -366,3 +370,40 @@ def test_a_trace_counts_identity_over_the_whole_source(
     )
     counts = {step.node_id: step.identical_row_count for step in result.steps}
     assert counts.get("source") == expected_count
+
+
+def test_an_object_column_leaves_the_gap_in_a_frame_or_a_plan() -> None:
+    # Object values cannot be compared row against row, so identity is unproven.
+    blob = pl.Series([object(), object()], dtype=pl.Object)
+    frame = pl.DataFrame({"policy_id": [10, 10]}).with_columns(blob.alias("blob"))
+    diagnostics: list[dict[str, object]] = []
+
+    row, index = _find_matching_row(frame, {"policy_id": 10}, diagnostics=diagnostics)
+
+    assert (row, index) == (None, -1)
+    assert [diagnostic["reason"] for diagnostic in diagnostics] == ["duplicate_exact_match"]
+    assert (
+        _identical_candidate_count(
+            frame.lazy(),
+            child_row={"policy_id": 10},
+            key_columns=["policy_id"],
+            collect=lambda plan: plan.collect(),
+        )
+        is None
+    )
+
+
+def test_an_error_reading_the_plan_propagates_instead_of_reading_as_a_tie() -> None:
+    # The third row fails its strict cast; a lookup of two rows never reads it,
+    # but counting identity over the plan does, and that failure is real.
+    plan = pl.LazyFrame({"key": [1, 1, 1], "value": ["1", "1", "x"]}).with_columns(
+        pl.col("value").cast(pl.Int64, strict=True)
+    )
+
+    with pytest.raises(pl.exceptions.InvalidOperationError):
+        _identical_candidate_count(
+            plan,
+            child_row={"key": 1},
+            key_columns=["key"],
+            collect=lambda counts: counts.collect(),
+        )

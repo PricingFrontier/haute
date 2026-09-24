@@ -406,9 +406,11 @@ identical matching logic:
    float key the matcher accepts within tolerance does not make two rows
    identical). The count runs over the frame being matched, or, for a row-scope
    lookup (which reads at most two rows), over the node's uncapped plan. A key
-   `_typed_value_match_expr` cannot compare, or columns Polars cannot
-   de-duplicate, leave the tie a `duplicate_exact_match` omission, as do
-   relaxed ties and candidates that differ in any column. When several frames or
+   `_typed_value_match_expr` cannot compare, or a column Polars cannot compare
+   row against row (`Object`, at any nesting depth, decided from the schema),
+   leaves the tie a `duplicate_exact_match` omission, as do relaxed ties and
+   candidates that differ in any column; an error while reading the frame or
+   plan propagates. When several frames or
    ports of one parent compete, each keeps its own diagnostics and only the
    winner's `identical_row_match` is recorded. A position of `-1` never feeds positional alignment
    (the fast path and head alignment require a known index), so correlation

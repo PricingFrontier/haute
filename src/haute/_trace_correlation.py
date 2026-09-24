@@ -27,6 +27,7 @@ from functools import lru_cache, partial
 from typing import Any, NamedTuple
 
 import polars as pl
+from polars.datatypes import DataTypeClass
 
 from haute._edge_join import (
     build_edge_join_kwargs,
@@ -704,6 +705,17 @@ def _record_ambiguous_row_match(
         diagnostics.append(diagnostic)
 
 
+def _deduplicable(dtype: pl.DataType | DataTypeClass) -> bool:
+    """Whether Polars can compare values of *dtype* row against row (no ``Object``)."""
+    if dtype.base_type() is pl.Object:
+        return False
+    if isinstance(dtype, pl.List | pl.Array):
+        return _deduplicable(dtype.inner)
+    if isinstance(dtype, pl.Struct):
+        return all(_deduplicable(field.dtype) for field in dtype.fields)
+    return True
+
+
 def _identical_candidate_count(
     frame: pl.DataFrame | pl.LazyFrame,
     *,
@@ -717,9 +729,12 @@ def _identical_candidate_count(
     *key_columns*. They are identical when they form exactly one distinct row
     across every column, compared exactly in their own dtypes (never with the
     matcher's float tolerance). ``None`` when they differ, or when a column
-    cannot be compared or de-duplicated.
+    cannot be compared or de-duplicated (decided from the schema, so an error
+    while reading the frame or plan propagates rather than reading as a tie).
     """
     schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
+    if not all(_deduplicable(dtype) for dtype in schema.values()):
+        return None
     key_expressions: list[pl.Expr] = []
     for column in key_columns:
         expression, _reason = _typed_value_match_expr(column, child_row[column], schema[column])
@@ -730,16 +745,12 @@ def _identical_candidate_count(
         pl.len().alias("candidates"),
         pl.struct(pl.all()).n_unique().alias("distinct_rows"),
     )
-    try:
-        if isinstance(counts_plan, pl.LazyFrame):
-            if collect is None:
-                raise ValueError("counting identical candidates in a plan needs a collect")
-            counts = collect(counts_plan)
-        else:
-            counts = counts_plan
-    except pl.exceptions.PolarsError:
-        # A column Polars cannot de-duplicate cannot prove identity.
-        return None
+    if isinstance(counts_plan, pl.LazyFrame):
+        if collect is None:
+            raise ValueError("counting identical candidates in a plan needs a collect")
+        counts = collect(counts_plan)
+    else:
+        counts = counts_plan
     candidates, distinct_rows = counts.row(0)
     return int(candidates) if candidates >= 2 and distinct_rows == 1 else None
 
