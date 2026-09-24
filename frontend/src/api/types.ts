@@ -17,7 +17,6 @@ import type {
   ExplorePivotResult as GeneratedExplorePivotResult,
   ExplorePivotRunResponse as GeneratedExplorePivotRunResponse,
   ExplorePivotStatusResponse as GeneratedExplorePivotStatusResponse,
-  GitRemoteLeg as GeneratedGitRemoteLeg,
   GitStorageBind as GeneratedGitStorageBind,
   GitStorageSync as GeneratedGitStorageSync,
   GitWorkingBranchResponse as GeneratedGitWorkingBranchResponse,
@@ -51,17 +50,13 @@ export interface EditorIdentityBatchRequest {
   nodes: EditorIdentityRequestNode[]
 }
 
-export interface EditorNodeIdentity {
-  node_id: string
-  function_name: string
-  config_reference: string | null
-  default_input_name: string | null
-  source_handle_input_names: Record<string, string>
-}
-
-export interface EditorIdentityBatchResponse {
-  identities: EditorNodeIdentity[]
-}
+// Editor identities, Polars step rendering and execution settings are generated.
+export type {
+  EditorIdentitiesResponse as EditorIdentityBatchResponse,
+  EditorIdentityResponseNode as EditorNodeIdentity,
+  ExecutionSettings,
+  PolarsStepsRenderResponse,
+} from "../generated/api-contracts.generated"
 export interface SchemaWarning {
   column: string
   status: string
@@ -476,58 +471,14 @@ export interface SchemaResult {
  * never hard-codes registry knowledge: its grouping, input/output modes,
  * accepted arguments, execution guarantees, and unavailable engines.
  */
-export interface IoInputCapability {
-  modes: ("scan" | "read")[]
-  arguments: Record<string, string[]>
-  engines_missing: string[]
-  cache_mode: "direct" | "snapshot"
-  direct_bounded: boolean
-  needs_schema_when_bounded: boolean
-  snapshot_build: "bounded" | "admitted_eager" | "unsupported"
-  cached_read: boolean
-}
-
-export interface IoOutputCapability {
-  modes: ("sink" | "write")[]
-  arguments: Record<string, string[]>
-  engines_missing: string[]
-  native_sink: boolean
-  eager_writer: boolean
-  publication: "atomic_file" | "transactional"
-}
-
-export interface IoFormatCapability {
-  name: string
-  label: string
-  group: "file" | "database" | "lakehouse" | "inline"
-  extensions: string[]
-  unstable: boolean
-  input: IoInputCapability | null
-  output: IoOutputCapability | null
-}
-
-export interface IoFieldCapability {
-  name: string
-  label: string
-  kind: "path" | "connection" | "text" | "query" | "table" | "records"
-  required: boolean
-}
-
-export interface IoCapabilityGroup {
-  name: "file" | "database" | "lakehouse" | "databricks" | "inline"
-  label: string
-  input_available: boolean
-  output_available: boolean
-  cache_modes: ("direct" | "snapshot")[]
-  input_fields: IoFieldCapability[]
-  output_fields: IoFieldCapability[]
-  formats: IoFormatCapability[]
-}
-
-export interface IoCapabilitiesResponse {
-  schema_version: 1
-  groups: IoCapabilityGroup[]
-}
+export type {
+  IoCapabilitiesResponse,
+  IoCapabilityGroup,
+  IoFieldCapability,
+  IoFormatCapability,
+  IoInputCapability,
+  IoOutputCapability,
+} from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------
 // Cache-inventory contracts (/api/cache)
@@ -734,10 +685,6 @@ export type {
 export type MlflowDestinationKey = GeneratedMlflowDestinationEntry["key"]
 
 export type MlflowProbeCategory = GeneratedMlflowTestConnectionResponse["category"]
-
-export interface ExecutionSettings {
-  streaming_chunk_size: number
-}
 
 export interface MlflowSettingsUpdateRequest {
   tracking_uri: string
@@ -1551,12 +1498,11 @@ export type {
 // File browsing types
 // ---------------------------------------------------------------------------
 
-export interface FileListItem {
-  name: string
-  path: string
-  type: "file" | "directory"
-  size?: number | null
-}
+export type {
+  BrowseFilesResponse,
+  FileItem as FileListItem,
+  SessionStatusResponse,
+} from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------
 // Utility types
@@ -1625,40 +1571,5 @@ export type SyncFailure = NonNullable<GeneratedGitStorageSync["failure"]>
 
 export type BindState = GeneratedGitStorageBind["state"]
 
-/** A non-fast-forward push rejection (P7 M7): the body of a 409 from
- *  POST /api/git/push, carrying the per-leg divergence so the UI shows the honest
- *  fork rather than a dead-end string. `ledger` is null when it isn't spawned. */
-export interface GitPushRejection {
-  status: "rejected_diverged"
-  remote: string
-  working: GeneratedGitRemoteLeg
-  ledger: GeneratedGitRemoteLeg | null
-  message: string
-  /** X3: the remote dropped a published commit (a rebase/force-push upstream),
-   *  not an ordinary divergence — the modal says so distinctly. */
-  is_rewrite: boolean
-}
-
-/** The pre-milestone fork warning (P7 U4/D4): the body of a 409 from
- *  POST /api/git/commit when the working branch is behind its remote, so a
- *  milestone now would branch off the shared copy. Drives the warn + "commit
- *  anyway (creates a fork)" confirm. */
-export interface GitMilestoneFork {
-  status: "would_fork"
-  remote: string
-  working: GeneratedGitRemoteLeg
-  message: string
-}
-
-/** Result of rendering a low-code Transform step list to Polars code. A step
- *  validation failure is data (`ok: false` with the failing step index and
- *  message), never a transport error. */
-export interface PolarsStepsRenderResponse {
-  ok: boolean
-  code: string
-  /** 1-based inclusive `[start, end]` line range per step. */
-  step_lines: number[][]
-  /** Zero-based index of the failing step; null for a list-level problem. */
-  step_index: number | null
-  message: string
-}
+// The 409 advisory bodies of a diverged push and a forking milestone.
+export type { GitMilestoneFork, GitPushRejection } from "../generated/api-contracts.generated"

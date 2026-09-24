@@ -25,7 +25,6 @@ import type {
   CacheNodesResponse,
   CacheOwnerEntry,
   DissolveSubmodelResponse,
-  EditorIdentityBatchResponse,
   ExecutionAdmission,
   ExecutionCacheProof,
   ExecutionMemoryPressureEvent,
@@ -65,17 +64,7 @@ import type {
   FrontierPointSummary,
   FrontierResponse,
   FrontierSelectResponse,
-  GitMilestoneFork,
-  GitRemoteLeg,
-  GitPushRejection,
-  GitStorageClaim,
-  IoCapabilitiesResponse,
-  IoCapabilityGroup,
   OutputDestinationResponse,
-  IoFieldCapability,
-  IoFormatCapability,
-  IoInputCapability,
-  IoOutputCapability,
   InputCacheBuildResponse,
   InputCacheCancelResponse,
   InputCacheGeneration,
@@ -83,8 +72,6 @@ import type {
   InputCacheProgress,
   InputCacheSnapshotResponse,
   InputCacheTableStatus,
-  FileListItem,
-  ExecutionSettings,
   MlflowLogResponse,
   NodeDataClearResponse,
   NodeDataColumns,
@@ -99,7 +86,6 @@ import type {
   OptimiserSolveResponse,
   OptimiserSolveResult,
   OptimiserStatusResponse,
-  PolarsStepsRenderResponse,
   PreviewInputsResponse,
   PreviewNodeResponse,
   PreviewSeedPlanEntry,
@@ -1312,79 +1298,6 @@ export function parsePipelineResponse(value: unknown): PipelineResponse {
   }
 }
 
-const EDITOR_IDENTITY_PARSER = "parseEditorNodeIdentityBatchResponse"
-
-function parseRequiredNullableNonBlankString(
-  value: unknown,
-  field: string,
-): string | null {
-  if (value === null) return null
-  return expectNonBlankString(EDITOR_IDENTITY_PARSER, value, field)
-}
-
-function parseEditorIdentityStringMap(
-  value: unknown,
-  field: string,
-): Record<string, string> {
-  const object = expectPlainObject(EDITOR_IDENTITY_PARSER, value, field)
-  return Object.fromEntries(
-    Object.entries(object).map(([key, item]) => [
-      expectNonBlankString(EDITOR_IDENTITY_PARSER, key, `${field} key`),
-      expectNonBlankString(EDITOR_IDENTITY_PARSER, item, `${field}.${key}`),
-    ]),
-  )
-}
-
-export function parseEditorNodeIdentityBatchResponse(
-  value: unknown,
-): EditorIdentityBatchResponse {
-  const object = expectPlainObject(EDITOR_IDENTITY_PARSER, value)
-  expectExactKeys(EDITOR_IDENTITY_PARSER, object, "response", ["identities"])
-  const identities = expectArray(
-    EDITOR_IDENTITY_PARSER,
-    object.identities,
-    "response.identities",
-  ).map((item, index) => {
-    const field = `response.identities[${index}]`
-    const identity = expectPlainObject(EDITOR_IDENTITY_PARSER, item, field)
-    expectExactKeys(EDITOR_IDENTITY_PARSER, identity, field, [
-      "node_id",
-      "function_name",
-      "config_reference",
-      "default_input_name",
-      "source_handle_input_names",
-    ])
-    return {
-      node_id: expectNonBlankString(
-        EDITOR_IDENTITY_PARSER,
-        identity.node_id,
-        `${field}.node_id`,
-      ),
-      function_name: expectNonBlankString(
-        EDITOR_IDENTITY_PARSER,
-        identity.function_name,
-        `${field}.function_name`,
-      ),
-      config_reference: parseRequiredNullableNonBlankString(
-        identity.config_reference,
-        `${field}.config_reference`,
-      ),
-      default_input_name: parseRequiredNullableNonBlankString(
-        identity.default_input_name,
-        `${field}.default_input_name`,
-      ),
-      source_handle_input_names: parseEditorIdentityStringMap(
-        identity.source_handle_input_names,
-        `${field}.source_handle_input_names`,
-      ),
-    }
-  })
-  if (new Set(identities.map((identity) => identity.node_id)).size !== identities.length) {
-    throw new Error(`${EDITOR_IDENTITY_PARSER}: duplicate node_id in response.identities`)
-  }
-  return { identities }
-}
-
 function parseNestedPipelineResponse(
   parser: string,
   obj: Record<string, unknown>,
@@ -1879,12 +1792,6 @@ export function parseSchemaResponse(value: unknown): SchemaResult {
   }
 }
 
-const IO_INPUT_MODES = ["scan", "read"] as const
-const IO_OUTPUT_MODES = ["sink", "write"] as const
-const IO_FORMAT_GROUPS = ["file", "database", "lakehouse", "inline"] as const
-const IO_GROUPS = ["file", "database", "lakehouse", "databricks", "inline"] as const
-const IO_FIELD_KINDS = ["path", "connection", "text", "query", "table", "records"] as const
-const IO_CACHE_MODES = ["direct", "snapshot"] as const
 const BUILD_CLASSES = ["bounded", "admitted_eager", "unsupported"] as const
 const INPUT_CACHE_PHASES = ["queued", "building", "publishing", "completed", "failed", "cancelled"] as const
 const INPUT_CACHE_SNAPSHOT_STATES = ["missing", "building", "ready", "corrupt", "failed"] as const
@@ -1892,42 +1799,6 @@ const INPUT_CACHE_FRESHNESS = ["fresh", "stale", "unknown"] as const
 function parseInputCacheStringRecord(parser: string, value: unknown, field: string): Record<string, string> {
   const obj = expectPlainObject(parser, value, field)
   return Object.fromEntries(Object.entries(obj).map(([key, item]) => [key, expectString(parser, item, `${field}.${key}`)]))
-}
-
-function parseIoInputCapability(value: unknown, field: string): IoInputCapability {
-  const p = "parseIoCapabilitiesResponse"
-  const obj = expectPlainObject(p, value, field)
-  return { modes: parseArray(p, obj.modes, `${field}.modes`, (v, f) => expectStringLiteral(p, v, f, IO_INPUT_MODES)), arguments: parseArrayRecord(p, obj.arguments, `${field}.arguments`, (v, f) => expectString(p, v, f)), engines_missing: parseStringArray(p, obj.engines_missing, `${field}.engines_missing`), cache_mode: expectStringLiteral(p, obj.cache_mode, `${field}.cache_mode`, IO_CACHE_MODES), direct_bounded: expectBoolean(p, obj.direct_bounded, `${field}.direct_bounded`), needs_schema_when_bounded: expectBoolean(p, obj.needs_schema_when_bounded, `${field}.needs_schema_when_bounded`), snapshot_build: expectStringLiteral(p, obj.snapshot_build, `${field}.snapshot_build`, BUILD_CLASSES), cached_read: expectBoolean(p, obj.cached_read, `${field}.cached_read`) }
-}
-
-function parseIoOutputCapability(value: unknown, field: string): IoOutputCapability {
-  const p = "parseIoCapabilitiesResponse"
-  const obj = expectPlainObject(p, value, field)
-  return { modes: parseArray(p, obj.modes, `${field}.modes`, (v, f) => expectStringLiteral(p, v, f, IO_OUTPUT_MODES)), arguments: parseArrayRecord(p, obj.arguments, `${field}.arguments`, (v, f) => expectString(p, v, f)), engines_missing: parseStringArray(p, obj.engines_missing, `${field}.engines_missing`), native_sink: expectBoolean(p, obj.native_sink, `${field}.native_sink`), eager_writer: expectBoolean(p, obj.eager_writer, `${field}.eager_writer`), publication: expectStringLiteral(p, obj.publication, `${field}.publication`, ["atomic_file", "transactional"]) }
-}
-
-function parseIoFormatCapability(value: unknown, field: string): IoFormatCapability {
-  const p = "parseIoCapabilitiesResponse"
-  const obj = expectPlainObject(p, value, field)
-  return { name: expectString(p, obj.name, `${field}.name`), label: expectString(p, obj.label, `${field}.label`), group: expectStringLiteral(p, obj.group, `${field}.group`, IO_FORMAT_GROUPS), extensions: parseStringArray(p, obj.extensions, `${field}.extensions`), unstable: expectBoolean(p, obj.unstable, `${field}.unstable`), input: obj.input === null ? null : parseIoInputCapability(obj.input, `${field}.input`), output: obj.output === null ? null : parseIoOutputCapability(obj.output, `${field}.output`) }
-}
-
-function parseIoFieldCapability(value: unknown, field: string): IoFieldCapability {
-  const p = "parseIoCapabilitiesResponse"
-  const obj = expectPlainObject(p, value, field)
-  return { name: expectString(p, obj.name, `${field}.name`), label: expectString(p, obj.label, `${field}.label`), kind: expectStringLiteral(p, obj.kind, `${field}.kind`, IO_FIELD_KINDS), required: expectBoolean(p, obj.required, `${field}.required`) }
-}
-
-function parseIoCapabilityGroup(value: unknown, field: string): IoCapabilityGroup {
-  const p = "parseIoCapabilitiesResponse"
-  const obj = expectPlainObject(p, value, field)
-  return { name: expectStringLiteral(p, obj.name, `${field}.name`, IO_GROUPS), label: expectString(p, obj.label, `${field}.label`), input_available: expectBoolean(p, obj.input_available, `${field}.input_available`), output_available: expectBoolean(p, obj.output_available, `${field}.output_available`), cache_modes: parseArray(p, obj.cache_modes, `${field}.cache_modes`, (v, f) => expectStringLiteral(p, v, f, IO_CACHE_MODES)), input_fields: parseArray(p, obj.input_fields, `${field}.input_fields`, parseIoFieldCapability), output_fields: parseArray(p, obj.output_fields, `${field}.output_fields`, parseIoFieldCapability), formats: parseArray(p, obj.formats, `${field}.formats`, parseIoFormatCapability) }
-}
-
-export function parseIoCapabilitiesResponse(value: unknown): IoCapabilitiesResponse {
-  const p = "parseIoCapabilitiesResponse"
-  const obj = expectPlainObject(p, value)
-  return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), groups: parseArray(p, obj.groups, "field `groups`", parseIoCapabilityGroup) }
 }
 
 function parseInputCacheProgress(value: unknown, field: string): InputCacheProgress {
@@ -2577,14 +2448,6 @@ export function explorePivotMembersFromContract(
   }
 }
 
-export function parseExecutionSettings(value: unknown): ExecutionSettings {
-  const p = "parseExecutionSettings"
-  const obj = expectPlainObject(p, value)
-  return {
-    streaming_chunk_size: expectPositiveInteger(p, obj.streaming_chunk_size, "field `streaming_chunk_size`"),
-  }
-}
-
 export function parseMlflowLogResponse(value: unknown): MlflowLogResponse {
   const obj = expectPlainObject("parseMlflowLogResponse", value)
   return {
@@ -2953,11 +2816,6 @@ export function parseOptimiserStatusResponse(value: unknown): OptimiserStatusRes
 // Databricks / cache / git contracts
 // ---------------------------------------------------------------------------
 
-export function parseHauteSessionResponse(value: unknown): { ok: boolean } {
-  const obj = expectPlainObject("parseHauteSessionResponse", value)
-  return { ok: expectBoolean("parseHauteSessionResponse", obj.ok, "field `ok`") }
-}
-
 export function parseOutputAssembleDryRunResponse(value: unknown): { status: string; document: unknown[]; row_count: number; error?: string | null } {
   const obj = expectPlainObject("parseOutputAssembleDryRunResponse", value)
   const error = obj.error
@@ -2975,81 +2833,6 @@ export function parseOutputAssembleDryRunResponse(value: unknown): { status: str
 export function parseJsonCacheSchemaInferenceResponse(value: unknown): { tables: Array<Record<string, unknown>> } {
   const obj = expectPlainObject("parseJsonCacheSchemaInferenceResponse", value)
   return { tables: parsePlainObjectArray("parseJsonCacheSchemaInferenceResponse", obj.tables, "field `tables`") }
-}
-
-export function parseFileListResponse(value: unknown): { items?: FileListItem[] } {
-  const obj = expectPlainObject("parseFileListResponse", value)
-  if (obj.items === undefined) return {}
-  return {
-    items: parseArray("parseFileListResponse", obj.items, "field `items`", (item, field) => {
-      const itemObj = expectPlainObject("parseFileListResponse", item, field)
-      return {
-        name: expectString("parseFileListResponse", itemObj.name, `${field}.name`),
-        path: expectString("parseFileListResponse", itemObj.path, `${field}.path`),
-        type: expectStringLiteral("parseFileListResponse", itemObj.type, `${field}.type`, ["file", "directory"]),
-        ...(itemObj.size === undefined ? {} : { size: expectNullableNumber("parseFileListResponse", itemObj.size, `${field}.size`) }),
-      }
-    }),
-  }
-}
-
-/** Lenient reader for the structured 409 body a claimed bind returns.
- *  Returns null when the payload is not claim-shaped (e.g. a plain-string
- *  detail from an older backend) so callers fall back to generic error text. */
-export function gitStorageClaimFromDetail(value: unknown): GitStorageClaim | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null
-  const obj = value as Record<string, unknown>
-  if (typeof obj.app_name !== "string" || !obj.app_name) return null
-  if (typeof obj.message !== "string" || !obj.message) return null
-  return {
-    app_name: obj.app_name,
-    user: typeof obj.user === "string" && obj.user ? obj.user : null,
-    refreshed_at: typeof obj.refreshed_at === "string" && obj.refreshed_at ? obj.refreshed_at : null,
-    message: obj.message,
-  }
-}
-
-const LEG_STATUSES: ReadonlySet<string> = new Set([
-  "untracked", "unknown", "synced", "ahead", "behind", "diverged",
-])
-
-function parseGitRemoteLeg(value: unknown, field: string): GitRemoteLeg {
-  const obj = expectPlainObject("parseGitRemotesResponse", value, field)
-  const status = expectString("parseGitRemotesResponse", obj.status, `${field}.status`)
-  if (!LEG_STATUSES.has(status)) {
-    throw new Error(`parseGitRemotesResponse: ${field}.status has unexpected value \`${status}\``)
-  }
-  return {
-    status: status as GitRemoteLeg["status"],
-    ahead: optionalNullableNumber("parseGitRemotesResponse", obj, "ahead"),
-    behind: optionalNullableNumber("parseGitRemotesResponse", obj, "behind"),
-  }
-}
-
-/** Parse a 409 push-rejection body; non-matching discriminators return null. */
-export function parseGitPushRejection(value: unknown): GitPushRejection | null {
-  if (!isPlainObject(value) || value.status !== "rejected_diverged") return null
-  return {
-    status: "rejected_diverged",
-    remote: expectString("parseGitPushRejection", value.remote, "remote"),
-    working: parseGitRemoteLeg(value.working, "working"),
-    ledger: value.ledger == null ? null : parseGitRemoteLeg(value.ledger, "ledger"),
-    message: expectString("parseGitPushRejection", value.message, "message"),
-    is_rewrite: value.is_rewrite === undefined
-      ? false
-      : expectBoolean("parseGitPushRejection", value.is_rewrite, "is_rewrite"),
-  }
-}
-
-/** Parse a 409 milestone-fork body; non-matching discriminators return null. */
-export function parseGitMilestoneFork(value: unknown): GitMilestoneFork | null {
-  if (!isPlainObject(value) || value.status !== "would_fork") return null
-  return {
-    status: "would_fork",
-    remote: expectString("parseGitMilestoneFork", value.remote, "remote"),
-    working: parseGitRemoteLeg(value.working, "working"),
-    message: expectString("parseGitMilestoneFork", value.message, "message"),
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3076,16 +2859,3 @@ export function validateReactFlowNode(value: unknown): Node {
   return value as Node
 }
 
-export function parsePolarsStepsRenderResponse(value: unknown): PolarsStepsRenderResponse {
-  const parser = "parsePolarsStepsRenderResponse"
-  const obj = expectPlainObject(parser, value)
-  return {
-    ok: expectBoolean(parser, obj.ok, "field `ok`"),
-    code: expectString(parser, obj.code, "field `code`"),
-    step_lines: parseArray(parser, obj.step_lines, "field `step_lines`", (item, field) =>
-      parseArray(parser, item, field, (line, lineField) => expectNumber(parser, line, lineField)),
-    ),
-    step_index: expectNullableNumber(parser, obj.step_index, "field `step_index`"),
-    message: expectString(parser, obj.message, "field `message`"),
-  }
-}

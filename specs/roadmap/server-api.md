@@ -108,7 +108,11 @@ test connection and discovery lists; modelling GPU status, training estimate,
 dispersion start and status, training MLflow log and model save; every git
 success response; the training responses (`TrainResponse`,
 `TrainStatusResponse`), with `MOD-T10`; Explore pivot run, status, cancel and
-members, and the data profile; banding stats and rating levels.
+members, and the data profile; banding stats and rating levels; I/O
+capabilities; the session check and file listing; editor identities, Polars
+step rendering and execution settings; the git 409 advisory bodies
+(`GitPushRejection`, `GitMilestoneFork`), whose storage-claim reader had no
+caller left and is deleted.
 
 **Remaining:** optimiser, including its MLflow log (still on
 the hand-written `parseMlflowLogResponse`); pipeline load and save, preview,
@@ -116,9 +120,7 @@ trace and submodel responses (they carry node configs, so after `PCFG-R07`);
 recovery and repair; node data, cache, JSON cache and input cache (the
 converted Explore, banding and rating responses keep the node-data point and
 profile on their hand types until then); output write, destination and assemble
-dry run; I/O capabilities; session bootstrap and file listing; editor identities; Polars step rendering;
-execution settings; and the git 409 advisory bodies (`GitPushRejection`,
-`GitMilestoneFork`) with the storage-claim reader.
+dry run.
 
 **Acceptance:** Every response the client parses is validated by generated
 code; `guards.ts`, `trainGuards.ts` and `api/types.ts` contain no structural

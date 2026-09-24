@@ -17,6 +17,7 @@ import {
   estimateOptimiserSolve,
   estimateTrainingRam,
   commitMilestone,
+  renderPolarsSteps,
   resolveEditorNodeIdentities,
   resolveOutputDestination,
   writeOutput,
@@ -224,7 +225,7 @@ describe("client runtime contracts", () => {
     }))
 
     await expect(resolveEditorNodeIdentities({ nodes: [] })).rejects.toThrow(
-      /parseEditorNodeIdentityBatchResponse/i,
+      "EditorIdentitiesResponse: invalid contract at /identities/0: additionalProperties",
     )
   })
 
@@ -319,9 +320,42 @@ describe("client runtime contracts", () => {
     })).rejects.toThrow(/API frame identities must preserve raw source handles/i)
   })
 
+  it("renderPolarsSteps resolves rendered code and a failing step as data", async () => {
+    const rendered = { ok: true, code: "df = df.filter(x)", step_lines: [[1, 1]], step_index: null, message: "" }
+    mockFetch.mockReturnValue(jsonResponse(rendered))
+
+    await expect(
+      renderPolarsSteps({ steps: [{ kind: "filter" }], inputNames: ["quotes"], start: "input" }),
+    ).resolves.toEqual(rendered)
+    const [url, init] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/pipeline/polars-steps/render")
+    expect(JSON.parse(String(init?.body))).toEqual({
+      steps: [{ kind: "filter" }], input_names: ["quotes"], start: "input",
+    })
+
+    // A step validation failure is data, not a rejected request.
+    const failed = { ok: false, code: "", step_lines: [], step_index: 2, message: "Pick a column." }
+    mockFetch.mockReturnValue(jsonResponse(failed))
+    await expect(
+      renderPolarsSteps({ steps: [], inputNames: [], start: "frame" }),
+    ).resolves.toEqual(failed)
+  })
+
+  it("renderPolarsSteps rejects a malformed step line range", async () => {
+    mockFetch.mockReturnValue(jsonResponse({
+      ok: true, code: "df = df", step_lines: [[1, "2"]], step_index: null, message: "",
+    }))
+
+    await expect(
+      renderPolarsSteps({ steps: [], inputNames: [], start: "frame" }),
+    ).rejects.toThrow("PolarsStepsRenderResponse: invalid contract at /step_lines/0/1: type")
+  })
+
   it("fetchIoCapabilities rejects unknown V1 discriminants", async () => {
     mockFetch.mockReturnValue(jsonResponse({ schema_version: 1, groups: [{ name: "file", label: "Files", input_available: true, output_available: true, cache_modes: ["unknown"], input_fields: [], output_fields: [], formats: [] }] }))
-    await expect(fetchIoCapabilities()).rejects.toThrow(/parseIoCapabilitiesResponse/i)
+    await expect(fetchIoCapabilities()).rejects.toThrow(
+      "IoCapabilitiesResponse: invalid contract at /groups/0/cache_modes/0: enum",
+    )
   })
 
   it("input-cache build rejects a malformed V1 response", async () => {
@@ -1157,14 +1191,14 @@ describe("shared client trust-boundary endpoints", () => {
     /** The exact failure, when a generated validator checks the response. */
     malformedError?: string
   }> = [
-    { name: "checkHauteSession", body: { ok: true }, call: () => checkHauteSession(), url: "/api/session", malformed: { ok: "yes" } },
+    { name: "checkHauteSession", body: { ok: true }, call: () => checkHauteSession(), url: "/api/session", malformed: { ok: "yes" }, malformedError: "SessionStatusResponse: invalid contract at /ok: type" },
     { name: "outputAssembleDryRun", body: { status: "ok", document: [], row_count: 0, error: null }, call: () => outputAssembleDryRun({ graph: dummyGraph, nodeId: "out", outputMapping: [] }), url: "/api/output-assemble/dry-run", method: "POST", malformed: { status: "ok", document: [], row_count: "1" } },
     { name: "inferJsonCacheSchema", body: { tables: [{ name: "drivers" }] }, call: () => inferJsonCacheSchema({ path: "/data/input.json" }), url: "/api/json-cache/infer", method: "POST", malformed: { tables: ["bad"] } },
     { name: "getExperiments", body: [{ experiment_id: "1", name: "pricing" }], call: () => getExperiments(""), url: "/api/mlflow/experiments", malformed: [{ experiment_id: "1" }], malformedError: "MlflowExperimentList: invalid contract at /0/name: required" },
     { name: "getRuns", body: [{ run_id: "r", run_name: "baseline", status: "FINISHED", start_time: null, metrics: { auc: 0.9 }, params: {}, artifacts: [] }], call: () => getRuns("exp", "model", ""), url: "/api/mlflow/runs?experiment_id=exp&artifact_filter=model", malformed: [{ run_id: "r", run_name: "baseline", status: "FINISHED", start_time: null, metrics: {}, params: {}, artifacts: [1] }], malformedError: "MlflowRunList: invalid contract at /0/artifacts/0: type" },
     { name: "getModels", body: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "r" }] }], call: () => getModels(""), url: "/api/mlflow/models", malformed: [{ name: "pricing", latest_versions: [{ version: "1", status: "READY" }] }], malformedError: "MlflowModelList: invalid contract at /0/latest_versions/0/run_id: required" },
     { name: "getModelVersions", body: [{ version: "1", run_id: "r", status: "READY", creation_timestamp: null, description: "baseline", params: {}, aliases: [] }], call: () => getModelVersions("pricing model", ""), url: "/api/mlflow/model-versions?model_name=pricing%20model", malformed: [{ version: "1", run_id: "r", status: "READY", creation_timestamp: null, params: {}, aliases: [] }], malformedError: "MlflowModelVersionList: invalid contract at /0/description: required" },
-    { name: "listFiles", body: { items: [{ name: "data", path: "/data", type: "directory" }] }, call: () => listFiles("/data", ".json"), url: "/api/files?dir=%2Fdata&extensions=.json", malformed: { items: [{ name: "data", path: "/data", type: "other" }] } },
+    { name: "listFiles", body: { dir: "/data", items: [{ name: "data", path: "/data", type: "directory", size: null }] }, call: () => listFiles("/data", ".json"), url: "/api/files?dir=%2Fdata&extensions=.json", malformed: { dir: "/data", items: [{ name: "data", path: "/data", type: "other", size: null }] }, malformedError: "BrowseFilesResponse: invalid contract at /items/0/type: enum" },
     { name: "getGitGraph", body: validGitGraph, call: () => getGitGraph(5), url: "/api/git/graph?limit=5", malformed: { ...validGitGraph, branches: [{ ...validGitGraph.branches[0], entries: [{ ...validGitGraph.branches[0].entries[0], parents: [1] }] }] }, malformedError: "GitGraphResponse: invalid contract at /branches/0/entries/0/parents/0: type" },
   ]
 

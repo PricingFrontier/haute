@@ -13,13 +13,8 @@ import {
   parseFrontierAutoRangeStatusResponse,
   parseFrontierResponse,
   parseFrontierSelectResponse,
-  gitStorageClaimFromDetail,
-  parseGitPushRejection,
-  parseGitMilestoneFork,
-  parseHauteSessionResponse,
   parseInputCacheSnapshotResponse,
   parseJsonCacheSchemaInferenceResponse,
-  parseFileListResponse,
   parseMlflowLogResponse,
   parseOutputAssembleDryRunResponse,
   parseOptimiserEstimateResponse,
@@ -41,6 +36,11 @@ import {
   validateNodeDataProfileResponse,
 } from "../../generated/api-contracts.explore.validators.mjs"
 import { validateRatingLevelsResponse } from "../../generated/api-contracts.factors.validators.mjs"
+import {
+  validateBrowseFilesResponse,
+  validateSessionStatusResponse,
+} from "../../generated/api-contracts.session.validators.mjs"
+import { parseGitMilestoneFork, parseGitPushRejection } from "../../api/client"
 import {
   validateMlflowDestinationsResponse,
   validateMlflowExperimentList,
@@ -338,6 +338,11 @@ const parseNodeDataProfileResponse = (value: unknown) =>
   expectGeneratedContract("NodeDataProfileResponse", validateNodeDataProfileResponse, value)
 const parseRatingLevelsResponse = (value: unknown) =>
   expectGeneratedContract("RatingLevelsResponse", validateRatingLevelsResponse, value)
+
+const sessionStatus = (value: unknown) =>
+  expectGeneratedContract("SessionStatusResponse", validateSessionStatusResponse, value)
+const browseFiles = (value: unknown) =>
+  expectGeneratedContract("BrowseFilesResponse", validateBrowseFilesResponse, value)
 
 // MLflow responses are checked by their generated validators (API-R03).
 const mlflowDestinations = (value: unknown) =>
@@ -3601,24 +3606,6 @@ describe("API response guards", () => {
     expect(parsed.target_url).toBe("uc://workspace.default.projects/demo-fork")
   })
 
-  it("reads a claim-shaped 409 detail and rejects non-claim shapes", () => {
-    const claim = gitStorageClaimFromDetail({
-      app_name: "other-app",
-      user: "colleague@example.com",
-      refreshed_at: "2026-08-04T17:00:00+00:00",
-      message: "This storage location is in use by app 'other-app'.",
-    })
-    expect(claim).not.toBeNull()
-    expect(claim?.app_name).toBe("other-app")
-    expect(claim?.user).toBe("colleague@example.com")
-    // A plain-string detail (older backend, other error) is not a claim.
-    expect(gitStorageClaimFromDetail("location is busy")).toBeNull()
-    expect(gitStorageClaimFromDetail({ message: "no holder name" })).toBeNull()
-    // Missing optionals degrade to null rather than throwing.
-    const bare = gitStorageClaimFromDetail({ app_name: "a", message: "m" })
-    expect(bare).toEqual({ app_name: "a", user: null, refreshed_at: null, message: "m" })
-  })
-
   // --- P7 remote catch-up surface: per-leg divergence, fast-forward, branch-away,
   //     and the two 409 advisory bodies (push rejection + milestone fork). ---
 
@@ -3713,8 +3700,8 @@ describe("API response guards", () => {
     expect(parsed.set_aside_as).toBe("dev-2026-06-21")
   })
 
-  it("parses a 409 push-rejection body, including a rewrite flag", () => {
-    const parsed = parseGitPushRejection({
+  it("parses a 409 push-rejection body, including a rewrite flag", async () => {
+    const parsed = await parseGitPushRejection({
       status: "rejected_diverged",
       remote: "origin",
       working: { status: "diverged", ahead: 1, behind: 2 },
@@ -3729,28 +3716,30 @@ describe("API response guards", () => {
     expect(parsed?.is_rewrite).toBe(true)
   })
 
-  it("returns null for a push-rejection body of the wrong status", () => {
-    expect(parseGitPushRejection({ status: "ok" })).toBeNull()
+  it("returns null for a push-rejection body of the wrong status", async () => {
+    await expect(parseGitPushRejection({ status: "ok" })).resolves.toBeNull()
   })
 
-  it("throws for a malformed matching push-rejection body", () => {
-    expect(() => parseGitPushRejection({ status: "rejected_diverged" })).toThrow()
-    expect(() => parseGitPushRejection({
+  it("throws for a malformed matching push-rejection body", async () => {
+    await expect(parseGitPushRejection({ status: "rejected_diverged" })).rejects.toThrow(
+      "GitPushRejection: invalid contract at /remote: required",
+    )
+    await expect(parseGitPushRejection({
       status: "rejected_diverged",
       remote: "origin",
       working: { status: "diverged", ahead: 1, behind: 2 },
       ledger: null,
       message: "Remote has work you don't.",
       is_rewrite: "yes",
-    })).toThrow()
+    })).rejects.toThrow("GitPushRejection: invalid contract at /is_rewrite: type")
   })
 
-  it("returns null for a non-object push-rejection discriminator", () => {
-    expect(parseGitPushRejection(null)).toBeNull()
+  it("returns null for a non-object push-rejection discriminator", async () => {
+    await expect(parseGitPushRejection(null)).resolves.toBeNull()
   })
 
-  it("parses a 409 milestone-fork body", () => {
-    const parsed = parseGitMilestoneFork({
+  it("parses a 409 milestone-fork body", async () => {
+    const parsed = await parseGitMilestoneFork({
       status: "would_fork",
       remote: "origin",
       working: { status: "diverged", ahead: 1, behind: 1 },
@@ -3761,15 +3750,15 @@ describe("API response guards", () => {
     expect(parsed?.working.status).toBe("diverged")
   })
 
-  it("returns null for a milestone-fork body of the wrong status", () => {
-    expect(parseGitMilestoneFork({ status: "ok" })).toBeNull()
+  it("returns null for a milestone-fork body of the wrong status", async () => {
+    await expect(parseGitMilestoneFork({ status: "ok" })).resolves.toBeNull()
   })
 
-  it("throws for a malformed matching milestone-fork body", () => {
-    expect(() => parseGitMilestoneFork({
+  it("throws for a malformed matching milestone-fork body", async () => {
+    await expect(parseGitMilestoneFork({
       status: "would_fork",
       remote: "origin",
-    })).toThrow()
+    })).rejects.toThrow("GitMilestoneFork: invalid contract at /working: required")
   })
 
   it("parses a create-working-branch response", () => {
@@ -3791,7 +3780,7 @@ describe("API response guards", () => {
   })
 
   it("parses shared client trust-boundary payloads", () => {
-    expect(parseHauteSessionResponse({ ok: true })).toEqual({ ok: true })
+    expect(sessionStatus({ ok: true })).toEqual({ ok: true })
     expect(parseOutputAssembleDryRunResponse({ status: "ok", document: [{ premium: 1 }], row_count: 1, error: null })).toMatchObject({ status: "ok", row_count: 1 })
     expect(parseJsonCacheSchemaInferenceResponse({ tables: [{ name: "drivers" }] }).tables).toEqual([{ name: "drivers" }])
     expect(mlflowExperiments([{ experiment_id: "1", name: "pricing" }])[0]?.name).toBe("pricing")
@@ -3806,8 +3795,12 @@ describe("API response guards", () => {
     expect(() =>
       mlflowModelVersions([{ version: "1", run_id: "r", status: "READY", creation_timestamp: null, description: "", params: {}, aliases: [1] }]),
     ).toThrow(/aliases/)
-    expect(parseFileListResponse({ items: [{ name: "data", path: "/data", type: "directory" }] }).items?.[0]?.type).toBe("directory")
-    expect(parseFileListResponse({ items: [{ name: "data", path: "/data", type: "directory", size: null }] }).items?.[0]?.size).toBeNull()
+    expect(browseFiles({ dir: "/", items: [{ name: "data", path: "/data", type: "directory", size: null }] }).items[0]?.size).toBeNull()
+    expect(browseFiles({ dir: "/", items: [{ name: "a.csv", path: "/a.csv", type: "file", size: 12 }] }).items[0]?.size).toBe(12)
+    // The server sends every file field, a directory's null size included.
+    expect(() => browseFiles({ dir: "/", items: [{ name: "data", path: "/data", type: "directory" }] })).toThrow(
+      "BrowseFilesResponse: invalid contract at /items/0/size: required",
+    )
     expect(gitGraph({
       working_branch: "main",
       order: ["main"],
@@ -3816,10 +3809,10 @@ describe("API response guards", () => {
   })
 
   it.each([
-    ["session boolean", () => parseHauteSessionResponse({ ok: "yes" })],
+    ["session boolean", () => sessionStatus({ ok: "yes" })],
     ["output document", () => parseOutputAssembleDryRunResponse({ status: "ok", document: {}, row_count: 1 })],
     ["inferred nested table", () => parseJsonCacheSchemaInferenceResponse({ tables: ["bad"] })],
-    ["file item type", () => parseFileListResponse({ items: [{ name: "x", path: "/x", type: "link" }] })],
+    ["file item type", () => browseFiles({ dir: "/", items: [{ name: "x", path: "/x", type: "link", size: null }] })],
     ["git graph nested parents", () => gitGraph({ working_branch: null, order: [], branches: [{ name: "main", is_archived: false, is_current: true, tip_sha: "a", fork_point_sha: null, fork_of: null, fork_source_sha: null, fork_credit_sha: null, truncated: false, entries: [{ sha: "a", short_sha: "a", message: "init", timestamp: "today", version_label: null, is_root: true, parents: [1] }] }] })],
   ])("rejects malformed shared client payload: %s", (_name, parse) => {
     expect(parse).toThrow()

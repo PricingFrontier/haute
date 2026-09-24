@@ -563,7 +563,13 @@ describe("request() core via loadPipeline", () => {
 
   it("getExecutionSettings rejects a malformed response", async () => {
     mockFetch.mockReturnValue(jsonResponse({ streaming_chunk_size: "not-a-number" }))
-    await expect(getExecutionSettings()).rejects.toThrow()
+    await expect(getExecutionSettings()).rejects.toThrow(
+      "ExecutionSettings: invalid contract at /streaming_chunk_size: type",
+    )
+    mockFetch.mockReturnValue(jsonResponse({ streaming_chunk_size: 0 }))
+    await expect(getExecutionSettings()).rejects.toThrow(
+      "ExecutionSettings: invalid contract at /streaming_chunk_size: minimum",
+    )
   })
 
   it("putExecutionSettings issues a PUT with the JSON payload and parses the response", async () => {
@@ -894,6 +900,7 @@ describe("endpoint contracts", () => {
   })
 
   it("listFiles GETs /api/files with dir and optional extensions", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ dir: "data", items: [] }))
     await listFiles("data", ".csv,.parquet")
     const [url] = mockFetch.mock.calls[0]
     expect(url).toContain("/api/files?")

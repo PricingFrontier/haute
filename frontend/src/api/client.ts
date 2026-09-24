@@ -23,7 +23,7 @@ import type {
   ExplorePivotMembersResponse,
   ExplorePivotRunResponse,
   ExplorePivotStatusResponse,
-  FileListItem,
+  BrowseFilesResponse,
   FrontierAutoRangeStartResponse,
   FrontierAutoRangeStatusResponse,
   FrontierSelectResponse,
@@ -110,6 +110,9 @@ import type {
   UtilityListResponse,
   UtilityReadResponse,
   UtilityWriteResult,
+  GitMilestoneFork,
+  GitPushRejection,
+  SessionStatusResponse,
 } from "./types"
 import {
   parseApplyOptimiserResponse,
@@ -119,7 +122,6 @@ import {
   explorePivotMembersFromContract,
   explorePivotRunFromContract,
   explorePivotStatusFromContract,
-  parseEditorNodeIdentityBatchResponse,
   parseNodeDataClearResponse,
   parseNodeDataPointResponse,
   parseNodeDataRunResponse,
@@ -128,16 +130,12 @@ import {
   parseFrontierAutoRangeStatusResponse,
   parseFrontierStatusResponse,
   parseFrontierSelectResponse,
-  parseIoCapabilitiesResponse,
   parseInputCacheBuildResponse,
   parseInputCacheCancelResponse,
   parseInputCacheJobStatusResponse,
   parseInputCacheSnapshotResponse,
   parseJsonCacheSchemaInferenceResponse,
-  parseExecutionSettings,
   parseMlflowLogResponse,
-  parseFileListResponse,
-  parseHauteSessionResponse,
   parseOptimiserEstimateResponse,
   parseSaveOptimiserResponse,
   parseSolveOptimiserResponse,
@@ -145,7 +143,6 @@ import {
   parseOutputDestinationResponse,
   parseOutputAssembleDryRunResponse,
   parsePipelineResponse,
-  parsePolarsStepsRenderResponse,
   parsePreviewInputsResponse,
   parsePreviewNodeResponse,
   parseSavePipelineResponse,
@@ -154,17 +151,21 @@ import {
   parseSubmodelCreateResponse,
   parseSubmodelGraphResponse,
   parseTraceResponse,
+  isPlainObject,
 } from "../types/guards"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
 
 // Generated response validators load with their first response, so none of
 // them reaches the initial bundle.
 const databricksValidators = () => import("../generated/api-contracts.databricks.validators.mjs")
+const editorValidators = () => import("../generated/api-contracts.editor.validators.mjs")
 const exploreValidators = () => import("../generated/api-contracts.explore.validators.mjs")
 const factorsValidators = () => import("../generated/api-contracts.factors.validators.mjs")
 const gitValidators = () => import("../generated/api-contracts.git.validators.mjs")
+const ioValidators = () => import("../generated/api-contracts.io.validators.mjs")
 const mlflowValidators = () => import("../generated/api-contracts.mlflow.validators.mjs")
 const modellingValidators = () => import("../generated/api-contracts.modelling.validators.mjs")
+const sessionValidators = () => import("../generated/api-contracts.session.validators.mjs")
 const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
 import {
   parseRemoveUnavailableNodeApplyResponse,
@@ -616,12 +617,12 @@ function del<T>(url: string, options: ApiClientOptions = {}): Promise<T> {
   return request<T>(url, { method: "DELETE", ...options })
 }
 
-export function checkHauteSession(options: ApiClientOptions = {}): Promise<{ ok: boolean }> {
+export function checkHauteSession(options: ApiClientOptions = {}): Promise<SessionStatusResponse> {
   return request<unknown>("/api/session", {
     ...options,
     timeout: options.timeout ?? 5_000,
     retry: options.retry ?? { maxRetries: 0, baseDelayMs: 100 },
-  }).then(parseHauteSessionResponse)
+  }).then(async (data) => expectGeneratedContract("SessionStatusResponse", (await sessionValidators()).validateSessionStatusResponse, data))
 }
 
 // ---------------------------------------------------------------------------
@@ -659,8 +660,11 @@ export async function resolveEditorNodeIdentities(
   payload: EditorIdentityBatchRequest,
   options?: MutationOptions,
 ): Promise<EditorIdentityBatchResponse> {
-  const response = parseEditorNodeIdentityBatchResponse(
-    await post<unknown>("/api/pipeline/editor-identities", payload, options),
+  const data = await post<unknown>("/api/pipeline/editor-identities", payload, options)
+  const response = expectGeneratedContract(
+    "EditorIdentitiesResponse",
+    (await editorValidators()).validateEditorIdentitiesResponse,
+    data,
   )
   if (
     response.identities.length !== payload.nodes.length
@@ -875,7 +879,7 @@ export function renderPolarsSteps(args: RenderPolarsStepsArgs): Promise<PolarsSt
     "/api/pipeline/polars-steps/render",
     { steps: args.steps, input_names: args.inputNames, start: args.start },
     { signal: args.signal },
-  ).then((data) => parsePolarsStepsRenderResponse(data))
+  ).then(async (data) => expectGeneratedContract("PolarsStepsRenderResponse", (await editorValidators()).validatePolarsStepsRenderResponse, data))
 }
 
 export interface RecoveryPreviewNodeArgs {
@@ -1130,7 +1134,7 @@ export function fetchSchema(
 export function fetchIoCapabilities(
   options?: { signal?: AbortSignal },
 ): Promise<IoCapabilitiesResponse> {
-  return request<unknown>("/api/io-capabilities", options).then(parseIoCapabilitiesResponse)
+  return request<unknown>("/api/io-capabilities", options).then(async (data) => expectGeneratedContract("IoCapabilitiesResponse", (await ioValidators()).validateIoCapabilitiesResponse, data))
 }
 
 // ---------------------------------------------------------------------------
@@ -1700,7 +1704,7 @@ export function inferJsonCacheSchema(
 export function getExecutionSettings(
   options?: { signal?: AbortSignal },
 ): Promise<ExecutionSettings> {
-  return request<unknown>("/api/execution-settings", options).then(parseExecutionSettings)
+  return request<unknown>("/api/execution-settings", options).then(async (data) => expectGeneratedContract("ExecutionSettings", (await editorValidators()).validateExecutionSettings, data))
 }
 
 export function putExecutionSettings(
@@ -1712,7 +1716,7 @@ export function putExecutionSettings(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ streaming_chunk_size: streamingChunkSize }),
     ...options,
-  }).then(parseExecutionSettings)
+  }).then(async (data) => expectGeneratedContract("ExecutionSettings", (await editorValidators()).validateExecutionSettings, data))
 }
 
 // ---------------------------------------------------------------------------
@@ -1858,10 +1862,10 @@ export function listFiles(
   dir: string,
   extensions?: string,
   options?: { signal?: AbortSignal },
-): Promise<{ items?: FileListItem[] }> {
+): Promise<BrowseFilesResponse> {
   const params = new URLSearchParams({ dir })
   if (extensions) params.set("extensions", extensions)
-  return request<unknown>(`/api/files?${params.toString()}`, options).then(parseFileListResponse)
+  return request<unknown>(`/api/files?${params.toString()}`, options).then(async (data) => expectGeneratedContract("BrowseFilesResponse", (await sessionValidators()).validateBrowseFilesResponse, data))
 }
 
 export function readJson<T = unknown>(
@@ -2080,6 +2084,18 @@ export function getGitRemotes(
   options?: { signal?: AbortSignal },
 ): Promise<GitRemotesResponse> {
   return request<unknown>("/api/git/remotes", options).then(async (data) => expectGeneratedContract("GitRemotesResponse", (await gitValidators()).validateGitRemotesResponse, data))
+}
+
+/** Read a 409 push-rejection body; a body with another discriminator reads as null. */
+export async function parseGitPushRejection(detail: unknown): Promise<GitPushRejection | null> {
+  if (!isPlainObject(detail) || detail.status !== "rejected_diverged") return null
+  return expectGeneratedContract("GitPushRejection", (await gitValidators()).validateGitPushRejection, detail)
+}
+
+/** Read a 409 milestone-fork body; a body with another discriminator reads as null. */
+export async function parseGitMilestoneFork(detail: unknown): Promise<GitMilestoneFork | null> {
+  if (!isPlainObject(detail) || detail.status !== "would_fork") return null
+  return expectGeneratedContract("GitMilestoneFork", (await gitValidators()).validateGitMilestoneFork, detail)
 }
 
 /** Deliberately publish branch history to a remote, bootstrapping its default branch when needed (S16/S33). */

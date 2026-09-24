@@ -1,9 +1,8 @@
 import { useState } from "react"
 import { AlertTriangle } from "lucide-react"
 
-import { ApiError, commitMilestone } from "../api/client"
+import { ApiError, commitMilestone, parseGitMilestoneFork } from "../api/client"
 import type { GitMilestoneFork } from "../api/types"
-import { parseGitMilestoneFork } from "../types/guards"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
 import { gitErrorMessage } from "../utils/gitError"
@@ -62,7 +61,7 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
       // warn + "commit anyway" confirm rather than a dead-end error toast.
       if (err instanceof ApiError && err.status === 409) {
         try {
-          const parsed = parseGitMilestoneFork(
+          const parsed = await parseGitMilestoneFork(
             (err.body as { detail?: unknown } | undefined)?.detail,
           )
           if (parsed) {

@@ -194,6 +194,27 @@
       "title": "BandingValueCount",
       "type": "object"
     },
+    "BrowseFilesResponse": {
+      "properties": {
+        "dir": {
+          "title": "Dir",
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/FileItem"
+          },
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "dir",
+        "items"
+      ],
+      "title": "BrowseFilesResponse",
+      "type": "object"
+    },
     "CatalogItem": {
       "properties": {
         "comment": {
@@ -737,6 +758,82 @@
         "terminal_reason"
       ],
       "title": "DispersionEstimateStatusResponse",
+      "type": "object"
+    },
+    "EditorIdentitiesResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "identities": {
+          "items": {
+            "$ref": "#/$defs/EditorIdentityResponseNode"
+          },
+          "title": "Identities",
+          "type": "array"
+        }
+      },
+      "required": [
+        "identities"
+      ],
+      "title": "EditorIdentitiesResponse",
+      "type": "object"
+    },
+    "EditorIdentityResponseNode": {
+      "additionalProperties": false,
+      "properties": {
+        "config_reference": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Config Reference"
+        },
+        "default_input_name": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Default Input Name"
+        },
+        "function_name": {
+          "minLength": 1,
+          "title": "Function Name",
+          "type": "string"
+        },
+        "node_id": {
+          "minLength": 1,
+          "title": "Node Id",
+          "type": "string"
+        },
+        "source_handle_input_names": {
+          "additionalProperties": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "title": "Source Handle Input Names",
+          "type": "object"
+        }
+      },
+      "required": [
+        "node_id",
+        "function_name",
+        "config_reference",
+        "default_input_name",
+        "source_handle_input_names"
+      ],
+      "title": "EditorIdentityResponseNode",
       "type": "object"
     },
     "EvaluationDateRangePayload": {
@@ -2292,6 +2389,23 @@
         "data_output_write_native_reason"
       ],
       "title": "ExecutionMetricsPayload",
+      "type": "object"
+    },
+    "ExecutionSettings": {
+      "additionalProperties": false,
+      "description": "The editor's execution settings: one value for the server process.",
+      "properties": {
+        "streaming_chunk_size": {
+          "maximum": 10000000,
+          "minimum": 1,
+          "title": "Streaming Chunk Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "streaming_chunk_size"
+      ],
+      "title": "ExecutionSettings",
       "type": "object"
     },
     "ExecutionStageMetricsPayload": {
@@ -4667,6 +4781,46 @@
       "title": "ExplorePivotValueIdentity",
       "type": "object"
     },
+    "FileItem": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Size"
+        },
+        "type": {
+          "enum": [
+            "file",
+            "directory"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "type",
+        "size"
+      ],
+      "title": "FileItem",
+      "type": "object"
+    },
     "FitEvidencePayload": {
       "additionalProperties": false,
       "description": "The final fit's thread allotment, round ceiling, fitted rounds, and stop reason.",
@@ -5436,6 +5590,35 @@
       "title": "GitMilestoneEntry",
       "type": "object"
     },
+    "GitMilestoneFork": {
+      "properties": {
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "remote": {
+          "title": "Remote",
+          "type": "string"
+        },
+        "status": {
+          "const": "would_fork",
+          "default": "would_fork",
+          "title": "Status",
+          "type": "string"
+        },
+        "working": {
+          "$ref": "#/$defs/GitRemoteLeg"
+        }
+      },
+      "required": [
+        "status",
+        "remote",
+        "working",
+        "message"
+      ],
+      "title": "GitMilestoneFork",
+      "type": "object"
+    },
     "GitMilestonesResponse": {
       "properties": {
         "entries": {
@@ -5506,6 +5689,53 @@
         "skip_switch_confirm"
       ],
       "title": "GitPrefs",
+      "type": "object"
+    },
+    "GitPushRejection": {
+      "properties": {
+        "is_rewrite": {
+          "default": false,
+          "title": "Is Rewrite",
+          "type": "boolean"
+        },
+        "ledger": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GitRemoteLeg"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "remote": {
+          "title": "Remote",
+          "type": "string"
+        },
+        "status": {
+          "const": "rejected_diverged",
+          "default": "rejected_diverged",
+          "title": "Status",
+          "type": "string"
+        },
+        "working": {
+          "$ref": "#/$defs/GitRemoteLeg"
+        }
+      },
+      "required": [
+        "status",
+        "remote",
+        "working",
+        "ledger",
+        "message",
+        "is_rewrite"
+      ],
+      "title": "GitPushRejection",
       "type": "object"
     },
     "GitPushResponse": {
@@ -6345,6 +6575,338 @@
         "warning_code"
       ],
       "title": "InputPreparationRecordPayload",
+      "type": "object"
+    },
+    "IoCapabilitiesResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "groups": {
+          "items": {
+            "$ref": "#/$defs/IoCapabilityGroup"
+          },
+          "title": "Groups",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "groups"
+      ],
+      "title": "IoCapabilitiesResponse",
+      "type": "object"
+    },
+    "IoCapabilityGroup": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_modes": {
+          "items": {
+            "enum": [
+              "direct",
+              "snapshot"
+            ],
+            "type": "string"
+          },
+          "title": "Cache Modes",
+          "type": "array"
+        },
+        "formats": {
+          "items": {
+            "$ref": "#/$defs/IoFormatCapability"
+          },
+          "title": "Formats",
+          "type": "array"
+        },
+        "input_available": {
+          "title": "Input Available",
+          "type": "boolean"
+        },
+        "input_fields": {
+          "items": {
+            "$ref": "#/$defs/IoFieldCapability"
+          },
+          "title": "Input Fields",
+          "type": "array"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "name": {
+          "enum": [
+            "file",
+            "database",
+            "lakehouse",
+            "databricks",
+            "inline"
+          ],
+          "title": "Name",
+          "type": "string"
+        },
+        "output_available": {
+          "title": "Output Available",
+          "type": "boolean"
+        },
+        "output_fields": {
+          "items": {
+            "$ref": "#/$defs/IoFieldCapability"
+          },
+          "title": "Output Fields",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "label",
+        "input_available",
+        "output_available",
+        "cache_modes",
+        "input_fields",
+        "output_fields",
+        "formats"
+      ],
+      "title": "IoCapabilityGroup",
+      "type": "object"
+    },
+    "IoFieldCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "path",
+            "connection",
+            "text",
+            "query",
+            "table",
+            "records"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "label",
+        "kind",
+        "required"
+      ],
+      "title": "IoFieldCapability",
+      "type": "object"
+    },
+    "IoFormatCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "extensions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Extensions",
+          "type": "array"
+        },
+        "group": {
+          "enum": [
+            "file",
+            "database",
+            "lakehouse",
+            "inline"
+          ],
+          "title": "Group",
+          "type": "string"
+        },
+        "input": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IoInputCapability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IoOutputCapability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "unstable": {
+          "title": "Unstable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "label",
+        "group",
+        "extensions",
+        "unstable",
+        "input",
+        "output"
+      ],
+      "title": "IoFormatCapability",
+      "type": "object"
+    },
+    "IoInputCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "arguments": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": "Arguments",
+          "type": "object"
+        },
+        "cache_mode": {
+          "enum": [
+            "direct",
+            "snapshot"
+          ],
+          "title": "Cache Mode",
+          "type": "string"
+        },
+        "cached_read": {
+          "title": "Cached Read",
+          "type": "boolean"
+        },
+        "direct_bounded": {
+          "title": "Direct Bounded",
+          "type": "boolean"
+        },
+        "engines_missing": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Engines Missing",
+          "type": "array"
+        },
+        "modes": {
+          "items": {
+            "enum": [
+              "scan",
+              "read"
+            ],
+            "type": "string"
+          },
+          "title": "Modes",
+          "type": "array"
+        },
+        "needs_schema_when_bounded": {
+          "title": "Needs Schema When Bounded",
+          "type": "boolean"
+        },
+        "snapshot_build": {
+          "enum": [
+            "bounded",
+            "admitted_eager",
+            "unsupported"
+          ],
+          "title": "Snapshot Build",
+          "type": "string"
+        }
+      },
+      "required": [
+        "modes",
+        "arguments",
+        "engines_missing",
+        "cache_mode",
+        "direct_bounded",
+        "needs_schema_when_bounded",
+        "snapshot_build",
+        "cached_read"
+      ],
+      "title": "IoInputCapability",
+      "type": "object"
+    },
+    "IoOutputCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "arguments": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": "Arguments",
+          "type": "object"
+        },
+        "eager_writer": {
+          "title": "Eager Writer",
+          "type": "boolean"
+        },
+        "engines_missing": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Engines Missing",
+          "type": "array"
+        },
+        "modes": {
+          "items": {
+            "enum": [
+              "sink",
+              "write"
+            ],
+            "type": "string"
+          },
+          "title": "Modes",
+          "type": "array"
+        },
+        "native_sink": {
+          "title": "Native Sink",
+          "type": "boolean"
+        },
+        "publication": {
+          "enum": [
+            "atomic_file",
+            "transactional"
+          ],
+          "title": "Publication",
+          "type": "string"
+        }
+      },
+      "required": [
+        "modes",
+        "arguments",
+        "engines_missing",
+        "native_sink",
+        "eager_writer",
+        "publication"
+      ],
+      "title": "IoOutputCapability",
       "type": "object"
     },
     "JsonValue": {
@@ -7370,6 +7932,56 @@
       "title": "NodeDataProfileResponse",
       "type": "object"
     },
+    "PolarsStepsRenderResponse": {
+      "description": "Either the rendered code with per-step line ranges or the failing step.\n\nA step validation failure is data (``ok`` false with ``step_index`` and\n``message``), never a transport error, so a half-built step list renders\nas an editor message rather than a failed request.",
+      "properties": {
+        "code": {
+          "default": "",
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "step_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Step Index"
+        },
+        "step_lines": {
+          "items": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "title": "Step Lines",
+          "type": "array"
+        }
+      },
+      "required": [
+        "ok",
+        "code",
+        "step_lines",
+        "step_index",
+        "message"
+      ],
+      "title": "PolarsStepsRenderResponse",
+      "type": "object"
+    },
     "RatingLevelColumn": {
       "description": "What one column offers as rating levels.\n\n`distinct_count` counts the levels that could be chosen — neither missing\nnor blank — so it is the number `values` would hold without the cap.",
       "properties": {
@@ -7530,6 +8142,20 @@
         "schemas"
       ],
       "title": "SchemaListResponse",
+      "type": "object"
+    },
+    "SessionStatusResponse": {
+      "properties": {
+        "ok": {
+          "default": true,
+          "title": "Ok",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "title": "SessionStatusResponse",
       "type": "object"
     },
     "SharedSnapshotCapturePayload": {
@@ -9266,6 +9892,9 @@
     "BandingStatsResponse": {
       "$ref": "#/$defs/BandingStatsResponse"
     },
+    "BrowseFilesResponse": {
+      "$ref": "#/$defs/BrowseFilesResponse"
+    },
     "CatalogListResponse": {
       "$ref": "#/$defs/CatalogListResponse"
     },
@@ -9274,6 +9903,12 @@
     },
     "DispersionEstimateStatusResponse": {
       "$ref": "#/$defs/DispersionEstimateStatusResponse"
+    },
+    "EditorIdentitiesResponse": {
+      "$ref": "#/$defs/EditorIdentitiesResponse"
+    },
+    "ExecutionSettings": {
+      "$ref": "#/$defs/ExecutionSettings"
     },
     "ExplorePivotMembersResponse": {
       "$ref": "#/$defs/ExplorePivotMembersResponse"
@@ -9317,6 +9952,9 @@
     "GitLedgerSavesResponse": {
       "$ref": "#/$defs/GitLedgerSavesResponse"
     },
+    "GitMilestoneFork": {
+      "$ref": "#/$defs/GitMilestoneFork"
+    },
     "GitMilestonesResponse": {
       "$ref": "#/$defs/GitMilestonesResponse"
     },
@@ -9325,6 +9963,9 @@
     },
     "GitPrefs": {
       "$ref": "#/$defs/GitPrefs"
+    },
+    "GitPushRejection": {
+      "$ref": "#/$defs/GitPushRejection"
     },
     "GitPushResponse": {
       "$ref": "#/$defs/GitPushResponse"
@@ -9352,6 +9993,9 @@
     },
     "GitWorkingBranchesResponse": {
       "$ref": "#/$defs/GitWorkingBranchesResponse"
+    },
+    "IoCapabilitiesResponse": {
+      "$ref": "#/$defs/IoCapabilitiesResponse"
     },
     "LogExperimentResponse": {
       "$ref": "#/$defs/LogExperimentResponse"
@@ -9386,6 +10030,9 @@
     "NodeDataProfileResponse": {
       "$ref": "#/$defs/NodeDataProfileResponse"
     },
+    "PolarsStepsRenderResponse": {
+      "$ref": "#/$defs/PolarsStepsRenderResponse"
+    },
     "RatingLevelsResponse": {
       "$ref": "#/$defs/RatingLevelsResponse"
     },
@@ -9394,6 +10041,9 @@
     },
     "SchemaListResponse": {
       "$ref": "#/$defs/SchemaListResponse"
+    },
+    "SessionStatusResponse": {
+      "$ref": "#/$defs/SessionStatusResponse"
     },
     "TableListResponse": {
       "$ref": "#/$defs/TableListResponse"
@@ -9477,6 +10127,8 @@
     "GitBindStorageResponse",
     "GitForkStorageResponse",
     "GitUpstreamStatusResponse",
+    "GitPushRejection",
+    "GitMilestoneFork",
     "TrainResponse",
     "TrainStatusResponse",
     "ExplorePivotRunResponse",
@@ -9484,7 +10136,13 @@
     "ExplorePivotMembersResponse",
     "NodeDataProfileResponse",
     "BandingStatsResponse",
-    "RatingLevelsResponse"
+    "RatingLevelsResponse",
+    "IoCapabilitiesResponse",
+    "SessionStatusResponse",
+    "BrowseFilesResponse",
+    "EditorIdentitiesResponse",
+    "PolarsStepsRenderResponse",
+    "ExecutionSettings"
   ],
   "title": "HauteApiContractBundle",
   "type": "object",
@@ -9494,6 +10152,11 @@
       "CatalogListResponse",
       "SchemaListResponse",
       "TableListResponse"
+    ],
+    "editor": [
+      "EditorIdentitiesResponse",
+      "PolarsStepsRenderResponse",
+      "ExecutionSettings"
     ],
     "explore": [
       "ExplorePivotRunResponse",
@@ -9528,7 +10191,12 @@
       "GitBranchAwayResponse",
       "GitBindStorageResponse",
       "GitForkStorageResponse",
-      "GitUpstreamStatusResponse"
+      "GitUpstreamStatusResponse",
+      "GitPushRejection",
+      "GitMilestoneFork"
+    ],
+    "io": [
+      "IoCapabilitiesResponse"
     ],
     "mlflow": [
       "MlflowDestinationsResponse",
@@ -9547,6 +10215,10 @@
       "LogExperimentResponse",
       "ModelSaveDestinationResponse",
       "SaveModelResponse"
+    ],
+    "session": [
+      "SessionStatusResponse",
+      "BrowseFilesResponse"
     ],
     "training": [
       "TrainResponse",

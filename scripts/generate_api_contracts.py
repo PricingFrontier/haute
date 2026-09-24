@@ -26,9 +26,12 @@ from haute._execution_schemas import ExecutionStrategyDiagnosticPayload
 from haute._explore_chart_contracts import ExploreChartsConfig
 from haute.schemas import (
     BandingStatsResponse,
+    BrowseFilesResponse,
     CatalogListResponse,
     DispersionEstimateResponse,
     DispersionEstimateStatusResponse,
+    EditorIdentitiesResponse,
+    ExecutionSettings,
     ExplorePivotMembersResponse,
     ExplorePivotRunResponse,
     ExplorePivotStatusResponse,
@@ -43,9 +46,11 @@ from haute.schemas import (
     GitForkStorageResponse,
     GitGraphResponse,
     GitLedgerSavesResponse,
+    GitMilestoneFork,
     GitMilestonesResponse,
     GitMoveResponse,
     GitPrefs,
+    GitPushRejection,
     GitPushResponse,
     GitRemotesResponse,
     GitRestoreResponse,
@@ -55,6 +60,7 @@ from haute.schemas import (
     GitUpstreamStatusResponse,
     GitWorkingBranchesResponse,
     GitWorkingBranchResponse,
+    IoCapabilitiesResponse,
     LogExperimentResponse,
     MlflowDestinationsResponse,
     MlflowExperimentList,
@@ -66,9 +72,11 @@ from haute.schemas import (
     ModellingGpuStatusResponse,
     ModelSaveDestinationResponse,
     NodeDataProfileResponse,
+    PolarsStepsRenderResponse,
     RatingLevelsResponse,
     SaveModelResponse,
     SchemaListResponse,
+    SessionStatusResponse,
     TableListResponse,
     TrainEstimateResponse,
     TrainResponse,
@@ -147,6 +155,9 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         GitBindStorageResponse,
         GitForkStorageResponse,
         GitUpstreamStatusResponse,
+        # 409 advisory bodies the push and milestone controls read.
+        GitPushRejection,
+        GitMilestoneFork,
     ),
     "training": (
         TrainResponse,
@@ -161,6 +172,16 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
     "factors": (
         BandingStatsResponse,
         RatingLevelsResponse,
+    ),
+    "io": (IoCapabilitiesResponse,),
+    "session": (
+        SessionStatusResponse,
+        BrowseFilesResponse,
+    ),
+    "editor": (
+        EditorIdentitiesResponse,
+        PolarsStepsRenderResponse,
+        ExecutionSettings,
     ),
 }
 

@@ -59,10 +59,12 @@ def _reject_bool_chunk_size(value: object) -> object:
     return value
 
 
+# Field before the validator, so the bounds reach the JSON schema as
+# minimum/maximum; the bool check still runs first.
 StreamingChunkSize = Annotated[
     int,
-    BeforeValidator(_reject_bool_chunk_size),
     Field(ge=1, le=10_000_000),
+    BeforeValidator(_reject_bool_chunk_size),
 ]
 
 RevisionToken = Annotated[str, Field(min_length=1, pattern=r"^\S+$")]
@@ -1816,7 +1818,7 @@ class ExplorePivotMembersResponse(BaseModel):
 class FileItem(BaseModel):
     name: str
     path: str
-    type: str
+    type: Literal["file", "directory"]
     size: int | None = None
 
 

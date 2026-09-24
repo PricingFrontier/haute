@@ -254,6 +254,38 @@ export interface TableItem {
   name: string;
   table_type: string;
 }
+export interface EditorIdentitiesResponse {
+  identities: EditorIdentityResponseNode[];
+}
+export interface EditorIdentityResponseNode {
+  config_reference: string | null;
+  default_input_name: string | null;
+  function_name: string;
+  node_id: string;
+  source_handle_input_names: {
+    [k: string]: string;
+  };
+}
+/**
+ * Either the rendered code with per-step line ranges or the failing step.
+ *
+ * A step validation failure is data (``ok`` false with ``step_index`` and
+ * ``message``), never a transport error, so a half-built step list renders
+ * as an editor message rather than a failed request.
+ */
+export interface PolarsStepsRenderResponse {
+  code: string;
+  message: string;
+  ok: boolean;
+  step_index: number | null;
+  step_lines: number[][];
+}
+/**
+ * The editor's execution settings: one value for the server process.
+ */
+export interface ExecutionSettings {
+  streaming_chunk_size: number;
+}
 export interface ExplorePivotRunResponse {
   cached: boolean;
   failure: ExplorePivotFailure | null;
@@ -1070,6 +1102,71 @@ export interface GitUpstreamStatusResponse {
   parent_url: string;
   working: GitRemoteLeg;
 }
+export interface GitPushRejection {
+  is_rewrite: boolean;
+  ledger: GitRemoteLeg | null;
+  message: string;
+  remote: string;
+  status: 'rejected_diverged';
+  working: GitRemoteLeg;
+}
+export interface GitMilestoneFork {
+  message: string;
+  remote: string;
+  status: 'would_fork';
+  working: GitRemoteLeg;
+}
+export interface IoCapabilitiesResponse {
+  groups: IoCapabilityGroup[];
+  schema_version: 1;
+}
+export interface IoCapabilityGroup {
+  cache_modes: ('direct' | 'snapshot')[];
+  formats: IoFormatCapability[];
+  input_available: boolean;
+  input_fields: IoFieldCapability[];
+  label: string;
+  name: 'file' | 'database' | 'lakehouse' | 'databricks' | 'inline';
+  output_available: boolean;
+  output_fields: IoFieldCapability[];
+}
+export interface IoFormatCapability {
+  extensions: string[];
+  group: 'file' | 'database' | 'lakehouse' | 'inline';
+  input: IoInputCapability | null;
+  label: string;
+  name: string;
+  output: IoOutputCapability | null;
+  unstable: boolean;
+}
+export interface IoInputCapability {
+  arguments: {
+    [k: string]: string[];
+  };
+  cache_mode: 'direct' | 'snapshot';
+  cached_read: boolean;
+  direct_bounded: boolean;
+  engines_missing: string[];
+  modes: ('scan' | 'read')[];
+  needs_schema_when_bounded: boolean;
+  snapshot_build: 'bounded' | 'admitted_eager' | 'unsupported';
+}
+export interface IoOutputCapability {
+  arguments: {
+    [k: string]: string[];
+  };
+  eager_writer: boolean;
+  engines_missing: string[];
+  modes: ('sink' | 'write')[];
+  native_sink: boolean;
+  publication: 'atomic_file' | 'transactional';
+}
+export interface IoFieldCapability {
+  kind: 'path' | 'connection' | 'text' | 'query' | 'table' | 'records';
+  label: string;
+  name: string;
+  required: boolean;
+}
 export interface MlflowDestinationsResponse {
   destinations: MlflowDestinationEntry[];
   detail: string;
@@ -1230,6 +1327,19 @@ export interface SaveModelResponse {
   feature_contract_path: string;
   path: string;
   status: 'ok';
+}
+export interface SessionStatusResponse {
+  ok: boolean;
+}
+export interface BrowseFilesResponse {
+  dir: string;
+  items: FileItem[];
+}
+export interface FileItem {
+  name: string;
+  path: string;
+  size: number | null;
+  type: 'file' | 'directory';
 }
 export interface TrainResponse {
   actual_vs_predicted: {

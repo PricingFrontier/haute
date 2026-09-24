@@ -9,9 +9,15 @@ import {
   Upload,
 } from "lucide-react"
 
-import { ApiError, getGitRemotes, gitBranchAway, gitFastForward, gitPush } from "../api/client"
+import {
+  ApiError,
+  getGitRemotes,
+  gitBranchAway,
+  gitFastForward,
+  gitPush,
+  parseGitPushRejection,
+} from "../api/client"
 import type { GitPushRejection, GitRemote, GitRemoteLeg } from "../api/types"
-import { parseGitPushRejection } from "../types/guards"
 import useToastStore from "../stores/useToastStore"
 import { gitErrorMessage } from "../utils/gitError"
 import ModalShell from "./ModalShell"
@@ -121,7 +127,7 @@ export default function RemotePushControl({
         const body = (err.body as { detail?: unknown } | undefined)?.detail
         let parsed: GitPushRejection | null
         try {
-          parsed = parseGitPushRejection(body)
+          parsed = await parseGitPushRejection(body)
         } catch (parseError) {
           addToast(
             "error",
