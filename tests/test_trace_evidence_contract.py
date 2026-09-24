@@ -304,6 +304,23 @@ def test_trace_result_schema_requires_a_valid_utc_timestamp(
         )
 
 
+def test_trace_result_schema_has_no_preview_cache_origin() -> None:
+    """A trace reads only its own cache or executes, so those are its only origins."""
+    payload = {
+        "target_node_id": "target",
+        "row_index": 0,
+        "steps": [],
+        "omissions": [],
+        "correlation_diagnostics": [],
+        "generated_at": "2026-07-23T12:00:00+00:00",
+    }
+    for origin in ("fresh_execution", "trace_cache"):
+        assert TraceResultResponse.model_validate({**payload, "execution_origin": origin})
+
+    with pytest.raises(ValidationError, match="execution_origin"):
+        TraceResultResponse.model_validate({**payload, "execution_origin": "preview_cache"})
+
+
 def test_trace_result_schema_requires_omissions_and_typed_waterfall_errors() -> None:
     payload = {
         "target_node_id": "target",

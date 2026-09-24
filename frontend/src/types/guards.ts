@@ -1812,7 +1812,7 @@ function parseTraceResult(value: unknown, field: string): TraceResult {
       "parseTraceResponse",
       obj.execution_origin,
       `${field}.execution_origin`,
-      ["fresh_execution", "preview_cache", "trace_cache"],
+      ["fresh_execution", "trace_cache"],
     ),
   }
 }

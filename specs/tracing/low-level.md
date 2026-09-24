@@ -47,8 +47,7 @@
   `None`), and `correlation_diagnostics: list[dict[str, Any]]` (never `None`,
   defaults to an empty list). Provenance fields are UTC `generated_at`,
   `pipeline_source`, and `execution_origin` (`fresh_execution` or
-  `trace_cache`; the response contract's `preview_cache` value is no longer
-  produced).
+  `trace_cache`).
 - **`SchemaDiff`** (`_trace_correlation.py`, dataclass) — `columns_added`,
   `columns_removed`, `columns_modified`, `columns_passed`, each a `list[str]`.
 - **`_RowMatchResult`** (`_trace_correlation.py`, frozen dataclass) — one

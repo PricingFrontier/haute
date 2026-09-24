@@ -100,7 +100,7 @@ function traceFixture(): TraceResult {
     ],
     generated_at: "2026-07-23T12:34:56+00:00",
     pipeline_source: "pricing/pipeline.py",
-    execution_origin: "preview_cache",
+    execution_origin: "trace_cache",
   }
 }
 

@@ -233,8 +233,7 @@ Out of scope (owned elsewhere, linked where relevant):
   serialise and send to the frontend.
 - **Generation provenance is explicit and narrow.** Every response carries a UTC
   `generated_at`, the pipeline/source identity available to the server, and an
-  `execution_origin` of `fresh_execution` or `trace_cache`. (The response
-  contract still admits a `preview_cache` value, which trace no longer produces.)
+  `execution_origin` of `fresh_execution` or `trace_cache`.
   These fields describe how the trace snapshot was assembled; they do not claim
   that an external data source is fresh.
   Provider group, safe source identity, selected snapshot generation, and
