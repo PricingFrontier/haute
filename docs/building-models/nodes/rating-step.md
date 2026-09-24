@@ -16,8 +16,7 @@ This node accepts a single input.
 | Config | Description |
 |---|---|
 | `tables` | **Required.** List of rating tables |
-| `operation` | **Required.** How to combine factors across tables: `"multiply"`, `"add"`, `"min"`, or `"max"` |
-| `combinedColumn` | Name of the column containing the combined result. If omitted, individual factor columns are still created but no combined column is produced. |
+| `combinedOutputs` | Columns that combine every table's output. Each has an `outputColumn`, an `operation`  - `"multiply"`, `"add"`, `"min"`, or `"max"`  - and a numeric `baseValue` it starts from. If omitted, the individual factor columns are still created but no combined column is produced. |
 
 Each table has:
 
@@ -28,7 +27,7 @@ Each table has:
 | `outputColumn` | **Required.** Column name for this table's looked-up value |
 | `defaultValue` | Value used when the input doesn't match any entry in the table (e.g. an area code you haven't mapped) |
 | `onMissing` | What to do when a lookup misses and no usable `defaultValue` is set: `"error"` (default) fails the run with the table name, the missing keys and the affected row count; `"neutral"` leaves the table output null — combined outputs treat it as the operation's neutral element (×1.0 / +0.0) — and logs a warning with the miss count. |
-| `entries` | **Required.** The factor table. In JSON sidecars, factor values are nested keys and the leaf is the looked-up value. |
+| `entries` | **Required.** The factor table: one row per level, holding a value for each factor and the looked-up `value`. |
 
 !!! warning "Misses fail loudly by default"
     A row whose factor value has no entry in the table is an unpriceable
@@ -39,7 +38,7 @@ Each table has:
     contribute nothing to the combined output; they are still counted and
     logged.
 
-A one-way table maps a single column. A two-way table maps two columns. In the sidecar JSON, a one-way area factor and a one-way age factor look like this:
+A one-way table maps a single column. A two-way table maps two columns. In the sidecar JSON, a one-way area factor and a one-way age factor, multiplied together, look like this:
 
 ```json
 {
@@ -48,31 +47,32 @@ A one-way table maps a single column. A two-way table maps two columns. In the s
       "name": "Area Factor",
       "factors": ["area"],
       "outputColumn": "area_factor",
-      "defaultValue": "1.0",
-      "entries": {
-        "London": 1.25,
-        "Manchester": 1.10,
-        "Rural": 0.85
-      }
+      "defaultValue": 1.0,
+      "entries": [
+        { "area": "London", "value": 1.25 },
+        { "area": "Manchester", "value": 1.10 },
+        { "area": "Rural", "value": 0.85 }
+      ]
     },
     {
       "name": "Age Factor",
       "factors": ["age_band"],
       "outputColumn": "age_factor",
-      "defaultValue": "1.0",
-      "entries": {
-        "18-25": 1.40,
-        "26-65": 1.00,
-        "65+": 1.15
-      }
+      "defaultValue": 1.0,
+      "entries": [
+        { "age_band": "18-25", "value": 1.40 },
+        { "age_band": "26-65", "value": 1.00 },
+        { "age_band": "65+", "value": 1.15 }
+      ]
     }
   ],
-  "operation": "multiply",
-  "combinedColumn": "location_age_factor"
+  "combinedOutputs": [
+    { "outputColumn": "location_age_factor", "operation": "multiply", "baseValue": 1.0 }
+  ]
 }
 ```
 
-For two-way tables, each factor adds one nesting level in the order listed in `factors`. For three-way tables, the sidecar matches the editor: the third factor is the outer dropdown, the second factor is the column group, and the first factor is the row key. With `factors` set to `["vehicle_age_band", "cover_type", "channel"]`, entries nest as `channel -> cover_type -> vehicle_age_band -> value`. When Haute loads the sidecar, it expands these maps back into row entries with one key per factor plus `value` for the editor, execution, and trace.
+A two- or three-way table has one row per combination, with a key for each factor. In the editor, a three-way table shows its third factor as the outer dropdown, the second as the column group, and the first as the row key.
 
 **Before and after:**
 

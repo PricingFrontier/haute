@@ -133,23 +133,23 @@ tests pass.
 **Why:** About 5,000 lines of tests, plus a 1,360-line coverage ledger, keep
 the internal specification corpus consistent (`test_docs_accuracy.py`,
 `test_workflow_coverage.py`, `test_test_debt.py`, the corpus inventory),
-while the published node reference documents removed node types
-(`BUILD-R01`). CI requires 100% statement and branch coverage of changed
+while only one check (`tests/test_node_reference_docs.py`, from `BUILD-R01`)
+covers a user-facing document. CI requires 100% statement and branch coverage of changed
 code in the execution-critical surface, which rewards line-shaped tests (see
 `ENGQ-R05`).
 
 **Plan:** Decide the coverage rule: keep mutation and critical-file ratchets
 for the safety-critical code (rating, deploy scoring, feature contracts,
 cache identity) and use risk-based review elsewhere, or keep the current
-gate with a reason. Point at least one documentation check at `docs/`
-(`BUILD-R01`). Review whether each internal governance check still pays for
+gate with a reason. Decide which further documentation checks should cover
+`docs/`. Review whether each internal governance check still pays for
 its maintenance.
 
 **Acceptance:** The engineering-quality specification states the coverage
 rule and which documentation checks cover user-facing documents; CI enforces
 it.
 
-**Dependencies:** `BUILD-R01` (build and distribution).
+**Dependencies:** None.
 
 **Evidence:** `tests/test_docs_accuracy.py`; `tests/test_workflow_coverage.py`;
 `tests/workflow_coverage.toml`; `tests/test_test_debt.py`;
