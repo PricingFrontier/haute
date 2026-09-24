@@ -30,7 +30,7 @@ from haute._worker_isolation import (
     IsolatedWorkerStoppedError,
     IsolatedWorkerTimeoutError,
 )
-from haute.routes import _optimiser_service
+from haute.routes import _optimiser_service, _optimiser_worker
 from haute.routes._background_jobs import BackgroundJobStoppedError
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import OptimiserSolveService
@@ -322,20 +322,34 @@ def _record_real_worker(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]
     return calls
 
 
+def _child_always_over_its_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every worker-local context sample one byte over its limit at each checkpoint.
+
+    Only the child's context is affected: the parent admits its own context
+    through ``create_admitted_execution_context``.
+    """
+    real_create = _optimiser_worker.create_isolated_execution_context
+
+    def over_budget(budget: IsolatedExecutionBudget) -> Any:
+        context = real_create(budget)
+        limit = context.rss_limit_bytes
+        context.memory_sampler = lambda: limit + 1
+        return context
+
+    monkeypatch.setattr(_optimiser_worker, "create_isolated_execution_context", over_budget)
+
+
 class _InlineWorker:
     """Stand in for ``run_isolated_worker``: run the entrypoint here, or raise."""
 
-    def __init__(self, *, raises: BaseException | None = None, memory_limit: int | None = None):
+    def __init__(self, *, raises: BaseException | None = None):
         self.raises = raises
-        self.memory_limit = memory_limit
         self.calls: list[dict[str, Any]] = []
 
     def __call__(self, function, request, budget: IsolatedExecutionBudget, *, config=None):
         self.calls.append({"function": function, "request": request, "config": config})
         if self.raises is not None:
             raise self.raises
-        if self.memory_limit is not None:
-            budget = replace(budget, memory_limit_bytes=self.memory_limit)
         return function(request, budget)
 
 
@@ -535,8 +549,8 @@ class TestWorkerOutcomes:
     def test_a_memory_limited_child_ends_the_job_memory_limited(
         self, project: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # A one-byte growth budget: the child's first memory checkpoint trips.
-        worker = _InlineWorker(memory_limit=1)
+        _child_always_over_its_budget(monkeypatch)
+        worker = _InlineWorker()
         service, job_id, _raised = self._auto_range(project, monkeypatch, worker)
         job = service._store.require_job(job_id)
 
@@ -601,7 +615,8 @@ class TestWorkerOutcomes:
         self, client, project: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _process_mode(monkeypatch)
-        worker = _InlineWorker(memory_limit=1)
+        _child_always_over_its_budget(monkeypatch)
+        worker = _InlineWorker()
         monkeypatch.setattr(_optimiser_service, "run_isolated_worker", worker)
 
         status = _solve(client, _online_graph(_scored_parquet(project)))
