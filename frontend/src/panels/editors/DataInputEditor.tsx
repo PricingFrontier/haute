@@ -1,9 +1,10 @@
 import { CommittedTextArea, EditorLabel } from "../../components/form"
-import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import type { IoCapabilityGroup, IoFormatCapability } from "../../api/types"
 import { WarehousePicker, CatalogTablePicker } from "./_DatabricksSelector"
 import InputSnapshotCacheButton from "./_InputSnapshotCacheButton"
 import IoFormatEditor, { IoArgumentsEditor } from "./_IoFormatEditor"
+import { hasNonEmptyString, ioBranchConfig, ioProviderFieldsReady } from "./_ioProvider"
+import IoProviderPicker from "./_IoProviderPicker"
 import { useIoCapabilities } from "./_ioFormats"
 import { INPUT_STYLE, SchemaPreview } from "./_shared"
 import type { OnReplaceConfig, OnUpdateConfig } from "./_shared"
@@ -36,74 +37,20 @@ const DATABRICKS_KEYS = new Set([
   "arguments",
 ])
 
-function retainedCommonConfig(config: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(
-    INPUT_COMMON_KEYS.flatMap((key) =>
-      config[key] === undefined ? [] : [[key, config[key]]],
-    ),
-  )
-}
-
-function initialFieldValue(field: IoCapabilityGroup["input_fields"][number]): unknown {
-  return field.kind === "records" ? [] : ""
-}
-
-function selectedInputFormat(
-  group: IoCapabilityGroup,
-  requested?: IoFormatCapability,
-): IoFormatCapability | undefined {
-  if (requested?.input) return requested
-  return group.formats.find((format) => format.input !== null)
-}
-
 function inputBranchConfig(
   config: Record<string, unknown>,
   group: IoCapabilityGroup,
   requestedFormat?: IoFormatCapability,
   preserveProviderFields = false,
 ): Record<string, unknown> {
-  const format = selectedInputFormat(group, requestedFormat)
-  const capability = format?.input
-  const fields = Object.fromEntries(
-    group.input_fields.flatMap((field) => {
-      if (preserveProviderFields && config[field.name] !== undefined) {
-        return [[field.name, config[field.name]]]
-      }
-      return field.required
-        ? [[field.name, initialFieldValue(field)]]
-        : []
-    }),
-  )
-  return {
-    ...retainedCommonConfig(config),
-    inputType: group.name,
-    ...(format ? { format: format.name } : {}),
-    ...(capability?.modes[0] ? { mode: capability.modes[0] } : {}),
-    arguments: {},
-    ...fields,
-  }
-}
-
-function hasNonEmptyString(value: unknown): boolean {
-  return typeof value === "string" && value.trim().length > 0
-}
-
-function providerFieldsReady(
-  group: IoCapabilityGroup,
-  config: Record<string, unknown>,
-): boolean {
-  if (group.name === "database") {
-    const hasConnection = hasNonEmptyString(config.connection)
-    const hasUri = hasNonEmptyString(config.uri)
-    return hasConnection !== hasUri && hasNonEmptyString(config.query)
-  }
-  return group.input_fields
-    .filter((field) => field.required)
-    .every((field) =>
-      field.kind === "records"
-        ? Array.isArray(config[field.name])
-        : hasNonEmptyString(config[field.name]),
-    )
+  return ioBranchConfig({
+    direction: "input",
+    config,
+    group,
+    commonKeys: INPUT_COMMON_KEYS,
+    requestedFormat,
+    preserveProviderFields,
+  })
 }
 
 function formatAndModeReady(
@@ -194,7 +141,7 @@ export default function DataInputEditor({
     !dataInputIsDirect(config)
   const requiredReady =
     group !== undefined &&
-    providerFieldsReady(group, config) &&
+    ioProviderFieldsReady("input", group, config) &&
     formatAndModeReady(group, format, config)
   const databricksErrors =
     group?.name === "databricks" ? databricksConfigurationErrors(config) : []
@@ -222,44 +169,16 @@ export default function DataInputEditor({
 
   return (
     <div className="px-4 py-3 space-y-3">
-      {error && (
-        <p style={{ color: "var(--danger-text)" }}>
-          Could not load IO capabilities: {error}
-        </p>
-      )}
-
-      {config.inputType !== undefined && !group && capabilities && (
-        <section
-          aria-label="Configuration errors"
-          className="rounded-lg p-2 text-[11px]"
-          style={{
-            background: "var(--danger-soft)",
-            border: "1px solid var(--danger-border)",
-            color: "var(--danger-text)",
-          }}
-        >
-          Unknown Data Input provider {JSON.stringify(config.inputType)}.
-        </section>
-      )}
-
-      <div>
-        <EditorLabel as="div">Provider</EditorLabel>
-        <div className="mt-1">
-          <ToggleButtonGroup
-            value={group?.name ?? ""}
-            onChange={(name) => {
-              const next = groups.find((candidate) => candidate.name === name)
-              if (next) onReplaceConfig(inputBranchConfig(config, next))
-            }}
-            options={groups.map((candidate) => ({
-              key: candidate.name,
-              label: candidate.label,
-            }))}
-            accentColor={accentColor}
-            ariaLabel="Provider"
-          />
-        </div>
-      </div>
+      <IoProviderPicker
+        direction="input"
+        config={config}
+        groups={groups}
+        group={group}
+        capabilitiesLoaded={capabilities !== null}
+        error={error}
+        accentColor={accentColor}
+        onSelect={(next) => onReplaceConfig(inputBranchConfig(config, next))}
+      />
 
       {group?.name === "databricks" ? (
         <div className="space-y-3">
