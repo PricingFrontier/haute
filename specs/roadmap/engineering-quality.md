@@ -77,23 +77,21 @@ and the reviewed allowlist covers the runner while it remains live.
 `frontend/src/panels/editors/rating/index.ts`.
 
 ### ENGQ-R02 — Stop tracking generated and local-state files
-**Why:** The repository tracks a Vitest results cache under a root-level
-`node_modules/.vite` directory, a 612 KB local `mlflow.db`, benchmark and
+**Why:** The repository tracks a 612 KB local `mlflow.db`, benchmark and
 reproduction scripts under `repro/`, and executable PR #227 probes and
 benchmark results under `specs/roadmap/`. The `rating/` reference project is
 not runnable (it lacks `rating/data/quotes/nest_example.json` and the
 scenario-expander sidecar it names), yet the root `haute.toml` selects it as
 the repository's pipeline.
 
-**Plan:** Untrack the Vitest cache and add it to `.gitignore`. Decide whether
-`mlflow.db` and `repro/` carry value; delete them or move them to a
-documented fixtures location. Move the PR #227 probes out of `specs/roadmap/`
-when their reports retire. Either make `rating/` runnable with its missing
+**Plan:** Decide whether `mlflow.db` and `repro/` carry value; delete them or
+move them to a documented fixtures location. Move the PR #227 probes out of
+`specs/roadmap/` when their reports retire. Either make `rating/` runnable with its missing
 files and one smoke test, or remove it and point `haute.toml` at a runnable
 example.
 
-**Acceptance:** No build cache or local database is tracked; `specs/roadmap/`
-holds no executable probe or benchmark output (the Markdown reports and the
+**Acceptance:** No local database is tracked; `specs/roadmap/` holds no
+executable probe or benchmark output (the Markdown reports and the
 provenance record the roadmap index links may stay); the repository's
 default pipeline loads and previews from a fresh clone, or the reference
 project is gone.

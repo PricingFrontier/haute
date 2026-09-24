@@ -27,6 +27,10 @@ def test_generated_and_local_agent_artifacts_are_not_tracked() -> None:
         or path == "graphify-out"
         or "/graphify-out/" in f"/{path}/"
         or (Path(path).name.startswith("PR23_") and path.endswith(".md"))
+        # Installed packages and their tool caches (a Vitest results cache
+        # under a stray root-level node_modules/ was once committed).
+        or path.startswith("node_modules/")
+        or "/node_modules/" in f"/{path}"
     )
 
     assert offenders == []
