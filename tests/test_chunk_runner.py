@@ -11,7 +11,6 @@ import polars as pl
 import polars.testing as plt
 import pytest
 
-from haute._execute_lazy import _execute_lazy
 from haute._execution_context import (
     ExecutionCancelledError,
     ExecutionContext,
@@ -29,6 +28,7 @@ from haute.chunking import (
     run_chunked_reduce,
 )
 from haute.errors import ChunkPlanUnsupportedError
+from haute.execution import execute_lazy_graph
 from haute.executor import _build_node_fn
 from tests.conftest import make_edge, make_graph, make_output_config
 
@@ -152,7 +152,7 @@ def _full_lazy_output(
     *,
     required_columns: frozenset[str] | None = None,
 ) -> pl.DataFrame:
-    outputs, *_ = _execute_lazy(
+    outputs, *_ = execute_lazy_graph(
         graph,
         _build_node_fn,
         target_node_id="out",
@@ -229,8 +229,8 @@ def test_chunk_runner_matches_full_lazy_for_chunk_safe_chain(
     assert "unused_payload" not in actual.columns
 
 
-def test_chunk_runner_derives_start_input_name_from_api_frame_edge() -> None:
-    """A supplied intermediate frame must not make chunking forget its edge identity."""
+def test_chunk_runner_walks_only_the_chain_below_a_supplied_start_frame() -> None:
+    """A supplied intermediate frame replaces the start node; nothing above the chain is built."""
     graph = make_graph(
         {
             "nodes": [
@@ -281,7 +281,9 @@ def test_chunk_runner_derives_start_input_name_from_api_frame_edge() -> None:
     )
 
     assert sum(batch.output_rows for batch in batches) == 3
-    assert captured_source_names["chunk_start"] == ["quotes"]
+    # The supplied frame is the start node's output: only the chain below it is
+    # built, and it reads the start node by its own name.
+    assert captured_source_names == {"target": ["chunk_start"]}
 
 
 def test_chunk_runner_projects_source_columns_before_first_map_node(tmp_path: Path) -> None:
@@ -364,7 +366,7 @@ def test_chunk_runner_bounds_output_rows_by_expansion_adjusted_source_batches(
 
 def test_chunk_runner_can_start_from_proven_intermediate_frame(tmp_path: Path) -> None:
     graph = _chunk_safe_graph(_write_source(tmp_path))
-    base_outputs, *_ = _execute_lazy(
+    base_outputs, *_ = execute_lazy_graph(
         graph,
         _build_node_fn,
         target_node_id="age_band",

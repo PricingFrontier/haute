@@ -144,7 +144,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "caching",
     "deploy",
     "engineering-quality",
-    "execution-engine",
     "explore-eda",
     "frontend-shared",
     "json-shredding",

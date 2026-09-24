@@ -85,7 +85,7 @@ def _build_children_of(
     order: list[str],
     parents_of: dict[str, list[str]],
 ) -> dict[str, list[str]]:
-    """Mirror the children_of construction done inside ``_execute_lazy``."""
+    """Mirror the children_of construction done by the prepared execution."""
     children_of: dict[str, list[str]] = {nid: [] for nid in order}
     for nid, pids in parents_of.items():
         for pid in pids:

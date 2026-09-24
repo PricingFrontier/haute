@@ -47,8 +47,7 @@
   `None`), and `correlation_diagnostics: list[dict[str, Any]]` (never `None`,
   defaults to an empty list). Provenance fields are UTC `generated_at`,
   `pipeline_source`, and `execution_origin` (`fresh_execution` or
-  `trace_cache`; the response contract's `preview_cache` value is no longer
-  produced).
+  `trace_cache`).
 - **`SchemaDiff`** (`_trace_correlation.py`, dataclass) — `columns_added`,
   `columns_removed`, `columns_modified`, `columns_passed`, each a `list[str]`.
 - **`_RowMatchResult`** (`_trace_correlation.py`, frozen dataclass) — one
@@ -234,10 +233,10 @@ It runs only on a trace-cache miss; trace never reads the preview cache.
 
 1. Compile the preamble, merge in any caller-supplied `preamble_ns`
    (caller-supplied keys win, for test convenience), and call
-   `_execute_eager_core()` (execution-engine) with `swallow_errors=False`,
-   `materialize_node_ids` set to the head-framed nodes, and `row_limits_by_node` set to
-   their prefixes, so each head frame is its node's plan limited to its own prefix; the
-   run's uncapped `plans` are returned for this request. A genuine execution failure
+   a display walk (`walk_graph`, execution-engine) that raises node failures, collects
+   the head-framed nodes (`CollectPolicy.display(collect=..., row_limits_by_node=...)`)
+   each to its prefix, so each head frame is its node's plan limited to its own prefix;
+   the walk's uncapped plans (`WalkResult.frames`) are returned for this request. A genuine execution failure
    propagates unmodified rather than being retried or masked.
 
 ### Limited-preview lineage (`_trace_correlation.py`)
@@ -750,9 +749,9 @@ snapshot deterministically.
 | `ValueError` | `execute_trace` — empty graph, unknown `target_node_id`, `row_index` out of range (also raised inside `_correlate_rows_posthoc`), unresolved row-value mismatch after relocation attempt, `target_node_id` resolving to a multi-frame source's `dict` output | The HTTP route rejects an empty graph itself with 400; recognised remaining message shapes map to 404 / 400 / 409, while an unrecognised `ValueError` is sanitised to 500 |
 | `ValueError` (ambiguous duplicate match) | `_find_target_row_index` (`trace.py`) — the clicked `row_values` match more than one row on the shared columns during target-row relocation | Propagates unchanged out of `execute_trace`; HTTP route maps to 409 |
 | `RuntimeError` | Module import — malformed/non-positive `HAUTE_PREVIEW_CACHE_MAX_BYTES` or `HAUTE_TRACE_CACHE_MAX_BYTES` | Importing caller; cache construction does not start |
-| `ContractMismatchError` | Propagated unchanged from `_execute_eager_core` (execution-engine) on a cold-execution contract violation | HTTP route, mapped to 422 |
+| `ContractMismatchError` | Propagated unchanged from the display walk (execution-engine) on a cold-execution contract violation | HTTP route, mapped to 422 |
 | `TraceCorrelationUnsupportedError` (`ExecutionError`) | `_find_target_row_index` — selected target keys use an unsupported dtype/value comparison | HTTP 422 / background `contract_error`; stable code and node/key/dtype/reason fields |
-| Any exception from cold execution (`_execute_eager_core`, `swallow_errors=False`) | Propagated unchanged — no regex-based masking/retry | HTTP route, mapped to 500 (or a specific status if it happens to be one of the recognised `ValueError` shapes) |
+| Any exception from cold execution (a display walk that raises node failures) | Propagated unchanged — no regex-based masking/retry | HTTP route, mapped to 500 (or a specific status if it happens to be one of the recognised `ValueError` shapes) |
 | `WaterfallReconciliationError` (`ValueError` subclass) | `_check_display_consistency`, the final-cumulative reconciliation check in `build_waterfall_from_steps` | Caught inside `build_waterfall_from_steps`; converted to `{"error": ..., "error_type": "WaterfallReconciliationError"}` in `TraceResult.waterfall` |
 | `WaterfallUnavailableError` (`ValueError` subclass) | `_ensure_single_column_lineage`, `_reject_renamed_join_branch_origins`, `_as_trace_waterfall_float` (unsafe integer) | Same as above — converted to a structured error dict, not raised |
 | Any other exception during waterfall assembly | — | Caught, logged (`waterfall_build_failed`, WARNING, `exc_info=True`), converted to `{"error": ..., "error_type": ...}` |

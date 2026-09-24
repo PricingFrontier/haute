@@ -1,4 +1,4 @@
-"""Lazy-path contract enforcement raises in ``haute._execute_lazy``.
+"""Lazy-path contract enforcement raises on the graph walker's sink walk.
 
 These cover the two boundary-check raises on the lazy execution path that
 ordinary lazy tests never trip: the input-side check (an upstream frame
@@ -11,7 +11,6 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from haute._execute_lazy import _execute_lazy
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -20,6 +19,7 @@ from haute._types import (
     PipelineGraph,
 )
 from haute.errors import ContractMismatchError
+from haute.execution import execute_lazy_graph
 
 
 def _e(src: str, tgt: str) -> GraphEdge:
@@ -61,7 +61,7 @@ class TestLazyInputContractViolation:
         )
 
         with pytest.raises(ContractMismatchError) as exc_info:
-            _execute_lazy(g, build_fn, enforce_contracts=True)
+            execute_lazy_graph(g, build_fn, enforce_contracts=True)
 
         assert exc_info.value.context["node_id"] == "t"
         assert "missing_col" in exc_info.value.context["missing"]
@@ -82,7 +82,7 @@ class TestLazyInputContractViolation:
             edges=[_e("src", "t")],
         )
 
-        outputs, *_ = _execute_lazy(g, build_fn, enforce_contracts=True)
+        outputs, *_ = execute_lazy_graph(g, build_fn, enforce_contracts=True)
         assert outputs["t"].collect()["x"].to_list() == [1, 2, 3]
 
 
@@ -108,7 +108,7 @@ class TestLazyOutputContractViolation:
         )
 
         with pytest.raises(ContractMismatchError) as exc_info:
-            _execute_lazy(g, build_fn, enforce_contracts=True)
+            execute_lazy_graph(g, build_fn, enforce_contracts=True)
 
         assert exc_info.value.context["node_id"] == "t"
         assert "promised" in exc_info.value.context["missing"]
@@ -129,7 +129,7 @@ class TestLazyOutputContractViolation:
             edges=[_e("src", "t")],
         )
 
-        outputs, *_ = _execute_lazy(g, build_fn, enforce_contracts=True)
+        outputs, *_ = execute_lazy_graph(g, build_fn, enforce_contracts=True)
         assert outputs["t"].collect()["promised"].to_list() == [2, 4, 6]
 
     def test_output_check_skipped_without_enforce_contracts(self):
@@ -148,5 +148,5 @@ class TestLazyOutputContractViolation:
             edges=[_e("src", "t")],
         )
 
-        outputs, *_ = _execute_lazy(g, build_fn, enforce_contracts=False)
+        outputs, *_ = execute_lazy_graph(g, build_fn, enforce_contracts=False)
         assert outputs["t"].collect().columns == ["x"]

@@ -5,12 +5,12 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
+from haute.execution import execute_lazy_graph
 from haute.graph_utils import (
     GraphNode,
     NodeData,
     PipelineGraph,
     UnknownEdgeEndpointError,
-    _execute_lazy,
     _sanitize_func_name,
     ancestors,
     topo_sort_ids,
@@ -170,7 +170,7 @@ def _make_graph(
 
 
 # ---------------------------------------------------------------------------
-# _execute_lazy
+# execute_lazy_graph
 # ---------------------------------------------------------------------------
 
 
@@ -208,7 +208,7 @@ class TestExecuteLazy:
             edges=g.edges,
         )
 
-        outputs, order, _, _ = _execute_lazy(g, self._simple_build_fn)
+        outputs, order, _, _ = execute_lazy_graph(g, self._simple_build_fn)
         assert "src" in outputs
         assert "t" in outputs
         df = outputs["t"].collect()
@@ -229,7 +229,7 @@ class TestExecuteLazy:
             edges=g.edges,
         )
 
-        outputs, order, _, _ = _execute_lazy(g, self._simple_build_fn, target_node_id="b")
+        outputs, order, _, _ = execute_lazy_graph(g, self._simple_build_fn, target_node_id="b")
         assert "b" in outputs
         assert "c" not in outputs
 
@@ -249,7 +249,7 @@ class TestExecuteLazy:
             edges=[_e("src", "t")],
         )
 
-        outputs, _, _, _ = _execute_lazy(g, build_fn)
+        outputs, _, _, _ = execute_lazy_graph(g, build_fn)
         assert isinstance(outputs["t"], pl.LazyFrame)
 
     def test_non_source_no_input_raises(self):
@@ -260,7 +260,7 @@ class TestExecuteLazy:
 
         g = _make_graph([("lonely", "Lonely")], [])
         with pytest.raises(ValueError, match="No input data available"):
-            _execute_lazy(g, build_fn)
+            execute_lazy_graph(g, build_fn)
 
     def test_no_edge_non_source_raises(self):
         """A non-source with no edges raises even when prior outputs exist."""
@@ -281,7 +281,7 @@ class TestExecuteLazy:
         )
 
         with pytest.raises(ValueError, match="No input data available"):
-            _execute_lazy(g, build_fn)
+            execute_lazy_graph(g, build_fn)
 
 
 class TestExecuteLazyMultiInput:
@@ -309,7 +309,7 @@ class TestExecuteLazyMultiInput:
             edges=[_e("a", "c"), _e("b", "c")],
         )
 
-        outputs, _, _, _ = _execute_lazy(g, build_fn)
+        outputs, _, _, _ = execute_lazy_graph(g, build_fn)
         df = outputs["c"].collect()
         assert set(df.columns) == {"x", "y"}
 

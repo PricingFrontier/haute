@@ -1970,8 +1970,8 @@ class TestTraceAfterPreview:
         )["t"].preview[0]
 
         with patch(
-            "haute.trace._execute_eager_core",
-            wraps=trace_mod._execute_eager_core,
+            "haute.trace.walk_graph",
+            wraps=trace_mod.walk_graph,
         ) as execute_eager:
             result = execute_trace(
                 graph,

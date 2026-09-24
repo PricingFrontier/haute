@@ -299,7 +299,9 @@ def test_execute_sink_fails_loudly_when_lazy_execution_drops_sink_output(
         }
     )
 
-    monkeypatch.setattr(executor, "_execute_lazy", lambda *_, **__: ({}, [], {}, {}))
+    from haute._graph_walker import WalkResult
+
+    monkeypatch.setattr(executor, "walk_graph", lambda *_, **__: WalkResult(frames={}))
 
     with pytest.raises(RuntimeError, match="Failed to compute Data Output input"):
         write_data_output(graph, "sink")

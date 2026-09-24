@@ -8,7 +8,6 @@ import polars as pl
 import pytest
 
 from haute._builders import _build_node_fn
-from haute._execute_lazy import _execute_lazy
 from haute._mlflow_io import ScoringModel
 from haute._model_scorer import (
     ScoreWriteProjection,
@@ -16,6 +15,7 @@ from haute._model_scorer import (
     _project_scored_output,
     score_frame,
 )
+from haute.execution import execute_lazy_graph
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from tests.conftest import make_output_config, make_ready_file_input_config
 
@@ -690,7 +690,7 @@ def test_lazy_batch_model_score_uses_downstream_required_output_projection(tmp_p
         patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
         patch("haute._model_scorer._sink_to_temp", side_effect=capture_projected_sink),
     ):
-        outputs, *_ = _execute_lazy(
+        outputs, *_ = execute_lazy_graph(
             graph,
             _build_node_fn,
             target_node_id="output",
@@ -823,7 +823,7 @@ def test_lazy_batch_model_score_uses_declared_transform_contract_for_projection(
         patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
         patch("haute._model_scorer._sink_to_temp", side_effect=capture_projected_sink),
     ):
-        outputs, *_ = _execute_lazy(
+        outputs, *_ = execute_lazy_graph(
             graph,
             _build_node_fn,
             target_node_id="online_optimiser",
@@ -922,7 +922,7 @@ def test_lazy_batch_model_score_applies_stale_selected_columns_after_scoring(
         patch("haute._mlflow_io.load_mlflow_model", return_value=scoring_model),
         patch("haute._model_scorer._sink_to_temp", side_effect=capture_projected_sink),
     ):
-        outputs, *_ = _execute_lazy(
+        outputs, *_ = execute_lazy_graph(
             graph,
             build_node_fn,
             target_node_id="output",

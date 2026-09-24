@@ -29,6 +29,7 @@ from haute._estimate_calibration import (
 )
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name, build_parents_of, edge_input_name
+from haute._polars_call_shapes import replace_strict_call_has_literal_mapping
 from haute._polars_operations import (
     EXPRESSION_NAMESPACE_NAMES,
     OperationPolicy,
@@ -2107,7 +2108,7 @@ def _materialising_calls_in_source_order(
                         entries = ()
                         fact = "non_frame"
                 elif receiver == "non_frame":
-                    entry = operation(OperationReceiver.EXPR, node.func.attr)
+                    entry = _registered_expression_call(node)
                     if entry is not None:
                         category = "registered"
                         call_name = node.func.attr
@@ -2137,7 +2138,7 @@ def _materialising_calls_in_source_order(
                         fact = "frame"
                 else:  # receiver == "unknown"
                     entry_f = operation(OperationReceiver.FRAME, node.func.attr)
-                    entry_e = operation(OperationReceiver.EXPR, node.func.attr)
+                    entry_e = _registered_expression_call(node)
                     matched_entries = tuple(e for e in (entry_f, entry_e) if e is not None)
                     if matched_entries:
                         category = "registered"
@@ -2479,6 +2480,20 @@ def _materialising_calls_in_source_order(
     for stmt in tree.body:
         visit(stmt, definite=True)
     return found
+
+
+def _registered_expression_call(call: ast.Call) -> PolarsOperation | None:
+    """The registered ``Expr`` method *call* makes, or None where its shape leaves it unproven.
+
+    ``replace_strict`` is row-local only with a literal mapping; a mapping or
+    default taken from an expression reads whole columns, so such a call is
+    classified as an unregistered one is.
+    """
+    assert isinstance(call.func, ast.Attribute)
+    entry = operation(OperationReceiver.EXPR, call.func.attr)
+    if call.func.attr == "replace_strict" and not replace_strict_call_has_literal_mapping(call):
+        return None
+    return entry
 
 
 def _fold_recompute_report(report: list[ReportedCall]) -> NodeRecomputeFacts:

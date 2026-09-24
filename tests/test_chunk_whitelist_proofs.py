@@ -3,7 +3,7 @@
 PATH_TO_HIGHEST_STANDARD §A3: the chunk-local AST whitelist in
 ``haute.chunking`` may only admit constructs backed by a proof that executing
 them through the REAL chunked path (``chunk_plan`` + ``collect_chunked``)
-produces exactly the same frame as full execution (``_execute_lazy``).
+produces exactly the same frame as full execution (``execute_lazy_graph``).
 A construct without such a proof is not whitelisted — it is rejected at plan
 time (``ChunkPlanUnsupportedError``) so callers route to the existing full
 (non-chunked) executor, which is always correct.
@@ -36,7 +36,6 @@ import pytest
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
-from haute._execute_lazy import _execute_lazy
 from haute._polars_operations import chunk_admitted_selector_constructors
 from haute._polars_selectors import preamble_selector_aliases
 from haute.chunking import (
@@ -53,6 +52,7 @@ from haute.chunking import (
     iter_chunked_frames,
 )
 from haute.errors import ChunkPlanUnsupportedError
+from haute.execution import execute_lazy_graph
 from haute.executor import _build_node_fn, _compile_preamble
 from tests.conftest import make_edge, make_graph, make_output_config
 
@@ -144,7 +144,7 @@ def _run_chunked(graph, *, chunk_size: int) -> pl.DataFrame:
 
 
 def _run_full(graph) -> pl.DataFrame:
-    outputs, *_ = _execute_lazy(
+    outputs, *_ = execute_lazy_graph(
         graph,
         _build_node_fn,
         target_node_id="xform",

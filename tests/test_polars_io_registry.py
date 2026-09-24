@@ -10,7 +10,6 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from haute._execute_lazy import _execute_lazy
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._polars_dtypes import dtype_to_spec, parse_dtype, parse_schema_mapping
 from haute._polars_io_registry import (
@@ -31,6 +30,7 @@ from haute._polars_io_registry import (
 )
 from haute._polars_io_schema import io_functions_by_key
 from haute.errors import BoundedMemoryUnsupportedError, SchemaMismatchError
+from haute.execution import execute_lazy_graph
 from haute.executor import _build_node_fn
 from tests.conftest import make_graph
 
@@ -97,7 +97,7 @@ def test_partitioned_parquet_prunes_partition_and_columns_before_execution(
         profile=ExecutionProfile.LAZY_SINK,
     )
 
-    outputs, *_ = _execute_lazy(
+    outputs, *_ = execute_lazy_graph(
         graph,
         _build_node_fn,
         target_node_id="target",

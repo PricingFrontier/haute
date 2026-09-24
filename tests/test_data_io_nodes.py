@@ -1285,7 +1285,7 @@ class TestExecuteSinkDataOutput:
         def unexpected_execution(*_args, **_kwargs):
             raise AssertionError("graph execution started before collision preflight")
 
-        monkeypatch.setattr(executor_module, "_execute_lazy", unexpected_execution)
+        monkeypatch.setattr(executor_module, "walk_graph", unexpected_execution)
 
         with pytest.raises(DataOutputDestinationExistsError) as exc:
             write_data_output(graph, "dout")

@@ -10,7 +10,7 @@ each behavioural node type we:
 3. import the generated module and drive ``pipeline.run()`` / the generated
    node body under source in ``{live, batch}``,
 4. ``assert_frame_equal`` the result against the canvas executor
-   (``_execute_lazy`` — the same engine ``write_data_output`` / deploy scoring
+   (``execute_lazy_graph`` — the same engine ``write_data_output`` / deploy scoring
    uses) for the SAME source.
 
 Before the fix the generated bodies were bare passthroughs (``return {first}``)
@@ -35,13 +35,12 @@ from polars.testing import assert_frame_equal
 
 from haute._builders import _build_node_fn
 from haute._config_io import collect_node_configs, config_path_for_node
-from haute._execute_lazy import _execute_lazy
 from haute._execution_admission import create_admitted_execution_context
 from haute._model_scorer import _scenario_ctx
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code
-from haute.execution import ExecutionProfile
+from haute.execution import ExecutionProfile, execute_lazy_graph
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -105,7 +104,7 @@ def _executor_frame(graph: PipelineGraph, target_id: str, source: str) -> pl.Dat
         profile=ExecutionProfile.LAZY_SINK,
     )
     try:
-        outputs, _, _, _ = _execute_lazy(
+        outputs, _, _, _ = execute_lazy_graph(
             graph, _build_node_fn, source=source, execution_context=context
         )
         return _collect(outputs[target_id])

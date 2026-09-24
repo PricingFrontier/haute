@@ -24,8 +24,9 @@ running heavy work in a child process the parent can kill on timeout or memory l
 
 **In scope:**
 - Turning a `PipelineGraph` (nodes + edges) into an executable order and running it,
-  both eagerly (`executor.execute_graph`, `_execute_lazy._execute_eager_core`) and
-  lazily (`execution.execute_lazy_graph`, `_execute_lazy._execute_lazy`).
+  both eagerly (`executor.execute_graph` and `trace.execute_trace`, display walks of
+  `_graph_walker.walk_graph`) and
+  lazily (`execution.execute_lazy_graph`, a sink walk of `_graph_walker.walk_graph`).
 - The GUI preview cache — reusing materialised node outputs across clicks on the same
   graph, extending the cache when a new target requires more of the graph, and
   discarding entries once source data or graph shape changes.
@@ -82,7 +83,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   this component calls it at preamble-compile and node-build time.
 - Correlating a completed run into a human-readable trace/waterfall — that is
   [tracing](../tracing/high-level.md), which is built on top of the same
-  `_execute_eager_core`/`ExecutionContext` primitives this component exposes.
+  `walk_graph`/`ExecutionContext` primitives this component exposes.
 - HTTP request/response shapes and route wiring for preview/run/sink/train endpoints —
   [server-api](../server-api/high-level.md).
 - Assistant revision, risk, consent, mutation, and verification policy is owned by
@@ -103,12 +104,12 @@ running heavy work in a child process the parent can kill on timeout or memory l
   graph than is cached extend the cache rather than starting over. Ordinary
   node-local failures are captured per-node (`status="error"`) rather than
   aborting the whole preview. Once
-  `_execute_eager_core` is running, every `HauteError` with a stable public
+  a display walk is running, every `HauteError` with a stable public
   `error_code`, cancellation, and memory-limit exhaustion is always raised. This includes
   `ContractResolutionError`,
   `ChunkMemoryRiskError`, `GroupByExecutionUnsupportedError`, and
   `LiveSwitchScenarioError`. `ContractMismatchError` and the base
-  `SchemaMismatchError` have no public `error_code`, so the eager core re-raises
+  `SchemaMismatchError` have no public `error_code`, so the walk re-raises
   both through one explicit mismatch branch. The preview HTTP adapter converts
   either mismatch into the same in-situ `PreviewNodeResponse(status="error")`
   instead of a generic 500. Preamble compilation happens outside that core:
@@ -432,7 +433,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   paths, so a mismatch (missing column, wrong dtype on a join key) is detected at the
   offending node rather than as an opaque Polars error three nodes later. Missing
   columns use `ContractMismatchError`; join-key dtype disagreement uses
-  `SchemaMismatchError`. Both propagate identically through the eager core and
+  `SchemaMismatchError`. Both propagate identically through a display walk and
   are adapted identically by the preview route.
 - **A declared contract only fills the builder's opaque sides.** The effective
   contract used for enforcement and projection (`overlay_declared_contract`) keeps
@@ -509,12 +510,24 @@ keep reporting the failing line so the editor can name the failing step.
   for capped surfaces, and once the optimiser runs in capped workers whether the
   remaining uncapped surfaces still justify it is decided again.
 - **Two execution strategies, one shared node-building step.** Eager execution
-  (`_execute_eager_core`) and lazy execution (`_execute_lazy`) both call
+  (the graph walker's display walk) and lazy execution (its sink walk) both call
   `_build_funcs`, which asks each node's `NODE_REGISTRY` builder for the same
   `(name, callable, is_source)` triple. This is deliberate: the GUI preview and a
   batch sink run *the same per-node logic*, differing only in when the result is
   collected. Divergence between "what preview shows" and "what the batch run
   produces" would otherwise be a permanent trust problem for users.
+- **One graph walker.** `_graph_walker.walk_graph` walks a graph once under a
+  `CollectPolicy` that says what the walk collects and how it treats each node's frame.
+  The Data Output sink, every lazy execution (`execution.execute_lazy_graph`: deploy
+  scoring, training, the optimiser, node data, the assistant), the preview, the trace and
+  the chunked runner (a chunk walk per batch) run on it. Two decisions
+  bound it. Its functions stay at a cyclomatic complexity of 15 or below, held by ruff's
+  C901 rule scoped to the walker module only; the rest of the package is not held to
+  that limit. And the decorator pipeline's `Pipeline.run`/`score` keeps its own loop over
+  the Python functions it registered, sharing only the one topological sort
+  (`topo_sort_ids`) and frame picking (`_pick_source_frame`) with the walker: the walker
+  runs config-built nodes, and routing the decorator path through it would need
+  `Pipeline.to_graph()` to rebuild every live node losslessly.
 - **Eager-with-caching for interactivity, lazy-with-captures for throughput.**
   Interactive preview needs low click-to-result latency on the *same* graph across
   many small edits — caching materialised DataFrames keyed by a graph fingerprint
@@ -645,7 +658,7 @@ keep reporting the failing line so the editor can name the failing step.
 - [pipeline-config](../pipeline-config/high-level.md): owns node schemas, sidecar
   validation, and registry/configuration contracts. Execution-engine owns the runtime
   builder implementations and interception seam registered behind those contracts.
-- [caching](../caching/high-level.md): the seed plans `_execute_lazy` runs, plus
+- [caching](../caching/high-level.md): the seed plans the graph walker runs, plus
   `_cache.lineage_cache_key()`, which
   `execution.preview_lineage_cache_key()` uses with
   `PREVIEW_EXECUTION_SEMANTICS_VERSION` and the complete selected-lineage payload as
@@ -653,7 +666,7 @@ keep reporting the failing line so the editor can name the failing step.
 - [sandbox-security](../sandbox-security/high-level.md): `executor._compile_preamble`
   and node builders execute user-written preamble/transform code through the sandbox's
   restricted-globals `exec`.
-- [tracing](../tracing/high-level.md): built directly on `_execute_eager_core` and
+- [tracing](../tracing/high-level.md): built directly on the graph walker's display walk and
   `ExecutionContext`'s stage/checkpoint instrumentation to reconstruct a run's
   timeline; shares the preview cache's lineage-key shape for its own trace cache,
   but never reads preview-cached frames.
@@ -671,7 +684,7 @@ keep reporting the failing line so the editor can name the failing step.
   node (and every downstream node that depended on it) so one bad node doesn't blank
   the whole canvas. Any `HauteError` that opts into the public contract with a stable
   `error_code`, plus cancellation and memory-limit exhaustion, propagates from the
-  eager core even in swallow mode because these are API-level correctness/resource
+  display walk even while it records node failures because these are API-level correctness/resource
   signals. `ContractMismatchError` and `SchemaMismatchError` also propagate via
   the explicit mismatch branch; the preview route then presents either one as
   the target node's in-situ error response. Interactive preamble compilation

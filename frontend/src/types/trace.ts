@@ -338,7 +338,7 @@ export interface TraceResult {
   correlation_diagnostics: TraceCorrelationDiagnostic[]
   generated_at: string
   pipeline_source: string | null
-  execution_origin: "fresh_execution" | "preview_cache" | "trace_cache"
+  execution_origin: "fresh_execution" | "trace_cache"
 }
 
 export interface WaterfallError {
