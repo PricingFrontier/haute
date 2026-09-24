@@ -413,7 +413,7 @@ def test_cold_trace_then_trace_cache_hit(
     correlation_seconds: list[float] = []
     original_materialize = trace_mod._materialize_eager_outputs
     original_correlate = trace_mod._correlate_rows_posthoc
-    original_execute = trace_mod._execute_eager_core
+    original_execute = trace_mod.walk_graph
 
     def counting_materialize(*args: Any, **kwargs: Any) -> Any:
         calls["materialize"] += 1
@@ -422,7 +422,7 @@ def test_cold_trace_then_trace_cache_hit(
     def counting_execute(*args: Any, **kwargs: Any) -> Any:
         # Building the uncapped lineage plans a row-scoped lookup reads collects
         # nothing; only the first trace's materialising execution runs the DAG.
-        if kwargs.get("materialize_node_ids") == frozenset():
+        if kwargs["policy"].collect == frozenset():
             calls["plan_builds"] += 1
         else:
             calls["cold_execute"] += 1
@@ -436,7 +436,7 @@ def test_cold_trace_then_trace_cache_hit(
             correlation_seconds.append(time.perf_counter() - start)
 
     monkeypatch.setattr(trace_mod, "_materialize_eager_outputs", counting_materialize)
-    monkeypatch.setattr(trace_mod, "_execute_eager_core", counting_execute)
+    monkeypatch.setattr(trace_mod, "walk_graph", counting_execute)
     monkeypatch.setattr(trace_mod, "_correlate_rows_posthoc", timed_correlate)
 
     with structlog.testing.capture_logs() as first_logs:

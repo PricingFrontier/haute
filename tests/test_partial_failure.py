@@ -325,7 +325,7 @@ class TestTempFileCleanupOnCrash:
     def test_temp_parquet_cleaned_on_execute_exception(self, haute_scratch: Path) -> None:
         """The try/finally pattern in _execute_and_sink cleans up temp files.
 
-        Catches: temp file leak when _execute_lazy raises — disk fills up
+        Catches: temp file leak when the lazy execution raises — disk fills up
         after many failed training attempts.
 
         We replicate the exact cleanup pattern from _execute_and_sink to
@@ -340,7 +340,7 @@ class TestTempFileCleanupOnCrash:
 
         # Replicate the exact cleanup pattern from _execute_and_sink
         try:
-            raise RuntimeError("Simulated OOM in _execute_lazy")
+            raise RuntimeError("Simulated OOM in the lazy execution")
         except Exception:
             if Path(tmp_parquet).exists():
                 os.unlink(tmp_parquet)

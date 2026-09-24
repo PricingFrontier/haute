@@ -7,6 +7,7 @@ import pytest
 
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from haute.execution import execute_lazy_graph
 from haute.executor import _normalise_requested_preview_columns, execute_graph
 from tests.conftest import make_ready_file_input_config
 
@@ -140,7 +141,6 @@ def test_refresh_preview_preserves_configured_column_names_and_values(
 
 @pytest.mark.parametrize("node_type", [NodeType.POLARS, NodeType.EDGE_JOIN])
 def test_join_rename_projection_matches_lazy_execution(tmp_path: Path, node_type: NodeType) -> None:
-    from haute._execute_lazy import _execute_lazy
     from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
     from haute.executor import _build_node_fn
 
@@ -159,7 +159,7 @@ def test_join_rename_projection_matches_lazy_execution(tmp_path: Path, node_type
     )["subject"]
     assert eager.status == "ok", eager.error
     assert eager.preview == [{"region": "North"}]
-    outputs, *_ = _execute_lazy(
+    outputs, *_ = execute_lazy_graph(
         graph,
         _build_node_fn,
         target_node_id="subject",

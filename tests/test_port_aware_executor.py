@@ -28,8 +28,8 @@ from pydantic import ValidationError
 
 from haute._execute_lazy import (
     _build_funcs,
-    _execute_eager_core,
 )
+from haute._graph_walker import CollectPolicy, walk_graph
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import ConfigError
 from haute.projection import prepare_graph
@@ -309,7 +309,7 @@ def test_single_frame_dict_source_binds_under_its_raw_frame_label() -> None:
 
         return node.id, consume, False
 
-    _execute_eager_core(graph, build_node_fn, swallow_errors=False)
+    walk_graph(graph, build_node_fn, policy=CollectPolicy.display(record_failures=False))
 
     assert observed == {"source_names": ["quotes"], "quote_ids": [101]}
 
@@ -399,7 +399,7 @@ def test_reconnecting_api_input_edges_in_reverse_keeps_names_bound_to_their_fram
 
             return node.id, consume, False
 
-        _execute_eager_core(graph, build_node_fn, swallow_errors=False)
+        walk_graph(graph, build_node_fn, policy=CollectPolicy.display(record_failures=False))
         return observed
 
     assert execute(["quotes", "drivers"]) == [
@@ -456,7 +456,7 @@ def test_null_handle_against_even_a_one_frame_dict_fails_loudly() -> None:
         return node.id, lambda frame: frame, False
 
     with pytest.raises(ValueError) as exc_info:
-        _execute_eager_core(graph, build_node_fn, swallow_errors=False)
+        walk_graph(graph, build_node_fn, policy=CollectPolicy.display(record_failures=False))
 
     message = str(exc_info.value)
     assert "api" in message
@@ -581,7 +581,7 @@ def test_eager_diamond_reuses_one_cached_lazyframe_and_executes_source_once() ->
 
         return node.id, sink, False
 
-    _execute_eager_core(graph, build, materialize_node_ids={"sink"})
+    walk_graph(graph, build, policy=CollectPolicy.display(collect={"sink"}))
 
     assert branch_inputs[0] is branch_inputs[1]
     assert calls == 1
@@ -641,7 +641,7 @@ def test_eager_nested_diamond_has_one_cache_per_shared_lazy_producer() -> None:
             return node.id, sink, False
         return node.id, lambda frame: frame.with_columns(pl.lit(node.id).alias(node.id)), False
 
-    _execute_eager_core(graph, build, materialize_node_ids={"sink"})
+    walk_graph(graph, build, policy=CollectPolicy.display(collect={"sink"}))
 
     assert calls == 1
     cache_ids = _cache_ids(plans[0])
@@ -674,7 +674,7 @@ def test_eager_dataframe_parent_is_not_wrapped_in_a_cache_hint() -> None:
 
         return node.id, branch, False
 
-    _execute_eager_core(graph, build)
+    walk_graph(graph, build, policy=CollectPolicy.display())
 
     assert all("CACHE[" not in plan for plan in plans)
 
@@ -727,7 +727,7 @@ def test_eager_multi_port_fanout_caches_each_selected_port_once() -> None:
 
         return node.id, branch, False
 
-    _execute_eager_core(graph, build, materialize_node_ids={"sink"})
+    walk_graph(graph, build, policy=CollectPolicy.display(collect={"sink"}))
 
     assert branch_inputs["q1"] is branch_inputs["q2"]
     assert branch_inputs["d1"] is branch_inputs["d2"]
@@ -743,15 +743,16 @@ def test_eager_multi_frame_timing_is_reported_in_milliseconds(
 ) -> None:
     graph = PipelineGraph(nodes=[_node("api", "api", NodeType.API_INPUT)], edges=[])
     clock = iter([10.0, 10.25])
-    monkeypatch.setattr("haute._execute_lazy.time.perf_counter", lambda: next(clock))
+    monkeypatch.setattr("haute._graph_walker.time.perf_counter", lambda: next(clock))
 
-    result = _execute_eager_core(
+    result = walk_graph(
         graph,
         lambda node, **_kwargs: (
             node.id,
             lambda: {"quotes": pl.DataFrame({"id": [1]})},
             True,
         ),
+        policy=CollectPolicy.display(),
     )
 
     assert result.timings["api"] == 250.0

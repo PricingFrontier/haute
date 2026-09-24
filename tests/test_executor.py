@@ -9,6 +9,7 @@ import polars as pl
 import pytest
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._graph_walker import CollectPolicy, walk_graph
 from haute._user_exec import _exec_user_code
 from haute.errors import ExecutionError, LiveSwitchScenarioError
 from haute.executor import (
@@ -1329,7 +1330,6 @@ class TestTargetPreviewRowLimit:
         [({"src": 0}, "positive integers"), ({"": 1}, "must be node ids")],
     )
     def test_invalid_node_row_limits_are_rejected(self, tmp_path, row_limits_by_node, message):
-        from haute._execute_lazy import _execute_eager_core
         from haute.executor import _build_node_fn
 
         path = tmp_path / "data.parquet"
@@ -1337,11 +1337,11 @@ class TestTargetPreviewRowLimit:
         graph = _g({"nodes": [_ready_source_node("src", str(path))], "edges": []})
 
         with pytest.raises(ValueError, match=message):
-            _execute_eager_core(
+            walk_graph(
                 graph,
                 _build_node_fn,
+                policy=CollectPolicy.display(row_limits_by_node=row_limits_by_node),
                 target_node_id="src",
-                row_limits_by_node=row_limits_by_node,
             )
 
 
@@ -1618,13 +1618,13 @@ class TestExecuteSink:
         captured_sources: list[str] = []
         from unittest.mock import patch
 
-        from haute._execute_lazy import _execute_lazy as original_execute_lazy
+        from haute._graph_walker import walk_graph as original_execute_lazy
 
         def spy(*args, **kwargs):
             captured_sources.append(kwargs.get("source", "???"))
             return original_execute_lazy(*args, **kwargs)
 
-        with patch("haute.executor._execute_lazy", side_effect=spy):
+        with patch("haute.executor.walk_graph", side_effect=spy):
             write_data_output(graph, output_node_id="sink", source="live")
 
         assert captured_sources == ["batch"]
@@ -1636,13 +1636,13 @@ class TestExecuteSink:
         captured_sources: list[str] = []
         from unittest.mock import patch
 
-        from haute._execute_lazy import _execute_lazy as original_execute_lazy
+        from haute._graph_walker import walk_graph as original_execute_lazy
 
         def spy(*args, **kwargs):
             captured_sources.append(kwargs.get("source", "???"))
             return original_execute_lazy(*args, **kwargs)
 
-        with patch("haute.executor._execute_lazy", side_effect=spy):
+        with patch("haute.executor.walk_graph", side_effect=spy):
             write_data_output(graph, output_node_id="sink", source="my_custom")
 
         assert captured_sources == ["my_custom"]
@@ -1724,7 +1724,7 @@ class TestExecuteSink:
 
         from unittest.mock import patch
 
-        from haute._execute_lazy import _execute_lazy as original
+        from haute._graph_walker import walk_graph as original
 
         captured_kwargs: list[dict] = []
 
@@ -1732,7 +1732,7 @@ class TestExecuteSink:
             captured_kwargs.append(kwargs)
             return original(*args, **kwargs)
 
-        with patch("haute.executor._execute_lazy", side_effect=spy):
+        with patch("haute.executor.walk_graph", side_effect=spy):
             write_data_output(graph, output_node_id="sink")
 
         assert len(captured_kwargs) == 1
@@ -1746,7 +1746,7 @@ class TestExecuteSink:
 
         from unittest.mock import patch
 
-        from haute._execute_lazy import _execute_lazy as original
+        from haute._graph_walker import walk_graph as original
 
         plans: list = []
 
@@ -1754,7 +1754,7 @@ class TestExecuteSink:
             plans.append(kwargs["snapshot_plan"])
             return original(*args, **kwargs)
 
-        with patch("haute.executor._execute_lazy", side_effect=spy):
+        with patch("haute.executor.walk_graph", side_effect=spy):
             write_data_output(graph, output_node_id="sink")
 
         assert len(plans) == 1
@@ -1811,13 +1811,13 @@ class TestExecuteSink:
         captured_sources: list[str] = []
         from unittest.mock import patch
 
-        from haute._execute_lazy import _execute_lazy as original_execute_lazy
+        from haute._graph_walker import walk_graph as original_execute_lazy
 
         def spy(*args, **kwargs):
             captured_sources.append(kwargs.get("source", "???"))
             return original_execute_lazy(*args, **kwargs)
 
-        with patch("haute.executor._execute_lazy", side_effect=spy):
+        with patch("haute.executor.walk_graph", side_effect=spy):
             write_data_output(graph, output_node_id="sink", source="live")
 
         # Should resolve to "nb_batch" from the ISM, not generic "batch"
@@ -2783,7 +2783,7 @@ class TestRequestedPreviewProjection:
         to be planned for schema, projection, and contract checks, but they
         should stay lazy until the target collect.
         """
-        import haute._execute_lazy as execute_lazy_mod
+        import haute._graph_walker as graph_walker_mod
         from haute.executor import _preview_cache
 
         _preview_cache.clear()
@@ -2807,7 +2807,7 @@ class TestRequestedPreviewProjection:
         )
 
         collect_calls = 0
-        original_streaming_collect = execute_lazy_mod.streaming_collect
+        original_streaming_collect = graph_walker_mod.streaming_collect
 
         def counting_streaming_collect(*args, **kwargs):
             nonlocal collect_calls
@@ -2815,7 +2815,7 @@ class TestRequestedPreviewProjection:
             return original_streaming_collect(*args, **kwargs)
 
         monkeypatch.setattr(
-            execute_lazy_mod,
+            graph_walker_mod,
             "streaming_collect",
             counting_streaming_collect,
         )
@@ -4652,17 +4652,17 @@ class TestSelectorRuntimeProjection:
 
     @staticmethod
     def _preview(graph, monkeypatch):
-        import haute._execute_lazy as execute_lazy
+        import haute._graph_walker as graph_walker
 
         selections: list[list[str]] = []
-        real = execute_lazy.projected_or_carrier_columns
+        real = graph_walker.projected_or_carrier_columns
 
         def recording(schema_names, demand):
             selected = real(schema_names, demand)
             selections.append(list(selected))
             return selected
 
-        monkeypatch.setattr(execute_lazy, "projected_or_carrier_columns", recording)
+        monkeypatch.setattr(graph_walker, "projected_or_carrier_columns", recording)
         context = ExecutionContext(
             operation="preview-test",
             profile=ExecutionProfile.PREVIEW_EAGER,

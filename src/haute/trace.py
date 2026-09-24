@@ -57,6 +57,7 @@ from haute._expression_parser import (
     parse_expression_chain,
 )
 from haute._graph_utils import edge_input_name
+from haute._graph_walker import CollectPolicy, walk_graph
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._json_safe import to_json_safe
 from haute._logging import get_logger
@@ -103,7 +104,6 @@ from haute.graph_utils import (
     GraphEdge,
     NodeType,
     PipelineGraph,
-    _execute_eager_core,
     topo_sort_ids,
 )
 
@@ -1062,21 +1062,22 @@ def _materialize_eager_outputs(
     # and silently retried with swallow_errors=True, which masked
     # genuine column-name typos whenever another node in the graph
     # happened to define the same kwarg name.  Fail loudly instead.
-    result = _execute_eager_core(
+    result = walk_graph(
         graph,
         _build_node_fn,
+        policy=CollectPolicy.display(
+            collect=prefixes,
+            row_limit=row_limit,
+            row_limits_by_node=prefixes,
+        ),
         target_node_id=target_node_id,
-        row_limit=row_limit,
-        swallow_errors=False,
         preamble_ns=effective_preamble or None,
         source=source,
         execution_context=execution_context,
-        materialize_node_ids=frozenset(prefixes),
-        row_limits_by_node=dict(prefixes),
         snapshot_plan=snapshot_plan,
     )
-    eager_outputs = {nid: df for nid, df in result.outputs.items() if df is not None}
-    order = result.order
+    eager_outputs = {nid: df for nid, df in result.collected.items() if df is not None}
+    order = result.run_order
     parents_of = result.parents_of
     node_map = result.node_map
     source_ids = _trace_source_ids(order, parents_of, snapshot_plan)
@@ -1086,7 +1087,7 @@ def _materialize_eager_outputs(
         parents_of,
         node_map,
         source_ids,
-        dict(result.plans),
+        dict(result.frames),
     )
 
 
@@ -1108,19 +1109,17 @@ def _build_trace_plans(
     effective_preamble = dict(compiled_preamble_ns or {})
     if preamble_ns:
         effective_preamble.update(preamble_ns)
-    result = _execute_eager_core(
+    result = walk_graph(
         graph,
         _build_node_fn,
+        policy=CollectPolicy.display(collect=(), row_limit=row_limit),
         target_node_id=target_node_id,
-        row_limit=row_limit,
-        swallow_errors=False,
         preamble_ns=effective_preamble or None,
         source=source,
         execution_context=execution_context,
-        materialize_node_ids=frozenset(),
         snapshot_plan=snapshot_plan,
     )
-    return dict(result.plans)
+    return dict(result.frames)
 
 
 def _planned_strategy_scope(graph: PipelineGraph, snapshot_plan: SeedPlan | None) -> dict[str, Any]:

@@ -3,7 +3,7 @@
 Covers:
   - get_column_contract          — builder-registered column contracts
   - prepared projection plans     — backward pass computing minimal column sets
-  - capture projection in _execute_lazy — what a planned run writes into the
+  - capture projection in a planned lazy walk — what a planned run writes into the
     shared snapshot store at a join, fan-out, or join feeder
 """
 
@@ -17,7 +17,6 @@ import polars as pl
 import pytest
 
 from haute._contracts import get_column_contract
-from haute._execute_lazy import _execute_lazy
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._native_memory_limit import native_memory_backend_scope
@@ -31,6 +30,7 @@ from haute._types import (
     PipelineGraph,
 )
 from haute.errors import ContractMismatchError
+from haute.execution import execute_lazy_graph
 from haute.projection import compute_prepared_plan
 from tests._projection_helpers import edge_keys_for_pair, pair_value
 from tests.conftest import make_output_config
@@ -458,7 +458,7 @@ class TestGetColumnContract:
 
 
 def _build_children_of(order, parents_of):
-    """Build children_of from parents_of (same as _execute_lazy does)."""
+    """Build children_of from parents_of (as the prepared execution does)."""
     children_of = {nid: [] for nid in order}
     for nid, pids in parents_of.items():
         for pid in pids:
@@ -930,7 +930,7 @@ class TestUnprovableProjectionDiagnostics:
                 return node.id, lambda *dfs: dfs[0].join(dfs[1], on="quote_id"), False
             return node.id, lambda *dfs: dfs[0], False
 
-        outputs, *_ = _execute_lazy(
+        outputs, *_ = execute_lazy_graph(
             graph,
             build_fn,
             target_node_id="out",
@@ -962,7 +962,7 @@ class TestUnprovableProjectionDiagnostics:
                 return node.id, lambda *dfs: dfs[0].join(dfs[1], on="quote_id"), False
             return node.id, lambda *dfs: dfs[0], False
 
-        outputs, *_ = _execute_lazy(
+        outputs, *_ = execute_lazy_graph(
             graph,
             build_fn,
             target_node_id="out",
@@ -976,7 +976,7 @@ class TestUnprovableProjectionDiagnostics:
 
 
 # ===========================================================================
-# Integration: capture projection in _execute_lazy
+# Integration: capture projection in a planned lazy walk
 # ===========================================================================
 
 
@@ -1015,7 +1015,7 @@ def _run_planned(
             native_memory_backend_scope("rlimit"),
             open_resolved_seed_plan(request, store=store) as plan,
         ):
-            outputs, *_ = _execute_lazy(
+            outputs, *_ = execute_lazy_graph(
                 graph,
                 build_fn,
                 target_node_id=target,

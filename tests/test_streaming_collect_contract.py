@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 BOUNDED_COLLECT_CALLERS = [
-    Path("src/haute/_execute_lazy.py"),
+    Path("src/haute/_graph_walker.py"),
     Path("src/haute/deploy/_scorer.py"),
     Path("src/haute/modelling/_training_job.py"),
     Path("src/haute/routes/_optimiser_service.py"),

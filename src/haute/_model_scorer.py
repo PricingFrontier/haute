@@ -1352,8 +1352,8 @@ def _run_score_pipeline(
     # exception was pure laundering — it hid ``RuntimeError`` from a
     # corrupt artifact, ``AttributeError`` from a broken predict
     # surface, and ``ValueError`` from a malformed frame behind a
-    # misleading mismatch message.  The ``_execute_eager_core`` /
-    # ``_execute_lazy`` boundary already handles per-node failures
+    # misleading mismatch message.  The graph walker's node
+    # boundary already handles per-node failures
     # correctly (preview swallows, trace / batch propagate), so letting
     # the real error type reach the caller is both safe and fail-loud.
     write_projection = None

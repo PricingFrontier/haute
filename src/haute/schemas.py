@@ -1021,7 +1021,7 @@ class TraceResultResponse(BaseModel):
     correlation_diagnostics: list[TraceCorrelationDiagnosticResponse]
     generated_at: str
     pipeline_source: str | None = None
-    execution_origin: Literal["fresh_execution", "preview_cache", "trace_cache"]
+    execution_origin: Literal["fresh_execution", "trace_cache"]
 
     @field_validator("generated_at")
     @classmethod

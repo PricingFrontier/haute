@@ -47,8 +47,9 @@ row identity and the corresponding value-matching code is removed; a fixture
 set including all-column selectors, `unique()` without a subset and
 schema-inspecting user code produces outputs identical to an untraced run.
 
-**Dependencies:** `EXEC-R05` (execution engine) makes a trace-only execution
-policy straightforward.
+**Dependencies:** None. Every trace execution is a display walk of the graph
+walker (`src/haute/_graph_walker.py`), which is where a trace-only execution
+policy would live.
 
 **Evidence:** `src/haute/_trace_correlation.py::RowScopeResolver`;
 `src/haute/trace.py::execute_trace`; `src/haute/_user_exec.py::_exec_user_code`;

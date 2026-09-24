@@ -1,8 +1,8 @@
 """Node builder registry — per-type factory functions for graph execution.
 
 Each builder receives a ``NodeBuildContext`` and returns
-``(func_name, callable, is_source)`` — consumed by
-``_execute_eager_core`` / ``_execute_lazy`` in ``graph_utils.py``.
+``(func_name, callable, is_source)`` — consumed by the graph walker
+(``_graph_walker.walk_graph``).
 
 Extracted from ``executor.py`` to keep the orchestration module focused
 on ``execute_graph``, ``_eager_execute``, and ``write_data_output``.
@@ -767,7 +767,7 @@ def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         )
 
     # The executor binds incoming edges positionally — ``fn(*input_lfs)`` in
-    # _execute_lazy, ordered by incoming edge — not as kwargs-by-port. So the
+    # the graph walker, ordered by incoming edge — not as kwargs-by-port. So the
     # shared helper recovers the ``{source_port: frame}`` map the assembler
     # wants from the positional order. ``ctx.source_ports[i]`` is edge *i*'s
     # port name (``sourceHandle or source-node-name``), which both aligns

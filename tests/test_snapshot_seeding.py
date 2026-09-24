@@ -15,10 +15,12 @@ import pytest
 from polars.testing import assert_frame_equal
 
 import haute._execute_lazy as execute_lazy_module
+import haute._graph_walker as graph_walker_module
 import haute._source_cache as source_cache_module
 from haute._data_points import DataPointResolver
 from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
 from haute._execution_schemas import ExecutionMetricsPayload
+from haute._graph_walker import CollectPolicy, walk_graph
 from haute._hashing import content_hash
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
@@ -906,16 +908,16 @@ def test_planned_eager_orphan_transform_reports_missing_input_without_prebinding
         return node.id, run, False
 
     with _planned(graph, store, profile=ExecutionProfile.PREVIEW_EAGER) as (plan, context, _):
-        result = execute_lazy_module._execute_eager_core(
+        result = walk_graph(
             graph,
             build,
+            policy=CollectPolicy.display(record_failures=True),
             target_node_id="T",
             execution_context=context,
             snapshot_plan=plan,
             enforce_contracts=False,
-            swallow_errors=True,
         )
-        assert result.outputs["T"] is None
+        assert result.collected["T"] is None
         assert result.errors == {"T": "No input data available for node 'T'"}
     assert calls == []
 
@@ -935,7 +937,7 @@ def test_equivalent_cloned_passthrough_frame_retains_its_write_recipe(
         ],
         [("src", "A"), ("A", "T")],
     )
-    real_select = execute_lazy_module.select_edge_source_output
+    real_select = graph_walker_module._pick_source_frame
     clones: list[pl.LazyFrame] = []
 
     def cloned(frame: Any, edge: GraphEdge) -> Any:
@@ -945,7 +947,7 @@ def test_equivalent_cloned_passthrough_frame_retains_its_write_recipe(
             clones.append(selected)
         return selected
 
-    monkeypatch.setattr(execute_lazy_module, "select_edge_source_output", cloned)
+    monkeypatch.setattr(graph_walker_module, "_pick_source_frame", cloned)
     recipes: dict[str, WriteRecipe] = {}
     with _planned(graph, store) as (plan, context, _):
         outputs, *_ = execute_lazy_graph(
@@ -984,10 +986,10 @@ def test_seeded_execution_does_not_require_a_metrics_context(
             "snapshot_plan": plan,
         }
         if eager:
-            result = execute_lazy_module._execute_eager_core(
-                graph, _counting_build(calls), **kwargs
+            result = walk_graph(
+                graph, _counting_build(calls), policy=CollectPolicy.display(), **kwargs
             )
-            actual = result.outputs["T"]
+            actual = result.collected["T"]
         else:
             outputs, *_ = execute_lazy_graph(
                 graph, _counting_build(calls), prepare_inputs=False, **kwargs
@@ -1725,9 +1727,10 @@ def test_metrics_list_skipped_capture_points(
         from haute.executor import _compile_preamble, _pipeline_dir
 
         with _planned(graph, store, context=context, profile=profile) as (plan, _, _):
-            result = execute_lazy_module._execute_eager_core(
+            result = walk_graph(
                 graph,
                 _counting_build(Counter()),
+                policy=CollectPolicy.display(),
                 target_node_id="T",
                 preamble_ns=_compile_preamble(
                     graph.preamble or "", pipeline_dir=_pipeline_dir(graph)
@@ -1735,7 +1738,7 @@ def test_metrics_list_skipped_capture_points(
                 execution_context=context,
                 snapshot_plan=plan,
             )
-            run = RunResult(result.outputs["T"], context.metrics_payload(status="completed"))
+            run = RunResult(result.collected["T"], context.metrics_payload(status="completed"))
     else:
         run = _run(graph, store, context=context)
 

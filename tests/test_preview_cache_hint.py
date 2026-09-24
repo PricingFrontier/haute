@@ -1,15 +1,14 @@
 """Phase 3 Wave 6 Package 6E — Item #97:
 
-``src/haute/executor.py:385`` (and the shared core in
-``_execute_lazy.py::_execute_eager_core``) materializes each node
-eagerly.  When a single source feeds multiple branches that reconverge
+The preview's display walk (``_graph_walker.walk_graph``) materializes
+each node eagerly.  When a single source feeds multiple branches that reconverge
 at a sink (a *diamond*), Polars' optimiser may duplicate the source's
 plan across branches — running the source scan twice rather than once.
 
 Polars' ``cache_hint()`` (``cache()`` in 1.39.x) marks a LazyFrame node
 so that the optimiser retains its result and reuses it across every
 downstream consumer within the same ``collect`` plan.  Adding a hint at
-fan-out points inside ``_execute_eager_core`` should:
+fan-out points inside the display walk should:
 
   * Keep the semantics identical — every node still gets the same
     DataFrame it had without the hint.
@@ -479,7 +478,7 @@ class TestCacheHintCallSiteLocated:
 
     ``cache_hint`` (``cache`` in Polars 1.39.x) should be invoked on a
     LazyFrame *before* the branching consumers see it.  The natural
-    location is inside ``_execute_eager_core`` when we compute
+    location is inside the display walk when it computes
     ``input_lfs = [df.lazy() for pid in input_ids]``: if ``df`` is
     about to feed multiple consumers (fan-out > 1), wrap its
     ``.lazy()`` result in ``.cache()``.
