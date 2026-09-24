@@ -10,7 +10,6 @@ Current behaviour is specified in [the optimiser specification](../optimiser/low
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| OPT-P11 | Planned | P2 | Extract the canonical artifact-lifecycle owner. |
 | OPT-P13 | Planned | P2 | Isolate immutable solve-input planning and grid construction. |
 | OPT-P06 | Planned | P2 | Benchmark bounded frontier parallelism after input isolation. |
 | OPT-P12 | Planned | P2 | Extract the frontier domain service after the scaling decision. |
@@ -19,7 +18,7 @@ Current behaviour is specified in [the optimiser specification](../optimiser/low
 
 ## Planned improvements
 
-Delivery order is `OPT-P11` → `OPT-P13` → the `OPT-P06` performance
+Delivery order is `OPT-P13` → the `OPT-P06` performance
 decision → `OPT-P12` → `OPT-P14`; later packages must not bypass those
 isolation boundaries. `OPT-P16`, from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md), is
@@ -47,24 +46,6 @@ contracts.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_routes_real_library.py`.
 
-### OPT-P11 — Extract owned artifact lifecycle
-**Why:** Persistence, handle validation, load diagnostics, orphan cleanup, and startup reaping are
-independent of solve orchestration but occupy the same module.
-
-**Plan:** Move the two artifact families and their registered cleaners to
-`src/haute/routes/_optimiser_artifacts.py`. Move every maintained internal
-importer in the same package and remove the obsolete service-module names
-immediately; Haute has no released internal import surface, so no compatibility
-re-export or deprecation shim is permitted. Preserve the current artifact-handle
-wire schema because it is the canonical persisted contract.
-
-**Acceptance:** Artifact round-trip, tampered-handle, orphan-race, TTL-cleanup, and stale-startup
-tests pass unchanged; `_optimiser_service.py` owns no filesystem deletion.
-
-**Dependencies:** The current bounded artifact-memory lifecycle.
-
-**Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_apply_artifacts.py`.
-
 ### OPT-P12 — Extract frontier domain service
 **Why:** Frontier range normalisation, compute dispatch, payload limiting, job lifecycle, point
 selection, and point-artifact retention form a cohesive domain separate from initial solve setup.
@@ -79,7 +60,7 @@ state lock. Keep FastAPI response assembly in `src/haute/routes/optimiser.py`.
 materialisation, artifact-cap, and unrelated-parent concurrency regressions remain green at each
 extraction step.
 
-**Dependencies:** OPT-P11, OPT-P13, and the OPT-P06 implement/no-change
+**Dependencies:** OPT-P13 and the OPT-P06 implement/no-change
 decision, plus the current frontier apply and interruptibility contracts.
 
 **Evidence:** `src/haute/routes/optimiser.py`; `src/haute/routes/_optimiser_service.py`;
@@ -97,7 +78,7 @@ contract errors. `OptimiserSolveService` retains only orchestration calls.
 **Acceptance:** Projection, bounded-memory, multi-input, null/non-finite, chunk provenance, and
 grid ordering tests pass without fixture rewrites.
 
-**Dependencies:** OPT-P11 and the current constraint-validation and scan-bounding
+**Dependencies:** The current constraint-validation and scan-bounding
 contracts.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_service_coverage.py`;
@@ -115,7 +96,7 @@ setup/worker composition. Retain the worker-context guard at the extracted publi
 dtype, and save/apply agreement suites pass; `_optimiser_service.py` is an orchestration module
 rather than a mixed domain/utilities module.
 
-**Dependencies:** OPT-P11–OPT-P13 and the OPT-P06 scaling decision.
+**Dependencies:** OPT-P12, OPT-P13 and the OPT-P06 scaling decision.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_routes.py`;
 `tests/test_optimiser_golden.py`; `tests/test_optimiser_ratebook_apply_agreement.py`.

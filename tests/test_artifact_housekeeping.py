@@ -365,19 +365,19 @@ def test_housekeeping_refuses_windows_reparse_point_root(
 def test_optimiser_artifact_creators_write_owner_markers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from haute.routes import _optimiser_service as service
+    from haute.routes import _optimiser_artifacts as artifacts
 
     apply_root = tmp_path / "apply"
     factors_root = tmp_path / "factors"
     apply_root.mkdir()
     factors_root.mkdir()
-    monkeypatch.setattr(service, "_prepare_apply_artifact_root", lambda: apply_root)
-    monkeypatch.setattr(service, "_prepare_ratebook_factors_artifact_root", lambda: factors_root)
+    monkeypatch.setattr(artifacts, "_prepare_apply_artifact_root", lambda: apply_root)
+    monkeypatch.setattr(artifacts, "_prepare_ratebook_factors_artifact_root", lambda: factors_root)
 
-    apply_handle = service._persist_apply_result_artifact(
+    apply_handle = artifacts._persist_apply_result_artifact(
         SimpleNamespace(dataframe=pl.DataFrame({"value": [1]}))
     )
-    factors_handle = service._persist_ratebook_factors_artifact(
+    factors_handle = artifacts._persist_ratebook_factors_artifact(
         pl.DataFrame({"factor": ["a"], "value": [1.0]})
     )
 
@@ -396,7 +396,7 @@ def test_optimiser_artifact_creators_write_owner_markers(
 def test_optimiser_reaper_targets_only_owned_marked_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from haute.routes import _optimiser_service as service
+    from haute.routes import _optimiser_artifacts as artifacts
 
     apply_root = tmp_path / "apply"
     factors_root = tmp_path / "factors"
@@ -406,9 +406,9 @@ def test_optimiser_reaper_targets_only_owned_marked_roots(
     _marker(factors_root / "stale", owner="optimiser_ratebook_factors")
     unrelated = apply_root / "unrelated"
     unrelated.mkdir()
-    monkeypatch.setattr(service, "_apply_artifact_root", lambda: apply_root)
-    monkeypatch.setattr(service, "_ratebook_factors_artifact_root", lambda: factors_root)
-    reports = service.reap_stale_optimiser_artifacts(0)
+    monkeypatch.setattr(artifacts, "_apply_artifact_root", lambda: apply_root)
+    monkeypatch.setattr(artifacts, "_ratebook_factors_artifact_root", lambda: factors_root)
+    reports = artifacts.reap_stale_optimiser_artifacts(0)
 
     assert reports["apply"]["removed"] == 1
     assert reports["ratebook_factors"]["removed"] == 1
@@ -418,12 +418,12 @@ def test_optimiser_reaper_targets_only_owned_marked_roots(
 def test_optimiser_reaper_rejects_invalid_stale_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from haute.routes import _optimiser_service as service
+    from haute.routes import _optimiser_artifacts as artifacts
 
     monkeypatch.setenv("HAUTE_ARTIFACT_STALE_SECONDS", "1.5")
 
     with pytest.raises(ValueError, match="non-negative integer"):
-        service._artifact_stale_seconds()
+        artifacts._artifact_stale_seconds()
 
 
 def test_server_lifespan_reaps_artifacts_without_delaying_readiness(

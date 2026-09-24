@@ -137,7 +137,7 @@ def _snapshot_parquet_data_input(
 @contextmanager
 def _persisted_ratebook_factors_handle(factors_df: pl.DataFrame) -> Iterator[dict[str, object]]:
     """Yield a canonical ratebook factor handle and remove its artifact afterwards."""
-    from haute.routes._optimiser_service import (
+    from haute.routes._optimiser_artifacts import (
         _cleanup_ratebook_factors_artifact,
         _persist_ratebook_factors_artifact,
     )
@@ -9990,11 +9990,11 @@ class TestFinalizeSolveResult:
 
     def test_finalized_ratebook_job_persists_factors_artifact_not_dataframe(self):
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import (
+        from haute.routes._optimiser_artifacts import (
             _RATEBOOK_FACTORS_HANDLE_KEY,
-            _finalize_solve_result,
             _load_ratebook_factors_artifact,
         )
+        from haute.routes._optimiser_service import _finalize_solve_result
 
         store = JobStore()
         job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
@@ -10048,7 +10048,7 @@ class TestFinalizeSolveResult:
             artifact_dir.mkdir(parents=True)
             return str(artifact_dir)
 
-        with patch("haute.routes._optimiser_service.tempfile.mkdtemp", side_effect=_mkdtemp):
+        with patch("haute.routes._optimiser_artifacts.tempfile.mkdtemp", side_effect=_mkdtemp):
             _finalize_solve_result(
                 self._make_solve_result(),
                 mode="online",
@@ -10213,7 +10213,7 @@ class TestApplyLambdasUnit:
         client,
         clean_job_store,
     ):
-        from haute.routes._optimiser_service import _persist_apply_result_artifact
+        from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
         df = pl.DataFrame(
             {
@@ -10256,7 +10256,7 @@ class TestApplyLambdasUnit:
         client,
         clean_job_store,
     ):
-        from haute.routes._optimiser_service import _persist_apply_result_artifact
+        from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
         df = pl.DataFrame(
             {
@@ -10310,7 +10310,7 @@ class TestApplyLambdasUnit:
         client,
         clean_job_store,
     ):
-        from haute.routes._optimiser_service import _persist_apply_result_artifact
+        from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
         handle = _persist_apply_result_artifact(
             SimpleNamespace(dataframe=pl.DataFrame({"quote_id": ["q1"]}))
@@ -10660,7 +10660,7 @@ class TestRunFrontierUnit:
         clean_job_store,
     ):
         """Old point-indexed apply artifacts must not be reused for a new frontier."""
-        from haute.routes._optimiser_service import _persist_apply_result_artifact
+        from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
         stale_frontier_handle = _persist_apply_result_artifact(
             SimpleNamespace(dataframe=pl.DataFrame({"optimal_scenario_value": [9.9]}))
@@ -10769,7 +10769,7 @@ class TestRunFrontierUnit:
         clean_job_store,
     ):
         """Point apply artifacts created during frontier compute cannot survive."""
-        from haute.routes._optimiser_service import _persist_apply_result_artifact
+        from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
         base_apply_handle = _persist_apply_result_artifact(
             SimpleNamespace(dataframe=pl.DataFrame({"optimal_scenario_value": [1.0]}))
@@ -11744,7 +11744,7 @@ class TestSelectFrontierPointResolve:
         client,
         clean_job_store,
     ):
-        from haute.routes._optimiser_service import _persist_apply_result_artifact
+        from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
         self._make_frontier_job(clean_job_store)
         old_handle = _persist_apply_result_artifact(
@@ -11775,7 +11775,7 @@ class TestSelectFrontierPointResolve:
         client,
         clean_job_store,
     ):
-        from haute.routes._optimiser_service import _persist_apply_result_artifact
+        from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
         self._make_frontier_job(clean_job_store)
         old_handle = _persist_apply_result_artifact(
@@ -12796,11 +12796,11 @@ class TestSolveRatebookUnit:
     def test_solve_ratebook_success(self):
         """Ratebook solve succeeds with valid factors_df."""
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import (
+        from haute.routes._optimiser_artifacts import (
             _RATEBOOK_FACTORS_HANDLE_KEY,
             _load_ratebook_factors_artifact,
-            _solve_ratebook,
         )
+        from haute.routes._optimiser_service import _solve_ratebook
 
         store = JobStore()
         job_id = store.create_job(
@@ -12877,11 +12877,11 @@ class TestSolveRatebookUnit:
         ``dataframe=`` mock fields used to make both appear — this pin keeps
         that divergence from silently returning."""
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import (
+        from haute.routes._optimiser_artifacts import (
             _APPLY_RESULT_HANDLE_KEY,
             _RATEBOOK_FACTORS_HANDLE_KEY,
-            _solve_ratebook,
         )
+        from haute.routes._optimiser_service import _solve_ratebook
 
         store = JobStore()
         job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
@@ -13319,11 +13319,11 @@ class TestSolveRatebookUnit:
     def test_solve_ratebook_frontier_passes_prepared_factors(self):
         """Ratebook frontier-in-solve passes prepared factor contexts."""
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import (
+        from haute.routes._optimiser_artifacts import (
             _RATEBOOK_FACTORS_HANDLE_KEY,
             _load_ratebook_factors_artifact,
-            _solve_ratebook,
         )
+        from haute.routes._optimiser_service import _solve_ratebook
 
         store = JobStore()
         job_id = store.create_job(
@@ -13543,9 +13543,9 @@ class TestSolveRatebookUnit:
         )
 
         captured: dict[str, Path] = {}
-        from haute.routes import _optimiser_service as opt_mod
+        from haute.routes import _optimiser_artifacts
 
-        original_persist = opt_mod._persist_ratebook_factors_lazy_artifact
+        original_persist = _optimiser_artifacts._persist_ratebook_factors_lazy_artifact
 
         def recording_persist(factors_lf, **kwargs):
             handle = original_persist(factors_lf, **kwargs)
@@ -13555,7 +13555,9 @@ class TestSolveRatebookUnit:
             return handle
 
         with (
-            patch.object(opt_mod, "_persist_ratebook_factors_lazy_artifact", recording_persist),
+            patch.object(
+                _optimiser_artifacts, "_persist_ratebook_factors_lazy_artifact", recording_persist
+            ),
             pytest.raises(ExecutionMemoryLimitExceededError),
         ):
             OptimiserSolveService._extract_factors(
@@ -13598,9 +13600,9 @@ class TestSolveRatebookUnit:
         )
 
         captured: dict[str, Path] = {}
-        from haute.routes import _optimiser_service as opt_mod
+        from haute.routes import _optimiser_artifacts
 
-        original_persist = opt_mod._persist_ratebook_factors_lazy_artifact
+        original_persist = _optimiser_artifacts._persist_ratebook_factors_lazy_artifact
 
         def recording_persist(factors_lf, **kwargs):
             handle = original_persist(factors_lf, **kwargs)
@@ -13610,7 +13612,9 @@ class TestSolveRatebookUnit:
             return handle
 
         with (
-            patch.object(opt_mod, "_persist_ratebook_factors_lazy_artifact", recording_persist),
+            patch.object(
+                _optimiser_artifacts, "_persist_ratebook_factors_lazy_artifact", recording_persist
+            ),
             pytest.raises(ExecutionCancelledError),
         ):
             OptimiserSolveService._extract_factors(
@@ -14275,11 +14279,11 @@ class TestBuildGrid:
     ) -> None:
         """Ratebook factor contexts follow byte-aware setup chunking when possible."""
         from haute._polars_utils import read_parquet_metadata
-        from haute.routes._optimiser_service import (
-            _build_ratebook_factor_contexts,
+        from haute.routes._optimiser_artifacts import (
             _cleanup_ratebook_factors_artifact,
             _persist_ratebook_factors_artifact,
         )
+        from haute.routes._optimiser_service import _build_ratebook_factor_contexts
 
         factors_df = pl.DataFrame(
             {

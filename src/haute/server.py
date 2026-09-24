@@ -68,7 +68,7 @@ from haute.routes._helpers import (
     ws_clients_discard,
     ws_clients_lock,
 )
-from haute.routes._optimiser_service import (
+from haute.routes._optimiser_artifacts import (
     _artifact_stale_seconds,
     reap_stale_optimiser_artifacts,
 )

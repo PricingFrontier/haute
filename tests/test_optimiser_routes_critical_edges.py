@@ -428,7 +428,7 @@ def test_frontier_apply_cleans_new_artifact_after_unexpected_store_failure(
     client,
     clean_job_store,
 ):
-    from haute.routes._optimiser_service import _persist_apply_result_artifact
+    from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
     orphan_handle = _persist_apply_result_artifact(
         SimpleNamespace(dataframe=pl.DataFrame({"optimal_scenario_value": [1.0]}))
@@ -790,7 +790,7 @@ def test_apply_reuses_cached_frontier_apply_artifact_for_online_mode(
     of ``apply_from_grid``).  This is the user-visible "Save result" round-trip
     where the artifact file should be served from disk on the second call.
     """
-    from haute.routes._optimiser_service import _persist_apply_result_artifact
+    from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
     persisted_df = pl.DataFrame(
         {

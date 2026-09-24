@@ -30,7 +30,7 @@ from haute._worker_isolation import (
     IsolatedWorkerStoppedError,
     IsolatedWorkerTimeoutError,
 )
-from haute.routes import _optimiser_service, _optimiser_worker
+from haute.routes import _optimiser_artifacts, _optimiser_service, _optimiser_worker
 from haute.routes._background_jobs import BackgroundJobStoppedError
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import OptimiserSolveService
@@ -665,7 +665,7 @@ class TestWorkerOutcomes:
         worker = _InlineWorker()
         monkeypatch.setattr(_optimiser_service, "run_isolated_worker", worker)
         persisted: list[dict[str, Any]] = []
-        real_persist = _optimiser_service._persist_ratebook_factors_lazy_artifact
+        real_persist = _optimiser_artifacts._persist_ratebook_factors_lazy_artifact
 
         def recording_persist(factors_lf: Any, **kwargs: Any) -> dict[str, Any]:
             handle = real_persist(factors_lf, **kwargs)
@@ -676,7 +676,7 @@ class TestWorkerOutcomes:
             raise HTTPException(status_code=422, detail="solver input could not be written")
 
         monkeypatch.setattr(
-            _optimiser_service, "_persist_ratebook_factors_lazy_artifact", recording_persist
+            _optimiser_artifacts, "_persist_ratebook_factors_lazy_artifact", recording_persist
         )
         monkeypatch.setattr(OptimiserSolveService, "_write_solver_input", failing_write)
 
