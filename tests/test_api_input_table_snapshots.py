@@ -1035,12 +1035,6 @@ def _generation_ids(store: SourceCacheStore, digest: str) -> set[str]:
     return {path.name for path in generations.iterdir()} if generations.is_dir() else set()
 
 
-@pytest.fixture()
-def no_retire_grace(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Retire superseded generations at once, so retirement is observable."""
-    monkeypatch.setenv("HAUTE_INPUT_CACHE_RETIRE_GRACE_SECONDS", "0.001")
-
-
 def test_freshness_is_judged_only_against_a_present_source() -> None:
     assert _snapshots.freshness_signature(_equal_but_distinct("missing")) is None
     assert _snapshots.freshness_signature(None) is None
@@ -1141,39 +1135,60 @@ def test_the_scratch_directory_is_named_by_the_given_token(
         assert scratch == scratch_directory(store, token)
 
 
+def _record_retirement_choices(
+    store: SourceCacheStore, monkeypatch: pytest.MonkeyPatch
+) -> list[bool]:
+    """Record whether each table's store build was asked to defer retirement."""
+    choices: list[bool] = []
+    build = store.build
+
+    def recording_build(identity: Any, builder: Any, *, context: Any, **kwargs: Any) -> Any:
+        choices.append(context.defer_retirement)
+        return build(identity, builder, context=context, **kwargs)
+
+    monkeypatch.setattr(store, "build", recording_build)
+    return choices
+
+
 def test_a_direct_build_retires_what_it_replaced(
-    project: tuple[Path, SourceCacheStore], no_retire_grace: None
+    project: tuple[Path, SourceCacheStore], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    root, _store = project
-    store = SourceCacheStore(root)
+    root, store = project
     data = _write_source(root / "quotes.jsonl")
     source = api_input_snapshot_source(_config(data), data)
+    choices = _record_retirement_choices(store, monkeypatch)
 
     _build_all(source, store)
-    second = _build_all(source, store)
 
-    for digest, generation in second.items():
-        assert _generation_ids(store, digest) == {generation.generation_id}
+    assert choices == [False, False]
 
 
 def test_the_worker_defers_retirement_and_its_parent_retires(
     project: tuple[Path, SourceCacheStore],
     worker_context: list[_ContextStub],
-    no_retire_grace: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    root, _store = project
-    store = SourceCacheStore(root)
+    root, store = project
     data = _write_source(root / "quotes.jsonl")
     source = api_input_snapshot_source(_config(data), data)
-    first = _build_all(source, store)
+    deferred: list[bool] = []
+    build = _snapshots.build_api_input_tables
 
-    # The worker alone keeps what it replaced: only this process's leases count.
-    outcome = build_api_input_tables_worker(_request(source, store, root), budget=None)
-    for digest, generation_id in outcome.generation_ids.items():
-        assert _generation_ids(store, digest) == {first[digest].generation_id, generation_id}
+    def recording_build(*args: Any, defer_retirement: bool = False, **kwargs: Any) -> Any:
+        deferred.append(defer_retirement)
+        return build(*args, defer_retirement=defer_retirement, **kwargs)
 
-    # A supervised build retires the replaced generations once the worker is done.
-    published = run_supervised_api_input_build(
+    monkeypatch.setattr(_snapshots, "build_api_input_tables", recording_build)
+    retired: list[str] = []
+    retire = store.retire_unleased
+    monkeypatch.setattr(
+        store,
+        "retire_unleased",
+        lambda identity: retired.append(identity.digest) or retire(identity),
+    )
+
+    # Only this process's leases count, so the worker never retires what it replaced...
+    run_supervised_api_input_build(
         source,
         ["quotes", "drivers"],
         store=store,
@@ -1182,8 +1197,10 @@ def test_the_worker_defers_retirement_and_its_parent_retires(
         worker_config=None,
         spawn=_Spawn(run=True, failure=None),
     )
-    for digest, generation in published.items():
-        assert _generation_ids(store, digest) == {generation.generation_id}
+
+    # ...and its supervising parent retires each table's once the worker is done.
+    assert deferred == [True]
+    assert retired == [table.identity.digest for table in source.tables]
 
 
 def test_a_dead_worker_whose_every_generation_was_staged_is_still_a_failure(
