@@ -865,13 +865,13 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
         {"amount": 10, "premium_total": 10},
         {"amount": 20, "premium_total": 16},
     ]
-    # A published table records the source's content signature, not its
-    # native revision, so a process with no proof in memory (the cleared memo
-    # above) proves the source once for the freshness check, as a Data Input
-    # does. Planning, preview identity, and loading then share that proof.
-    assert source_hashes == 1
-    # Execution reads the published tables, so that hash is the only read.
-    assert source_opens == 1
+    # The snapshot build proved the source under its native revision and
+    # recorded that proof on disk, so a process with no proof in memory (the
+    # cleared memo above) reads the durable record instead of the source.
+    # Planning, preview identity, and loading all share that proof.
+    assert source_hashes == 0
+    # Execution reads the published tables, so the source is never opened.
+    assert source_opens == 0
     # Admission, the seed plan's resolution, the post-capture key, and
     # execution each prepare the graph. The seed plan is the fourth: a
     # preview resolves what it can read from the shared node-output store
@@ -897,7 +897,7 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
                 },
                 "elapsed_ns": elapsed_ns,
                 "source_content_hashes": source_hashes,
-                "persisted_cache_build_source_proof_reused": False,
+                "persisted_cache_build_source_proof_reused": True,
                 "source_file_opens": source_opens,
                 "execution_profile": ExecutionProfile.PREVIEW_EAGER.value,
                 "request_local_graph_preparation": {

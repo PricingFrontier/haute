@@ -695,7 +695,8 @@ The runtime-input fingerprint (`_stat_gated_runtime_path_fingerprint`, for every
 kind) and the snapshot-freshness checks of automatic input preparation and data-point
 resolution all read the shared content signature (`_source_proof.file_signature`), so
 their independently initiated calls share one process-wide proof behind an unchanged
-freshness token. A file's runtime record is `{path, exists, is_file, size, mtime_ns,
+freshness token, and a restarted process reuses the durable record of a proof made under a
+native revision ([caching](../caching/low-level.md#durable-source-proofs)). A file's runtime record is `{path, exists, is_file, size, mtime_ns,
 hash_algo: "xxh64", content_hash}` from that signature; a missing path or a directory is
 signed by its stat. A structured `apiInput` record also signs each emitting table's
 generation pointer (`snapshot_pointer:<label>`), so publishing a new generation of any

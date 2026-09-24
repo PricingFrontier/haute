@@ -7,6 +7,7 @@ consumer, and a file that keeps changing while it is proved.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,8 @@ from haute._json_shred._source_proof import (
     FileSignature,
     Freshness,
     SourceChangedError,
+    _proof_record_root,
+    _StrongFileRevision,
     clear_file_signatures,
     file_signature,
     observe_freshness,
@@ -156,6 +159,18 @@ def test_an_unchanged_file_is_hashed_once_and_a_write_hashes_again(
     assert second.digest == content_hash(path) != first.digest
 
 
+def test_a_new_process_reuses_the_saved_proof_of_an_unchanged_file(
+    tmp_path: Path, hashes: list[Path]
+) -> None:
+    path = _write(tmp_path / "a.csv")
+    first = file_signature(path)
+
+    clear_file_signatures()  # a new process: nothing retained in memory
+
+    assert file_signature(path) == first
+    assert len(hashes) == 1
+
+
 def test_a_young_file_without_a_native_revision_is_hashed_every_time(
     tmp_path: Path,
     hashes: list[Path],
@@ -183,14 +198,23 @@ def test_a_settled_file_without_a_native_revision_is_hashed_once(
     assert len(hashes) == 1
 
 
-def test_clearing_forgets_every_proof(tmp_path: Path, hashes: list[Path]) -> None:
+def test_without_a_native_revision_clearing_forgets_every_proof(
+    tmp_path: Path,
+    hashes: list[Path],
+    without_native_revision: list[tuple[str, dict[str, Any]]],
+    source_proof_records: Path,
+) -> None:
     path = _write(tmp_path / "a.csv")
+    _age(path, SETTLE_SECONDS + 1)
     file_signature(path)
+    file_signature(path)
+    assert len(hashes) == 1
 
     clear_file_signatures()
     file_signature(path)
 
     assert len(hashes) == 2
+    assert not source_proof_records.exists()
 
 
 def test_a_file_that_changes_once_while_hashed_is_signed_in_its_settled_state(
@@ -320,3 +344,272 @@ def test_the_native_revision_reader_follows_the_os(
     _source_proof._strong_file_revision(tmp_path / "a.csv")
 
     assert calls == [reader]
+
+
+# ---------------------------------------------------------- durable records
+
+
+@pytest.fixture()
+def logged(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
+    """Every warning the proof logs, as (event, fields)."""
+    warnings: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        _source_proof.logger,
+        "warning",
+        lambda event, **fields: warnings.append((event, fields)),
+    )
+    return warnings
+
+
+def _record_path(path: Path) -> Path:
+    return _source_proof._proof_record_path(path.resolve())
+
+
+def _replace_record(record_path: Path, raw: bytes) -> None:
+    record_path.write_bytes(raw)
+
+
+def _record(path: Path) -> dict[str, Any]:
+    record: dict[str, Any] = json.loads(_record_path(path).read_bytes())
+    return record
+
+
+def _current_revision_record(path: Path) -> dict[str, object]:
+    revision = _source_proof._strong_file_revision(path.resolve())
+    assert revision is not None, "these tests need the platform's native revision"
+    return _source_proof._revision_record(revision)
+
+
+def test_a_proof_records_the_revision_it_was_made_under(tmp_path: Path) -> None:
+    path = _write(tmp_path / "a.csv")
+
+    signature = file_signature(path)
+
+    assert _record(path) == {
+        "schema_version": 1,
+        "path": str(path.resolve()),
+        "revision": _current_revision_record(path),
+        "hash_algo": "xxh64",
+        "digest": signature.digest,
+        "size": signature.size,
+        "mtime_ns": signature.mtime_ns,
+    }
+
+
+@pytest.mark.parametrize("rewrite", ["content", "same_size_with_mtime_restored"])
+def test_a_new_process_hashes_a_rewritten_file_and_replaces_its_record(
+    tmp_path: Path,
+    hashes: list[Path],
+    logged: list[tuple[str, dict[str, Any]]],
+    rewrite: str,
+) -> None:
+    path = _write(tmp_path / "a.csv", "id,value\n1,a\n")
+    first = file_signature(path)
+    before = path.stat()
+    if rewrite == "content":
+        _write(path, "id,value\n10,ab\n")
+    else:
+        _write(path, "id,value\n2,b\n")
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    clear_file_signatures()
+    second = file_signature(path)
+
+    assert len(hashes) == 2
+    assert second.digest == content_hash(path) != first.digest
+    assert logged == []
+    assert _record(path)["digest"] == second.digest
+    assert _record(path)["revision"] == _current_revision_record(path)
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        "not_json",
+        "schema_version_2",
+        "extra_key",
+        "bool_size",
+        "another_path",
+        "another_algorithm",
+        "weaker_revision",
+        "zero_windows_file_id",
+    ],
+)
+def test_an_invalid_record_is_rejected_and_replaced(
+    tmp_path: Path,
+    hashes: list[Path],
+    logged: list[tuple[str, dict[str, Any]]],
+    corrupt: str,
+) -> None:
+    path = _write(tmp_path / "a.csv")
+    expected = file_signature(path)
+    record = _record(path)
+    if corrupt == "not_json":
+        raw = b"{not json"
+    else:
+        if corrupt == "schema_version_2":
+            record["schema_version"] = 2
+        elif corrupt == "extra_key":
+            record["generation"] = "g1"
+        elif corrupt == "bool_size":
+            record["revision"]["size"] = record["size"] = True
+        elif corrupt == "another_path":
+            record["path"] = str(tmp_path / "b.csv")
+        elif corrupt == "another_algorithm":
+            record["hash_algo"] = "sha256"
+        elif corrupt == "weaker_revision":
+            record["revision"]["kind"] = "stat"
+        else:
+            record["revision"] = {
+                **record["revision"],
+                "kind": "windows_usn_v1",
+                "file_identity": [1, "0" * 32],
+            }
+        raw = json.dumps(record).encode("utf-8")
+    _replace_record(_record_path(path), raw)
+
+    clear_file_signatures()
+
+    assert file_signature(path) == expected
+    assert len(hashes) == 2
+    assert [(event, fields["reason"]) for event, fields in logged] == [
+        ("source_proof_record_rejected", "invalid")
+    ]
+    assert _record(path)["revision"] == _current_revision_record(path)
+
+
+def test_an_unreadable_record_is_rejected_and_the_file_hashed(
+    tmp_path: Path,
+    hashes: list[Path],
+    logged: list[tuple[str, dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _write(tmp_path / "a.csv")
+    expected = file_signature(path)
+    record_path = _record_path(path)
+    real_read_bytes = Path.read_bytes
+
+    def denied(self: Path) -> bytes:
+        if self == record_path:
+            raise PermissionError("denied")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", denied)
+    clear_file_signatures()
+
+    assert file_signature(path) == expected
+    assert len(hashes) == 2
+    assert [(event, fields["reason"]) for event, fields in logged] == [
+        ("source_proof_record_rejected", "unreadable")
+    ]
+
+
+def test_a_failed_write_still_returns_the_signature(
+    tmp_path: Path,
+    logged: list[tuple[str, dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _write(tmp_path / "a.csv")
+
+    def failing(_path: Path, _data: bytes) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(_source_proof, "atomic_write_bytes", failing)
+
+    signature = file_signature(path)
+
+    assert signature.digest == content_hash(path)
+    assert [event for event, _fields in logged] == ["source_proof_record_write_failed"]
+    assert not _record_path(path).exists()
+
+
+def test_a_file_that_changes_while_hashed_records_only_its_settled_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write(tmp_path / "a.csv")
+    real_hash = _source_proof._hash_file
+    real_write = _source_proof._write_proof_record
+    hashed: list[Path] = []
+    recorded: list[dict[str, object]] = []
+
+    def racing(target: Path) -> str:
+        hashed.append(target)
+        if len(hashed) == 1:
+            _write(target, "id,value\n1,a\n2,b\n")
+        return real_hash(target)
+
+    def recording(record_path: Path, target: Path, revision: Any, signature: Any) -> None:
+        recorded.append(_source_proof._revision_record(revision))
+        real_write(record_path, target, revision, signature)
+
+    monkeypatch.setattr(_source_proof, "_hash_file", racing)
+    monkeypatch.setattr(_source_proof, "_write_proof_record", recording)
+
+    signature = file_signature(path)
+
+    assert recorded == [_current_revision_record(path)]
+    assert _record(path)["digest"] == signature.digest == content_hash(path)
+
+
+def test_records_live_in_the_project_cache(haute_scratch: Path) -> None:
+    # Imported before the autouse fixture redirects the module's root.
+    assert _proof_record_root() == haute_scratch / ".haute_cache" / "source_proofs"
+
+
+_WINDOWS_REVISION = _StrongFileRevision(
+    file_identity=(7, bytes(range(1, 17))), size=12, mtime_ns=34, change_token=56
+)
+_POSIX_REVISION = _StrongFileRevision(file_identity=(7, 123), size=12, mtime_ns=34, change_token=56)
+
+
+@pytest.mark.parametrize(
+    ("revision", "kind"),
+    [(_WINDOWS_REVISION, "windows_usn_v1"), (_POSIX_REVISION, "posix_ctime_v1")],
+)
+def test_a_revision_round_trips_through_its_record(
+    revision: _StrongFileRevision, kind: str
+) -> None:
+    record = _source_proof._revision_record(revision)
+
+    assert record["kind"] == kind
+    assert _source_proof._parse_revision(json.loads(json.dumps(record))) == revision
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        "not_a_mapping",
+        "missing_key",
+        "negative_volume",
+        "non_hex_windows_id",
+        "short_windows_id",
+        "zero_posix_inode",
+        "string_posix_inode",
+        "zero_change_token",
+        "unknown_kind",
+    ],
+)
+def test_a_broken_revision_record_is_refused(broken: str) -> None:
+    windows = _source_proof._revision_record(_WINDOWS_REVISION)
+    posix = _source_proof._revision_record(_POSIX_REVISION)
+    record: object
+    if broken == "not_a_mapping":
+        record = [windows]
+    elif broken == "missing_key":
+        record = {key: value for key, value in windows.items() if key != "change_token"}
+    elif broken == "negative_volume":
+        record = {**windows, "file_identity": [-1, windows["file_identity"][1]]}  # type: ignore[index]
+    elif broken == "non_hex_windows_id":
+        record = {**windows, "file_identity": [7, "z" * 32]}
+    elif broken == "short_windows_id":
+        record = {**windows, "file_identity": [7, "ab" * 8]}
+    elif broken == "zero_posix_inode":
+        record = {**posix, "file_identity": [7, 0]}
+    elif broken == "string_posix_inode":
+        record = {**posix, "file_identity": [7, "123"]}
+    elif broken == "zero_change_token":
+        record = {**posix, "change_token": 0}
+    else:
+        record = {**posix, "kind": "stat"}
+
+    assert _source_proof._parse_revision(record) is None

@@ -70,7 +70,9 @@ relationship is recorded in `specs/ownership.toml`.
   `unremovable`.
 - `source_signature` is the shared content signature
   (`_json_shred._source_proof.file_signature`, `xxh64:<digest>:<size>`), so an unchanged file
-  is hashed once per process whatever asks. Reuse follows the one freshness guarantee in the
+  is hashed once per process whatever asks, and a proof made under a native revision is
+  reused across processes from its durable record
+  ([caching](../caching/low-level.md#durable-source-proofs)). Reuse follows the one freshness guarantee in the
   [caching](../caching/low-level.md) specification: a native revision where the platform has
   one, otherwise a stat trusted only for a file modified at least two seconds earlier,
   because a filesystem stamps mtimes at its own granularity and a same-size rewrite inside
@@ -348,8 +350,9 @@ generations to their owners when readable. Inventory takes no lock and mutates n
   (identity redaction treats a key named `signature` as credential material).
   `node_snapshot_signature(graph, node_id, source, semantics_class, enforce_contracts)`
   builds the checked `node_snapshot_signature` consumer from the graph fingerprint of the
-  node's upstream subgraph (including the node), the runtime-input fingerprint targeted at
-  the node, and the execution fields; `pipeline_source_file_key(graph)` resolves the slot's
+  node's source lineage (the node and its upstream subgraph after live-switch pruning for
+  the source; see [caching](../caching/low-level.md#source-snapshots)), the runtime-input
+  fingerprint of that lineage targeted at the node, and the execution fields; `pipeline_source_file_key(graph)` resolves the slot's
   pipeline file.
 - **Class mappings.** `snapshot_write_class(profile, preview_admitted=...)` returns
   `bounded` for every bounded profile (`TRAINING_PREP`, `OPTIMISER_SETUP`,

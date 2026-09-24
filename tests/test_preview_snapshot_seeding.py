@@ -1639,9 +1639,7 @@ def test_a_preview_seeding_nothing_is_keyed_like_one_without_a_plan(project: Pat
     assert key(None, runtime_input_identity=identity) == unplanned
     assert key("seed-plan:v1:a") not in {unplanned, key("seed-plan:v1:b")}
     assert identity.fingerprint({"k": 1}) == execution_facade.dataframe_graph_input_fingerprint(
-        execution_facade._lineage_runtime_graph(
-            graph, execution_facade.prepare_graph(graph, "banding", source="live")
-        ),
+        execution_facade.source_lineage_graph(graph, "banding", source="live"),
         target_node_id=None,
         source="live",
         extra_fingerprints={"k": 1},

@@ -111,7 +111,59 @@ device, inode, ctime, size and mtime). Without one it returns the stat tuple
 `("stat", dev, ino, size, mtime_ns, ctime_ns)`, reusable only when the mtime is at least
 `SETTLE_SECONDS` (2.0) old, and logs `source_revision_unavailable` once per path. A missing
 file raises `FileNotFoundError`. `file_signature(path)` is a `StatGatedCache` of
-`FileSignature` values keyed by the canonical path; `clear_file_signatures()` empties it.
+`FileSignature` values keyed by the canonical path; `clear_file_signatures()` empties it
+(the in-process proofs only).
+
+### Durable source proofs
+
+A content signature proved under a native revision is also recorded on disk, so a new
+process reuses it instead of reading the whole file again. One record per resolved source
+path lives at `<project root>/.haute_cache/source_proofs/<name>.json`, where `<name>` is the
+SHA-256 hex of `os.path.normcase(<resolved path>)` and the project root is
+`haute._sandbox._get_project_root()`, read through `_source_proof._proof_record_root()`.
+
+A record (`schema_version` 1) is `canonical_json` bytes written through
+`_file_ops.atomic_write_bytes`. It has exactly these keys at each level; a missing or extra
+key, or a value of the wrong type, makes it invalid. Integers are checked with
+`type(x) is int`, so a `bool` is not an integer here.
+
+| Key | Type and rule |
+|---|---|
+| `schema_version` | int, `== 1` |
+| `path` | str, the case-preserved resolved path; must equal the path being proved |
+| `revision.kind` | `"windows_usn_v1"` or `"posix_ctime_v1"` |
+| `revision.file_identity` | 2-item list: `[volume serial or st_dev (int >= 0), file id]`; the file id is a 32-char lowercase hex string of the 128-bit id, not all zero, for `windows_usn_v1`, and an int inode > 0 for `posix_ctime_v1` |
+| `revision.size` | int >= 0 |
+| `revision.mtime_ns` | int |
+| `revision.change_token` | int > 0 (the USN on Windows, `st_ctime_ns` on POSIX) |
+| `hash_algo` | str, equal to `_hashing.HASH_ALGO` (`"xxh64"`) |
+| `digest` | str, 16 lowercase hex chars |
+| `size` | int, `== revision.size` |
+| `mtime_ns` | int, `== revision.mtime_ns` |
+
+Records are read and written only by the `file_signature` loader, so only on an in-process
+miss, inside the freshness-gated load below. The loader reads the native revision once and
+then:
+
+| Situation | Outcome | Log |
+|---|---|---|
+| No native revision | Hash; no record is read or written (the settled-stat rule is in-process only) | `source_revision_unavailable`, once per path |
+| No record file | Hash, then write | none |
+| Record unreadable (an `OSError` other than `FileNotFoundError`) | Hash, then try to write | `source_proof_record_rejected`, `reason="unreadable"` |
+| Record does not parse, breaks the contract, or names another path or algorithm | Hash, then overwrite | `source_proof_record_rejected`, `reason="invalid"` |
+| Valid record naming a different revision | Hash, then overwrite | none |
+| Valid record naming the current revision | Return its signature without hashing | none |
+| The write fails (`OSError`) | Return the fresh signature; no new record is published and any previous one remains, which its revision already refuses | `source_proof_record_write_failed` |
+
+A record is written only when the revision read before the hash is still the file's
+revision after it. Processes race by atomic replacement, and each record is valid only for
+the revision it names. Records have no eviction (one small file per source path) and go
+with `.haute_cache`. A rejected record is logged rather than raised: it only spares a hash,
+and the content hash stays authoritative.
+
+Residual: a Windows USN is a journal offset, so a USN journal deleted and recreated could in
+principle hand a later write a recorded USN. Reuse also requires the same 128-bit file id,
+size and last-write time, which makes that no practical collision.
 
 ### Freshness-gated loading
 
@@ -422,10 +474,19 @@ its previous data.
 
 `SourceCacheIdentity` uses `checked_cache_inputs(CacheConsumer.INPUT_SNAPSHOT, ...)`.
 `node_snapshot_signature()` in `src/haute/_node_snapshots.py` builds the
-`node_snapshot_signature` consumer: the lineage fingerprint is `graph_fingerprint` of the
-node's upstream subgraph including the node, the runtime-input fingerprint is
-`dataframe_graph_input_fingerprint` targeted at the node, and the execution semantics
-version is `node-snapshot:v1`. It never contains generations or column sets, and
+`node_snapshot_signature` consumer over the node's **source lineage**:
+`execution.source_lineage_graph(graph, node_id, source=...)`, the node and everything
+upstream of it after the executor's own live-switch pruning (`prepare_graph` →
+`prune_live_switch_edges`) for the signature's source. The lineage fingerprint is
+`graph_fingerprint` of that graph, the runtime-input fingerprint is
+`dataframe_graph_input_fingerprint` of the same graph targeted at the node, and the
+execution semantics version is `node-snapshot:v1`. A branch into a live switch that the
+source does not read is therefore not signed: editing its code or rewriting its input
+files leaves the signature, and every capture keyed by it, unchanged, and its files are
+never hashed. The switch node itself stays in the lineage with its config, so remapping
+its `input_scenario_map` invalidates. A graph without a live switch, or a source no switch
+maps, prunes nothing, and its signature is the upstream-subgraph one. The preview/trace
+key (`lineage_runtime_input_identity`) reads its runtime inputs from the same graph. It never contains generations or column sets, and
 request shape (column demand) and row limits are excluded with rationales.
 Generation layout, integrity, publication, lease, and concurrency rules are owned
 and tested by the [IO layer](../io-layer/low-level.md).

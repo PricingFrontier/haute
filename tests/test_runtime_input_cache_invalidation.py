@@ -608,15 +608,17 @@ class TestStatGatedFingerprintMemo:
         dataframe_graph_input_fingerprint(graph, target_node_id=None, source="test")
         assert hash_calls.get(key) == 1
 
-    def test_json_preview_hashes_the_source_at_most_once(
+    def test_json_preview_reuses_the_recorded_source_proof(
         self,
         tmp_path,
         monkeypatch,
     ):
-        """Planning, identity, and loading share one in-process memoised content-hash
-        proof of the source file — persisted proofs are gone, so the first
-        admitted preparation after a memo reset legitimately hashes once, but
-        no *further* stage of the same preview rehashes it."""
+        """Planning, identity, and loading share one content-hash proof of the source.
+
+        The cache build already proved the source and recorded that proof on
+        disk, so after a memo reset (a new process) no stage of the preview reads
+        the source again: the durable record answers while the file's native
+        revision is unchanged."""
         from haute._json_shred import _source_proof
 
         monkeypatch.chdir(tmp_path)
@@ -640,7 +642,7 @@ class TestStatGatedFingerprintMemo:
         result = execute_graph(graph, target_node_id="aggregate")
 
         assert result["aggregate"].preview == [{"amount": 10, "rows": 1}]
-        assert source_hashes == 1
+        assert source_hashes == 0
 
     def test_json_same_stat_byte_rewrite_invalidates_preview_identity(
         self,

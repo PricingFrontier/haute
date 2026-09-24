@@ -546,26 +546,30 @@ def node_snapshot_signature(
     """Return the checked data signature of *node_id*'s output.
 
     It never contains snapshot generations or column sets: generations are
-    recorded as dependencies and column sets widen a generation.
+    recorded as dependencies and column sets widen a generation. It signs the
+    node's lineage as the executor runs it for *source*, so a live-switch
+    branch *source* does not read is neither signed nor hashed.
     """
     from haute._builders import resolve_instance_nodes
-    from haute._graph_utils import upstream_subgraph
     from haute.execution import (
         canonical_dataframe_execution_graph,
         dataframe_graph_input_fingerprint,
+        source_lineage_graph,
     )
 
     if type(enforce_contracts) is not bool:
         raise TypeError("enforce_contracts must be a bool")
     # An instance node executes its original's config, so its signature does too.
     canonical = canonical_dataframe_execution_graph(resolve_instance_nodes(graph))
-    lineage = upstream_subgraph(canonical, node_id)
+    if node_id not in canonical.node_map:
+        raise ValueError(f"Cannot sign the output of unknown node {node_id!r}")
+    lineage = source_lineage_graph(canonical, node_id, source=source)
     inputs = checked_cache_inputs(
         CacheConsumer.NODE_SNAPSHOT_SIGNATURE,
         {
             "lineage_fingerprint": graph_fingerprint(lineage, memo=memo),
             "runtime_input_fingerprint": dataframe_graph_input_fingerprint(
-                canonical,
+                lineage,
                 target_node_id=node_id,
                 source=source,
                 memo=memo,

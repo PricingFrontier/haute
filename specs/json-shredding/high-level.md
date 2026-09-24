@@ -268,8 +268,10 @@ checks, preparation, builds, runtime identity and later previews share one hash 
 unchanged file. Its reuse follows the one freshness guarantee the
 [caching](../caching/high-level.md) specification states: the file's native revision
 (identity, length, last-write value and change token), or where the platform has none a
-stat trusted only once the file has settled. Nothing is persisted, so a new server process
-hashes each source once. A changed token, an atomic replacement, or a file that keeps
+stat trusted only once the file has settled. A proof made under a native revision is
+recorded on disk, so a new server process reuses it while that revision holds rather than
+hashing a multi-gigabyte source again; without a native revision nothing is persisted and a
+new process hashes each source once. A changed token, an atomic replacement, or a file that keeps
 changing during hashing cannot reuse the proof. A build that observes a different
 signature after its shred publishes nothing.
 

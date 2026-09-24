@@ -18,6 +18,8 @@ granularity keeps its size and mtime.
 from __future__ import annotations
 
 import ctypes
+import hashlib
+import json
 import os
 import stat as stat_module
 import time
@@ -26,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from haute._file_ops import atomic_write_bytes
 from haute._hashing import HASH_ALGO, content_hash
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
@@ -342,18 +345,214 @@ def file_signature(path: Path) -> FileSignature:
 
 
 def _signature(path: Path) -> FileSignature:
-    observed = path.stat()
-    return FileSignature(
-        size=int(observed.st_size),
-        mtime_ns=int(observed.st_mtime_ns),
+    """Prove *path*: from its durable record when that names the current revision.
+
+    Only a proof made under a native revision is recorded, and a record is
+    reused only while the file still has exactly that revision, so a new
+    process skips the complete read of an unchanged file. Without a native
+    revision the file is hashed and nothing is read or written.
+    """
+    revision = _strong_file_revision(path)
+    if revision is None:
+        observed = path.stat()
+        return FileSignature(
+            size=int(observed.st_size),
+            mtime_ns=int(observed.st_mtime_ns),
+            digest=_hash_file(path),
+        )
+    record_path = _proof_record_path(path)
+    recorded = _read_proof_record(record_path, path)
+    if recorded is not None and recorded[0] == revision:
+        return recorded[1]
+    signature = FileSignature(
+        size=revision.size,
+        mtime_ns=revision.mtime_ns,
         digest=_hash_file(path),
     )
+    # A proof is recorded only for the revision it was actually made under.
+    if _strong_file_revision(path) == revision:
+        _write_proof_record(record_path, path, revision, signature)
+    return signature
 
 
 def clear_file_signatures() -> None:
-    """Forget every retained proof (a test seam; an active flight is kept)."""
+    """Forget every in-process proof (a test seam; an active flight is kept).
+
+    Durable records are untouched, so a test clears the memo to stand in for a
+    new process.
+    """
     _signatures().clear()
     _UNAVAILABLE_WARNINGS.clear()
+
+
+# ---------------------------------------------------------- durable records
+
+_PROOF_RECORD_SCHEMA_VERSION = 1
+_PROOF_RECORD_KEYS = frozenset(
+    {"schema_version", "path", "revision", "hash_algo", "digest", "size", "mtime_ns"}
+)
+_REVISION_KEYS = frozenset({"kind", "file_identity", "size", "mtime_ns", "change_token"})
+_WINDOWS_REVISION_KIND = "windows_usn_v1"
+_POSIX_REVISION_KIND = "posix_ctime_v1"
+_DIGEST_LENGTH = 16
+_HEX_DIGITS = frozenset("0123456789abcdef")
+
+
+def _proof_record_root() -> Path:
+    """The project-local directory durable source proofs live in."""
+    from haute._sandbox import _get_project_root
+
+    return _get_project_root() / ".haute_cache" / "source_proofs"
+
+
+def _proof_record_path(path: Path) -> Path:
+    name = hashlib.sha256(os.path.normcase(str(path)).encode("utf-8")).hexdigest()
+    return _proof_record_root() / f"{name}.json"
+
+
+def _is_int(value: object) -> bool:
+    return type(value) is int
+
+
+def _is_lower_hex(value: object, length: int) -> bool:
+    return isinstance(value, str) and len(value) == length and set(value) <= _HEX_DIGITS
+
+
+def _revision_record(revision: _StrongFileRevision) -> dict[str, object]:
+    volume_or_device, file_id = revision.file_identity
+    if isinstance(file_id, bytes):
+        kind, identity = _WINDOWS_REVISION_KIND, [volume_or_device, file_id.hex()]
+    else:
+        kind, identity = _POSIX_REVISION_KIND, [volume_or_device, file_id]
+    return {
+        "kind": kind,
+        "file_identity": identity,
+        "size": revision.size,
+        "mtime_ns": revision.mtime_ns,
+        "change_token": revision.change_token,
+    }
+
+
+def _parse_revision(value: object) -> _StrongFileRevision | None:
+    if not isinstance(value, dict) or set(value) != _REVISION_KEYS:
+        return None
+    identity = value["file_identity"]
+    size, mtime_ns, change_token = value["size"], value["mtime_ns"], value["change_token"]
+    if (
+        not isinstance(identity, list)
+        or len(identity) != 2
+        or not _is_int(identity[0])
+        or identity[0] < 0
+        or not _is_int(size)
+        or size < 0
+        or not _is_int(mtime_ns)
+        or not _is_int(change_token)
+        or change_token <= 0
+    ):
+        return None
+    file_id: int | bytes
+    if value["kind"] == _WINDOWS_REVISION_KIND:
+        if not _is_lower_hex(identity[1], 32):
+            return None
+        file_id = bytes.fromhex(identity[1])
+        if not any(file_id):
+            return None
+    elif value["kind"] == _POSIX_REVISION_KIND:
+        if not _is_int(identity[1]) or identity[1] <= 0:
+            return None
+        file_id = identity[1]
+    else:
+        return None
+    return _StrongFileRevision(
+        file_identity=(identity[0], file_id),
+        size=size,
+        mtime_ns=mtime_ns,
+        change_token=change_token,
+    )
+
+
+def _parse_proof_record(raw: bytes, path: Path) -> tuple[_StrongFileRevision, FileSignature] | None:
+    """The record's revision and signature, or ``None`` when it breaks the contract."""
+    try:
+        record = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(record, dict) or set(record) != _PROOF_RECORD_KEYS:
+        return None
+    revision = _parse_revision(record["revision"])
+    if (
+        revision is None
+        or not _is_int(record["schema_version"])
+        or record["schema_version"] != _PROOF_RECORD_SCHEMA_VERSION
+        or record["path"] != str(path)
+        or record["hash_algo"] != HASH_ALGO
+        or not _is_lower_hex(record["digest"], _DIGEST_LENGTH)
+        or not _is_int(record["size"])
+        or record["size"] != revision.size
+        or not _is_int(record["mtime_ns"])
+        or record["mtime_ns"] != revision.mtime_ns
+    ):
+        return None
+    return revision, FileSignature(
+        size=record["size"], mtime_ns=record["mtime_ns"], digest=record["digest"]
+    )
+
+
+def _read_proof_record(
+    record_path: Path, path: Path
+) -> tuple[_StrongFileRevision, FileSignature] | None:
+    try:
+        raw = record_path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        _reject_proof_record(record_path, path, reason="unreadable", error=str(exc))
+        return None
+    parsed = _parse_proof_record(raw, path)
+    if parsed is None:
+        _reject_proof_record(record_path, path, reason="invalid")
+    return parsed
+
+
+def _reject_proof_record(record_path: Path, path: Path, **fields: str) -> None:
+    logger.warning(
+        "source_proof_record_rejected",
+        path=str(path),
+        record=str(record_path),
+        action="full_source_hash",
+        **fields,
+    )
+
+
+def _write_proof_record(
+    record_path: Path,
+    path: Path,
+    revision: _StrongFileRevision,
+    signature: FileSignature,
+) -> None:
+    from haute._cache import canonical_json
+
+    record = {
+        "schema_version": _PROOF_RECORD_SCHEMA_VERSION,
+        "path": str(path),
+        "revision": _revision_record(revision),
+        "hash_algo": HASH_ALGO,
+        "digest": signature.digest,
+        "size": signature.size,
+        "mtime_ns": signature.mtime_ns,
+    }
+    try:
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_bytes(record_path, canonical_json(record).encode("utf-8"))
+    except OSError as exc:
+        # The fresh signature is correct either way; a missing record costs
+        # the next process one complete read of the file.
+        logger.warning(
+            "source_proof_record_write_failed",
+            path=str(path),
+            record=str(record_path),
+            error=str(exc),
+        )
 
 
 def _hash_file(path: Path) -> str:
