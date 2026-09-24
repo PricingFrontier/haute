@@ -54,7 +54,6 @@ or where it will not hold at scale.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CACHE-S28 | Planned | P3 | A `replace` whose mapping is read from columns is planned as whole-column work, as `replace_strict` already is. |
 | CACHE-S13 | Planned | P3 | A capturing preview finishes as a job instead of dying at the interactive timeout. Unproven: no measured preview approaches the timeout (re-measured 24-Sep-2026). |
 | CACHE-S19 | Deferred | P3 | Two consumers that need the same cold capture compute it once. |
 | CACHE-S22 | Planned | P3 | The shapes that cannot carry a write recipe at all can. |
@@ -72,8 +71,7 @@ whose refusals it would have shown are removed, and a failed build already
 reports its error through the shared job poller. `CACHE-S13` moved down on 20-Sep-2026 because measurement showed
 no preview near its timeout. `CACHE-S25`, from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md), sits
-outside that order: it follows the pipeline-config package `PCFG-R08`.
-`CACHE-S28` is a small independent planning fix. Every full-frame write is now bounded, so what
+outside that order: it follows the pipeline-config package `PCFG-R08`. Every full-frame write is now bounded, so what
 is left is measured against cost rather than shape. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
 specified. Every package builds on the node-output snapshot store (signature,
@@ -511,35 +509,3 @@ cache-identity tests are reduced to the remaining consumer contracts.
 `src/haute/_cache.py::_classify_config_fields`;
 `src/haute/_cache.py::validate_cache_config_field_classifications`;
 `tests/test_cache_identity_contract.py`.
-
-### CACHE-S28 — Plan a column-mapped `replace` as whole-column work
-**Why:** Recompute analysis decides what a bounded run captures. The planner
-resolves each expression method to its registered operation, and a registered
-row-local operation makes a node cheap and slice-transparent. `replace_strict`
-counts as registered only when its mapping is literal: a mapping taken from
-an expression or column reads whole columns, so such a call is treated as an
-unresolved one (costly, not slice-transparent). Plain `replace` does not get
-the same check, although the chunk classifier already applies the literal
-rule to both through `_polars_call_shapes`. A node whose `replace` maps from
-columns is therefore planned as a cheap slice-transparent segment and can be
-left uncaptured beside a join, and every chunk of the join then recomputes a
-whole-column lookup. Results are unchanged, because Polars decides slice
-pushdown itself; the cost is planning.
-
-**Plan:** Apply `replace_call_has_literal_mapping` in
-`projection._registered_expression_call` exactly as `replace_strict` applies
-its rule, and state in the caching specification that both methods count as
-row-local only with a literal mapping.
-
-**Acceptance:** A node using `replace` with a column-derived mapping is
-planned as costly and captured as a join feeder, with a regression like the
-existing `replace_strict` one; a literal-mapping `replace` plans as before;
-execution results are unchanged.
-
-**Dependencies:** None.
-
-**Owning specifications:** [caching](../caching/low-level.md#seed-plans).
-
-**Evidence:** `src/haute/projection.py::_registered_expression_call`;
-`src/haute/_polars_call_shapes.py::replace_call_has_literal_mapping`;
-`src/haute/_seed_plans.py`; `tests/test_row_local_operation_registrations.py`.

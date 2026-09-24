@@ -216,17 +216,41 @@ def test_replace_strict_is_cheap_and_slice_transparent_only_with_a_literal_mappi
 
 
 @pytest.mark.parametrize(
-    ("mapping", "captured"),
+    ("mapping", "cost", "slice_transparent"),
     [
-        ("pl.col('k'), pl.col('v')", True),
-        ("{'x': 1, 'y': 2}, default=0", False),
+        ("{'x': 'a', 'y': 'b'}", "cheap", True),
+        ("old=['x'], new=['a']", "cheap", True),
+        # A mapping read from columns looks each value up in whole columns, the
+        # same rule replace_strict follows.
+        ("pl.col('k'), pl.col('v')", "cheap", False),
+        ("old=pl.col('k'), new=pl.col('v')", "cheap", False),
+        ("MAPPING", "costly", False),
+    ],
+)
+def test_replace_is_cheap_and_slice_transparent_only_with_a_literal_mapping(
+    mapping: str, cost: str, slice_transparent: bool
+) -> None:
+    code = f"df = src.with_columns(band=pl.col('s').replace({mapping}))"
+
+    facts = code_recompute_facts(code, frozenset({"src"}))
+
+    assert (facts.cost, facts.slice_transparent) == (cost, slice_transparent)
+
+
+@pytest.mark.parametrize(
+    ("method", "mapping", "captured"),
+    [
+        ("replace_strict", "pl.col('k'), pl.col('v')", True),
+        ("replace_strict", "{'x': 1, 'y': 2}, default=0", False),
+        ("replace", "pl.col('k'), pl.col('v')", True),
+        ("replace", "{'x': 'a', 'y': 'b'}", False),
     ],
 )
 def test_a_join_feeder_using_a_column_mapping_stays_captured(
-    project: Path, mapping: str, captured: bool
+    project: Path, method: str, mapping: str, captured: bool
 ) -> None:
     graph = _graph(project)
-    code = f"df = src.with_columns(band=pl.col('s').replace_strict({mapping}))"
+    code = f"df = src.with_columns(band=pl.col('s').{method}({mapping}))"
     graph.nodes[2] = _node("n", NodeType.POLARS, {"code": code})
     request = SeedPlanRequest(
         graph=graph,

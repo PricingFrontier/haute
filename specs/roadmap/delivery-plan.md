@@ -37,7 +37,7 @@ merges, remove that round from the table.
 
 | Round | Theme | Packages, in order | Needs | Size | Why here |
 |---:|---|---|---|---|---|
-| 1 | Fail-loud fixes | `CACHE-S28`, `DEP-R05`, `SUB-R02` | — | M | Small, independent fixes for silent drops, a planning gap and a deploy that always fails. |
+| 1 | Fail-loud fixes | `DEP-R05`, `SUB-R02` | — | M | Small, independent fixes for silent drops, a planning gap and a deploy that always fails. |
 | 2 | Explore and trace | `EDA-E25`, `TRACE-R03` | — | M | Two small user-facing changes; `EDA-E25` regenerates the Explore chart contract. |
 | 3 | Tests and gates | `ENGQ-R06`, `API-R05`, `ENGQ-R04` | — | M | Removes CI noise and narrows the coverage gate before the large refactors, which then work under the lighter rule. |
 | 4 | Optimiser routes | `API-R01`, `MLF-R02`, `OPT-P13` | — | M | All three change `routes/optimiser.py` and `_optimiser_service.py`; `OPT-P13` opens the optimiser chain. |

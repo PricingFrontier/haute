@@ -29,7 +29,10 @@ from haute._estimate_calibration import (
 )
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import _sanitize_func_name, build_parents_of, edge_input_name
-from haute._polars_call_shapes import replace_strict_call_has_literal_mapping
+from haute._polars_call_shapes import (
+    replace_call_has_literal_mapping,
+    replace_strict_call_has_literal_mapping,
+)
 from haute._polars_operations import (
     EXPRESSION_NAMESPACE_NAMES,
     OperationPolicy,
@@ -2482,16 +2485,23 @@ def _materialising_calls_in_source_order(
     return found
 
 
+_LITERAL_MAPPING_SHAPES: dict[str, Callable[[ast.Call], bool]] = {
+    "replace": replace_call_has_literal_mapping,
+    "replace_strict": replace_strict_call_has_literal_mapping,
+}
+
+
 def _registered_expression_call(call: ast.Call) -> PolarsOperation | None:
     """The registered ``Expr`` method *call* makes, or None where its shape leaves it unproven.
 
-    ``replace_strict`` is row-local only with a literal mapping; a mapping or
-    default taken from an expression reads whole columns, so such a call is
-    classified as an unregistered one is.
+    ``replace`` and ``replace_strict`` are row-local only with a literal mapping;
+    a mapping or default taken from an expression reads whole columns, so such a
+    call is classified as an unregistered one is.
     """
     assert isinstance(call.func, ast.Attribute)
     entry = operation(OperationReceiver.EXPR, call.func.attr)
-    if call.func.attr == "replace_strict" and not replace_strict_call_has_literal_mapping(call):
+    literal_mapping = _LITERAL_MAPPING_SHAPES.get(call.func.attr)
+    if literal_mapping is not None and not literal_mapping(call):
         return None
     return entry
 

@@ -1734,10 +1734,10 @@ present a structural or schema result as execution evidence.
     constructions and not reported. A namespace receiver uses its `namespace` registry entry
     when registered, else is unregistered (cheap, not transparent). A non-frame receiver
     uses its `expr` entry when registered, else is unresolved when any argument is a proven
-    or may-frame, else unregistered (cheap, not transparent). A `replace_strict` call counts as
-    registered only with a literal mapping (`_polars_call_shapes`, the rule the classifiers
-    use): a mapping or default taken from an expression or a name reads whole columns, so
-    the call is classified as an unregistered one is. A proven-frame receiver uses
+    or may-frame, else unregistered (cheap, not transparent). A `replace` or `replace_strict`
+    call counts as registered only with a literal mapping (`_polars_call_shapes`, the rules
+    the classifiers use): a mapping or default taken from an expression or a name reads whole
+    columns, so the call is classified as an unregistered one is. A proven-frame receiver uses
     its `frame` entry when registered, else is an unregistered frame method (costly). A
     may-frame receiver checks all registered `frame` and `expr` entries for the name: costly
     if any is, transparent only if all are, full-input work if any is; if neither is
