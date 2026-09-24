@@ -59,8 +59,7 @@ cyclomatic complexity the team agrees in the specification.
 **Dependencies:** None. The chunked runner stays (see above), so it moves onto
 the walker as one more policy.
 
-**Evidence:** `src/haute/_graph_walker.py::walk_graph` (the lazy walk so far);
-`src/haute/_execute_lazy.py::_execute_eager_core`;
+**Evidence:** `src/haute/_graph_walker.py::walk_graph` (every surface but the chunked runner so far);
 `src/haute/executor.py::_execute_graph_core`;
 `src/haute/trace.py::_execute_trace_core`;
 `src/haute/deploy/_scorer.py::_score_graph_lazy`;

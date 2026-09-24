@@ -1702,7 +1702,7 @@ def _eager_execute(
     execution_context: ExecutionContext | None = None,  # pragma: no mutate
     snapshot_plan: SeedPlan | None = None,  # pragma: no mutate
 ) -> tuple[
-    # Mirrors EagerResult.outputs — may carry per-frame dict for multi-frame
+    # Mirrors WalkResult.collected — may carry per-frame dict for multi-frame
     # apiInput sources.
     dict[str, pl.DataFrame | dict[str, pl.DataFrame] | None],  # pragma: no mutate
     list[str],

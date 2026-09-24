@@ -5,9 +5,8 @@ Covers:
   - prepare_graph             — topo sort, parent building, id_to_name
   - execute_lazy_graph        — lazy execution path (the walker's sink walk)
   - _build_funcs              — function building for eager execution
-  - _execute_eager_core       — eager execution with swallow_errors, timings, memory
+  - walk_graph (display)      — eager execution with recorded failures, timings, memory
   - _apply_selected_columns   — shared column-filter helper (D4)
-  - EagerResult               — named tuple structure
 """
 
 from __future__ import annotations
@@ -19,17 +18,16 @@ import haute._execute_lazy as execution_core
 import haute._graph_walker as graph_walker
 import haute.projection as projection_planner
 from haute._execute_lazy import (
-    EagerResult,
     NodeBoundaryRunner,
     PreparedExecutionRequest,
     _apply_selected_columns,
     _build_funcs,
-    _execute_eager_core,
     _extract_error_line,
     _prepare_execution,
     _prune_live_switch_edges,
 )
 from haute._execution_context import ExecutionProfile
+from haute._graph_walker import CollectPolicy, WalkResult, walk_graph
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -333,12 +331,10 @@ class TestPreparedExecution:
         source_frame = pl.DataFrame({"x": [1]}).lazy()
 
         boundary = runner.open("transform")
-        inputs = runner.input_frames(boundary, {"source": source_frame})
-        result = runner.invoke(boundary, inputs)
+        result = runner.invoke(boundary, [source_frame])
 
         assert boundary.parent_ids == ("source",)
         assert boundary.incoming_edges == (edge,)
-        assert inputs == [source_frame]
         assert result.collect().to_dict(as_series=False) == {"x": [1], "y": [2]}
 
     def test_node_boundary_runner_rejects_missing_non_source_input(self):
@@ -405,7 +401,7 @@ class TestPreparedExecution:
         monkeypatch.setattr(graph_walker, "_prepare_execution", capture)
 
         execute_lazy_graph(graph, _simple_build_fn)
-        execution_core._execute_eager_core(graph, _simple_build_fn)
+        walk_graph(graph, _simple_build_fn, policy=CollectPolicy.display())
 
         assert requests == [
             PreparedExecutionRequest(graph=graph),
@@ -479,11 +475,6 @@ class TestExecuteLazy:
         )
         execute_lazy_graph(g, build_fn, preamble_ns={"helper": lambda x: x})
         assert "preamble_ns" in captured
-
-
-# ===========================================================================
-# EagerResult
-# ===========================================================================
 
 
 # ===========================================================================
@@ -561,7 +552,7 @@ class TestBuildFuncs:
 
 
 # ===========================================================================
-# _execute_eager_core
+# Display walks (the eager execution preview and trace run)
 # ===========================================================================
 
 
@@ -571,19 +562,19 @@ class TestExecuteEagerCore:
             nodes=[_source_node("src"), _transform_node("t")],
             edges=[_e("src", "t")],
         )
-        result = _execute_eager_core(g, _simple_build_fn)
-        assert isinstance(result, EagerResult)
-        assert result.outputs["src"] is not None
-        assert result.outputs["t"] is not None
-        assert isinstance(result.outputs["t"], pl.DataFrame)
-        assert "y" in result.outputs["t"].columns
+        result = walk_graph(g, _simple_build_fn, policy=CollectPolicy.display())
+        assert isinstance(result, WalkResult)
+        assert result.collected["src"] is not None
+        assert result.collected["t"] is not None
+        assert isinstance(result.collected["t"], pl.DataFrame)
+        assert "y" in result.collected["t"].columns
 
     def test_timings_populated(self):
         g = PipelineGraph(
             nodes=[_source_node("src")],
             edges=[],
         )
-        result = _execute_eager_core(g, _simple_build_fn)
+        result = walk_graph(g, _simple_build_fn, policy=CollectPolicy.display())
         assert "src" in result.timings
         assert result.timings["src"] >= 0
 
@@ -592,7 +583,7 @@ class TestExecuteEagerCore:
             nodes=[_source_node("src")],
             edges=[],
         )
-        result = _execute_eager_core(g, _simple_build_fn)
+        result = walk_graph(g, _simple_build_fn, policy=CollectPolicy.display())
         assert "src" in result.memory_bytes
         assert result.memory_bytes["src"] > 0
 
@@ -612,10 +603,10 @@ class TestExecuteEagerCore:
             nodes=[_source_node("src"), _transform_node("t")],
             edges=[_e("src", "t")],
         )
-        result = _execute_eager_core(g, build_fn, swallow_errors=True)
+        result = walk_graph(g, build_fn, policy=CollectPolicy.display(record_failures=True))
         assert "t" in result.errors
         assert "intentional test error" in result.errors["t"]
-        assert result.outputs["t"] is None
+        assert result.collected["t"] is None
 
     def test_swallow_errors_false_raises(self):
         """With swallow_errors=False (default), errors are raised."""
@@ -634,7 +625,7 @@ class TestExecuteEagerCore:
             edges=[_e("src", "t")],
         )
         with pytest.raises(RuntimeError, match="boom"):
-            _execute_eager_core(g, build_fn, swallow_errors=False)
+            walk_graph(g, build_fn, policy=CollectPolicy.display(record_failures=False))
 
     def test_row_limit_applied_to_lazy_source(self):
         """row_limit should head-truncate source LazyFrames."""
@@ -646,17 +637,17 @@ class TestExecuteEagerCore:
             nodes=[_source_node("src")],
             edges=[],
         )
-        result = _execute_eager_core(g, build_fn, row_limit=5)
-        assert len(result.outputs["src"]) == 5
+        result = walk_graph(g, build_fn, policy=CollectPolicy.display(row_limit=5))
+        assert len(result.collected["src"]) == 5
 
     def test_target_node_filters(self):
         g = PipelineGraph(
             nodes=[_source_node("a"), _transform_node("b"), _transform_node("c")],
             edges=[_e("a", "b"), _e("b", "c")],
         )
-        result = _execute_eager_core(g, _simple_build_fn, target_node_id="b")
-        assert "b" in result.outputs
-        assert "c" not in result.outputs
+        result = walk_graph(g, _simple_build_fn, policy=CollectPolicy.display(), target_node_id="b")
+        assert "b" in result.collected
+        assert "c" not in result.collected
 
     def test_non_source_no_input_raises_eagerly(self):
         def build_fn(node, **kwargs):
@@ -667,7 +658,7 @@ class TestExecuteEagerCore:
             edges=[],
         )
         with pytest.raises(ValueError, match="No input data available"):
-            _execute_eager_core(g, build_fn)
+            walk_graph(g, build_fn, policy=CollectPolicy.display())
 
     def test_eager_handles_dataframe_source(self):
         """A source that returns a DataFrame (not LazyFrame) should work."""
@@ -679,9 +670,9 @@ class TestExecuteEagerCore:
             nodes=[_source_node("src")],
             edges=[],
         )
-        result = _execute_eager_core(g, build_fn)
-        assert isinstance(result.outputs["src"], pl.DataFrame)
-        assert len(result.outputs["src"]) == 2
+        result = walk_graph(g, build_fn, policy=CollectPolicy.display())
+        assert isinstance(result.collected["src"], pl.DataFrame)
+        assert len(result.collected["src"]) == 2
 
     def test_scenario_forwarded_to_build_fn(self):
         captured = {}
@@ -691,7 +682,7 @@ class TestExecuteEagerCore:
             return node.id, lambda: pl.DataFrame({"x": [1]}).lazy(), True
 
         g = PipelineGraph(nodes=[_source_node("s")], edges=[])
-        _execute_eager_core(g, build_fn, source="test_batch")
+        walk_graph(g, build_fn, policy=CollectPolicy.display(), source="test_batch")
         assert captured["s"] == "test_batch"
 
     def test_multiple_errors_captured_with_swallow(self):
@@ -714,7 +705,7 @@ class TestExecuteEagerCore:
             ],
             edges=[_e("s", "t1"), _e("s", "t2")],
         )
-        result = _execute_eager_core(g, build_fn, swallow_errors=True)
+        result = walk_graph(g, build_fn, policy=CollectPolicy.display(record_failures=True))
         assert "t1" in result.errors
         assert "t2" in result.errors
 
@@ -756,12 +747,12 @@ class TestExtractErrorLine:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# error_lines in _execute_eager_core
+# error_lines in a display walk
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 class TestEagerCoreErrorLines:
-    """Test that error_lines is populated in EagerResult."""
+    """Test that error_lines is populated in a display walk's result."""
 
     def test_syntax_error_populates_error_lines(self):
         def build_fn(node, **kwargs):
@@ -779,7 +770,7 @@ class TestEagerCoreErrorLines:
             nodes=[_source_node("src"), _transform_node("t")],
             edges=[_e("src", "t")],
         )
-        result = _execute_eager_core(g, build_fn, swallow_errors=True)
+        result = walk_graph(g, build_fn, policy=CollectPolicy.display(record_failures=True))
         assert result.error_lines["t"] == 3
 
     def test_runtime_error_with_line_populates_error_lines(self):
@@ -796,7 +787,7 @@ class TestEagerCoreErrorLines:
             nodes=[_source_node("src"), _transform_node("t")],
             edges=[_e("src", "t")],
         )
-        result = _execute_eager_core(g, build_fn, swallow_errors=True)
+        result = walk_graph(g, build_fn, policy=CollectPolicy.display(record_failures=True))
         assert result.error_lines["t"] == 5
 
     def test_error_without_line_not_in_error_lines(self):
@@ -813,7 +804,7 @@ class TestEagerCoreErrorLines:
             nodes=[_source_node("src"), _transform_node("t")],
             edges=[_e("src", "t")],
         )
-        result = _execute_eager_core(g, build_fn, swallow_errors=True)
+        result = walk_graph(g, build_fn, policy=CollectPolicy.display(record_failures=True))
         assert "t" not in result.error_lines
 
     def test_successful_node_not_in_error_lines(self):
@@ -821,7 +812,7 @@ class TestEagerCoreErrorLines:
             nodes=[_source_node("src")],
             edges=[],
         )
-        result = _execute_eager_core(g, _simple_build_fn)
+        result = walk_graph(g, _simple_build_fn, policy=CollectPolicy.display())
         assert result.error_lines == {}
 
 
@@ -968,7 +959,9 @@ class TestJoinsAndFanOuts:
             edges=[_e("s1", "t"), _e("s2", "t")],
         )
 
-        eager = _execute_eager_core(g, build_fn, enforce_contracts=True).outputs["t"]
+        eager = walk_graph(
+            g, build_fn, policy=CollectPolicy.display(), enforce_contracts=True
+        ).collected["t"]
         lazy_outputs, *_ = execute_lazy_graph(g, build_fn, enforce_contracts=True)
         lazy = lazy_outputs["t"].collect()
 
@@ -1224,7 +1217,7 @@ class TestSelectedColumnsInPaths:
         assert df.columns == ["x"]
 
     def test_eager_path_applies_selected_columns(self):
-        """_execute_eager_core applies selected_columns using _apply_selected_columns."""
+        """A display walk applies selected_columns using _apply_selected_columns."""
         g = PipelineGraph(
             nodes=[
                 _source_node("s"),
@@ -1232,8 +1225,8 @@ class TestSelectedColumnsInPaths:
             ],
             edges=[_e("s", "t")],
         )
-        result = _execute_eager_core(g, _simple_build_fn)
-        df = result.outputs["t"]
+        result = walk_graph(g, _simple_build_fn, policy=CollectPolicy.display())
+        df = result.collected["t"]
         assert df.columns == ["x"]
 
     def test_eager_available_columns_captured_before_filter(self):
@@ -1245,10 +1238,10 @@ class TestSelectedColumnsInPaths:
             ],
             edges=[_e("s", "t")],
         )
-        result = _execute_eager_core(g, _simple_build_fn)
+        result = walk_graph(g, _simple_build_fn, policy=CollectPolicy.display())
         # available_columns should have all columns (before filtering)
         col_names = [name for name, _ in result.available_columns["t"]]
         assert "x" in col_names
         assert "y" in col_names
         # But the actual output should be filtered
-        assert result.outputs["t"].columns == ["x"]
+        assert result.collected["t"].columns == ["x"]

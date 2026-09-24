@@ -17,9 +17,9 @@ import haute.projection as projection_planner
 from haute._builders import resolve_instance_node
 from haute._execute_lazy import (
     _build_funcs,
-    _execute_eager_core,
     _prune_live_switch_edges,
 )
+from haute._graph_walker import CollectPolicy, walk_graph
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -127,13 +127,18 @@ class TestScenarioForwardingToBuilders:
         assert captured["s"] == "nb_batch"
         assert captured["t"] == "nb_batch"
 
-    def test_execute_eager_core_forwards_scenario(self):
+    def test_display_walk_forwards_scenario(self):
         captured: dict[str, str] = {}
         g = PipelineGraph(
             nodes=[_source_node("s"), _transform_node("t")],
             edges=[_e("s", "t")],
         )
-        _execute_eager_core(g, _scenario_tracking_build_fn(captured), source="nb_batch")
+        walk_graph(
+            g,
+            _scenario_tracking_build_fn(captured),
+            policy=CollectPolicy.display(),
+            source="nb_batch",
+        )
         assert captured["s"] == "nb_batch"
         assert captured["t"] == "nb_batch"
 
@@ -162,7 +167,7 @@ class TestScenarioForwardingToBuilders:
             nodes=[_source_node("s")],
             edges=[],
         )
-        _execute_eager_core(g, _scenario_tracking_build_fn(captured))
+        walk_graph(g, _scenario_tracking_build_fn(captured), policy=CollectPolicy.display())
         assert captured["s"] == "live"
 
 
@@ -236,14 +241,15 @@ class TestSourceSwitchScenarioRouting:
         """End-to-end: the right data flows through with nb_batch scenario."""
         captured: dict[str, str] = {}
         g = self._make_switch_graph()
-        result = _execute_eager_core(
+        result = walk_graph(
             g,
             _branching_build_fn(captured),
+            policy=CollectPolicy.display(),
             source="nb_batch",
             target_node_id="downstream",
         )
         # With nb_batch, the downstream should get batch data
-        df = result.outputs.get("downstream")
+        df = result.collected.get("downstream")
         assert df is not None
         # The switch should have received only the batch source
         assert captured["sw"] == "nb_batch"
@@ -454,7 +460,7 @@ class TestSelectedColumnsSilentDrop:
 
 class TestRamEstimateScenario:
     """estimate_safe_training_rows now accepts a scenario parameter and
-    forwards it to _execute_eager_core. These tests verify the fix.
+    forwards it to the graph walk. These tests verify the fix.
     """
 
     def test_estimate_accepts_source_parameter(self):
@@ -467,8 +473,8 @@ class TestRamEstimateScenario:
         param_names = list(sig.parameters.keys())
         assert "source" in param_names
 
-    def test_execute_eager_core_defaults_to_live_scenario(self):
-        """When no scenario is passed, _execute_eager_core defaults to 'live'.
+    def test_display_walk_defaults_to_live_scenario(self):
+        """When no scenario is passed, a display walk defaults to 'live'.
         This is what estimate_safe_training_rows triggers."""
         captured: dict[str, str] = {}
         g = PipelineGraph(
@@ -476,19 +482,20 @@ class TestRamEstimateScenario:
             edges=[_e("s", "model")],
         )
         # Explicitly NOT passing scenario — simulating what estimate does
-        _execute_eager_core(g, _scenario_tracking_build_fn(captured))
+        walk_graph(g, _scenario_tracking_build_fn(captured), policy=CollectPolicy.display())
         assert captured["s"] == "live"
 
-    def test_execute_eager_core_with_explicit_scenario(self):
+    def test_display_walk_with_explicit_scenario(self):
         """When scenario IS passed, it reaches the build functions."""
         captured: dict[str, str] = {}
         g = PipelineGraph(
             nodes=[_source_node("s"), _modelling_node()],
             edges=[_e("s", "model")],
         )
-        _execute_eager_core(
+        walk_graph(
             g,
             _scenario_tracking_build_fn(captured),
+            policy=CollectPolicy.display(),
             source="nb_batch",
         )
         assert captured["s"] == "nb_batch"

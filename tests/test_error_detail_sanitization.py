@@ -4,7 +4,7 @@ E3: Verify no route leaks raw Python exception messages via HTTP 500
     ``detail`` strings. All routes must return a safe, generic message
     and log the actual error server-side.
 
-E8: Verify ``_execute_eager_core`` logs node failures at ``error`` level,
+E8: Verify a display walk that records failures logs them at ``error`` level,
     not ``warning``.
 """
 
@@ -21,6 +21,7 @@ import polars as pl
 import pytest
 from fastapi.testclient import TestClient
 
+from haute._graph_walker import CollectPolicy, walk_graph
 from tests.job_store_support import seed_job
 from tests.optimiser_fixtures import run_frontier_and_wait
 from tests.training_artifacts_support import publish_trained_job
@@ -937,7 +938,7 @@ class TestInternalErrorDetailConstant:
 
 
 class TestNodeFailureLogLevel:
-    """Verify that _execute_eager_core logs node failures at ERROR, not WARNING."""
+    """Verify that a display walk logs recorded node failures at ERROR, not WARNING."""
 
     @staticmethod
     def _make_failing_graph():
@@ -962,12 +963,13 @@ class TestNodeFailureLogLevel:
         return node.id, failing_fn, False
 
     def test_node_failure_logged_at_error_level(self) -> None:
-        from haute._execute_lazy import _execute_eager_core
 
         g = self._make_failing_graph()
         mock_logger = MagicMock()
-        with patch("haute._execute_lazy.logger", mock_logger):
-            result = _execute_eager_core(g, self._build_fn, swallow_errors=True)
+        with patch("haute._graph_walker.logger", mock_logger):
+            result = walk_graph(
+                g, self._build_fn, policy=CollectPolicy.display(record_failures=True)
+            )
 
         assert "t" in result.errors
         assert "test node failure" in result.errors["t"]
@@ -976,12 +978,11 @@ class TestNodeFailureLogLevel:
         mock_logger.warning.assert_not_called()
 
     def test_node_failure_not_logged_at_warning(self) -> None:
-        from haute._execute_lazy import _execute_eager_core
 
         g = self._make_failing_graph()
         mock_logger = MagicMock()
-        with patch("haute._execute_lazy.logger", mock_logger):
-            _execute_eager_core(g, self._build_fn, swallow_errors=True)
+        with patch("haute._graph_walker.logger", mock_logger):
+            walk_graph(g, self._build_fn, policy=CollectPolicy.display(record_failures=True))
 
         for call in mock_logger.warning.call_args_list:
             assert "node_failed" not in str(call), (

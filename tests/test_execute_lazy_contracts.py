@@ -13,7 +13,6 @@ import haute.projection as projection_planner
 from haute._contracts import Contract
 from haute._execute_lazy import (
     _declared_api_input_frame_schema_items,
-    _execute_eager_core,
     _resolve_effective_contract,
     _runtime_lineage_demands,
     _runtime_projectable_source_ids,
@@ -21,6 +20,7 @@ from haute._execute_lazy import (
 )
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._graph_walker import CollectPolicy, walk_graph
 from haute._native_memory_limit import native_memory_backend_scope
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import (
@@ -73,11 +73,11 @@ def _undeclared_two_port_builder(node: GraphNode, **_kwargs):
 
 
 def test_eager_multi_port_materialized_target_records_observed_port_schemas() -> None:
-    result = _execute_eager_core(
+    result = walk_graph(
         _undeclared_two_port_api_graph(with_target=False),
         _undeclared_two_port_builder,
+        policy=CollectPolicy.display(collect={"source"}),
         target_node_id="source",
-        materialize_node_ids={"source"},
     )
 
     assert result.frame_columns == {
@@ -87,18 +87,18 @@ def test_eager_multi_port_materialized_target_records_observed_port_schemas() ->
 
 
 def test_eager_multi_port_lazy_ancestor_records_schema_without_materialising_source() -> None:
-    result = _execute_eager_core(
+    result = walk_graph(
         _undeclared_two_port_api_graph(with_target=True),
         _undeclared_two_port_builder,
+        policy=CollectPolicy.display(collect={"target"}),
         target_node_id="target",
-        materialize_node_ids={"target"},
     )
 
     assert result.frame_columns == {
         ("source", "first"): [("a", "Int64")],
         ("source", "second"): [("b", "String")],
     }
-    assert "source" not in result.outputs
+    assert "source" not in result.collected
 
 
 @pytest.mark.parametrize(
@@ -218,9 +218,10 @@ def test_lazy_and_eager_bounded_execution_share_typed_resolution_failure() -> No
                     profile=ExecutionProfile.LAZY_SINK,
                 ),
             ),
-            lambda: _execute_eager_core(
+            lambda: walk_graph(
                 graph,
                 build_node_fn,
+                policy=CollectPolicy.display(),
                 target_node_id="source",
                 execution_context=ExecutionContext(
                     operation="eager",
@@ -1040,21 +1041,21 @@ def test_eager_runtime_partial_inference_keeps_unknown_edge_full_and_empty_edge_
         return node.id, retain_right, False
 
     monkeypatch.setattr(
-        "haute._execute_lazy._runtime_lineage_demands",
+        "haute._graph_walker._runtime_lineage_demands",
         lambda *_args, **_kwargs: {
             projection_planner.ProjectionEdgeKey.from_edge(left_edge): set()
         },
     )
 
-    result = _execute_eager_core(
+    result = walk_graph(
         graph,
         build_node_fn,
+        policy=CollectPolicy.display(collect={"joined"}),
         target_node_id="joined",
-        materialize_node_ids={"joined"},
     )
 
     assert seen == [(["left_id"], ["right_id", "payload"], 2)]
-    output = result.outputs["joined"]
+    output = result.collected["joined"]
     assert isinstance(output, pl.DataFrame)
     assert output.columns == ["right_id", "payload"]
 
@@ -1211,17 +1212,17 @@ def test_eager_preview_runtime_projects_builtin_edge_join_and_final_diagnostic()
         execution_context=context,
     )
 
-    result = _execute_eager_core(
+    result = walk_graph(
         graph,
         build_node_fn,
+        policy=CollectPolicy.display(collect={"joined"}),
         target_node_id="joined",
         required_columns_by_node=required,
-        materialize_node_ids={"joined"},
         execution_context=context,
     )
 
     assert seen_join_schemas == [(["quote_id"], ["quote_id", "competitor_premium"])]
-    joined_output = result.outputs["joined"]
+    joined_output = result.collected["joined"]
     assert isinstance(joined_output, pl.DataFrame)
     assert joined_output.to_dict(as_series=False) == {
         "quote_id": ["q1"],

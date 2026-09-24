@@ -41,7 +41,7 @@ from haute._pipeline_recovery import pipeline_document_fingerprint
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.errors import ContractMismatchError, SchemaMismatchError
 from haute.execution import execute_lazy_graph
-from haute.graph_utils import NodeType, _execute_eager_core
+from haute.graph_utils import NodeType
 from haute.schemas import ExecutionMetricsPayload
 from tests._execution_faults import ExecutionFaultPoint, FaultInjectingExecutionContext
 from tests.conftest import (
@@ -2775,11 +2775,7 @@ def test_background_job_registry_uses_caller_execution_token() -> None:
     assert supplied_token.cancelled
 
 
-_EAGER_ENGINES = pytest.mark.parametrize("engine", ["eager_core", "display_walk"])
-
-
 def _run_eager(
-    engine: str,
     graph: Any,
     build_node_fn: Any,
     *,
@@ -2787,16 +2783,7 @@ def _run_eager(
     swallow_errors: bool = False,
     execution_context: ExecutionContext | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
-    """One eager execution on either engine: the eager core (the trace's) or a display walk."""
-    if engine == "eager_core":
-        result = _execute_eager_core(
-            graph,
-            build_node_fn,
-            target_node_id=target_node_id,
-            swallow_errors=swallow_errors,
-            execution_context=execution_context,
-        )
-        return result.outputs, result.errors
+    """One eager execution: a display walk, recording node failures when asked."""
     walked = walk_graph(
         graph,
         build_node_fn,
@@ -2807,8 +2794,7 @@ def _run_eager(
     return walked.collected, walked.errors
 
 
-@_EAGER_ENGINES
-def test_eager_graph_execution_records_collect_stages(engine: str) -> None:
+def test_eager_graph_execution_records_collect_stages() -> None:
     graph = make_graph(
         {
             "nodes": [
@@ -2848,7 +2834,7 @@ def test_eager_graph_execution_records_collect_stages(engine: str) -> None:
         )
 
     outputs, _errors = _run_eager(
-        engine, graph, build_node_fn, target_node_id="derived", execution_context=context
+        graph, build_node_fn, target_node_id="derived", execution_context=context
     )
 
     assert outputs["derived"]["b"].to_list() == [2, 3]
@@ -2857,8 +2843,7 @@ def test_eager_graph_execution_records_collect_stages(engine: str) -> None:
     assert {metric.name for metric in metrics} == {"eager_collect"}
 
 
-@_EAGER_ENGINES
-def test_eager_graph_execution_does_not_swallow_memory_budget_failures(engine: str) -> None:
+def test_eager_graph_execution_does_not_swallow_memory_budget_failures() -> None:
     graph = make_graph(
         {
             "nodes": [
@@ -2887,7 +2872,6 @@ def test_eager_graph_execution_does_not_swallow_memory_budget_failures(engine: s
 
     with pytest.raises(ExecutionMemoryLimitExceededError):
         _run_eager(
-            engine,
             graph,
             build_node_fn,
             target_node_id="source",
@@ -2896,8 +2880,7 @@ def test_eager_graph_execution_does_not_swallow_memory_budget_failures(engine: s
         )
 
 
-@_EAGER_ENGINES
-def test_eager_graph_execution_does_not_swallow_cancellation(engine: str) -> None:
+def test_eager_graph_execution_does_not_swallow_cancellation() -> None:
     graph = make_graph(
         {
             "nodes": [
@@ -2924,7 +2907,6 @@ def test_eager_graph_execution_does_not_swallow_cancellation(engine: str) -> Non
 
     with pytest.raises(ExecutionCancelledError):
         _run_eager(
-            engine,
             graph,
             build_node_fn,
             target_node_id="source",
@@ -2940,8 +2922,7 @@ def test_eager_graph_execution_does_not_swallow_cancellation(engine: str) -> Non
         SchemaMismatchError("bad schema", node_id="source"),
     ],
 )
-@_EAGER_ENGINES
-def test_eager_graph_execution_does_not_swallow_mismatches(engine: str, error: Exception) -> None:
+def test_eager_graph_execution_does_not_swallow_mismatches(error: Exception) -> None:
     graph = make_graph(
         {
             "nodes": [
@@ -2965,11 +2946,10 @@ def test_eager_graph_execution_does_not_swallow_mismatches(engine: str, error: E
         return node.id, raise_mismatch, True
 
     with pytest.raises(type(error), match=error.message):
-        _run_eager(engine, graph, build_node_fn, target_node_id="source", swallow_errors=True)
+        _run_eager(graph, build_node_fn, target_node_id="source", swallow_errors=True)
 
 
-@_EAGER_ENGINES
-def test_eager_graph_execution_swallows_ordinary_node_errors(engine: str) -> None:
+def test_eager_graph_execution_swallows_ordinary_node_errors() -> None:
     graph = make_graph(
         {
             "nodes": [
@@ -2992,9 +2972,7 @@ def test_eager_graph_execution_swallows_ordinary_node_errors(engine: str) -> Non
 
         return node.id, raise_runtime_error, True
 
-    outputs, errors = _run_eager(
-        engine, graph, build_node_fn, target_node_id="source", swallow_errors=True
-    )
+    outputs, errors = _run_eager(graph, build_node_fn, target_node_id="source", swallow_errors=True)
 
     assert errors == {"source": "ordinary node failure"}
     assert outputs == {"source": None}

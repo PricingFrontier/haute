@@ -874,7 +874,6 @@ class TestNoNewPrivateEngineImports:
         "haute._execute_lazy": None,
         "haute.projection": None,
         "haute.graph_utils": {
-            "_execute_eager_core",
             "_prune_live_switch_edges",
         },
     }

@@ -118,7 +118,7 @@ class CollectPolicy:
         for limits in (self.row_limits_by_node, self.column_limits_by_node):
             for node_id, limit in limits.items():
                 if not isinstance(node_id, str) or not node_id:
-                    raise ValueError("collection limits must be keyed by node id")
+                    raise ValueError("collection limit keys must be node ids")
                 if type(limit) is not int or limit < 1:
                     raise ValueError("collection limits must be positive integers")
 

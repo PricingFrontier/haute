@@ -307,7 +307,7 @@ Out of scope (owned elsewhere, linked where relevant):
 
 - Depends on [execution-engine](../execution-engine/high-level.md) for
   `PipelineGraph`/`GraphNode` types, topological ordering, the eager execution
-  core (`_execute_eager_core`, `_build_node_fn`), preamble compilation, and the
+  path (display walks of `walk_graph`, `_build_node_fn`), preamble compilation, and the
   shared preview-lineage cache-key factory the trace calls so its fingerprints
   use the executor's canonical identity contract.
 - Depends on [expression-parsing](../expression-parsing/high-level.md) for

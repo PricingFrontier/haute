@@ -253,7 +253,7 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
    behaving the same on every machine instead of failing only after it moves.
    The match is on the exact stem before the first dot, so `CONTRACT.json` and
    `COM10.json` remain ordinary names.
-3. `walk_graph` and `_execute_eager_core` run under
+3. `walk_graph` runs under
    `runtime_project_root_scoped`. The decorator accepts the declared `graph`
    argument positionally or by keyword and rejects a missing/non-`PipelineGraph`
    value before opening the scope. `_builders._resolve_runtime_data_path` repeats

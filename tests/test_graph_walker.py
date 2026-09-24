@@ -327,7 +327,7 @@ def test_a_display_walk_records_node_failures_when_the_policy_says_so(
 @pytest.mark.parametrize(
     ("limits", "message"),
     [
-        ({"": 1}, "keyed by node id"),
+        ({"": 1}, "must be node ids"),
         ({"node": 0}, "positive integers"),
         ({"node": True}, "positive integers"),
     ],

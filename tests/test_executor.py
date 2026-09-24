@@ -9,6 +9,7 @@ import polars as pl
 import pytest
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._graph_walker import CollectPolicy, walk_graph
 from haute._user_exec import _exec_user_code
 from haute.errors import ExecutionError, LiveSwitchScenarioError
 from haute.executor import (
@@ -1329,7 +1330,6 @@ class TestTargetPreviewRowLimit:
         [({"src": 0}, "positive integers"), ({"": 1}, "must be node ids")],
     )
     def test_invalid_node_row_limits_are_rejected(self, tmp_path, row_limits_by_node, message):
-        from haute._execute_lazy import _execute_eager_core
         from haute.executor import _build_node_fn
 
         path = tmp_path / "data.parquet"
@@ -1337,11 +1337,11 @@ class TestTargetPreviewRowLimit:
         graph = _g({"nodes": [_ready_source_node("src", str(path))], "edges": []})
 
         with pytest.raises(ValueError, match=message):
-            _execute_eager_core(
+            walk_graph(
                 graph,
                 _build_node_fn,
+                policy=CollectPolicy.display(row_limits_by_node=row_limits_by_node),
                 target_node_id="src",
-                row_limits_by_node=row_limits_by_node,
             )
 
 

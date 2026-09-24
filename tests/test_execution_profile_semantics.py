@@ -22,9 +22,9 @@ import polars as pl
 import pytest
 
 from haute._builders import _build_node_fn
-from haute._execute_lazy import _execute_eager_core
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionProfile
+from haute._graph_walker import CollectPolicy, walk_graph
 from haute._io import read_source
 from haute._polars_utils import bounded_collect_batches, bounded_sink
 from haute._types import PipelineGraph
@@ -201,17 +201,17 @@ def _preview_frame(
     port: str | None = None,
 ) -> pl.DataFrame:
     """The node's data as the interactive preview produces it."""
-    result = _execute_eager_core(
+    result = walk_graph(
         PipelineGraph.model_validate(graph),
         _build_node_fn,
+        policy=CollectPolicy.display(row_limit=row_limit),
         target_node_id=target,
-        row_limit=row_limit,
         preamble_ns=None,
         source="live",
         enforce_contracts=True,
     )
     assert not result.errors, result.errors
-    frame = result.outputs[target]
+    frame = result.collected[target]
     if isinstance(frame, dict):
         frame = frame[port]
     assert isinstance(frame, pl.DataFrame), frame
