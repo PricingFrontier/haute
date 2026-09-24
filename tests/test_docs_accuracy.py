@@ -139,7 +139,6 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
     "## Planned improvements",
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
-    "assistant",
     "background-jobs-api",
     "caching",
     "engineering-quality",

@@ -270,6 +270,12 @@ consumers = ["assistant", "engineering-quality"]
 reason = "Package metadata also configures quality tools and declares the assistant dependency."
 
 [[shared_file]]
+path = "scripts/run_assistant_evaluation.py"
+primary = "assistant"
+consumers = ["engineering-quality"]
+reason = "The assistant owns the qualification harness; engineering quality runs it as the credentialed qualification command."
+
+[[shared_file]]
 path = "src/haute/_ast_helpers.py"
 primary = "codegen"
 consumers = ["expression-parsing"]

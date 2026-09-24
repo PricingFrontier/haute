@@ -7,7 +7,7 @@ from hashlib import sha256
 from typing import Any
 
 from haute._types import GraphNode, NodeType, PipelineGraph
-from haute.assistant._catalog import NODE_CATALOG
+from haute.assistant._catalog import capability_manifest
 
 
 def _node_type(node: GraphNode) -> str:
@@ -46,11 +46,9 @@ def render_pipeline_graph(graph: PipelineGraph) -> dict[str, object]:
         for edge in graph.edges
     ]
     singletons = {
-        entry.node_type.value: any(
-            _node_type(node) == entry.node_type.value for node in graph.nodes
-        )
-        for entry in NODE_CATALOG.values()
-        if entry.singleton
+        descriptor.id: any(_node_type(node) == descriptor.id for node in graph.nodes)
+        for descriptor in capability_manifest().nodes
+        if descriptor.singleton
     }
     return {
         "name": graph.pipeline_name,

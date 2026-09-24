@@ -17,7 +17,6 @@ or maintenance issue; `P3` opportunistic work.
 
 | Component | Improvement surface | Start with |
 |---|---|---|
-| [Assistant](assistant.md) | One capability catalogue and example format; harnesses out of the runtime package | `ASSIST-R01` |
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache usage, freshness and retention | `CACHE-S24` |
 | [Engineering quality](engineering-quality.md) | Dead code, tracked artifacts, specification drift, coverage gates, test organisation | `ENGQ-R01` |
