@@ -2511,8 +2511,8 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   selector node.
 - **`test_executor_critical_edges.py`**, **`test_executor_edge_cases.py`**,
   **`test_executor_mut_witnesses.py`** — focused/mutation-witness pins on the pure
-  helper functions in `executor.py` (preview row-limit math, dangerous-binding
-  detection, cache-satisfies-request logic) that the big integration suites don't
+  helper functions in `executor.py` (preview row-limit math,
+  cache-satisfies-request logic) that the big integration suites don't
   exercise branch-by-branch.
 - **`test_executor_builders.py`**, **`test_port_aware_executor.py`** — per-`NodeType`
   builder dispatch and multi-port/multi-frame routing through the executor; the

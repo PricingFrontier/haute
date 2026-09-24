@@ -376,7 +376,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §4.6 Recovery and repair scope | `API-R04` (server API, delivered); its remaining migration action is `SUB-R02` ([submodels](submodels.md)) |
 | §4.7 Four reuse mechanisms | `SUB-R01` ([submodels](submodels.md)) |
 | §4.8 Implicit-join output assembly | `JSON-R02` (JSON shredding, delivered; its roadmap file is retired) |
-| §4.9 Node-code guard | `SBX-R02` (sandbox security, delivered); the preamble export filter it left is `SBX-R03` ([sandbox security](sandbox-security.md)) |
+| §4.9 Node-code guard | `SBX-R02` (sandbox security, delivered); the preamble export filter it left was removed by `SBX-R03` (delivered) |
 | §4.10 Codegen decorator splice | `CODEGEN-R01` (codegen, delivered; its roadmap file is retired) |
 | §4.10 Node registry | `PCFG-R09` ([pipeline config](pipeline-config.md)) |
 | §4.10 `ExecutionContext` size | `EXEC-R07` (execution engine, delivered; its roadmap file is retired) |

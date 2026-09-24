@@ -129,14 +129,11 @@ Out of scope (owned elsewhere, linked where relevant):
 - **Training scripts are not guarded.** `haute train` imports the script as an
   ordinary module in the CLI process, where console input, a debugger and `exit()` are
   ordinary.
-- **Preamble exports are filtered before node code receives them.** Preamble
-  execution itself retains the import privilege above, but
-  `executor._is_dangerous_preamble_binding` removes exported top-level values whose
-  module root is `os`, `sys`, `subprocess`, `shutil`, `signal`, `ctypes`, or
-  `importlib` before the namespace becomes node-code globals. This is a direct-binding
-  handoff filter, not recursive inspection of containers or closures and not a claim
-  that preamble execution is sandboxed from those modules; node code may import those
-  modules itself.
+- **Preamble exports reach node code as written.** Every top-level binding the
+  preamble makes (apart from the base namespace it starts from) becomes a node-code
+  global, whatever module it came from: project code is trusted, and node code may
+  import `os`, `sys`, `shutil` and the like itself, so filtering the handoff would
+  protect nothing and would only make an author's helper silently disappear.
 - **Unified data I/O does not fork the code sandbox.** Optional `dataInput` code runs
   exactly once through `_exec_user_code` after provider resolution;
   `DataOutputConfig` rejects executable code. Direct locators, source-cache

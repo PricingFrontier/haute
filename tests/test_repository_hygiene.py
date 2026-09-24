@@ -106,13 +106,10 @@ _SUBPROCESS_IMPORT_ALLOWLIST = {
     # import-only: deliberate F401-suppressed patch-target — tests patch the
     # module attribute and assert this module never shells out.
     "src/haute/cli/_helpers.py",
-    # import-only: sandbox denylist membership (_DANGEROUS_MODULE_OBJECTS);
-    # never launches anything.
-    "src/haute/executor.py",
 }
 
-# The chokepoints that actually launch subprocesses (the two import-only
-# entries above never make calls, so they carry no text-mode call sites).
+# The chokepoints that actually launch subprocesses (the import-only entry
+# above never makes calls, so it carries no text-mode call sites).
 _CALLER_CHOKEPOINTS = (
     "src/haute/_git_core.py",
     "src/haute/_host_memory.py",

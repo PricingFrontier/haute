@@ -26,7 +26,7 @@ or maintenance issue; `P3` opportunistic work.
 | [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients for the optimiser log | `MLF-R02` |
 | [Optimiser](optimiser.md) | Service extraction, scaling, input isolation | `OPT-P13` |
 | [Pipeline config](pipeline-config.md) | Project context, typed configs, editor state, node specification | `PCFG-R04` |
-| [Sandbox security](sandbox-security.md) | Preamble handoff, every containment comparison through the one check | `SBX-R03` |
+| [Sandbox security](sandbox-security.md) | Every containment comparison through the one check | `SBX-R01` |
 | [Server API](server-api.md) | WebSocket broadcast, error translation, generated browser contract | `API-R05` |
 | [Submodels](submodels.md) | Legacy registrations, one reuse mechanism | `SUB-R02` |
 | [Tracing](tracing.md) | Identical candidate rows | `TRACE-R03` |

@@ -12,41 +12,12 @@ These packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| SBX-R03 | Planned | P3 | Every binding the preamble exports reaches node code; nothing is dropped silently. |
 | SBX-R01 | Planned | P3 | Every containment comparison goes through the one check. |
 
 ## Planned improvements
 
-`SBX-R03` is small and independent. `SBX-R01` touches files that most other
-packages also change, so it is cheapest after them.
-
-### SBX-R03 — Preamble bindings reach node code
-**Why:** Since `SBX-R02` decided on 24 September 2026 that the node-code guard
-is an accident guard and project code is trusted,
-`executor._is_dangerous_preamble_binding` protects nothing: node code may
-import `os`, `sys`, `subprocess`, `shutil`, `signal`, `ctypes` or `importlib`
-itself, as the sandbox-security specification says. What the filter still
-does is drop, without a message, any preamble binding whose module root is
-one of those, so a helper the author imported in the preamble (for example
-`from os.path import join`) is simply missing when a node calls it. That is a
-silent fallback the engineering priorities rule out.
-
-**Plan:** Remove the export filter and its module sets, so the preamble's
-top-level bindings (minus the base namespace) become node-code globals as
-written. Replace the sandbox-security specification's "Preamble exports are
-filtered" rule with the plain handoff, and delete the mutation witnesses that
-pin the filter.
-
-**Acceptance:** A preamble that imports `os.path.join` or `shutil` exposes
-them to node code; no code path filters preamble exports by module; the
-node-code accident guard and the pickle allowlist are unchanged.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/executor.py::_is_dangerous_preamble_binding`;
-`src/haute/executor.py::_compile_preamble`;
-`specs/sandbox-security/high-level.md`;
-`tests/test_executor_mut_witnesses.py`.
+`SBX-R01` touches files that most other packages also change, so it is
+cheapest after them.
 
 ### SBX-R01 — Every containment comparison goes through the one check
 **Why:** `_sandbox.contained_path` is the one containment check, with its
