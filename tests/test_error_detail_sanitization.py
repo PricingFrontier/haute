@@ -712,7 +712,9 @@ _LOG_ON_ERROR_CASES: list[tuple] = [
         "/api/databricks/warehouses",
         None,
         lambda err: _databricks_client_patch("warehouses.list", err),
-        "haute.routes.databricks",
+        # Unexpected failures are logged, with their traceback, by the
+        # application's unexpected-exception handler in the server module.
+        "haute.server",
         "secret-err",
         500,
         id="databricks-warehouses-log",
@@ -803,7 +805,7 @@ class TestLogOnError:
                 "haute.routes.pipeline.execute_trace",
                 side_effect=RuntimeError("real-trace-error"),
             ),
-            patch("haute.routes.pipeline.logger", mock_logger),
+            patch("haute.server.logger", mock_logger),
         ):
             resp = client.post(
                 "/api/pipeline/trace",
@@ -823,7 +825,7 @@ class TestLogOnError:
                 "haute.routes.pipeline.execute_graph",
                 side_effect=RuntimeError("real-preview-error"),
             ),
-            patch("haute.routes.pipeline.logger", mock_logger),
+            patch("haute.server.logger", mock_logger),
         ):
             resp = client.post(
                 "/api/pipeline/preview",
@@ -843,7 +845,7 @@ class TestLogOnError:
                 "haute.routes.pipeline._output_write_transaction",
                 side_effect=RuntimeError("real-sink-error"),
             ),
-            patch("haute.routes.pipeline.logger", mock_logger),
+            patch("haute.server.logger", mock_logger),
         ):
             resp = client.post(
                 "/api/pipeline/write-output", json={"graph": graph, "node_id": "sink"}
@@ -922,11 +924,10 @@ class TestInternalErrorDetailConstant:
     @pytest.mark.parametrize(
         "module_path",
         [
-            "haute.routes.databricks",
+            "haute.server",
             "haute.routes.pipeline",
             "haute.routes.json_cache",
             "haute.routes.optimiser",
-            "haute.routes.modelling",
             "haute.routes.git",
             "haute.routes.mlflow",
         ],

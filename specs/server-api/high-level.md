@@ -323,9 +323,9 @@ request is a transport error. The endpoint reads and writes no project state.
   and deadline errors deliberately extend stdlib bases instead, so existing `except
   MemoryError` / `except TimeoutError` handlers keep working).
 - **Sanitized error detail, always.** `_INTERNAL_ERROR_DETAIL` ("Operation failed. Check the
-  server logs for details.") is the only text most `except Exception` handlers return to the
+  server logs for details.") is the only text an unexpected exception returns to the
   client; the real exception — which can embed absolute filesystem paths, OS error strings,
-  or git stderr — is logged server-side with `exc_info=True`. This is deliberate defence
+  or git stderr — is logged server-side with its traceback. This is deliberate defence
   against information disclosure, not an oversight; contrast with explicitly surfaced
   domain subclasses such as `ConfigError`, `ContractMismatchError`, and
   `SchemaMismatchError`, whose hand-authored messages are safe to return.
@@ -469,15 +469,21 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   with a `type` discriminator, while preview/write execution uses the stable public-contract
   payload under `detail`; `OutputMappingSchemaError` uses FastAPI's
   `{"detail": <message>}` 422 envelope.
-- **Everything else** — any exception not explicitly mapped — is normally caught at the
-  route level, logged server-side, and returned as `{"detail": "Operation failed. Check the
-  server logs for details."}`. If a route-level handler is bypassed,
-  `_RequestIdMiddleware` returns the separately pinned sanitized envelope
-  `{"detail": "Internal server error"}`. Neither exposes a traceback; outer trusted-host
-  and session middleware rejections bypass request-ID middleware entirely.
+- **Error families are translated once, at the application edge.** Application exception
+  handlers (`routes/_error_handlers.py`, installed on the app by `server.py`) answer the
+  same way for every route: a public contract error with its stable payload, a memory
+  refusal or overrun with 507, and a `GitError` through the git mapping. A route keeps an
+  `except` clause only where it maps an error differently from its family's handler (the
+  explicit mappings above, a trace row mismatch → 409), and route code never catches
+  `Exception` merely to log it and answer 500.
+- **Everything else** — any exception no handler claims — reaches `_RequestIdMiddleware`,
+  which logs it with its error class and traceback and returns `{"detail": "Operation
+  failed. Check the server logs for details."}` with the request ID. No response exposes a
+  traceback; outer trusted-host and session middleware rejections bypass request-ID
+  middleware entirely.
 - **Resource limits** surface as their own status codes rather than a generic 500:
-  `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → 507 for preview,
-  output-write, and OUTPUT dry-run; a superseded request →
+  `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → 507 from any synchronous
+  route, through the one memory-limit mapping; a superseded request →
   `SupersededRequestError` → 409; a timed-out isolated operation → 504. Production heavy-route
   workers are terminated and joined before the terminal response or job transition. Parent
   cleanup then removes the exact private staging artifact, and admission is released only after

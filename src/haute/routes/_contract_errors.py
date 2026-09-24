@@ -7,6 +7,8 @@ from typing import Any, Literal
 from fastapi import HTTPException
 
 from haute._api_input_schema import ApiInputSchemaError
+from haute._execution_admission import ExecutionAdmissionError
+from haute._execution_context import ExecutionMemoryLimitExceededError
 from haute._output_assembler import OutputNestingKeyError
 from haute.errors import (
     ChunkMemoryRiskError,
@@ -25,6 +27,7 @@ from haute.errors import (
     TraceCorrelationUnsupportedError,
     is_public_contract_error,
 )
+from haute.routes._memory_messages import memory_limit_user_message
 
 CONTRACT_ERROR_HTTP_STATUS = 422
 CONTRACT_ERROR_TERMINAL_REASON: Literal["contract_error"] = "contract_error"
@@ -98,6 +101,24 @@ def _contract_error_http_status(exc: BaseException) -> int:
     if isinstance(exc, SeedPlanExpiredError):
         return SEED_PLAN_EXPIRED_HTTP_STATUS
     return CONTRACT_ERROR_HTTP_STATUS
+
+
+def memory_limit_http_exception(
+    exc: ExecutionAdmissionError | ExecutionMemoryLimitExceededError,
+    *,
+    operation_noun: str | None = None,
+) -> HTTPException:
+    """Map a memory refusal or overrun to its 507 response.
+
+    The detail is the exception's structured payload. A job-backed surface
+    passes its *operation_noun* so the detail also carries the curated user
+    message; ``str(exc)`` names internal operations and raw byte counts, so it
+    never becomes the message.
+    """
+    detail = exc.to_payload()
+    if operation_noun is not None:
+        detail["message"] = memory_limit_user_message(exc, operation_noun=operation_noun)
+    return HTTPException(status_code=MEMORY_LIMITED_HTTP_STATUS, detail=detail)
 
 
 def contract_error_job_fields(exc: BaseException) -> dict[str, Any]:

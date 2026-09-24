@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from watchfiles import Change
 
 from haute._sandbox import set_project_root
+from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from tests.conftest import (
     build_test_input_snapshot,
     current_source_revision,
@@ -3311,7 +3312,7 @@ class TestMiddleware500:
         import json
 
         body = json.loads(resp.body)
-        assert body == {"detail": "Internal server error"}
+        assert body == {"detail": _INTERNAL_ERROR_DETAIL}
         assert 1 <= len(resp.headers["x-request-id"]) <= 64
 
     def test_request_id_header_passthrough(self, client: TestClient):
@@ -4894,7 +4895,7 @@ class TestMiddlewareLogging:
 
         assert resp.status_code == 500
         body = json.loads(resp.body)
-        assert body == {"detail": "Internal server error"}
+        assert body == {"detail": _INTERNAL_ERROR_DETAIL}
         assert "secret internal detail" not in resp.body.decode()
         assert "Traceback" not in resp.body.decode()
 
