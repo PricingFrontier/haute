@@ -169,9 +169,13 @@ compatibility facade and route own no duplicate state or worker implementation.
   cannot be analysed statically. Estimating RAM alone never builds missing snapshots
   or runs upstream code; without usable cache evidence, the existing analytical
   estimate (including its unavailable outcome) applies. The estimator returns the
-  unavailable outcome itself. When the target's cardinality cannot be proven, the
-  estimate has no row total. When the cardinality is known but the target's schema
-  cannot be resolved, it keeps the row total and has no memory figure. An exception
+  unavailable outcome itself, with one reason from a closed set.
+  `row_count_unprovable` means the target's row cardinality cannot be proven: the
+  estimate has no row total and names the first upstream node whose rows could not be
+  bounded. `schema_unresolvable` means the cardinality is known but the target's schema
+  cannot be resolved: the estimate keeps the row total. Either way it has no memory
+  figure, no downsampling verdict or warning, and no GPU VRAM figure, so it never
+  reports a size of zero. An exception
   raised while estimating is not an unavailable estimate. It propagates as an error
   response and is logged as a failure, never answered with an empty estimate.
   Once the relevant modelling and evaluation fields

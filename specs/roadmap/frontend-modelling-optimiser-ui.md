@@ -14,7 +14,6 @@ packages come from the
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | FMO-R01 | Planned | P3 | Modelling result tabs, target configuration and result charts share one implementation. |
-| FMO-R02 | Planned | P2 | A training estimate that cannot size its input says why, and never reports that the data fits in 0 MB. |
 
 ## Planned improvements
 
@@ -47,36 +46,3 @@ take them together if both are open.
 `frontend/src/panels/optimiser/ConvergenceChart.tsx`;
 `frontend/src/utils/chartHelpers.ts`;
 `frontend/src/panels/explore/chartRuntime.ts`.
-
-### FMO-R02 — An unavailable training estimate says why
-**Why:** The training estimate has two specified unavailable outcomes, and
-`POST /api/modelling/estimate` carries no reason for either. When the
-target's cardinality cannot be proven, the estimate has no row total and the
-training panel hides the estimate entirely, so the user cannot tell that one
-was attempted or what would make one possible. When the cardinality is known
-but the schema cannot be resolved, the estimate keeps the row total with zero
-bytes per row, and the panel reports "Dataset fits in memory" with 0 MB of
-estimated training RAM: a reassurance the estimator never gave. The optimiser
-estimate's null `total_rows` has no reason either, but the optimiser panel
-does not display the total, so it needs none until it does.
-
-**Plan:** Specify a closed set of unavailable reasons in the modelling
-specification: cardinality not provable (naming the blocking node when
-known) and schema not resolvable. Carry the reason on `RamEstimate` and
-`TrainEstimateResponse`. In the training panel, show the reason in place of
-the missing figure, and never show a memory verdict for an estimate without
-a memory figure.
-
-**Acceptance:** Each unavailable case returns its reason under test; the
-training panel shows the reason instead of hiding the estimate or reporting
-0 MB; an estimator exception is still an error response, never a reason.
-
-**Dependencies:** None. `API-R03` (server API) would generate the response
-type; this package does not wait for it.
-
-**Evidence:** `src/haute/_ram_estimate.py::estimate_safe_training_rows`;
-`src/haute/_ram_estimate.py::RamEstimate`;
-`src/haute/routes/modelling.py::estimate_training`;
-`src/haute/schemas.py::TrainEstimateResponse`;
-`frontend/src/types/trainGuards.ts`;
-`frontend/src/panels/modelling/TrainingActionsAndResults.tsx`.

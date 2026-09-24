@@ -69,6 +69,7 @@ __all__ = [
     "estimate_safe_training_rows",
     "decoded_frame_row_width_bytes",
     "RamEstimate",
+    "TrainingEstimateUnavailableReason",
 ]
 
 
@@ -1425,25 +1426,104 @@ def _estimate_peak_bytes(
     return (numerator + denominator - 1) // denominator
 
 
-class RamEstimate(NamedTuple):
-    """Result of the RAM estimation."""
+class TrainingEstimateUnavailableReason(StrEnum):
+    """Why a training estimate cannot size its input (a closed set)."""
+
+    ROW_COUNT_UNPROVABLE = "row_count_unprovable"
+    """The target's row cardinality cannot be proven; a blocking node is named."""
+    SCHEMA_UNRESOLVABLE = "schema_unresolvable"
+    """The row total is known but the target's schema cannot be resolved."""
+
+
+@dataclass(frozen=True, slots=True)
+class RamEstimate:
+    """Result of the RAM estimation: sized, or unavailable with one reason.
+
+    An unavailable estimate has ``None`` memory figures rather than zeros, so
+    no consumer can read it as an input that fits in no memory at all.
+    """
 
     safe_row_limit: int | None
     """Row limit that fits in RAM, or ``None`` if no limit is needed."""
     total_rows: int | None
-    """Estimated total source rows, or ``None`` if unknown."""
-    estimated_bytes: int
-    """Estimated peak bytes across all training phases."""
+    """Proven target row upper bound, or ``None`` when it cannot be proven."""
+    estimated_bytes: int | None
+    """Estimated peak bytes across all training phases, or ``None`` if unavailable."""
     available_bytes: int
     """Available system RAM in bytes (estimation fails if this is unknown)."""
-    bytes_per_row: float
-    """Estimated bytes per row (at peak phase)."""
+    bytes_per_row: float | None
+    """Estimated bytes per row (at peak phase), or ``None`` if unavailable."""
     was_downsampled: bool
     """Whether a row limit was applied."""
     warning: str | None
     """Human-readable warning message if downsampled, else ``None``."""
     probe_columns: int = 0
     """Number of columns (from source metadata)."""
+    unavailable_reason: TrainingEstimateUnavailableReason | None = None
+    """Why the estimate has no memory figure, or ``None`` when it has one."""
+    blocking_node_id: str | None = None
+    """The first node whose rows could not be bounded (``row_count_unprovable`` only)."""
+
+    def __post_init__(self) -> None:
+        reason = self.unavailable_reason
+        if reason is None:
+            if None in (self.total_rows, self.estimated_bytes, self.bytes_per_row):
+                raise ValueError(
+                    "an available RAM estimate requires a row total and memory figures"
+                )
+            if self.blocking_node_id is not None:
+                raise ValueError("an available RAM estimate names no blocking node")
+            return
+        if not isinstance(reason, TrainingEstimateUnavailableReason):
+            raise TypeError("unavailable_reason must be a TrainingEstimateUnavailableReason")
+        if (
+            self.estimated_bytes is not None
+            or self.bytes_per_row is not None
+            or self.safe_row_limit is not None
+            or self.was_downsampled
+            or self.warning is not None
+            or self.probe_columns != 0
+        ):
+            raise ValueError(
+                "an unavailable RAM estimate has no memory figures, row limit, warning "
+                "or probed columns"
+            )
+        if reason is TrainingEstimateUnavailableReason.ROW_COUNT_UNPROVABLE:
+            if self.total_rows is not None or not self.blocking_node_id:
+                raise ValueError(
+                    "a row_count_unprovable estimate names its blocking node and has no row total"
+                )
+        elif self.total_rows is None or self.blocking_node_id is not None:
+            raise ValueError(
+                "a schema_unresolvable estimate keeps its row total and names no blocking node"
+            )
+
+    @classmethod
+    def row_count_unprovable(cls, blocking_node_id: str, available_bytes: int) -> RamEstimate:
+        return cls(
+            safe_row_limit=None,
+            total_rows=None,
+            estimated_bytes=None,
+            available_bytes=available_bytes,
+            bytes_per_row=None,
+            was_downsampled=False,
+            warning=None,
+            unavailable_reason=TrainingEstimateUnavailableReason.ROW_COUNT_UNPROVABLE,
+            blocking_node_id=blocking_node_id,
+        )
+
+    @classmethod
+    def schema_unresolvable(cls, total_rows: int, available_bytes: int) -> RamEstimate:
+        return cls(
+            safe_row_limit=None,
+            total_rows=total_rows,
+            estimated_bytes=None,
+            available_bytes=available_bytes,
+            bytes_per_row=None,
+            was_downsampled=False,
+            warning=None,
+            unavailable_reason=TrainingEstimateUnavailableReason.SCHEMA_UNRESOLVABLE,
+        )
 
 
 def _resolve_target_columns(
@@ -1810,16 +1890,8 @@ def estimate_safe_training_rows(
             blocking_node_id=cardinality.blocking_node_id,
             reason=cardinality.unavailable_reason,
         )
-        return RamEstimate(
-            safe_row_limit=None,
-            total_rows=None,
-            estimated_bytes=0,
-            available_bytes=available,
-            bytes_per_row=0,
-            was_downsampled=False,
-            warning=None,
-            probe_columns=0,
-        )
+        assert cardinality.blocking_node_id is not None
+        return RamEstimate.row_count_unprovable(cardinality.blocking_node_id, available)
     assert cardinality.output_rows is not None
     total_rows = cardinality.output_rows
 
@@ -1839,16 +1911,7 @@ def estimate_safe_training_rows(
             target=target_node_id,
             source=source,
         )
-        return RamEstimate(
-            safe_row_limit=None,
-            total_rows=total_rows,
-            estimated_bytes=0,
-            available_bytes=available,
-            bytes_per_row=0,
-            was_downsampled=False,
-            warning=None,
-            probe_columns=0,
-        )
+        return RamEstimate.schema_unresolvable(total_rows, available)
 
     # Subtract excluded features — the pipeline now projects before
     # sinking, so excluded columns never enter the split or pools.

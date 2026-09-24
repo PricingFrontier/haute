@@ -6,6 +6,7 @@ import type {
   EbmTermAxis,
   EvaluationPreview,
   TrainEstimate,
+  TrainEstimateUnavailable,
   TrainExportReceipts,
   TrainResponse,
   TrainStatusResponse,
@@ -1661,20 +1662,69 @@ export function parseTrainEstimateResponse(value: unknown): TrainEstimate {
     }
     return result
   }
-  return {
-    total_rows: optionalNullableNumber("parseTrainEstimateResponse", obj, "total_rows"),
+  const parseUnavailable = (value: unknown): TrainEstimateUnavailable | null => {
+    if (value === null) return null
+    const unavailableObj = expectPlainObject("parseTrainEstimateResponse", value, "unavailable")
+    expectExactKeys("parseTrainEstimateResponse", unavailableObj, "unavailable", ["reason", "blocking_node_id"])
+    const reason = expectStringLiteral(
+      "parseTrainEstimateResponse",
+      unavailableObj.reason,
+      "unavailable.reason",
+      ["row_count_unprovable", "schema_unresolvable"] as const,
+    )
+    const blockingNodeId = expectNullableString(
+      "parseTrainEstimateResponse",
+      unavailableObj.blocking_node_id,
+      "unavailable.blocking_node_id",
+    )
+    if (reason === "row_count_unprovable") {
+      if (!blockingNodeId) {
+        throw new Error("parseTrainEstimateResponse: row_count_unprovable names the blocking node")
+      }
+      return { reason, blocking_node_id: blockingNodeId }
+    }
+    if (blockingNodeId !== null) {
+      throw new Error("parseTrainEstimateResponse: schema_unresolvable names no blocking node")
+    }
+    return { reason, blocking_node_id: null }
+  }
+  const estimate: TrainEstimate = {
+    total_rows: expectNullableNumber("parseTrainEstimateResponse", obj.total_rows, "total_rows"),
     safe_row_limit: optionalNullableNumber("parseTrainEstimateResponse", obj, "safe_row_limit"),
-    estimated_mb: optionalNumber("parseTrainEstimateResponse", obj, "estimated_mb"),
-    training_mb: optionalNumber("parseTrainEstimateResponse", obj, "training_mb"),
-    available_mb: optionalNumber("parseTrainEstimateResponse", obj, "available_mb"),
-    bytes_per_row: optionalNumber("parseTrainEstimateResponse", obj, "bytes_per_row"),
+    estimated_mb: expectNullableNumber("parseTrainEstimateResponse", obj.estimated_mb, "estimated_mb"),
+    training_mb: expectNullableNumber("parseTrainEstimateResponse", obj.training_mb, "training_mb"),
+    available_mb: expectNumber("parseTrainEstimateResponse", obj.available_mb, "available_mb"),
+    bytes_per_row: expectNullableNumber("parseTrainEstimateResponse", obj.bytes_per_row, "bytes_per_row"),
     was_downsampled: optionalBoolean("parseTrainEstimateResponse", obj, "was_downsampled"),
     warning: optionalNullableString("parseTrainEstimateResponse", obj, "warning"),
     gpu_vram_estimated_mb: optionalNullableNumber("parseTrainEstimateResponse", obj, "gpu_vram_estimated_mb"),
     gpu_vram_available_mb: optionalNullableNumber("parseTrainEstimateResponse", obj, "gpu_vram_available_mb"),
     gpu_warning: optionalNullableString("parseTrainEstimateResponse", obj, "gpu_warning"),
+    unavailable: parseUnavailable(obj.unavailable),
     evaluation_preview: obj.evaluation_preview === undefined || obj.evaluation_preview === null
       ? null
       : parseEvaluationPreview(obj.evaluation_preview),
   }
+  // Mirrors TrainEstimateResponse: an estimate that cannot size its input has
+  // no memory figure to misread, and an available one has every figure.
+  const figures = [estimate.estimated_mb, estimate.training_mb, estimate.bytes_per_row]
+  if (estimate.unavailable === null) {
+    if (estimate.total_rows === null || figures.some((value) => value === null)) {
+      throw new Error("parseTrainEstimateResponse: an available estimate requires a row total and memory figures")
+    }
+    return estimate
+  }
+  if (figures.some((value) => value !== null)) {
+    throw new Error("parseTrainEstimateResponse: an unavailable estimate has no memory figures")
+  }
+  if (estimate.was_downsampled || estimate.warning !== null) {
+    throw new Error("parseTrainEstimateResponse: an unavailable estimate has no downsampling verdict or warning")
+  }
+  if (estimate.gpu_vram_estimated_mb !== null || estimate.gpu_vram_available_mb !== null || estimate.gpu_warning !== null) {
+    throw new Error("parseTrainEstimateResponse: an unavailable estimate has no GPU VRAM check")
+  }
+  if ((estimate.total_rows === null) !== (estimate.unavailable.reason === "row_count_unprovable")) {
+    throw new Error("parseTrainEstimateResponse: only a row_count_unprovable estimate lacks a row total")
+  }
+  return estimate
 }

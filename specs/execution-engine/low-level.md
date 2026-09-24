@@ -152,9 +152,13 @@
   (polled callback returning a `WorkerTerminalReason | None`),
   `stop_poll_interval_seconds`, `process_name`; validates positivity in
   `__post_init__`.
-- **`RamEstimate`** (`_ram_estimate.py`, `NamedTuple`) — `safe_row_limit`,
+- **`RamEstimate`** (`_ram_estimate.py`, frozen dataclass) — `safe_row_limit`,
   `total_rows`, `estimated_bytes`, `available_bytes`, `bytes_per_row`,
-  `was_downsampled`, `warning`, `probe_columns`.
+  `was_downsampled`, `warning`, `probe_columns`, `unavailable_reason`,
+  `blocking_node_id`. An unavailable estimate has one
+  `TrainingEstimateUnavailableReason` (`row_count_unprovable` with the blocking node and
+  no row total, or `schema_unresolvable` with the row total) and `None` memory figures;
+  construction rejects any other combination.
 - **`MaterialisationEstimate`** (`_ram_estimate.py`, frozen dataclass) — explicit
   `available|unavailable` state with `estimated_peak_bytes`. Available requires a
   non-negative integer (zero is a legitimate empty-input estimate); unavailable
@@ -1789,9 +1793,10 @@ present a structural or schema result as execution evidence.
   nothing and writes no checkpoint.
 - **A capture's path is never a node id.** Captures are stored under their slot's
   identity digest, so no node-id spelling can escape or alias the store.
-- **RAM estimation returns `None` rather than guessing** when parquet metadata, the
-  target row-cardinality proof, or the canonical detailed target schema is unavailable
-  (for example Databricks sources or opaque row expansion) — callers must treat `None`
+- **RAM estimation returns an unavailable estimate rather than guessing** when parquet
+  metadata, the target row-cardinality proof, or the canonical detailed target schema is
+  unavailable (for example Databricks sources or opaque row expansion). Its memory
+  figures are `None` and its reason says which proof is missing; callers must treat it
   as "estimate unavailable," not "unlimited." `estimate_safe_training_rows()` uses the
   target node's proven output upper bound for training/pool sizing and user-facing row
   counts. It does not reuse the largest ancestor row count. The independent

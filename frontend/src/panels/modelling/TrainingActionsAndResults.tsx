@@ -1,7 +1,7 @@
 import { useMemo } from "react"
 import { Play, Loader2, AlertTriangle, RefreshCw, CheckCircle2, Database, XCircle } from "lucide-react"
 import type { TrainResult, TrainProgress } from "../../stores/useNodeResultsStore"
-import type { TrainEstimate } from "../../api/types"
+import type { TrainEstimate, TrainEstimateUnavailable } from "../../api/types"
 import { MODEL_COLORS } from "../../theme/colors"
 import { TrainingProgress as TrainingProgressPanel } from "./TrainingProgress"
 import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSummary"
@@ -14,6 +14,15 @@ const TRAINING_OVERHEAD = 1.0
 
 function formatMb(mb: number): string {
   return mb < 1024 ? `${mb.toFixed(0)} MB` : `${(mb / 1024).toFixed(1)} GB`
+}
+
+function unavailableEstimateReason(
+  unavailable: TrainEstimateUnavailable,
+  nodeLabel: (nodeId: string) => string,
+): string {
+  return unavailable.reason === "row_count_unprovable"
+    ? `The row count at "${nodeLabel(unavailable.blocking_node_id)}" can't be proven before it runs, so training memory can't be estimated.`
+    : "The columns reaching this node can't be resolved before it runs, so training memory can't be estimated."
 }
 
 export type TrainingActionsAndResultsProps = {
@@ -30,6 +39,8 @@ export type TrainingActionsAndResultsProps = {
   ramEstimateLoading: boolean
   ramEstimateError?: string | null
   rowLimit: number | null
+  /** Canvas label for a node the estimate names (the blocking node of an unavailable estimate). */
+  nodeLabel: (nodeId: string) => string
   terminalMetrics?: ExecutionMetrics | null
   terminalStatus?: string | null
   terminalReason?: string | null
@@ -54,6 +65,7 @@ export function TrainingActionsAndResults({
   ramEstimateLoading,
   ramEstimateError = null,
   rowLimit,
+  nodeLabel,
   terminalMetrics = null,
   terminalStatus = null,
   terminalReason = null,
@@ -65,7 +77,8 @@ export function TrainingActionsAndResults({
 }: TrainingActionsAndResultsProps) {
   // Recalculate training MB and GPU VRAM reactively as row_limit changes
   const adjusted = useMemo(() => {
-    if (!ramEstimate || ramEstimate.total_rows == null) return null
+    // An unavailable estimate has no memory figure to scale.
+    if (!ramEstimate || ramEstimate.total_rows == null || ramEstimate.bytes_per_row == null) return null
     const sourceRows = ramEstimate.total_rows
     const hasUserLimit = rowLimit != null && rowLimit > 0
 
@@ -140,12 +153,34 @@ export function TrainingActionsAndResults({
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}>
           <AlertTriangle size={12} className="shrink-0" style={{ color: "var(--warning-strong)" }} />
           <div style={{ color: "var(--warning)" }}>
-            <p className="font-medium">{ramEstimateError.startsWith("Evaluation preview failed:") ? "Evaluation preview failed" : "Memory estimate unavailable"}</p>
+            <p className="font-medium">{ramEstimateError.startsWith("Evaluation preview failed:") ? "Evaluation preview failed" : "Memory estimate failed"}</p>
             <p className="mt-1 break-words">{ramEstimateError.replace(/^Evaluation preview failed:\s*/, "")}</p>
           </div>
         </div>
       )}
-      {ramEstimate && !ramEstimateLoading && adjusted && (
+      {ramEstimate?.unavailable && !ramEstimateLoading && (
+        <div
+          role="status"
+          className="px-3 py-2.5 rounded-lg text-xs space-y-1.5"
+          style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+        >
+          <p className="font-medium" style={{ color: "var(--text-primary)" }}>Memory estimate unavailable</p>
+          <p className="break-words" style={{ color: "var(--text-secondary)" }}>
+            {unavailableEstimateReason(ramEstimate.unavailable, nodeLabel)}
+          </p>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] font-mono" style={{ color: "var(--text-secondary)" }}>
+            {ramEstimate.total_rows != null && (
+              <>
+                <span>Source rows</span>
+                <span style={{ color: "var(--text-primary)" }}>{ramEstimate.total_rows.toLocaleString()}</span>
+              </>
+            )}
+            <span>Available RAM</span>
+            <span style={{ color: "var(--text-primary)" }}>{formatMb(ramEstimate.available_mb)}</span>
+          </div>
+        </div>
+      )}
+      {ramEstimate && !ramEstimate.unavailable && !ramEstimateLoading && adjusted && (
         <div className="px-3 py-2.5 rounded-lg text-xs space-y-1.5" style={{
           background: adjusted.wasDownsampled ? "var(--warning-soft-subtle)" : "var(--train-summary-success-bg)",
           border: `1px solid ${adjusted.wasDownsampled ? "var(--warning-border)" : "var(--train-summary-success-border)"}`,

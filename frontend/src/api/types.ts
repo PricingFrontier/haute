@@ -767,19 +767,27 @@ export interface EvaluationPreview {
   final_test_date_range?: EvaluationDateRange
 }
 
+/** Why a training estimate cannot size its input: one reason from a closed set. */
+export type TrainEstimateUnavailable =
+  | { reason: "row_count_unprovable"; blocking_node_id: string }
+  | { reason: "schema_unresolvable"; blocking_node_id: null }
+
 export interface TrainEstimate {
+  /** Null only for a `row_count_unprovable` estimate. */
   total_rows: number | null
   safe_row_limit: number | null
-  estimated_mb: number
-  training_mb: number
+  /** The memory figures are null exactly when `unavailable` is set. */
+  estimated_mb: number | null
+  training_mb: number | null
   available_mb: number
-  bytes_per_row: number
+  bytes_per_row: number | null
   was_downsampled: boolean
   warning: string | null
   // GPU VRAM estimation (only populated when task_type is GPU)
   gpu_vram_estimated_mb: number | null
   gpu_vram_available_mb: number | null
   gpu_warning: string | null
+  unavailable: TrainEstimateUnavailable | null
   evaluation_preview: EvaluationPreview | null
 }
 

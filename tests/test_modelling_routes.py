@@ -15,6 +15,7 @@ import pytest
 from fastapi import HTTPException
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._ram_estimate import RamEstimate
 from haute.errors import HauteValidationError
 from haute.projection import ProjectionRequest, plan
 from haute.routes._train_service import (
@@ -1891,25 +1892,156 @@ class TestEstimateEndpoint:
             resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
         assert resp.status_code == 500
 
-    def test_estimate_the_estimator_cannot_prove_is_returned_without_a_total(
-        self, client, training_data
+    @pytest.mark.parametrize(
+        ("unavailable", "expected_rows", "expected_reason"),
+        [
+            (
+                RamEstimate.row_count_unprovable("explode_items", 8 * 1024**3),
+                None,
+                {"reason": "row_count_unprovable", "blocking_node_id": "explode_items"},
+            ),
+            (
+                RamEstimate.schema_unresolvable(250_000, 8 * 1024**3),
+                250_000,
+                {"reason": "schema_unresolvable", "blocking_node_id": None},
+            ),
+        ],
+    )
+    def test_estimate_the_estimator_cannot_size_says_why_without_figures(
+        self, client, training_data, unavailable, expected_rows, expected_reason
     ):
-        from haute._ram_estimate import RamEstimate
-
+        """An unavailable estimate carries its reason and no memory figure or
+        VRAM check, even with GPU training and a user row limit configured."""
         graph = _make_modelling_graph(training_data)
-        unavailable = RamEstimate(
+        for node in graph["nodes"]:
+            if node["id"] == "train":
+                node["data"]["config"]["params"] = {"task_type": "GPU"}
+                node["data"]["config"]["row_limit"] = 500
+        with (
+            patch("haute._ram_estimate.estimate_safe_training_rows", return_value=unavailable),
+            patch("haute.routes.modelling._check_gpu_vram") as vram_check,
+        ):
+            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["unavailable"] == expected_reason
+        assert data["total_rows"] == expected_rows
+        assert (data["estimated_mb"], data["training_mb"], data["bytes_per_row"]) == (
+            None,
+            None,
+            None,
+        )
+        assert data["available_mb"] == 8192.0
+        assert data["safe_row_limit"] == 500
+        assert (data["was_downsampled"], data["warning"]) == (False, None)
+        assert data["gpu_vram_estimated_mb"] is None
+        vram_check.assert_not_called()
+
+    def test_available_estimate_reports_figures_and_no_reason(self, client, training_data):
+        graph = _make_modelling_graph(training_data)
+        available = RamEstimate(
             safe_row_limit=None,
-            total_rows=None,
-            estimated_bytes=0,
+            total_rows=1_000,
+            estimated_bytes=3 * 1024**2,
             available_bytes=8 * 1024**3,
-            bytes_per_row=0,
+            bytes_per_row=3_145.7,
             was_downsampled=False,
             warning=None,
+            probe_columns=4,
         )
-        with patch("haute._ram_estimate.estimate_safe_training_rows", return_value=unavailable):
+        with patch("haute._ram_estimate.estimate_safe_training_rows", return_value=available):
             resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
-        assert resp.status_code == 200
-        assert resp.json()["total_rows"] is None
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["unavailable"] is None
+        assert (data["total_rows"], data["estimated_mb"], data["training_mb"]) == (1_000, 3.0, 3.0)
+        assert data["bytes_per_row"] == 3_145.7
+
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ({"estimated_mb": None}, "requires a row total and memory figures"),
+            ({"total_rows": None}, "requires a row total and memory figures"),
+            (
+                {"unavailable": {"reason": "schema_unresolvable", "blocking_node_id": None}},
+                "has no memory figures",
+            ),
+            (
+                {
+                    "estimated_mb": None,
+                    "training_mb": None,
+                    "bytes_per_row": None,
+                    "was_downsampled": True,
+                    "unavailable": {"reason": "schema_unresolvable", "blocking_node_id": None},
+                },
+                "no downsampling verdict or warning",
+            ),
+            (
+                {
+                    "estimated_mb": None,
+                    "training_mb": None,
+                    "bytes_per_row": None,
+                    "gpu_vram_estimated_mb": 12.0,
+                    "unavailable": {"reason": "schema_unresolvable", "blocking_node_id": None},
+                },
+                "no GPU VRAM check",
+            ),
+            (
+                {
+                    "estimated_mb": None,
+                    "training_mb": None,
+                    "bytes_per_row": None,
+                    "unavailable": {"reason": "row_count_unprovable", "blocking_node_id": "j"},
+                },
+                "only a row_count_unprovable estimate lacks a row total",
+            ),
+            (
+                {
+                    "total_rows": None,
+                    "estimated_mb": None,
+                    "training_mb": None,
+                    "bytes_per_row": None,
+                    "unavailable": {"reason": "row_count_unprovable", "blocking_node_id": None},
+                },
+                "names the blocking node",
+            ),
+            (
+                {
+                    "estimated_mb": None,
+                    "training_mb": None,
+                    "bytes_per_row": None,
+                    "unavailable": {"reason": "schema_unresolvable", "blocking_node_id": "j"},
+                },
+                "names no blocking node",
+            ),
+            (
+                {
+                    "estimated_mb": None,
+                    "training_mb": None,
+                    "bytes_per_row": None,
+                    "unavailable": {"reason": "cardinality", "blocking_node_id": None},
+                },
+                "row_count_unprovable",
+            ),
+        ],
+    )
+    def test_estimate_response_rejects_figures_that_disagree_with_availability(
+        self, overrides, message
+    ):
+        from pydantic import ValidationError
+
+        from haute.schemas import TrainEstimateResponse
+
+        payload = {
+            "total_rows": 100,
+            "estimated_mb": 1.0,
+            "training_mb": 1.0,
+            "available_mb": 8192.0,
+            "bytes_per_row": 10.0,
+            "unavailable": None,
+        }
+        with pytest.raises(ValidationError, match=message):
+            TrainEstimateResponse.model_validate({**payload, **overrides})
 
     def test_estimate_suppresses_ram_warning_when_user_limit_binds(self, client, training_data):
         """When user's row_limit is lower than the RAM-safe limit, suppress the RAM warning."""
@@ -1919,13 +2051,13 @@ class TestEstimateEndpoint:
             if node["id"] == "train":
                 node["data"]["config"]["row_limit"] = 500
 
-        mock_est = SimpleNamespace(
+        mock_est = RamEstimate(
             safe_row_limit=9_000_000,
             warning="Dataset downsampled to 9,000,000 of 10,000,000 rows",
             total_rows=10_000_000,
             probe_columns=5,
-            estimated_bytes=1e9,
-            available_bytes=2e10,
+            estimated_bytes=1_000_000_000,
+            available_bytes=20_000_000_000,
             bytes_per_row=100.0,
             was_downsampled=True,
         )
@@ -1947,13 +2079,13 @@ class TestEstimateEndpoint:
             if node["id"] == "train":
                 node["data"]["config"]["row_limit"] = 20_000_000
 
-        mock_est = SimpleNamespace(
+        mock_est = RamEstimate(
             safe_row_limit=9_000_000,
             warning="Dataset downsampled to 9,000,000 of 10,000,000 rows",
             total_rows=10_000_000,
             probe_columns=5,
-            estimated_bytes=1e9,
-            available_bytes=2e10,
+            estimated_bytes=1_000_000_000,
+            available_bytes=20_000_000_000,
             bytes_per_row=100.0,
             was_downsampled=True,
         )

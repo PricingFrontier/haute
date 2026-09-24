@@ -235,6 +235,7 @@ type TrainPaneProps = {
   trainJob: ReturnType<typeof useNodeResultsStore.getState>["trainJobs"][string] | undefined
   cachedResult: ReturnType<typeof useNodeResultsStore.getState>["trainResults"][string] | undefined
   estimate: UseStaleConfigEstimateResult<TrainEstimate>
+  nodeLabel: (nodeId: string) => string
   submitting: boolean
   cancelling: boolean
   onTrain: () => void
@@ -253,6 +254,7 @@ function TrainPane({
   trainJob,
   cachedResult,
   estimate,
+  nodeLabel,
   submitting,
   cancelling,
   onTrain,
@@ -312,6 +314,7 @@ function TrainPane({
         ramEstimateLoading={estimate.loading}
         ramEstimateError={estimate.error}
         rowLimit={rowLimit}
+        nodeLabel={nodeLabel}
         terminalMetrics={cachedResult?.terminalStatus?.execution_metrics ?? null}
         terminalStatus={cachedResult?.terminalStatus?.status ?? null}
         terminalReason={cachedResult?.terminalStatus?.terminal_reason ?? null}
@@ -435,6 +438,11 @@ export default function ModellingConfig({
   const graph = useCallback(
     () => buildGraph(allNodes, edges, submodels, preamble),
     [allNodes, edges, submodels, preamble],
+  )
+  // A node the estimate names may sit inside a submodel, off this canvas; its id still says which.
+  const canvasNodeLabel = useCallback(
+    (id: string) => allNodes.find((node) => node.id === id)?.data.label || id,
+    [allNodes],
   )
   const estimateEndpoint = useCallback(
     (_payload: void, context: { signal: AbortSignal }) => estimateAfterSupersededPreviews(
@@ -601,6 +609,7 @@ export default function ModellingConfig({
       trainJob={trainJob}
       cachedResult={cachedResult}
       estimate={estimate}
+      nodeLabel={canvasNodeLabel}
       submitting={submitting}
       cancelling={cancelling}
       onTrain={onTrain}

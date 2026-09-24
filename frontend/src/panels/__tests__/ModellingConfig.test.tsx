@@ -1478,7 +1478,7 @@ describe("ModellingConfig", () => {
         expect(toasts.some((t) => t.text.includes("Training estimate failed"))).toBe(true)
       })
       // Inline warning is shown
-      expect(screen.getByText(/Memory estimate unavailable/)).toBeTruthy()
+      expect(screen.getByText("Memory estimate failed")).toBeTruthy()
       // Verify toast content
       const toasts = useToastStore.getState().toasts
       const ramToast = toasts.find((t) => t.text.includes("Training estimate failed"))!
@@ -1504,7 +1504,29 @@ describe("ModellingConfig", () => {
       await waitFor(() => {
         expect(screen.getByText("Dataset fits in memory")).toBeTruthy()
       })
-      expect(screen.queryByText(/Memory estimate unavailable/)).toBeNull()
+      expect(screen.queryByText(/Memory estimate (unavailable|failed)/)).toBeNull()
+    })
+
+    it("names the blocking node of an unavailable estimate by its canvas label", async () => {
+      mockEstimateTrainingRam.mockResolvedValue({
+        total_rows: null,
+        safe_row_limit: null,
+        estimated_mb: null,
+        training_mb: null,
+        available_mb: 8192,
+        bytes_per_row: null,
+        was_downsampled: false,
+        warning: null,
+        gpu_vram_estimated_mb: null,
+        gpu_vram_available_mb: null,
+        gpu_warning: null,
+        unavailable: { reason: "row_count_unprovable", blocking_node_id: "explode" },
+        evaluation_preview: null,
+      })
+      const upstream = { id: "explode", data: { label: "Explode items", description: "", nodeType: "polars", code: "df" } }
+      renderConfig({ allNodes: [upstream] })
+      expect(await screen.findByText(/The row count at "Explode items" can't be proven/)).toBeTruthy()
+      expect(screen.queryByText("Dataset fits in memory")).toBeNull()
     })
   })
 

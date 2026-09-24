@@ -2732,7 +2732,7 @@ describe("API response guards", () => {
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
       training_mb: 25, available_mb: 512, bytes_per_row: 256,
       was_downsampled: false, warning: null, gpu_vram_estimated_mb: null,
-      gpu_vram_available_mb: null, gpu_warning: null,
+      gpu_vram_available_mb: null, gpu_warning: null, unavailable: null,
       evaluation_preview: {
         schema_version: 1, strategy: "temporal", validation_method: "cross_validation",
         development_rows: 800, final_test_rows: 200, validation_fit_count: 5,
@@ -2756,12 +2756,56 @@ describe("API response guards", () => {
     }).evaluation_preview).toMatchObject({ validation_method: "none", validation_fit_count: 0 })
   })
 
+  it("parses an unavailable estimate's reason and rejects figures that disagree with it", () => {
+    const unavailable = parseTrainEstimateResponse(
+      loadUiContractFixture("train_estimate_unavailable_response"),
+    )
+    expect(unavailable.unavailable).toEqual({
+      reason: "row_count_unprovable",
+      blocking_node_id: "explode_items",
+    })
+    expect([unavailable.total_rows, unavailable.estimated_mb, unavailable.bytes_per_row]).toEqual([
+      null,
+      null,
+      null,
+    ])
+
+    const sized = loadUiContractFixture<Record<string, unknown>>("train_estimate_response")
+    const blank = { estimated_mb: null, training_mb: null, bytes_per_row: null }
+    const schema = { reason: "schema_unresolvable", blocking_node_id: null }
+    expect(parseTrainEstimateResponse({ ...sized, ...blank, unavailable: schema }).unavailable).toEqual(schema)
+
+    const rejected: [Record<string, unknown>, RegExp][] = [
+      [{ unavailable: undefined }, /unavailable/],
+      [{ estimated_mb: null }, /requires a row total and memory figures/],
+      [{ total_rows: null }, /requires a row total and memory figures/],
+      [{ estimated_mb: undefined }, /estimated_mb/],
+      [{ unavailable: schema }, /has no memory figures/],
+      [{ ...blank, unavailable: schema, was_downsampled: true }, /no downsampling verdict or warning/],
+      [{ ...blank, unavailable: schema, gpu_vram_estimated_mb: 12 }, /no GPU VRAM check/],
+      [
+        { ...blank, unavailable: { reason: "row_count_unprovable", blocking_node_id: "join" } },
+        /only a row_count_unprovable estimate lacks a row total/,
+      ],
+      [
+        { ...blank, total_rows: null, unavailable: { reason: "row_count_unprovable", blocking_node_id: null } },
+        /names the blocking node/,
+      ],
+      [{ ...blank, unavailable: { ...schema, blocking_node_id: "join" } }, /names no blocking node/],
+      [{ ...blank, unavailable: { ...schema, extra: true } }, /unexpected or missing fields/],
+      [{ ...blank, unavailable: { reason: "cardinality", blocking_node_id: null } }, /unavailable\.reason/],
+    ]
+    for (const [overrides, error] of rejected) {
+      expect(() => parseTrainEstimateResponse({ ...sized, ...overrides })).toThrow(error)
+    }
+  })
+
   it("rejects malformed bounded evaluation previews", () => {
     const estimate = {
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
       training_mb: 25, available_mb: 512, bytes_per_row: 256,
       was_downsampled: false, warning: null, gpu_vram_estimated_mb: null,
-      gpu_vram_available_mb: null, gpu_warning: null,
+      gpu_vram_available_mb: null, gpu_warning: null, unavailable: null,
     }
     expect(() => parseTrainEstimateResponse({
       ...estimate,
