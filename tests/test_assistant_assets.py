@@ -11,6 +11,7 @@ matches the live-graph shape ``get_pipeline`` serves.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -84,10 +85,36 @@ class TestExemplars:
             output_nodes = [node for node in graph["nodes"] if node["type"] == "output"]
             assert all("outputMapping" in node["config"]["keys"] for node in output_nodes), name
 
-        output_sidecars = _assets._examples_root().joinpath("config", "quote_response")
-        for resource in output_sidecars.iterdir():
-            config = json.loads(resource.read_text(encoding="utf-8"))
-            assert config["outputMapping"], resource.name
+        for manifest in _assets.example_bundle_manifests():
+            bundle = _assets._bundle_root(str(manifest["id"]))
+            assert bundle is not None
+            for resource in manifest["resources"]:
+                if resource["role"] != "output_config":
+                    continue
+                config = json.loads(bundle.joinpath(resource["path"]).read_text(encoding="utf-8"))
+                assert config["outputMapping"], (manifest["id"], resource["path"])
+
+    def test_every_example_is_a_bundle(self):
+        """One example format: no single-file example sits beside the bundles."""
+
+        root = _assets._examples_root()
+        assert not [child.name for child in root.iterdir() if child.is_file()]
+        for name, _summary in example_index():
+            assert _assets._bundle_root(name) is not None, name
+
+    def test_a_removed_example_is_refused_with_its_replacement(self):
+        error = load_example("joined_reference")["error"]
+        assert error == {
+            "code": "example_removed",
+            "message": (
+                "Assistant example 'joined_reference' was removed; use 'reference_join' instead."
+            ),
+            "name": "joined_reference",
+            "replacement": "reference_join",
+        }
+        assert "reference_join" in {name for name, _summary in example_index()}
+        with pytest.raises(ValueError, match="was removed; use 'reference_join'"):
+            _assets.materialize_example_bundle("joined_reference", Path("unused"))
 
     def test_rendering_matches_the_live_graph_shape(self):
         """Few-shot format == the format the model reads the live graph in."""
@@ -112,6 +139,8 @@ class TestExemplars:
 
 class TestExecutableBundles:
     EXPECTED = {
+        "branched_features",
+        "linear_pricing",
         "minimal_batch",
         "minimal_live_quote",
         "continuous_banding",

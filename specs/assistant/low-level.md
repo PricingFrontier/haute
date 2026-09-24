@@ -6,21 +6,15 @@
 |---|---|
 | `src/haute/assistant/__init__.py` | Public package seam; re-exports only `assistant_readiness`. The FastAPI router remains in the routes package and is not re-exported here. |
 | `src/haute/assistant/_config.py` | Resolves assistant configuration: the outer `[assistant]` table is closed to provider/model/base URL/egress and the required nested `[assistant.egress]` table is closed to trust, maximum sensitivity, and the three `allow_*` booleans. It validates endpoint/trust combinations and credential-free OpenAI URLs before SDK/key probing. The first-class Databricks mode rejects `base_url`, reads DATABRICKS_HOST / DATABRICKS_TOKEN, validates a credential-free HTTPS workspace-root host, and derives `<host>/serving-endpoints`. Other credentials come from their named environment variables. It produces `AssistantConfig`/`AssistantReadiness` including safe endpoint host, trust, and sensitivity status. |
-| `src/haute/assistant/_catalog.py` | The versioned capability registry and compatibility catalogue view. It derives mechanical node facts and resolved JSON Schemas from Haute's canonical types, config validation, config I/O, node registry, Polars I/O registry, and save validation; owns completeness-checked semantic metadata; declares the closed operation descriptors consumed by the tool layer; computes canonical manifest identity; and caches immutable manifests by installed version plus capability hash. |
+| `src/haute/assistant/_catalog.py` | The versioned capability registry, the assistant's one node catalogue. It derives mechanical node facts and resolved JSON Schemas from Haute's canonical types, config validation, config I/O, node registry, Polars I/O registry, and save validation; owns completeness-checked semantic metadata; declares the closed operation descriptors consumed by the tool layer; computes canonical manifest identity; and caches immutable manifests by installed version plus capability hash. |
 | `src/haute/assistant/_assets.py` | Loader and verifier for the assistant's packaged knowledge assets (read via `importlib.resources`): resource enumeration, `authoring_guide()`, and `example_index()` are cached; `load_example(name)` materialises the complete example tree for validation, then returns only a self-contained model-facing attribution/narrative/rendered-graph view with no inaccessible resource inventory. `validate_example_bundles()` checks closed manifests, content digests, evidence-resource roles, graph/schema assertions, positional golden output, and the declared installed-package fast checks; `materialize_example_bundle()` copies one already-validated project into an empty destination for specialist ordinary/negative checks. The guide fails loudly if missing/empty, index summaries come from the first module-docstring line, and an unknown name is a structured error listing valid names. |
 | `src/haute/assistant/_recipes.py` | Versioned immutable recipe registry and deterministic `plan_recipe` dispatcher. Each descriptor has a closed argument schema, unresolved decisions, preconditions, allowed primitive operation kinds, postconditions, linked example bundles, and stable failures. Explanation-only requests do not route to mutations, while a later explicit sequenced authoring clause retains mutation intent. Planner output is round-tripped through `_wire_ops.parse_ops`; unknown recipes and invalid arguments fail by stable code. |
 | `src/haute/assistant/_project_knowledge.py` | Source-linked project-knowledge extraction, bounded query selection, and disposable content-addressed index. Derives a saved-graph fact, a value-free `haute.toml` digest fact, and allowlisted UTF-8 documentation evidence; labels unmarked document sensitivity as restricted; records source digest/extraction version/evidence class; filters by `EgressPolicy`; and atomically refreshes metadata-only cache state under `.haute/assistant/knowledge/`. An allowlisted document that is not valid UTF-8 fails the read with a typed, project-relative error instead of silently disappearing. Dataset schemas remain a separate schema-only tool result. |
-| `src/haute/assistant/_evaluation.py` | Closed evaluation scenario/support-matrix loaders, semantic/safety scorer, repeated-trial attribution, percentile aggregation, and release-gate evaluator. The runner is injected so deterministic tests use fakes and the live-provider lane uses real provider adapters in isolated projects. It never imports or exposes held-out fixtures through production tools. |
-| `src/haute/assistant/_self_test.py` | Developer-facing live self-test harness for the configured provider. It loads a closed prompt-case format, copies each project fixture into a disposable directory, initializes the real Git mutation gate, runs the provider-neutral loop with the real tool executor, and evaluates semantic, completion, connectivity, join-port, failed-attempt, duplicate-read, and canary-leakage expectations. Reports may retain ordered tool names plus value-free status/error code/validation path/validation reason diagnostics so failed model strategies are actionable. They otherwise record only redacted identities, outcomes, reasons, graph structure, and aggregate metrics; prompts, model prose, tool arguments/results, credentials, dataset values, canary values, and content digests are not written to reports. |
-| `scripts/run_assistant_self_test.py` | Explicit credentialed CLI for listing/selecting self-test cases, loading the project's configured provider, running isolated synthetic cases, printing the redacted summary, optionally writing the redacted report, and exiting non-zero when any case fails. |
+| `scripts/run_assistant_evaluation.py` | The development-only qualification harness and its command (it is not part of the installed package): closed evaluation scenario/support-matrix loaders, semantic/safety scorer, repeated-trial attribution, percentile aggregation, and release-gate evaluator. The runner is injected so deterministic tests use fakes and the live-provider lane uses real provider adapters in isolated projects. It never imports or exposes held-out fixtures through production tools. |
+| `scripts/run_assistant_self_test.py` | Developer-facing live self-test harness for the configured provider, outside the installed package, and its explicit credentialed command. It loads a closed prompt-case format, copies each project fixture into a disposable directory, initializes the real Git mutation gate, runs the provider-neutral loop with the real tool executor, and evaluates semantic, completion, connectivity, join-port, failed-attempt, duplicate-read, and canary-leakage expectations. Reports may retain ordered tool names plus value-free status/error code/validation path/validation reason diagnostics so failed model strategies are actionable. They otherwise record only redacted identities, outcomes, reasons, graph structure, and aggregate metrics; prompts, model prose, tool arguments/results, credentials, dataset values, canary values, and content digests are not written to reports. |
 | `src/haute/assistant/assets/examples/<id>/manifest.json` | Closed executable-bundle manifest (`schema_version=1`, stable id/version, summary, source, `fast`/`ordinary`/`negative` assertion tier, required `engineering`/`pricing` review class, and a closed-role resource inventory). Review class records the required discipline rather than asserting approval; model-validation and optimisation fixtures use `pricing`, while purely mechanical fixtures use `engineering`. Every bundle includes its project configuration, source, synthetic input, graph/schema expectations, golden request/output, boundary cases, paired prompts, and semantic assertions. Assertion files have only `target`, non-empty `required_columns`, optional `row_count`, and a non-empty closed `checks` list. Golden arrays retain production row order, so order-unstable operators are followed by an explicit stable pipeline sort rather than normalized by the verifier. Every declared resource resolves inside its bundle, exists, and matches its recorded SHA-256 digest. |
 | `src/haute/assistant/assets/authoring_guide.md` | Packaged, hand-authored Haute idiom: canonical pipeline shapes, naming and stage-chaining conventions, and do/don't guidance returned with source/version/digest/evidence attribution by the authoring-guide tool; it is not embedded in every system prompt. |
-| `src/haute/assistant/assets/examples/branched_features.py` | Packaged exemplar with parallel feature branches joined before the output stage; its module docstring supplies narrative notes and the index summary. |
-| `src/haute/assistant/assets/examples/joined_reference.py` | Packaged exemplar showing a reference-data join; parsed as data by `_assets.py`, never imported as a module. |
-| `src/haute/assistant/assets/examples/linear_pricing.py` | Packaged minimal linear-pricing exemplar; parsed through the real pipeline parser and rendered in the same compact graph shape as the get-pipeline tool. |
-| `src/haute/assistant/assets/examples/config/data_input/quotes.json`, `src/haute/assistant/assets/examples/config/data_input/regions.json` | Packaged parser-relative file-input sidecars used by the linear and joined exemplars; source decorators load them through the same generated-code helper as user pipelines. |
-| `src/haute/assistant/assets/examples/config/quote_input/quote.json` | Packaged API-input schema for the branched exemplar, including its emitted `quote` port. |
-| `src/haute/assistant/assets/examples/config/quote_response/joined_priced.json`, `src/haute/assistant/assets/examples/config/quote_response/linear_priced.json`, `src/haute/assistant/assets/examples/config/quote_response/response.json` | Packaged response-output sidecars; each carries a concrete non-empty `outputMapping`. |
+| `src/haute/assistant/assets/examples/<id>/pipeline.py` | Every example is a bundle; there is no other example format. The bundle source is parsed as data by `_assets.py`, never imported, and rendered in the same compact graph shape as the get-pipeline tool; its module docstring supplies the narrative and the index summary. `linear_pricing` teaches implicit wiring through a source, one Polars enrichment and an output; `branched_features` teaches parallel feature branches joined before the response with explicit connections. A request for the removed `joined_reference` example is refused with `example_removed`, naming `reference_join`, which teaches the same edge join. |
 | `src/haute/assistant/_wire_ops.py` | Closed provider-wire graph-edit models plus graph-independent `parse_ops` validation. It imports no assistant modules, so recipes, the capability catalogue, and the graph domain layer share one operation vocabulary without lazy imports or dependency cycles. |
 | `src/haute/assistant/_ops.py` | Pure graph-edit domain layer, re-exporting the wire vocabulary for its existing public seam: ordered graph application, assistant-authoring validation (including connected new nodes and retained Polars results), canonical snapshot/revision and semantic-diff functions, typed plan models, deterministic verification policy, postcondition evaluation, and the bounded single-use `PlanStore`. It performs no writes. |
 | `src/haute/assistant/_render.py` | Shared compact graph renderer for live pipelines and packaged examples. It emits bounded node/config summaries, edges and handles, preamble presence/digest, and singleton presence without executable source or row values. Edge handles are rendered under the exact field names the graph-edit operations accept, so the shape the model reads back is the shape it must write; see Edge cases. |
@@ -45,10 +39,13 @@ is a **readiness error**, not a warn-and-default — a silently substituted cost
 precisely the wrong-fallback class the project forbids.
 Retention constants in `_session.py`, not env knobs: the provider request carries the most
 recent **complete turns** fitting a 40-message budget; stored history is capped at 200
-messages by evicting whole oldest turns; live-session LRU cap 32 (least-recently-used
-*idle* session evicted on create beyond the cap — dropping only the in-memory record, the
-persisted file revives it on next lookup; a session with a running turn is never
-evicted); persisted session files cap at 100 (`MAX_PERSISTED_SESSIONS`), pruning the
+messages by evicting whole oldest turns; live-session LRU cap 32 idle sessions, held in
+the shared `LRUCache` (a session with a running turn is pinned from `reserve_turn` until
+its reservation is released, so it is never evicted and does not count against the cap;
+when a create, a revival or the end of a turn leaves more idle sessions than the cap, the
+least-recently-used idle session is evicted — dropping only the in-memory record, the
+persisted file revives it on next lookup; a read that must not count as use, such as a
+listing or a resume refused for another pipeline, does not promote it); persisted session files cap at 100 (`MAX_PERSISTED_SESSIONS`), pruning the
 oldest by session-file modification time at session creation after removing abandoned
 atomic-write temp files. Pruning always cuts at turn boundaries — an
 assistant tool call and its result are never separated (both provider APIs reject
@@ -192,7 +189,7 @@ orphaned halves).
   their node and key; the stored normalized
   operation remains the authority for its requested value.
 - **`PlanStore`**: process-local, size- and TTL-bounded records keyed by plan
-  hash. It owns validated/applying/applied/aborted state transitions under a
+  hash, held in the shared `LRUCache`. It owns validated/applying/applied/aborted state transitions under a
   lock. An applied record cannot return to validated. A failed pre-commit
   application becomes aborted and cannot be applied directly again; an
   identical fresh dry-run may replace that aborted record and reissue the same
@@ -218,8 +215,10 @@ one to twelve unique ids. It validates the complete batch before returning descr
 in request order, so an unknown or duplicate id is one stable
 `unsupported_capability` or `invalid_capability_query` result rather than a partial
 response. Every descriptor is materialised into ordinary JSON containers.
-`list_node_types` maps the manifest's node descriptors into its legacy response shape
-and cannot drift independently.
+The manifest is the only node catalogue: there is no separate node-type list. A call to
+the removed `list_node_types` tool, which a resumed session's history can still name, is
+refused with `tool_removed` and a message naming `get_capability_manifest` and
+`get_capability_descriptors` as its replacements.
 
 **Recipe planning**: `plan_recipe` has a canonical flat discriminated union derived from the
 closed recipe argument schemas. Every request receives the same complete provider-facing
@@ -422,11 +421,12 @@ excluded count; its path and content never cross the tool boundary.
    retrying the mutation.
 
 `PlanStore` is bounded for plans awaiting use, but an `applying` record is a
-non-evictable lease until `complete_apply` or `abort_apply` records its
-terminal result. TTL expiry and capacity pressure may remove only
-non-applying records. If every slot is leased, a new distinct dry-run fails
-with `plan_store_busy` rather than losing authority evidence for a save that
-may already be committing.
+pinned, non-evictable lease until `complete_apply` or `abort_apply` records its
+terminal result; a lease does not count against the bound, and when it ends the
+least-recently-used plan beyond the bound is dropped. TTL expiry and capacity
+pressure may remove only non-applying records. If as many applies are in flight
+as the bound, a new distinct dry-run fails with `plan_store_busy` rather than
+losing authority evidence for a save that may already be committing.
 
 **Status** (`GET /api/assistant/status`): `_config.assistant_readiness()` — read `haute.toml`
 (malformed or unknown `[assistant]` key → `ConfigError` → 400), check
@@ -860,9 +860,10 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   complete turns within a 40-message budget plus the always-complete system prompt; stored
   history caps at 200 messages by evicting whole oldest turns. No pruning boundary ever
   separates an assistant tool call from its result (an orphaned half is an invalid provider
-  conversation). Live sessions are LRU-capped at 32 with least-recently-used *idle*
-  eviction — a session holding a running turn is never evicted, and eviction drops only
-  the in-memory record: the persisted file revives the id transparently on next lookup.
+  conversation). Live sessions are LRU-capped at 32 idle sessions with least-recently-used
+  eviction — a session holding a running turn is pinned, never evicted and outside the cap,
+  and eviction drops only the in-memory record: the persisted file revives the id
+  transparently on next lookup.
 - **Dataset discovery and schema inspection share one safety contract**: installed readable path
   extensions come from `routes.files._installed_input_extensions()` and are matched by
   case-folded filename suffix (including compound extensions). The resolved project-relative
@@ -884,7 +885,8 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   payload, and is never shown to the model: echoing it invited edit operations written
   in the shape the model had just read, which the closed operation schema then rejected
   as an unknown field. Every in-repo reader of that rendering follows the same names —
-  including `_self_test._read_graph`, whose scoring compares Edge Join `base`/`join`
+  including the self-test harness's `_read_graph` (`scripts/run_assistant_self_test.py`),
+  whose scoring compares Edge Join `base`/`join`
   roles. A reader left on the persisted spelling gets `None` for every edge without
   raising, silently scoring every handle-qualified required edge as missing.
 - **Egress flags are honoured, not merely recorded.** `allow_executable_source` and
@@ -1004,8 +1006,9 @@ fixture for route tests). The implemented coverage is:
   state-directory, and credential-file listing/schema inspection; preview
   collection is poisoned to enforce the no-row boundary.
 - **`tests/test_assistant_assets.py`** — the authoring guide loads non-empty via
-  `importlib.resources`; every legacy exemplar and content-addressed bundle
-  parses through `parse_pipeline_to_graph`; bundle manifests are closed,
+  `importlib.resources`; every example is a content-addressed bundle (no
+  single-file example remains) and parses through `parse_pipeline_to_graph`; the
+  removed `joined_reference` is refused with its replacement named; bundle manifests are closed,
   inventories reject unknown roles, missing/digest-mismatched/undeclared
   files, expected-schema/assertion drift, and missing required artifact
   classes; the declared fast subset executes against synthetic data.

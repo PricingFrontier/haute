@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,10 +23,11 @@ from typing import Any, Literal
 
 from haute._logging import get_logger
 from haute._mlflow_utils import (
+    allow_file_store_if_local,
+    ensure_experiment,
     mlflow_fluent_operation,
     registry_uri_for_tracking,
     runtime_environment_inference,
-    set_experiment_creating_workspace_folder,
     set_tracking_uri_preserving_env,
 )
 from haute.errors import HauteValidationError
@@ -122,18 +124,23 @@ def build_run_url(
     backend: str,
     experiment_name: str,
     run_id: str,
+    *,
+    tracking_uri: str | None = None,
 ) -> str | None:
     """Build a Databricks/server run URL, or return ``None`` for local mode.
 
-    Uses ``mlflow.get_experiment_by_name`` to resolve the experiment ID
-    (run URLs require the numeric ID, not the name). Databricks URLs point
-    at the workspace host; server URLs point at the configured tracking
-    server's own UI.
+    Resolves the experiment ID (run URLs require the numeric ID, not the name)
+    through a client bound to *tracking_uri* — MLflow's fluent tracking URI when
+    omitted, as inside a fluent operation. Databricks URLs point at the
+    workspace host; server URLs point at the configured tracking server's own UI.
     """
     if backend not in ("databricks", "server"):
         return None
 
     import mlflow
+    from mlflow.tracking import MlflowClient
+
+    uri = tracking_uri if tracking_uri is not None else mlflow.get_tracking_uri()
 
     if backend == "databricks":
         # The host MLflow's requests actually target: the MLflow pair or the
@@ -141,7 +148,7 @@ def build_run_url(
         from mlflow.utils.databricks_utils import get_databricks_host_creds
 
         try:
-            base = (get_databricks_host_creds(mlflow.get_tracking_uri()).host or "").rstrip("/")
+            base = (get_databricks_host_creds(uri).host or "").rstrip("/")
         except Exception:
             logger.debug("run_url_host_unavailable", exc_info=True)
             return None
@@ -151,12 +158,12 @@ def build_run_url(
 
         # A credential-bearing env tracking URI must not leak into the
         # displayed run link.
-        base = redact_uri(mlflow.get_tracking_uri()).rstrip("/")
+        base = redact_uri(uri).rstrip("/")
         path = "#/experiments"
     if not base:
         return None
     try:
-        exp = mlflow.get_experiment_by_name(experiment_name)
+        exp = MlflowClient(tracking_uri=uri).get_experiment_by_name(experiment_name)
         if exp is None:
             logger.warning(
                 "experiment_lookup_returned_none",
@@ -192,7 +199,6 @@ _DIAGNOSTIC_ARTIFACTS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-@mlflow_fluent_operation()
 def log_experiment(
     *,
     experiment_name: str,
@@ -206,10 +212,16 @@ def log_experiment(
     created for a complete candidate. Registration never happens here: a
     separate promotion process registers candidates.
 
+    The run, its parameters, metrics, tags and artifacts and its terminal status
+    go through a client bound to the resolved destination; only the model log
+    holds MLflow's process-global state (:func:`_log_model_with_signature`), so
+    logs to different destinations proceed concurrently.
+
     Returns:
         MLflowLogResult with backend, experiment name, run ID, and URLs.
     """
-    import mlflow
+    from mlflow.entities import Metric, Param
+    from mlflow.tracking import MlflowClient
 
     candidate.artifacts.require_files()
 
@@ -217,49 +229,57 @@ def log_experiment(
         if check_cancelled is not None:
             check_cancelled()
 
-    tracking_uri, backend = configure_mlflow_tracking(destination)
+    tracking_uri, backend = resolve_tracking_backend(destination)
+    registry_uri = registry_uri_for_tracking(tracking_uri)
+    allow_file_store_if_local(tracking_uri, backend)
+    client = MlflowClient(tracking_uri=tracking_uri, registry_uri=registry_uri)
     logger.info("mlflow_logging_started", experiment=experiment_name, backend=backend)
 
-    set_experiment_creating_workspace_folder(mlflow, experiment_name)
+    experiment_id = ensure_experiment(client, tracking_uri, experiment_name)
     _check_cancelled()
 
     diag = candidate.diagnostics
-    with mlflow.start_run(run_name=candidate.run_name, tags=dict(candidate.tags)) as run:
+    run_id = client.create_run(
+        experiment_id, run_name=candidate.run_name, tags=dict(candidate.tags)
+    ).info.run_id
+    status = "FAILED"
+    try:
         _check_cancelled()
         # Truncate params to 500 chars (MLflow limit) and batch in groups of 100
         truncated_params = {k: str(v)[:500] for k, v in candidate.params.items()}
         param_items = list(truncated_params.items())
         for i in range(0, len(param_items), 100):
             _check_cancelled()
-            mlflow.log_params(dict(param_items[i : i + 100]))
-        mlflow.log_metrics(dict(candidate.metrics))
+            client.log_batch(
+                run_id, params=[Param(key, value) for key, value in param_items[i : i + 100]]
+            )
+        timestamp = int(time.time() * 1000)
+        client.log_batch(
+            run_id,
+            metrics=[
+                Metric(key, float(value), timestamp, 0) for key, value in candidate.metrics.items()
+            ],
+        )
         _check_cancelled()
 
-        # The model carries a ModelSignature from the feature contract, so a
-        # scorer can detect train-vs-score drift from the MLflow artifact alone.
-        _log_model_with_signature(
-            mlflow,
-            model_path=candidate.artifacts.model,
-            contract_path=candidate.artifacts.feature_contract,
-            metadata=candidate.metadata,
-        )
-        mlflow.log_artifact(str(candidate.artifacts.feature_contract))
+        client.log_artifact(run_id, str(candidate.artifacts.feature_contract))
         _check_cancelled()
 
         for field_name, prefix, artifact_dir in _DIAGNOSTIC_ARTIFACTS:
             value = getattr(diag, field_name)
             if value:
-                _log_json_artifact(mlflow, value, prefix, artifact_dir)
+                _log_json_artifact(client, run_id, value, prefix, artifact_dir)
 
         for artifact_kind, path in candidate.artifacts.evidence.items():
             _check_cancelled()
             artifact_dir = "tuning" if artifact_kind.startswith("tuning_") else "evaluation"
-            mlflow.log_artifact(str(path), artifact_dir)
+            client.log_artifact(run_id, str(path), artifact_dir)
 
         _check_cancelled()
         try:
             _log_model_card(
-                mlflow,
+                client,
+                run_id,
                 name=candidate.run_name,
                 metrics=dict(candidate.metrics),
                 params=dict(candidate.params),
@@ -268,12 +288,26 @@ def log_experiment(
             )
         except Exception as exc:
             logger.warning("model_card_generation_failed", error_type=type(exc).__name__)
-            mlflow.set_tag("haute.model_card", "unavailable")
+            client.set_tag(run_id, "haute.model_card", "unavailable")
 
-        run_id = run.info.run_id
         _check_cancelled()
+        # The model carries a ModelSignature from the feature contract, so a
+        # scorer can detect train-vs-score drift from the MLflow artifact alone.
+        _log_model_with_signature(
+            client,
+            run_id,
+            tracking_uri=tracking_uri,
+            registry_uri=registry_uri,
+            model_path=candidate.artifacts.model,
+            contract_path=candidate.artifacts.feature_contract,
+            metadata=candidate.metadata,
+        )
+        _check_cancelled()
+        status = "FINISHED"
+    finally:
+        client.set_terminated(run_id, status)
 
-    run_url = build_run_url(backend, experiment_name, run_id)
+    run_url = build_run_url(backend, experiment_name, run_id, tracking_uri=tracking_uri)
 
     logger.info("mlflow_logging_completed", run_id=run_id, backend=backend)
     return MLflowLogResult(
@@ -285,8 +319,8 @@ def log_experiment(
     )
 
 
-def _log_json_artifact(mlflow: Any, data: Any, prefix: str, artifact_dir: str) -> None:
-    """Write *data* to a temp JSON file and log it as an MLflow artifact."""
+def _log_json_artifact(client: Any, run_id: str, data: Any, prefix: str, artifact_dir: str) -> None:
+    """Write *data* to a temp JSON file and log it as an artifact of *run_id*."""
     with tempfile.NamedTemporaryFile(
         encoding="utf-8",
         mode="w",
@@ -296,19 +330,27 @@ def _log_json_artifact(mlflow: Any, data: Any, prefix: str, artifact_dir: str) -
     ) as f:
         json.dump(data, f, indent=2)
     try:
-        mlflow.log_artifact(f.name, artifact_dir)
+        client.log_artifact(run_id, f.name, artifact_dir)
     finally:
         os.unlink(f.name)
 
 
 def _log_model_with_signature(
-    mlflow: Any,
+    client: Any,
+    run_id: str,
     *,
+    tracking_uri: str,
+    registry_uri: str,
     model_path: Path,
     contract_path: Path,
     metadata: ModelCardMetadata,
 ) -> None:
-    """Log a trained model to MLflow with a ``ModelSignature`` attached.
+    """Log a trained model to run *run_id* with a ``ModelSignature`` attached.
+
+    This is training's one fluent MLflow call: ``mlflow.pyfunc.log_model``
+    resolves the global tracking URI and the thread's active run, so it runs
+    inside :func:`mlflow_fluent_operation`, pointed at the destination and
+    attached to the client-created run, then restores MLflow's global state.
 
     The signature's input schema preserves the exact training feature order and
     dtypes from the feature contract. Every native model is logged through
@@ -352,24 +394,30 @@ def _log_model_with_signature(
                 f"The trained model could not be loaded for logging ({type(exc).__name__}: "
                 f"{exc}); retrain the model."
             ) from exc
+        import mlflow
+
         # ``name`` is MLflow 3's spelling (``artifact_path`` is deprecated); the
         # environment scope makes the recorded requirements describe this
         # interpreter, not a uv.lock in the working directory.
-        with runtime_environment_inference():
-            mlflow.pyfunc.log_model(
-                name="model",
-                loader_module="haute.modelling._native_pyfunc",
-                data_path=str(package),
-                signature=signature,
-            )
+        with mlflow_fluent_operation():
+            set_tracking_uri_preserving_env(mlflow, tracking_uri)
+            mlflow.set_registry_uri(registry_uri)
+            with mlflow.start_run(run_id=run_id), runtime_environment_inference():
+                mlflow.pyfunc.log_model(
+                    name="model",
+                    loader_module="haute.modelling._native_pyfunc",
+                    data_path=str(package),
+                    signature=signature,
+                )
     # mlflow 3.x stores logged models as LoggedModel entities outside the run's
     # artifact listing, so haute's run-artifact discovery needs the native file
     # at the run root too.
-    mlflow.log_artifact(str(model_path))
+    client.log_artifact(run_id, str(model_path))
 
 
 def _log_model_card(
-    mlflow: Any,
+    client: Any,
+    run_id: str,
     *,
     name: str,
     metrics: dict[str, float],
@@ -396,6 +444,6 @@ def _log_model_card(
     ) as f:
         f.write(html_content)
     try:
-        mlflow.log_artifact(f.name, "model_card")
+        client.log_artifact(run_id, f.name, "model_card")
     finally:
         os.unlink(f.name)

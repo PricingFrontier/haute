@@ -1,9 +1,9 @@
-"""The node vocabulary exposed to the pricing assistant.
+"""The capability manifest: the node, operation and recipe vocabulary of the assistant.
 
-The catalog deliberately keeps its mechanical facts derived from the same
-registries that validate and save a pipeline.  The only hand-authored part is
-the short usage note for each node type.  That gives the model useful authoring
-guidance without creating a second source of truth for node names, config keys,
+Node descriptors derive their mechanical facts from the same registries that
+validate and save a pipeline.  The only hand-authored part is the short usage
+note for each node type.  That gives the model useful authoring guidance
+without creating a second source of truth for node names, config keys,
 decorators, sidecar folders, or singleton rules.
 """
 
@@ -24,53 +24,15 @@ from haute.assistant._recipes import recipe_manifest
 from haute.assistant._wire_ops import graph_edit_operations_schema
 from haute.routes._save_pipeline import _SINGLETON_NODE_TYPES
 
-
-@dataclass(frozen=True, slots=True)
-class NodeCatalogEntry:
-    """Facts and authoring guidance for one :class:`~haute._types.NodeType`."""
-
-    node_type: NodeType
-    decorator: str | None
-    config_keys: tuple[str, ...]
-    config_folder: str | None
-    singleton: bool
-    usage_note: str
-
-    @property
-    def config_shapes(self) -> tuple[tuple[str, str], ...]:
-        """Return the TypedDict field shapes behind the config allowlist."""
-
-        config_type = _TYPED_DICT_BY_NODE_TYPE.get(self.node_type)
-        if config_type is None:
-            return ()
-        return tuple(
-            (key, str(shape).replace("typing.", ""))
-            for key, shape in config_type.__annotations__.items()
-        )
-
-    def as_dict(self) -> dict[str, object]:
-        """Return the stable, JSON-shaped representation used by tools."""
-
-        return {
-            "node_type": self.node_type.value,
-            "decorator": self.decorator,
-            "config_keys": list(self.config_keys),
-            "config_shapes": [{"key": key, "shape": shape} for key, shape in self.config_shapes],
-            "config_folder": self.config_folder,
-            "singleton": self.singleton,
-            "usage_note": self.usage_note,
-        }
-
-
 # The save service is the authority for singleton policy.  Keep this derived
 # rather than repeating the node list here: a new singleton must be visible to
-# both save validation and the assistant catalog in the same change.
+# both save validation and the capability manifest in the same change.
 _SINGLETON_TYPES = frozenset(node_type for node_type, _label in _SINGLETON_NODE_TYPES)
 
 
-# Usage notes are the catalog's intentionally hand-authored knowledge.  Every
+# Usage notes are the manifest's intentionally hand-authored knowledge.  Every
 # current NodeType is listed explicitly so adding a NodeType without adding a
-# corresponding note leaves the catalog incomplete and fails at import time.
+# corresponding note leaves the manifest incomplete and fails at import time.
 _USAGE_NOTES: dict[NodeType, str] = {
     NodeType.API_INPUT: (
         "Declare the request contract and its input tables; use this as the "
@@ -151,121 +113,7 @@ _USAGE_NOTES: dict[NodeType, str] = {
 }
 
 
-def _make_entry(node_type: NodeType) -> NodeCatalogEntry:
-    """Build one entry from the canonical registries and the local usage note."""
-
-    return NodeCatalogEntry(
-        node_type=node_type,
-        decorator=NODE_TYPE_TO_DECORATOR.get(node_type),
-        config_keys=tuple(sorted(VALID_KEYS.get(node_type, frozenset()))),
-        config_folder=NODE_TYPE_TO_FOLDER.get(node_type),
-        singleton=node_type in _SINGLETON_TYPES,
-        usage_note=_USAGE_NOTES[node_type],
-    )
-
-
-# Iterate over the enum, rather than the hand-authored notes, so the enum's
-# order is the catalog's order and an omitted note cannot silently hide a new
-# node type.  The explicit membership check lets the completeness validator
-# report the missing type with its normal diagnostic instead of using a broad
-# fallback note.
-NODE_CATALOG: dict[NodeType, NodeCatalogEntry] = {
-    node_type: _make_entry(node_type) for node_type in NodeType if node_type in _USAGE_NOTES
-}
-
-
-def validate_catalog_complete() -> None:
-    """Assert that every canonical node type has a complete catalog entry.
-
-    This mirrors ``haute._registry.validate_registry_complete``: a missing
-    entry is a release-time programming error, not a condition for the model
-    to recover from.  Mechanical fields are checked too, so a hand-edited
-    catalog entry cannot quietly disagree with save/config behaviour.
-    """
-
-    canonical_types = frozenset(NodeType)
-    catalog_types = frozenset(NODE_CATALOG)
-    missing = [node_type for node_type in NodeType if node_type not in catalog_types]
-    unexpected = [node_type for node_type in NODE_CATALOG if node_type not in canonical_types]
-
-    invalid_entries: list[str] = []
-    for node_type in NodeType:
-        entry = NODE_CATALOG.get(node_type)
-        if entry is None:
-            continue
-        if entry.node_type is not node_type:
-            invalid_entries.append(f"{node_type.value}: entry.node_type={entry.node_type!r}")
-        if entry.decorator != NODE_TYPE_TO_DECORATOR.get(node_type):
-            invalid_entries.append(f"{node_type.value}: decorator")
-        expected_keys = tuple(sorted(VALID_KEYS.get(node_type, frozenset())))
-        if entry.config_keys != expected_keys:
-            invalid_entries.append(f"{node_type.value}: config_keys")
-        if entry.config_folder != NODE_TYPE_TO_FOLDER.get(node_type):
-            invalid_entries.append(f"{node_type.value}: config_folder")
-        if entry.singleton != (node_type in _SINGLETON_TYPES):
-            invalid_entries.append(f"{node_type.value}: singleton")
-        if not entry.usage_note.strip():
-            invalid_entries.append(f"{node_type.value}: usage_note")
-
-    if missing or unexpected or invalid_entries:
-        raise RuntimeError(
-            "NODE_CATALOG is incomplete or disagrees with canonical registries — "
-            "every NodeType needs matching assistant metadata.\n"
-            f"  Missing: {[node_type.value for node_type in missing]}\n"
-            f"  Unexpected: {[str(node_type) for node_type in unexpected]}\n"
-            f"  Invalid: {invalid_entries}"
-        )
-
-
-def render_catalog() -> str:
-    """Render the catalog section in a stable, model-readable Markdown form."""
-
-    lines = [
-        "## Haute node catalog",
-        "Use only these canonical node types and config keys when authoring a graph.",
-    ]
-    for node_type in NodeType:
-        entry = NODE_CATALOG[node_type]
-        lines.extend(
-            (
-                f"### `{node_type.value}`",
-                (
-                    f"- Decorator: `{entry.decorator}`"
-                    if entry.decorator
-                    else "- Decorator: structural-only"
-                ),
-                (
-                    "- Config keys: " + ", ".join(f"`{key}`" for key in entry.config_keys)
-                    if entry.config_keys
-                    else "- Config keys: none"
-                ),
-                (
-                    "- Config shapes: "
-                    + ", ".join(f"`{key}`: `{shape}`" for key, shape in entry.config_shapes)
-                    if entry.config_shapes
-                    else "- Config shapes: none"
-                ),
-                (
-                    f"- Sidecar folder: `config/{entry.config_folder}/`"
-                    if entry.config_folder
-                    else "- Sidecar folder: none"
-                ),
-                f"- Singleton: {'yes' if entry.singleton else 'no'}",
-                f"- Usage: {entry.usage_note}",
-                "",
-            )
-        )
-    return "\n".join(lines).rstrip()
-
-
-# Fail during import if a new node type is not represented here.  This is
-# intentionally eager: an incomplete catalog must not reach a configured model.
-validate_catalog_complete()
-
-
 # ASSIST-A04 capability manifest -------------------------------------------------
-# This intentionally lives beside the legacy catalogue: it is the authoritative
-# descriptor and the latter remains a small compatibility projection.
 MANIFEST_SCHEMA_VERSION = "1.0"
 _MANIFEST_CACHE: dict[tuple[str, str], CapabilityManifest] = {}
 
@@ -636,7 +484,8 @@ def _execution_class(node_type: NodeType) -> tuple[str, str]:
 
 
 def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
-    entry = NODE_CATALOG[node_type]
+    config_folder = NODE_TYPE_TO_FOLDER.get(node_type)
+    usage = _USAGE_NOTES[node_type]
     schema = _config_schema(node_type)
     raw_required = schema.get("required", ())
     if not isinstance(raw_required, list | tuple):
@@ -686,7 +535,7 @@ def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
         anti_patterns.append("Do not omit or duplicate edgeJoin target_handle roles.")
     return NodeCapabilityDescriptor(
         node_type.value,
-        entry.decorator,
+        NODE_TYPE_TO_DECORATOR.get(node_type),
         cast(Mapping[str, object], _freeze(schema)),
         required,
         tuple(key for key in fields if key not in required),
@@ -694,21 +543,21 @@ def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
         cast(Mapping[str, object], _freeze(_schema_enums(schema))),
         branches,
         (branch_constraints,),
-        entry.config_folder,
-        entry.singleton,
+        config_folder,
+        node_type in _SINGLETON_TYPES,
         (
             "Persisted in the canonical sidecar folder."
-            if entry.config_folder
+            if config_folder
             else "Inline graph configuration."
         ),
-        entry.usage_note,
+        usage,
         cast(Mapping[str, object], _freeze(_node_ports(node_type))),
         _input_cardinality(node_type),
         wiring_rules,
         _schema_effect(node_type),
         execution,
         side_effects,
-        entry.usage_note,
+        usage,
         tuple(anti_patterns),
         _EXAMPLE_IDS.get(node_type, ()),
         _RECIPE_IDS.get(node_type, ()),
@@ -811,7 +660,6 @@ def _operation_output_schema(name: str) -> dict[str, object]:
             "max_levels",
             "project_revision",
         ),
-        "list_node_types": ("node_types",),
         "list_datasets": ("datasets", "directories", "recursive", "truncated"),
         "get_dataset_schema": (
             "path",
@@ -1039,7 +887,6 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
             "node's inputs by the name its code binds. Returns no rows: a value appears "
             "only as a distinct level, and a high-cardinality column is withheld."
         ),
-        "list_node_types": "List the manifest-backed node catalogue compatibility view.",
         "list_datasets": (
             "List safe installed-format datasets in one project directory, optionally recursively."
         ),
@@ -1086,7 +933,6 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
             },
             ["node"],
         ),
-        "list_node_types": _closed_object(),
         "list_datasets": _closed_object(
             {
                 "project_root": {"type": "string"},
@@ -1275,7 +1121,6 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
             "get_capability_descriptors",
             "get_example",
             "get_authoring_guide",
-            "list_node_types",
             "plan_recipe",
         },
         not mutation,
@@ -1305,7 +1150,6 @@ def capability_manifest() -> CapabilityManifest:
                 "get_node_schema",
                 "get_node_config",
                 "get_column_profiles",
-                "list_node_types",
                 "list_datasets",
                 "get_dataset_schema",
                 "get_project_knowledge",
@@ -1358,6 +1202,14 @@ def _clear_manifest_cache() -> None:
 
 def validate_manifest_complete() -> None:
     """Fail loudly if an exported descriptor becomes incomplete or open."""
+    missing_notes = [node_type.value for node_type in NodeType if node_type not in _USAGE_NOTES]
+    unexpected_notes = [str(key) for key in _USAGE_NOTES if not isinstance(key, NodeType)]
+    if missing_notes or unexpected_notes:
+        raise RuntimeError(
+            "Every NodeType needs exactly one assistant usage note.\n"
+            f"  Missing: {missing_notes}\n"
+            f"  Unexpected: {unexpected_notes}"
+        )
     manifest = capability_manifest()
     if {node.id for node in manifest.nodes} != {node_type.value for node_type in NodeType}:
         raise RuntimeError("Capability manifest is missing a NodeType descriptor.")
@@ -1437,15 +1289,11 @@ validate_manifest_complete()
 
 __all__ = [
     "MANIFEST_SCHEMA_VERSION",
-    "NODE_CATALOG",
     "CapabilityManifest",
     "NodeCapabilityDescriptor",
-    "NodeCatalogEntry",
     "OperationCapabilityDescriptor",
     "capability_manifest",
     "compact_manifest",
     "materialise_json",
-    "render_catalog",
-    "validate_catalog_complete",
     "validate_manifest_complete",
 ]

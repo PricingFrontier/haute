@@ -202,7 +202,7 @@ documents = [
   "specs/reference-pipeline/high-level.md",
   "specs/reference-pipeline/low-level.md",
 ]
-entry_points = ["library", "http"]
+entry_points = ["library", "http", "cli"]
 
 [[node_types]]
 id = "apiInput"
@@ -649,7 +649,7 @@ tests = [
   "tests/test_output_assembler.py::test_validate_rejects_two_columns_on_one_path",
   "tests/test_v2_codec_and_shred.py::test_validate_rejects_duplicate_table_labels",
   "tests/test_json_shred_parallel.py::test_byte_ranges_read_back_every_record_in_order",
-  "tests/test_output_assembler.py::test_same_level_join_output_follows_the_first_source_then_unmatched_later_rows",
+  "tests/test_output_assembler.py::test_validate_rejects_two_frames_emitting_at_one_array_level",
   "tests/test_v2_codec_and_shred.py::test_validate_v2_schema_rejects_invalid_declared_scalars",
   "tests/test_scalar_array_and_inference.py::test_build_bool_in_numeric_column_fails_loud",
   "tests/test_json_shred_w1_conservation.py::test_build_conserves_root_rows_and_accounts_skips",
@@ -660,9 +660,9 @@ tests = [
 invariant = "JSON, JSONL and XML inputs shred to the declared tables with every root row accounted for; frame and edge joins, output mapping, dry-run and batch assembly return the exact expected document per request; missing, null, empty and nested arrays, duplicate or missing keys, deterministic row order and strict schema errors have the documented outcomes; and frame edits persist through save and reload."
 
 [scenarios.evidence]
-commit = "f9265ddf"
+commit = "4427e219"
 command = 'uv run pytest tests/test_v2_codec_and_shred.py tests/test_load_v2_api_source.py tests/test_scalar_array_and_inference.py tests/test_json_shred_parallel.py tests/test_xml_api_input.py tests/test_edge_join.py tests/test_output_assembler.py tests/test_output_nested_roundtrip.py tests/test_apiinput_flat_output_dry_run.py tests/test_json_shred_w1_conservation.py -q -p no:warnings'
-result = "506 passed in 28.85s"
+result = "506 passed in 45.03s"
 
 [[scenarios]]
 id = "W06-S01"
@@ -1376,12 +1376,18 @@ result = "331 passed, 7 skipped in 11.98s; the environment-marker and outside-wr
 id = "W15-S02"
 workflow = "W15"
 contract = "specs/reference-pipeline/high-level.md#purpose"
-state = "not-applicable"
-entry_point = "library"
+state = "covered"
+entry_point = "cli"
 tier = "workflow"
 lane = "backend"
-real = []
+real = ["filesystem", "parser", "executor"]
 stubbed = []
-tests = []
-reason = "the checked-in rating project is a documented non-runnable snapshot"
-invariant = "A runnable end-to-end fixture from the checked-in rating project is not applicable because the project is a documented non-runnable snapshot."
+tests = [
+  "tests/test_reference_pipeline.py::test_default_pipeline_runs",
+]
+invariant = "From a fresh copy of the tracked root haute.toml and examples/, `haute run` resolves the repository's default pipeline, runs all three nodes of examples/reference/, and its output returns the six expected priced quote records."
+
+[scenarios.evidence]
+commit = "6d67330a"
+command = 'uv run pytest tests/test_reference_pipeline.py -q -p no:warnings'
+result = "1 passed in 5.10s"

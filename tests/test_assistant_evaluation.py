@@ -14,7 +14,7 @@ FIXTURE_ROOT = Path(__file__).parent / "assistant_eval"
 
 def test_matrix_and_held_out_scenarios_are_closed_versioned_and_separate_from_assets():
     from haute.assistant._assets import example_index
-    from haute.assistant._evaluation import load_scenarios, load_support_matrix
+    from scripts.run_assistant_evaluation import load_scenarios, load_support_matrix
 
     matrix = load_support_matrix(FIXTURE_ROOT / "support_matrix.json")
     scenarios = load_scenarios(FIXTURE_ROOT / "held_out")
@@ -48,7 +48,7 @@ def test_matrix_and_held_out_scenarios_are_closed_versioned_and_separate_from_as
 
 
 def _observation(*, cold: bool = False, unauthorized: bool = False, leaks: bool = False):
-    from haute.assistant._evaluation import TrialObservation
+    from scripts.run_assistant_evaluation import TrialObservation
 
     return TrialObservation(
         node_types=("banding",),
@@ -88,7 +88,7 @@ def _observation(*, cold: bool = False, unauthorized: bool = False, leaks: bool 
 
 
 def test_scoring_is_semantic_and_does_not_depend_on_prose_or_tool_order():
-    from haute.assistant._evaluation import TrialAttribution, load_scenarios, score_trial
+    from scripts.run_assistant_evaluation import TrialAttribution, load_scenarios, score_trial
 
     scenario = next(
         scenario
@@ -117,7 +117,7 @@ def test_scoring_is_semantic_and_does_not_depend_on_prose_or_tool_order():
 
 
 def test_scoring_rejects_non_finite_or_malformed_runner_evidence():
-    from haute.assistant._evaluation import TrialAttribution, load_scenarios, score_trial
+    from scripts.run_assistant_evaluation import TrialAttribution, load_scenarios, score_trial
 
     scenario = load_scenarios(FIXTURE_ROOT / "held_out")[0]
     attribution = TrialAttribution(
@@ -147,7 +147,7 @@ def test_scoring_rejects_non_finite_or_malformed_runner_evidence():
 
 
 async def test_repeated_trials_use_isolated_projects_and_per_scenario_cold_runs():
-    from haute.assistant._evaluation import (
+    from scripts.run_assistant_evaluation import (
         TrialAttribution,
         load_scenarios,
         load_support_matrix,
@@ -195,7 +195,7 @@ async def test_repeated_trials_use_isolated_projects_and_per_scenario_cold_runs(
 
 
 def test_zero_tolerance_safety_cannot_be_averaged_into_a_qualified_report():
-    from haute.assistant._evaluation import (
+    from scripts.run_assistant_evaluation import (
         TrialAttribution,
         evaluate_configuration,
         load_scenarios,
@@ -232,7 +232,7 @@ def test_zero_tolerance_safety_cannot_be_averaged_into_a_qualified_report():
 
 
 def test_candidate_or_scripted_evidence_never_qualifies_even_when_metrics_pass():
-    from haute.assistant._evaluation import (
+    from scripts.run_assistant_evaluation import (
         TrialAttribution,
         evaluate_configuration,
         load_scenarios,
@@ -265,7 +265,7 @@ def test_candidate_or_scripted_evidence_never_qualifies_even_when_metrics_pass()
 
 
 def test_percentiles_and_repeated_trial_counts_are_gated_per_task():
-    from haute.assistant._evaluation import (
+    from scripts.run_assistant_evaluation import (
         TrialAttribution,
         evaluate_configuration,
         load_scenarios,
@@ -318,7 +318,7 @@ def test_percentiles_and_repeated_trial_counts_are_gated_per_task():
 
 
 def test_unexpected_trial_cannot_fall_outside_the_support_matrix_gate():
-    from haute.assistant._evaluation import (
+    from scripts.run_assistant_evaluation import (
         TrialAttribution,
         evaluate_configuration,
         load_scenarios,
@@ -366,7 +366,7 @@ def test_unexpected_trial_cannot_fall_outside_the_support_matrix_gate():
 def test_persisted_report_is_attributable_and_does_not_retain_canary_values(
     tmp_path: Path,
 ):
-    from haute.assistant._evaluation import (
+    from scripts.run_assistant_evaluation import (
         TrialAttribution,
         evaluate_configuration,
         load_scenarios,
@@ -411,3 +411,10 @@ def test_persisted_report_is_attributable_and_does_not_retain_canary_values(
     assert "canary" not in raw
     assert payload["report"]["capability_hash"] == "a" * 64
     assert payload["trials"][0]["metrics"]["leakage_count"] == 1
+
+
+def test_the_harnesses_are_not_part_of_the_installed_package() -> None:
+    import importlib.util
+
+    for name in ("haute.assistant._self_test", "haute.assistant._evaluation"):
+        assert importlib.util.find_spec(name) is None, name

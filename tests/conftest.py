@@ -146,7 +146,7 @@ def _patient_preparation_join(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_mlflow_fluent_state(monkeypatch: pytest.MonkeyPatch) -> None:
+def _isolate_mlflow_fluent_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Give every test fresh MLflow fluent globals.
 
     ``set_tracking_uri``, ``set_registry_uri`` and ``set_experiment`` write
@@ -154,12 +154,27 @@ def _isolate_mlflow_fluent_state(monkeypatch: pytest.MonkeyPatch) -> None:
     would otherwise hand its URI or experiment ID to whichever test runs next on
     the worker (seen as "Could not find experiment with ID ..." against a fresh
     local store). monkeypatch restores the originals after the test.
+
+    ``set_tracking_uri`` also exports ``MLFLOW_TRACKING_URI``, so a test that
+    restores MLflow's default URI in a ``finally`` leaves that default in the
+    environment, where a fresh checkout's ``sqlite:///mlflow.db`` fails the next
+    destination resolution on the worker ("Unsupported MLflow tracking URI
+    scheme 'sqlite'"). The URI variables are restored exactly after the test.
     """
     monkeypatch.setattr("mlflow.tracking._tracking_service.utils._tracking_uri", None)
     monkeypatch.setattr("mlflow.tracking._model_registry.utils._registry_uri", None)
     monkeypatch.setattr("mlflow.tracking.fluent._active_experiment_id", None)
     # set_experiment also exports the ID; monkeypatch unsets it again afterwards.
     monkeypatch.delenv("MLFLOW_EXPERIMENT_ID", raising=False)
+    exported = {
+        name: os.environ.get(name) for name in ("MLFLOW_TRACKING_URI", "MLFLOW_REGISTRY_URI")
+    }
+    yield
+    for name, value in exported.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
 
 
 @pytest.fixture(autouse=True)

@@ -306,6 +306,33 @@ def test_new_experiment_creates_its_missing_workspace_folder_first(
     databricks.assert_bound_to_mlflow_pair()
 
 
+def test_client_bound_new_experiment_creates_its_missing_workspace_folder_first(
+    databricks: FakeDatabricks,
+) -> None:
+    # Training and deploy select their experiment on a destination-bound client.
+    from mlflow.tracking import MlflowClient
+
+    databricks.respond_json(
+        *_GET_EXPERIMENT_BY_NAME,
+        {"error_code": "RESOURCE_DOES_NOT_EXIST", "message": "Node not found"},
+        status=404,
+    )
+    databricks.respond_json(*_WORKSPACE_MKDIRS, {})
+    databricks.respond_json(*_CREATE_EXPERIMENT, {"experiment_id": EXPERIMENT_ID})
+    tracking_uri = resolve_backend("databricks").tracking_uri
+
+    experiment_id = _mlflow_utils.ensure_experiment(
+        MlflowClient(tracking_uri=tracking_uri), tracking_uri, _NEW_EXPERIMENT_NAME
+    )
+
+    assert experiment_id == EXPERIMENT_ID
+    endpoints = [(r.method, urlsplit(r.url).path) for r in databricks.requests]
+    assert endpoints.index(_WORKSPACE_MKDIRS) < endpoints.index(_CREATE_EXPERIMENT)
+    mkdirs = next(r for r in databricks.requests if urlsplit(r.url).path == _WORKSPACE_MKDIRS[1])
+    assert json.loads(mkdirs.body or b"{}") == {"path": "/Shared/haute"}
+    databricks.assert_bound_to_mlflow_pair()
+
+
 def test_existing_experiment_does_not_touch_workspace_folders(
     databricks: FakeDatabricks,
 ) -> None:

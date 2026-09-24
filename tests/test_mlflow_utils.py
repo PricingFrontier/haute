@@ -13,6 +13,7 @@ import pytest
 
 from haute._mlflow_utils import (
     ResolvedBackend,
+    ensure_experiment,
     mlflow_fluent_operation,
     resolve_backend,
     resolve_mlflow_source,
@@ -127,6 +128,23 @@ def test_mlflow_fluent_operation_serializes_writers_and_restores_state() -> None
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
+
+
+def test_mlflow_fluent_operation_scopes_the_active_experiment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An experiment selected before the operation (the optimiser route's, or a
+    # notebook's) would make MLflow refuse to attach to a client-created run in
+    # another experiment; one selected inside must not leak out.
+    from mlflow.tracking import fluent
+
+    monkeypatch.setattr(fluent, "_active_experiment_id", "selected-before")
+    with pytest.raises(RuntimeError, match="boom"):
+        with mlflow_fluent_operation():
+            assert fluent._active_experiment_id is None
+            fluent._active_experiment_id = "selected-inside"
+            raise RuntimeError("boom")
+    assert fluent._active_experiment_id == "selected-before"
 
 
 def test_source_resolution_uses_selected_registry_without_changing_globals(
@@ -652,3 +670,91 @@ class TestRuntimeEnvironmentInference:
                 raise RuntimeError("boom")
         assert os.environ["MLFLOW_UV_AUTO_DETECT"] == "true"
         assert os.environ["MLFLOW_LOG_UV_FILES"] == "1"
+
+
+# ---------------------------------------------------------------------------
+# ensure_experiment
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureExperiment:
+    """The client-bound experiment lookup-and-create training and deploy use."""
+
+    @staticmethod
+    def _experiment(stage: str = "active") -> Any:
+        return MagicMock(experiment_id="7", lifecycle_stage=stage)
+
+    def test_returns_an_existing_experiment_without_creating_it(self) -> None:
+        client = MagicMock()
+        client.get_experiment_by_name.return_value = self._experiment()
+
+        assert ensure_experiment(client, "file:///store", "pricing") == "7"
+        client.create_experiment.assert_not_called()
+
+    def test_a_deleted_experiment_is_refused(self) -> None:
+        from mlflow.exceptions import MlflowException
+
+        client = MagicMock()
+        client.get_experiment_by_name.return_value = self._experiment("deleted")
+
+        with pytest.raises(MlflowException, match="deleted experiment") as raised:
+            ensure_experiment(client, "file:///store", "pricing")
+        assert raised.value.error_code == "INVALID_PARAMETER_VALUE"
+        client.create_experiment.assert_not_called()
+
+    def test_an_experiment_created_elsewhere_meanwhile_is_used(self) -> None:
+        from mlflow.exceptions import MlflowException
+        from mlflow.protos.databricks_pb2 import RESOURCE_ALREADY_EXISTS
+
+        client = MagicMock()
+        client.get_experiment_by_name.side_effect = [None, self._experiment()]
+        client.create_experiment.side_effect = MlflowException(
+            "exists", error_code=RESOURCE_ALREADY_EXISTS
+        )
+
+        assert ensure_experiment(client, "http://server", "pricing") == "7"
+
+    def test_other_create_failures_propagate(self) -> None:
+        from mlflow.exceptions import MlflowException
+        from mlflow.protos.databricks_pb2 import PERMISSION_DENIED
+
+        client = MagicMock()
+        client.get_experiment_by_name.return_value = None
+        client.create_experiment.side_effect = MlflowException(
+            "denied", error_code=PERMISSION_DENIED
+        )
+
+        with pytest.raises(MlflowException, match="denied"):
+            ensure_experiment(client, "http://server", "pricing")
+
+    def test_concurrent_first_logs_create_the_experiment_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MLflow's file store checks the name and then creates under a new id, so
+        two unsynchronised first logs would split their runs across two experiments."""
+        from mlflow.tracking import MlflowClient
+
+        monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+        uri = (tmp_path / "mlruns").as_uri()
+        client = MlflowClient(tracking_uri=uri)
+        create = client.create_experiment
+        creators: list[str] = []
+        both_creating = Event()
+
+        def create_after_the_other_looked(name: str) -> str:
+            creators.append(name)
+            if len(creators) == 2:
+                both_creating.set()
+            # Give the other first log the chance to look the name up meanwhile.
+            both_creating.wait(timeout=0.5)
+            return create(name)
+
+        monkeypatch.setattr(client, "create_experiment", create_after_the_other_looked)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(ensure_experiment, client, uri, "pricing") for _ in range(2)]
+            ids = {future.result(timeout=30) for future in futures}
+
+        assert creators == ["pricing"]
+        assert len(ids) == 1
+        names = [experiment.name for experiment in client.search_experiments()]
+        assert names.count("pricing") == 1

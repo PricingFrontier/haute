@@ -141,8 +141,8 @@ The system has three tiers:
   generic `container` target builds and pushes a FastAPI scoring image but deliberately does not
   choose a hosting platform. Azure Container Apps, AWS ECS, and GCP Cloud Run currently validate,
   build, and push that image, then fail loudly before service update because their SDK adapters are
-  not implemented. SageMaker and Azure ML remain scaffold-visible planned targets and are rejected
-  by deploy. See [deploy](deploy/high-level.md).
+  not implemented; `haute init` labels them build and push only. SageMaker and Azure ML are named
+  future targets that `haute init` does not offer and deploy rejects. See [deploy](deploy/high-level.md).
 
 **One authored pipeline, one derived deploy graph.** Authors maintain one pipeline. Deployment
 derives a scoring-only graph from it by retaining the selected output's ancestors and collapsing
@@ -173,10 +173,9 @@ The component specs cover maintained behaviour, not just the importable runtime:
   the role of the large test/audit corpora are owned by
   [engineering-quality](engineering-quality/high-level.md). Tests that verify a product component
   are also named in that component's `## Testing` section.
-- The checked-in `rating/` project is a non-runnable layout/example snapshot, documented by
-  [reference-pipeline](reference-pipeline/high-level.md). Missing input data and a referenced
-  sidecar remain loud, and no dedicated test suite maintains it as an end-to-end compatibility
-  fixture.
+- `examples/reference/` is the repository's runnable reference pipeline, selected by the root
+  `haute.toml` and documented by [reference-pipeline](reference-pipeline/high-level.md); a test
+  runs it from a fresh copy.
 - A file may be named in several module maps only when one component is its **primary owner** and
   the others are consumers documenting their direct interaction. An explicit cross-component
   ownership claim in prose is subject to the same discipline even when only the primary component
@@ -192,9 +191,8 @@ plus explicitly enumerated dated findings reports. Roadmaps do not replace
 code, tests, or behaviour specifications. Generated caches, coverage data, untracked local MLflow
 state, `site/`, and built static assets are outputs, not additional source components. Tracked root
 policy, legal, tooling, and snapshot artifacts are listed explicitly in the appropriate
-repository-level module map even when they are non-runtime or non-normative; in particular, the
-tracked `mlflow.db` is classified as a historical local MLflow SQLite snapshot rather than
-silently grouped with untracked generated state.
+repository-level module map even when they are non-runtime or non-normative. No local MLflow
+store is tracked: `mlflow.db` and `mlruns/` are ignored local state.
 
 ## Where is each node type specced?
 
@@ -274,4 +272,4 @@ tabular persistence; the removed `dataSource` and `dataSink` types have no compa
 |---|---|
 | [build-and-distribution](build-and-distribution/high-level.md) | Python package metadata and Hatch hook, frontend production build, bundled static assets, dependency locks, typed-package marker, and MkDocs publication |
 | [engineering-quality](engineering-quality/high-level.md) | CI workflows, pre-commit/lint/type/test gates, critical coverage, mutation/performance suites, browser E2E, developer scripts, and non-normative engineering evidence |
-| [reference-pipeline](reference-pipeline/high-level.md) | The checked-in non-runnable `rating/` layout/example snapshot: generated graph code, available sidecars, utilities, and model artefacts, with missing referenced data/sidecar and no dedicated end-to-end tests |
+| [reference-pipeline](reference-pipeline/high-level.md) | The runnable `examples/reference/` pipeline the root `haute.toml` selects: synthetic quotes, one feature step and an output mapping |

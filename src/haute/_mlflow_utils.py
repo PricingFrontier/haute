@@ -254,6 +254,74 @@ def set_tracking_uri_preserving_env(mlflow: Any, tracking_uri: str) -> None:
 _WORKSPACE_MKDIRS_ENDPOINT = "/api/2.0/workspace/mkdirs"
 
 
+def _is_databricks_tracking(tracking_uri: str) -> bool:
+    return tracking_uri == "databricks" or tracking_uri.startswith("databricks://")
+
+
+_EXPERIMENT_LOCKS: dict[str, threading.Lock] = {}
+_EXPERIMENT_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _experiment_creation_lock(experiment_name: str) -> Iterator[None]:
+    """Serialise one experiment name's lookup-and-create within the process.
+
+    MLflow's file store checks that a name is free and then creates the experiment
+    under a newly generated id, so two threads creating the same name both succeed
+    and split their runs across two experiments. Keyed by name alone, so a log to
+    another experiment never waits, and two destinations that share a name wait
+    only for each other's lookup.
+    """
+    with _EXPERIMENT_LOCKS_GUARD:
+        lock = _EXPERIMENT_LOCKS.setdefault(experiment_name, threading.Lock())
+    with lock:
+        yield
+
+
+def ensure_experiment(client: MlflowClient, tracking_uri: str, experiment_name: str) -> str:
+    """The id of *experiment_name* at *client*'s destination, creating it when missing.
+
+    The client-bound counterpart of :func:`set_experiment_creating_workspace_folder`
+    for callers that log through a destination-bound client instead of MLflow's
+    process-global fluent state: a new Databricks experiment's workspace folder is
+    created first, with the same credentials MLflow's own requests use for
+    *tracking_uri*. A deleted experiment is refused exactly as
+    ``mlflow.set_experiment`` refuses it.
+
+    Raises:
+        MlflowRemoteError: MLflow refused to create the Databricks folder.
+        MlflowException: a deleted experiment, and authentication or
+            connectivity failures, for the caller to classify.
+    """
+    from mlflow.entities import LifecycleStage
+    from mlflow.exceptions import MlflowException
+    from mlflow.protos.databricks_pb2 import INVALID_PARAMETER_VALUE
+
+    with _experiment_creation_lock(experiment_name):
+        experiment = client.get_experiment_by_name(experiment_name)
+        if experiment is None:
+            folder = experiment_name.rpartition("/")[0]
+            if _is_databricks_tracking(tracking_uri) and experiment_name.startswith("/") and folder:
+                _create_databricks_workspace_folder(tracking_uri, folder, experiment_name)
+            try:
+                return str(client.create_experiment(experiment_name))
+            except MlflowException as exc:
+                # Another process created it between the lookup and the create.
+                if exc.error_code != "RESOURCE_ALREADY_EXISTS":
+                    raise
+                experiment = client.get_experiment_by_name(experiment_name)
+                if experiment is None:
+                    raise
+    if experiment.lifecycle_stage != LifecycleStage.ACTIVE:
+        raise MlflowException(
+            f"Cannot set a deleted experiment {experiment.name!r} as the active experiment. "
+            "You can restore the experiment, or permanently delete the experiment to create "
+            "a new one.",
+            error_code=INVALID_PARAMETER_VALUE,
+        )
+    return str(experiment.experiment_id)
+
+
 def set_experiment_creating_workspace_folder(mlflow: Any, experiment_name: str) -> Any:
     """``mlflow.set_experiment``, first creating a new Databricks experiment's folder.
 
@@ -274,14 +342,15 @@ def set_experiment_creating_workspace_folder(mlflow: Any, experiment_name: str) 
     """
     tracking_uri = mlflow.get_tracking_uri()
     folder = experiment_name.rpartition("/")[0]
-    if (
-        (tracking_uri == "databricks" or tracking_uri.startswith("databricks://"))
-        and experiment_name.startswith("/")
-        and folder
-        and mlflow.get_experiment_by_name(experiment_name) is None
-    ):
-        _create_databricks_workspace_folder(tracking_uri, folder, experiment_name)
-    return mlflow.set_experiment(experiment_name)
+    with _experiment_creation_lock(experiment_name):
+        if (
+            _is_databricks_tracking(tracking_uri)
+            and experiment_name.startswith("/")
+            and folder
+            and mlflow.get_experiment_by_name(experiment_name) is None
+        ):
+            _create_databricks_workspace_folder(tracking_uri, folder, experiment_name)
+        return mlflow.set_experiment(experiment_name)
 
 
 def _create_databricks_workspace_folder(
@@ -339,15 +408,26 @@ def _restore_env(name: str, value: str | None) -> None:
 def mlflow_fluent_operation() -> Iterator[None]:
     """Serialize global-state SDK operations and restore state on every exit.
 
-    Discovery and native reads use pinned clients without this lock. Pyfunc
-    downloads share it for MLflow's nested global-state model lookup. Settings
-    can change while a log is in progress; its fluent URI remains fixed until
-    the run has terminated. The next writer then resolves the new settings.
+    The only MLflow calls that still need process-global state run here: model
+    logging (``mlflow.<flavor>.log_model`` resolves the global tracking URI and
+    the thread's active run, and its uv detection is switched off only through
+    environment variables), pyfunc downloads (MLflow's nested logged-model
+    lookup), and the optimiser route's log. Everything else — discovery, native
+    reads, and training and deploy runs, parameters, metrics, tags and
+    artifacts — uses destination-bound clients without this lock.
+
+    MLflow's active experiment is scoped here too: it is cleared on entry, so
+    attaching to a client-created run with ``mlflow.start_run(run_id=...)`` is
+    never refused because an earlier ``set_experiment`` named another
+    experiment, and the previous value is restored on exit.
     """
     with _FLUENT_LOCK:
         import mlflow
+        from mlflow.tracking import fluent
 
         tracking_uri, registry_uri = mlflow.get_tracking_uri(), mlflow.get_registry_uri()
+        active_experiment_id = fluent._active_experiment_id
+        fluent._active_experiment_id = None
         environment = {
             name: os.environ.get(name)
             for name in (
@@ -365,6 +445,7 @@ def mlflow_fluent_operation() -> Iterator[None]:
                 if mlflow.get_registry_uri() != registry_uri:
                     mlflow.set_registry_uri(registry_uri)
             finally:
+                fluent._active_experiment_id = active_experiment_id
                 for name, value in environment.items():
                     _restore_env(name, value)
 

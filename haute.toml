@@ -4,7 +4,7 @@
 
 [project]
 name = "main"
-pipeline = "rating/main.py"
+pipeline = "examples/reference/main.py"
 
 # ─────────────────────────────────────────────────────────────────
 # Deployment - Databricks MLflow Model Serving

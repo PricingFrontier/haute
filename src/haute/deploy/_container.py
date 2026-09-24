@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
@@ -14,6 +15,7 @@ from pathlib import Path
 
 from haute._git_core import _run_git_ok, git_binary_available
 from haute._logging import get_logger
+from haute._types import NodeType
 from haute.deploy._config import ResolvedDeploy
 from haute.deploy._mlflow import DeployResult
 from haute.deploy._project_modules import UTILITY_PACKAGE
@@ -29,12 +31,29 @@ _VALID_BASE_IMAGE_RE = re.compile(r"^[a-zA-Z0-9._:/@-]+$")
 _VALID_MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 DEFAULT_QUOTE_REQUEST_BODY_LIMIT_BYTES = DEFAULT_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES
 DEFAULT_QUOTE_RESPONSE_ROW_LIMIT = 1_000
-_CORE_DOCKERFILE_DEPENDENCIES: tuple[tuple[str, str], ...] = (
-    ("haute", "haute"),
+# The scoring runtime a deployed pricing API imports, as (distribution, pip
+# install name). The Dockerfile installs these pinned, then ``haute`` itself
+# with ``--no-deps``: haute's own dependencies bring the editor, assistant,
+# training, tuning and MLflow stacks, which a scoring container never runs.
+# ``pip install haute`` is unchanged.
+_SCORING_RUNTIME_DEPENDENCIES: tuple[tuple[str, str], ...] = (
     ("polars", "polars"),
+    ("pyarrow", "pyarrow"),
+    ("numpy", "numpy"),
+    ("pydantic", "pydantic"),
     ("fastapi", "fastapi"),
     ("uvicorn", "uvicorn[standard]"),
+    ("structlog", "structlog"),
+    ("xxhash", "xxhash"),
+    ("psutil", "psutil"),
+    ("orjson", "orjson"),
+    ("msgspec", "msgspec"),
+    ("joblib", "joblib"),
+    ("price-contour", "price-contour"),
 )
+# The XGBoost distribution haute depends on, by the same platform marker as
+# its package metadata: the CPU-only build except on macOS.
+_XGBOOST_DISTRIBUTION = "xgboost" if sys.platform == "darwin" else "xgboost-cpu"
 
 
 def _validate_base_image(base_image: str) -> None:
@@ -874,7 +893,8 @@ def _generate_dockerfile(
     wheel_name: str | None = None,
 ) -> str:
     """Generate a Dockerfile for the scoring container."""
-    deps_line = " ".join(_pinned_dockerfile_deps(resolved, haute_requirement=haute_pip_dep))
+    haute_dep, *runtime_deps = _pinned_dockerfile_deps(resolved, haute_requirement=haute_pip_dep)
+    runtime_line = " ".join(runtime_deps)
     copy_wheel = f"COPY {wheel_name} .\n" if wheel_name else ""
     utility = resolved.project_modules.utility
     if utility is None:
@@ -893,8 +913,11 @@ WORKDIR /app
 # enforcement; the hosting platform owns any outer hard container cap.
 ENV HAUTE_EXECUTION_MEMORY_POLICY=strict_server
 
-# Install Python dependencies
-{copy_wheel}RUN pip install --no-cache-dir {deps_line}
+# Install the pinned scoring runtime, then haute itself without its
+# dependencies: they include the editor, assistant, training and tuning
+# stacks, which a scoring container never runs.
+RUN pip install --no-cache-dir {runtime_line}
+{copy_wheel}RUN pip install --no-cache-dir --no-deps {haute_dep}
 
 # Copy application code and artifacts
 COPY deploy_manifest.json .
@@ -912,27 +935,45 @@ def _pinned_dockerfile_deps(
     *,
     haute_requirement: str | None = None,
 ) -> list[str]:
-    """Every ``pip install`` requirement of the scoring container, pinned.
+    """Every ``pip install`` requirement of the scoring container, pinned: ``haute`` first.
 
-    Core runtime and model runtime alike are pinned to the version installed
+    Scoring runtime and model runtime alike are pinned to the version installed
     in the deploying environment: the container unpickles the model, and a
     model loaded under a different scikit-learn (or LightGBM, ...) than the
     one that wrote it is silently wrong premiums, not an error.
     """
+    haute = (
+        haute_requirement
+        if haute_requirement is not None
+        else _pinned_dockerfile_dependency("haute", "haute")
+    )
     return [
-        *_pinned_core_dockerfile_deps(haute_requirement=haute_requirement),
+        haute,
+        *(
+            _pinned_dockerfile_dependency(distribution_name, install_name)
+            for distribution_name, install_name in _SCORING_RUNTIME_DEPENDENCIES
+        ),
+        *_pinned_graph_dockerfile_deps(resolved),
         *_pinned_extra_dockerfile_deps(resolved),
     ]
 
 
-def _pinned_core_dockerfile_deps(*, haute_requirement: str | None = None) -> list[str]:
-    deps: list[str] = []
-    for distribution_name, install_name in _CORE_DOCKERFILE_DEPENDENCIES:
-        if distribution_name == "haute" and haute_requirement is not None:
-            deps.append(haute_requirement)
-        else:
-            deps.append(_pinned_dockerfile_dependency(distribution_name, install_name))
-    return deps
+def _pinned_graph_dockerfile_deps(resolved: ResolvedDeploy) -> list[str]:
+    """Pin the runtime the served graph needs beyond the scoring runtime.
+
+    An optimiser apply sourced from an MLflow run or registered model loads its
+    artefact from MLflow when the container runs (such artefacts are not
+    bundled), so the image needs ``mlflow``.
+    """
+    nodes = [
+        node.id
+        for node in resolved.pruned_graph.nodes
+        if node.data.nodeType == NodeType.OPTIMISER_APPLY
+        and node.data.config.get("sourceType") in {"run", "registered"}
+    ]
+    if not nodes:
+        return []
+    return [_pinned_dockerfile_dependency("mlflow", "mlflow", required_by=sorted(nodes))]
 
 
 def _pinned_extra_dockerfile_deps(resolved: ResolvedDeploy) -> list[str]:
@@ -952,7 +993,7 @@ def _pinned_dockerfile_dependency(
     try:
         package_version = metadata_version(distribution_name)
     except PackageNotFoundError as exc:
-        needed_by = f" (needed by artifact {', '.join(required_by)})" if required_by else ""
+        needed_by = f" (needed by {', '.join(required_by)})" if required_by else ""
         raise DeployError(
             f"Cannot pin Dockerfile dependency {install_name!r}{needed_by}: "
             f"installed distribution {distribution_name!r} was not found. The "
@@ -962,17 +1003,37 @@ def _pinned_dockerfile_dependency(
     return f"{install_name}=={package_version}"
 
 
-# Artifact extension -> distribution name of the runtime that loads it.  Every
+# A pickle or joblib artifact may hold an object of any third-party package
+# haute's restricted unpickler allows (``_sandbox._ALLOWED_PICKLE_CLASSES`` and
+# ``_ALLOWED_PICKLE_GLOBALS``) beyond the scoring runtime, so the image installs
+# all of them, as a full haute install would.
+_PICKLE_RUNTIME_DEPENDENCIES: tuple[str, ...] = (
+    "catboost",
+    "interpret-core",
+    "lightgbm",
+    "pandas",
+    "scikit-learn",
+    _XGBOOST_DISTRIBUTION,
+)
+
+# Artifact extension -> distribution names of the runtime that loads it.  Every
 # entry is also the ``pip install`` name, and every entry is pinned through
-# ``_pinned_dockerfile_dependency`` -- catboost included, even though haute's
-# own ``catboost<2`` cap would happen to constrain a bare name.
-_ARTIFACT_EXT_TO_DEP: dict[str, str] = {
-    ".cbm": "catboost",
-    ".pkl": "scikit-learn",
-    ".pickle": "scikit-learn",
-    ".lgb": "lightgbm",
-    ".xgb": "xgboost",
-    ".onnx": "onnxruntime",
+# ``_pinned_dockerfile_dependency``. haute is installed without its own
+# dependencies, so each model family's engine comes from here: XGBoost,
+# LightGBM and EBM models also need pandas, which haute's feature encoding
+# uses for them.
+_ARTIFACT_EXT_TO_DEPS: dict[str, tuple[str, ...]] = {
+    ".cbm": ("catboost",),
+    ".rsglm": ("rustystats",),
+    ".ubj": (_XGBOOST_DISTRIBUTION, "pandas"),
+    ".lgbm": ("lightgbm", "pandas"),
+    ".ebm": ("interpret-core", "pandas"),
+    ".pkl": _PICKLE_RUNTIME_DEPENDENCIES,
+    ".pickle": _PICKLE_RUNTIME_DEPENDENCIES,
+    ".joblib": _PICKLE_RUNTIME_DEPENDENCIES,
+    ".lgb": ("lightgbm",),
+    ".xgb": (_XGBOOST_DISTRIBUTION,),
+    ".onnx": ("onnxruntime",),
 }
 
 
@@ -987,8 +1048,8 @@ def _extra_deps_by_artifact(resolved: ResolvedDeploy) -> dict[str, list[str]]:
     needed: dict[str, list[str]] = {}
     for artifact_name in sorted(resolved.artifacts):
         suffix = Path(artifact_name).suffix.lower()
-        if suffix in _ARTIFACT_EXT_TO_DEP:
-            needed.setdefault(_ARTIFACT_EXT_TO_DEP[suffix], []).append(artifact_name)
+        for dependency in _ARTIFACT_EXT_TO_DEPS.get(suffix, ()):
+            needed.setdefault(dependency, []).append(artifact_name)
     return dict(sorted(needed.items()))
 
 

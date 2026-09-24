@@ -17,15 +17,12 @@ or maintenance issue; `P3` opportunistic work.
 
 | Component | Improvement surface | Start with |
 |---|---|---|
-| [Assistant](assistant.md) | One capability catalogue and example format; harnesses out of the runtime package | `ASSIST-R01` |
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
-| [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache usage, freshness and retention | `CACHE-S24` |
-| [Deploy](deploy.md) | A slim scoring runtime, offered targets | `DEP-R02` |
-| [Engineering quality](engineering-quality.md) | Dead code, tracked artifacts, specification drift, coverage gates, test organisation | `ENGQ-R01` |
+| [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache usage, freshness and retention | `CACHE-S17` |
+| [Engineering quality](engineering-quality.md) | Dead code, coverage gates, test organisation | `ENGQ-R01` |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | — |
 | [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
-| [JSON shredding](json-shredding.md) | Explicit output nesting | `JSON-R02` |
-| [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients | `MLF-R02` |
+| [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients for the optimiser log | `MLF-R02` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers, auto-range, input isolation | `OPT-P13` |
 | [Pipeline config](pipeline-config.md) | Repair, save validation, the error a rejected config reports, project context, typed configs, node specification | `PCFG-R01` |
 | [Sandbox security](sandbox-security.md) | One path-containment check, the node-code guard | `SBX-R01` |

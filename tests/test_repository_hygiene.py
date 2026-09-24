@@ -36,12 +36,39 @@ def test_generated_and_local_agent_artifacts_are_not_tracked() -> None:
     assert offenders == []
 
 
-def test_example_pipeline_config_lives_only_under_rating() -> None:
+def test_example_pipeline_config_lives_only_under_the_reference_example() -> None:
     tracked = _tracked_files()
     root_config = sorted(path for path in tracked if path == "config" or path.startswith("config/"))
 
     assert root_config == []
-    assert any(path.startswith("rating/config/") for path in tracked)
+    assert any(path.startswith("examples/reference/config/") for path in tracked)
+
+
+def test_no_local_mlflow_store_is_tracked() -> None:
+    tracked = _tracked_files()
+
+    assert (
+        sorted(
+            path
+            for path in tracked
+            if path.endswith(".db") or path.startswith("mlruns/") or "/mlruns/" in path
+        )
+        == []
+    )
+
+
+def test_the_roadmap_holds_reports_not_probes_or_benchmark_output() -> None:
+    """Executable probes and raw results live in scripts/benchmarks/; the roadmap
+    keeps its Markdown reports and the one provenance record its index links."""
+    tracked = _tracked_files()
+    roadmap = sorted(path for path in tracked if path.startswith("specs/roadmap/"))
+
+    assert roadmap
+    assert [
+        path
+        for path in roadmap
+        if not path.endswith(".md") and path != "specs/roadmap/pr-227-fable-5.1-provenance.json"
+    ] == []
 
 
 def test_graphify_is_not_a_runtime_dependency() -> None:

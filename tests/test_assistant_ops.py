@@ -1130,6 +1130,58 @@ class TestPlanStore:
             store.get(plan.plan_hash)
         assert exc.value.code == "plan_expired"
 
+    @pytest.mark.parametrize("ending", ["complete", "abort"])
+    def test_plans_awaiting_use_are_bounded_and_a_lease_does_not_count(
+        self, tmp_path: Path, ending: str
+    ):
+        """An applying lease is pinned outside the bound on plans awaiting use;
+        when it ends, completed or aborted, the least recently used plan beyond
+        the bound is dropped."""
+        from haute.assistant._ops import (
+            AssistantOperationError,
+            PlanStore,
+            build_graph_edit_plan,
+            build_project_snapshot,
+        )
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        snapshot = build_project_snapshot(tmp_path, source, _graph([_node("source")]))
+        leased, older, newer, newest = (
+            build_graph_edit_plan(
+                snapshot,
+                [{"op": "rename_node", "node": "source", "new_name": name}],
+            )
+            for name in ("leased", "older", "newer", "newest")
+        )
+        store = PlanStore(max_size=2)
+        store.put(leased)
+        store.begin_apply(leased.plan_hash)
+        store.put(older)
+        store.put(newer)
+        assert len(store) == 3, "the lease sits outside the two plans awaiting use"
+
+        store.put(newest)  # the least recently used plan awaiting use goes
+        with pytest.raises(AssistantOperationError) as exc:
+            store.get(older.plan_hash)
+        assert exc.value.code == "plan_not_found"
+        assert store.get(newer.plan_hash) == newer  # a read is a use: newest is now LRU
+
+        if ending == "complete":
+            store.complete_apply(leased.plan_hash, {"result_revision": "a" * 64})
+        else:
+            store.abort_apply(leased.plan_hash)
+        assert len(store) == 2
+        with pytest.raises(AssistantOperationError) as exc:
+            store.get(newest.plan_hash)
+        assert exc.value.code == "plan_not_found"
+        assert store.get(newer.plan_hash) == newer
+        with pytest.raises(AssistantOperationError) as exc:
+            store.begin_apply(leased.plan_hash)
+        assert exc.value.code == (
+            "plan_already_applied" if ending == "complete" else "plan_aborted"
+        )
+
     def test_capacity_never_evicts_an_applying_plan(self, tmp_path: Path):
         from haute.assistant._ops import (
             AssistantOperationError,

@@ -177,9 +177,9 @@ diagnostics that recognise historical Haute input". The code recognises
 retired keys in config recovery (`baseInput`, `joinInput`, `scored_input`,
 `factors_input`), retired Edge Join decorator arguments, removed config keys
 in validation, and legacy modelling `split`/`cross_validation` objects in two
-places. Projection synthesises identity "for legacy callers". The assistant
-keeps a legacy catalogue and examples (removed by `ASSIST-R01`, which applies
-this rule). Explore display validators preserve
+places. Projection synthesises identity "for legacy callers". The assistant's
+legacy catalogue and single-file examples are removed, and a call to a removed
+tool or example is refused with its replacement named. Explore display validators preserve
 unknown keys so "a newer UI can round-trip through an older parser". The
 parse-time contract check falls
 back to an opaque contract on `ConfigError`, `OSError`, `ImportError`,
@@ -196,8 +196,8 @@ and give the modelling legacy check one home.
 assistant's either follows it or is removed; one test per site pins the
 behaviour; the legacy modelling check exists once.
 
-**Dependencies:** None. `ASSIST-R01` (assistant) and `SUB-R01`
-(submodels) depend on the rule this package decides.
+**Dependencies:** None. `SUB-R01` (submodels) depends on the rule this
+package decides.
 
 **Evidence:** `src/haute/_node_config_recovery.py::reconcile_config`;
 `src/haute/_edge_join.py::_LEGACY_ROLE_DECORATOR_ARGS`;

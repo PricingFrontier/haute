@@ -69,7 +69,7 @@
 | `scripts/preflight.sh` | POSIX preflight entry point for selected backend/frontend/init-smoke checks. |
 | `scripts/regen_sanitize_parity_fixture.py` | Regenerates the retained backend compatibility golden when deliberately requested. |
 | `scripts/run_frontend_e2e_server.py` | Generates the isolated browser fixture, then starts and readiness-signals its dedicated-port backend and Vite proxy for Playwright. |
-| `scripts/run_assistant_evaluation.py` | Fail-closed credentialed assistant qualification command: loads a closed candidate/matrix/scenario set, invokes an explicit live runner repeatedly, writes a redacted atomic report, and succeeds only for an already-qualified configuration that still meets every threshold. |
+| `scripts/run_assistant_evaluation.py` | Cross-component dependency owned by [assistant](../assistant/low-level.md); the fail-closed credentialed assistant qualification command and its harness, which the installed package does not ship: loads a closed candidate/matrix/scenario set, invokes an explicit live runner repeatedly, writes a redacted atomic report, and succeeds only for an already-qualified configuration that still meets every threshold. |
 | `scripts/run_mutation_pytest.py` | Runs a mutation witness command from a fresh synthetic project while retaining repository pytest configuration and placing pytest inputs in a sibling temporary boundary, so relative Haute runtime state cannot leak between mutants or alter path-confinement semantics. |
 | `scripts/run_mutation_suite.py` | Implements mutation target selection, work planning, shard execution, merge, and survival-threshold reporting. |
 | `scripts/run_perf_suite.py` | Runs bounded Python performance tests and writes schema-4 workload, environment, resource, wall-time, and per-test evidence artifacts. |
@@ -109,8 +109,7 @@
 | `tests/test_workflow_coverage.py` | Ledger validator (`load_ledger`, `roadmap_package_ids`, `ledger_violations`) and its malformed-ledger cases; a meta-marked repository-health module. |
 | `tests/_test_debt_scanner.py` | Test-debt scanning primitives (backend AST visitor, frontend source scanner, frontend test-file predicate) shared by `tests/test_test_debt.py` and `tests/test_workflow_coverage.py`; a support module, not a test. |
 | `tests/_property_budget.py` | Shared Hypothesis settings for the generated families: `pr_budget` (small, derandomised, no example database, reproduction blob printed) and the `exploration_examples` override read from the `EXPLORATION_ENV` variable (HAUTE_PROPERTY_EXAMPLES); a support module, not a test. |
-| `repro/` | Point-in-time benchmark/reproduction programs and metadata; not an automatically current product-behaviour contract. |
-| `mlflow.db` | Checked-in SQLite MLflow tracking-store snapshot (experiments, runs, metrics, parameters, tags, and model-version metadata). It is repository data/local state, not an installed-package input or a runtime prerequisite; MLflow may instead use the configured tracking store. |
+| `scripts/benchmarks/` | Point-in-time benchmark, probe and reproduction programs with their raw results and metadata, linked from the dated reports under `specs/roadmap/`; not an automatically current product-behaviour contract. `specs/roadmap/` itself holds only Markdown reports and the provenance record its index links. |
 
 ## Key types and data structures
 
@@ -426,7 +425,7 @@
   `gitBranchLoader.ts` is identity-guarded — a detached request neither
   publishes state nor clobbers a newer request's slot.
 - `tests/`, `frontend/src/__tests__/`, and the colocated frontend test
-  directories are active corpora. `specs/roadmap/`, `repro/`, and generated
+  directories are active corpora. `specs/roadmap/`, `scripts/benchmarks/`, and generated
   output/reports must not be read as exhaustive or current behaviour merely
   because they remain tracked or present locally.
 - Every component roadmap has `Scope`, `Priorities`, and `Planned improvements`
@@ -437,7 +436,7 @@
   link checks include both categories. Reports link from the roadmap index and
   contain no package headings; only component queues have package lifecycle rules.
   The enumeration changes in the same commit that adds or retires a report.
-- The normal Ruff configuration excludes `rating/`, `modules/`, `outputs/`, and
+- The normal Ruff configuration excludes `examples/`, `modules/`, `outputs/`, and
   generated pytest basetemp families (`.codex-pytest-*`, `.ops-pytest-temp`,
   `.providers-pytest-temp`, `.pytest-tmp*`). The former are lint-target
   boundaries; the latter may contain intentionally unreadable test fixtures and
@@ -620,5 +619,5 @@ are never retained in the report artifact.
   waive a child's concrete GHSA, malformed fail-closed reports, and live-command
   return-code orchestration without contacting advisory services.
 - `mutation/` is tested as configuration/orchestration through its active
-  script/tests and CI workflow. `specs/roadmap/`, `repro/`, and generated
+  script/tests and CI workflow. `specs/roadmap/`, `scripts/benchmarks/`, and generated
   artifacts are intentionally not claimed as a current test suite.

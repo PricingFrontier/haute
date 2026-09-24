@@ -20,113 +20,67 @@ from haute._config_validation import VALID_KEYS
 from haute._types import NODE_TYPE_TO_DECORATOR, NodeType
 from haute.assistant import _catalog
 from haute.assistant._catalog import (
-    NODE_CATALOG,
+    NodeCapabilityDescriptor,
     capability_manifest,
     compact_manifest,
-    render_catalog,
-    validate_catalog_complete,
+    validate_manifest_complete,
 )
 from haute.routes._save_pipeline import _SINGLETON_NODE_TYPES
 
 
-class TestCompleteness:
-    def test_every_node_type_has_an_entry(self):
-        assert set(NODE_CATALOG.keys()) == set(NodeType)
+class TestNodeDescriptors:
+    """The manifest is the one node catalogue; its facts come from the registries."""
 
-    def test_every_entry_has_a_hand_authored_usage_note(self):
-        for node_type, entry in NODE_CATALOG.items():
-            assert entry.usage_note.strip(), f"{node_type.value} has no usage note"
+    @staticmethod
+    def _nodes() -> dict[str, NodeCapabilityDescriptor]:
+        return {descriptor.id: descriptor for descriptor in capability_manifest().nodes}
 
-    def test_validate_catalog_complete_passes_on_the_real_catalog(self):
-        validate_catalog_complete()
+    def test_every_node_type_has_a_descriptor_with_a_usage_note(self):
+        nodes = self._nodes()
+        assert set(nodes) == {node_type.value for node_type in NodeType}
+        for node_id, descriptor in nodes.items():
+            assert descriptor.usage.strip(), f"{node_id} has no usage note"
 
-    def test_validate_catalog_complete_raises_on_a_missing_entry(
+    def test_a_missing_usage_note_fails_manifest_validation(self, monkeypatch: pytest.MonkeyPatch):
+        notes = dict(_catalog._USAGE_NOTES)
+        del notes[NodeType.POLARS]
+        monkeypatch.setattr(_catalog, "_USAGE_NOTES", notes)
+        with pytest.raises(RuntimeError, match="polars"):
+            validate_manifest_complete()
+
+    def test_an_unexpected_usage_note_fails_manifest_validation(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        depleted = dict(NODE_CATALOG)
-        removed = depleted.pop(NodeType.POLARS)
-        assert removed is not None
-        monkeypatch.setattr(_catalog, "NODE_CATALOG", depleted)
-        with pytest.raises(RuntimeError, match="polars"):
-            validate_catalog_complete()
+        notes = {**_catalog._USAGE_NOTES, "not-a-node-type": "stray"}
+        monkeypatch.setattr(_catalog, "_USAGE_NOTES", notes)
+        with pytest.raises(RuntimeError, match="Unexpected"):
+            validate_manifest_complete()
 
-
-class TestFactAgreement:
     def test_decorators_agree_with_the_type_registry(self):
-        for node_type, entry in NODE_CATALOG.items():
-            assert entry.decorator == NODE_TYPE_TO_DECORATOR.get(node_type), node_type
+        for node_type in NodeType:
+            descriptor = self._nodes()[node_type.value]
+            assert descriptor.decorator == NODE_TYPE_TO_DECORATOR.get(node_type), node_type
 
     def test_sidecar_folders_agree_with_config_io(self):
-        for node_type, entry in NODE_CATALOG.items():
-            assert entry.config_folder == NODE_TYPE_TO_FOLDER.get(node_type), node_type
+        for node_type in NodeType:
+            descriptor = self._nodes()[node_type.value]
+            assert descriptor.config_folder == NODE_TYPE_TO_FOLDER.get(node_type), node_type
 
-    def test_config_keys_agree_with_the_validation_allowlist(self):
-        for node_type, entry in NODE_CATALOG.items():
-            allowed = VALID_KEYS.get(node_type)
-            expected = tuple(sorted(allowed)) if allowed is not None else ()
-            assert tuple(sorted(entry.config_keys)) == expected, node_type
+    def test_config_fields_agree_with_the_validation_allowlist(self):
+        for node_type in NodeType:
+            descriptor = self._nodes()[node_type.value]
+            fields = {*descriptor.required_fields, *descriptor.optional_fields}
+            assert fields == set(VALID_KEYS.get(node_type, ())), node_type
 
     def test_singleton_flags_agree_with_the_save_service(self):
         singleton_types = {node_type for node_type, _label in _SINGLETON_NODE_TYPES}
-        for node_type, entry in NODE_CATALOG.items():
-            assert entry.singleton == (node_type in singleton_types), node_type
-
-
-class TestRendering:
-    def test_render_names_every_node_type(self):
-        rendered = render_catalog()
         for node_type in NodeType:
-            assert node_type.value in rendered
+            descriptor = self._nodes()[node_type.value]
+            assert descriptor.singleton == (node_type in singleton_types), node_type
 
-    def test_render_carries_the_usage_notes(self):
-        rendered = render_catalog()
-        for entry in NODE_CATALOG.values():
-            first_words = " ".join(entry.usage_note.split()[:4])
-            assert first_words in " ".join(rendered.split())
-
-
-class TestEntryShapes:
-    def test_as_dict_is_json_shaped(self):
-        entry = next(iter(NODE_CATALOG.values()))
-        dumped = entry.as_dict()
-        assert set(dumped.keys()) == {
-            "node_type",
-            "decorator",
-            "config_keys",
-            "config_shapes",
-            "config_folder",
-            "singleton",
-            "usage_note",
-        }
-
-    def test_types_without_a_config_typeddict_have_empty_shapes(self):
-        from haute._config_validation import _TYPED_DICT_BY_NODE_TYPE
-
-        shapeless = [
-            node_type for node_type in NodeType if node_type not in _TYPED_DICT_BY_NODE_TYPE
-        ]
-        for node_type in shapeless:
-            assert NODE_CATALOG[node_type].config_shapes == ()
-
-    def test_validate_catalog_complete_raises_on_unexpected_entry(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        inflated = dict(NODE_CATALOG)
-        inflated["not-a-node-type"] = next(iter(NODE_CATALOG.values()))
-        monkeypatch.setattr(_catalog, "NODE_CATALOG", inflated)
-        with pytest.raises(RuntimeError, match="Unexpected"):
-            validate_catalog_complete()
-
-
-def test_validate_catalog_complete_raises_on_fact_mismatch(monkeypatch: pytest.MonkeyPatch):
-    from dataclasses import replace
-
-    tampered = dict(NODE_CATALOG)
-    entry = tampered[NodeType.POLARS]
-    tampered[NodeType.POLARS] = replace(entry, decorator="not_the_real_decorator")
-    monkeypatch.setattr(_catalog, "NODE_CATALOG", tampered)
-    with pytest.raises(RuntimeError):
-        validate_catalog_complete()
+    def test_the_legacy_catalogue_is_gone(self):
+        for name in ("NODE_CATALOG", "NodeCatalogEntry", "render_catalog"):
+            assert not hasattr(_catalog, name), name
 
 
 class TestCapabilityManifest:

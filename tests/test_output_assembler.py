@@ -1,18 +1,9 @@
-"""OUTPUT assembler (notes-haute OUTPUT_ASSEMBLY_PROPERTIES.md).
+"""OUTPUT assembler: mapping validation, assembly, pruning and rendering.
 
-The worked examples in OUTPUT_ASSEMBLY_WORKED_EXAMPLES.md are the oracles. We
-encode each as a table → field-set incidence and assert the algorithm's
-schema-determined decisions (A4) — here, the GYO core detection of §3.3: which
-constraint systems are α-acyclic (no cut) vs which expose a cyclic core.
-
-Fields are single capital letters as in the doc; ``K`` is a common parent key,
-``X/Y/Z`` etc. are private attributes (must strip out as private, Rule 1).
+The algorithm is specified in specs/json-shredding ("OUTPUT assembly").
 """
 
 from __future__ import annotations
-
-from collections import Counter
-from dataclasses import FrozenInstanceError
 
 import polars as pl
 import pytest
@@ -24,16 +15,10 @@ from haute._output_assembler import (
     OutputMappingSchemaError,
     OutputNestingKeyError,
     _assemble_document,
-    _Core,
-    _CutPlan,
-    _execute_plan,
-    _gyo_residue,
     _index_rows,
     _limit_level_plan,
-    _merge_groups,
     _OutputAssemblyProgress,
     _parse_output_path,
-    _plan_cut,
     _prune,
     assemble_output_from_mapping,
     is_active_mapping_entry,
@@ -42,15 +27,6 @@ from haute._output_assembler import (
 )
 from haute.errors import HauteError
 from tests._execution_faults import FaultInjectingExecutionContext
-
-
-def _fs(spec: dict[str, str]) -> dict[str, frozenset[str]]:
-    """Build a {table: frozenset(fields)} incidence from compact strings.
-
-    ``{"T1": "KABX"}`` → ``{"T1": frozenset({"K","A","B","X"})}``.
-    """
-    return {t: frozenset(fields) for t, fields in spec.items()}
-
 
 # ─── OutputMappingSchemaError ──────────────────────────────────────
 
@@ -72,355 +48,7 @@ def test_output_nesting_key_error_requires_keyword_context() -> None:
         )
 
 
-# ─── GYO core detection — α-acyclic cases (no core, nothing cut) ───
-
-
-def test_single_key_is_a_star_not_a_cycle() -> None:
-    # Three tables on one common field A — a star. No second shared field to
-    # close a loop, so it is α-acyclic and fully reduces.
-    assert _gyo_residue(_fs({"S1": "AX", "S2": "AY", "S3": "AZ"})) == {}
-
-
-def test_multiplicity_star_is_acyclic() -> None:
-    # Two tables sharing only A (both non-unique on A — that is a data
-    # property, irrelevant to the schema-determined cut). Still a star.
-    assert _gyo_residue(_fs({"M1": "AX", "M2": "AY"})) == {}
-
-
-def test_composite_key_is_one_join_not_a_loop() -> None:
-    # Two tables sharing *two* fields A,B is a single composite join, not a
-    # cycle (a loop needs the shared fields to chain through different tables).
-    assert _gyo_residue(_fs({"K1": "ABX", "K2": "ABY"})) == {}
-
-
-def test_nested_table_subsumption_is_acyclic() -> None:
-    # N2's fields {A} ⊆ N1's {A,B}: a covered table, stripped by Rule 2. No new
-    # field reaches out to a third table to close a loop.
-    assert _gyo_residue(_fs({"N1": "ABX", "N2": "AY"})) == {}
-
-
-def test_boxed_triangle_covered_cycle_is_acyclic() -> None:
-    # The bare triangle plus a box B1 carrying all three cycle fields A,B,C.
-    # B1 covers the whole cycle, so each triangle table is covered (Rule 2)
-    # and the residue is empty: a covered cycle is not an obstruction.
-    residue = _gyo_residue(_fs({"T1": "ABX", "T2": "BCY", "T3": "ACZ", "B1": "ABCS"}))
-    assert residue == {}
-
-
-# ─── GYO core detection — α-cyclic cases (a core survives, will be cut) ───
-
-
-def test_triangle_exposes_a_three_table_core() -> None:
-    # A,B,C each held by exactly two tables, closing a loop no single table
-    # covers; K is a common parent key (rides above the loop); X,Y,Z private.
-    # The privates strip out (Rule 1); K + the three carriers survive.
-    residue = _gyo_residue(_fs({"T1": "KABX", "T2": "KBCY", "T3": "KACZ"}))
-    assert set(residue) == {"T1", "T2", "T3"}
-    surviving_fields = frozenset().union(*residue.values())
-    assert surviving_fields == frozenset({"K", "A", "B", "C"})
-    # K is in every core table (the benign parent key); A,B,C in exactly two.
-    assert all("K" in fs for fs in residue.values())
-
-
-def test_consistent_triangle_cut_is_data_independent() -> None:
-    # Same shared-field structure as the bare triangle. The cut is decided by
-    # the shared fields, not the values — so even with consistent data (a
-    # detail invisible at this layer) the core is the same (A4).
-    residue = _gyo_residue(_fs({"T1": "KAB", "T2": "KBC", "T3": "KAC"}))
-    assert set(residue) == {"T1", "T2", "T3"}
-
-
-def test_gyo_is_order_independent_confluent() -> None:
-    # Same triangle, tables presented in a different dict order — GYO is
-    # confluent, so the residue table-set is identical.
-    a = _gyo_residue(_fs({"T1": "KABX", "T2": "KBCY", "T3": "KACZ"}))
-    b = _gyo_residue(_fs({"T3": "KACZ", "T1": "KABX", "T2": "KBCY"}))
-    assert set(a) == set(b)
-
-
-@pytest.mark.parametrize(
-    "spec",
-    [
-        {},  # no tables
-        {"only": "ABC"},  # one table — every field private
-        {"a": "X", "b": "Y"},  # disjoint fields — nothing shared
-    ],
-)
-def test_trivially_acyclic_inputs_have_empty_residue(spec: dict[str, str]) -> None:
-    assert _gyo_residue(_fs(spec)) == {}
-
-
-# ─── Recursive surgical cut — the cut PLAN (§4.1–§4.2, schema-determined) ───
-#
-# These pin the worked-example *decisions*: which (table, field) incidences are
-# severed, which cores are found (and in what recursion order), and the
-# honoured-merge groups the cut leaves behind. All data-independent (A4).
-
-
-def _groups(plan: _CutPlan) -> set[frozenset[str]]:
-    """The honoured-merge structure as a set of table groups (executor input)."""
-    return {frozenset(g) for g in _merge_groups(plan.merge_residue)}
-
-
-def test_triangle_cut_plan_parent_key_nests_carriers_cut() -> None:
-    # The bare triangle under a common parent key K. K is in every core table
-    # (the all-vs-some split, §3.3) → a parent key: it LOCATES the objects under
-    # one parent but never merges them. A,B,C are carriers (each in exactly two)
-    # → cut at the core tables. Result: three standalone objects, not one.
-    plan = _plan_cut(_fs({"T1": "KABX", "T2": "KBCY", "T3": "KACZ"}))
-
-    assert len(plan.cores) == 1
-    (core,) = plan.cores
-    assert core.tables == frozenset({"T1", "T2", "T3"})
-    assert core.parent_keys == frozenset({"K"})
-    assert core.carriers == frozenset({"A", "B", "C"})
-
-    # Each carrier severed at exactly the two core tables that carry it.
-    assert plan.cuts == frozenset(
-        {("T1", "A"), ("T3", "A"), ("T1", "B"), ("T2", "B"), ("T2", "C"), ("T3", "C")}
-    )
-    # The parent key is never cut.
-    assert all(field != "K" for _table, field in plan.cuts)
-
-    # No honoured merge among the core tables — each stands alone. And the cut
-    # removes the JOIN role, not the value: the private X still rides along.
-    assert _groups(plan) == {frozenset({"T1"}), frozenset({"T2"}), frozenset({"T3"})}
-    assert plan.merge_residue["T1"] == frozenset({"X"})
-
-
-def test_pendant_cut_is_surgical() -> None:
-    # The triangle core plus two pendants P1,P2 sharing carrier A. The cut is
-    # surgical (§4.2): A is severed at the CORE tables T1,T3 but stays live at
-    # the pendants, so the pendants join among themselves while the core stands
-    # apart — (A:P, W, V) coexists unmerged beside (A:P, B, X).
-    plan = _plan_cut(_fs({"T1": "ABX", "T2": "BCY", "T3": "ACZ", "P1": "AW", "P2": "AV"}))
-
-    (core,) = plan.cores
-    assert core.tables == frozenset({"T1", "T2", "T3"})
-    assert core.carriers == frozenset({"A", "B", "C"})
-    assert core.parent_keys == frozenset()  # no K in this listing
-
-    # Surgical: cut at the core tables, untouched at the pendants.
-    assert {("T1", "A"), ("T3", "A")} <= plan.cuts
-    assert ("P1", "A") not in plan.cuts
-    assert ("P2", "A") not in plan.cuts
-
-    assert _groups(plan) == {
-        frozenset({"P1", "P2"}),  # pendants merge among themselves on A
-        frozenset({"T1"}),
-        frozenset({"T2"}),
-        frozenset({"T3"}),
-    }
-
-
-def test_tri_pendant_symmetric_three_pendant_merges() -> None:
-    # Every carrier A,B,C carries its own pendant pair. By symmetry no field is
-    # distinguished; the core is cut and each carrier is restricted to its
-    # pendants, giving three independent merge groups beside the standalone core.
-    plan = _plan_cut(
-        _fs(
-            {
-                "T1": "ABX",
-                "T2": "BCY",
-                "T3": "ACZ",
-                "P1": "AW",
-                "P2": "AV",
-                "Q1": "BU",
-                "Q2": "BG",
-                "R1": "CS",
-                "R2": "CO",
-            }
-        )
-    )
-
-    assert plan.cores[0].tables == frozenset({"T1", "T2", "T3"})
-    groups = _groups(plan)
-    assert frozenset({"P1", "P2"}) in groups
-    assert frozenset({"Q1", "Q2"}) in groups
-    assert frozenset({"R1", "R2"}) in groups
-    assert frozenset({"T1"}) in groups  # the core never merges
-
-
-def test_window_recursion_finds_curtain_core_then_window_core() -> None:
-    # The recursion trap (§4.1 step 3). GYO finds the CURTAIN core first because
-    # the windows are *covered* by the curtains and strip out as covered tables.
-    # After cutting the curtain carriers {A,B,D} (with C the parent key), re-run
-    # on the FULL set: the windows are now un-covered and surface as a SECOND
-    # core {A,B,C,D} with no parent key. Everything lands standalone (8 objects).
-    plan = _plan_cut(
-        _fs(
-            {
-                "W1": "ABX",
-                "W2": "BCY",
-                "W3": "CDZ",
-                "W4": "ADW",
-                "C1": "ABCV",
-                "C2": "ACDU",
-                "C3": "BCDT",
-            }
-        )
-    )
-
-    assert len(plan.cores) == 2
-    curtain, window = plan.cores  # recursion order: curtains first
-    assert curtain.tables == frozenset({"C1", "C2", "C3"})
-    assert curtain.parent_keys == frozenset({"C"})
-    assert curtain.carriers == frozenset({"A", "B", "D"})
-    assert window.tables == frozenset({"W1", "W2", "W3", "W4"})
-    assert window.parent_keys == frozenset()
-    assert window.carriers == frozenset({"A", "B", "C", "D"})
-
-    # No honoured merge survives — eight standalone partial objects.
-    assert len(_groups(plan)) == 7  # 7 tables, every one isolated
-
-
-def test_boxed_cycle_is_not_cut_and_all_merge() -> None:
-    # A box B1 covering the whole cycle dissolves it (§6.3): no core, nothing
-    # cut, and every table lands in one honoured-merge group.
-    plan = _plan_cut(_fs({"T1": "ABX", "T2": "BCY", "T3": "ACZ", "B1": "ABCS"}))
-    assert plan.cores == ()
-    assert plan.cuts == frozenset()
-    assert _groups(plan) == {frozenset({"T1", "T2", "T3", "B1"})}
-
-
-def test_nested_table_is_not_cut_and_joins_on_shared_field() -> None:
-    # Subsumption: N2 ⊆ N1, no cycle. Nothing cut; the two merge on A.
-    plan = _plan_cut(_fs({"N1": "ABX", "N2": "AY"}))
-    assert plan.cores == ()
-    assert plan.cuts == frozenset()
-    assert _groups(plan) == {frozenset({"N1", "N2"})}
-
-
-@pytest.mark.parametrize(
-    "spec",
-    [
-        {"S1": "AX", "S2": "AY", "S3": "AZ"},  # single-key star
-        {"K1": "ABX", "K2": "ABY"},  # composite key — one join, not a loop
-        {},  # no tables
-        {"only": "ABC"},  # one table — all private
-    ],
-)
-def test_acyclic_inputs_have_empty_cut_plan(spec: dict[str, str]) -> None:
-    plan = _plan_cut(_fs(spec))
-    assert plan.cores == ()
-    assert plan.cuts == frozenset()
-
-
-# ─── Executor — run the plan over data (§4.3 bag join + §4.4 co-location) ───
-#
-# The frames here are already keyed by FIELD (column name = field id), isolating
-# the relational assembly from the column→path normalisation. Each assembled row
-# is read back as the worked examples write objects: the set of (field, value)
-# pairs it actually carries (nulls = absent fields). Compared as a *multiset*,
-# because the join is a bag (multiplicity is meaningful, not deduped).
-
-
-def _objects(lf: pl.LazyFrame) -> Counter[frozenset[tuple[str, object]]]:
-    df = lf.collect()
-    cols = df.columns
-    return Counter(
-        frozenset((c, v) for c, v in zip(cols, row) if v is not None) for row in df.iter_rows()
-    )
-
-
-def _obj(**fields: object) -> frozenset[tuple[str, object]]:
-    return frozenset(fields.items())
-
-
-def test_execute_multiplicity_fans_out_as_a_bag() -> None:
-    # Star on A, both sides non-unique → the bag natural join multiplies out to
-    # every combination (§4.3). Four objects, not deduped.
-    frames = {
-        "M1": pl.LazyFrame({"A": ["m", "m"], "X": [1, 2]}),
-        "M2": pl.LazyFrame({"A": ["m", "m"], "Y": [3, 4]}),
-    }
-    plan = _plan_cut(_fs({"M1": "AX", "M2": "AY"}))
-    assert _objects(_execute_plan(frames, plan)) == Counter(
-        [
-            _obj(A="m", X=1, Y=3),
-            _obj(A="m", X=1, Y=4),
-            _obj(A="m", X=2, Y=3),
-            _obj(A="m", X=2, Y=4),
-        ]
-    )
-
-
-def test_execute_single_key_star_merges_to_one() -> None:
-    frames = {
-        "S1": pl.LazyFrame({"A": ["m"], "X": [1]}),
-        "S2": pl.LazyFrame({"A": ["m"], "Y": [2]}),
-        "S3": pl.LazyFrame({"A": ["m"], "Z": [3]}),
-    }
-    plan = _plan_cut(_fs({"S1": "AX", "S2": "AY", "S3": "AZ"}))
-    assert _objects(_execute_plan(frames, plan)) == Counter([_obj(A="m", X=1, Y=2, Z=3)])
-
-
-def test_execute_nested_joins_where_matched_else_stands_alone() -> None:
-    # Full-outer bag join: N2's matching A=m row folds into N1; its A=n row has
-    # nothing to join and survives as a co-located partial (§4.4).
-    frames = {
-        "N1": pl.LazyFrame({"A": ["m"], "B": [5], "X": [1]}),
-        "N2": pl.LazyFrame({"A": ["m", "n"], "Y": [7, 8]}),
-    }
-    plan = _plan_cut(_fs({"N1": "ABX", "N2": "AY"}))
-    assert _objects(_execute_plan(frames, plan)) == Counter(
-        [_obj(A="m", B=5, X=1, Y=7), _obj(A="n", Y=8)]
-    )
-
-
-def test_execute_triangle_stays_three_partials_despite_consistent_data() -> None:
-    # The cut is schema-determined (A4): even with consistent data round the
-    # cycle (one K0, P, Q, R everywhere — which a join WOULD have merged), the
-    # three core tables stay three separate partial objects. The parent key K0
-    # rides on every row (it nests at serialise time; it does not merge here).
-    frames = {
-        "T1": pl.LazyFrame({"K": ["K0"], "A": ["P"], "B": ["Q"], "X": [1]}),
-        "T2": pl.LazyFrame({"K": ["K0"], "B": ["Q"], "C": ["R"], "Y": [2]}),
-        "T3": pl.LazyFrame({"K": ["K0"], "A": ["P"], "C": ["R"], "Z": [3]}),
-    }
-    plan = _plan_cut(_fs({"T1": "KABX", "T2": "KBCY", "T3": "KACZ"}))
-    assert _objects(_execute_plan(frames, plan)) == Counter(
-        [
-            _obj(K="K0", A="P", B="Q", X=1),
-            _obj(K="K0", B="Q", C="R", Y=2),
-            _obj(K="K0", A="P", C="R", Z=3),
-        ]
-    )
-
-
-def test_execute_pendant_pendants_join_core_stands_apart() -> None:
-    # Surgical cut at execution: the pendants merge on A into one object, while
-    # the three core tables stand apart — (A:P, W, V) coexists unmerged beside
-    # (A:P, B, X), both carrying A=P (§4.2 transitivity).
-    frames = {
-        "T1": pl.LazyFrame({"A": ["P"], "B": ["Q"], "X": [1]}),
-        "T2": pl.LazyFrame({"B": ["Q"], "C": ["R"], "Y": [2]}),
-        "T3": pl.LazyFrame({"A": ["P"], "C": ["R"], "Z": [3]}),
-        "P1": pl.LazyFrame({"A": ["P"], "W": [8]}),
-        "P2": pl.LazyFrame({"A": ["P"], "V": [9]}),
-    }
-    plan = _plan_cut(_fs({"T1": "ABX", "T2": "BCY", "T3": "ACZ", "P1": "AW", "P2": "AV"}))
-    assert _objects(_execute_plan(frames, plan)) == Counter(
-        [
-            _obj(A="P", B="Q", X=1),
-            _obj(B="Q", C="R", Y=2),
-            _obj(A="P", C="R", Z=3),
-            _obj(A="P", W=8, V=9),  # the joined-up pendant
-        ]
-    )
-
-
-def test_execute_standalone_table_keeps_every_row() -> None:
-    # Co-location is a bag-union: an isolated table's rows each stand alone,
-    # multiplicity preserved (nothing dropped, nothing invented — A1a).
-    frames = {"L": pl.LazyFrame({"A": ["p", "q", "q"], "X": [1, 2, 3]})}
-    plan = _plan_cut(_fs({"L": "AX"}))
-    assert _objects(_execute_plan(frames, plan)) == Counter(
-        [_obj(A="p", X=1), _obj(A="q", X=2), _obj(A="q", X=3)]
-    )
-
-
-# ─── Output-path parser — the [:]-only conventional-JSONPath subset (§2) ───
+# ─── Output-path parser — the [:]-only conventional-JSONPath subset ───
 
 
 def test_parse_output_path_segments() -> None:
@@ -468,7 +96,7 @@ def test_validate_v2_output_mapping_requires_canonical_root() -> None:
         validate_v2_output_mapping(mapping)
 
 
-# ─── Assembler — descend the prefix tree, nest by ancestor key (§4.5) ───
+# ─── Assembler — descend the prefix tree, nest by ancestor key ───
 #
 # Each frame's columns are its output paths; the assembler nests children under
 # parents by the ancestor keys the child carries (the inverse of the W1 shred).
@@ -485,49 +113,6 @@ def test_assemble_parent_and_child_array() -> None:
     }
     assert _assemble_document(field_frames) == [
         {"id": 1, "policy": "P", "drivers": [{"name": "a"}, {"name": "b"}]}
-    ]
-
-
-def test_assemble_triangle_three_partials_under_one_parent() -> None:
-    # The single-level cyclic case still works through the tree recursion: the
-    # root level has no frame of its own, so it is synthesised from the parent key
-    # K the obj-level frames carry; the three obj frames share a cyclic core at
-    # one level → cut → three co-located partials, nested under the one K0 parent.
-    field_frames = {
-        "T1": pl.LazyFrame(
-            {
-                "$[:].K": ["K0"],
-                "$[:].obj[:].A": ["P"],
-                "$[:].obj[:].B": ["Q"],
-                "$[:].obj[:].attrs.X": [1],
-            }
-        ),
-        "T2": pl.LazyFrame(
-            {
-                "$[:].K": ["K0"],
-                "$[:].obj[:].B": ["Q"],
-                "$[:].obj[:].C": ["R"],
-                "$[:].obj[:].attrs.Y": [2],
-            }
-        ),
-        "T3": pl.LazyFrame(
-            {
-                "$[:].K": ["K0"],
-                "$[:].obj[:].A": ["P"],
-                "$[:].obj[:].C": ["R"],
-                "$[:].obj[:].attrs.Z": [3],
-            }
-        ),
-    }
-    assert _assemble_document(field_frames) == [
-        {
-            "K": "K0",
-            "obj": [
-                {"A": "P", "B": "Q", "attrs": {"X": 1}},
-                {"B": "Q", "C": "R", "attrs": {"Y": 2}},
-                {"A": "P", "C": "R", "attrs": {"Z": 3}},
-            ],
-        }
     ]
 
 
@@ -786,6 +371,73 @@ def test_validate_accepts_a_well_formed_mapping() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        pytest.param(
+            [
+                _entry("priced", "quote_id", "$[:].quote_id"),
+                _entry("priced", "premium", "$[:].premium"),
+                _entry("extras", "quote_id", "$[:].quote_id"),
+                _entry("extras", "discount", "$[:].discount"),
+            ],
+            id="two-frames-at-the-root",
+        ),
+        pytest.param(
+            [
+                _entry("policies", "policy_id", "$[:].policy_id"),
+                _entry("drivers", "policy_id", "$[:].policy_id"),
+                _entry("drivers", "name", "$[:].drivers[:].name"),
+                _entry("licenses", "policy_id", "$[:].policy_id"),
+                _entry("licenses", "country", "$[:].drivers[:].licence_country"),
+            ],
+            id="two-frames-at-a-nested-level",
+        ),
+    ],
+)
+def test_validate_rejects_two_frames_emitting_at_one_array_level(
+    mapping: list[dict[str, object]],
+) -> None:
+    # One frame per array level: frames describing the same objects are joined
+    # upstream, where the join is an explicit node, never inside OUTPUT.
+    with pytest.raises(OutputMappingSchemaError, match="same array level") as exc_info:
+        validate_v2_output_mapping(mapping)
+
+    assert len(exc_info.value.context["source_ports"]) == 2
+
+
+def test_assembly_rejects_two_frames_at_one_level_before_collecting_them() -> None:
+    collected: list[str] = []
+
+    def frame(port: str, data: dict[str, list[object]]) -> pl.LazyFrame:
+        def mark(batch: pl.DataFrame) -> pl.DataFrame:
+            collected.append(port)
+            return batch
+
+        return pl.LazyFrame(data).map_batches(mark)
+
+    field_frames = {
+        "priced": frame("priced", {"$[:].quote_id": ["q1"], "$[:].premium": [1.0]}),
+        "extras": frame("extras", {"$[:].quote_id": ["q1"], "$[:].discount": [0.1]}),
+    }
+
+    with pytest.raises(OutputMappingSchemaError, match="same array level"):
+        _assemble_document(field_frames)
+    assert collected == []
+
+
+def test_frames_at_different_levels_and_sibling_branches_are_valid() -> None:
+    validate_v2_output_mapping(
+        [
+            _entry("policies", "policy_id", "$[:].policy_id"),
+            _entry("drivers", "policy_id", "$[:].policy_id"),
+            _entry("drivers", "name", "$[:].drivers[:].name"),
+            _entry("vehicles", "policy_id", "$[:].policy_id"),
+            _entry("vehicles", "make", "$[:].vehicles[:].make"),
+        ]
+    )
+
+
 def test_validate_parses_each_distinct_active_path_once(monkeypatch: pytest.MonkeyPatch) -> None:
     import haute._output_assembler as assembler
 
@@ -797,14 +449,14 @@ def test_validate_parses_each_distinct_active_path_once(monkeypatch: pytest.Monk
         return original(path)
 
     monkeypatch.setattr(assembler, "_parse_output_path", spy)
-    mapping = [
-        _entry("p", f"value_{index}", f"$[:].items[:].value_{index}") for index in range(200)
-    ]
-    mapping.extend([_entry("q", "same", "$[:].items[:].value_0") for _ in range(50)])
+    # A child frame carries its parent's key by repeating the parent's path.
+    mapping = [_entry("p", f"value_{index}", f"$[:].value_{index}") for index in range(200)]
+    mapping.extend([_entry("q", "same", "$[:].value_0") for _ in range(50)])
+    mapping.append(_entry("q", "leaf", "$[:].items[:].leaf"))
 
     assembler.validate_v2_output_mapping(mapping)
 
-    assert len(calls) == 200
+    assert len(calls) == 201
 
 
 def test_validate_rejects_prefix_comparable_paths_within_a_port() -> None:
@@ -849,72 +501,6 @@ def test_validate_rejects_divergent_array_branches_before_frame_collection() -> 
     mapping = [_entry("p", "id", "$[:].left[:].id"), _entry("p", "id", "$[:].right[:].id")]
     with pytest.raises(OutputMappingSchemaError, match="divergent"):
         assemble_output_from_mapping({"p": CollectSpy()}, mapping)  # type: ignore[arg-type]
-
-
-def test_same_level_output_frames_are_materialised_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The same lazy sources must not be collected once raw and again for their join."""
-    original_collect = pl.LazyFrame.collect
-    collect_calls = 0
-
-    def counted_collect(self: pl.LazyFrame, *args: object, **kwargs: object) -> pl.DataFrame:
-        nonlocal collect_calls
-        collect_calls += 1
-        return original_collect(self, *args, **kwargs)
-
-    monkeypatch.setattr(pl.LazyFrame, "collect", counted_collect)
-    result = _assemble_document(
-        {
-            "left": pl.LazyFrame({"$[:].id": [1], "$[:].a": ["left"]}),
-            "right": pl.LazyFrame({"$[:].id": [1], "$[:].b": ["right"]}),
-        }
-    )
-
-    assert result == [{"id": 1, "a": "left", "b": "right"}]
-    assert collect_calls == 1
-
-
-def test_same_level_join_output_follows_the_first_source_then_unmatched_later_rows() -> None:
-    """Same-level joins retain deterministic source-row order:
-
-    rows follow the sorted left/first source, followed by unmatched rows from later sources.
-    """
-    first = pl.LazyFrame(
-        {
-            "$[:].id": [30, 10, 20],
-            "$[:].a": ["a30", "a10", "a20"],
-        }
-    )
-    second = pl.LazyFrame(
-        {
-            "$[:].id": [10, 40, 30],
-            "$[:].b": ["b10", "b40", "b30"],
-        }
-    )
-
-    # When source_1 carries `first` and source_2 carries `second`, the first member
-    # in the sorted join order is source_1. Output rows follow `first`'s non-sorted
-    # order ([30, 10, 20]), followed by unmatched rows from `second` ([40]).
-    assembled = _assemble_document({"source_1": first, "source_2": second})
-    assert assembled == [
-        {"id": 30, "a": "a30", "b": "b30"},
-        {"id": 10, "a": "a10", "b": "b10"},
-        {"id": 20, "a": "a20"},
-        {"id": 40, "b": "b40"},
-    ]
-
-    # When swapped (source_1 carries `second` and source_2 carries `first`), the
-    # first member in the sorted join order is now `second`. Output rows follow
-    # `second`'s non-sorted order ([10, 40, 30]), followed by unmatched rows from
-    # `first` ([20]), proving the row order is determined by the first source.
-    assembled_swapped = _assemble_document({"source_1": second, "source_2": first})
-    assert assembled_swapped == [
-        {"id": 10, "a": "a10", "b": "b10"},
-        {"id": 40, "b": "b40"},
-        {"id": 30, "a": "a30", "b": "b30"},
-        {"id": 20, "a": "a20"},
-    ]
 
 
 def test_output_materialisation_uses_active_execution_context() -> None:
@@ -1090,21 +676,38 @@ def test_assemble_rejects_null_key_across_a_synthesised_child_level(
     }
 
 
-def test_assemble_ignores_absent_nesting_key_in_partial_frame() -> None:
+def test_assemble_ignores_a_nesting_key_the_child_frame_does_not_carry() -> None:
+    # The child frame has no quote_id column: that is absence, not a null key,
+    # so it raises nothing and its rows nest under every parent object.
     frames = {
-        "a": pl.LazyFrame(
-            {
-                "$[:].quote_id": [1],
-                "$[:].drivers[:].name": ["Ann"],
-            }
-        ),
-        "b": pl.LazyFrame({"$[:].drivers[:].age": [42]}),
+        "quotes": pl.LazyFrame({"$[:].quote_id": [1, None]}),
+        "drivers": pl.LazyFrame({"$[:].drivers[:].name": ["Ann"]}),
     }
 
     assert _assemble_document(frames) == [
         {"quote_id": 1, "drivers": [{"name": "Ann"}]},
-        {"drivers": [{"age": 42}]},
+        {"drivers": [{"name": "Ann"}]},
     ]
+
+
+def test_null_key_guard_skips_a_subtree_frame_that_does_not_carry_the_key() -> None:
+    # quote_id relates quotes to drivers, so the guard checks it in every frame
+    # of the drivers subtree that carries it. The licences frame does not: its
+    # missing column is absence, never read as a null key (no error). Per the
+    # nesting rule, a row that lacks a scope key matches no parent object, so
+    # the licences are not placed.
+    frames = {
+        "quotes": pl.LazyFrame({"$[:].quote_id": [1]}),
+        "drivers": pl.LazyFrame({"$[:].quote_id": [1], "$[:].drivers[:].driver_id": [7]}),
+        "licences": pl.LazyFrame(
+            {
+                "$[:].drivers[:].driver_id": [7],
+                "$[:].drivers[:].licences[:].country": ["GB"],
+            }
+        ),
+    }
+
+    assert _assemble_document(frames) == [{"quote_id": 1, "drivers": [{"driver_id": 7}]}]
 
 
 def test_config_assembly_ignores_incomplete_enabled_mapping_port() -> None:
@@ -1256,83 +859,10 @@ def test_output_contract_excludes_blank_source_column() -> None:
 # the mutation, not merely "it still runs".
 
 
-@pytest.mark.parametrize(
-    ("record", "attribute"),
-    [
-        (
-            _Core(
-                tables=frozenset({"T"}),
-                parent_keys=frozenset(),
-                carriers=frozenset(),
-            ),
-            "tables",
-        ),
-        (
-            _CutPlan(
-                cores=(),
-                cuts=frozenset(),
-                merge_residue={"T": frozenset()},
-            ),
-            "cuts",
-        ),
-    ],
-)
-def test_cut_plan_records_are_immutable(record: object, attribute: str) -> None:
-    with pytest.raises(FrozenInstanceError):
-        setattr(record, attribute, None)
-
-
 # _merge_groups union-find — find() must reach the true root regardless of the
 # alphabetical relation between a node and its parent pointer (the '!=' loop
 # bound must not become '<' or '>'). Two single-field merges with the carriers
 # listed in opposite orders force a parent pointer in each direction.
-
-
-def test_merge_groups_unions_with_ascending_parent_pointer() -> None:
-    # residue order A,B → union(A,B) sets parent[A]=B (ascending). A '<' mutant on
-    # `while parent[root] != root` stops immediately at A, splitting the group.
-    assert _merge_groups({"A": frozenset({"f"}), "B": frozenset({"f"})}) == [frozenset({"A", "B"})]
-
-
-def test_merge_groups_unions_with_descending_parent_pointer() -> None:
-    # residue order B,A → union(B,A) sets parent[B]=A (descending). A '>' mutant on
-    # the same loop bound stops immediately at B, splitting the group.
-    assert _merge_groups({"B": frozenset({"f"}), "A": frozenset({"f"})}) == [frozenset({"A", "B"})]
-
-
-def test_merge_groups_transitive_chain_is_one_group() -> None:
-    # A–B–C–D linked pairwise through three distinct fields: find() must walk the
-    # multi-hop parent chain to a single root, so all four are one honoured group.
-    chain = {
-        "A": frozenset({"f1"}),
-        "B": frozenset({"f1", "f2"}),
-        "C": frozenset({"f2", "f3"}),
-        "D": frozenset({"f3"}),
-    }
-    assert _merge_groups(chain) == [frozenset({"A", "B", "C", "D"})]
-
-
-def test_merge_groups_field_shared_by_three_tables() -> None:
-    # One field carried by THREE tables unions members[1:] (B and C) onto members[0]
-    # (A). A `members[2:]` slice mutation would leave B ungrouped → two groups.
-    groups = _merge_groups({"A": frozenset({"f"}), "B": frozenset({"f"}), "C": frozenset({"f"})})
-    assert {frozenset(g) for g in groups} == {frozenset({"A", "B", "C"})}
-
-
-def test_merge_groups_disconnected_pairs_stay_separate() -> None:
-    # Two field-disjoint pairs never merge — a sanity bound on the union step.
-    groups = {
-        frozenset(g)
-        for g in _merge_groups(
-            {
-                "A": frozenset({"f1"}),
-                "B": frozenset({"f1"}),
-                "C": frozenset({"f2"}),
-                "D": frozenset({"f2"}),
-            }
-        )
-    }
-    assert groups == {frozenset({"A", "B"}), frozenset({"C", "D"})}
 
 
 # _execute_plan — the greedy fold must pick the next table by the INTERSECTION of
@@ -1342,43 +872,6 @@ def test_merge_groups_disconnected_pairs_stay_separate() -> None:
 # T1 row (A=p2) makes the difference observable: the correct fold leaves {A:p2}
 # standing alone, whereas a '|' (union) mutation makes the filter always-true,
 # picks the non-overlapping T2 first, and cross-joins p2 onto B=q.
-
-
-def test_execute_plan_picks_fold_order_by_shared_field_intersection() -> None:
-    frames = {
-        "T1": pl.LazyFrame({"A": ["p", "p2"]}),  # p2 has no T3 match
-        "T2": pl.LazyFrame({"B": ["q"], "mB": [9]}),
-        "T3": pl.LazyFrame({"A": ["p"], "B": ["q"]}),
-    }
-    plan = _plan_cut(_fs({"T1": "A", "T2": "B", "T3": "AB"}))
-    assert _objects(_execute_plan(frames, plan)) == Counter(
-        [_obj(A="p", B="q", mB=9), _obj(A="p2")]
-    )
-
-
-def test_execute_plan_rejects_a_disconnected_merge_group(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A corrupt plan must fail instead of silently Cartesian-joining rows."""
-    frames = {
-        "A": pl.LazyFrame({"left_key": [1]}),
-        "B": pl.LazyFrame({"right_key": [2]}),
-    }
-    plan = _CutPlan(
-        cores=(),
-        cuts=frozenset(),
-        merge_residue={
-            "A": frozenset({"left_key"}),
-            "B": frozenset({"right_key"}),
-        },
-    )
-    monkeypatch.setattr(
-        "haute._output_assembler._merge_groups",
-        lambda _residue: [frozenset({"A", "B"})],
-    )
-
-    with pytest.raises(RuntimeError, match="join plan is disconnected"):
-        _execute_plan(frames, plan)
 
 
 # Prefix-tree serialisation — a synthesised intermediate level (no frame emits
@@ -1533,29 +1026,6 @@ def test_validate_collision_is_detected_regardless_of_column_order() -> None:
 # node, nor exactly two honoured-merge groups.
 
 
-def test_assemble_two_frames_at_one_level_keeps_both() -> None:
-    # Two frames both emit at the root array and join on id — a 2-port level. If
-    # the `len == 1` shortcut fired for a count of two, the second frame's column
-    # ("b") would vanish.
-    field_frames = {
-        "F1": pl.LazyFrame({"$[:].id": [1], "$[:].a": ["av"]}),
-        "F2": pl.LazyFrame({"$[:].id": [1], "$[:].b": ["bv"]}),
-    }
-    assert _assemble_document(field_frames) == [{"id": 1, "a": "av", "b": "bv"}]
-
-
-def test_execute_plan_two_disjoint_groups_are_both_emitted() -> None:
-    # Two field-disjoint tables form two honoured-merge groups, stacked by the
-    # diagonal concat. A `len(group_frames) == 2` shortcut would return only the
-    # first group and drop the second.
-    frames = {
-        "G1": pl.LazyFrame({"A": ["p"], "x": [1]}),
-        "G2": pl.LazyFrame({"B": ["q"], "y": [2]}),
-    }
-    plan = _plan_cut(_fs({"G1": "Ax", "G2": "By"}))
-    assert _objects(_execute_plan(frames, plan)) == Counter([_obj(A="p", x=1), _obj(B="q", y=2)])
-
-
 # ---------------------------------------------------------------------------
 # Limited assembly: the first documents without assembling every document
 # ---------------------------------------------------------------------------
@@ -1602,23 +1072,10 @@ def test_limited_assembly_reads_only_the_selected_policies_children() -> None:
     assert sum(seen) == 6
 
 
-def test_limited_assembly_objects_equal_unlimited_objects_for_multi_port_levels() -> None:
-    field_frames = {
-        "left": pl.LazyFrame({"$[:].id": [1, 2, 3], "$[:].a": ["x", "y", "z"]}),
-        "right": pl.LazyFrame({"$[:].id": [1, 2, 3], "$[:].b": [10, 20, 30]}),
-    }
-    unlimited = _assemble_document(field_frames)
-
-    limited = _assemble_document(field_frames, row_limit=2)
-
-    assert 0 < len(limited) <= 2
-    assert all(document in unlimited for document in limited)
-
-
 def test_limited_assembly_of_a_synthesised_root_is_complete() -> None:
     field_frames = {
         "T1": pl.LazyFrame({"$[:].K": ["K0", "K1"], "$[:].obj[:].A": ["P", "Q"]}),
-        "T2": pl.LazyFrame({"$[:].K": ["K0", "K1"], "$[:].obj[:].B": ["R", "S"]}),
+        "T2": pl.LazyFrame({"$[:].K": ["K0", "K1"], "$[:].other[:].B": ["R", "S"]}),
     }
 
     assert _assemble_document(field_frames, row_limit=1) == _assemble_document(field_frames)

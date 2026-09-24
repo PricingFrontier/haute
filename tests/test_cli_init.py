@@ -22,8 +22,6 @@ ALL_TARGETS = [
     "azure-container-apps",
     "aws-ecs",
     "gcp-run",
-    "sagemaker",
-    "azure-ml",
 ]
 
 ALL_CI_OPTIONS = ["github", "gitlab", "azure-devops", "none"]
@@ -300,6 +298,28 @@ class TestInitProjectName:
 
 
 class TestInitTargetOptions:
+    @pytest.mark.parametrize("target", ["sagemaker", "azure-ml"])
+    def test_future_targets_are_not_offered(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        target: str,
+    ):
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(cli, ["init", "--target", target])
+        assert result.exit_code == 2
+        assert not (tmp_path / "haute.toml").exists()
+
+    def test_help_labels_the_build_and_push_only_targets(self, runner: CliRunner):
+        result = runner.invoke(cli, ["init", "--help"], terminal_width=200)
+        assert result.exit_code == 0, result.output
+        help_text = " ".join(result.output.split())
+        assert "azure-container-apps, aws-ecs and gcp-run are build and push only" in help_text
+        assert "pushes it when a registry is configured" in help_text
+        assert "sagemaker" not in help_text
+        assert "azure-ml" not in help_text
+
     @pytest.mark.parametrize("target", ALL_TARGETS)
     def test_target_option_succeeds(
         self,

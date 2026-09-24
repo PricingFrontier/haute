@@ -8,7 +8,7 @@ You've calculated a price. Now you choose which columns to send back in the API 
 !!! info "When to use"
     Use this to define the API response for live pricing. For saving results to a file (batch scoring), use [Data Output](data-output.md) instead. You can use both in the same pipeline.
 
-Each incoming connection is one frame. A single frame is the usual case; several frames let the response nest child arrays, such as each quote's drivers.
+Each incoming connection is one frame. A single frame is the usual case; several frames let the response nest child arrays, such as each quote's drivers. Each array level of the response takes one frame: two frames that would both fill the top-level objects (or both fill one nested array) are rejected. Join them upstream with an [Edge Join](edge-join.md) or [Polars](polars.md) node, or map one of them into a child array.
 
 | Config | Description |
 |---|---|

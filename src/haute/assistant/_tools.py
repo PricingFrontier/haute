@@ -38,7 +38,6 @@ from haute._types import GraphNode, NodeType, PipelineGraph
 from haute.assistant._application import CommittedVerificationError, PipelineApplicationService
 from haute.assistant._assets import authoring_guide, load_example
 from haute.assistant._catalog import (
-    NODE_CATALOG,
     capability_manifest,
     compact_manifest,
     materialise_json,
@@ -706,21 +705,6 @@ def get_column_profiles(
             execution_context.release_admission(preserve_primary_error=True)
 
 
-def list_node_types() -> dict[str, object]:
-    """Return the manifest-backed legacy node-catalogue compatibility view."""
-
-    manifest_nodes = {descriptor.id: descriptor for descriptor in capability_manifest().nodes}
-    return {
-        "node_types": [
-            {
-                **entry.as_dict(),
-                "config_schema": manifest_nodes[entry.node_type.value].as_dict()["config_schema"],
-            }
-            for entry in NODE_CATALOG.values()
-        ]
-    }
-
-
 def get_capability_manifest() -> dict[str, object]:
     """Return manifest identity and the bounded descriptor index."""
 
@@ -1169,6 +1153,16 @@ def _log_tool_outcome(name: str, result: Mapping[str, object], *, elapsed_ms: fl
         validation_path=error.get("validation_path"),
         validation_reason=error.get("validation_reason"),
     )
+
+
+# Tools that were removed, each refused with what replaces it rather than as an
+# unknown name: a resumed session's history can still name one.
+_REMOVED_TOOLS: dict[str, str] = {
+    "list_node_types": (
+        "list_node_types was removed; use get_capability_manifest for the node index "
+        'and get_capability_descriptors with kind "node" for a node\'s full descriptor.'
+    ),
+}
 
 
 def _dispatch_error(name: str, message: str) -> dict[str, object]:
@@ -1625,6 +1619,8 @@ def build_tool_executor(
         return result
 
     async def _dispatch_tool(name: str, arguments: dict[str, Any]) -> Mapping[str, object]:
+        if name in _REMOVED_TOOLS:
+            return _error("tool_removed", _REMOVED_TOOLS[name], name=name)
         if name not in _TOOL_NAMES:
             return _dispatch_error(
                 name,
@@ -1775,8 +1771,6 @@ def build_tool_executor(
                     arguments["node"],
                     arguments.get("input"),
                 )
-            elif name == "list_node_types":
-                operation = list_node_types
             elif name == "get_capability_manifest":
                 operation = get_capability_manifest
             elif name == "get_capability_descriptors":
@@ -1883,6 +1877,5 @@ __all__ = [
     "get_project_knowledge",
     "plan_recipe",
     "list_datasets",
-    "list_node_types",
     "render_pipeline_graph",
 ]

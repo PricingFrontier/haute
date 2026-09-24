@@ -7,6 +7,7 @@ config). MLflow-specific tests are integration-level and require mlflow installe
 from __future__ import annotations
 
 import os
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -136,6 +137,12 @@ def mock_mlflow_deploy():
         registered = MagicMock()
         registered.version = "1"
         m_client.return_value.search_model_versions.return_value = [registered]
+        # Deploy logs through a destination-bound client: an active experiment
+        # and the run it creates.
+        m_client.return_value.get_experiment_by_name.return_value = MagicMock(
+            experiment_id="1", lifecycle_stage="active"
+        )
+        m_client.return_value.create_run.return_value.info.run_id = "run-1"
         m_run.return_value.__enter__ = MagicMock()
         m_run.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -1359,7 +1366,7 @@ class TestConfig:
 
         config = DeployConfig.from_toml(Path("haute.toml"))
         assert config.model_name == "motor-pricing"
-        assert config.pipeline_file == Path("rating/main.py")
+        assert config.pipeline_file == Path("examples/reference/main.py")
         assert config.databricks.experiment_name == "/Shared/haute/motor-pricing"
         assert config.databricks.serving_workload_size == "Small"
 
@@ -1516,6 +1523,65 @@ class TestBuildExperimentName:
 class TestDatabricksTracking:
     """Regression tests: deploy must target Databricks, not local MLflow."""
 
+    def test_concurrent_deploys_each_serve_the_version_they_registered(
+        self, deploy_pipeline_file: Path
+    ) -> None:
+        """Deploys share the build directory and read their version back from the
+        registry after logging, so a second deploy may not register in between."""
+        from haute.deploy._mlflow import deploy_to_mlflow
+
+        events: list[str] = []
+        registered: list[MagicMock] = []
+        second_registered = threading.Event()
+        first_logged = threading.Event()
+
+        def log_model(**_: object) -> None:
+            name = threading.current_thread().name
+            events.append(f"{name}:register")
+            registered.append(MagicMock(version=str(len(registered) + 1)))
+            if name == "second":
+                second_registered.set()
+            else:
+                first_logged.set()
+
+        def search_model_versions(_filter: str) -> list[MagicMock]:
+            name = threading.current_thread().name
+            if name == "first":
+                # Give the second deploy the chance to register in between.
+                second_registered.wait(timeout=0.5)
+            events.append(f"{name}:versions")
+            return list(registered)
+
+        results: dict[str, int] = {}
+        errors: list[BaseException] = []
+
+        def deploy(name: str) -> None:
+            try:
+                resolved = _make_resolved(pipeline_file=deploy_pipeline_file)
+                results[name] = deploy_to_mlflow(resolved).model_version
+            except BaseException as exc:  # surfaced below
+                errors.append(exc)
+
+        with mock_mlflow_deploy() as mocks:
+            mocks.log_model.side_effect = log_model
+            mocks.client.return_value.search_model_versions.side_effect = search_model_versions
+            first = threading.Thread(target=deploy, args=("first",), name="first")
+            second = threading.Thread(target=deploy, args=("second",), name="second")
+            first.start()
+            assert first_logged.wait(30)
+            second.start()
+            first.join(30)
+            second.join(30)
+
+        assert not errors
+        assert results == {"first": 1, "second": 2}
+        assert events == [
+            "first:register",
+            "first:versions",
+            "second:register",
+            "second:versions",
+        ]
+
     def test_deploy_sets_tracking_uri(self, deploy_pipeline_file: Path) -> None:
         """deploy_to_mlflow() must call mlflow.set_tracking_uri('databricks')."""
         from haute.deploy._mlflow import DeployResult, deploy_to_mlflow
@@ -1527,6 +1593,11 @@ class TestDatabricksTracking:
 
             mocks.set_tracking_uri.assert_called_once_with("databricks")
             mocks.set_registry_uri.assert_called_once_with("databricks-uc")
+            # Everything but the model log goes through a client bound to it.
+            mocks.client.assert_any_call(tracking_uri="databricks", registry_uri="databricks-uc")
+            mocks.client.return_value.log_dict.assert_called_once()
+            mocks.client.return_value.set_terminated.assert_called_once_with("run-1", "FINISHED")
+            mocks.log_dict.assert_not_called()
             # Behavioral: result is a well-formed DeployResult
             assert isinstance(result, DeployResult)
             assert result.model_name == "test-model"
@@ -1579,7 +1650,10 @@ class TestDatabricksTracking:
         with mock_mlflow_deploy() as mocks:
             deploy_to_mlflow(resolved)
 
-            mocks.set_experiment.assert_called_once_with("/Shared/haute/test-staging")
+            mocks.client.return_value.get_experiment_by_name.assert_called_once_with(
+                "/Shared/haute/test-staging"
+            )
+            mocks.set_experiment.assert_not_called()
             # Model must also be registered with the suffix
             log_call = mocks.log_model.call_args
             assert (

@@ -1438,14 +1438,32 @@ class TestSessionRetention:
         assert other.id not in store
 
     async def test_lru_never_evicts_session_with_running_turn(self):
+        from haute.assistant._loop import reserve_turn
+
         store = SessionStore(max_live_sessions=1)
         busy = store.create("a.py")
-        async with busy.lock:
+        reservation = await reserve_turn(store, busy.id)
+        try:
             replacement = store.create("b.py")
-            assert store.lookup(busy.id) is not None, "locked session must survive eviction"
-            assert store.lookup(replacement.id) is not None
-        store.create("c.py")  # now that busy is idle it may be evicted
-        assert len(store) <= 2
+            store.create("c.py")
+            assert busy.id in store, "a session with a running turn must survive eviction"
+            assert replacement.id not in store, "the idle bound still applies to the rest"
+        finally:
+            reservation.release()
+        assert len(store) == 1, "the end of the turn restores the idle bound"
+
+    async def test_the_end_of_a_turn_evicts_the_least_recently_used_idle_session(self):
+        from haute.assistant._loop import reserve_turn
+
+        store = SessionStore(max_live_sessions=1)
+        busy = store.create("a.py")
+        reservation = await reserve_turn(store, busy.id)
+        idle = store.create("b.py")
+        assert busy.id in store and idle.id in store, "a running turn sits outside the bound"
+        store.append(busy, _turn("u", "a"))  # the running turn commits: busy is most recent
+        reservation.release()
+        assert busy.id in store
+        assert idle.id not in store
 
 
 # ---------------------------------------------------------------------------

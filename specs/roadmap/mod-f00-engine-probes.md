@@ -7,8 +7,8 @@ This is a dated evidence record, not a specification; the behaviour it supports
 is binding only through the approved change contracts in the owning component
 specifications.
 
-The probe script is [`mod-f00-engine-probes.py`](mod-f00-engine-probes.py); the raw
-output of every run is [`mod-f00-engine-probes.json`](mod-f00-engine-probes.json).
+The probe script is [`mod-f00-engine-probes.py`](../../scripts/benchmarks/mod-f00-engine-probes.py); the raw
+output of every run is [`mod-f00-engine-probes.json`](../../scripts/benchmarks/mod-f00-engine-probes.json).
 Each run fits tiny real models on a 2,000-row fixture (a four-level categorical
 and a numeric feature, exposure, weights, a Poisson count, a Gamma severity and
 a binary flag; every fifth row is validation).
@@ -29,7 +29,7 @@ interpret-core==0.7.8
 
 Resolution succeeds for Python 3.11, 3.12 and 3.13 (NumPy 2.3.5, pandas 2.3.3,
 scikit-learn 1.9.1, joblib 1.6.0; LightGBM adds `narwhals`). The probe then ran
-with `PYTHONPATH=src python specs/roadmap/mod-f00-engine-probes.py OUT.json` on:
+with `PYTHONPATH=src python scripts/benchmarks/mod-f00-engine-probes.py OUT.json` on:
 
 | Run | Platform | Python | Result |
 |---|---|---|---|
