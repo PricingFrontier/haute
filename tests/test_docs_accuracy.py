@@ -146,7 +146,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "engineering-quality",
     "execution-engine",
     "explore-eda",
-    "frontend-modelling-optimiser-ui",
     "frontend-shared",
     "json-shredding",
     "mlflow-model-registry",

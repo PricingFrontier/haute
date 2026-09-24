@@ -51,6 +51,53 @@ export function ResponsiveChart({
   )
 }
 
+/** The gap between two charts laid out side by side (Tailwind `gap-6`). */
+const TWO_CHART_GAP = 24
+
+/**
+ * The result tabs' two-chart layout. When both charts exist and the pane is
+ * at least `sideBySideFrom` pixels wide they sit side by side, each half the
+ * width less the gap and never narrower than `minChartWidth`; otherwise they
+ * take the full width, one under the other. `header` renders above the charts
+ * (Lift puts its view switch there when the charts do not fit side by side).
+ */
+export function TwoChartLayout({
+  width,
+  ariaLabel,
+  bothCharts,
+  sideBySideFrom,
+  minChartWidth,
+  header,
+  children,
+}: {
+  width?: number
+  ariaLabel: string
+  bothCharts: boolean
+  sideBySideFrom: number
+  minChartWidth: number
+  header?: (sideBySide: boolean) => ReactNode
+  children: (layout: { sideBySide: boolean; chartWidth: number }) => ReactNode
+}) {
+  return (
+    <ResponsiveChart width={width}>
+      {(containerWidth) => {
+        const sideBySide = bothCharts && containerWidth >= sideBySideFrom
+        const chartWidth = sideBySide
+          ? Math.max(minChartWidth, (containerWidth - TWO_CHART_GAP) / 2)
+          : containerWidth
+        return (
+          <section className="space-y-3" aria-label={ariaLabel}>
+            {header?.(sideBySide)}
+            <div className={sideBySide ? "grid grid-cols-2 gap-6" : "space-y-6"}>
+              {children({ sideBySide, chartWidth })}
+            </div>
+          </section>
+        )
+      }}
+    </ResponsiveChart>
+  )
+}
+
 type ChartSvgProps = Omit<SVGProps<SVGSVGElement>, "children" | "height" | "width"> & {
   width: number
   height: number
