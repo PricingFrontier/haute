@@ -193,7 +193,7 @@ def test_frontier_route_caps_response_before_serialising_large_point_frame(
 def test_completed_optimiser_jobs_slim_heavy_objects_then_evict_owned_artifacts() -> None:
     import polars as pl
 
-    from haute.routes._optimiser_service import _persist_apply_result_artifact
+    from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
 
     timers: list[_ManualTimer] = []
     store = JobStore(

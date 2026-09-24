@@ -568,6 +568,18 @@ rationale = "Pricing-optimisation orchestration engine behind the thin (gated) o
 # those arms in the modelling/optimiser workstream.
 
 [[tool.haute.critical_coverage.files]]
+path = "src/haute/routes/_optimiser_artifacts.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 78.0
+rationale = "Owned optimiser artifact lifecycle extracted from the gated service (OPT-P11): handle path-traversal validation, persistence, cleanup-on-failure and stale-startup reaping keep the service's floors."
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/routes/_optimiser_input.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 78.0
+rationale = "Optimiser solve-input planning extracted from the gated service (OPT-P13): projection demand, data-input resolution, value-contract checks and grid sizing/admission keep the service's floors."
+
+[[tool.haute.critical_coverage.files]]
 path = "src/haute/_rating_step_config.py"
 min_statement_coverage = 95.0
 min_branch_coverage = 92.0
