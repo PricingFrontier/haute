@@ -38,6 +38,7 @@
 | `frontend/src/panels/explore/ExploreResultCardChrome.tsx` | Result-card chrome shared by the Pivots and Charts panes: the centered empty state and the Cancel/Starting/Retry run-status action cluster. |
 | `frontend/src/panels/explore/chartConfig.ts`, `frontend/src/panels/explore/chartData.ts`, `frontend/src/panels/explore/chartOptions.ts`, `frontend/src/panels/explore/chartRuntime.ts`, `frontend/src/panels/explore/ComboChart.tsx`, `frontend/src/panels/explore/ExploreChartsPane.tsx` | Versioned chart parsing/linkage/presets; pure typed pivot adapter; safe renderer options; narrow ECharts registration/lifecycle/accessibility; enabled-card state dispatch. |
 | `frontend/src/panels/explore/ExploreSummaryCards.tsx`, `frontend/src/panels/explore/SchemaTableCard.tsx` | Dataset, quality, numeric, categorical and schema report cards, including card-specific export grids. |
+| `frontend/src/panels/explore/DistributionSparkline.tsx`, `frontend/src/panels/explore/distribution.ts` | The Numeric Summary card's per-field distribution: a bar chart of the profile's server-binned histogram, and the text that names it (bin count and span, or why there is none) for its accessible name and export. |
 | `frontend/src/panels/explore/ExploreTableActions.tsx` | Read-only copy-as-TSV and download-as-CSV actions for supported Explore tables, built on the shared table serializers. |
 | `frontend/src/panels/explore/DistinctInfoButton.tsx`, `frontend/src/panels/explore/StatValueCell.tsx` | Distinct-count explanation and reusable optional-stat cell. |
 | `frontend/e2e/explore.spec.ts` | Explore browser journey: author/connect an Explore node, cache its data and reload, configure Pivots using the profile's schema, and observe fixed decimal formats in the calculated result. |
@@ -139,7 +140,13 @@
    categorical summaries export their complete profile lists. The actions do not offer JSON
    sharing or paste-in because Explore reports are read-only analysis artifacts. The shared
    serializers remain click-loaded from the already-lazy Overview code.
-7. `SchemaTableCard` derives one factual Profile cell per column from the report's additive
+7. The Numeric Summary card's Distribution column draws each field's server-binned histogram as
+   a small bar chart (`DistributionSparkline`, bars scaled to the tallest bin, an accessible name
+   giving the bin count and span), or says why there is none: `All <value>` for a constant field,
+   `No finite values`, or `Not binned` (past the profile's column limit, or integers too large
+   for the browser to hold their boundaries exactly, each explained in its title). `distributionText` is the
+   same text in the TSV/CSV export.
+8. `SchemaTableCard` derives one factual Profile cell per column from the report's additive
    quality fields: ID candidate, high cardinality, text length min/mean/max, and temporal span.
    The same text participates in schema search and full filtered TSV/CSV export; an unflagged
    column renders an em dash.

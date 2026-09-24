@@ -33,7 +33,26 @@
   `p75_value`, `std_value`, `zero_count`, `negative_count`) default to `None` and are only
   populated when `dtype.is_numeric()`. `nan_count` is narrower still — `None` unless the dtype is
   float (`Float32`/`Float64`, per `_is_float_dtype`), since `is_nan()` raises against a non-float
-  numeric column and NaN cannot occur in an integer column at all.
+  numeric column and NaN cannot occur in an integer column at all. `histogram` is `None` for
+  non-numeric columns and an `ExploreHistogram` for every numeric one.
+- **`ExploreHistogram`** (`schemas.py`) — `status` `ok` (up to `_HISTOGRAM_BIN_COUNT` = 20
+  equal-width `ExploreHistogramBin`s `{start, end, count}` from the finite minimum to maximum,
+  each half-open except the last, which includes the maximum; the counts sum to `finite_count`),
+  `constant` (one bin with `start == end`), `empty` (no finite values, no bins) or `skipped`: past
+  `_HISTOGRAM_COLUMN_LIMIT` = 50 numeric columns in schema order (`skipped_reason` `column_limit`,
+  both counts `None`), or an integer column with a value beyond `_HISTOGRAM_SAFE_INTEGER`
+  (2**53 - 1, the largest integer a browser's JSON parser keeps exactly; `integer_precision`,
+  counts reported), whose boundaries would reach the browser rounded together. `finite_count` and `non_finite_count` (NaN plus
+  infinities; nulls are neither) come from the profile's first aggregation pass, which also takes
+  the extrema in the column's own dtype, so constant detection never compares rounded values.
+  `_build_histograms` runs the second pass, one query per `_PROFILE_COLUMN_BATCH_SIZE` binnable
+  columns, over `numeric_bin_scale`: a value's bin is the number of interior boundaries at or below
+  it, and the reported `start`s are those same boundaries, so every counted value lies inside its
+  bin's reported interval. Integer columns (other than 128-bit ones and spans of 2**63 or more)
+  get exact integer boundaries, bin k starting at the smallest integer offset at or above
+  `span * k / bins`, compared as exact offsets from the minimum and reported as integers so large
+  identifiers survive the response; a range narrower than 20 gets one bin per value. Float and
+  Decimal columns use `min + (max - min) * k / 20` and compare their `Float64` values.
 - **`ExploreOverviewSummary`** (`schemas.py`) — `data_quality: ExploreDataQualitySummary` plus
   `categorical_summary: list[ExploreCategoricalColumnProfile]`, one profile per non-numeric
   column that has a schema stat.
@@ -485,7 +504,9 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
 ## Testing
 
 - `tests/test_frame_profile.py` — direct unit tests of `_build_frame_stats` (no HTTP layer),
-  the computation the shared profile analysis runs,
+  the computation the shared profile analysis runs, including exact histogram bins for nullable,
+  constant, negative, NaN/infinite, all-null, integer and Decimal columns, the wide-schema column
+  limit, and non-numeric columns having none,
   covering: Object vs. Struct distinct-count handling, empty schema, numeric
   profile fields, boolean min/max-vs-value-count casing consistency, all-null numeric columns,
   the full data-quality summary issue set and ordering, bounded categorical value counts

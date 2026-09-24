@@ -1150,6 +1150,26 @@ export interface TrainExportReceipts {
 /** Per-column statistics surfaced in the Schema overview card. */
 export type ExploreColumnKind = "Numeric" | "Text" | "Temporal" | "Boolean" | "Nested" | "Other"
 
+export interface ExploreHistogramBin {
+  start: number
+  end: number
+  count: number
+}
+
+/**
+ * Equal-width bins over a numeric column's finite values: `ok` bins span the
+ * finite minimum to maximum, `constant` has one bin, `empty` has no finite
+ * values, and `skipped` is past the profile's histogram column limit or an
+ * integer column too large for the browser to hold its boundaries exactly.
+ */
+export interface ExploreHistogram {
+  status: "ok" | "constant" | "empty" | "skipped"
+  bins: ExploreHistogramBin[]
+  finite_count: number | null
+  non_finite_count: number | null
+  skipped_reason: "column_limit" | "integer_precision" | null
+}
+
 export interface ExploreColumnStat {
   name: string
   dtype: string
@@ -1174,6 +1194,8 @@ export interface ExploreColumnStat {
   text_mean_length: number | null
   text_max_length: number | null
   temporal_span: string | null
+  /** Server-binned distribution; null for non-numeric columns. */
+  histogram?: ExploreHistogram | null
 }
 
 export interface ExploreDataQualityIssue {

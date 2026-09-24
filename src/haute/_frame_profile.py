@@ -20,6 +20,8 @@ from haute.schemas import (
     ExploreDataQualityIssue,
     ExploreDataQualitySummary,
     ExploreDistinctValueCount,
+    ExploreHistogram,
+    ExploreHistogramBin,
     ExploreOverviewSummary,
 )
 
@@ -32,6 +34,15 @@ _SUMMARY_NAME_LIMIT = 3
 _CATEGORICAL_VALUE_COUNT_LIMIT = 50
 _PROFILE_COLUMN_BATCH_SIZE = 8
 _PROFILE_DISTINCT_PARTITION_ROWS = 250_000
+# Equal-width bins rendered per numeric column histogram.
+_HISTOGRAM_BIN_COUNT = 20
+# Wide-schema guardrail: only the first N numeric columns (schema order) get a
+# histogram; later ones report status "skipped" rather than adding more state.
+_HISTOGRAM_COLUMN_LIMIT = 50
+# The largest integer a browser's JSON parser keeps exactly (2**53 - 1): an
+# integer column beyond it is not binned, because its boundaries would
+# arrive rounded together.
+_HISTOGRAM_SAFE_INTEGER = 2**53 - 1
 _CATEGORICAL_VALUE_FIELD = "__haute_categorical_value"
 _TEXT_DTYPE_BASES = (pl.String, pl.Categorical, pl.Enum, pl.Binary)
 _LEXICAL_MIN_MAX_DTYPE_BASES = (pl.String, pl.Categorical, pl.Enum)
@@ -368,6 +379,26 @@ def _build_data_quality_summary(
     )
 
 
+def _histogram_min_alias(name: str) -> str:
+    return f"hist_min::{name}"
+
+
+def _histogram_max_alias(name: str) -> str:
+    return f"hist_max::{name}"
+
+
+def _histogram_finite_alias(name: str) -> str:
+    return f"hist_finite::{name}"
+
+
+def _histogram_non_finite_alias(name: str) -> str:
+    return f"hist_non_finite::{name}"
+
+
+def _histogram_bin_alias(name: str, bin_index: int) -> str:
+    return f"hist_bin_{bin_index}::{name}"
+
+
 def _categorical_value_counts_alias(name: str) -> str:
     return f"categorical_values::{name}"
 
@@ -581,6 +612,178 @@ def _count_unique_rows(
     return unique_rows
 
 
+def numeric_finite_mask(value: pl.Expr, dtype: pl.DataType) -> pl.Expr:
+    """Rows a histogram bins: non-null, and for floats also neither NaN nor infinite.
+
+    ``is_finite()`` of a null is null, so the mask is null-free for both sums.
+    """
+    if _is_float_dtype(dtype):
+        return value.is_finite().fill_null(False)
+    return value.is_not_null()
+
+
+@dataclass(frozen=True, slots=True)
+class NumericBinScale:
+    """Equal-width bins over a numeric column and the expression that places values in them.
+
+    A value's bin is the number of ``thresholds`` at or below its ``position``,
+    and ``starts`` are the same boundaries as the values they are compared
+    against, so every counted value lies inside the reported interval of its
+    bin (half-open, except the last, which ends at the maximum inclusive).
+    Integer columns get integer boundaries, compared as exact offsets from the
+    minimum, so large identifiers are neither merged nor misreported by a
+    Float64 cast; a range narrower than the bin count gets one bin per value.
+    """
+
+    position: pl.Expr
+    thresholds: tuple[int | float, ...]
+    starts: tuple[int | float, ...]
+    maximum: int | float
+
+    @property
+    def bin_count(self) -> int:
+        return len(self.starts)
+
+    def end(self, index: int) -> int | float:
+        return self.starts[index + 1] if index + 1 < len(self.starts) else self.maximum
+
+    def index(self) -> pl.Expr:
+        """Each value's bin: the number of thresholds at or below its position."""
+        if not self.thresholds:
+            return pl.lit(0, dtype=pl.Int32)
+        return pl.sum_horizontal(
+            [(self.position >= threshold).cast(pl.Int32) for threshold in self.thresholds]
+        )
+
+
+def numeric_bin_scale(
+    name: str, dtype: pl.DataType, minimum: Any, maximum: Any, bins: int
+) -> NumericBinScale:
+    """Up to ``bins`` equal-width bins over ``[minimum, maximum]`` of a numeric column.
+
+    ``minimum`` and ``maximum`` are the column's own finite extrema (rows chosen
+    by ``numeric_finite_mask``, in the column's dtype) and must differ.
+    """
+    if dtype.is_integer() and dtype not in (pl.Int128, pl.UInt128):
+        low, high = int(minimum), int(maximum)
+        span = high - low
+        if span < 2**63:
+            count = min(bins, span + 1)
+            # Bin k starts at the smallest integer offset at or above span * k / count,
+            # so boundaries are exact integers and strictly increasing.
+            offsets = tuple(-(-span * k // count) for k in range(count))
+            exact = pl.UInt64 if dtype.is_unsigned_integer() else pl.Int64
+            return NumericBinScale(
+                position=pl.col(name).cast(exact) - pl.lit(low, dtype=exact),
+                thresholds=offsets[1:],
+                starts=tuple(low + offset for offset in offsets),
+                maximum=high,
+            )
+    low_float, high_float = float(minimum), float(maximum)
+    edges = tuple(low_float + (high_float - low_float) * k / bins for k in range(bins))
+    return NumericBinScale(
+        position=pl.col(name).cast(pl.Float64),
+        thresholds=edges[1:],
+        starts=edges,
+        maximum=high_float,
+    )
+
+
+def _build_histograms(
+    lf: pl.LazyFrame,
+    schema: pl.Schema,
+    histogram_column_names: list[str],
+    aggregate_row: dict[str, Any],
+    *,
+    execution_context: ExecutionContext,
+) -> dict[str, ExploreHistogram]:
+    """Compute capped, server-binned histograms for the eligible numeric columns.
+
+    Bin counts are collected in a second batched pass, one query per
+    ``_PROFILE_COLUMN_BATCH_SIZE`` columns, so only columns that actually need
+    bins (finite_count > 0 and min < max) add aggregation state.
+    """
+
+    histograms: dict[str, ExploreHistogram] = {}
+    scales: dict[str, NumericBinScale] = {}
+    for name in histogram_column_names:
+        finite_count = int(aggregate_row[_histogram_finite_alias(name)])
+        non_finite_count = int(aggregate_row[_histogram_non_finite_alias(name)])
+        if finite_count == 0:
+            histograms[name] = ExploreHistogram(
+                status="empty",
+                bins=[],
+                finite_count=0,
+                non_finite_count=non_finite_count,
+            )
+            continue
+        minimum = aggregate_row[_histogram_min_alias(name)]
+        maximum = aggregate_row[_histogram_max_alias(name)]
+        if schema[name].is_integer() and max(abs(int(minimum)), abs(int(maximum))) > (
+            _HISTOGRAM_SAFE_INTEGER
+        ):
+            histograms[name] = ExploreHistogram(
+                status="skipped",
+                bins=[],
+                finite_count=finite_count,
+                non_finite_count=non_finite_count,
+                skipped_reason="integer_precision",
+            )
+            continue
+        if minimum == maximum:
+            boundary = _histogram_boundary(minimum, schema[name])
+            histograms[name] = ExploreHistogram(
+                status="constant",
+                bins=[ExploreHistogramBin(start=boundary, end=boundary, count=finite_count)],
+                finite_count=finite_count,
+                non_finite_count=non_finite_count,
+            )
+            continue
+        scales[name] = numeric_bin_scale(name, schema[name], minimum, maximum, _HISTOGRAM_BIN_COUNT)
+
+    binnable_names = list(scales)
+    bin_counts_by_name: dict[str, list[int]] = {}
+    bin_batches = [
+        binnable_names[index : index + _PROFILE_COLUMN_BATCH_SIZE]
+        for index in range(0, len(binnable_names), _PROFILE_COLUMN_BATCH_SIZE)
+    ]
+    for batch_names in bin_batches:
+        batch_aggregations: list[pl.Expr] = []
+        for name in batch_names:
+            scale = scales[name]
+            index_expr = scale.index().filter(numeric_finite_mask(pl.col(name), schema[name]))
+            for bin_index in range(scale.bin_count):
+                batch_aggregations.append(
+                    (index_expr == bin_index).sum().alias(_histogram_bin_alias(name, bin_index))
+                )
+        bin_row = cancellable_streaming_collect(
+            lf.select(batch_aggregations), execution_context=execution_context
+        ).row(0, named=True)
+        for name in batch_names:
+            bin_counts_by_name[name] = [
+                int(bin_row[_histogram_bin_alias(name, bin_index)])
+                for bin_index in range(scales[name].bin_count)
+            ]
+
+    for name, scale in scales.items():
+        histograms[name] = ExploreHistogram(
+            status="ok",
+            bins=[
+                ExploreHistogramBin(start=scale.starts[index], end=scale.end(index), count=count)
+                for index, count in enumerate(bin_counts_by_name[name])
+            ],
+            finite_count=int(aggregate_row[_histogram_finite_alias(name)]),
+            non_finite_count=int(aggregate_row[_histogram_non_finite_alias(name)]),
+        )
+
+    return histograms
+
+
+def _histogram_boundary(value: Any, dtype: pl.DataType) -> int | float:
+    """A boundary as the response carries it: exact for integers, a float otherwise."""
+    return int(value) if dtype.is_integer() else float(value)
+
+
 def _build_frame_stats(
     lf: pl.LazyFrame,
     schema: pl.Schema,
@@ -601,6 +804,12 @@ def _build_frame_stats(
     can_count_unique_rows = bool(column_names) and all(
         not is_unhashable_dtype(schema[name]) for name in column_names
     )
+    # First N numeric columns (schema order) get a histogram; later ones are
+    # reported "skipped" without adding more aggregation state.
+    histogram_column_names = [name for name in column_names if schema[name].is_numeric()][
+        :_HISTOGRAM_COLUMN_LIMIT
+    ]
+    histogram_column_name_set = set(histogram_column_names)
     for index, name in enumerate(column_names):
         if index and index % _PROFILE_COLUMN_BATCH_SIZE == 0:
             aggregations = []
@@ -638,6 +847,19 @@ def _build_frame_stats(
                 # ``is_nan()`` yields null for null rows, so ``.sum()`` counts
                 # only genuine NaN values.
                 aggregations.append(pl.col(name).is_nan().sum().alias(f"nan::{name}"))
+            if name in histogram_column_name_set:
+                # Extrema stay in the column's own dtype: a Float64 cast would
+                # merge distinct large integers and call the column constant.
+                value = pl.col(name)
+                finite = numeric_finite_mask(value, dtype)
+                aggregations.append(value.filter(finite).min().alias(_histogram_min_alias(name)))
+                aggregations.append(value.filter(finite).max().alias(_histogram_max_alias(name)))
+                aggregations.append(finite.sum().alias(_histogram_finite_alias(name)))
+                aggregations.append(
+                    (value.is_not_null() & finite.not_())
+                    .sum()
+                    .alias(_histogram_non_finite_alias(name))
+                )
         elif _has_categorical_value_counts(dtype):
             aggregations.append(
                 _categorical_value_counts_expr(name, dtype).alias(
@@ -676,6 +898,9 @@ def _build_frame_stats(
                 scratch_directory=scratch_directory,
             )
             duplicate_row_count = row_count - int(unique_rows)
+    histograms_by_column = _build_histograms(
+        lf, schema, histogram_column_names, aggregate_row, execution_context=execution_context
+    )
     stats: list[ExploreColumnStat] = []
     categorical_values_by_column: dict[str, list[ExploreDistinctValueCount]] = {}
     categorical_label_group_counts: dict[str, int] = {}
@@ -739,6 +964,16 @@ def _build_frame_stats(
             )
             if _is_float_dtype(dtype):
                 profile_stats["nan_count"] = nan_count
+            if name in histogram_column_name_set:
+                profile_stats["histogram"] = histograms_by_column[name]
+            else:
+                profile_stats["histogram"] = ExploreHistogram(
+                    status="skipped",
+                    bins=[],
+                    finite_count=None,
+                    non_finite_count=None,
+                    skipped_reason="column_limit",
+                )
         elif _has_categorical_value_counts(dtype):
             categorical_values_by_column[name] = _parse_categorical_value_counts(
                 aggregate_row[_categorical_value_counts_alias(name)]

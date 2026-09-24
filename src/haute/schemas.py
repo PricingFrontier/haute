@@ -1182,6 +1182,37 @@ class InputCacheCancelResponse(_StrictInputCacheModel):
 ExploreColumnKind = Literal["Numeric", "Text", "Temporal", "Boolean", "Nested", "Other"]
 
 
+class ExploreHistogramBin(BaseModel):
+    # Integer columns report exact integer boundaries; a float would round
+    # large identifiers together.
+    start: int | float
+    end: int | float
+    count: int
+
+
+class ExploreHistogram(BaseModel):
+    """Equal-width bins over a numeric column's finite values.
+
+    ``ok``: ``bins`` holds up to ``HISTOGRAM_BIN_COUNT`` equal-width bins
+    spanning the finite minimum to maximum, each ``[start, end)`` except the
+    last, which includes its end. Integer columns have integer boundaries and,
+    when their range is narrower than the bin count, one bin per value.
+    ``constant``: every finite value is equal, so there is one bin with
+    ``start == end``. ``empty``: no finite values. ``skipped``: the column is
+    past the profile's histogram column limit (``column_limit``; nothing was
+    computed) or an integer column with values beyond 2**53 - 1
+    (``integer_precision``), whose boundaries a browser would round together.
+    Null, NaN and infinite values never enter a bin; ``non_finite_count``
+    counts the NaN and infinite ones.
+    """
+
+    status: Literal["ok", "constant", "empty", "skipped"]
+    bins: list[ExploreHistogramBin]
+    finite_count: int | None
+    non_finite_count: int | None
+    skipped_reason: Literal["column_limit", "integer_precision"] | None = None
+
+
 class ExploreColumnStat(BaseModel):
     """Per-column stats captured at Explore cache-materialisation time.
 
@@ -1221,6 +1252,8 @@ class ExploreColumnStat(BaseModel):
     text_mean_length: float | None = None
     text_max_length: int | None = None
     temporal_span: str | None = None
+    # None for non-numeric columns.
+    histogram: ExploreHistogram | None = None
 
 
 class ExploreDistinctValueCount(BaseModel):

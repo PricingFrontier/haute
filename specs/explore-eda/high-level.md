@@ -16,9 +16,9 @@ In scope:
 
 - Computing the statistics an Explore node renders — row count, column count, per-column schema
   stats (`ExploreColumnStat`), a data-quality summary, per-column bounded categorical value
-  counts, text/temporal cues, cardinality flags, and an exact duplicate-row count when every
-  column is hashable — as the `profile` analysis of a shared data point, so every consumer of
-  that data sees the same statistics.
+  counts, text/temporal cues, cardinality flags, capped server-binned histograms of numeric
+  columns, and an exact duplicate-row count when every column is hashable — as the `profile`
+  analysis of a shared data point, so every consumer of that data sees the same statistics.
 - Validating the `overview` config dict attached to an Explore node — the set of toggle cards
   (`dataset_snapshot`, `data_quality`, `numeric_summary`, `categorical_summary`, `schema`) a user
   has enabled, plus round-trip-safe storage of any unrecognised keys.
@@ -308,6 +308,16 @@ Out of scope (owned elsewhere):
   cardinality; this required bumping the profile's analysis version
   (`PROFILE_ANALYSIS_VERSION`), since a stored profile computed the field differently would
   otherwise be served stale.
+- **Bounded server-binned distributions.** Each numeric column's histogram is computed on the
+  server from the profile's own streaming passes, never from rows sent to the browser: the first
+  pass adds the finite minimum, maximum, finite count and non-finite count, and a second batched
+  pass counts up to 20 equal-width bins only for columns that have a range; integer columns get
+  exact integer boundaries, so large identifiers are neither merged nor misreported. Null, NaN and infinite
+  values never enter a bin. A wide schema bins only its first 50 numeric columns and reports the
+  rest as skipped, so the extra aggregation state is bounded; constant and all-missing columns
+  say so explicitly instead of drawing an empty chart. Adding the histograms bumped
+  `PROFILE_ANALYSIS_VERSION` to 2, so stored profiles are recomputed rather than served
+  without them.
 - **Data and analysis kept apart.** The point's snapshot (parquet on disk, keyed by the node
   snapshot signature) and the profile stored against it (keyed by point digest, data version,
   analysis kind, and analysis version) are deliberately independent. This lets an `overview`,

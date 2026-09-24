@@ -12,7 +12,6 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| EDA-E09 | Planned | P2 | Add bounded server-binned distributions. |
 | EDA-E10 | Planned | P2 | Add one cached on-demand relationship/key-analysis service. |
 | EDA-E18 | Deferred | P3 | Evaluate advanced Excel-parity pivot operations after representative use. |
 | EDA-E23 | Deferred | P3 | Add shared chart filter and hierarchy interactions after representative use. |
@@ -20,28 +19,12 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 
 ## Planned improvements
 
-### EDA-E09 — Distribution charts
-
-**Why:** Analysts need distributions without client-side raw-data processing.
-
-**Plan:** Emit capped server-binned numeric histograms from the shared profile
-analysis and render them with explicit empty/skipped states.
-
-**Acceptance:** Tests cover null, constant, negative, and wide-schema guardrail
-cases plus chart rendering.
-
-**Dependencies:** The current bounded profile analysis, the shared data point,
-and the tab/panel contracts.
-
-**Evidence:** `src/haute/_frame_profile.py`; `src/haute/schemas.py`;
-`frontend/src/panels/explore`; `tests/test_frame_profile.py`.
-
 ### EDA-E10 — Target relationships
 
 **Why:** A report needs bounded, target-aware signals for feature investigation.
 
-**Plan:** After EDA-E09 establishes the bounded distribution primitives, add
-one on-demand analysis job/cache surface with explicit cache-miss and
+**Plan:** Building on the bounded distribution primitives the profile now
+has, add one on-demand analysis job/cache surface with explicit cache-miss and
 cancellation behaviour. It owns bounded numeric/categorical target
 aggregations, target/weight configuration, and exact user-selected
 multi-column key uniqueness checks. Key analysis is not a second synchronous
@@ -52,7 +35,7 @@ weight validation, numeric and categorical results, bounded levels, ranked UI
 rendering, exact single-/multi-column key counts, unhashable key rejection, and
 cache identity for the selected analysis and columns.
 
-**Dependencies:** EDA-E09 plus the current bounded collection, the shared data
+**Dependencies:** The current bounded collection, the shared data
 point and its analysis-result store, and the job-lifecycle and tab/panel
 contracts.
 

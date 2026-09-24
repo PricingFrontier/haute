@@ -5,6 +5,8 @@ import { NODE_GROUP_COLORS } from "../../theme/colors"
 import { formatNullPct } from "../../utils/formatValue"
 import { formatRelativeTime } from "../../utils/formatTime"
 import DistinctInfoButton from "./DistinctInfoButton"
+import DistributionSparkline from "./DistributionSparkline"
+import { distributionText } from "./distribution"
 import { StatValueCell } from "./StatValueCell"
 import ExploreTableActions from "./ExploreTableActions"
 import type { ExploreDataView } from "./exploreDataView"
@@ -154,6 +156,7 @@ export function NumericSummaryCard({ report }: SummaryCardProps) {
         "Type",
         "Null %",
         "Distinct",
+        "Distribution",
         "Min",
         "P25",
         "Median",
@@ -170,6 +173,7 @@ export function NumericSummaryCard({ report }: SummaryCardProps) {
         column.dtype,
         formatNullPct(column.null_count, report.row_count) ?? "-",
         formatOptionalNumber(column.distinct_count),
+        distributionText(column.histogram),
         column.min_value ?? "-",
         column.p25_value ?? "-",
         column.median_value ?? "-",
@@ -227,6 +231,7 @@ export function NumericSummaryCard({ report }: SummaryCardProps) {
                   "Type",
                   "Null %",
                   "Distinct",
+                  "Distribution",
                   "Min",
                   "P25",
                   "Median",
@@ -269,6 +274,9 @@ export function NumericSummaryCard({ report }: SummaryCardProps) {
                   </td>
                   <td className={CELL_CLASS} style={column.distinct_count === null ? MUTED_STYLE : PRIMARY_STYLE}>
                     {formatOptionalNumber(column.distinct_count)}
+                  </td>
+                  <td className={CELL_CLASS} data-testid="explore-numeric-distribution">
+                    <DistributionSparkline field={column.name} histogram={column.histogram} />
                   </td>
                   <StatValueCell maxWidthClass="max-w-[16ch]" value={column.min_value} />
                   <StatValueCell maxWidthClass="max-w-[16ch]" value={column.p25_value} />
