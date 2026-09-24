@@ -567,10 +567,18 @@ describe("client runtime contracts", () => {
     const stats = {
       status: "ok",
       point: loadUiContractFixture("node_data_point_response"),
+      data_version: "v1",
       total_rows: 10,
       null_count: 1,
+      non_finite_count: 0,
+      minimum: 0,
+      maximum: 5,
       bins: [{ lower: 0, upper: 5, count: 9 }],
       values: [],
+      distinct_count: null,
+      other_count: null,
+      rule_counts: [],
+      unmatched_count: null,
     }
     mockFetch.mockReturnValue(jsonResponse(stats))
     const factor = { column: "age" }
@@ -597,6 +605,11 @@ describe("client runtime contracts", () => {
       histogram_bins: 20,
       value_limit: 50,
     })
+
+    mockFetch.mockReturnValue(jsonResponse({ ...stats, bins: [{ lower: 0, upper: 5, count: "many" }] }))
+    await expect(
+      getBandingStats({ graph: dummyGraph, node_id: "banding", factor }),
+    ).rejects.toThrow("BandingStatsResponse: invalid contract at /bins/0/count: type")
   })
 
   it("getRatingLevels posts the columns and parses the levels of each one", async () => {
@@ -636,13 +649,15 @@ describe("client runtime contracts", () => {
     mockFetch.mockReturnValue(
       jsonResponse({
         ...fixture,
-        columns: [{ column: "region", values: [{ value: "North", count: "many" }] }],
+        columns: [
+          { column: "region", values: [{ value: "North", count: "many" }], distinct_count: 1, null_count: 0 },
+        ],
       }),
     )
 
     await expect(
       getRatingLevels({ graph: dummyGraph, node_id: "rating", columns: ["region"] }),
-    ).rejects.toThrow(/columns\[0\]\.values\[0\]\.count/)
+    ).rejects.toThrow("RatingLevelsResponse: invalid contract at /columns/0/values/0/count: type")
   })
 
   it("runNodeData sends refresh with no streaming chunk size, and parses the started job", async () => {
@@ -740,7 +755,7 @@ describe("client runtime contracts", () => {
 
     await expect(getExplorePivotStatus("pivot-job-1")).rejects.toMatchObject({
       name: "ApiResponseValidationError",
-      message: expect.stringMatching(/could not read pivot status.*parseExplorePivotStatusResponse/i),
+      message: "Could not read pivot status: ExplorePivotStatusResponse: invalid contract at /progress: type",
       cause: expect.any(Error),
     })
   })
@@ -1230,7 +1245,7 @@ describe("pivot client contracts", () => {
     )
     await expect(
       runExplorePivot({ graph: dummyGraph, node_id: "explore", pivot: {} }),
-    ).rejects.toThrow(/parseExplorePivotRunResponse/i)
+    ).rejects.toThrow("ExplorePivotRunResponse: invalid contract at /job_id: required")
   })
 })
 

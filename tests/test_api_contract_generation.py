@@ -14,6 +14,7 @@ from scripts.generate_api_contracts import (
     RESPONSE_CONTRACT_GROUPS,
     RESPONSE_GROUPS_KEYWORD,
     _ResponseJsonSchema,
+    _serialized_definitions,
     build_contract_bundle,
     main,
     render_contract_bundle,
@@ -231,6 +232,44 @@ def test_a_field_omitted_when_none_admits_no_null() -> None:
     assert {"type": "null"} in definitions["TrainEstimateResponse"]["properties"]["unavailable"][
         "anyOf"
     ]
+
+
+def test_serialized_copies_of_a_validation_definition_are_renamed_once() -> None:
+    leaf = {"type": "object", "properties": {"a": {"type": "integer"}}}
+    bundle: dict[str, Any] = {"Leaf": leaf}
+    response = {
+        "Leaf": {**leaf, "required": ["a"], "title": "Leaf"},
+        "Mid": {"type": "object", "properties": {"leaf": {"$ref": "#/$defs/Leaf"}}},
+    }
+
+    first = _serialized_definitions({**response, "One": {"$ref": "#/$defs/Mid"}}, bundle)
+    assert set(first) == {"LeafOutput", "Mid", "One"}
+    assert first["LeafOutput"]["title"] == "LeafOutput"
+    assert first["Mid"]["properties"]["leaf"] == {"$ref": "#/$defs/LeafOutput"}
+    bundle.update(first)
+
+    # A second response reaching the same definitions reuses them rather than
+    # renaming the one an earlier response stored with renamed references.
+    second = _serialized_definitions({**response, "Two": {"$ref": "#/$defs/Mid"}}, bundle)
+    assert set(second) == {"LeafOutput", "Mid", "Two"}
+    assert second["Mid"] == bundle["Mid"]
+
+
+def test_responses_share_one_serialized_execution_metrics_definition() -> None:
+    definitions = build_contract_bundle()["$defs"]
+
+    # The pilot keeps its validation-mode diagnostic; responses use the
+    # serialized one, through a single execution-metrics definition.
+    assert "ExecutionStrategyDiagnosticPayloadOutput" in definitions
+    assert not [name for name in definitions if name.endswith("OutputOutput")]
+    assert "ExecutionMetricsPayloadOutput" not in definitions
+    assert "ExplorePivotResultOutput" not in definitions
+    metrics = {"$ref": "#/$defs/ExecutionMetricsPayload"}
+    assert metrics in definitions["TrainStatusResponse"]["properties"]["execution_metrics"]["anyOf"]
+    assert (
+        metrics
+        in definitions["ExplorePivotStatusResponse"]["properties"]["execution_metrics"]["anyOf"]
+    )
 
 
 def test_frontend_contract_generators_are_direct_exact_pins() -> None:

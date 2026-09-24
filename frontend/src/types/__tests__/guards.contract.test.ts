@@ -6,9 +6,9 @@ import {
   parseApplyOptimiserResponse,
   parsePreviewInputsResponse,
   parseDissolveSubmodelResponse,
-  parseExplorePivotMembersResponse,
-  parseExplorePivotRunResponse,
-  parseExplorePivotStatusResponse,
+  explorePivotMembersFromContract,
+  explorePivotRunFromContract,
+  explorePivotStatusFromContract,
   parseFrontierAutoRangeResponse,
   parseFrontierAutoRangeStatusResponse,
   parseFrontierResponse,
@@ -32,9 +32,15 @@ import {
   parseSubmodelGraphResponse,
   parseSolveOptimiserResponse,
   parseExecutionStrategyDiagnostic,
-  parseNodeDataProfileResponse,
-  parseRatingLevelsResponse,
+  parseNodeDataProfile,
 } from "../guards"
+import {
+  validateExplorePivotMembersResponse,
+  validateExplorePivotRunResponse,
+  validateExplorePivotStatusResponse,
+  validateNodeDataProfileResponse,
+} from "../../generated/api-contracts.explore.validators.mjs"
+import { validateRatingLevelsResponse } from "../../generated/api-contracts.factors.validators.mjs"
 import {
   validateMlflowDestinationsResponse,
   validateMlflowExperimentList,
@@ -313,6 +319,25 @@ function executionMetricsFixture() {
     },
   }
 }
+
+// Explore and factor responses are checked by their generated validators
+// (API-R03); the pivot responses then get the UI's member-key and matrix checks.
+const parseExplorePivotRunResponse = (value: unknown) =>
+  explorePivotRunFromContract(
+    expectGeneratedContract("ExplorePivotRunResponse", validateExplorePivotRunResponse, value),
+  )
+const parseExplorePivotStatusResponse = (value: unknown) =>
+  explorePivotStatusFromContract(
+    expectGeneratedContract("ExplorePivotStatusResponse", validateExplorePivotStatusResponse, value),
+  )
+const parseExplorePivotMembersResponse = (value: unknown) =>
+  explorePivotMembersFromContract(
+    expectGeneratedContract("ExplorePivotMembersResponse", validateExplorePivotMembersResponse, value),
+  )
+const parseNodeDataProfileResponse = (value: unknown) =>
+  expectGeneratedContract("NodeDataProfileResponse", validateNodeDataProfileResponse, value)
+const parseRatingLevelsResponse = (value: unknown) =>
+  expectGeneratedContract("RatingLevelsResponse", validateRatingLevelsResponse, value)
 
 // MLflow responses are checked by their generated validators (API-R03).
 const mlflowDestinations = (value: unknown) =>
@@ -2205,12 +2230,13 @@ describe("API response guards", () => {
   it("rejects malformed pivot path/cell/member payloads", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("explore_pivot_run_response")
     const result = fixture.result as Record<string, unknown>
+    const cell = (result.cells as Record<string, unknown>[])[0]
     expect(() =>
       parseExplorePivotRunResponse({
         ...fixture,
-        result: { ...result, cells: [{ row_index: -1, column_index: 0, value_id: "v", value: 1 }] },
+        result: { ...result, cells: [{ ...cell, row_index: -1 }] },
       }),
-    ).toThrow(/parseExplorePivot/i)
+    ).toThrow("ExplorePivotRunResponse: invalid contract at /result/cells/0/row_index: minimum")
 
     expect(() =>
       parseExplorePivotMembersResponse({
@@ -2219,10 +2245,46 @@ describe("API response guards", () => {
         members: [{ key: { kind: "wat", value: null }, label: "bad", count: 1 }],
         failure: null,
       }),
-    ).toThrow(/parseExplorePivot/i)
+    ).toThrow("ExplorePivotMembersResponse: invalid contract at /members/0/key/kind: enum")
   })
 
-  it("reads rating levels, defaulting the counts a cache-required answer omits", () => {
+  it("keeps the pivot matrix closed and each member key's value true to its kind", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("explore_pivot_run_response")
+    const result = fixture.result as Record<string, unknown>
+    const cell = (result.cells as Record<string, unknown>[])[0]
+    const rowCount = (result.row_paths as unknown[]).length
+
+    expect(() =>
+      parseExplorePivotRunResponse({
+        ...fixture,
+        result: { ...result, cells: [{ ...cell, row_index: rowCount }] },
+      }),
+    ).toThrow("parseExplorePivotResult: pivot cell index is outside the declared matrix")
+    expect(() =>
+      parseExplorePivotRunResponse({
+        ...fixture,
+        result: { ...result, cells: [{ ...cell, value_id: "undeclared" }] },
+      }),
+    ).toThrow("parseExplorePivotResult: pivot cell references an unknown value id")
+    expect(() =>
+      parseExplorePivotMembersResponse({
+        status: "ok",
+        field: "region",
+        members: [{ key: { kind: "null", value: "North" }, label: "bad", count: 1 }],
+        failure: null,
+      }),
+    ).toThrow("parseExplorePivotMemberKey: expected members[0].key.value to be null for null")
+    expect(() =>
+      parseExplorePivotMembersResponse({
+        status: "ok",
+        field: "policy_count",
+        members: [{ key: { kind: "integer", value: "1.5" }, label: "bad", count: 1 }],
+        failure: null,
+      }),
+    ).toThrow("parseExplorePivotMemberKey: expected members[0].key.value to be a canonical integer")
+  })
+
+  it("reads rating levels, and requires the counts a cache-required answer sends", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("rating_levels_response")
 
     const answered = parseRatingLevelsResponse(fixture)
@@ -2233,15 +2295,19 @@ describe("API response guards", () => {
     ])
     expect(answered.columns[0].distinct_count).toBe(3)
 
-    // A cache-required answer carries the point and nothing else; the reader
-    // must not invent levels, and must not throw over their absence either.
+    // A cache-required answer sends its empty levels and zero counts.
     const unanswered = parseRatingLevelsResponse({
       status: "cache_required",
       point: fixture.point,
+      data_version: null,
+      total_rows: 0,
+      columns: [],
     })
     expect(unanswered.columns).toEqual([])
     expect(unanswered.total_rows).toBe(0)
-    expect(unanswered.data_version).toBeNull()
+    expect(() =>
+      parseRatingLevelsResponse({ status: "cache_required", point: fixture.point }),
+    ).toThrow("RatingLevelsResponse: invalid contract at /data_version: required")
   })
 
   it("rejects rating levels that are not levels", () => {
@@ -2249,19 +2315,19 @@ describe("API response guards", () => {
 
     expect(() =>
       parseRatingLevelsResponse({ ...fixture, status: "partial" }),
-    ).toThrow(/parseRatingLevels/i)
+    ).toThrow("RatingLevelsResponse: invalid contract at /status: enum")
     expect(() =>
       parseRatingLevelsResponse({
         ...fixture,
         columns: [{ column: 7, values: [], distinct_count: 0, null_count: 0 }],
       }),
-    ).toThrow(/columns\[0\]\.column/)
+    ).toThrow("RatingLevelsResponse: invalid contract at /columns/0/column: type")
     expect(() =>
       parseRatingLevelsResponse({
         ...fixture,
-        columns: [{ column: "region", values: [{ value: null, count: 1 }] }],
+        columns: [{ column: "region", values: [{ value: null, count: 1 }], distinct_count: 1, null_count: 0 }],
       }),
-    ).toThrow(/columns\[0\]\.values\[0\]\.value/)
+    ).toThrow("RatingLevelsResponse: invalid contract at /columns/0/values/0/value: type")
   })
 
   it("rejects malformed profile payloads", () => {
@@ -2273,10 +2339,16 @@ describe("API response guards", () => {
         ...fixture,
         result: { ...result, row_count: "bad" },
       }),
-    ).toThrow(/parseNodeDataProfile/i)
+    ).toThrow("NodeDataProfileResponse: invalid contract at /result/row_count: type")
   })
 
   describe("parseExploreColumnStat (via parseNodeDataProfile.columns)", () => {
+    // The node-data status still reads its profile with this hand parser until
+    // the node-data responses are generated (API-R03).
+    function parseProfileOf(response: Record<string, unknown>) {
+      return { result: parseNodeDataProfile(response.result) }
+    }
+
     function withColumns(columns: unknown): Record<string, unknown> {
       const fixture = loadUiContractFixture<Record<string, unknown>>(
         "node_data_profile_response",
@@ -2321,7 +2393,7 @@ describe("API response guards", () => {
         non_finite_count: 1,
         skipped_reason: null,
       }
-      const parsed = parseNodeDataProfileResponse(
+      const parsed = parseProfileOf(
         withColumns([
           { ...numericColumn, histogram },
           { ...numericColumn, name: "no_histogram" },
@@ -2342,7 +2414,7 @@ describe("API response guards", () => {
         non_finite_count: 0,
         skipped_reason: "integer_precision",
       }
-      const parsed = parseNodeDataProfileResponse(withColumns([{ ...numericColumn, histogram }]))
+      const parsed = parseProfileOf(withColumns([{ ...numericColumn, histogram }]))
       expect(parsed.result!.columns[0].histogram).toEqual(histogram)
     })
 
@@ -2352,12 +2424,12 @@ describe("API response guards", () => {
       ["an unknown skip reason", { status: "skipped", bins: [], finite_count: null, non_finite_count: null, skipped_reason: "budget" }, /skipped_reason/],
     ])("rejects a histogram with %s", (_label, histogram, message) => {
       expect(() =>
-        parseNodeDataProfileResponse(withColumns([{ ...numericColumn, histogram }])),
+        parseProfileOf(withColumns([{ ...numericColumn, histogram }])),
       ).toThrow(message)
     })
 
     it("parses a fully populated column stat", () => {
-      const parsed = parseNodeDataProfileResponse(
+      const parsed = parseProfileOf(
         withColumns([
           {
             name: "premium",
@@ -2403,7 +2475,7 @@ describe("API response guards", () => {
     })
 
     it("accepts null distinct_count", () => {
-      const parsed = parseNodeDataProfileResponse(
+      const parsed = parseProfileOf(
         withColumns([
           {
             name: "sparse",
@@ -2426,7 +2498,7 @@ describe("API response guards", () => {
     })
 
     it("accepts a profile without columns as an empty column list", () => {
-      const parsed = parseNodeDataProfileResponse(withoutResultField("columns"))
+      const parsed = parseProfileOf(withoutResultField("columns"))
 
       expect(parsed.result?.columns).toEqual([])
     })
@@ -2434,21 +2506,21 @@ describe("API response guards", () => {
     it.each(["row_count", "column_count", "generated_at", "data_version"])(
       "throws when %s is missing from a profile",
       (field) => {
-        expect(() => parseNodeDataProfileResponse(withoutResultField(field))).toThrow(
+        expect(() => parseProfileOf(withoutResultField(field))).toThrow(
           /parseNodeDataProfile/i,
         )
       },
     )
 
     it("throws when overview_summary is missing from a cache report", () => {
-      expect(() => parseNodeDataProfileResponse(withoutResultField("overview_summary"))).toThrow(
+      expect(() => parseProfileOf(withoutResultField("overview_summary"))).toThrow(
         /parseExploreOverviewSummary/i,
       )
     })
 
     it("throws when distinct_count is missing", () => {
       expect(() =>
-        parseNodeDataProfileResponse(
+        parseProfileOf(
           withColumns([
             { name: "minimal", dtype: "Int64", kind: "Numeric", null_count: 0 },
           ]),
@@ -2464,7 +2536,7 @@ describe("API response guards", () => {
       const overview = result.overview_summary as Record<string, unknown>
 
       expect(() =>
-        parseNodeDataProfileResponse({
+        parseProfileOf({
           ...fixture,
           result: {
             ...result,
@@ -2487,7 +2559,7 @@ describe("API response guards", () => {
       const result = fixture.result as Record<string, unknown>
       const overview = result.overview_summary as Record<string, unknown>
 
-      const parsed = parseNodeDataProfileResponse({
+      const parsed = parseProfileOf({
         ...fixture,
         result: {
           ...result,
@@ -2529,7 +2601,7 @@ describe("API response guards", () => {
       const overview = result.overview_summary as Record<string, unknown>
 
       expect(() =>
-        parseNodeDataProfileResponse({
+        parseProfileOf({
           ...fixture,
           result: {
             ...result,
@@ -2552,7 +2624,7 @@ describe("API response guards", () => {
 
     it("throws when name is missing", () => {
       expect(() =>
-        parseNodeDataProfileResponse(
+        parseProfileOf(
           withColumns([
             {
               dtype: "Float64",
@@ -2567,7 +2639,7 @@ describe("API response guards", () => {
 
     it("throws when dtype is missing", () => {
       expect(() =>
-        parseNodeDataProfileResponse(
+        parseProfileOf(
           withColumns([
             {
               name: "x",
@@ -2582,7 +2654,7 @@ describe("API response guards", () => {
 
     it("throws when kind is missing", () => {
       expect(() =>
-        parseNodeDataProfileResponse(
+        parseProfileOf(
           withColumns([
             {
               name: "x",
@@ -2597,7 +2669,7 @@ describe("API response guards", () => {
 
     it("throws when kind is invalid", () => {
       expect(() =>
-        parseNodeDataProfileResponse(
+        parseProfileOf(
           withColumns([
             {
               name: "x",
@@ -2613,7 +2685,7 @@ describe("API response guards", () => {
 
     it("throws when null_count is missing", () => {
       expect(() =>
-        parseNodeDataProfileResponse(
+        parseProfileOf(
           withColumns([
             {
               name: "x",
@@ -2628,7 +2700,7 @@ describe("API response guards", () => {
 
     it("throws when null_count is a string", () => {
       expect(() =>
-        parseNodeDataProfileResponse(
+        parseProfileOf(
           withColumns([
             {
               name: "x",
@@ -2644,7 +2716,7 @@ describe("API response guards", () => {
 
     it("throws when numeric profile counts are malformed", () => {
       expect(() =>
-        parseNodeDataProfileResponse(
+        parseProfileOf(
           withColumns([
             {
               name: "premium",

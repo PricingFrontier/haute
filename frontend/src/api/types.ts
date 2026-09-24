@@ -10,12 +10,21 @@ import type {
 } from "../types/node"
 import type {
   EvaluationPreviewPayload as EvaluationPreview,
+  BandingStatsResponse as GeneratedBandingStatsResponse,
+  ExplorePivotMemberOption as GeneratedExplorePivotMemberOption,
+  ExplorePivotMembersResponse as GeneratedExplorePivotMembersResponse,
+  ExplorePivotPath as GeneratedExplorePivotPath,
+  ExplorePivotResult as GeneratedExplorePivotResult,
+  ExplorePivotRunResponse as GeneratedExplorePivotRunResponse,
+  ExplorePivotStatusResponse as GeneratedExplorePivotStatusResponse,
   GitRemoteLeg as GeneratedGitRemoteLeg,
   GitStorageBind as GeneratedGitStorageBind,
   GitStorageSync as GeneratedGitStorageSync,
   GitWorkingBranchResponse as GeneratedGitWorkingBranchResponse,
   MlflowDestinationEntry as GeneratedMlflowDestinationEntry,
   MlflowTestConnectionResponse as GeneratedMlflowTestConnectionResponse,
+  NodeDataProfileResponse as GeneratedNodeDataProfileResponse,
+  RatingLevelsResponse as GeneratedRatingLevelsResponse,
   TrainEstimateResponse as GeneratedTrainEstimateResponse,
   TrainResponse as GeneratedTrainResponse,
   TrainStatusResponse as GeneratedTrainStatusResponse,
@@ -1127,66 +1136,27 @@ export interface NodeDataProfile {
   generated_at: number
 }
 
-export interface BandingHistogramBin {
-  lower: number
-  upper: number
-  count: number
-}
+// The banding, rating-level and data-profile responses are generated. The
+// node-data point and profile keep their hand types until the node-data
+// responses are generated; the generated shapes are assignable to them.
+export type {
+  BandingHistogramBin,
+  BandingValueCount,
+  RatingLevelColumn,
+  RatingLevelValue,
+} from "../generated/api-contracts.generated"
 
-export interface BandingValueCount {
-  value: string
-  count: number
-}
-
-/** Whole-dataset statistics for one banding factor, or why there are none. */
-export interface BandingStatsResponse {
-  status: "ok" | "cache_required"
+export type BandingStatsResponse = Omit<GeneratedBandingStatsResponse, "point"> & {
   point: NodeDataPointResponse
-  data_version?: string | null
-  total_rows: number
-  null_count: number
-  /** Numeric modes: values no bin can hold, and the extent of those it can. */
-  non_finite_count?: number | null
-  minimum?: number | null
-  maximum?: number | null
-  bins: BandingHistogramBin[]
-  /** Categorical mode. */
-  values: BandingValueCount[]
-  distinct_count?: number | null
-  other_count?: number | null
-  /** Counts aligned to the user's rules, and the rows no rule claimed. */
-  rule_counts: number[]
-  unmatched_count?: number | null
 }
 
-export interface RatingLevelValue {
-  value: string
-  count: number
-}
-
-/** What one column offers as rating levels, neither missing nor blank. */
-export interface RatingLevelColumn {
-  column: string
-  values: RatingLevelValue[]
-  distinct_count: number
-  null_count: number
-}
-
-/** Whole-dataset levels for raw rating factor columns, or why there are none. */
-export interface RatingLevelsResponse {
-  status: "ok" | "cache_required"
+export type RatingLevelsResponse = Omit<GeneratedRatingLevelsResponse, "point"> & {
   point: NodeDataPointResponse
-  data_version?: string | null
-  total_rows: number
-  columns: RatingLevelColumn[]
 }
 
-export interface NodeDataProfileResponse {
-  status: "completed" | "started" | "joined" | "cache_required"
-  job_id?: string | null
-  message: string
-  result?: NodeDataProfile | null
+export type NodeDataProfileResponse = Omit<GeneratedNodeDataProfileResponse, "point" | "result"> & {
   point: NodeDataPointResponse
+  result: NodeDataProfile | null
 }
 
 export interface NodeDataStatusResponse {
@@ -1225,79 +1195,45 @@ export type ExplorePivotMemberKey =
   | { kind: "boolean"; value: boolean }
   | { kind: "float"; value: number }
 
-export interface ExplorePivotFailure {
-  reason_code: string
-  message: string
-  remediation: string
-  dimensions: Record<string, string | number>
-}
+export type {
+  ExplorePivotCell,
+  ExplorePivotFailure,
+  ExplorePivotValueIdentity,
+} from "../generated/api-contracts.generated"
 
-export interface ExplorePivotMemberOption {
-  key: ExplorePivotMemberKey
-  label: string
-  count: number
-}
-
-export interface ExplorePivotValueIdentity {
-  id: string
-  field: string
-  aggregation: "sum" | "count" | "average" | "min" | "max" | "median" | "distinct_count" | "formula"
-}
-
-export interface ExplorePivotPath {
+// The pivot responses are generated; the UI narrows each member key to the
+// value its kind carries and parses execution metrics with the shared parser.
+export type ExplorePivotPath = Omit<GeneratedExplorePivotPath, "members"> & {
   members: ExplorePivotMemberKey[]
-  is_grand_total: boolean
 }
 
-export interface ExplorePivotCell {
-  row_index: number
-  column_index: number
-  value_id: string
-  value: string | number | boolean | null
+export type ExplorePivotMemberOption = Omit<GeneratedExplorePivotMemberOption, "key"> & {
+  key: ExplorePivotMemberKey
 }
 
-export interface ExplorePivotResult {
-  version: 1
-  node_id: string
-  pivot_id: string
-  source: string
-  data_version: string
-  calculation_key: string
-  row_fields: string[]
-  column_fields: string[]
-  values: ExplorePivotValueIdentity[]
+export type ExplorePivotResult = Omit<
+  GeneratedExplorePivotResult,
+  "row_paths" | "column_paths" | "execution_metrics"
+> & {
   row_paths: ExplorePivotPath[]
   column_paths: ExplorePivotPath[]
-  cells: ExplorePivotCell[]
-  warnings: string[]
-  generated_at: number
   execution_metrics: ExecutionMetrics | null
 }
 
-export interface ExplorePivotRunResponse {
-  status: "started" | "completed" | "cache_required"
-  job_id: string | null
-  cached: boolean
-  message: string
+export type ExplorePivotRunResponse = Omit<GeneratedExplorePivotRunResponse, "result"> & {
   result: ExplorePivotResult | null
-  failure: ExplorePivotFailure | null
 }
 
-export interface ExplorePivotStatusResponse {
-  status: JobStatus
-  progress: number
-  message: string
+export type ExplorePivotStatusResponse = Omit<
+  GeneratedExplorePivotStatusResponse,
+  "result" | "execution_metrics"
+> & {
   result: ExplorePivotResult | null
-  failure: ExplorePivotFailure | null
-  terminal_reason: string | null
   execution_metrics: ExecutionMetrics | null
 }
 
-export interface ExplorePivotMembersResponse {
-  status: "ok" | "cache_required" | "error"
-  field: string | null
+export type ExplorePivotMembersResponse = Omit<GeneratedExplorePivotMembersResponse, "members"> & {
   members: ExplorePivotMemberOption[]
-  failure: ExplorePivotFailure | null
 }
 
 export interface MlflowLogResponse {

@@ -25,9 +25,13 @@ from pydantic_core import core_schema
 from haute._execution_schemas import ExecutionStrategyDiagnosticPayload
 from haute._explore_chart_contracts import ExploreChartsConfig
 from haute.schemas import (
+    BandingStatsResponse,
     CatalogListResponse,
     DispersionEstimateResponse,
     DispersionEstimateStatusResponse,
+    ExplorePivotMembersResponse,
+    ExplorePivotRunResponse,
+    ExplorePivotStatusResponse,
     GitArchiveResponse,
     GitBindStorageResponse,
     GitBranchAwayResponse,
@@ -61,6 +65,8 @@ from haute.schemas import (
     MlflowTestConnectionResponse,
     ModellingGpuStatusResponse,
     ModelSaveDestinationResponse,
+    NodeDataProfileResponse,
+    RatingLevelsResponse,
     SaveModelResponse,
     SchemaListResponse,
     TableListResponse,
@@ -146,6 +152,16 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         TrainResponse,
         TrainStatusResponse,
     ),
+    "explore": (
+        ExplorePivotRunResponse,
+        ExplorePivotStatusResponse,
+        ExplorePivotMembersResponse,
+        NodeDataProfileResponse,
+    ),
+    "factors": (
+        BandingStatsResponse,
+        RatingLevelsResponse,
+    ),
 }
 
 
@@ -222,6 +238,20 @@ def _with_renamed_refs(value: Any, renames: Mapping[str, str]) -> Any:
     return value
 
 
+def _local_references(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        found = set()
+        for key, item in value.items():
+            if key == "$ref" and isinstance(item, str) and item.startswith("#/$defs/"):
+                found.add(item.removeprefix("#/$defs/"))
+            else:
+                found |= _local_references(item)
+        return found
+    if isinstance(value, list):
+        return set().union(*(_local_references(item) for item in value))
+    return set()
+
+
 def _serialized_definitions(
     response_definitions: Mapping[str, Any],
     bundle_definitions: Mapping[str, Any],
@@ -235,21 +265,33 @@ def _serialized_definitions(
     differs too and is renamed with it.
     """
     renames: dict[str, str] = {}
-    while True:
-        rewritten = {
-            name: _with_renamed_refs(definition, renames)
-            for name, definition in response_definitions.items()
-        }
-        conflicting = {
+
+    def conflicts(name: str) -> bool:
+        rewritten = _with_renamed_refs(response_definitions[name], renames)
+        return name in bundle_definitions and bundle_definitions[name] != rewritten
+
+    # A definition is compared only once the ones it refers to are named, so a
+    # copy an earlier response already stored with renamed references matches.
+    pending = set(response_definitions)
+    while pending:
+        ready = sorted(
             name
-            for name, definition in rewritten.items()
-            if name not in renames
-            and name in bundle_definitions
-            and bundle_definitions[name] != definition
-        }
-        if not conflicting:
+            for name in pending
+            if not (_local_references(response_definitions[name]) - {name}) & pending
+        )
+        if not ready:
+            # Mutually recursive definitions: rename until nothing conflicts.
+            while conflicting := {name for name in pending - set(renames) if conflicts(name)}:
+                renames.update({name: f"{name}{_SERIALIZED_SUFFIX}" for name in conflicting})
             break
-        renames.update({name: f"{name}{_SERIALIZED_SUFFIX}" for name in conflicting})
+        for name in ready:
+            if conflicts(name):
+                renames[name] = f"{name}{_SERIALIZED_SUFFIX}"
+        pending.difference_update(ready)
+    rewritten = {
+        name: _with_renamed_refs(definition, renames)
+        for name, definition in response_definitions.items()
+    }
     serialized: dict[str, Any] = {}
     for name, definition in rewritten.items():
         new_name = renames.get(name, name)

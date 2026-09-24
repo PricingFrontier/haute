@@ -1,5 +1,199 @@
 {
   "$defs": {
+    "BandingHistogramBin": {
+      "description": "One `[lower, upper)` interval of a numeric distribution, the last closed.",
+      "properties": {
+        "count": {
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "lower": {
+          "title": "Lower",
+          "type": "number"
+        },
+        "upper": {
+          "title": "Upper",
+          "type": "number"
+        }
+      },
+      "required": [
+        "lower",
+        "upper",
+        "count"
+      ],
+      "title": "BandingHistogramBin",
+      "type": "object"
+    },
+    "BandingStatsResponse": {
+      "description": "Whole-dataset statistics for one factor, or why there are none.",
+      "properties": {
+        "bins": {
+          "items": {
+            "$ref": "#/$defs/BandingHistogramBin"
+          },
+          "title": "Bins",
+          "type": "array"
+        },
+        "data_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Version"
+        },
+        "distinct_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Distinct Count"
+        },
+        "maximum": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum"
+        },
+        "minimum": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimum"
+        },
+        "non_finite_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Non Finite Count"
+        },
+        "null_count": {
+          "default": 0,
+          "title": "Null Count",
+          "type": "integer"
+        },
+        "other_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Other Count"
+        },
+        "point": {
+          "$ref": "#/$defs/NodeDataPointResponse"
+        },
+        "rule_counts": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Rule Counts",
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "cache_required"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "total_rows": {
+          "default": 0,
+          "title": "Total Rows",
+          "type": "integer"
+        },
+        "unmatched_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unmatched Count"
+        },
+        "values": {
+          "items": {
+            "$ref": "#/$defs/BandingValueCount"
+          },
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "status",
+        "point",
+        "data_version",
+        "total_rows",
+        "null_count",
+        "non_finite_count",
+        "minimum",
+        "maximum",
+        "bins",
+        "values",
+        "distinct_count",
+        "other_count",
+        "rule_counts",
+        "unmatched_count"
+      ],
+      "title": "BandingStatsResponse",
+      "type": "object"
+    },
+    "BandingValueCount": {
+      "description": "One categorical value, as the text execution matches it by.",
+      "properties": {
+        "count": {
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "count"
+      ],
+      "title": "BandingValueCount",
+      "type": "object"
+    },
     "CatalogItem": {
       "properties": {
         "comment": {
@@ -3307,6 +3501,51 @@
       "title": "ExecutionWarningPayload",
       "type": "object"
     },
+    "ExploreCategoricalColumnProfile": {
+      "properties": {
+        "distinct_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Distinct Count"
+        },
+        "expandable": {
+          "default": false,
+          "title": "Expandable",
+          "type": "boolean"
+        },
+        "field": {
+          "title": "Field",
+          "type": "string"
+        },
+        "values": {
+          "items": {
+            "$ref": "#/$defs/ExploreDistinctValueCount"
+          },
+          "title": "Values",
+          "type": "array"
+        },
+        "values_truncated": {
+          "default": false,
+          "title": "Values Truncated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "field",
+        "distinct_count",
+        "expandable",
+        "values_truncated",
+        "values"
+      ],
+      "title": "ExploreCategoricalColumnProfile",
+      "type": "object"
+    },
     "ExploreChartConfig": {
       "additionalProperties": {
         "$ref": "#/$defs/JsonValue"
@@ -3407,6 +3646,1026 @@
       },
       "title": "ExploreChartsConfig",
       "type": "array"
+    },
+    "ExploreColumnStat": {
+      "description": "Per-column stats captured at Explore cache-materialisation time.\n\nMissingness is reported as a three-way split rather than a valid/invalid\ndichotomy: ``null_count`` (absent values), ``nan_count`` (float NaN — an\ninvalid-numeric value that a stream unable to distinguish string from int\nmaterialises for non-numeric input), and everything else is valid. Polars\n``null_count`` ignores NaN, so an all-NaN float column would otherwise look\nfully populated. ``nan_count`` is None for non-float dtypes (not\napplicable), mirroring ``zero_count``/``negative_count`` on non-numeric\ncolumns.\n\n``distinct_count`` counts distinct non-null values (the null bucket is\nexcluded) and may be None when the dtype is not hashable (Object columns),\nin which case the UI renders an em-dash.",
+      "properties": {
+        "distinct_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Distinct Count"
+        },
+        "dtype": {
+          "title": "Dtype",
+          "type": "string"
+        },
+        "histogram": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExploreHistogram"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "is_high_cardinality": {
+          "default": false,
+          "title": "Is High Cardinality",
+          "type": "boolean"
+        },
+        "is_identifier_candidate": {
+          "default": false,
+          "title": "Is Identifier Candidate",
+          "type": "boolean"
+        },
+        "kind": {
+          "enum": [
+            "Numeric",
+            "Text",
+            "Temporal",
+            "Boolean",
+            "Nested",
+            "Other"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "max_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Value"
+        },
+        "mean_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mean Value"
+        },
+        "median_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Median Value"
+        },
+        "min_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Value"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "nan_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nan Count"
+        },
+        "negative_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Negative Count"
+        },
+        "null_count": {
+          "title": "Null Count",
+          "type": "integer"
+        },
+        "p25_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "P25 Value"
+        },
+        "p75_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "P75 Value"
+        },
+        "std_value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Std Value"
+        },
+        "temporal_span": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temporal Span"
+        },
+        "text_max_length": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text Max Length"
+        },
+        "text_mean_length": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text Mean Length"
+        },
+        "text_min_length": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text Min Length"
+        },
+        "unique_ratio": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unique Ratio"
+        },
+        "zero_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Zero Count"
+        }
+      },
+      "required": [
+        "name",
+        "dtype",
+        "kind",
+        "null_count",
+        "nan_count",
+        "distinct_count",
+        "min_value",
+        "p25_value",
+        "median_value",
+        "mean_value",
+        "p75_value",
+        "max_value",
+        "std_value",
+        "zero_count",
+        "negative_count",
+        "unique_ratio",
+        "is_high_cardinality",
+        "is_identifier_candidate",
+        "text_min_length",
+        "text_mean_length",
+        "text_max_length",
+        "temporal_span",
+        "histogram"
+      ],
+      "title": "ExploreColumnStat",
+      "type": "object"
+    },
+    "ExploreDataQualityIssue": {
+      "properties": {
+        "detail": {
+          "title": "Detail",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "warning",
+            "danger"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "severity",
+        "label",
+        "detail"
+      ],
+      "title": "ExploreDataQualityIssue",
+      "type": "object"
+    },
+    "ExploreDataQualitySummary": {
+      "properties": {
+        "duplicate_ratio": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duplicate Ratio"
+        },
+        "duplicate_row_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duplicate Row Count"
+        },
+        "issue_count": {
+          "default": 0,
+          "title": "Issue Count",
+          "type": "integer"
+        },
+        "issues": {
+          "items": {
+            "$ref": "#/$defs/ExploreDataQualityIssue"
+          },
+          "title": "Issues",
+          "type": "array"
+        }
+      },
+      "required": [
+        "issue_count",
+        "issues",
+        "duplicate_row_count",
+        "duplicate_ratio"
+      ],
+      "title": "ExploreDataQualitySummary",
+      "type": "object"
+    },
+    "ExploreDistinctValueCount": {
+      "properties": {
+        "count": {
+          "title": "Count",
+          "type": "integer"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "value",
+        "count"
+      ],
+      "title": "ExploreDistinctValueCount",
+      "type": "object"
+    },
+    "ExploreHistogram": {
+      "description": "Equal-width bins over a numeric column's finite values.\n\n``ok``: ``bins`` holds up to ``HISTOGRAM_BIN_COUNT`` equal-width bins\nspanning the finite minimum to maximum, each ``[start, end)`` except the\nlast, which includes its end. Integer columns have integer boundaries and,\nwhen their range is narrower than the bin count, one bin per value.\n``constant``: every finite value is equal, so there is one bin with\n``start == end``. ``empty``: no finite values. ``skipped``: the column is\npast the profile's histogram column limit (``column_limit``; nothing was\ncomputed) or an integer column with values beyond 2**53 - 1\n(``integer_precision``), whose boundaries a browser would round together.\nNull, NaN and infinite values never enter a bin; ``non_finite_count``\ncounts the NaN and infinite ones.",
+      "properties": {
+        "bins": {
+          "items": {
+            "$ref": "#/$defs/ExploreHistogramBin"
+          },
+          "title": "Bins",
+          "type": "array"
+        },
+        "finite_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Finite Count"
+        },
+        "non_finite_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Non Finite Count"
+        },
+        "skipped_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "column_limit",
+                "integer_precision"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Skipped Reason"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "constant",
+            "empty",
+            "skipped"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "bins",
+        "finite_count",
+        "non_finite_count",
+        "skipped_reason"
+      ],
+      "title": "ExploreHistogram",
+      "type": "object"
+    },
+    "ExploreHistogramBin": {
+      "properties": {
+        "count": {
+          "title": "Count",
+          "type": "integer"
+        },
+        "end": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "End"
+        },
+        "start": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Start"
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "count"
+      ],
+      "title": "ExploreHistogramBin",
+      "type": "object"
+    },
+    "ExploreOverviewSummary": {
+      "properties": {
+        "categorical_summary": {
+          "items": {
+            "$ref": "#/$defs/ExploreCategoricalColumnProfile"
+          },
+          "title": "Categorical Summary",
+          "type": "array"
+        },
+        "data_quality": {
+          "$ref": "#/$defs/ExploreDataQualitySummary"
+        }
+      },
+      "required": [
+        "data_quality",
+        "categorical_summary"
+      ],
+      "title": "ExploreOverviewSummary",
+      "type": "object"
+    },
+    "ExplorePivotCell": {
+      "properties": {
+        "column_index": {
+          "minimum": 0,
+          "title": "Column Index",
+          "type": "integer"
+        },
+        "row_index": {
+          "minimum": 0,
+          "title": "Row Index",
+          "type": "integer"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        },
+        "value_id": {
+          "title": "Value Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "row_index",
+        "column_index",
+        "value_id",
+        "value"
+      ],
+      "title": "ExplorePivotCell",
+      "type": "object"
+    },
+    "ExplorePivotFailure": {
+      "properties": {
+        "dimensions": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          },
+          "title": "Dimensions",
+          "type": "object"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "reason_code": {
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "remediation": {
+          "title": "Remediation",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason_code",
+        "message",
+        "remediation",
+        "dimensions"
+      ],
+      "title": "ExplorePivotFailure",
+      "type": "object"
+    },
+    "ExplorePivotMemberKey": {
+      "properties": {
+        "kind": {
+          "enum": [
+            "null",
+            "string",
+            "boolean",
+            "integer",
+            "float",
+            "nan",
+            "date",
+            "datetime",
+            "time",
+            "decimal"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "title": "ExplorePivotMemberKey",
+      "type": "object"
+    },
+    "ExplorePivotMemberOption": {
+      "properties": {
+        "count": {
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "key": {
+          "$ref": "#/$defs/ExplorePivotMemberKey"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "count"
+      ],
+      "title": "ExplorePivotMemberOption",
+      "type": "object"
+    },
+    "ExplorePivotMembersResponse": {
+      "properties": {
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExplorePivotFailure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "field": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Field"
+        },
+        "members": {
+          "items": {
+            "$ref": "#/$defs/ExplorePivotMemberOption"
+          },
+          "title": "Members",
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "cache_required",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "field",
+        "members",
+        "failure"
+      ],
+      "title": "ExplorePivotMembersResponse",
+      "type": "object"
+    },
+    "ExplorePivotPath": {
+      "properties": {
+        "is_grand_total": {
+          "default": false,
+          "title": "Is Grand Total",
+          "type": "boolean"
+        },
+        "members": {
+          "items": {
+            "$ref": "#/$defs/ExplorePivotMemberKey"
+          },
+          "title": "Members",
+          "type": "array"
+        }
+      },
+      "required": [
+        "members",
+        "is_grand_total"
+      ],
+      "title": "ExplorePivotPath",
+      "type": "object"
+    },
+    "ExplorePivotResult": {
+      "properties": {
+        "calculation_key": {
+          "title": "Calculation Key",
+          "type": "string"
+        },
+        "cells": {
+          "items": {
+            "$ref": "#/$defs/ExplorePivotCell"
+          },
+          "title": "Cells",
+          "type": "array"
+        },
+        "column_fields": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Column Fields",
+          "type": "array"
+        },
+        "column_paths": {
+          "items": {
+            "$ref": "#/$defs/ExplorePivotPath"
+          },
+          "title": "Column Paths",
+          "type": "array"
+        },
+        "data_version": {
+          "title": "Data Version",
+          "type": "string"
+        },
+        "execution_metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionMetricsPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "generated_at": {
+          "default": 0.0,
+          "title": "Generated At",
+          "type": "number"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "pivot_id": {
+          "title": "Pivot Id",
+          "type": "string"
+        },
+        "row_fields": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Row Fields",
+          "type": "array"
+        },
+        "row_paths": {
+          "items": {
+            "$ref": "#/$defs/ExplorePivotPath"
+          },
+          "title": "Row Paths",
+          "type": "array"
+        },
+        "source": {
+          "default": "live",
+          "title": "Source",
+          "type": "string"
+        },
+        "values": {
+          "items": {
+            "$ref": "#/$defs/ExplorePivotValueIdentity"
+          },
+          "title": "Values",
+          "type": "array"
+        },
+        "version": {
+          "const": 1,
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "version",
+        "node_id",
+        "pivot_id",
+        "source",
+        "data_version",
+        "calculation_key",
+        "row_fields",
+        "column_fields",
+        "values",
+        "row_paths",
+        "column_paths",
+        "cells",
+        "warnings",
+        "generated_at",
+        "execution_metrics"
+      ],
+      "title": "ExplorePivotResult",
+      "type": "object"
+    },
+    "ExplorePivotRunResponse": {
+      "properties": {
+        "cached": {
+          "default": false,
+          "title": "Cached",
+          "type": "boolean"
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExplorePivotFailure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "job_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job Id"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExplorePivotResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "enum": [
+            "started",
+            "completed",
+            "cache_required"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "job_id",
+        "cached",
+        "message",
+        "result",
+        "failure"
+      ],
+      "title": "ExplorePivotRunResponse",
+      "type": "object"
+    },
+    "ExplorePivotStatusResponse": {
+      "properties": {
+        "execution_metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionMetricsPayload"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExplorePivotFailure"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "progress": {
+          "default": 0.0,
+          "title": "Progress",
+          "type": "number"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExplorePivotResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "enum": [
+            "running",
+            "completed",
+            "error",
+            "cancelled",
+            "superseded",
+            "timed_out",
+            "memory_limited",
+            "contract_error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "terminal_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Terminal Reason"
+        }
+      },
+      "required": [
+        "status",
+        "progress",
+        "message",
+        "result",
+        "failure",
+        "terminal_reason",
+        "execution_metrics"
+      ],
+      "title": "ExplorePivotStatusResponse",
+      "type": "object"
+    },
+    "ExplorePivotValueIdentity": {
+      "properties": {
+        "aggregation": {
+          "enum": [
+            "sum",
+            "count",
+            "average",
+            "min",
+            "max",
+            "median",
+            "distinct_count",
+            "formula"
+          ],
+          "title": "Aggregation",
+          "type": "string"
+        },
+        "field": {
+          "title": "Field",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "field",
+        "aggregation"
+      ],
+      "title": "ExplorePivotValueIdentity",
+      "type": "object"
     },
     "FitEvidencePayload": {
       "additionalProperties": false,
@@ -5728,6 +6987,492 @@
       "title": "ModellingGpuStatusResponse",
       "type": "object"
     },
+    "NodeDataGeneration": {
+      "description": "The node-output generation a slot currently holds for the consumer's signature.",
+      "properties": {
+        "column_count": {
+          "title": "Column Count",
+          "type": "integer"
+        },
+        "columns": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "const": "all",
+              "type": "string"
+            }
+          ],
+          "title": "Columns"
+        },
+        "created_at": {
+          "title": "Created At",
+          "type": "number"
+        },
+        "fresh": {
+          "title": "Fresh",
+          "type": "boolean"
+        },
+        "generation_id": {
+          "title": "Generation Id",
+          "type": "string"
+        },
+        "retention": {
+          "enum": [
+            "pinned",
+            "automatic"
+          ],
+          "title": "Retention",
+          "type": "string"
+        },
+        "row_count": {
+          "title": "Row Count",
+          "type": "integer"
+        },
+        "size_bytes": {
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "generation_id",
+        "columns",
+        "row_count",
+        "column_count",
+        "size_bytes",
+        "retention",
+        "fresh",
+        "created_at"
+      ],
+      "title": "NodeDataGeneration",
+      "type": "object"
+    },
+    "NodeDataJob": {
+      "properties": {
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "progress": {
+          "default": 0.0,
+          "title": "Progress",
+          "type": "number"
+        }
+      },
+      "required": [
+        "job_id",
+        "progress",
+        "message"
+      ],
+      "title": "NodeDataJob",
+      "type": "object"
+    },
+    "NodeDataPointRef": {
+      "properties": {
+        "port_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Port Label"
+        },
+        "producer_node_id": {
+          "title": "Producer Node Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "producer_node_id",
+        "port_label"
+      ],
+      "title": "NodeDataPointRef",
+      "type": "object"
+    },
+    "NodeDataPointResponse": {
+      "properties": {
+        "build_endpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Build Endpoint"
+        },
+        "clear_endpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clear Endpoint"
+        },
+        "consumer_node_id": {
+          "title": "Consumer Node Id",
+          "type": "string"
+        },
+        "data_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Version"
+        },
+        "demand": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "const": "all",
+              "type": "string"
+            }
+          ],
+          "title": "Demand"
+        },
+        "generation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NodeDataGeneration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "job": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NodeDataJob"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "kind": {
+          "enum": [
+            "data_input",
+            "api_input_table",
+            "node_output"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "point": {
+          "$ref": "#/$defs/NodeDataPointRef"
+        },
+        "reads_directly": {
+          "default": false,
+          "title": "Reads Directly",
+          "type": "boolean"
+        },
+        "retention": {
+          "anyOf": [
+            {
+              "enum": [
+                "pinned",
+                "automatic"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retention"
+        },
+        "row_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Row Count"
+        },
+        "size_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Size Bytes"
+        },
+        "slot_key": {
+          "title": "Slot Key",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "current",
+            "stale",
+            "partial",
+            "missing",
+            "building",
+            "corrupt"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "consumer_node_id",
+        "point",
+        "slot_key",
+        "kind",
+        "state",
+        "demand",
+        "data_version",
+        "row_count",
+        "size_bytes",
+        "retention",
+        "generation",
+        "job",
+        "reads_directly",
+        "build_endpoint",
+        "clear_endpoint"
+      ],
+      "title": "NodeDataPointResponse",
+      "type": "object"
+    },
+    "NodeDataProfile": {
+      "description": "Per-column statistics and overview summary of one data version of a point.",
+      "properties": {
+        "column_count": {
+          "title": "Column Count",
+          "type": "integer"
+        },
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/ExploreColumnStat"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "data_version": {
+          "title": "Data Version",
+          "type": "string"
+        },
+        "generated_at": {
+          "title": "Generated At",
+          "type": "number"
+        },
+        "overview_summary": {
+          "$ref": "#/$defs/ExploreOverviewSummary"
+        },
+        "row_count": {
+          "title": "Row Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "row_count",
+        "column_count",
+        "columns",
+        "overview_summary",
+        "data_version",
+        "generated_at"
+      ],
+      "title": "NodeDataProfile",
+      "type": "object"
+    },
+    "NodeDataProfileResponse": {
+      "properties": {
+        "job_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job Id"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "point": {
+          "$ref": "#/$defs/NodeDataPointResponse"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NodeDataProfile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "started",
+            "joined",
+            "cache_required"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "job_id",
+        "message",
+        "result",
+        "point"
+      ],
+      "title": "NodeDataProfileResponse",
+      "type": "object"
+    },
+    "RatingLevelColumn": {
+      "description": "What one column offers as rating levels.\n\n`distinct_count` counts the levels that could be chosen — neither missing\nnor blank — so it is the number `values` would hold without the cap.",
+      "properties": {
+        "column": {
+          "title": "Column",
+          "type": "string"
+        },
+        "distinct_count": {
+          "default": 0,
+          "title": "Distinct Count",
+          "type": "integer"
+        },
+        "null_count": {
+          "default": 0,
+          "title": "Null Count",
+          "type": "integer"
+        },
+        "values": {
+          "items": {
+            "$ref": "#/$defs/RatingLevelValue"
+          },
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "column",
+        "values",
+        "distinct_count",
+        "null_count"
+      ],
+      "title": "RatingLevelColumn",
+      "type": "object"
+    },
+    "RatingLevelValue": {
+      "description": "One level, keyed the way the rating lookup keys it.",
+      "properties": {
+        "count": {
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "count"
+      ],
+      "title": "RatingLevelValue",
+      "type": "object"
+    },
+    "RatingLevelsResponse": {
+      "description": "Whole-dataset levels for the columns asked about, or why there are none.",
+      "properties": {
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/RatingLevelColumn"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "data_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Version"
+        },
+        "point": {
+          "$ref": "#/$defs/NodeDataPointResponse"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "cache_required"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "total_rows": {
+          "default": 0,
+          "title": "Total Rows",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "status",
+        "point",
+        "data_version",
+        "total_rows",
+        "columns"
+      ],
+      "title": "RatingLevelsResponse",
+      "type": "object"
+    },
     "SaveModelResponse": {
       "properties": {
         "feature_contract_path": {
@@ -7518,6 +9263,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "BandingStatsResponse": {
+      "$ref": "#/$defs/BandingStatsResponse"
+    },
     "CatalogListResponse": {
       "$ref": "#/$defs/CatalogListResponse"
     },
@@ -7526,6 +9274,15 @@
     },
     "DispersionEstimateStatusResponse": {
       "$ref": "#/$defs/DispersionEstimateStatusResponse"
+    },
+    "ExplorePivotMembersResponse": {
+      "$ref": "#/$defs/ExplorePivotMembersResponse"
+    },
+    "ExplorePivotRunResponse": {
+      "$ref": "#/$defs/ExplorePivotRunResponse"
+    },
+    "ExplorePivotStatusResponse": {
+      "$ref": "#/$defs/ExplorePivotStatusResponse"
     },
     "GitArchiveResponse": {
       "$ref": "#/$defs/GitArchiveResponse"
@@ -7626,6 +9383,12 @@
     "ModellingGpuStatusResponse": {
       "$ref": "#/$defs/ModellingGpuStatusResponse"
     },
+    "NodeDataProfileResponse": {
+      "$ref": "#/$defs/NodeDataProfileResponse"
+    },
+    "RatingLevelsResponse": {
+      "$ref": "#/$defs/RatingLevelsResponse"
+    },
     "SaveModelResponse": {
       "$ref": "#/$defs/SaveModelResponse"
     },
@@ -7715,7 +9478,13 @@
     "GitForkStorageResponse",
     "GitUpstreamStatusResponse",
     "TrainResponse",
-    "TrainStatusResponse"
+    "TrainStatusResponse",
+    "ExplorePivotRunResponse",
+    "ExplorePivotStatusResponse",
+    "ExplorePivotMembersResponse",
+    "NodeDataProfileResponse",
+    "BandingStatsResponse",
+    "RatingLevelsResponse"
   ],
   "title": "HauteApiContractBundle",
   "type": "object",
@@ -7725,6 +9494,16 @@
       "CatalogListResponse",
       "SchemaListResponse",
       "TableListResponse"
+    ],
+    "explore": [
+      "ExplorePivotRunResponse",
+      "ExplorePivotStatusResponse",
+      "ExplorePivotMembersResponse",
+      "NodeDataProfileResponse"
+    ],
+    "factors": [
+      "BandingStatsResponse",
+      "RatingLevelsResponse"
     ],
     "git": [
       "GitWorkingBranchResponse",

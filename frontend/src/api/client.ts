@@ -116,15 +116,12 @@ import {
   parseCacheClearResponse,
   parseCacheNodesResponse,
   parseDissolveSubmodelResponse,
+  explorePivotMembersFromContract,
+  explorePivotRunFromContract,
+  explorePivotStatusFromContract,
   parseEditorNodeIdentityBatchResponse,
-  parseExplorePivotMembersResponse,
-  parseExplorePivotRunResponse,
-  parseExplorePivotStatusResponse,
   parseNodeDataClearResponse,
   parseNodeDataPointResponse,
-  parseBandingStatsResponse,
-  parseRatingLevelsResponse,
-  parseNodeDataProfileResponse,
   parseNodeDataRunResponse,
   parseNodeDataStatusResponse,
   parseFrontierAutoRangeStartResponse,
@@ -163,6 +160,8 @@ import { expectGeneratedContract } from "../types/generatedContractValidation"
 // Generated response validators load with their first response, so none of
 // them reaches the initial bundle.
 const databricksValidators = () => import("../generated/api-contracts.databricks.validators.mjs")
+const exploreValidators = () => import("../generated/api-contracts.explore.validators.mjs")
+const factorsValidators = () => import("../generated/api-contracts.factors.validators.mjs")
 const gitValidators = () => import("../generated/api-contracts.git.validators.mjs")
 const mlflowValidators = () => import("../generated/api-contracts.mlflow.validators.mjs")
 const modellingValidators = () => import("../generated/api-contracts.modelling.validators.mjs")
@@ -1271,7 +1270,7 @@ export function getNodeDataProfile(args: NodeDataArgs): Promise<NodeDataProfileR
       source: payload.source ?? "live",
     },
     { signal },
-  ).then(parseNodeDataProfileResponse)
+  ).then(async (data) => expectGeneratedContract("NodeDataProfileResponse", (await exploreValidators()).validateNodeDataProfileResponse, data))
 }
 
 export interface BandingStatsArgs extends NodeDataArgs {
@@ -1293,7 +1292,7 @@ export function getBandingStats(args: BandingStatsArgs): Promise<BandingStatsRes
       ...(valueLimit === undefined ? {} : { value_limit: valueLimit }),
     },
     { signal },
-  ).then(parseBandingStatsResponse)
+  ).then(async (data) => expectGeneratedContract("BandingStatsResponse", (await factorsValidators()).validateBandingStatsResponse, data))
 }
 
 export interface RatingLevelsArgs {
@@ -1316,7 +1315,7 @@ export function getRatingLevels(args: RatingLevelsArgs): Promise<RatingLevelsRes
       ...(valueLimit === undefined ? {} : { value_limit: valueLimit }),
     },
     { signal },
-  ).then(parseRatingLevelsResponse)
+  ).then(async (data) => expectGeneratedContract("RatingLevelsResponse", (await factorsValidators()).validateRatingLevelsResponse, data))
 }
 
 export function clearNodeData(args: NodeDataArgs): Promise<NodeDataClearResponse> {
@@ -1358,7 +1357,9 @@ export function runExplorePivot(args: RunExplorePivotArgs): Promise<ExplorePivot
   return post<unknown>("/api/explore/pivots/run", {
     ...payload,
     source: payload.source ?? "live",
-  }, { signal, timeout }).then(parseExplorePivotRunResponse)
+  }, { signal, timeout }).then(async (data) => explorePivotRunFromContract(
+    expectGeneratedContract("ExplorePivotRunResponse", (await exploreValidators()).validateExplorePivotRunResponse, data),
+  ))
 }
 
 export function getExplorePivotStatus(
@@ -1366,7 +1367,12 @@ export function getExplorePivotStatus(
   options?: { signal?: AbortSignal },
 ): Promise<ExplorePivotStatusResponse> {
   return request<unknown>(`/api/explore/pivots/status/${encodeURIComponent(jobId)}`, options)
-    .then((data) => validateApiResponse("Could not read pivot status", () => parseExplorePivotStatusResponse(data)))
+    .then(async (data) => {
+      const { validateExplorePivotStatusResponse } = await exploreValidators()
+      return validateApiResponse("Could not read pivot status", () => explorePivotStatusFromContract(
+        expectGeneratedContract("ExplorePivotStatusResponse", validateExplorePivotStatusResponse, data),
+      ))
+    })
 }
 
 export function cancelExplorePivot(
@@ -1374,7 +1380,9 @@ export function cancelExplorePivot(
   options?: { signal?: AbortSignal },
 ): Promise<ExplorePivotStatusResponse> {
   return post<unknown>(`/api/explore/pivots/cancel/${encodeURIComponent(jobId)}`, {}, options)
-    .then(parseExplorePivotStatusResponse)
+    .then(async (data) => explorePivotStatusFromContract(
+      expectGeneratedContract("ExplorePivotStatusResponse", (await exploreValidators()).validateExplorePivotStatusResponse, data),
+    ))
 }
 
 export interface FetchExplorePivotMembersArgs {
@@ -1394,7 +1402,9 @@ export function fetchExplorePivotMembers(
   return post<unknown>("/api/explore/pivots/members", {
     ...payload,
     source: payload.source ?? "live",
-  }, { signal, timeout }).then(parseExplorePivotMembersResponse)
+  }, { signal, timeout }).then(async (data) => explorePivotMembersFromContract(
+    expectGeneratedContract("ExplorePivotMembersResponse", (await exploreValidators()).validateExplorePivotMembersResponse, data),
+  ))
 }
 
 // ---------------------------------------------------------------------------

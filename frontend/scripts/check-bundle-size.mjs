@@ -59,7 +59,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // each shared definition once, but the train responses carry the evaluation,
 // tuning and execution-metrics contracts. The complete production bundle is
 // 1,453.2 KiB; 1,463 KiB restores about 10 KiB of aggregate headroom.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1463
+// The explore (pivot and profile) and factors (banding and rating) groups add
+// lazy validator modules of 20.4 and 3.7 KiB; about 13 KiB of the explore one
+// is the execution-metrics contract the training chunk also carries. The
+// complete production bundle is 1,476.5 KiB; 1,487 KiB restores about 10 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1487
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

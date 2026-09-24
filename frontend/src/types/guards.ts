@@ -13,6 +13,13 @@ import {
   validateExecutionStrategyDiagnostic,
 } from "../generated/api-contracts.execution-strategy-diagnostic.validators.mjs"
 import type {
+  ExplorePivotMembersResponse as GeneratedExplorePivotMembersResponse,
+  ExplorePivotPath as GeneratedExplorePivotPath,
+  ExplorePivotResult as GeneratedExplorePivotResult,
+  ExplorePivotRunResponse as GeneratedExplorePivotRunResponse,
+  ExplorePivotStatusResponse as GeneratedExplorePivotStatusResponse,
+} from "../generated/api-contracts.generated"
+import type {
   CacheClearResponse,
   CacheNodeEntry,
   CacheNodesResponse,
@@ -44,16 +51,12 @@ import type {
   ExploreDataQualitySummary,
   ExploreDistinctValueCount,
   ExploreOverviewSummary,
-  ExplorePivotCell,
-  ExplorePivotFailure,
   ExplorePivotMemberKey,
-  ExplorePivotMemberOption,
   ExplorePivotMembersResponse,
   ExplorePivotPath,
   ExplorePivotResult,
   ExplorePivotRunResponse,
   ExplorePivotStatusResponse,
-  ExplorePivotValueIdentity,
   FrontierAutoRangeResponse,
   FrontierAutoRangeStartResponse,
   FrontierAutoRangeStatusResponse,
@@ -87,9 +90,6 @@ import type {
   NodeDataColumns,
   NodeDataPointResponse,
   NodeDataProfile,
-  BandingStatsResponse,
-  RatingLevelsResponse,
-  NodeDataProfileResponse,
   NodeDataRunResponse,
   NodeDataStatusResponse,
   OptimiserHistoryEntry,
@@ -2282,110 +2282,6 @@ export function parseNodeDataProfile(value: unknown): NodeDataProfile {
   }
 }
 
-export function parseBandingStatsResponse(value: unknown): BandingStatsResponse {
-  const parser = "parseBandingStatsResponse"
-  const obj = expectPlainObject(parser, value)
-  return {
-    status: expectStringLiteral(parser, obj.status, "field `status`", [
-      "ok",
-      "cache_required",
-    ] as const),
-    point: parseNodeDataPointResponse(obj.point),
-    data_version: optionalNullableString(parser, obj, "data_version"),
-    total_rows: expectNumber(parser, obj.total_rows ?? 0, "field `total_rows`"),
-    null_count: expectNumber(parser, obj.null_count ?? 0, "field `null_count`"),
-    non_finite_count: optionalNullableNumber(parser, obj, "non_finite_count"),
-    minimum: optionalNullableNumber(parser, obj, "minimum"),
-    maximum: optionalNullableNumber(parser, obj, "maximum"),
-    bins: expectArray(parser, obj.bins ?? [], "field `bins`").map((bin, index) => {
-      const item = expectPlainObject(parser, bin)
-      return {
-        lower: expectNumber(parser, item.lower, `field \`bins[${index}].lower\``),
-        upper: expectNumber(parser, item.upper, `field \`bins[${index}].upper\``),
-        count: expectNumber(parser, item.count, `field \`bins[${index}].count\``),
-      }
-    }),
-    values: expectArray(parser, obj.values ?? [], "field `values`").map((entry, index) => {
-      const item = expectPlainObject(parser, entry)
-      return {
-        value: expectString(parser, item.value, `field \`values[${index}].value\``),
-        count: expectNumber(parser, item.count, `field \`values[${index}].count\``),
-      }
-    }),
-    distinct_count: optionalNullableNumber(parser, obj, "distinct_count"),
-    other_count: optionalNullableNumber(parser, obj, "other_count"),
-    rule_counts: expectArray(parser, obj.rule_counts ?? [], "field `rule_counts`").map(
-      (count, index) => expectNumber(parser, count, `field \`rule_counts[${index}]\``),
-    ),
-    unmatched_count: optionalNullableNumber(parser, obj, "unmatched_count"),
-  }
-}
-
-export function parseRatingLevelsResponse(value: unknown): RatingLevelsResponse {
-  const parser = "parseRatingLevelsResponse"
-  const obj = expectPlainObject(parser, value)
-  return {
-    status: expectStringLiteral(parser, obj.status, "field `status`", [
-      "ok",
-      "cache_required",
-    ] as const),
-    point: parseNodeDataPointResponse(obj.point),
-    data_version: optionalNullableString(parser, obj, "data_version"),
-    total_rows: expectNumber(parser, obj.total_rows ?? 0, "field `total_rows`"),
-    columns: expectArray(parser, obj.columns ?? [], "field `columns`").map((entry, index) => {
-      const item = expectPlainObject(parser, entry)
-      return {
-        column: expectString(parser, item.column, `field \`columns[${index}].column\``),
-        values: expectArray(parser, item.values ?? [], `field \`columns[${index}].values\``).map(
-          (level, position) => {
-            const value = expectPlainObject(parser, level)
-            return {
-              value: expectString(
-                parser,
-                value.value,
-                `field \`columns[${index}].values[${position}].value\``,
-              ),
-              count: expectNumber(
-                parser,
-                value.count,
-                `field \`columns[${index}].values[${position}].count\``,
-              ),
-            }
-          },
-        ),
-        distinct_count: expectNumber(
-          parser,
-          item.distinct_count ?? 0,
-          `field \`columns[${index}].distinct_count\``,
-        ),
-        null_count: expectNumber(
-          parser,
-          item.null_count ?? 0,
-          `field \`columns[${index}].null_count\``,
-        ),
-      }
-    }),
-  }
-}
-
-export function parseNodeDataProfileResponse(value: unknown): NodeDataProfileResponse {
-  const parser = "parseNodeDataProfileResponse"
-  const obj = expectPlainObject(parser, value)
-  return {
-    status: expectStringLiteral(parser, obj.status, "field `status`", [
-      "completed",
-      "started",
-      "joined",
-      "cache_required",
-    ] as const),
-    job_id: optionalNullableString(parser, obj, "job_id"),
-    message: optionalString(parser, obj, "message"),
-    result:
-      obj.result === undefined || obj.result === null ? null : parseNodeDataProfile(obj.result),
-    point: parseNodeDataPointResponse(obj.point),
-  }
-}
-
 export function parseNodeDataRunResponse(value: unknown): NodeDataRunResponse {
   const parser = "parseNodeDataRunResponse"
   const obj = expectPlainObject(parser, value)
@@ -2428,8 +2324,6 @@ export function parseNodeDataClearResponse(value: unknown): NodeDataClearRespons
   }
 }
 
-const EXPLORE_PIVOT_RUN_STATUSES = ["started", "completed", "cache_required"] as const
-const EXPLORE_PIVOT_MEMBER_STATUSES = ["ok", "cache_required", "error"] as const
 const EXPLORE_PIVOT_MEMBER_KINDS = [
   "null",
   "string",
@@ -2441,16 +2335,6 @@ const EXPLORE_PIVOT_MEMBER_KINDS = [
   "datetime",
   "time",
   "decimal",
-] as const
-const EXPLORE_PIVOT_AGGREGATIONS = [
-  "sum",
-  "count",
-  "average",
-  "min",
-  "max",
-  "median",
-  "distinct_count",
-  "formula",
 ] as const
 const PIVOT_INTEGER_PATTERN = /^-?(?:0|[1-9][0-9]*)$/
 const PIVOT_DECIMAL_PATTERN = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:E[+-]?[0-9]+)?$/
@@ -2617,105 +2501,33 @@ function parseExplorePivotMemberKey(value: unknown, field: string): ExplorePivot
   }
 }
 
-function parseExplorePivotFailure(value: unknown, field: string): ExplorePivotFailure {
-  const parser = "parseExplorePivotFailure"
-  const obj = expectPlainObject(parser, value, field)
-  const rawDimensions = expectPlainObject(parser, obj.dimensions, `${field}.dimensions`)
-  const dimensions = Object.fromEntries(
-    Object.entries(rawDimensions).map(([key, dimension]) => {
-      if (typeof dimension === "string") return [key, dimension]
-      return [key, expectSafeInteger(parser, dimension, `${field}.dimensions.${key}`)]
-    }),
-  )
-  return {
-    reason_code: expectString(parser, obj.reason_code, `${field}.reason_code`),
-    message: expectString(parser, obj.message, `${field}.message`),
-    remediation: expectString(parser, obj.remediation, `${field}.remediation`),
-    dimensions,
-  }
-}
-
-function parseNullablePivotFailure(
-  value: unknown,
+// The generated explore validators own the pivot responses' structure. The UI
+// narrows each member key to the value its kind carries and checks that every
+// cell sits inside the declared matrix and names a declared value.
+function explorePivotPathFromContract(
+  path: GeneratedExplorePivotPath,
   field: string,
-): ExplorePivotFailure | null {
-  return value === null ? null : parseExplorePivotFailure(value, field)
-}
-
-function parseExplorePivotPath(value: unknown, field: string): ExplorePivotPath {
-  const parser = "parseExplorePivotResult"
-  const obj = expectPlainObject(parser, value, field)
+): ExplorePivotPath {
   return {
-    members: parseArray(parser, obj.members, `${field}.members`, parseExplorePivotMemberKey),
-    is_grand_total: expectBoolean(parser, obj.is_grand_total, `${field}.is_grand_total`),
-  }
-}
-
-function parseExplorePivotValueIdentity(
-  value: unknown,
-  field: string,
-): ExplorePivotValueIdentity {
-  const parser = "parseExplorePivotResult"
-  const obj = expectPlainObject(parser, value, field)
-  return {
-    id: expectString(parser, obj.id, `${field}.id`),
-    field: expectString(parser, obj.field, `${field}.field`),
-    aggregation: expectStringLiteral(
-      parser,
-      obj.aggregation,
-      `${field}.aggregation`,
-      EXPLORE_PIVOT_AGGREGATIONS,
+    ...path,
+    members: path.members.map((member, index) =>
+      parseExplorePivotMemberKey(member, `${field}.members[${index}]`),
     ),
   }
 }
 
-function parseExplorePivotCell(value: unknown, field: string): ExplorePivotCell {
+function explorePivotResultFromContract(
+  result: GeneratedExplorePivotResult,
+): ExplorePivotResult {
   const parser = "parseExplorePivotResult"
-  const obj = expectPlainObject(parser, value, field)
-  const rawValue = obj.value
-  if (
-    rawValue !== null &&
-    typeof rawValue !== "string" &&
-    typeof rawValue !== "boolean" &&
-    typeof rawValue !== "number"
-  ) {
-    throw new Error(`${parser}: expected ${field}.value to be a scalar or null`)
-  }
-  return {
-    row_index: expectNonNegativeInteger(parser, obj.row_index, `${field}.row_index`),
-    column_index: expectNonNegativeInteger(parser, obj.column_index, `${field}.column_index`),
-    value_id: expectString(parser, obj.value_id, `${field}.value_id`),
-    value:
-      typeof rawValue === "number"
-        ? expectFiniteNumber(parser, rawValue, `${field}.value`)
-        : rawValue,
-  }
-}
-
-function parseExplorePivotResult(value: unknown, field: string): ExplorePivotResult {
-  const parser = "parseExplorePivotResult"
-  const obj = expectPlainObject(parser, value, field)
-  const rowPaths = parseArray(
-    parser,
-    obj.row_paths,
-    `${field}.row_paths`,
-    parseExplorePivotPath,
+  const rowPaths = result.row_paths.map((path, index) =>
+    explorePivotPathFromContract(path, `result.row_paths[${index}]`),
   )
-  const columnPaths = parseArray(
-    parser,
-    obj.column_paths,
-    `${field}.column_paths`,
-    parseExplorePivotPath,
+  const columnPaths = result.column_paths.map((path, index) =>
+    explorePivotPathFromContract(path, `result.column_paths[${index}]`),
   )
-  const values = parseArray(
-    parser,
-    obj.values,
-    `${field}.values`,
-    parseExplorePivotValueIdentity,
-  )
-  const cells = parseArray(parser, obj.cells, `${field}.cells`, parseExplorePivotCell)
-  const valueIds = new Set(values.map((identity) => identity.id))
-  for (const cell of cells) {
+  const valueIds = new Set(result.values.map((identity) => identity.id))
+  for (const cell of result.cells) {
     if (cell.row_index >= rowPaths.length || cell.column_index >= columnPaths.length) {
       throw new Error(`${parser}: pivot cell index is outside the declared matrix`)
     }
@@ -2724,104 +2536,44 @@ function parseExplorePivotResult(value: unknown, field: string): ExplorePivotRes
     }
   }
   return {
-    version: expectSchemaVersionOne(parser, obj.version, `${field}.version`),
-    node_id: expectString(parser, obj.node_id, `${field}.node_id`),
-    pivot_id: expectString(parser, obj.pivot_id, `${field}.pivot_id`),
-    source: expectString(parser, obj.source, `${field}.source`),
-    data_version: expectString(parser, obj.data_version, `${field}.data_version`),
-    calculation_key: expectString(parser, obj.calculation_key, `${field}.calculation_key`),
-    row_fields: parseArray(parser, obj.row_fields, `${field}.row_fields`, (item, itemField) =>
-      expectString(parser, item, itemField),
-    ),
-    column_fields: parseArray(
-      parser,
-      obj.column_fields,
-      `${field}.column_fields`,
-      (item, itemField) => expectString(parser, item, itemField),
-    ),
-    values,
+    ...result,
     row_paths: rowPaths,
     column_paths: columnPaths,
-    cells,
-    warnings: parseArray(parser, obj.warnings, `${field}.warnings`, (item, itemField) =>
-      expectString(parser, item, itemField),
-    ),
-    generated_at: expectFiniteNumber(parser, obj.generated_at, `${field}.generated_at`),
-    execution_metrics:
-      obj.execution_metrics === null
-        ? null
-        : parseExecutionMetrics(parser, obj.execution_metrics, `${field}.execution_metrics`),
+    execution_metrics: optionalExecutionMetrics(parser, { execution_metrics: result.execution_metrics }),
   }
 }
 
-export function parseExplorePivotRunResponse(value: unknown): ExplorePivotRunResponse {
-  const parser = "parseExplorePivotRunResponse"
-  const obj = expectPlainObject(parser, value)
+export function explorePivotRunFromContract(
+  response: GeneratedExplorePivotRunResponse,
+): ExplorePivotRunResponse {
   return {
-    status: expectStringLiteral(
-      parser,
-      obj.status,
-      "field `status`",
-      EXPLORE_PIVOT_RUN_STATUSES,
-    ),
-    job_id: expectNullableString(parser, obj.job_id, "field `job_id`"),
-    cached: expectBoolean(parser, obj.cached, "field `cached`"),
-    message: expectString(parser, obj.message, "field `message`"),
-    result:
-      obj.result === null ? null : parseExplorePivotResult(obj.result, "field `result`"),
-    failure: parseNullablePivotFailure(obj.failure, "field `failure`"),
+    ...response,
+    result: response.result === null ? null : explorePivotResultFromContract(response.result),
   }
 }
 
-export function parseExplorePivotStatusResponse(value: unknown): ExplorePivotStatusResponse {
-  const parser = "parseExplorePivotStatusResponse"
-  const obj = expectPlainObject(parser, value)
+export function explorePivotStatusFromContract(
+  response: GeneratedExplorePivotStatusResponse,
+): ExplorePivotStatusResponse {
   return {
-    status: expectStringLiteral(parser, obj.status, "field `status`", JOB_STATUS_VALUES),
-    progress: expectFiniteNumber(parser, obj.progress, "field `progress`"),
-    message: expectString(parser, obj.message, "field `message`"),
-    result:
-      obj.result === null ? null : parseExplorePivotResult(obj.result, "field `result`"),
-    failure: parseNullablePivotFailure(obj.failure, "field `failure`"),
-    terminal_reason: expectNullableString(parser, obj.terminal_reason, "field `terminal_reason`"),
-    execution_metrics:
-      obj.execution_metrics === null
-        ? null
-        : parseExecutionMetrics(parser, obj.execution_metrics, "field `execution_metrics`"),
+    ...response,
+    result: response.result === null ? null : explorePivotResultFromContract(response.result),
+    execution_metrics: optionalExecutionMetrics(
+      "parseExplorePivotStatusResponse",
+      { execution_metrics: response.execution_metrics },
+    ),
   }
 }
 
-function parseExplorePivotMemberOption(
-  value: unknown,
-  field: string,
-): ExplorePivotMemberOption {
-  const parser = "parseExplorePivotMembersResponse"
-  const obj = expectPlainObject(parser, value, field)
+export function explorePivotMembersFromContract(
+  response: GeneratedExplorePivotMembersResponse,
+): ExplorePivotMembersResponse {
   return {
-    key: parseExplorePivotMemberKey(obj.key, `${field}.key`),
-    label: expectString(parser, obj.label, `${field}.label`),
-    count: expectNonNegativeInteger(parser, obj.count, `${field}.count`),
-  }
-}
-
-export function parseExplorePivotMembersResponse(value: unknown): ExplorePivotMembersResponse {
-  const parser = "parseExplorePivotMembersResponse"
-  const obj = expectPlainObject(parser, value)
-  return {
-    status: expectStringLiteral(
-      parser,
-      obj.status,
-      "field `status`",
-      EXPLORE_PIVOT_MEMBER_STATUSES,
-    ),
-    field: expectNullableString(parser, obj.field, "field `field`"),
-    members: parseArray(
-      parser,
-      obj.members,
-      "field `members`",
-      parseExplorePivotMemberOption,
-    ),
-    failure: parseNullablePivotFailure(obj.failure, "field `failure`"),
+    ...response,
+    members: response.members.map((member, index) => ({
+      ...member,
+      key: parseExplorePivotMemberKey(member.key, `members[${index}].key`),
+    })),
   }
 }
 
