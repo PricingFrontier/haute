@@ -13,7 +13,7 @@ import { ApiError, getGitRemotes, gitBranchAway, gitFastForward, gitPush } from 
 import type { GitPushRejection, GitRemote, GitRemoteLeg } from "../api/types"
 import { parseGitPushRejection } from "../types/guards"
 import useToastStore from "../stores/useToastStore"
-import { gitErrorMessage } from "../utils/gitError"
+import { apiErrorMessage } from "../api/errors"
 import ModalShell from "./ModalShell"
 import Tooltip from "./Tooltip"
 
@@ -125,7 +125,7 @@ export default function RemotePushControl({
         } catch (parseError) {
           addToast(
             "error",
-            `Push failed: ${gitErrorMessage(parseError, "malformed divergence response")}`,
+            `Push failed: ${apiErrorMessage(parseError, "malformed divergence response")}`,
           )
           return
         }
@@ -134,8 +134,14 @@ export default function RemotePushControl({
           await load() // badges now reflect the freshly-known divergence
           return
         }
+        // A structured 409 this client cannot read: name the status rather
+        // than print the unread body.
+        if (typeof body === "object" && body !== null) {
+          addToast("error", `Push failed: ${err.message}`)
+          return
+        }
       }
-      const detail = gitErrorMessage(err, "unknown error")
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Push failed: ${detail}`)
     } finally {
       setPushing(false)
@@ -160,7 +166,7 @@ export default function RemotePushControl({
       setRejection(null)
       await load()
     } catch (err) {
-      const detail = gitErrorMessage(err, "unknown error")
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Couldn't catch up: ${detail}`)
     } finally {
       setCatchingUp(false)
@@ -189,7 +195,7 @@ export default function RemotePushControl({
       setRejection(null)
       await load()
     } catch (err) {
-      const detail = gitErrorMessage(err, "unknown error")
+      const detail = apiErrorMessage(err, "unknown error")
       addToast("error", `Couldn't spin off a copy: ${detail}`)
     } finally {
       setBranchingAway(false)

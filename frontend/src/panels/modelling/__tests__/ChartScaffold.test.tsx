@@ -6,6 +6,7 @@ import {
   ChartSvg,
   ChartValueGrid,
   ResponsiveChart,
+  TwoChartLayout,
   MODELLING_CHART_AXIS_FONT_SIZE,
   MODELLING_CHART_AXIS_TEXT_COLOR,
   MODELLING_CHART_GRID_COLOR,
@@ -122,5 +123,57 @@ describe("ChartScaffold", () => {
     expect(label.textContent).toBe("12.3K")
     expect(label.getAttribute("x")).toBe("52")
     expect(label.getAttribute("text-anchor")).toBe("end")
+  })
+})
+
+describe("TwoChartLayout", () => {
+  const layout = (width: number, bothCharts = true) =>
+    render(
+      <TwoChartLayout
+        width={width}
+        ariaLabel="Result charts"
+        bothCharts={bothCharts}
+        sideBySideFrom={600}
+        minChartWidth={290}
+        header={(sideBySide) => (sideBySide ? null : <p>narrow header</p>)}
+      >
+        {({ sideBySide, chartWidth }) => (
+          <>
+            <span data-testid="layout">{`${sideBySide ? "side" : "stacked"} ${chartWidth}`}</span>
+            <span data-testid="second-chart" />
+          </>
+        )}
+      </TwoChartLayout>,
+    )
+
+  // The element that holds the two charts.
+  const chartRow = () => screen.getByTestId("second-chart").parentElement!
+
+  it("puts both charts side by side from the breakpoint, halving the width less the gap", () => {
+    layout(800)
+    expect(screen.getByTestId("layout").textContent).toBe("side 388")
+    expect(chartRow()).toHaveClass("grid", "grid-cols-2", "gap-6")
+    expect(chartRow()).not.toHaveClass("space-y-6")
+    expect(chartRow().parentElement).toBe(screen.getByRole("region", { name: "Result charts" }))
+    expect(screen.queryByText("narrow header")).toBeNull()
+  })
+
+  it("never makes a side-by-side chart narrower than the minimum", () => {
+    layout(600)
+    expect(screen.getByTestId("layout").textContent).toBe("side 290")
+  })
+
+  it("stacks full-width charts below the breakpoint, or when only one chart exists", () => {
+    const { unmount } = layout(599)
+    expect(screen.getByTestId("layout").textContent).toBe("stacked 599")
+    expect(chartRow()).toHaveClass("space-y-6")
+    expect(chartRow()).not.toHaveClass("grid")
+    expect(chartRow()).not.toHaveClass("grid-cols-2")
+    expect(screen.getByText("narrow header")).toBeInTheDocument()
+    unmount()
+    layout(1200, false)
+    expect(screen.getByTestId("layout").textContent).toBe("stacked 1200")
+    expect(chartRow()).toHaveClass("space-y-6")
+    expect(chartRow()).not.toHaveClass("grid-cols-2")
   })
 })

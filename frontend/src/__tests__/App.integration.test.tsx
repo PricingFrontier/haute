@@ -60,6 +60,8 @@ vi.mock("../api/client", async () => {
     notifyHauteSessionExpired: actual.notifyHauteSessionExpired,
     bootstrapHauteSession: vi.fn(() => Promise.resolve()),
     checkHauteSession: vi.fn(() => Promise.resolve({ ok: true })),
+    // The preview status bar reads the snapshot store's size.
+    fetchCacheUsage: vi.fn(() => Promise.resolve({ schema_version: 1, total_bytes: 0, automatic_bytes: 0, automatic_budget_bytes: 1 })),
     // Pipeline endpoints
     renderPolarsSteps: vi.fn(async ({ steps }: { steps: Array<{ kind: string; input?: string }> }) => ({
       ok: true,

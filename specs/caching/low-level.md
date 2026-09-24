@@ -154,6 +154,13 @@ snapshot, selected by `node_type: "apiInput"` on the request:
 4. `clear` removes every table of the node, and answers 409 while the node's build
    runs.
 
+A Data Input's `build` takes no profile: `_chosen_build` asks the IO registry for the
+config's build class (`input_snapshot_build_class(..., allow_admitted_eager=True)`) and
+builds a `bounded` class under `LAZY_SINK` and an `admitted_eager` class under
+`PREVIEW_EAGER` in the hard-capped worker. A config that cannot build a snapshot answers
+400 `snapshot_build_unsupported`. Every build response, including one that joins a running
+build, carries the job's `build_class`.
+
 `api_input_table_build_running(table digest)` reports whether a running build
 writes a table, for the data-point `building` probe. Schema inference stays on
 `POST /api/json-cache/infer`.

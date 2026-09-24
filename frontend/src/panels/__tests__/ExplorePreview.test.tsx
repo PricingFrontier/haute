@@ -38,6 +38,8 @@ vi.mock("../../api/client", () => ({
   clearNodeData: (...args: unknown[]) => mockClearNodeData(...args),
   getNodeDataProfile: (...args: unknown[]) => mockGetNodeDataProfile(...args),
   clearInputCache: vi.fn(),
+  // The embedded preview's status bar reads the snapshot store's size.
+  fetchCacheUsage: vi.fn(() => Promise.resolve({ schema_version: 1, total_bytes: 0, automatic_bytes: 0, automatic_budget_bytes: 1 })),
 }))
 
 class MockResizeObserver {

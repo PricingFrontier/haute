@@ -18,7 +18,7 @@ const POLLING_SELECTORS = [
   },
 ]
 // One helper per repeated concern; each owning module is exempt from its own ban.
-const ERROR_HELPER_NAMES = '/^(errorMessage|errorMsg|errorDetail|requestErrorDetail|previewErrorDetail)$/'
+const ERROR_HELPER_NAMES = '/^(errorMessage|errorMsg|errorDetail|requestErrorDetail|previewErrorDetail|gitErrorMessage)$/'
 const ERROR_TEXT_SELECTORS = [
   {
     // A variable of that name holding a string is fine; a function is a copy.
@@ -121,18 +121,7 @@ export default defineConfig([
     },
   },
   {
-    // Its progress interval and error text go with the component, or onto the
-    // shared poller and apiErrorMessage, in CACHE-S08.
-    files: ['src/components/CacheFetchButton.tsx'],
-    rules: {
-      'no-restricted-syntax': 'warn',
-    },
-  },
-  {
-    files: [
-      'src/components/CacheFetchButton.tsx',
-      'src/panels/GitPanel.tsx',
-    ],
+    files: ['src/panels/GitPanel.tsx'],
     rules: {
       'react-hooks/refs': 'warn',
     },

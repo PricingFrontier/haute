@@ -1,5 +1,6 @@
 import {
   useState,
+  type CSSProperties,
   type InputHTMLAttributes,
   type TextareaHTMLAttributes,
 } from "react"
@@ -20,21 +21,22 @@ import {
 // a field edit to ONE undo step — the same one-gesture-one-snapshot
 // shape as the delete/paste `setNodesAndEdges` chokepoint.
 //
-// This mirrors the commit-on-blur behaviour already proven by
-// ApiInputEditor/OutputEditor's local `CommittedTextInput` (which also
-// carry path-grammar validation + non-canonical/conflict hints those
-// editors need). This is the general-purpose base for plain config
-// fields with no such grammar; folding the two richer variants onto it
-// is a later, separate refactor. The visible trade-off is deliberate:
-// a node's canvas label updates on commit, not per keystroke — matching
-// apiInput frame labels and the right-click Rename dialog.
+// `ValidatedTextField` below adds the validation the API Input and Output
+// editors' label, path and column-name fields need. The visible trade-off
+// is deliberate: a node's canvas label updates on commit, not per
+// keystroke — matching apiInput frame labels and the right-click Rename
+// dialog.
+
+/** What a commit reports: nothing when it always lands, or `{ ok }` when
+ *  its owner can refuse it — a refused commit keeps the draft on screen. */
+type CommitResult = void | { ok: boolean }
 
 /** Shared draft-buffer logic. Holds keystrokes locally; the external
  *  committed value wins whenever it changes out from under an open edit
  *  (undo/redo, programmatic edit, or the field being reused for a
  *  different node via a positional key); no-op commits are skipped so a
  *  blur with no change never churns state / the undo stack. */
-function useCommittedDraft(value: string, onCommit: (next: string) => void) {
+function useCommittedDraft(value: string, onCommit: (next: string) => CommitResult) {
   // Raw edit buffer; null = not editing, render the committed value.
   const [draft, setDraft] = useState<string | null>(null)
   // React's adjust-state-on-render pattern: drop a stale draft the moment
@@ -52,7 +54,8 @@ function useCommittedDraft(value: string, onCommit: (next: string) => void) {
       setDraft(null)
       return
     }
-    onCommit(draft)
+    const result = onCommit(draft)
+    if (result && !result.ok) return
     setDraft(null)
   }
   return { shown, setDraft, commit }
@@ -123,5 +126,86 @@ export function CommittedTextArea({
         onBlur?.(e)
       }}
     />
+  )
+}
+
+type ValidatedTextFieldProps = {
+  /** The committed value from config — the source of truth when idle. */
+  value: string
+  /** Called once per commit boundary (blur / Enter) with a valid value.
+   *  Returning `{ ok: false }` refuses it and keeps the draft. */
+  onCommit: (next: string) => CommitResult
+  /** User-facing error for a candidate; null = valid. An invalid candidate
+   *  is never committed, and an invalid committed value (from disk or an
+   *  inference merge) shows its error without any interaction. */
+  validate: (candidate: string) => string | null
+  /** The commit owner's rejection, shown while the value itself is valid. */
+  commitError?: string | null
+  /** A non-blocking advisory, shown only when there is no error. */
+  warning?: string | null
+  dataTestId: string
+  containerClassName: string
+  className: string
+  style: CSSProperties
+  placeholder?: string
+}
+
+/** The API Input and Output editors' schema fields (labels, paths, column
+ *  names): a committed single-line field that refuses invalid values at the
+ *  commit boundary, keeping the draft and a visible error so nothing
+ *  destructive reaches config, and the user can fix or revert. The error
+ *  sits under the field as `${dataTestId}-error`, the warning as
+ *  `${dataTestId}-warning`. */
+export function ValidatedTextField({
+  value,
+  onCommit,
+  validate,
+  commitError = null,
+  warning = null,
+  dataTestId,
+  containerClassName,
+  className,
+  style,
+  placeholder,
+}: ValidatedTextFieldProps) {
+  const { shown, setDraft, commit } = useCommittedDraft(value, (next) =>
+    validate(next) === null ? onCommit(next) : { ok: false },
+  )
+  const error = validate(shown) ?? commitError
+  return (
+    <div className={containerClassName}>
+      <input
+        data-testid={dataTestId}
+        type="text"
+        value={shown}
+        aria-invalid={error !== null ? true : undefined}
+        placeholder={placeholder}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit()
+        }}
+        className={className}
+        style={error !== null ? { ...style, border: "1px solid var(--danger-border-strong)" } : style}
+      />
+      {error !== null && (
+        <div
+          data-testid={`${dataTestId}-error`}
+          className="mt-0.5 px-1.5 py-0.5 rounded text-[10px] leading-snug"
+          style={{ background: "var(--danger-soft)", color: "var(--danger-text)" }}
+        >
+          {error}
+        </div>
+      )}
+      {error === null && warning && (
+        <div
+          data-testid={`${dataTestId}-warning`}
+          className="mt-0.5 px-1.5 py-0.5 rounded text-[10px] leading-snug"
+          style={{ background: "var(--warning-soft)", color: "var(--warning-strong)" }}
+        >
+          {warning}
+        </div>
+      )}
+    </div>
   )
 }

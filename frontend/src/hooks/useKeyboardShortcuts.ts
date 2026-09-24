@@ -84,10 +84,14 @@ export default function useKeyboardShortcuts({
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName
       const el = e.target as HTMLElement
-      // Focused dialogs own their keyboard interactions, including Escape.
-      if (e.defaultPrevented || el.closest?.('[role="dialog"][aria-modal="true"]')) return
-      const isTyping = tag === "INPUT" || tag === "TEXTAREA" || el.closest?.(".cm-editor") != null
       const mod = e.ctrlKey || e.metaKey
+      // Focused dialogs own their keyboard interactions, including Escape. The
+      // node-search palette is itself a modal dialog, so its toggle key still
+      // reaches the Ctrl+K handler below while it is open.
+      const closesNodeSearch = mod && e.key === "k" && useUIStore.getState().nodeSearchOpen
+      if (e.defaultPrevented) return
+      if (el.closest?.('[role="dialog"][aria-modal="true"]') && !closesNodeSearch) return
+      const isTyping = tag === "INPUT" || tag === "TEXTAREA" || el.closest?.(".cm-editor") != null
 
       // Ctrl+S / Cmd+S → save
       if (mod && e.key === "s") {

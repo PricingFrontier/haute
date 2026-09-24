@@ -63,7 +63,7 @@ function buildResponse(joined = false): InputCacheBuildResponse {
     job_id: "job-1",
     identity_digest: "identity",
     status: "running",
-    joined,
+    joined, build_class: "bounded",
   }
 }
 
@@ -123,7 +123,7 @@ describe("ensureInputSnapshots", () => {
     })
     expect(buildInputCache).toHaveBeenCalledWith({
       schema_version: 1, node_type: "apiInput", config: node.data.config,
-      refresh: false, profile: "lazy_sink",
+      refresh: false,
     })
     expect(onBuildStart).toHaveBeenCalledOnce()
     expect(onProgress).toHaveBeenCalledWith(expect.stringContaining("Caching Quote Input"))
@@ -241,7 +241,7 @@ describe("ensureInputSnapshots", () => {
     expect(buildInputCache).not.toHaveBeenCalled()
   })
 
-  it("builds a missing snapshot with the lazy profile and waits for completion", async () => {
+  it("builds a missing snapshot the way the server chooses and waits for completion", async () => {
     vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("missing"))
     vi.mocked(buildInputCache).mockResolvedValue(buildResponse())
     vi.mocked(getInputCacheJob).mockResolvedValue(job("completed"))
@@ -254,7 +254,6 @@ describe("ensureInputSnapshots", () => {
         path: "quotes.csv",
       }),
       refresh: false,
-      profile: "lazy_sink",
     })
     expect(getInputCacheJob).toHaveBeenCalledWith("job-1", { signal: expect.any(AbortSignal) })
   })
@@ -281,29 +280,19 @@ describe("ensureInputSnapshots", () => {
     expect(getInputCacheJob).toHaveBeenCalledWith("job-1", { signal: expect.any(AbortSignal) })
   })
 
-  it("retries an unsupported lazy build once with the eager profile", async () => {
+  it("asks once and surfaces a build the server refuses, choosing no profile itself", async () => {
     vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("missing"))
-    vi.mocked(buildInputCache)
-      .mockRejectedValueOnce(
-        new ApiError(
-          "Unsupported snapshot build",
-          400,
-          "snapshot_build_unsupported: use preview eager",
-        ),
-      )
-      .mockResolvedValueOnce(buildResponse())
-    vi.mocked(getInputCacheJob).mockResolvedValue(job("completed"))
-
-    await ensureInputSnapshots([dataInput("quotes")])
-
-    expect(buildInputCache).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({ profile: "lazy_sink" }),
+    const refused = new ApiError(
+      "Unsupported snapshot build",
+      400,
+      "snapshot_build_unsupported: This Data Input cannot build a snapshot.",
     )
-    expect(buildInputCache).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({ profile: "preview_eager" }),
-    )
+    vi.mocked(buildInputCache).mockRejectedValue(refused)
+
+    await expect(ensureInputSnapshots([dataInput("quotes")])).rejects.toBe(refused)
+
+    expect(buildInputCache).toHaveBeenCalledOnce()
+    expect(vi.mocked(buildInputCache).mock.calls[0][0]).not.toHaveProperty("profile")
   })
 
   it("rejects with the server message when the build is not completed", async () => {
