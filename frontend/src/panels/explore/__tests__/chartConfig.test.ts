@@ -161,6 +161,19 @@ describe("chart config", () => {
     })
   })
 
+  it("reports an unknown nested version key by name, not as the card version", () => {
+    const raw = structuredClone(configured()) as unknown as Record<string, unknown>
+    mutableRecord(raw.category).version = 1
+    expect(parseExploreCharts({ charts: [raw] })).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/\/category\/version: must NOT have additional properties$/),
+    })
+    expect(parseExploreCharts({ charts: [{ ...configured(), version: 2 }] })).toMatchObject({
+      ok: false,
+      error: "Chart 1 version must be 1.",
+    })
+  })
+
   it.each([
     ["version", (chart: Record<string, unknown>) => { chart.version = 2 }],
     ["required", (chart: Record<string, unknown>) => { delete chart.pivot_id }],
