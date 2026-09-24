@@ -95,9 +95,16 @@ class TestAccidentGuard:
             pytest.param("kind = type(1)", id="type"),
             pytest.param("names = vars()", id="vars"),
             pytest.param("import math", id="import"),
+            pytest.param("from math import *", id="star-import"),
             pytest.param("name = (1).__class__.__name__", id="dunder"),
             pytest.param("text = open", id="open"),
             pytest.param("def input():\n    return 1\nvalue = input()", id="own-input"),
+            pytest.param(
+                "try:\n    pass\nexcept Exception as input:\n    input()", id="except-bound-input"
+            ),
+            pytest.param("match 1:\n    case input:\n        input()", id="match-as-input"),
+            pytest.param("match [1]:\n    case [*input]:\n        input()", id="match-star-input"),
+            pytest.param("match {}:\n    case {**input}:\n        input()", id="match-rest-input"),
         ],
     )
     def test_ordinary_python_is_accepted(self, code: str) -> None:
