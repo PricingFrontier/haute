@@ -12237,17 +12237,19 @@ class TestMlflowLogExtended:
         holder = threading.Thread(target=hold_fluent_state, daemon=True)
         holder.start()
         assert held.wait(10)
-        try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                request = executor.submit(
-                    client.post,
-                    "/api/optimiser/mlflow/log",
-                    json={"job_id": "mlf_concurrent", "experiment_name": "concurrent"},
-                )
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            request = executor.submit(
+                client.post,
+                "/api/optimiser/mlflow/log",
+                json={"job_id": "mlf_concurrent", "experiment_name": "concurrent"},
+            )
+            try:
                 resp = request.result(timeout=30)
-        finally:
-            release.set()
-            holder.join(10)
+            finally:
+                # Released before the executor waits for the request, so a
+                # log that does wait for the fluent state fails instead of hanging.
+                release.set()
+                holder.join(10)
 
         assert resp.status_code == 200, resp.text
         assert store.get_run(resp.json()["run_id"]).info.status == "FINISHED"
