@@ -1243,14 +1243,15 @@ tests = [
   "tests/test_container.py::TestGenerateAppSource::test_quote_rejects_malformed_json_and_non_record_payloads",
   "tests/test_deploy.py::TestServingEndpoint::test_endpoint_creates_new_endpoint",
   "tests/test_deploy_container.py::TestDockerBuild::test_success_when_returncode_zero",
-  "tests/test_deploy_container.py::TestUpdateService::test_raises_not_implemented_for_unsupported_platform",
+  "tests/test_container.py::TestDeployToPlatformContainer::test_returns_the_pushed_image_and_reports_the_manual_update",
+  "tests/test_container.py::TestDeployToPlatformContainer::test_requires_a_registry_before_building",
 ]
-invariant = "Validate, prune, bundle, load and score succeed for one and many requests and the editor dry-run, score_graph and the packaged pyfunc model return identical rows for the same synthetic input; missing artifacts, expected-output drift, non-finite values, malformed request bodies and unsupported or planned targets fail at their specified stage; and the upload and service SDKs are stubbed in ordinary CI while platform-container service updates stay loudly unimplemented."
+invariant = "Validate, prune, bundle, load and score succeed for one and many requests and the editor dry-run, score_graph and the packaged pyfunc model return identical rows for the same synthetic input; missing artifacts, expected-output drift, non-finite values, malformed request bodies and unsupported or planned targets fail at their specified stage; and the upload and service SDKs are stubbed in ordinary CI; a build-and-push-only platform target requires a registry, pushes the image and reports that its service update is manual."
 
 [scenarios.evidence]
-commit = "10e94474"
+commit = "c2c0fcf2"
 command = 'uv run pytest tests/test_deploy.py tests/test_deploy_config.py tests/test_deploy_expected_output_validation.py tests/test_deploy_config_and_bundle.py tests/test_deploy_internals.py tests/test_deploy_batch_scoring.py tests/test_deploy_identity_parity.py tests/test_deploy_dispatch.py tests/test_container.py tests/test_deploy_container.py -q -p no:warnings'
-result = "548 passed, 2 skipped in 17.93s"
+result = "563 passed, 2 skipped in 16.37s"
 
 [[scenarios]]
 id = "W13-S02"

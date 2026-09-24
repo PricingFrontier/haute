@@ -304,7 +304,9 @@ def test_config_reset_ownership_and_required_settings(tmp_path, case):
 
 def test_reset_preserves_bom_crlf_and_comments(tmp_path):
     parent = _broken_constant(tmp_path, prefix="# café: preserve comment\n")
-    parent.write_bytes(b"\xef\xbb\xbf" + parent.read_bytes().replace(b"\n", b"\r\n"))
+    (tmp_path / "main.py").write_bytes(
+        b"\xef\xbb\xbf" + parent.read_bytes().replace(b"\n", b"\r\n")
+    )
     request = _request(tmp_path, "source", "reset")
     _apply(tmp_path, request)
     assert parent.read_bytes().startswith(b"\xef\xbb\xbf")
