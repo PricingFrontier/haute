@@ -236,7 +236,8 @@ strip; it never falls through to CatBoost. Pane ownership:
   stored as the node's `device: "gpu"`, enabled only when `GET /api/modelling/gpu` reports
   the server can train on a CUDA GPU, otherwise disabled beside the server's reason, and
   always switchable back to CPU), row
-  limit beside the RAM/VRAM estimate it modulates,
+  limit beside the RAM/VRAM estimate it modulates (an estimate the server cannot size
+  shows its reason in place of the missing figures, never a memory verdict),
   staleness banner, Train/Cancel actions, click-time validation banner, live progress, completion
   badge and error card. Its checkbox and text/number controls use the same visible themed borders,
   backgrounds, typography and spacing as the rest of the modelling editor; labels never collapse

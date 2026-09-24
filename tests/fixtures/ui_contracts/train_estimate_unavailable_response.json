@@ -1,0 +1,17 @@
+{
+  "total_rows": null,
+  "safe_row_limit": 500,
+  "estimated_mb": null,
+  "training_mb": null,
+  "available_mb": 8192.0,
+  "bytes_per_row": null,
+  "was_downsampled": false,
+  "warning": null,
+  "gpu_vram_estimated_mb": null,
+  "gpu_vram_available_mb": null,
+  "gpu_warning": null,
+  "unavailable": {
+    "reason": "row_count_unprovable",
+    "blocking_node_id": "explode_items"
+  }
+}

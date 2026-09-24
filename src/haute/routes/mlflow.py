@@ -41,10 +41,14 @@ from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.schemas import (
     MlflowDestinationEntry,
     MlflowDestinationsResponse,
+    MlflowExperimentList,
     MlflowExperimentSummary,
+    MlflowModelList,
     MlflowModelSummary,
+    MlflowModelVersionList,
     MlflowModelVersionSummary,
     MlflowProbeCategory,
+    MlflowRunList,
     MlflowRunSummary,
     MlflowSettingsResponse,
     MlflowSettingsUpdateRequest,
@@ -504,7 +508,7 @@ def mlflow_test_connection(
     return MlflowTestConnectionResponse(ok=ok, category=category, detail=detail)
 
 
-@router.get("/experiments", response_model=list[MlflowExperimentSummary])
+@router.get("/experiments", response_model=MlflowExperimentList)
 def list_experiments(
     destination: Annotated[_DestinationQuery, Query()] = "",
 ) -> list[MlflowExperimentSummary]:
@@ -529,7 +533,7 @@ def list_experiments(
     ]
 
 
-@router.get("/runs", response_model=list[MlflowRunSummary])
+@router.get("/runs", response_model=MlflowRunList)
 def list_runs(
     experiment_id: str = Query(..., description="MLflow experiment ID"),
     max_results: int = Query(20, ge=1, le=100),
@@ -574,7 +578,7 @@ def list_runs(
     return results
 
 
-@router.get("/models", response_model=list[MlflowModelSummary])
+@router.get("/models", response_model=MlflowModelList)
 def list_models(
     max_results: int = Query(100, ge=1, le=1000),
     page_token: str | None = Query(None),
@@ -634,7 +638,7 @@ def _model_version_run_params(client: MlflowClient, run_id: str) -> dict[str, st
     return dict(run.data.params)
 
 
-@router.get("/model-versions", response_model=list[MlflowModelVersionSummary])
+@router.get("/model-versions", response_model=MlflowModelVersionList)
 def list_model_versions(
     model_name: str = Query(..., description="Registered model name"),
     destination: Annotated[_DestinationQuery, Query()] = "",

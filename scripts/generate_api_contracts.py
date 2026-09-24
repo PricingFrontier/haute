@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -18,9 +19,58 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, RootModel
+from pydantic.json_schema import GenerateJsonSchema, JsonSchemaMode, JsonSchemaValue
+from pydantic_core import core_schema
 
 from haute._execution_schemas import ExecutionStrategyDiagnosticPayload
 from haute._explore_chart_contracts import ExploreChartsConfig
+from haute.schemas import (
+    CatalogListResponse,
+    DispersionEstimateResponse,
+    DispersionEstimateStatusResponse,
+    GitArchiveResponse,
+    GitBindStorageResponse,
+    GitBranchAwayResponse,
+    GitCommitContext,
+    GitCommitResponse,
+    GitCreateWorkingBranchResponse,
+    GitDeleteBranchResponse,
+    GitFastForwardResponse,
+    GitForkStorageResponse,
+    GitGraphResponse,
+    GitLedgerSavesResponse,
+    GitMilestonesResponse,
+    GitMoveResponse,
+    GitPrefs,
+    GitPushResponse,
+    GitRemotesResponse,
+    GitRestoreResponse,
+    GitSetIdentityResponse,
+    GitSetWorkingBranchResponse,
+    GitUndeleteResponse,
+    GitUpstreamStatusResponse,
+    GitWorkingBranchesResponse,
+    GitWorkingBranchResponse,
+    LogExperimentResponse,
+    MlflowDestinationsResponse,
+    MlflowExperimentList,
+    MlflowModelList,
+    MlflowModelVersionList,
+    MlflowRunList,
+    MlflowSettingsResponse,
+    MlflowTestConnectionResponse,
+    ModellingGpuStatusResponse,
+    ModelSaveDestinationResponse,
+    SaveModelResponse,
+    SchemaListResponse,
+    TableListResponse,
+    TrainEstimateResponse,
+    UtilityDeleteResponse,
+    UtilityListResponse,
+    UtilityReadResponse,
+    UtilityWriteResponse,
+    WarehouseListResponse,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GENERATED_SCHEMA_PATH = REPO_ROOT / "frontend" / "src" / "generated" / "api-contracts.schema.json"
@@ -28,6 +78,107 @@ SCHEMA_ID = "https://haute.dev/schemas/api-contracts.v1.json"
 SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 
 _ContractModel = type[BaseModel] | type[RootModel[Any]]
+
+RESPONSE_GROUPS_KEYWORD = "x-haute-response-groups"
+
+# Response models the browser parses with generated validators, by the module
+# group whose hand-written guards they replace. The frontend generator emits one
+# validator module per group with one export per model.
+RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
+    "utility": (
+        UtilityListResponse,
+        UtilityReadResponse,
+        UtilityWriteResponse,
+        UtilityDeleteResponse,
+    ),
+    "databricks": (
+        WarehouseListResponse,
+        CatalogListResponse,
+        SchemaListResponse,
+        TableListResponse,
+    ),
+    "mlflow": (
+        MlflowDestinationsResponse,
+        MlflowSettingsResponse,
+        MlflowTestConnectionResponse,
+        MlflowExperimentList,
+        MlflowRunList,
+        MlflowModelList,
+        MlflowModelVersionList,
+    ),
+    "modelling": (
+        ModellingGpuStatusResponse,
+        TrainEstimateResponse,
+        DispersionEstimateResponse,
+        DispersionEstimateStatusResponse,
+        LogExperimentResponse,
+        ModelSaveDestinationResponse,
+        SaveModelResponse,
+    ),
+    "git": (
+        GitWorkingBranchResponse,
+        GitSetWorkingBranchResponse,
+        GitWorkingBranchesResponse,
+        GitCreateWorkingBranchResponse,
+        GitSetIdentityResponse,
+        GitPrefs,
+        GitMoveResponse,
+        GitCommitResponse,
+        GitCommitContext,
+        GitMilestonesResponse,
+        GitGraphResponse,
+        GitLedgerSavesResponse,
+        GitRestoreResponse,
+        GitArchiveResponse,
+        GitDeleteBranchResponse,
+        GitUndeleteResponse,
+        GitRemotesResponse,
+        GitPushResponse,
+        GitFastForwardResponse,
+        GitBranchAwayResponse,
+        GitBindStorageResponse,
+        GitForkStorageResponse,
+        GitUpstreamStatusResponse,
+    ),
+}
+
+
+class _ResponseJsonSchema(GenerateJsonSchema):
+    """Describe a response as the server serializes it.
+
+    FastAPI always sends every declared field, defaults included, so each one
+    is required; only a field the model drops from its output (``exclude_if``)
+    is optional.
+    """
+
+    def field_is_required(
+        self,
+        field: core_schema.ModelField | core_schema.DataclassField | core_schema.TypedDictField,
+        total: bool,
+    ) -> bool:
+        if field["type"] == "typed-dict-field":
+            return super().field_is_required(field, total)
+        return field.get("serialization_exclude_if") is None
+
+    def model_field_schema(self, schema: core_schema.ModelField) -> JsonSchemaValue:
+        json_schema = super().model_field_schema(schema)
+        exclude_if = schema.get("serialization_exclude_if")
+        if self.mode != "serialization" or exclude_if is None or not exclude_if(None):
+            return json_schema
+        # The field is dropped from the output whenever it is None, so the
+        # response never carries null for it.
+        return _without_null_branch(json_schema)
+
+
+def _without_null_branch(json_schema: JsonSchemaValue) -> JsonSchemaValue:
+    alternatives = json_schema.get("anyOf")
+    if not isinstance(alternatives, list) or {"type": "null"} not in alternatives:
+        return json_schema
+    kept = [alternative for alternative in alternatives if alternative != {"type": "null"}]
+    rest = {key: value for key, value in json_schema.items() if key not in {"anyOf", "default"}}
+    if len(kept) == 1:
+        return {**kept[0], **rest}
+    return {**rest, "anyOf": kept}
 
 
 def _merge_definition(
@@ -42,8 +193,17 @@ def _merge_definition(
         raise RuntimeError(f"conflicting generated JSON Schema definition: {name}")
 
 
-def _definitions_for(model: _ContractModel) -> dict[str, Any]:
-    schema = model.model_json_schema(ref_template="#/$defs/{model}")
+def _definitions_for(
+    model: _ContractModel,
+    *,
+    mode: JsonSchemaMode = "validation",
+    schema_generator: type[GenerateJsonSchema] = GenerateJsonSchema,
+) -> dict[str, Any]:
+    schema = model.model_json_schema(
+        ref_template="#/$defs/{model}",
+        mode=mode,
+        schema_generator=schema_generator,
+    )
     nested = schema.pop("$defs", {})
     if not isinstance(nested, dict):
         raise RuntimeError(f"{model.__name__} generated a non-object $defs section")
@@ -73,7 +233,7 @@ def _json_value_definition() -> dict[str, Any]:
 
 
 def build_contract_bundle() -> dict[str, Any]:
-    """Build one deterministic JSON Schema bundle for the approved pilots."""
+    """Build one deterministic JSON Schema bundle for the pilots and response groups."""
     definitions: dict[str, Any] = {}
     for model in (
         ExecutionStrategyDiagnosticPayload,
@@ -86,20 +246,40 @@ def build_contract_bundle() -> dict[str, Any]:
         raise RuntimeError("Explore chart schema did not declare its JsonValue extension grammar")
     definitions["JsonValue"] = _json_value_definition()
 
+    properties: dict[str, Any] = {
+        "execution_strategy_diagnostic": {"$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"},
+        "explore_charts": {"$ref": "#/$defs/ExploreChartsConfig"},
+    }
+    for group, models in RESPONSE_CONTRACT_GROUPS.items():
+        # The group names a generated module file.
+        if re.fullmatch(r"[a-z][a-z0-9-]*", group) is None or not models:
+            raise RuntimeError(f"invalid response contract group: {group!r}")
+        for response_model in models:
+            response_definitions = _definitions_for(
+                response_model,
+                mode="serialization",
+                schema_generator=_ResponseJsonSchema,
+            )
+            for name, definition in response_definitions.items():
+                _merge_definition(definitions, name=name, value=definition)
+            root = response_model.__name__
+            if root in properties:
+                raise RuntimeError(f"response contract listed twice: {root}")
+            properties[root] = {"$ref": f"#/$defs/{root}"}
+
     return {
         "$schema": SCHEMA_DIALECT,
         "$id": SCHEMA_ID,
         "title": "HauteApiContractBundle",
         "type": "object",
-        "properties": {
-            "execution_strategy_diagnostic": {"$ref": "#/$defs/ExecutionStrategyDiagnosticPayload"},
-            "explore_charts": {"$ref": "#/$defs/ExploreChartsConfig"},
-        },
-        "required": [
-            "execution_strategy_diagnostic",
-            "explore_charts",
-        ],
+        "properties": properties,
+        "required": list(properties),
         "additionalProperties": False,
+        # The frontend generator emits one validator module per group from this.
+        RESPONSE_GROUPS_KEYWORD: {
+            group: [model.__name__ for model in models]
+            for group, models in RESPONSE_CONTRACT_GROUPS.items()
+        },
         "$defs": definitions,
     }
 

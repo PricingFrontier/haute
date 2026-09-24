@@ -24,13 +24,13 @@ or maintenance issue; `P3` opportunistic work.
 | [Engineering quality](engineering-quality.md) | Dead code, tracked artifacts, specification drift, coverage gates, test organisation | `ENGQ-R01` |
 | [Execution engine](execution-engine.md) | Chunked runner, one execution walker | `EXEC-R05` |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | — |
-| [Frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md) | Shared result tabs, target configuration and charts; why a training estimate is unavailable | `FMO-R01` |
+| [Frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md) | Shared result tabs, target configuration and charts | `FMO-R01` |
 | [Frontend node editors](frontend-node-editors.md) | API Input and Output shared block | `FNE-R01` |
 | [Frontend shared](frontend-shared.md) | Debounce, modal and table bases; results store | `FSH-R02` |
 | [IO layer](io-layer.md) | One atomic write and file lock | `IO-R02` |
 | [JSON shredding](json-shredding.md) | Explicit output nesting | `JSON-R02` |
 | [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients | `MLF-R02` |
-| [Modelling](modelling.md) | RustyStats 0.9.0 upgrade, GLM terms and interactions; invariant checks | `MOD-T00` |
+| [Modelling](modelling.md) | Evaluation and tuning invariants checked once | `MOD-T10` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers, auto-range, input isolation | `OPT-P13` |
 | [Pipeline config](pipeline-config.md) | Repair, save validation, the error a rejected config reports, project context, typed configs, node specification | `PCFG-R01` |
 | [Sandbox security](sandbox-security.md) | One path-containment check, the node-code guard | `SBX-R01` |
@@ -79,7 +79,8 @@ instructions supplied for that independent review.
 
 The [engine probe record](mod-f00-engine-probes.md) holds the dependency,
 packaging and native-behaviour evidence that settled the pre-implementation
-gates of the model-family expansion in the [modelling roadmap](modelling.md).
+gates of the model-family expansion, which is delivered and retired from the
+[modelling roadmap](modelling.md).
 It is a dated evidence artifact; component specifications remain the behavior
 authority.
 

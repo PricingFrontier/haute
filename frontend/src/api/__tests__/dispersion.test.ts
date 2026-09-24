@@ -71,7 +71,7 @@ describe("dispersion estimation endpoints", () => {
     mockFetch.mockReturnValue(jsonResponse({ status: "started" }))
     await expect(
       estimateGlmDispersion({ graph: dummyGraph, node_id: "n1", param: "theta" }),
-    ).rejects.toThrow("unexpected payload")
+    ).rejects.toThrow("DispersionEstimateResponse: invalid contract")
   })
 
   it("getDispersionStatus GETs the job status", async () => {

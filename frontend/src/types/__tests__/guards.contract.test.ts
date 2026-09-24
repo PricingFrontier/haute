@@ -4,7 +4,6 @@ import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import { makeTrainResult } from "../../test-utils/factories"
 import {
   parseApplyOptimiserResponse,
-  parseModellingGpuStatusResponse,
   parsePreviewInputsResponse,
   parseDissolveSubmodelResponse,
   parseExplorePivotMembersResponse,
@@ -14,38 +13,16 @@ import {
   parseFrontierAutoRangeStatusResponse,
   parseFrontierResponse,
   parseFrontierSelectResponse,
-  parseGitArchiveResponse,
   gitStorageClaimFromDetail,
-  parseGitBindStorageResponse,
-  parseGitForkStorageResponse,
-  parseGitDeleteBranchResponse,
-  parseGitMoveResponse,
-  parseGitPushResponse,
-  parseGitRemotesResponse,
-  parseGitWorkingBranchResponse,
-  parseGitFastForwardResponse,
-  parseGitBranchAwayResponse,
   parseGitPushRejection,
   parseGitMilestoneFork,
-  parseGitCreateWorkingBranchResponse,
-  parseGitGraphResponse,
-  parseGitPrefs,
   parseHauteSessionResponse,
   parseJsonCacheDeleteResponse,
   parseJsonCacheBuildResponse,
   parseJsonCacheStatusResponse,
   parseJsonCacheSchemaInferenceResponse,
   parseFileListResponse,
-  parseMlflowExperiments,
-  parseMlflowDestinationsResponse,
-  parseMlflowSettingsResponse,
-  parseMlflowTestConnectionResponse,
   parseMlflowLogResponse,
-  parseModelSaveDestinationResponse,
-  parseSaveModelResponse,
-  parseMlflowModels,
-  parseMlflowModelVersions,
-  parseMlflowRuns,
   parseOutputAssembleDryRunResponse,
   parseOptimiserEstimateResponse,
   parseOptimiserStatusResponse,
@@ -57,13 +34,40 @@ import {
   parseSubmodelGraphResponse,
   parseSolveOptimiserResponse,
   parseExecutionStrategyDiagnostic,
-  parseUtilityDeleteResponse,
-  parseUtilityListResponse,
-  parseUtilityReadResponse,
-  parseUtilityWriteResponse,
   parseNodeDataProfileResponse,
   parseRatingLevelsResponse,
 } from "../guards"
+import {
+  validateMlflowDestinationsResponse,
+  validateMlflowExperimentList,
+  validateMlflowModelList,
+  validateMlflowModelVersionList,
+  validateMlflowRunList,
+  validateMlflowSettingsResponse,
+  validateMlflowTestConnectionResponse,
+} from "../../generated/api-contracts.mlflow.validators.mjs"
+import {
+  validateModelSaveDestinationResponse,
+  validateModellingGpuStatusResponse,
+  validateSaveModelResponse,
+} from "../../generated/api-contracts.modelling.validators.mjs"
+import {
+  validateGitArchiveResponse,
+  validateGitBindStorageResponse,
+  validateGitBranchAwayResponse,
+  validateGitCreateWorkingBranchResponse,
+  validateGitDeleteBranchResponse,
+  validateGitFastForwardResponse,
+  validateGitForkStorageResponse,
+  validateGitGraphResponse,
+  validateGitMoveResponse,
+  validateGitPrefs,
+  validateGitPushResponse,
+  validateGitRemotesResponse,
+  validateGitWorkingBranchResponse,
+} from "../../generated/api-contracts.git.validators.mjs"
+import { makeGitWorkingBranch } from "../../test-utils/factories"
+import { expectGeneratedContract } from "../generatedContractValidation"
 import {
   parseTrainEstimateResponse,
   parseTrainFeatureSelection,
@@ -310,6 +314,54 @@ function executionMetricsFixture() {
     },
   }
 }
+
+// MLflow responses are checked by their generated validators (API-R03).
+const mlflowDestinations = (value: unknown) =>
+  expectGeneratedContract("MlflowDestinationsResponse", validateMlflowDestinationsResponse, value)
+const mlflowSettings = (value: unknown) =>
+  expectGeneratedContract("MlflowSettingsResponse", validateMlflowSettingsResponse, value)
+const mlflowTestConnection = (value: unknown) =>
+  expectGeneratedContract("MlflowTestConnectionResponse", validateMlflowTestConnectionResponse, value)
+const mlflowExperiments = (value: unknown) =>
+  expectGeneratedContract("MlflowExperimentList", validateMlflowExperimentList, value)
+const mlflowRuns = (value: unknown) =>
+  expectGeneratedContract("MlflowRunList", validateMlflowRunList, value)
+const mlflowModels = (value: unknown) =>
+  expectGeneratedContract("MlflowModelList", validateMlflowModelList, value)
+const modellingGpuStatus = (value: unknown) =>
+  expectGeneratedContract("ModellingGpuStatusResponse", validateModellingGpuStatusResponse, value)
+const modelSaveDestination = (value: unknown) =>
+  expectGeneratedContract("ModelSaveDestinationResponse", validateModelSaveDestinationResponse, value)
+const savedModel = (value: unknown) =>
+  expectGeneratedContract("SaveModelResponse", validateSaveModelResponse, value)
+const gitWorkingBranch = (value: unknown) =>
+  expectGeneratedContract("GitWorkingBranchResponse", validateGitWorkingBranchResponse, value)
+const gitBindStorage = (value: unknown) =>
+  expectGeneratedContract("GitBindStorageResponse", validateGitBindStorageResponse, value)
+const gitForkStorage = (value: unknown) =>
+  expectGeneratedContract("GitForkStorageResponse", validateGitForkStorageResponse, value)
+const gitMove = (value: unknown) =>
+  expectGeneratedContract("GitMoveResponse", validateGitMoveResponse, value)
+const gitRemotes = (value: unknown) =>
+  expectGeneratedContract("GitRemotesResponse", validateGitRemotesResponse, value)
+const gitFastForward = (value: unknown) =>
+  expectGeneratedContract("GitFastForwardResponse", validateGitFastForwardResponse, value)
+const gitPush = (value: unknown) =>
+  expectGeneratedContract("GitPushResponse", validateGitPushResponse, value)
+const gitBranchAway = (value: unknown) =>
+  expectGeneratedContract("GitBranchAwayResponse", validateGitBranchAwayResponse, value)
+const gitCreateWorkingBranch = (value: unknown) =>
+  expectGeneratedContract("GitCreateWorkingBranchResponse", validateGitCreateWorkingBranchResponse, value)
+const gitPrefs = (value: unknown) =>
+  expectGeneratedContract("GitPrefs", validateGitPrefs, value)
+const gitGraph = (value: unknown) =>
+  expectGeneratedContract("GitGraphResponse", validateGitGraphResponse, value)
+const gitArchive = (value: unknown) =>
+  expectGeneratedContract("GitArchiveResponse", validateGitArchiveResponse, value)
+const gitDeleteBranch = (value: unknown) =>
+  expectGeneratedContract("GitDeleteBranchResponse", validateGitDeleteBranchResponse, value)
+const mlflowModelVersions = (value: unknown) =>
+  expectGeneratedContract("MlflowModelVersionList", validateMlflowModelVersionList, value)
 
 describe("parseExecutionStrategyDiagnostic", () => {
   it.each([
@@ -1311,7 +1363,7 @@ describe("API response guards", () => {
   })
 
   it("parses a git move response", () => {
-    const parsed = parseGitMoveResponse({
+    const parsed = gitMove({
       sha: "a".repeat(40),
       short_sha: "aaaaaaaa",
       prior_branch: "pricing/test/dev-save",
@@ -1325,7 +1377,7 @@ describe("API response guards", () => {
 
   it("rejects a git move response missing prior_branch", () => {
     expect(() =>
-      parseGitMoveResponse({ sha: "abc", short_sha: "abc", is_detached: true }),
+      gitMove({ sha: "abc", short_sha: "abc", is_detached: true }),
     ).toThrow(/prior_branch/i)
   })
 
@@ -1749,11 +1801,11 @@ describe("API response guards", () => {
   })
 
   it("parses the XGBoost GPU status (MOD-F06)", () => {
-    expect(parseModellingGpuStatusResponse({
+    expect(modellingGpuStatus({
       xgboost: { available: false, detail: "Run `haute gpu-setup`.", device: null },
     })).toEqual({ xgboost: { available: false, detail: "Run `haute gpu-setup`.", device: null } })
-    expect(() => parseModellingGpuStatusResponse({ xgboost: { available: "yes", detail: "", device: null } }))
-      .toThrow(/xgboost.available/)
+    expect(() => modellingGpuStatus({ xgboost: { available: "yes", detail: "", device: null } }))
+      .toThrow("ModellingGpuStatusResponse: invalid contract at /xgboost/available: type")
   })
 
   it("keeps the device an XGBoost GPU fit trained on (MOD-F06)", () => {
@@ -2781,13 +2833,13 @@ describe("API response guards", () => {
   })
 
   it("parses modelling preflight payloads", () => {
-    const mlflow = parseMlflowDestinationsResponse(
+    const mlflow = mlflowDestinations(
       loadUiContractFixture("mlflow_destinations_response"),
     )
     const estimate = parseTrainEstimateResponse(loadUiContractFixture("train_estimate_response"))
     const log = parseMlflowLogResponse(loadUiContractFixture("mlflow_log_response"))
-    const saved = parseSaveModelResponse(loadUiContractFixture("model_save_response"))
-    const destination = parseModelSaveDestinationResponse(
+    const saved = savedModel(loadUiContractFixture("model_save_response"))
+    const destination = modelSaveDestination(
       loadUiContractFixture("model_save_destination_response"),
     )
 
@@ -2815,12 +2867,14 @@ describe("API response guards", () => {
       feature_contract_path: "models/frequency.feature_contract.json",
     })
     expect(destination).toEqual({ path: "models/frequency.cbm", suffix_mismatch: false })
-    expect(() => parseModelSaveDestinationResponse({ ...destination, suffix_mismatch: "no" })).toThrow(
-      /parseModelSaveDestinationResponse/,
+    expect(() => modelSaveDestination({ ...destination, suffix_mismatch: "no" })).toThrow(
+      "ModelSaveDestinationResponse: invalid contract at /suffix_mismatch: type",
     )
-    expect(() => parseSaveModelResponse({ ...saved, status: "error" })).toThrow(/parseSaveModelResponse/)
-    expect(() => parseSaveModelResponse({ ...saved, feature_contract_path: null })).toThrow(
-      /parseSaveModelResponse/,
+    expect(() => savedModel({ ...saved, status: "error" })).toThrow(
+      "SaveModelResponse: invalid contract at /status: const",
+    )
+    expect(() => savedModel({ ...saved, feature_contract_path: null })).toThrow(
+      "SaveModelResponse: invalid contract at /feature_contract_path: type",
     )
   })
 
@@ -2829,7 +2883,7 @@ describe("API response guards", () => {
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
       training_mb: 25, available_mb: 512, bytes_per_row: 256,
       was_downsampled: false, warning: null, gpu_vram_estimated_mb: null,
-      gpu_vram_available_mb: null, gpu_warning: null,
+      gpu_vram_available_mb: null, gpu_warning: null, unavailable: null,
       evaluation_preview: {
         schema_version: 1, strategy: "temporal", validation_method: "cross_validation",
         development_rows: 800, final_test_rows: 200, validation_fit_count: 5,
@@ -2853,12 +2907,56 @@ describe("API response guards", () => {
     }).evaluation_preview).toMatchObject({ validation_method: "none", validation_fit_count: 0 })
   })
 
+  it("parses an unavailable estimate's reason and rejects figures that disagree with it", () => {
+    const unavailable = parseTrainEstimateResponse(
+      loadUiContractFixture("train_estimate_unavailable_response"),
+    )
+    expect(unavailable.unavailable).toEqual({
+      reason: "row_count_unprovable",
+      blocking_node_id: "explode_items",
+    })
+    expect([unavailable.total_rows, unavailable.estimated_mb, unavailable.bytes_per_row]).toEqual([
+      null,
+      null,
+      null,
+    ])
+
+    const sized = loadUiContractFixture<Record<string, unknown>>("train_estimate_response")
+    const blank = { estimated_mb: null, training_mb: null, bytes_per_row: null }
+    const schema = { reason: "schema_unresolvable", blocking_node_id: null }
+    expect(parseTrainEstimateResponse({ ...sized, ...blank, unavailable: schema }).unavailable).toEqual(schema)
+
+    const rejected: [Record<string, unknown>, RegExp][] = [
+      [{ unavailable: undefined }, /unavailable/],
+      [{ estimated_mb: null }, /requires a row total and memory figures/],
+      [{ total_rows: null }, /requires a row total and memory figures/],
+      [{ estimated_mb: undefined }, /estimated_mb/],
+      [{ unavailable: schema }, /has no memory figures/],
+      [{ ...blank, unavailable: schema, was_downsampled: true }, /no downsampling verdict or warning/],
+      [{ ...blank, unavailable: schema, gpu_vram_estimated_mb: 12 }, /no GPU VRAM check/],
+      [
+        { ...blank, unavailable: { reason: "row_count_unprovable", blocking_node_id: "join" } },
+        /only a row_count_unprovable estimate lacks a row total/,
+      ],
+      [
+        { ...blank, total_rows: null, unavailable: { reason: "row_count_unprovable", blocking_node_id: null } },
+        /names the blocking node/,
+      ],
+      [{ ...blank, unavailable: { ...schema, blocking_node_id: "join" } }, /names no blocking node/],
+      [{ ...blank, unavailable: { ...schema, extra: true } }, /\/unavailable: additionalProperties/],
+      [{ ...blank, unavailable: { reason: "cardinality", blocking_node_id: null } }, /\/unavailable\/reason: enum/],
+    ]
+    for (const [overrides, error] of rejected) {
+      expect(() => parseTrainEstimateResponse({ ...sized, ...overrides })).toThrow(error)
+    }
+  })
+
   it("rejects malformed bounded evaluation previews", () => {
     const estimate = {
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
       training_mb: 25, available_mb: 512, bytes_per_row: 256,
       was_downsampled: false, warning: null, gpu_vram_estimated_mb: null,
-      gpu_vram_available_mb: null, gpu_warning: null,
+      gpu_vram_available_mb: null, gpu_warning: null, unavailable: null,
     }
     expect(() => parseTrainEstimateResponse({
       ...estimate,
@@ -2867,7 +2965,7 @@ describe("API response guards", () => {
         development_rows: 800, final_test_rows: 200, validation_fit_count: 1,
         unexpected: true,
       },
-    })).toThrow(/evaluation_preview.*unexpected or missing fields/i)
+    })).toThrow("TrainEstimateResponse: invalid contract at /evaluation_preview: additionalProperties")
     expect(() => parseTrainEstimateResponse({
       ...estimate,
       evaluation_preview: {
@@ -3124,21 +3222,9 @@ describe("API response guards", () => {
     ).toThrow(/pressure_ratio/i)
   })
 
-  it("parses utility response payloads", () => {
-    const listed = parseUtilityListResponse(loadUiContractFixture("utility_list_response"))
-    const read = parseUtilityReadResponse(loadUiContractFixture("utility_read_response"))
-    const written = parseUtilityWriteResponse(loadUiContractFixture("utility_write_response"))
-    const deleted = parseUtilityDeleteResponse(loadUiContractFixture("utility_delete_response"))
-
-    expect(listed.files[0]?.module).toBe("helpers")
-    expect(read.content).toContain("helper")
-    expect(written.import_line).toContain("utility.helpers")
-    expect(deleted.module).toBe("helpers")
-  })
-
   it("parses git action payloads", () => {
-    const archived = parseGitArchiveResponse(loadUiContractFixture("git_archive_response"))
-    const deleted = parseGitDeleteBranchResponse(loadUiContractFixture("git_delete_branch_response"))
+    const archived = gitArchive(loadUiContractFixture("git_archive_response"))
+    const deleted = gitDeleteBranch(loadUiContractFixture("git_delete_branch_response"))
 
     expect(archived.archived_as).toContain("archive/")
     expect(deleted.branch).toContain("feat/")
@@ -3245,14 +3331,14 @@ describe("API response guards", () => {
   })
 
   it("parses mlflow settings and test-connection payloads", () => {
-    const settings = parseMlflowSettingsResponse(loadUiContractFixture("mlflow_settings_response"))
+    const settings = mlflowSettings(loadUiContractFixture("mlflow_settings_response"))
     expect(settings.section_present).toBe(true)
     expect(settings.tracking_uri).toBe("http://localhost:5000")
     expect(settings.folder).toBe("team-runs")
     expect(settings.resolved_folder).toBe("C:/proj/team-runs")
     expect(settings.detail).toBe("")
 
-    const probe = parseMlflowTestConnectionResponse(
+    const probe = mlflowTestConnection(
       loadUiContractFixture("mlflow_test_connection_response"),
     )
     expect(probe.ok).toBe(false)
@@ -3262,18 +3348,18 @@ describe("API response guards", () => {
   it("rejects malformed mlflow settings and test-connection payloads", () => {
     const settings = loadUiContractFixture<Record<string, unknown>>("mlflow_settings_response")
     expect(() =>
-      parseMlflowSettingsResponse({ ...settings, section_present: "yes" }),
+      mlflowSettings({ ...settings, section_present: "yes" }),
     ).toThrow(/section_present/i)
     expect(() =>
-      parseMlflowSettingsResponse({ ...settings, resolved_folder: 42 }),
+      mlflowSettings({ ...settings, resolved_folder: 42 }),
     ).toThrow(/resolved_folder/i)
 
     const probe = loadUiContractFixture<Record<string, unknown>>(
       "mlflow_test_connection_response",
     )
-    expect(() => parseMlflowTestConnectionResponse({ ...probe, ok: "no" })).toThrow(/`ok`/i)
+    expect(() => mlflowTestConnection({ ...probe, ok: "no" })).toThrow(/\/ok: type/)
     expect(() =>
-      parseMlflowTestConnectionResponse({ ...probe, category: "offline" }),
+      mlflowTestConnection({ ...probe, category: "offline" }),
     ).toThrow(/category/i)
   })
 
@@ -3288,58 +3374,42 @@ describe("API response guards", () => {
     })
 
     expect(() =>
-      parseMlflowDestinationsResponse({
+      mlflowDestinations({
         ...fixture,
         mlflow_installed: "yes",
       }),
     ).toThrow(/mlflow_installed/i)
 
     expect(() =>
-      parseMlflowDestinationsResponse({
+      mlflowDestinations({
         ...fixture,
         destinations: "none",
       }),
-    ).toThrow(/parseMlflowDestinationsResponse/i)
+    ).toThrow(/MlflowDestinationsResponse: invalid contract at \/destinations: type/)
 
-    expect(() => parseMlflowDestinationsResponse(withFirstEntry({ key: "file" }))).toThrow(
+    expect(() => mlflowDestinations(withFirstEntry({ key: "file" }))).toThrow(
       /key/i,
     )
 
-    expect(() => parseMlflowDestinationsResponse(withFirstEntry({ probed: "yes" }))).toThrow(
+    expect(() => mlflowDestinations(withFirstEntry({ probed: "yes" }))).toThrow(
       /probed/i,
     )
 
-    expect(() => parseMlflowDestinationsResponse(withFirstEntry({ configured: "yes" }))).toThrow(
+    expect(() => mlflowDestinations(withFirstEntry({ configured: "yes" }))).toThrow(
       /configured/i,
     )
 
     expect(() =>
-      parseMlflowDestinationsResponse(withFirstEntry({ config_source: "registry" })),
+      mlflowDestinations(withFirstEntry({ config_source: "registry" })),
     ).toThrow(/config_source/i)
 
     expect(() =>
-      parseMlflowDestinationsResponse(withFirstEntry({ category: "offline" })),
+      mlflowDestinations(withFirstEntry({ category: "offline" })),
     ).toThrow(/category/i)
   })
 
-  it("rejects malformed utility write payloads", () => {
-    const fixture = loadUiContractFixture<Record<string, unknown>>("utility_write_response")
-
-    expect(() =>
-      parseUtilityWriteResponse({
-        ...fixture,
-        import_line: 123,
-      }),
-    ).toThrow(/import_line/i)
-  })
-
   it("parses every working-branch readiness state and detached commit context", () => {
-    const base = {
-      working_branch: null,
-      current_branch: "",
-      eligible_branches: [],
-      identity_set: false,
-    }
+    const base = makeGitWorkingBranch({ current_branch: "", identity_set: false })
 
     for (const state of [
       "no-repository",
@@ -3349,7 +3419,7 @@ describe("API response guards", () => {
       "divergent",
       "ready",
     ] as const) {
-      const parsed = parseGitWorkingBranchResponse({
+      const parsed = gitWorkingBranch({
         ...base,
         state,
         head_sha: state === "detached" ? "a".repeat(40) : null,
@@ -3361,43 +3431,38 @@ describe("API response guards", () => {
 
   it("rejects an unknown working-branch readiness state", () => {
     expect(() =>
-      parseGitWorkingBranchResponse({
-        state: "missing",
-        current_branch: "",
-      }),
-    ).toThrow(/expected field `state` to be one of/i)
+      gitWorkingBranch({ ...makeGitWorkingBranch(), state: "missing" }),
+    ).toThrow("GitWorkingBranchResponse: invalid contract at /state: enum")
   })
 
-  it("defaults storage to unsupported and sync to null when an older backend omits them", () => {
-    const parsed = parseGitWorkingBranchResponse({
-      state: "ready",
-      current_branch: "dev",
-    })
-    expect(parsed.storage).toBe("unsupported")
-    expect(parsed.storage_remote).toBeNull()
-    expect(parsed.sync).toBeNull()
+  it("rejects a readiness payload that omits the storage surface", () => {
+    // The server always sends it; its absence is drift, not an older backend.
+    const { storage: _storage, ...withoutStorage } = makeGitWorkingBranch({ state: "ready", current_branch: "dev" })
+    expect(() => gitWorkingBranch(withoutStorage)).toThrow(
+      "GitWorkingBranchResponse: invalid contract at /storage: required",
+    )
   })
 
   it("parses a bound, synced storage surface", () => {
-    const parsed = parseGitWorkingBranchResponse({
+    const parsed = gitWorkingBranch(makeGitWorkingBranch({
       state: "ready",
       current_branch: "dev",
       storage: "bound",
       storage_remote: "https://github.com/org/repo.git",
       sync: { state: "synced", pending: 0, failure: null, message: null },
-    })
+    }))
     expect(parsed.storage).toBe("bound")
     expect(parsed.storage_remote).toBe("https://github.com/org/repo.git")
     expect(parsed.sync).toEqual({ state: "synced", pending: 0, failure: null, message: null })
   })
 
   it("parses a failed sync with its failure kind and message", () => {
-    const parsed = parseGitWorkingBranchResponse({
+    const parsed = gitWorkingBranch(makeGitWorkingBranch({
       state: "ready",
       current_branch: "dev",
       storage: "bound",
       sync: { state: "failed", pending: 2, failure: "rejected", message: "Push was rejected" },
-    })
+    }))
     expect(parsed.sync).toEqual({
       state: "failed",
       pending: 2,
@@ -3408,16 +3473,15 @@ describe("API response guards", () => {
 
   it("rejects an unknown storage state", () => {
     expect(() =>
-      parseGitWorkingBranchResponse({
-        state: "ready",
-        current_branch: "dev",
+      gitWorkingBranch({
+        ...makeGitWorkingBranch({ state: "ready", current_branch: "dev" }),
         storage: "bogus",
       }),
-    ).toThrow(/expected field `storage` to be one of/i)
+    ).toThrow("GitWorkingBranchResponse: invalid contract at /storage: enum")
   })
 
   it("parses the accepted bind-storage response", () => {
-    const parsed = parseGitBindStorageResponse({
+    const parsed = gitBindStorage({
       outcome: "pending",
       remote_url: "https://github.com/org/repo.git",
       message: "Saving this project to storage - you can keep working.",
@@ -3434,17 +3498,17 @@ describe("API response guards", () => {
     // the real outcome arrives on the readiness response's storage_bind.
     for (const outcome of ["adopted", "restart-required"]) {
       expect(() =>
-        parseGitBindStorageResponse({
+        gitBindStorage({
           outcome,
           remote_url: "https://github.com/org/repo.git",
           message: "x",
         }),
-      ).toThrow(/expected field `outcome` to be one of/i)
+      ).toThrow("GitBindStorageResponse: invalid contract at /outcome: const")
     }
   })
 
-  it("parses background bind progress, defaulting to absent", () => {
-    const running = parseGitWorkingBranchResponse({
+  it("parses background bind progress, null when no bind runs", () => {
+    const running = gitWorkingBranch(makeGitWorkingBranch({
       state: "ready",
       current_branch: "dev",
       storage_bind: {
@@ -3454,40 +3518,41 @@ describe("API response guards", () => {
         claim: null,
         remote_url: "uc://workspace.default.projects/demo",
       },
-    })
+    }))
     expect(running.storage_bind?.state).toBe("running")
     expect(running.storage_bind?.remote_url).toBe("uc://workspace.default.projects/demo")
 
-    const failed = parseGitWorkingBranchResponse({
+    const failed = gitWorkingBranch(makeGitWorkingBranch({
       state: "ready",
       current_branch: "dev",
       storage_bind: {
         state: "failed",
+        outcome: null,
         message: "in use by app 'other-app'",
         claim: { app_name: "other-app", user: null, refreshed_at: null, message: "in use" },
+        remote_url: null,
       },
-    })
+    }))
     expect(failed.storage_bind?.claim?.app_name).toBe("other-app")
 
-    // An older backend omitting the field reads as absent, not an error.
-    const absent = parseGitWorkingBranchResponse({ state: "ready", current_branch: "dev" })
+    const absent = gitWorkingBranch(makeGitWorkingBranch({ state: "ready", current_branch: "dev" }))
     expect(absent.storage_bind).toBeNull()
   })
 
   it("parses fork provenance on the readiness surface, defaulting to null", () => {
-    const withLineage = parseGitWorkingBranchResponse({
+    const withLineage = gitWorkingBranch(makeGitWorkingBranch({
       state: "ready",
       current_branch: "dev",
       storage: "bound",
       storage_forked_from: "uc://workspace.default.projects/demo",
-    })
+    }))
     expect(withLineage.storage_forked_from).toBe("uc://workspace.default.projects/demo")
-    const without = parseGitWorkingBranchResponse({ state: "ready", current_branch: "dev" })
+    const without = gitWorkingBranch(makeGitWorkingBranch({ state: "ready", current_branch: "dev" }))
     expect(without.storage_forked_from).toBeNull()
   })
 
   it("parses a fork-storage response", () => {
-    const parsed = parseGitForkStorageResponse({
+    const parsed = gitForkStorage({
       outcome: "forked",
       target_url: "uc://workspace.default.projects/demo-fork",
       parent_url: "uc://workspace.default.projects/demo",
@@ -3520,7 +3585,7 @@ describe("API response guards", () => {
   //     and the two 409 advisory bodies (push rejection + milestone fork). ---
 
   it("parses a remotes response with per-leg ahead/behind detail", () => {
-    const parsed = parseGitRemotesResponse({
+    const parsed = gitRemotes({
       working_branch: "dev",
       remotes: [
         {
@@ -3529,8 +3594,8 @@ describe("API response guards", () => {
           working: { status: "behind", ahead: 0, behind: 1 },
           ledger: { status: "diverged", ahead: 2, behind: 1 },
         },
-        // legs absent → fill to null (a remote we have no tracking detail for).
-        { name: "backup" },
+        // A remote we have no tracking detail for carries null legs.
+        { name: "backup", url: null, working: null, ledger: null },
       ],
     })
 
@@ -3542,8 +3607,9 @@ describe("API response guards", () => {
 
   it("accepts every known leg status", () => {
     for (const status of ["untracked", "unknown", "synced", "ahead", "behind", "diverged"]) {
-      const parsed = parseGitRemotesResponse({
-        remotes: [{ name: "origin", working: { status } }],
+      const parsed = gitRemotes({
+        working_branch: null,
+        remotes: [{ name: "origin", url: null, working: { status, ahead: null, behind: null }, ledger: null }],
       })
       expect(parsed.remotes[0].working?.status).toBe(status)
     }
@@ -3551,12 +3617,15 @@ describe("API response guards", () => {
 
   it("rejects an unknown leg status", () => {
     expect(() =>
-      parseGitRemotesResponse({ remotes: [{ name: "origin", working: { status: "wat" } }] }),
-    ).toThrow(/status has unexpected value/i)
+      gitRemotes({
+        working_branch: null,
+        remotes: [{ name: "origin", url: null, working: { status: "wat", ahead: null, behind: null }, ledger: null }],
+      }),
+    ).toThrow("GitRemotesResponse: invalid contract at /remotes/0/working/status: enum")
   })
 
   it("parses a fast-forward response with the advanced refs", () => {
-    const parsed = parseGitFastForwardResponse({
+    const parsed = gitFastForward({
       remote: "origin",
       working_branch: "dev",
       fast_forwarded: ["dev", "dev-save"],
@@ -3569,36 +3638,36 @@ describe("API response guards", () => {
   it("parses required bootstrap metadata for either bootstrap outcome", () => {
     const base = loadUiContractFixture<Record<string, unknown>>("git_push_response")
 
-    expect(parseGitPushResponse({ ...base, bootstrapped_default: true })).toMatchObject({
+    expect(gitPush({ ...base, bootstrapped_default: true })).toMatchObject({
       default_branch: base.default_branch,
       bootstrapped_default: true,
     })
     expect(
-      parseGitPushResponse({ ...base, bootstrapped_default: false }).bootstrapped_default,
+      gitPush({ ...base, bootstrapped_default: false }).bootstrapped_default,
     ).toBe(false)
   })
 
   it("rejects missing or malformed bootstrap metadata instead of inventing it", () => {
     const base = loadUiContractFixture<Record<string, unknown>>("git_push_response")
 
-    expect(() => parseGitPushResponse({ ...base, default_branch: undefined })).toThrow(
+    expect(() => gitPush({ ...base, default_branch: undefined })).toThrow(
       /default_branch/i,
     )
-    expect(() => parseGitPushResponse({ ...base, bootstrapped_default: undefined })).toThrow(
+    expect(() => gitPush({ ...base, bootstrapped_default: undefined })).toThrow(
       /bootstrapped_default/i,
     )
-    expect(() => parseGitPushResponse({ ...base, default_branch: 42 })).toThrow(/default_branch/i)
-    expect(() => parseGitPushResponse({ ...base, bootstrapped_default: "false" })).toThrow(/bootstrapped_default/i)
+    expect(() => gitPush({ ...base, default_branch: 42 })).toThrow(/default_branch/i)
+    expect(() => gitPush({ ...base, bootstrapped_default: "false" })).toThrow(/bootstrapped_default/i)
   })
 
   it("rejects a fast-forward response missing working_branch", () => {
     expect(() =>
-      parseGitFastForwardResponse({ remote: "origin", fast_forwarded: [] }),
+      gitFastForward({ remote: "origin", fast_forwarded: [] }),
     ).toThrow(/working_branch/i)
   })
 
   it("parses a branch-away response with the set-aside name", () => {
-    const parsed = parseGitBranchAwayResponse({
+    const parsed = gitBranchAway({
       working_branch: "dev",
       set_aside_as: "dev-2026-06-21",
     })
@@ -3666,7 +3735,7 @@ describe("API response guards", () => {
   })
 
   it("parses a create-working-branch response", () => {
-    const parsed = parseGitCreateWorkingBranchResponse({
+    const parsed = gitCreateWorkingBranch({
       working_branch: "feature",
       moved: false,
       switched: true,
@@ -3678,9 +3747,9 @@ describe("API response guards", () => {
     expect(parsed.last_save_sha).toBeNull()
   })
 
-  it("parses git prefs, defaulting skip_switch_confirm to false", () => {
-    expect(parseGitPrefs({}).skip_switch_confirm).toBe(false)
-    expect(parseGitPrefs({ skip_switch_confirm: true }).skip_switch_confirm).toBe(true)
+  it("parses git prefs and requires skip_switch_confirm", () => {
+    expect(gitPrefs({ skip_switch_confirm: true }).skip_switch_confirm).toBe(true)
+    expect(() => gitPrefs({})).toThrow("GitPrefs: invalid contract at /skip_switch_confirm: required")
   })
 
   it("parses shared client trust-boundary payloads", () => {
@@ -3688,24 +3757,24 @@ describe("API response guards", () => {
     expect(parseOutputAssembleDryRunResponse({ status: "ok", document: [{ premium: 1 }], row_count: 1, error: null })).toMatchObject({ status: "ok", row_count: 1 })
     expect(parseJsonCacheDeleteResponse({ cached: false, data_path: "cache/data.parquet" })).toEqual({ cached: false, data_path: "cache/data.parquet" })
     expect(parseJsonCacheSchemaInferenceResponse({ tables: [{ name: "drivers" }] }).tables).toEqual([{ name: "drivers" }])
-    expect(parseMlflowExperiments([{ experiment_id: "1", name: "pricing" }])[0]?.name).toBe("pricing")
-    expect(parseMlflowRuns([{ run_id: "run-1", run_name: "baseline", metrics: { auc: 0.9 }, artifacts: ["model"] }])[0]?.metrics.auc).toBe(0.9)
-    expect(parseMlflowModels([{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "run-1" }] }])[0]?.latest_versions).toHaveLength(1)
-    expect(parseMlflowModelVersions([{ version: "1", run_id: "run-1", status: "READY", description: "baseline" }])[0]?.description).toBe("baseline")
+    expect(mlflowExperiments([{ experiment_id: "1", name: "pricing" }])[0]?.name).toBe("pricing")
+    expect(mlflowRuns([{ run_id: "run-1", run_name: "baseline", status: "FINISHED", start_time: null, metrics: { auc: 0.9 }, params: {}, artifacts: ["model"] }])[0]?.metrics.auc).toBe(0.9)
+    expect(mlflowModels([{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "run-1" }] }])[0]?.latest_versions).toHaveLength(1)
+    expect(mlflowModelVersions([{ version: "1", run_id: "run-1", status: "READY", creation_timestamp: null, description: "baseline", params: {}, aliases: [] }])[0]?.description).toBe("baseline")
     expect(
-      parseMlflowModelVersions([
-        { version: "1", run_id: "run-1", status: "READY", description: "", aliases: ["champion"] },
+      mlflowModelVersions([
+        { version: "1", run_id: "run-1", status: "READY", creation_timestamp: 1, description: "", params: {}, aliases: ["champion"] },
       ])[0]?.aliases,
     ).toEqual(["champion"])
     expect(() =>
-      parseMlflowModelVersions([{ version: "1", run_id: "r", status: "READY", description: "", aliases: [1] }]),
+      mlflowModelVersions([{ version: "1", run_id: "r", status: "READY", creation_timestamp: null, description: "", params: {}, aliases: [1] }]),
     ).toThrow(/aliases/)
     expect(parseFileListResponse({ items: [{ name: "data", path: "/data", type: "directory" }] }).items?.[0]?.type).toBe("directory")
     expect(parseFileListResponse({ items: [{ name: "data", path: "/data", type: "directory", size: null }] }).items?.[0]?.size).toBeNull()
-    expect(parseGitGraphResponse({
+    expect(gitGraph({
       working_branch: "main",
       order: ["main"],
-      branches: [{ name: "main", is_archived: false, is_current: true, tip_sha: "a", fork_point_sha: null, fork_of: null, fork_source_sha: null, fork_credit_sha: null, truncated: false, entries: [{ sha: "a", short_sha: "a", message: "init", timestamp: "2026-01-01", version_label: null, parents: [] }] }],
+      branches: [{ name: "main", is_archived: false, is_current: true, tip_sha: "a", fork_point_sha: null, fork_of: null, fork_source_sha: null, fork_credit_sha: null, truncated: false, entries: [{ sha: "a", short_sha: "a", message: "init", timestamp: "2026-01-01", version_label: null, is_root: true, parents: [] }] }],
     }).branches[0]?.entries[0]?.parents).toEqual([])
   })
 
@@ -3714,14 +3783,33 @@ describe("API response guards", () => {
     ["output document", () => parseOutputAssembleDryRunResponse({ status: "ok", document: {}, row_count: 1 })],
     ["cache deletion path", () => parseJsonCacheDeleteResponse({ cached: true })],
     ["inferred nested table", () => parseJsonCacheSchemaInferenceResponse({ tables: ["bad"] })],
-    ["experiment required name", () => parseMlflowExperiments([{ experiment_id: "1" }])],
-    ["run nested metric", () => parseMlflowRuns([{ run_id: "r", run_name: "n", metrics: { auc: "high" }, artifacts: [] }])],
-    ["model nested version", () => parseMlflowModels([{ name: "m", latest_versions: [{ version: "1", status: "READY" }] }])],
-    ["model version description", () => parseMlflowModelVersions([{ version: "1", run_id: "r", status: "READY" }])],
     ["file item type", () => parseFileListResponse({ items: [{ name: "x", path: "/x", type: "link" }] })],
-    ["git graph nested parents", () => parseGitGraphResponse({ working_branch: null, order: [], branches: [{ name: "main", is_archived: false, is_current: true, tip_sha: "a", fork_point_sha: null, fork_of: null, fork_source_sha: null, fork_credit_sha: null, truncated: false, entries: [{ sha: "a", short_sha: "a", message: "init", timestamp: "today", version_label: null, parents: [1] }] }] })],
+    ["git graph nested parents", () => gitGraph({ working_branch: null, order: [], branches: [{ name: "main", is_archived: false, is_current: true, tip_sha: "a", fork_point_sha: null, fork_of: null, fork_source_sha: null, fork_credit_sha: null, truncated: false, entries: [{ sha: "a", short_sha: "a", message: "init", timestamp: "today", version_label: null, is_root: true, parents: [1] }] }] })],
   ])("rejects malformed shared client payload: %s", (_name, parse) => {
     expect(parse).toThrow()
+  })
+
+  it("rejects a malformed MLflow discovery listing at the offending field", () => {
+    // Each payload is complete except for the one field under test.
+    const run = { run_id: "r", run_name: "n", status: "FINISHED", start_time: null, metrics: { auc: 0.9 }, params: {}, artifacts: [] }
+    const version = { version: "1", run_id: "r", status: "READY", creation_timestamp: null, description: "", params: {}, aliases: [] }
+    const { description: _description, ...versionWithoutDescription } = version
+
+    expect(() => mlflowExperiments([{ experiment_id: "1" }])).toThrow(
+      "MlflowExperimentList: invalid contract at /0/name: required",
+    )
+    expect(() => mlflowRuns([{ ...run, metrics: { auc: "high" } }])).toThrow(
+      "MlflowRunList: invalid contract at /0/metrics/auc: type",
+    )
+    expect(() => mlflowRuns([{ ...run, artifacts: [1] }])).toThrow(
+      "MlflowRunList: invalid contract at /0/artifacts/0: type",
+    )
+    expect(() => mlflowModels([{ name: "m", latest_versions: [{ version: "1", status: "READY" }] }])).toThrow(
+      "MlflowModelList: invalid contract at /0/latest_versions/0/run_id: required",
+    )
+    expect(() => mlflowModelVersions([versionWithoutDescription])).toThrow(
+      "MlflowModelVersionList: invalid contract at /0/description: required",
+    )
   })
 
 })

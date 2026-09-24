@@ -94,11 +94,31 @@ guards parse in contract tests. In the three months to 23 September 2026
 `schemas.py`, `api/types.ts`, `guards.ts` and `api/client.ts` were the four
 most-changed files in the repository.
 
-**Plan:** Extend the existing generator, or adopt an OpenAPI-based one, to
-emit types and runtime validators for every response model, and replace the
-hand-written types and structural guards module by module. Keep hand-written
-code only for cross-field rules that belong in the UI. Retire the fixture
-parity tests once generated validators cover their shapes.
+**Plan:** The existing generator is extended (decided 24 September 2026):
+`scripts/generate_api_contracts.py` emits the response models of each module
+group in `RESPONSE_CONTRACT_GROUPS` as the server serializes them, and the Node
+stage builds one lazily loaded validator module per group. Convert the
+remaining groups the same way, replacing the hand-written types and structural
+guards. Keep hand-written code only for cross-field rules that belong in the
+UI. Retire the fixture parity tests once generated validators cover their
+shapes.
+
+**Delivered:** utility; Databricks listings; MLflow settings, destinations,
+test connection and discovery lists; modelling GPU status, training estimate,
+dispersion start and status, training MLflow log and model save; every git
+success response.
+
+**Remaining:** the training responses (`TrainResponse`, `TrainStatusResponse`,
+best taken with `MOD-T10`, whose browser semantic re-checks would otherwise be
+rewritten only to be deleted); optimiser, including its MLflow log (still on
+the hand-written `parseMlflowLogResponse`); pipeline load and save, preview,
+trace and submodel responses (they carry node configs, so after `PCFG-R07`);
+recovery and repair; node data, cache, JSON cache and input cache; Explore
+pivot and profile; output write, destination and assemble dry run; I/O
+capabilities; banding stats and rating levels (they embed the node-data point);
+session bootstrap and file listing; editor identities; Polars step rendering;
+execution settings; and the git 409 advisory bodies (`GitPushRejection`,
+`GitMilestoneFork`) with the storage-claim reader.
 
 **Acceptance:** Every response the client parses is validated by generated
 code; `guards.ts`, `trainGuards.ts` and `api/types.ts` contain no structural

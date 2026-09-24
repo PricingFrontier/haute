@@ -9,6 +9,16 @@ import type {
   PipelineGraph,
 } from "../types/node"
 import type {
+  EvaluationPreviewPayload as EvaluationPreview,
+  GitRemoteLeg as GeneratedGitRemoteLeg,
+  GitStorageBind as GeneratedGitStorageBind,
+  GitStorageSync as GeneratedGitStorageSync,
+  GitWorkingBranchResponse as GeneratedGitWorkingBranchResponse,
+  MlflowDestinationEntry as GeneratedMlflowDestinationEntry,
+  MlflowTestConnectionResponse as GeneratedMlflowTestConnectionResponse,
+  TrainEstimateResponse as GeneratedTrainEstimateResponse,
+} from "../generated/api-contracts.generated"
+import type {
   ExecutionStrategyBoundaryCollectionPayload as GeneratedExecutionStrategyCollection,
   ExecutionStrategyBoundaryPayload as GeneratedExecutionStrategyBoundary,
   ExecutionStrategyDiagnosticPayload as GeneratedExecutionStrategyDiagnostic,
@@ -508,17 +518,6 @@ export interface IoCapabilitiesResponse {
   groups: IoCapabilityGroup[]
 }
 
-/** Whether one family can train on a GPU in the running server. */
-export interface GpuFamilyStatus {
-  available: boolean
-  detail: string
-  device: string | null
-}
-
-export interface ModellingGpuStatusResponse {
-  xgboost: GpuFamilyStatus
-}
-
 // ---------------------------------------------------------------------------
 // Cache-inventory contracts (/api/cache)
 // ---------------------------------------------------------------------------
@@ -684,47 +683,36 @@ export interface OutputAssembleDryRunResponse {
 // Modelling types
 // ---------------------------------------------------------------------------
 
+// Generated from the backend response models (scripts/generate_api_contracts.py).
+export type {
+  DispersionEstimateResponse as DispersionEstimateStart,
+  DispersionEstimateStatusResponse as DispersionEstimateStatus,
+  EvaluationDateRangePayload as EvaluationDateRange,
+  EvaluationPreviewPayload as EvaluationPreview,
+  GpuFamilyStatus,
+  LogExperimentResponse,
+  ModellingGpuStatusResponse,
+  ModelSaveDestinationResponse,
+  SaveModelResponse,
+} from "../generated/api-contracts.generated"
+export type {
+  MlflowDestinationEntry,
+  MlflowDestinationsResponse,
+  MlflowExperimentSummary as MlflowExperiment,
+  MlflowModelSummary as MlflowModel,
+  MlflowModelVersionSummary as MlflowModelVersion,
+  MlflowRunSummary as MlflowRun,
+  MlflowSettingsResponse,
+  MlflowTestConnectionResponse,
+} from "../generated/api-contracts.generated"
+
 /** The three tracking destinations; a request's `""` means the local folder. */
-export type MlflowDestinationKey = "databricks" | "server" | "local"
+export type MlflowDestinationKey = GeneratedMlflowDestinationEntry["key"]
 
-export type MlflowProbeCategory =
-  | ""
-  | "authentication"
-  | "permission"
-  | "missing_resource"
-  | "connectivity"
-  | "configuration"
-  | "unknown"
-
-export interface MlflowDestinationEntry {
-  key: MlflowDestinationKey
-  configured: boolean
-  /** Secret-free display form of what the key resolves to. */
-  destination: string
-  config_source: "" | "toml" | "env" | "default"
-  detail: string
-  probed: boolean
-  ok: boolean
-  category: MlflowProbeCategory
-}
-
-export interface MlflowDestinationsResponse {
-  mlflow_installed: boolean
-  mlflow_importable: boolean
-  destinations: MlflowDestinationEntry[]
-  detail: string
-}
+export type MlflowProbeCategory = GeneratedMlflowTestConnectionResponse["category"]
 
 export interface ExecutionSettings {
   streaming_chunk_size: number
-}
-
-export interface MlflowSettingsResponse {
-  section_present: boolean
-  tracking_uri: string
-  folder: string
-  resolved_folder: string
-  detail: string
 }
 
 export interface MlflowSettingsUpdateRequest {
@@ -739,69 +727,23 @@ export interface MlflowTestConnectionRequest {
   folder?: string
 }
 
-export interface MlflowTestConnectionResponse {
-  ok: boolean
-  category: MlflowProbeCategory
-  detail?: string
-}
+/** Why a training estimate cannot size its input: one reason from a closed set. */
+export type TrainEstimateUnavailable =
+  | { reason: "row_count_unprovable"; blocking_node_id: string }
+  | { reason: "schema_unresolvable"; blocking_node_id: null }
 
-export interface EvaluationDateRange {
-  start: string
-  end: string
-}
-
-export interface EvaluationPreview {
-  schema_version: 1
-  strategy: "random" | "group" | "temporal"
-  validation_method: "none" | "single" | "cross_validation"
-  development_rows: number
-  final_test_rows: number
-  validation_fit_count: number
-  min_selection_train_rows?: number
-  max_selection_train_rows?: number
-  min_selection_validation_rows?: number
-  max_selection_validation_rows?: number
-  development_group_count?: number
-  final_test_group_count?: number
-  development_date_range?: EvaluationDateRange
-  final_test_date_range?: EvaluationDateRange
-}
-
-export interface TrainEstimate {
-  total_rows: number | null
-  safe_row_limit: number | null
-  estimated_mb: number
-  training_mb: number
-  available_mb: number
-  bytes_per_row: number
-  was_downsampled: boolean
-  warning: string | null
-  // GPU VRAM estimation (only populated when task_type is GPU)
-  gpu_vram_estimated_mb: number | null
-  gpu_vram_available_mb: number | null
-  gpu_warning: string | null
+/**
+ * The generated estimate with its cross-field rules applied by
+ * `parseTrainEstimateResponse`: the reason is the discriminated union above,
+ * and an omitted evaluation preview is null. Memory figures are null exactly
+ * when `unavailable` is set; `total_rows` only for `row_count_unprovable`.
+ */
+export type TrainEstimate = Omit<GeneratedTrainEstimateResponse, "unavailable" | "evaluation_preview"> & {
+  unavailable: TrainEstimateUnavailable | null
   evaluation_preview: EvaluationPreview | null
 }
 
 export type DispersionParam = "theta" | "var_power"
-
-export interface DispersionEstimateStart {
-  status: "started"
-  job_id: string
-}
-
-export interface DispersionEstimateStatus {
-  status: JobStatus
-  progress: number
-  message: string
-  elapsed_seconds: number
-  param: string | null
-  value: number | null
-  llf: number | null
-  n_fits: number | null
-  error: string | null
-  terminal_reason: string | null
-}
 
 export interface TrainFeatureImportanceRow {
   feature: string
@@ -1499,23 +1441,12 @@ export interface ModelSaveDestinationRequest {
   algorithm: "catboost" | "glm" | "xgboost" | "lightgbm" | "ebm"
 }
 
-export interface ModelSaveDestinationResponse {
-  path: string
-  suffix_mismatch: boolean
-}
-
 export interface SaveModelRequest {
   job_id: string
   /** A bare filename saves under models/; paths are project-root-relative. */
   output_path: string
   /** Replace an existing destination; without it the server answers 409. */
   overwrite: boolean
-}
-
-export interface SaveModelResponse {
-  status: "ok"
-  path: string
-  feature_contract_path: string
 }
 
 // ---------------------------------------------------------------------------
@@ -1786,46 +1717,17 @@ export interface FrontierSelectResponse {
 // Databricks types
 // ---------------------------------------------------------------------------
 
-export interface DatabricksWarehouse {
-  id: string
-  name: string
-  http_path: string
-  state: string
-  size: string
-}
-
-export interface DatabricksCatalog {
-  name: string
-  comment: string
-}
-
-export interface DatabricksSchema {
-  name: string
-  comment: string
-}
-
-export interface DatabricksTable {
-  name: string
-  full_name: string
-  table_type: string
-  comment: string
-}
-
-export interface DatabricksWarehousesResponse {
-  warehouses: DatabricksWarehouse[]
-}
-
-export interface DatabricksCatalogsResponse {
-  catalogs: DatabricksCatalog[]
-}
-
-export interface DatabricksSchemasResponse {
-  schemas: DatabricksSchema[]
-}
-
-export interface DatabricksTablesResponse {
-  tables: DatabricksTable[]
-}
+// Generated from the backend response models (scripts/generate_api_contracts.py).
+export type {
+  CatalogItem as DatabricksCatalog,
+  CatalogListResponse as DatabricksCatalogsResponse,
+  SchemaItem as DatabricksSchema,
+  SchemaListResponse as DatabricksSchemasResponse,
+  TableItem as DatabricksTable,
+  TableListResponse as DatabricksTablesResponse,
+  WarehouseItem as DatabricksWarehouse,
+  WarehouseListResponse as DatabricksWarehousesResponse,
+} from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------
 // JSON cache types
@@ -1868,37 +1770,6 @@ export interface JsonCacheStatusResponse {
 // MLflow browser types
 // ---------------------------------------------------------------------------
 
-export interface MlflowExperiment {
-  experiment_id: string
-  name: string
-}
-
-export interface MlflowRun {
-  run_id: string
-  run_name: string
-  metrics: Record<string, number>
-  artifacts: string[]
-  status?: string
-  start_time?: number | null
-  params?: Record<string, string>
-}
-
-export interface MlflowModel {
-  name: string
-  latest_versions: { version: string; status: string; run_id: string }[]
-}
-
-export interface MlflowModelVersion {
-  version: string
-  run_id: string
-  status: string
-  description: string
-  params?: Record<string, string>
-  creation_timestamp?: number | null
-  /** Registered model aliases currently targeting this version. */
-  aliases?: string[]
-}
-
 // ---------------------------------------------------------------------------
 // File browsing types
 // ---------------------------------------------------------------------------
@@ -1914,347 +1785,68 @@ export interface FileListItem {
 // Utility types
 // ---------------------------------------------------------------------------
 
-export interface UtilityFile {
-  name: string
-  module: string
-}
-
-export interface UtilityListResponse {
-  files: UtilityFile[]
-}
-
-export interface UtilityReadResponse {
-  name: string
-  module: string
-  content: string
-}
-
-export interface UtilityWriteResult {
-  status: string
-  name: string
-  module: string
-  import_line: string
-  error: string | null
-  error_line: number | null
-}
-
-export interface UtilityDeleteResponse {
-  status: string
-  module: string
-}
+// Generated from the backend response models (scripts/generate_api_contracts.py).
+export type {
+  UtilityDeleteResponse,
+  UtilityFileItem as UtilityFile,
+  UtilityListResponse,
+  UtilityReadResponse,
+  UtilityWriteResponse as UtilityWriteResult,
+} from "../generated/api-contracts.generated"
 
 // ---------------------------------------------------------------------------
 // Git types
 // ---------------------------------------------------------------------------
 
-export type WorkingBranchState = "git-unavailable" | "no-repository" | "unset" | "detached" | "invalid" | "divergent" | "ready"
+// Generated from the backend response models (scripts/generate_api_contracts.py).
+export type {
+  GitArchiveResponse,
+  GitBindStorageResponse,
+  GitBranchAwayResponse,
+  GitCommitContext,
+  GitCommitRef,
+  GitCommitResponse,
+  GitCreateWorkingBranchResponse,
+  GitDeleteBranchResponse,
+  GitFastForwardResponse,
+  GitFileChange,
+  GitForkStorageResponse,
+  GitGraphBranch,
+  GitGraphEntry,
+  GitGraphResponse,
+  GitLedgerSave,
+  GitLedgerSavesResponse,
+  GitManagedBranch,
+  GitMilestoneEntry,
+  GitMilestonesResponse,
+  GitMoveResponse,
+  GitPrefs,
+  GitPushResponse,
+  GitRemote,
+  GitRemoteLeg,
+  GitRemotesResponse,
+  GitRestoreResponse,
+  GitSetIdentityResponse,
+  GitSetWorkingBranchResponse,
+  GitStorageBind,
+  GitStorageClaim,
+  GitStorageSync,
+  GitUndeleteResponse,
+  GitWorkingBranchesResponse,
+  GitWorkingBranchResponse,
+  GitUpstreamStatusResponse as GitUpstreamStatus,
+} from "../generated/api-contracts.generated"
+
+export type WorkingBranchState = GeneratedGitWorkingBranchResponse["state"]
 
 /** Whether this deployment can durably remember a bound remote at all (§ hosted storage). */
-export type StorageState = "unsupported" | "unbound" | "bound"
+export type StorageState = GeneratedGitWorkingBranchResponse["storage"]
 
-export type SyncState = "synced" | "pending" | "failed"
+export type SyncState = GeneratedGitStorageSync["state"]
 
-export type SyncFailure = "transport" | "rejected" | "config"
+export type SyncFailure = NonNullable<GeneratedGitStorageSync["failure"]>
 
-export interface GitStorageSync {
-  state: SyncState
-  pending: number
-  failure: SyncFailure | null
-  message: string | null
-}
-
-export interface GitWorkingBranchResponse {
-  working_branch: string | null
-  state: WorkingBranchState
-  errors: string[]
-  current_branch: string
-  last_save_sha: string | null
-  eligible_branches: string[]
-  identity_set: boolean
-  user_name: string | null
-  user_email: string | null
-  head_sha?: string | null
-  /** Whether this deployment can durably remember a bound remote. Optional so
-   *  older backends (and existing fixtures) that omit it still type-check; the
-   *  parser defaults it to "unsupported" (hide the storage surface). */
-  storage?: StorageState
-  storage_remote?: string | null
-  /** Parent uc:// URL when the bound location is a fork (provenance). */
-  storage_forked_from?: string | null
-  sync?: GitStorageSync | null
-  /** Progress of a bind running in the background. */
-  storage_bind?: GitStorageBind | null
-}
-
-/** A bind is accepted immediately; the outcome arrives on `storage_bind`. */
-export interface GitBindStorageResponse {
-  outcome: "pending"
-  remote_url: string
-  message: string
-}
-
-export type BindState = "idle" | "running" | "succeeded" | "failed"
-
-export interface GitStorageBind {
-  state: BindState
-  outcome: "adopted" | "restart-required" | null
-  message: string | null
-  /** Set when the bind failed because another app holds the location. */
-  claim: GitStorageClaim | null
-  remote_url: string | null
-}
-
-/** Who holds a uc:// location's lease. */
-export interface GitStorageClaim {
-  app_name: string
-  user: string | null
-  refreshed_at: string | null
-  message: string
-}
-
-export interface GitForkStorageResponse {
-  outcome: "forked"
-  target_url: string
-  parent_url: string
-  parent_generation: number
-  message: string
-}
-
-/** A fork's measured relationship to the parent it was forked from.
- *  `can_fast_forward` is the single predicate the catch-up affordance keys on;
- *  `message` is hand-authored prose safe to render verbatim. */
-export interface GitUpstreamStatus {
-  parent_url: string
-  parent_generation: number
-  working: GitRemoteLeg
-  ledger: GitRemoteLeg
-  can_fast_forward: boolean
-  checked_at: string
-  message: string
-}
-
-export interface GitSetWorkingBranchResponse {
-  working_branch: string
-  state: WorkingBranchState
-  last_save_sha: string | null
-}
-
-/** Result of moving to a historical commit (detached checkout, §3.4). */
-export interface GitMoveResponse {
-  /** The commit now checked out (detached HEAD). */
-  sha: string
-  short_sha: string
-  /** The branch HEAD was on before the move — still reachable (no ref moved). */
-  prior_branch: string
-  /** Always true: a move leaves HEAD detached with no working branch recorded. */
-  is_detached: boolean
-}
-
-export interface GitSetIdentityResponse {
-  user_name: string
-  user_email: string
-  scope: "local" | "global"
-}
-
-export interface GitCommitResponse {
-  sha: string
-  short_sha: string
-  working_branch: string
-  version_label: string | null
-}
-
-export interface GitMilestoneEntry {
-  sha: string
-  short_sha: string
-  message: string
-  timestamp: string
-  version_label: string | null
-  /** The repo's initial commit (no parents) — shown with an "init" tag. */
-  is_root?: boolean
-}
-
-export interface GitMilestonesResponse {
-  working_branch: string | null
-  entries: GitMilestoneEntry[]
-}
-
-/** One commit on a branch's first-parent spine, in the graph payload. */
-export interface GitGraphEntry extends GitMilestoneEntry {
-  /** Full parent shas; >= 2 means the milestone folds ledger saves (a merge). */
-  parents: string[]
-}
-
-export interface GitGraphBranch {
-  name: string
-  is_archived: boolean
-  is_current: boolean
-  tip_sha: string
-  /** Newest spine commit already owned by an earlier-processed branch;
-   *  null for the root of its tree. */
-  fork_point_sha: string | null
-  /** Name of the branch owning that commit; null for the root of its tree. */
-  fork_of: string | null
-  /** The ledger SAVE this branch was actually spawned from, when that differs
-   *  from the fork-point milestone (crystallized / pending-save forks);
-   *  ancestry-derived. Anchors the spawn chip on the save row when visible. */
-  fork_source_sha: string | null
-  /** The parent-spine milestone whose fold contains fork_source_sha — the
-   *  milestone that takes credit for the spawn while collapsed. Null when the
-   *  source save is still pending (or there is no source). */
-  fork_credit_sha: string | null
-  /** Spine longer than the requested limit (entries windowed). */
-  truncated: boolean
-  /** Newest-first first-parent spine, windowed to the limit. */
-  entries: GitGraphEntry[]
-}
-
-export interface GitGraphResponse {
-  working_branch: string | null
-  /** Server-computed lane/colour ordering (processing order of the fork forest). */
-  order: string[]
-  branches: GitGraphBranch[]
-}
-
-/** A commit referenced in a breadcrumb (the nearest milestone, or a commit). */
-export interface GitCommitRef {
-  sha: string
-  short_sha: string
-  message: string
-  version_label: string | null
-  is_root: boolean
-}
-
-/** A commit's breadcrumb context: its nearest ancestor milestone + distance (S11). */
-export interface GitCommitContext {
-  sha: string
-  short_sha: string
-  message: string
-  timestamp: string
-  is_root: boolean
-  is_milestone: boolean
-  version_label: string | null
-  /** The latest milestone at this commit (its working-chain anchor). */
-  nearest_milestone: GitCommitRef
-  /** Commits between that milestone's fold-point and this commit. */
-  distance: number
-  /** Commits between a caller-supplied base and this commit (the historic↔current
-   *  span); null unless commit-context was queried with `?base=`. */
-  delta_from_base: number | null
-  /** Per-commit push status (nick-dev multi-frame addition). Optional: VC's
-   *  commit-context parser/model doesn't populate it, so consumers must treat
-   *  it as possibly-absent. */
-  pushed?: boolean
-  push_error?: string | null
-}
-
-export interface GitFileChange {
-  status: string // M | A | D | R | C | T
-  path: string
-  old_path: string | null
-}
-
-export interface GitLedgerSave {
-  sha: string
-  short_sha: string
-  message: string
-  timestamp: string
-  files: GitFileChange[]
-}
-
-export interface GitLedgerSavesResponse {
-  saves: GitLedgerSave[]
-}
-
-export interface GitManagedBranch {
-  name: string
-  is_current: boolean
-  is_archived: boolean
-  has_unmerged_saves: boolean
-  has_uncommitted_changes: boolean
-}
-
-export interface GitWorkingBranchesResponse {
-  current: string | null
-  branches: GitManagedBranch[]
-}
-
-/** POST /api/git/undelete — restore a trash-preserved deleted pair. */
-export interface GitUndeleteResponse {
-  status: string
-  branch: string
-}
-
-export interface GitRestoreResponse {
-  restored_as: string
-}
-
-export interface GitCreateWorkingBranchResponse {
-  working_branch: string
-  moved: boolean
-  switched: boolean
-  last_save_sha: string | null
-}
-
-export interface GitPrefs {
-  skip_switch_confirm: boolean
-}
-
-export interface GitArchiveResponse {
-  archived_as: string
-}
-
-export interface GitDeleteBranchResponse {
-  status: string
-  branch: string
-}
-
-/** Divergence of one local branch (working or its ledger) vs its remote-tracking
- *  ref. `status` is the honest tri-state (P7 F2): "untracked" = never pushed here
- *  (NOT in-sync), "unknown" = couldn't read, otherwise the measured state. */
-export interface GitRemoteLeg {
-  status: "untracked" | "unknown" | "synced" | "ahead" | "behind" | "diverged"
-  ahead: number | null
-  behind: number | null
-}
-
-export interface GitRemote {
-  name: string
-  url: string | null
-  /** Per-leg structured divergence (P7 F6). `working` is the working branch;
-   *  `ledger` surfaces the save-history leg — the two-machine accident is here. */
-  working: GitRemoteLeg | null
-  ledger: GitRemoteLeg | null
-}
-
-export interface GitRemotesResponse {
-  remotes: GitRemote[]
-  working_branch: string | null
-}
-
-export interface GitPushResponse {
-  remote: string
-  working_branch: string
-  ledger_branch: string
-  pushed_refs: string[]
-  default_branch: string
-  bootstrapped_default: boolean
-}
-
-/** A conflict-free catch-up result (P7 D1/D2): the working pair advanced to the
- *  remote's tips by fast-forward only. `fast_forwarded` lists the refs moved. */
-export interface GitFastForwardResponse {
-  remote: string
-  working_branch: string
-  fast_forwarded: string[]
-}
-
-/** A branch-away result (P7 M3): the local fork was set aside under a dated name
- *  and the canonical name now tracks the remote. `set_aside_as` is that dated
- *  name (surfaced to the user — S35). */
-export interface GitBranchAwayResponse {
-  working_branch: string
-  set_aside_as: string
-}
+export type BindState = GeneratedGitStorageBind["state"]
 
 /** A non-fast-forward push rejection (P7 M7): the body of a 409 from
  *  POST /api/git/push, carrying the per-leg divergence so the UI shows the honest
@@ -2262,8 +1854,8 @@ export interface GitBranchAwayResponse {
 export interface GitPushRejection {
   status: "rejected_diverged"
   remote: string
-  working: GitRemoteLeg
-  ledger: GitRemoteLeg | null
+  working: GeneratedGitRemoteLeg
+  ledger: GeneratedGitRemoteLeg | null
   message: string
   /** X3: the remote dropped a published commit (a rebase/force-push upstream),
    *  not an ordinary divergence — the modal says so distinctly. */
@@ -2277,7 +1869,7 @@ export interface GitPushRejection {
 export interface GitMilestoneFork {
   status: "would_fork"
   remote: string
-  working: GitRemoteLeg
+  working: GeneratedGitRemoteLeg
   message: string
 }
 

@@ -17,10 +17,6 @@ import type {
   CacheNodeEntry,
   CacheNodesResponse,
   CacheOwnerEntry,
-  DatabricksCatalogsResponse,
-  DatabricksSchemasResponse,
-  DatabricksTablesResponse,
-  DatabricksWarehousesResponse,
   DissolveSubmodelResponse,
   EditorIdentityBatchResponse,
   ExecutionAdmission,
@@ -66,43 +62,11 @@ import type {
   FrontierPointSummary,
   FrontierResponse,
   FrontierSelectResponse,
-  GitArchiveResponse,
-  GitDeleteBranchResponse,
-  GitCommitResponse,
-  GitMilestoneEntry,
-  GitMilestonesResponse,
-  GitCommitRef,
-  GitCommitContext,
-  GitMoveResponse,
-  GitFileChange,
-  GitLedgerSave,
-  GitLedgerSavesResponse,
-  GitManagedBranch,
-  GitWorkingBranchesResponse,
-  GitRestoreResponse,
-  GitUndeleteResponse,
-  GitCreateWorkingBranchResponse,
-  GitPrefs,
-  GitBranchAwayResponse,
-  GitFastForwardResponse,
-  GitGraphResponse,
   GitMilestoneFork,
-  GitRemote,
   GitRemoteLeg,
-  GitRemotesResponse,
   GitPushRejection,
-  GitPushResponse,
-  GitSetIdentityResponse,
-  GitBindStorageResponse,
-  GitForkStorageResponse,
-  GitStorageBind,
   GitStorageClaim,
-  GitUpstreamStatus,
-  GitSetWorkingBranchResponse,
-  GitStorageSync,
-  GitWorkingBranchResponse,
   IoCapabilitiesResponse,
-  ModellingGpuStatusResponse,
   IoCapabilityGroup,
   OutputDestinationResponse,
   IoFieldCapability,
@@ -119,18 +83,8 @@ import type {
   FileListItem,
   JsonCacheProgressResponse,
   JsonCacheStatusResponse,
-  MlflowDestinationEntry,
-  MlflowDestinationsResponse,
   ExecutionSettings,
-  MlflowSettingsResponse,
-  MlflowTestConnectionResponse,
-  MlflowExperiment,
   MlflowLogResponse,
-  ModelSaveDestinationResponse,
-  SaveModelResponse,
-  MlflowModel,
-  MlflowModelVersion,
-  MlflowRun,
   NodeDataClearResponse,
   NodeDataColumns,
   NodeDataPointResponse,
@@ -159,11 +113,6 @@ import type {
   SubmodelCreateResponse,
   SubmodelGraphResponse,
   TraceResponse,
-  UtilityDeleteResponse,
-  UtilityFile,
-  UtilityListResponse,
-  UtilityReadResponse,
-  UtilityWriteResult,
 } from "../api/types"
 import {
   JOB_STATUS_VALUES,
@@ -2000,19 +1949,6 @@ function parseIoCapabilityGroup(value: unknown, field: string): IoCapabilityGrou
   return { name: expectStringLiteral(p, obj.name, `${field}.name`, IO_GROUPS), label: expectString(p, obj.label, `${field}.label`), input_available: expectBoolean(p, obj.input_available, `${field}.input_available`), output_available: expectBoolean(p, obj.output_available, `${field}.output_available`), cache_modes: parseArray(p, obj.cache_modes, `${field}.cache_modes`, (v, f) => expectStringLiteral(p, v, f, IO_CACHE_MODES)), input_fields: parseArray(p, obj.input_fields, `${field}.input_fields`, parseIoFieldCapability), output_fields: parseArray(p, obj.output_fields, `${field}.output_fields`, parseIoFieldCapability), formats: parseArray(p, obj.formats, `${field}.formats`, parseIoFormatCapability) }
 }
 
-export function parseModellingGpuStatusResponse(value: unknown): ModellingGpuStatusResponse {
-  const p = "parseModellingGpuStatusResponse"
-  const obj = expectPlainObject(p, value)
-  const xgboost = expectPlainObject(p, obj.xgboost, "field `xgboost`")
-  return {
-    xgboost: {
-      available: expectBoolean(p, xgboost.available, "xgboost.available"),
-      detail: expectString(p, xgboost.detail, "xgboost.detail"),
-      device: expectNullableString(p, xgboost.device ?? null, "xgboost.device"),
-    },
-  }
-}
-
 export function parseIoCapabilitiesResponse(value: unknown): IoCapabilitiesResponse {
   const p = "parseIoCapabilitiesResponse"
   const obj = expectPlainObject(p, value)
@@ -2910,86 +2846,11 @@ export function parseExplorePivotMembersResponse(value: unknown): ExplorePivotMe
   }
 }
 
-const MLFLOW_DESTINATION_KEYS = ["databricks", "server", "local"] as const
-const MLFLOW_CONFIG_SOURCES = ["", "toml", "env", "default"] as const
-const MLFLOW_TEST_CATEGORIES = [
-  "",
-  "authentication",
-  "permission",
-  "missing_resource",
-  "connectivity",
-  "configuration",
-  "unknown",
-] as const
-
-function parseMlflowDestinationEntry(value: unknown, field: string): MlflowDestinationEntry {
-  const p = "parseMlflowDestinationsResponse"
-  const obj = expectPlainObject(p, value, field)
-  return {
-    key: expectStringLiteral(p, obj.key, `${field}.key`, MLFLOW_DESTINATION_KEYS),
-    configured: expectBoolean(p, obj.configured, `${field}.configured`),
-    destination: expectString(p, obj.destination, `${field}.destination`),
-    config_source: expectStringLiteral(
-      p,
-      obj.config_source,
-      `${field}.config_source`,
-      MLFLOW_CONFIG_SOURCES,
-    ),
-    detail: expectString(p, obj.detail, `${field}.detail`),
-    probed: expectBoolean(p, obj.probed, `${field}.probed`),
-    ok: expectBoolean(p, obj.ok, `${field}.ok`),
-    category: expectStringLiteral(p, obj.category, `${field}.category`, MLFLOW_TEST_CATEGORIES),
-  }
-}
-
-export function parseMlflowDestinationsResponse(value: unknown): MlflowDestinationsResponse {
-  const p = "parseMlflowDestinationsResponse"
-  const obj = expectPlainObject(p, value)
-  return {
-    mlflow_installed: expectBoolean(p, obj.mlflow_installed, "field `mlflow_installed`"),
-    mlflow_importable: expectBoolean(p, obj.mlflow_importable, "field `mlflow_importable`"),
-    destinations: parseArray(
-      p,
-      obj.destinations,
-      "field `destinations`",
-      parseMlflowDestinationEntry,
-    ),
-    detail: expectString(p, obj.detail, "field `detail`"),
-  }
-}
-
 export function parseExecutionSettings(value: unknown): ExecutionSettings {
   const p = "parseExecutionSettings"
   const obj = expectPlainObject(p, value)
   return {
     streaming_chunk_size: expectPositiveInteger(p, obj.streaming_chunk_size, "field `streaming_chunk_size`"),
-  }
-}
-
-export function parseMlflowSettingsResponse(value: unknown): MlflowSettingsResponse {
-  const p = "parseMlflowSettingsResponse"
-  const obj = expectPlainObject(p, value)
-  return {
-    section_present: expectBoolean(p, obj.section_present, "field `section_present`"),
-    tracking_uri: expectString(p, obj.tracking_uri, "field `tracking_uri`"),
-    folder: expectString(p, obj.folder, "field `folder`"),
-    resolved_folder: expectString(p, obj.resolved_folder, "field `resolved_folder`"),
-    detail: expectString(p, obj.detail, "field `detail`"),
-  }
-}
-
-export function parseMlflowTestConnectionResponse(value: unknown): MlflowTestConnectionResponse {
-  const obj = expectPlainObject("parseMlflowTestConnectionResponse", value)
-  const category = optionalString("parseMlflowTestConnectionResponse", obj, "category")
-  if (!(MLFLOW_TEST_CATEGORIES as readonly string[]).includes(category)) {
-    throw new Error(
-      `parseMlflowTestConnectionResponse: unexpected category \`${category}\``,
-    )
-  }
-  return {
-    ok: expectBoolean("parseMlflowTestConnectionResponse", obj.ok, "field `ok`"),
-    category: category as MlflowTestConnectionResponse["category"],
-    detail: optionalString("parseMlflowTestConnectionResponse", obj, "detail"),
   }
 }
 
@@ -3009,31 +2870,6 @@ export function parseMlflowLogResponse(value: unknown): MlflowLogResponse {
     ...(obj.logged_at === undefined
       ? {}
       : { logged_at: optionalNullableString("parseMlflowLogResponse", obj, "logged_at") }),
-  }
-}
-
-export function parseModelSaveDestinationResponse(value: unknown): ModelSaveDestinationResponse {
-  const obj = expectPlainObject("parseModelSaveDestinationResponse", value)
-  return {
-    path: expectString("parseModelSaveDestinationResponse", obj.path, "field `path`"),
-    suffix_mismatch: expectBoolean(
-      "parseModelSaveDestinationResponse",
-      obj.suffix_mismatch,
-      "field `suffix_mismatch`",
-    ),
-  }
-}
-
-export function parseSaveModelResponse(value: unknown): SaveModelResponse {
-  const obj = expectPlainObject("parseSaveModelResponse", value)
-  return {
-    status: expectStringLiteral("parseSaveModelResponse", obj.status, "field `status`", ["ok"]),
-    path: expectString("parseSaveModelResponse", obj.path, "field `path`"),
-    feature_contract_path: expectString(
-      "parseSaveModelResponse",
-      obj.feature_contract_path,
-      "field `feature_contract_path`",
-    ),
   }
 }
 
@@ -3386,71 +3222,6 @@ export function parseOptimiserStatusResponse(value: unknown): OptimiserStatusRes
 // Databricks / cache / git contracts
 // ---------------------------------------------------------------------------
 
-function parseWarehouse(value: unknown, field: string): DatabricksWarehousesResponse["warehouses"][number] {
-  const obj = expectPlainObject("parseDatabricksWarehousesResponse", value, field)
-  return {
-    id: expectString("parseDatabricksWarehousesResponse", obj.id, `${field}.id`),
-    name: expectString("parseDatabricksWarehousesResponse", obj.name, `${field}.name`),
-    http_path: expectString("parseDatabricksWarehousesResponse", obj.http_path, `${field}.http_path`),
-    state: expectString("parseDatabricksWarehousesResponse", obj.state, `${field}.state`),
-    size: optionalString("parseDatabricksWarehousesResponse", obj, "size"),
-  }
-}
-
-function parseCatalog(value: unknown, field: string): DatabricksCatalogsResponse["catalogs"][number] {
-  const obj = expectPlainObject("parseDatabricksCatalogsResponse", value, field)
-  return {
-    name: expectString("parseDatabricksCatalogsResponse", obj.name, `${field}.name`),
-    comment: optionalString("parseDatabricksCatalogsResponse", obj, "comment"),
-  }
-}
-
-function parseSchemaItem(value: unknown, field: string): DatabricksSchemasResponse["schemas"][number] {
-  const obj = expectPlainObject("parseDatabricksSchemasResponse", value, field)
-  return {
-    name: expectString("parseDatabricksSchemasResponse", obj.name, `${field}.name`),
-    comment: optionalString("parseDatabricksSchemasResponse", obj, "comment"),
-  }
-}
-
-function parseTableItem(value: unknown, field: string): DatabricksTablesResponse["tables"][number] {
-  const obj = expectPlainObject("parseDatabricksTablesResponse", value, field)
-  return {
-    name: expectString("parseDatabricksTablesResponse", obj.name, `${field}.name`),
-    full_name: expectString("parseDatabricksTablesResponse", obj.full_name, `${field}.full_name`),
-    table_type: optionalString("parseDatabricksTablesResponse", obj, "table_type"),
-    comment: optionalString("parseDatabricksTablesResponse", obj, "comment"),
-  }
-}
-
-export function parseDatabricksWarehousesResponse(value: unknown): DatabricksWarehousesResponse {
-  const obj = expectPlainObject("parseDatabricksWarehousesResponse", value)
-  return {
-    warehouses: optionalArray("parseDatabricksWarehousesResponse", obj, "warehouses", parseWarehouse),
-  }
-}
-
-export function parseDatabricksCatalogsResponse(value: unknown): DatabricksCatalogsResponse {
-  const obj = expectPlainObject("parseDatabricksCatalogsResponse", value)
-  return {
-    catalogs: optionalArray("parseDatabricksCatalogsResponse", obj, "catalogs", parseCatalog),
-  }
-}
-
-export function parseDatabricksSchemasResponse(value: unknown): DatabricksSchemasResponse {
-  const obj = expectPlainObject("parseDatabricksSchemasResponse", value)
-  return {
-    schemas: optionalArray("parseDatabricksSchemasResponse", obj, "schemas", parseSchemaItem),
-  }
-}
-
-export function parseDatabricksTablesResponse(value: unknown): DatabricksTablesResponse {
-  const obj = expectPlainObject("parseDatabricksTablesResponse", value)
-  return {
-    tables: optionalArray("parseDatabricksTablesResponse", obj, "tables", parseTableItem),
-  }
-}
-
 export function parseJsonCacheBuildResponse(value: unknown): JsonCacheBuildResponse {
   const obj = expectPlainObject("parseJsonCacheBuildResponse", value)
   return {
@@ -3525,68 +3296,6 @@ export function parseJsonCacheSchemaInferenceResponse(value: unknown): { tables:
   return { tables: parsePlainObjectArray("parseJsonCacheSchemaInferenceResponse", obj.tables, "field `tables`") }
 }
 
-export function parseMlflowExperiments(value: unknown): MlflowExperiment[] {
-  return parseArray("parseMlflowExperiments", value, "response", (item, field) => {
-    const obj = expectPlainObject("parseMlflowExperiments", item, field)
-    return {
-      experiment_id: expectString("parseMlflowExperiments", obj.experiment_id, `${field}.experiment_id`),
-      name: expectString("parseMlflowExperiments", obj.name, `${field}.name`),
-    }
-  })
-}
-
-export function parseMlflowRuns(value: unknown): MlflowRun[] {
-  return parseArray("parseMlflowRuns", value, "response", (item, field) => {
-    const obj = expectPlainObject("parseMlflowRuns", item, field)
-    return {
-      run_id: expectString("parseMlflowRuns", obj.run_id, `${field}.run_id`),
-      run_name: expectString("parseMlflowRuns", obj.run_name, `${field}.run_name`),
-      metrics: parseNumberRecord("parseMlflowRuns", obj.metrics, `${field}.metrics`),
-      artifacts: parseStringArray("parseMlflowRuns", obj.artifacts, `${field}.artifacts`),
-      ...(obj.status === undefined ? {} : { status: expectString("parseMlflowRuns", obj.status, `${field}.status`) }),
-      ...(obj.start_time === undefined ? {} : { start_time: expectNullableNumber("parseMlflowRuns", obj.start_time, `${field}.start_time`) }),
-      ...(obj.params === undefined ? {} : { params: parseStringRecord("parseMlflowRuns", obj.params, `${field}.params`) }),
-    }
-  })
-}
-
-export function parseMlflowModels(value: unknown): MlflowModel[] {
-  return parseArray("parseMlflowModels", value, "response", (item, field) => {
-    const obj = expectPlainObject("parseMlflowModels", item, field)
-    return {
-      name: expectString("parseMlflowModels", obj.name, `${field}.name`),
-      latest_versions: parseArray("parseMlflowModels", obj.latest_versions, `${field}.latest_versions`, (version, versionField) => {
-        const versionObj = expectPlainObject("parseMlflowModels", version, versionField)
-        return {
-          version: expectString("parseMlflowModels", versionObj.version, `${versionField}.version`),
-          status: expectString("parseMlflowModels", versionObj.status, `${versionField}.status`),
-          run_id: expectString("parseMlflowModels", versionObj.run_id, `${versionField}.run_id`),
-        }
-      }),
-    }
-  })
-}
-
-export function parseMlflowModelVersions(value: unknown): MlflowModelVersion[] {
-  return parseArray("parseMlflowModelVersions", value, "response", (item, field) => {
-    const obj = expectPlainObject("parseMlflowModelVersions", item, field)
-    return {
-      version: expectString("parseMlflowModelVersions", obj.version, `${field}.version`),
-      run_id: expectString("parseMlflowModelVersions", obj.run_id, `${field}.run_id`),
-      status: expectString("parseMlflowModelVersions", obj.status, `${field}.status`),
-      description: expectString("parseMlflowModelVersions", obj.description, `${field}.description`),
-      ...(obj.params === undefined ? {} : { params: parseStringRecord("parseMlflowModelVersions", obj.params, `${field}.params`) }),
-      ...(obj.creation_timestamp === undefined ? {} : { creation_timestamp: expectNullableNumber("parseMlflowModelVersions", obj.creation_timestamp, `${field}.creation_timestamp`) }),
-      ...(obj.aliases === undefined
-        ? {}
-        : {
-          aliases: parseArray("parseMlflowModelVersions", obj.aliases, `${field}.aliases`, (alias, aliasField) =>
-            expectString("parseMlflowModelVersions", alias, aliasField)),
-        }),
-    }
-  })
-}
-
 export function parseFileListResponse(value: unknown): { items?: FileListItem[] } {
   const obj = expectPlainObject("parseFileListResponse", value)
   if (obj.items === undefined) return {}
@@ -3600,150 +3309,6 @@ export function parseFileListResponse(value: unknown): { items?: FileListItem[] 
         ...(itemObj.size === undefined ? {} : { size: expectNullableNumber("parseFileListResponse", itemObj.size, `${field}.size`) }),
       }
     }),
-  }
-}
-
-function parseUtilityFile(value: unknown, field: string): UtilityFile {
-  const obj = expectPlainObject("parseUtilityListResponse", value, field)
-  return {
-    name: expectString("parseUtilityListResponse", obj.name, `${field}.name`),
-    module: expectString("parseUtilityListResponse", obj.module, `${field}.module`),
-  }
-}
-
-export function parseUtilityListResponse(value: unknown): UtilityListResponse {
-  const obj = expectPlainObject("parseUtilityListResponse", value)
-  return {
-    files: optionalArray("parseUtilityListResponse", obj, "files", parseUtilityFile),
-  }
-}
-
-export function parseUtilityReadResponse(value: unknown): UtilityReadResponse {
-  const obj = expectPlainObject("parseUtilityReadResponse", value)
-  return {
-    name: expectString("parseUtilityReadResponse", obj.name, "field `name`"),
-    module: expectString("parseUtilityReadResponse", obj.module, "field `module`"),
-    content: expectString("parseUtilityReadResponse", obj.content, "field `content`"),
-  }
-}
-
-export function parseUtilityWriteResponse(value: unknown): UtilityWriteResult {
-  const obj = expectPlainObject("parseUtilityWriteResponse", value)
-  return {
-    status: optionalString("parseUtilityWriteResponse", obj, "status", "ok"),
-    name: optionalString("parseUtilityWriteResponse", obj, "name"),
-    module: optionalString("parseUtilityWriteResponse", obj, "module"),
-    import_line: optionalString("parseUtilityWriteResponse", obj, "import_line"),
-    error: optionalNullableString("parseUtilityWriteResponse", obj, "error"),
-    error_line: optionalNullableNumber("parseUtilityWriteResponse", obj, "error_line"),
-  }
-}
-
-export function parseUtilityDeleteResponse(value: unknown): UtilityDeleteResponse {
-  const obj = expectPlainObject("parseUtilityDeleteResponse", value)
-  return {
-    status: optionalString("parseUtilityDeleteResponse", obj, "status", "ok"),
-    module: expectString("parseUtilityDeleteResponse", obj.module, "field `module`"),
-  }
-}
-
-const WORKING_BRANCH_STATES = ["git-unavailable", "no-repository", "unset", "detached", "invalid", "divergent", "ready"] as const
-
-const STORAGE_STATES = ["unsupported", "unbound", "bound"] as const
-
-const SYNC_STATES = ["synced", "pending", "failed"] as const
-
-const SYNC_FAILURES = ["transport", "rejected", "config"] as const
-
-/** Older backends omit the storage surface entirely — default to "unsupported"
- *  (hide the surface) rather than throw, and treat `sync` as absent (null). */
-function parseGitStorageSync(
-  parser: string,
-  obj: Record<string, unknown>,
-  key: string,
-): GitStorageSync | null {
-  const value = obj[key]
-  if (value === undefined || value === null) return null
-  const syncObj = expectPlainObject(parser, value, `field \`${key}\``)
-  return {
-    state: expectStringLiteral(parser, syncObj.state, `field \`${key}.state\``, SYNC_STATES),
-    pending: optionalNumber(parser, syncObj, "pending"),
-    failure: expectNullableStringLiteral(
-      parser,
-      syncObj.failure === undefined ? null : syncObj.failure,
-      `field \`${key}.failure\``,
-      SYNC_FAILURES,
-    ),
-    message: optionalNullableString(parser, syncObj, "message"),
-  }
-}
-
-export function parseGitWorkingBranchResponse(value: unknown): GitWorkingBranchResponse {
-  const obj = expectPlainObject("parseGitWorkingBranchResponse", value)
-  return {
-    working_branch: optionalNullableString("parseGitWorkingBranchResponse", obj, "working_branch"),
-    state: expectStringLiteral(
-      "parseGitWorkingBranchResponse",
-      obj.state,
-      "field `state`",
-      WORKING_BRANCH_STATES,
-    ),
-    errors: optionalStringArray("parseGitWorkingBranchResponse", obj, "errors"),
-    current_branch: expectString(
-      "parseGitWorkingBranchResponse",
-      obj.current_branch,
-      "field `current_branch`",
-    ),
-    last_save_sha: optionalNullableString("parseGitWorkingBranchResponse", obj, "last_save_sha"),
-    eligible_branches: optionalStringArray(
-      "parseGitWorkingBranchResponse",
-      obj,
-      "eligible_branches",
-    ),
-    identity_set: optionalBoolean("parseGitWorkingBranchResponse", obj, "identity_set"),
-    user_name: optionalNullableString("parseGitWorkingBranchResponse", obj, "user_name"),
-    user_email: optionalNullableString("parseGitWorkingBranchResponse", obj, "user_email"),
-    head_sha: optionalNullableString("parseGitWorkingBranchResponse", obj, "head_sha"),
-    storage:
-      obj.storage === undefined
-        ? "unsupported"
-        : expectStringLiteral("parseGitWorkingBranchResponse", obj.storage, "field `storage`", STORAGE_STATES),
-    storage_remote: optionalNullableString("parseGitWorkingBranchResponse", obj, "storage_remote"),
-    storage_forked_from: optionalNullableString(
-      "parseGitWorkingBranchResponse",
-      obj,
-      "storage_forked_from",
-    ),
-    sync: parseGitStorageSync("parseGitWorkingBranchResponse", obj, "sync"),
-    storage_bind: parseGitStorageBind("parseGitWorkingBranchResponse", obj, "storage_bind"),
-  }
-}
-
-const BIND_STATES = ["idle", "running", "succeeded", "failed"] as const
-
-const BIND_OUTCOMES = ["adopted", "restart-required"] as const
-
-/** Older backends omit the async-bind surface — read it as absent (null)
- *  rather than throw, so a stale server still renders the rest. */
-function parseGitStorageBind(
-  parser: string,
-  obj: Record<string, unknown>,
-  key: string,
-): GitStorageBind | null {
-  const value = obj[key]
-  if (value === undefined || value === null) return null
-  const bindObj = expectPlainObject(parser, value, `field \`${key}\``)
-  return {
-    state: expectStringLiteral(parser, bindObj.state, `field \`${key}.state\``, BIND_STATES),
-    outcome: expectNullableStringLiteral(
-      parser,
-      bindObj.outcome === undefined ? null : bindObj.outcome,
-      `field \`${key}.outcome\``,
-      BIND_OUTCOMES,
-    ),
-    message: optionalNullableString(parser, bindObj, "message"),
-    claim: gitStorageClaimFromDetail(bindObj.claim),
-    remote_url: optionalNullableString(parser, bindObj, "remote_url"),
   }
 }
 
@@ -3763,261 +3328,6 @@ export function gitStorageClaimFromDetail(value: unknown): GitStorageClaim | nul
   }
 }
 
-export function parseGitForkStorageResponse(value: unknown): GitForkStorageResponse {
-  const obj = expectPlainObject("parseGitForkStorageResponse", value)
-  return {
-    outcome: expectStringLiteral("parseGitForkStorageResponse", obj.outcome, "field `outcome`", [
-      "forked",
-    ] as const),
-    target_url: expectString("parseGitForkStorageResponse", obj.target_url, "field `target_url`"),
-    parent_url: expectString("parseGitForkStorageResponse", obj.parent_url, "field `parent_url`"),
-    parent_generation: expectNumber(
-      "parseGitForkStorageResponse",
-      obj.parent_generation,
-      "field `parent_generation`",
-    ),
-    message: expectString("parseGitForkStorageResponse", obj.message, "field `message`"),
-  }
-}
-
-export function parseGitUpstreamStatusResponse(value: unknown): GitUpstreamStatus {
-  const obj = expectPlainObject("parseGitUpstreamStatusResponse", value)
-  return {
-    parent_url: expectString("parseGitUpstreamStatusResponse", obj.parent_url, "field `parent_url`"),
-    parent_generation: expectNumber(
-      "parseGitUpstreamStatusResponse",
-      obj.parent_generation,
-      "field `parent_generation`",
-    ),
-    working: parseGitRemoteLeg(obj.working, "working"),
-    ledger: parseGitRemoteLeg(obj.ledger, "ledger"),
-    can_fast_forward: expectBoolean(
-      "parseGitUpstreamStatusResponse",
-      obj.can_fast_forward,
-      "field `can_fast_forward`",
-    ),
-    checked_at: expectString("parseGitUpstreamStatusResponse", obj.checked_at, "field `checked_at`"),
-    message: expectString("parseGitUpstreamStatusResponse", obj.message, "field `message`"),
-  }
-}
-
-export function parseGitBindStorageResponse(value: unknown): GitBindStorageResponse {
-  const obj = expectPlainObject("parseGitBindStorageResponse", value)
-  return {
-    outcome: expectStringLiteral("parseGitBindStorageResponse", obj.outcome, "field `outcome`", [
-      "pending",
-    ] as const),
-    remote_url: expectString("parseGitBindStorageResponse", obj.remote_url, "field `remote_url`"),
-    message: expectString("parseGitBindStorageResponse", obj.message, "field `message`"),
-  }
-}
-
-export function parseGitSetWorkingBranchResponse(value: unknown): GitSetWorkingBranchResponse {
-  const obj = expectPlainObject("parseGitSetWorkingBranchResponse", value)
-  return {
-    working_branch: expectString(
-      "parseGitSetWorkingBranchResponse",
-      obj.working_branch,
-      "field `working_branch`",
-    ),
-    state: expectStringLiteral(
-      "parseGitSetWorkingBranchResponse",
-      obj.state,
-      "field `state`",
-      WORKING_BRANCH_STATES,
-    ),
-    last_save_sha: optionalNullableString(
-      "parseGitSetWorkingBranchResponse",
-      obj,
-      "last_save_sha",
-    ),
-  }
-}
-
-export function parseGitMoveResponse(value: unknown): GitMoveResponse {
-  const obj = expectPlainObject("parseGitMoveResponse", value)
-  return {
-    sha: expectString("parseGitMoveResponse", obj.sha, "field `sha`"),
-    short_sha: expectString("parseGitMoveResponse", obj.short_sha, "field `short_sha`"),
-    prior_branch: expectString("parseGitMoveResponse", obj.prior_branch, "field `prior_branch`"),
-    is_detached: expectBoolean("parseGitMoveResponse", obj.is_detached, "field `is_detached`"),
-  }
-}
-
-export function parseGitSetIdentityResponse(value: unknown): GitSetIdentityResponse {
-  const obj = expectPlainObject("parseGitSetIdentityResponse", value)
-  return {
-    user_name: expectString("parseGitSetIdentityResponse", obj.user_name, "field `user_name`"),
-    user_email: expectString("parseGitSetIdentityResponse", obj.user_email, "field `user_email`"),
-    scope: expectStringLiteral("parseGitSetIdentityResponse", obj.scope, "field `scope`", [
-      "local",
-      "global",
-    ] as const),
-  }
-}
-
-export function parseGitCommitResponse(value: unknown): GitCommitResponse {
-  const obj = expectPlainObject("parseGitCommitResponse", value)
-  return {
-    sha: expectString("parseGitCommitResponse", obj.sha, "field `sha`"),
-    short_sha: expectString("parseGitCommitResponse", obj.short_sha, "field `short_sha`"),
-    working_branch: expectString(
-      "parseGitCommitResponse",
-      obj.working_branch,
-      "field `working_branch`",
-    ),
-    version_label: optionalNullableString("parseGitCommitResponse", obj, "version_label"),
-  }
-}
-
-function parseGitMilestoneEntry(value: unknown, field: string): GitMilestoneEntry {
-  const obj = expectPlainObject("parseGitMilestonesResponse", value, field)
-  return {
-    sha: expectString("parseGitMilestonesResponse", obj.sha, `${field}.sha`),
-    short_sha: expectString("parseGitMilestonesResponse", obj.short_sha, `${field}.short_sha`),
-    message: expectString("parseGitMilestonesResponse", obj.message, `${field}.message`),
-    timestamp: expectString("parseGitMilestonesResponse", obj.timestamp, `${field}.timestamp`),
-    version_label: optionalNullableString("parseGitMilestonesResponse", obj, "version_label"),
-    is_root: optionalBoolean("parseGitMilestonesResponse", obj, "is_root", false),
-  }
-}
-
-export function parseGitMilestonesResponse(value: unknown): GitMilestonesResponse {
-  const obj = expectPlainObject("parseGitMilestonesResponse", value)
-  return {
-    working_branch: optionalNullableString("parseGitMilestonesResponse", obj, "working_branch"),
-    entries: optionalArray("parseGitMilestonesResponse", obj, "entries", parseGitMilestoneEntry),
-  }
-}
-
-export function parseGitGraphResponse(value: unknown): GitGraphResponse {
-  const obj = expectPlainObject("parseGitGraphResponse", value)
-  return {
-    working_branch: expectNullableString("parseGitGraphResponse", obj.working_branch, "field `working_branch`"),
-    order: parseStringArray("parseGitGraphResponse", obj.order, "field `order`"),
-    branches: parseArray("parseGitGraphResponse", obj.branches, "field `branches`", (branch, field) => {
-      const branchObj = expectPlainObject("parseGitGraphResponse", branch, field)
-      return {
-        name: expectString("parseGitGraphResponse", branchObj.name, `${field}.name`),
-        is_archived: expectBoolean("parseGitGraphResponse", branchObj.is_archived, `${field}.is_archived`),
-        is_current: expectBoolean("parseGitGraphResponse", branchObj.is_current, `${field}.is_current`),
-        tip_sha: expectString("parseGitGraphResponse", branchObj.tip_sha, `${field}.tip_sha`),
-        fork_point_sha: expectNullableString("parseGitGraphResponse", branchObj.fork_point_sha, `${field}.fork_point_sha`),
-        fork_of: expectNullableString("parseGitGraphResponse", branchObj.fork_of, `${field}.fork_of`),
-        fork_source_sha: expectNullableString("parseGitGraphResponse", branchObj.fork_source_sha, `${field}.fork_source_sha`),
-        fork_credit_sha: expectNullableString("parseGitGraphResponse", branchObj.fork_credit_sha, `${field}.fork_credit_sha`),
-        truncated: expectBoolean("parseGitGraphResponse", branchObj.truncated, `${field}.truncated`),
-        entries: parseArray("parseGitGraphResponse", branchObj.entries, `${field}.entries`, (entry, entryField) => {
-          const entryObj = expectPlainObject("parseGitGraphResponse", entry, entryField)
-          return {
-            sha: expectString("parseGitGraphResponse", entryObj.sha, `${entryField}.sha`),
-            short_sha: expectString("parseGitGraphResponse", entryObj.short_sha, `${entryField}.short_sha`),
-            message: expectString("parseGitGraphResponse", entryObj.message, `${entryField}.message`),
-            timestamp: expectString("parseGitGraphResponse", entryObj.timestamp, `${entryField}.timestamp`),
-            version_label: expectNullableString("parseGitGraphResponse", entryObj.version_label, `${entryField}.version_label`),
-            ...(entryObj.is_root === undefined ? {} : { is_root: expectBoolean("parseGitGraphResponse", entryObj.is_root, `${entryField}.is_root`) }),
-            parents: parseStringArray("parseGitGraphResponse", entryObj.parents, `${entryField}.parents`),
-          }
-        }),
-      }
-    }),
-  }
-}
-
-function parseGitCommitRef(value: unknown, field: string): GitCommitRef {
-  const obj = expectPlainObject("parseGitCommitContext", value, field)
-  return {
-    sha: expectString("parseGitCommitContext", obj.sha, `${field}.sha`),
-    short_sha: expectString("parseGitCommitContext", obj.short_sha, `${field}.short_sha`),
-    message: expectString("parseGitCommitContext", obj.message, `${field}.message`),
-    version_label: optionalNullableString("parseGitCommitContext", obj, "version_label"),
-    is_root: optionalBoolean("parseGitCommitContext", obj, "is_root", false),
-  }
-}
-
-export function parseGitCommitContext(value: unknown): GitCommitContext {
-  const obj = expectPlainObject("parseGitCommitContext", value)
-  return {
-    sha: expectString("parseGitCommitContext", obj.sha, "field `sha`"),
-    short_sha: expectString("parseGitCommitContext", obj.short_sha, "field `short_sha`"),
-    message: expectString("parseGitCommitContext", obj.message, "field `message`"),
-    timestamp: expectString("parseGitCommitContext", obj.timestamp, "field `timestamp`"),
-    is_root: optionalBoolean("parseGitCommitContext", obj, "is_root", false),
-    is_milestone: optionalBoolean("parseGitCommitContext", obj, "is_milestone", false),
-    version_label: optionalNullableString("parseGitCommitContext", obj, "version_label"),
-    nearest_milestone: parseGitCommitRef(obj.nearest_milestone, "nearest_milestone"),
-    distance: expectNumber("parseGitCommitContext", obj.distance, "field `distance`"),
-    delta_from_base: optionalNullableNumber("parseGitCommitContext", obj, "delta_from_base"),
-  }
-}
-
-function parseGitFileChange(value: unknown, field: string): GitFileChange {
-  const obj = expectPlainObject("parseGitLedgerSavesResponse", value, field)
-  return {
-    status: expectString("parseGitLedgerSavesResponse", obj.status, `${field}.status`),
-    path: expectString("parseGitLedgerSavesResponse", obj.path, `${field}.path`),
-    old_path: optionalNullableString("parseGitLedgerSavesResponse", obj, "old_path"),
-  }
-}
-
-function parseGitLedgerSave(value: unknown, field: string): GitLedgerSave {
-  const obj = expectPlainObject("parseGitLedgerSavesResponse", value, field)
-  return {
-    sha: expectString("parseGitLedgerSavesResponse", obj.sha, `${field}.sha`),
-    short_sha: expectString("parseGitLedgerSavesResponse", obj.short_sha, `${field}.short_sha`),
-    message: expectString("parseGitLedgerSavesResponse", obj.message, `${field}.message`),
-    timestamp: expectString("parseGitLedgerSavesResponse", obj.timestamp, `${field}.timestamp`),
-    files: optionalArray("parseGitLedgerSavesResponse", obj, "files", parseGitFileChange),
-  }
-}
-
-export function parseGitLedgerSavesResponse(value: unknown): GitLedgerSavesResponse {
-  const obj = expectPlainObject("parseGitLedgerSavesResponse", value)
-  return {
-    saves: optionalArray("parseGitLedgerSavesResponse", obj, "saves", parseGitLedgerSave),
-  }
-}
-
-function parseGitManagedBranch(value: unknown, field: string): GitManagedBranch {
-  const obj = expectPlainObject("parseGitWorkingBranchesResponse", value, field)
-  return {
-    name: expectString("parseGitWorkingBranchesResponse", obj.name, `${field}.name`),
-    is_current: expectBoolean("parseGitWorkingBranchesResponse", obj.is_current, `${field}.is_current`),
-    is_archived: expectBoolean("parseGitWorkingBranchesResponse", obj.is_archived, `${field}.is_archived`),
-    has_unmerged_saves: expectBoolean(
-      "parseGitWorkingBranchesResponse", obj.has_unmerged_saves, `${field}.has_unmerged_saves`,
-    ),
-    has_uncommitted_changes: optionalBoolean(
-      "parseGitWorkingBranchesResponse", obj, "has_uncommitted_changes", false,
-    ),
-  }
-}
-
-export function parseGitWorkingBranchesResponse(value: unknown): GitWorkingBranchesResponse {
-  const obj = expectPlainObject("parseGitWorkingBranchesResponse", value)
-  return {
-    current: optionalNullableString("parseGitWorkingBranchesResponse", obj, "current"),
-    branches: optionalArray(
-      "parseGitWorkingBranchesResponse", obj, "branches", parseGitManagedBranch,
-    ),
-  }
-}
-
-export function parseGitRestoreResponse(value: unknown): GitRestoreResponse {
-  const obj = expectPlainObject("parseGitRestoreResponse", value)
-  return {
-    restored_as: expectString("parseGitRestoreResponse", obj.restored_as, "restored_as"),
-  }
-}
-
-export function parseGitUndeleteResponse(value: unknown): GitUndeleteResponse {
-  const obj = expectPlainObject("parseGitUndeleteResponse", value)
-  return {
-    status: expectString("parseGitUndeleteResponse", obj.status, "status"),
-    branch: expectString("parseGitUndeleteResponse", obj.branch, "branch"),
-  }
-}
-
 const LEG_STATUSES: ReadonlySet<string> = new Set([
   "untracked", "unknown", "synced", "ahead", "behind", "diverged",
 ])
@@ -4032,69 +3342,6 @@ function parseGitRemoteLeg(value: unknown, field: string): GitRemoteLeg {
     status: status as GitRemoteLeg["status"],
     ahead: optionalNullableNumber("parseGitRemotesResponse", obj, "ahead"),
     behind: optionalNullableNumber("parseGitRemotesResponse", obj, "behind"),
-  }
-}
-
-function parseGitRemote(value: unknown, field: string): GitRemote {
-  const obj = expectPlainObject("parseGitRemotesResponse", value, field)
-  return {
-    name: expectString("parseGitRemotesResponse", obj.name, `${field}.name`),
-    url: optionalNullableString("parseGitRemotesResponse", obj, "url"),
-    working: obj.working == null
-      ? null
-      : parseGitRemoteLeg(obj.working, `${field}.working`),
-    ledger: obj.ledger == null
-      ? null
-      : parseGitRemoteLeg(obj.ledger, `${field}.ledger`),
-  }
-}
-
-export function parseGitRemotesResponse(value: unknown): GitRemotesResponse {
-  const obj = expectPlainObject("parseGitRemotesResponse", value)
-  return {
-    remotes: optionalArray("parseGitRemotesResponse", obj, "remotes", parseGitRemote),
-    working_branch: optionalNullableString("parseGitRemotesResponse", obj, "working_branch"),
-  }
-}
-
-export function parseGitPushResponse(value: unknown): GitPushResponse {
-  const obj = expectPlainObject("parseGitPushResponse", value)
-  return {
-    remote: expectString("parseGitPushResponse", obj.remote, "remote"),
-    working_branch: expectString("parseGitPushResponse", obj.working_branch, "working_branch"),
-    ledger_branch: expectString("parseGitPushResponse", obj.ledger_branch, "ledger_branch"),
-    pushed_refs: optionalStringArray("parseGitPushResponse", obj, "pushed_refs"),
-    default_branch: expectString("parseGitPushResponse", obj.default_branch, "default_branch"),
-    bootstrapped_default: expectBoolean(
-      "parseGitPushResponse",
-      obj.bootstrapped_default,
-      "bootstrapped_default",
-    ),
-  }
-}
-
-export function parseGitFastForwardResponse(value: unknown): GitFastForwardResponse {
-  const obj = expectPlainObject("parseGitFastForwardResponse", value)
-  return {
-    remote: expectString("parseGitFastForwardResponse", obj.remote, "remote"),
-    working_branch: expectString(
-      "parseGitFastForwardResponse",
-      obj.working_branch,
-      "working_branch",
-    ),
-    fast_forwarded: optionalStringArray("parseGitFastForwardResponse", obj, "fast_forwarded"),
-  }
-}
-
-export function parseGitBranchAwayResponse(value: unknown): GitBranchAwayResponse {
-  const obj = expectPlainObject("parseGitBranchAwayResponse", value)
-  return {
-    working_branch: expectString(
-      "parseGitBranchAwayResponse",
-      obj.working_branch,
-      "working_branch",
-    ),
-    set_aside_as: expectString("parseGitBranchAwayResponse", obj.set_aside_as, "set_aside_as"),
   }
 }
 
@@ -4121,48 +3368,6 @@ export function parseGitMilestoneFork(value: unknown): GitMilestoneFork | null {
     remote: expectString("parseGitMilestoneFork", value.remote, "remote"),
     working: parseGitRemoteLeg(value.working, "working"),
     message: expectString("parseGitMilestoneFork", value.message, "message"),
-  }
-}
-
-export function parseGitCreateWorkingBranchResponse(
-  value: unknown,
-): GitCreateWorkingBranchResponse {
-  const obj = expectPlainObject("parseGitCreateWorkingBranchResponse", value)
-  return {
-    working_branch: expectString(
-      "parseGitCreateWorkingBranchResponse", obj.working_branch, "working_branch",
-    ),
-    moved: expectBoolean("parseGitCreateWorkingBranchResponse", obj.moved, "moved"),
-    switched: expectBoolean(
-      "parseGitCreateWorkingBranchResponse", obj.switched, "switched",
-    ),
-    last_save_sha: optionalNullableString(
-      "parseGitCreateWorkingBranchResponse", obj, "last_save_sha",
-    ),
-  }
-}
-
-export function parseGitPrefs(value: unknown): GitPrefs {
-  const obj = expectPlainObject("parseGitPrefs", value)
-  return {
-    skip_switch_confirm: optionalBoolean(
-      "parseGitPrefs", obj, "skip_switch_confirm", false,
-    ),
-  }
-}
-
-export function parseGitArchiveResponse(value: unknown): GitArchiveResponse {
-  const obj = expectPlainObject("parseGitArchiveResponse", value)
-  return {
-    archived_as: expectString("parseGitArchiveResponse", obj.archived_as, "field `archived_as`"),
-  }
-}
-
-export function parseGitDeleteBranchResponse(value: unknown): GitDeleteBranchResponse {
-  const obj = expectPlainObject("parseGitDeleteBranchResponse", value)
-  return {
-    status: optionalString("parseGitDeleteBranchResponse", obj, "status", "ok"),
-    branch: expectString("parseGitDeleteBranchResponse", obj.branch, "field `branch`"),
   }
 }
 

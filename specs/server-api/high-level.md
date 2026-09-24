@@ -315,9 +315,12 @@ request is a transport error. The endpoint reads and writes no project state.
 - **One stable schema surface, one shared error hierarchy.** Nearly every route in the product —
   including the ones owned by other components — imports its Pydantic models from
   `schemas.py`, which may re-export cohesive private domain modules, and raises through
-  `errors.py`'s `HauteError` family. The execution-diagnostic and Explore-chart pilots generate
-  reviewed browser declarations and standalone validators from their canonical Pydantic models;
-  other frontend contracts remain explicitly maintained rather than being claimed as generated.
+  `errors.py`'s `HauteError` family. The execution-diagnostic and Explore-chart pilots, and the
+  response models of each converted module group (`RESPONSE_CONTRACT_GROUPS` in
+  `scripts/generate_api_contracts.py`), generate reviewed browser declarations and standalone
+  validators from their canonical Pydantic models; the browser checks those responses with the
+  generated validators alone. Other frontend contracts remain explicitly maintained until they
+  are converted, rather than being claimed as generated.
   A single `except HauteError` at any boundary catches the
   entire product's domain-error surface (with the documented exceptions — the OUTPUT
   dry-run request/response models are route-local, and resource-exhaustion

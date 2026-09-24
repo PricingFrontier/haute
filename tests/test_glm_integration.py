@@ -1085,5 +1085,4 @@ def test_all_factors_is_gone():
                 continue
             if pattern in path.read_text(encoding="utf-8", errors="ignore"):
                 offenders.append(path.relative_to(root).as_posix())
-    # The roadmap documents the removal by name; everything else must be clean.
-    assert offenders == ["specs/roadmap/modelling.md"], offenders
+    assert offenders == [], offenders

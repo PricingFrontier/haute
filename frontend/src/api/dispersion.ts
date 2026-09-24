@@ -9,58 +9,28 @@
  * via its exported `request`/`post`.
  */
 
+import {
+  validateDispersionEstimateResponse,
+  validateDispersionEstimateStatusResponse,
+} from "../generated/api-contracts.modelling.validators.mjs"
 import { waitForJob } from "../hooks/jobPollingController"
+import { expectGeneratedContract } from "../types/generatedContractValidation"
 import { ApiError, post, request } from "./client"
-import { expectPlainObject } from "../types/guards"
-import { JOB_STATUS_VALUES, TERMINAL_JOB_STATUSES } from "./types"
+import { TERMINAL_JOB_STATUSES } from "./types"
 import type {
   DispersionEstimateStart,
   DispersionEstimateStatus,
   DispersionParam,
   GraphPayload,
-  JobStatus,
 } from "./types"
 
-function numberOrNull(obj: Record<string, unknown>, key: string): number | null {
-  const value = obj[key]
-  return typeof value === "number" ? value : null
-}
-
-function stringOrNull(obj: Record<string, unknown>, key: string): string | null {
-  const value = obj[key]
-  return typeof value === "string" ? value : null
-}
-
+// The generated validators own both responses' structure (API-R03).
 function parseDispersionEstimateResponse(value: unknown): DispersionEstimateStart {
-  const obj = expectPlainObject("parseDispersionEstimateResponse", value)
-  if (obj.status !== "started" || typeof obj.job_id !== "string") {
-    throw new Error(
-      `parseDispersionEstimateResponse: unexpected payload (status ${String(obj.status)})`,
-    )
-  }
-  return { status: "started", job_id: obj.job_id }
+  return expectGeneratedContract("DispersionEstimateResponse", validateDispersionEstimateResponse, value)
 }
 
 function parseDispersionStatusResponse(value: unknown): DispersionEstimateStatus {
-  const obj = expectPlainObject("parseDispersionStatusResponse", value)
-  if (
-    typeof obj.status !== "string"
-    || !JOB_STATUS_VALUES.includes(obj.status as JobStatus)
-  ) {
-    throw new Error(`parseDispersionStatusResponse: invalid \`status\` ${String(obj.status)}`)
-  }
-  return {
-    status: obj.status as JobStatus,
-    progress: typeof obj.progress === "number" ? obj.progress : 0,
-    message: typeof obj.message === "string" ? obj.message : "",
-    elapsed_seconds: typeof obj.elapsed_seconds === "number" ? obj.elapsed_seconds : 0,
-    param: stringOrNull(obj, "param"),
-    value: numberOrNull(obj, "value"),
-    llf: numberOrNull(obj, "llf"),
-    n_fits: numberOrNull(obj, "n_fits"),
-    error: stringOrNull(obj, "error"),
-    terminal_reason: stringOrNull(obj, "terminal_reason"),
-  }
+  return expectGeneratedContract("DispersionEstimateStatusResponse", validateDispersionEstimateStatusResponse, value)
 }
 
 export interface EstimateDispersionArgs {

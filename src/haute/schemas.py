@@ -2977,23 +2977,64 @@ class EvaluationPreviewPayload(BaseModel):
         return self
 
 
+class TrainEstimateUnavailable(BaseModel):
+    """Why a training estimate cannot size its input: one reason from a closed set."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: Literal["row_count_unprovable", "schema_unresolvable"]
+    blocking_node_id: str | None
+
+    @model_validator(mode="after")
+    def _blocking_node_matches_reason(self) -> TrainEstimateUnavailable:
+        if self.reason == "row_count_unprovable":
+            if not self.blocking_node_id:
+                raise ValueError("row_count_unprovable names the blocking node")
+        elif self.blocking_node_id is not None:
+            raise ValueError("schema_unresolvable names no blocking node")
+        return self
+
+
 class TrainEstimateResponse(BaseModel):
-    total_rows: int | None = None
+    total_rows: int | None
     safe_row_limit: int | None = None
-    estimated_mb: float = 0.0
-    training_mb: float = 0.0
-    available_mb: float = 0.0
-    bytes_per_row: float = 0.0
+    estimated_mb: float | None
+    training_mb: float | None
+    available_mb: float
+    bytes_per_row: float | None
     was_downsampled: bool = False
     warning: str | None = None
     # GPU VRAM estimation
     gpu_vram_estimated_mb: float | None = None
     gpu_vram_available_mb: float | None = None
     gpu_warning: str | None = None
+    unavailable: TrainEstimateUnavailable | None
+    """Set, with the memory figures null, when the estimate cannot size its input."""
     evaluation_preview: EvaluationPreviewPayload | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )
+
+    @model_validator(mode="after")
+    def _figures_match_availability(self) -> TrainEstimateResponse:
+        figures = (self.estimated_mb, self.training_mb, self.bytes_per_row)
+        if self.unavailable is None:
+            if self.total_rows is None or any(value is None for value in figures):
+                raise ValueError("an available estimate requires a row total and memory figures")
+            return self
+        if any(value is not None for value in figures):
+            raise ValueError("an unavailable estimate has no memory figures")
+        if self.was_downsampled or self.warning is not None:
+            raise ValueError("an unavailable estimate has no downsampling verdict or warning")
+        if (
+            self.gpu_vram_estimated_mb is not None
+            or self.gpu_vram_available_mb is not None
+            or self.gpu_warning is not None
+        ):
+            raise ValueError("an unavailable estimate has no GPU VRAM check")
+        if (self.total_rows is None) != (self.unavailable.reason == "row_count_unprovable"):
+            raise ValueError("only a row_count_unprovable estimate lacks a row total")
+        return self
 
 
 class DispersionEstimateRequest(BaseModel):
@@ -3201,6 +3242,22 @@ class MlflowModelVersionSummary(BaseModel):
     params: dict[str, str] = Field(default_factory=dict)
     # Registered model aliases that currently target this version.
     aliases: list[str] = Field(default_factory=list)
+
+
+class MlflowExperimentList(RootModel[list[MlflowExperimentSummary]]):
+    """``GET /api/mlflow/experiments``."""
+
+
+class MlflowRunList(RootModel[list[MlflowRunSummary]]):
+    """``GET /api/mlflow/runs``."""
+
+
+class MlflowModelList(RootModel[list[MlflowModelSummary]]):
+    """``GET /api/mlflow/models``."""
+
+
+class MlflowModelVersionList(RootModel[list[MlflowModelVersionSummary]]):
+    """``GET /api/mlflow/model-versions``."""
 
 
 # ---------------------------------------------------------------------------

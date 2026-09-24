@@ -1629,6 +1629,20 @@ The implementation seams are:
   training run's capture of the modelling node's producer when one covers its demand, and
   otherwise captures that producer with its narrow demand, which the next training run
   widens.
+- The estimate's unavailable outcome is one contract from the estimator to the panel.
+  `RamEstimate` carries `unavailable_reason` (`TrainingEstimateUnavailableReason`:
+  `row_count_unprovable`, `schema_unresolvable`) and `blocking_node_id`, and rejects any
+  other combination at construction. An available estimate has a row total and memory
+  figures. `row_count_unprovable` has no row total and names the blocking node that the
+  row-cardinality proof reports. `schema_unresolvable` keeps the row total and names no
+  node. Neither has memory figures, a RAM row limit, a warning or probed columns.
+  `estimate_training` returns it as `TrainEstimateResponse.unavailable`
+  (`{reason, blocking_node_id}`, null when available) with `estimated_mb`, `training_mb`
+  and `bytes_per_row` null, and skips the GPU VRAM check. `safe_row_limit` still reports
+  the user's row limit. `TrainEstimateResponse` and `parseTrainEstimateResponse` both
+  reject a memory figure beside a reason, a missing figure without one, a row total that
+  disagrees with the reason, and a downsampling verdict, warning or VRAM field on an
+  unavailable estimate.
 
 Focused evidence lives in `tests/test_evaluation.py`,
 `tests/test_train_evaluation_config.py`, `tests/test_training_evaluation.py`,
@@ -1697,7 +1711,11 @@ suites prove the same canonical vocabulary and bounded lifecycle end to end.
   their controls. The run summary reflects effective feature selection and evaluation.
 - Estimate failures show the server's detail. Evaluation-preview failures are shown
   with Split feedback; other estimate failures are labelled memory-estimate failures,
-  without asserting training success. Split has no loading message beneath its settings;
+  without asserting training success. An unavailable estimate is not a failure: Train
+  shows "Memory estimate unavailable" with its reason in place of the missing figures
+  (naming the blocking node by its canvas label for `row_count_unprovable`), the source
+  rows when known, and the available RAM. It never shows a fits-in-memory or downsample
+  verdict, or a memory figure. Split has no loading message beneath its settings;
   the allocation summary still updates when the exact preview arrives.
 
 ### Training allocation ordering (cache implementation correction)
