@@ -8060,7 +8060,7 @@ class TestExecutePipelineArgs:
         execution_context = execute.call_args.kwargs["execution_context"]
         assert execution_context.profile is ExecutionProfile.OPTIMISER_SETUP
         assert execution_context.admission is not None
-        assert execution_context._admission_released is True
+        assert execution_context.lease.released is True
         assert execute.call_args.kwargs["required_columns_by_node"] == {
             "source": frozenset(
                 {
@@ -16632,7 +16632,7 @@ def test_auto_range_prepares_snapshot_inputs_before_chunk_planning(scored_data, 
     def fake_prepare(order, node_map, *, profile, execution_context, base_dir, schema_only, **_):
         assert execution_context is not None
         assert execution_context.admission is not None
-        assert not execution_context._admission_released
+        assert not execution_context.lease.released
         calls.append(("prepare", (tuple(order), profile, schema_only, execution_context)))
         return ()
 
@@ -16654,4 +16654,4 @@ def test_auto_range_prepares_snapshot_inputs_before_chunk_planning(scored_data, 
     assert profile is ExecutionProfile.AUTO_RANGE
     assert schema_only is False
     assert set(order) == {"source", "opt"}
-    assert context._admission_released
+    assert context.lease.released

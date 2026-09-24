@@ -1429,6 +1429,7 @@ def _correlate_rows_posthoc(
     traced_column: str | None = None,
     work: CorrelationWork | None = None,
     row_scope: RowScopeResolver | None = None,
+    row_positions: dict[str, int] | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """Extract the correct row from each node using post-hoc correlation.
 
@@ -1636,6 +1637,15 @@ def _correlate_rows_posthoc(
                 diagnostic_index,
             )
 
+    if row_positions is not None:
+        # Where each resolved row sits in the node's frame (for a row-scoped
+        # lookup, the looked-up frame it recorded), so the trace can keep the
+        # row in its real dtypes.
+        row_positions.update(
+            (nid, index)
+            for nid, index in row_indices.items()
+            if result.get(nid) is not None and index >= 0
+        )
     return result
 
 

@@ -1058,9 +1058,6 @@ class _FakeExecutionContext:
     def record_bytes_written(self, n: int) -> None:
         self.bytes_recorded += n
 
-    def fault_point(self, name: str, node_id: str | None = None) -> None:
-        pass
-
     def record_collect(self, *args: Any, **kwargs: Any) -> None:
         pass
 

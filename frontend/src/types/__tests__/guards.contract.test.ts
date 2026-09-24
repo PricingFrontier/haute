@@ -1371,6 +1371,42 @@ describe("API response guards", () => {
     expect(parsed.trace?.correlation_diagnostics[0]?.seed_node_ids).toEqual(["join"])
   })
 
+  it("keeps why a traced value was not computed from the row", () => {
+    const fixture = loadUiContractFixture<{ trace: Record<string, unknown> }>("trace_response")
+    const [step] = fixture.trace.steps as Record<string, unknown>[]
+    const parsed = parseTraceResponse({
+      ...fixture,
+      trace: {
+        ...fixture.trace,
+        steps: [{
+          ...step,
+          calculation: {
+            substituted_text: "sum of x over g",
+            result_value: 30,
+            input_values: {},
+            not_computable_reason: "not_row_local: sum",
+            result_source: "trace_execution",
+            expression_chain: [{
+              expression_text: "x.shift(1)",
+              target_column: "lagged",
+              result_value: null,
+              not_computable_reason: "not_row_local: shift",
+            }],
+            input_sources: {
+              x: { node_name: "source", result_value: null, not_computable_reason: "traced_row_unavailable" },
+            },
+          },
+        }],
+      },
+    })
+
+    const calculation = parsed.trace?.steps[0]?.calculation
+    expect(calculation?.not_computable_reason).toBe("not_row_local: sum")
+    expect(calculation?.result_source).toBe("trace_execution")
+    expect(calculation?.expression_chain?.[0]?.not_computable_reason).toBe("not_row_local: shift")
+    expect(calculation?.input_sources?.x?.not_computable_reason).toBe("traced_row_unavailable")
+  })
+
   it("rejects a trace response with no trace (backend always returns one)", () => {
     expect(() => parseTraceResponse({ status: "ok" })).toThrow(/trace/i)
   })

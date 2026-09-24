@@ -393,7 +393,7 @@ def test_trace_cold_execution_records_stage_costs(
     )
 
 
-def test_trace_reuses_preview_cache_then_hits_trace_cache(
+def test_cold_trace_then_trace_cache_hit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
@@ -408,14 +408,6 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
         max_preview_rows=_MAX_PREVIEW_ROWS,
     )
     assert preview[_TARGET_NODE].status == "ok"
-    preview_lookups: list[str] = []
-
-    class RecordingPreview:
-        def get(self, fingerprint: str) -> dict[str, Any] | None:
-            preview_lookups.append(fingerprint)
-            return _preview_cache.get(fingerprint)
-
-    preview_reader = RecordingPreview()
 
     calls = {"materialize": 0, "cold_execute": 0, "plan_builds": 0}
     correlation_seconds: list[float] = []
@@ -427,14 +419,14 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
         calls["materialize"] += 1
         return original_materialize(*args, **kwargs)
 
-    def forbidden_cold_execute(*args: Any, **kwargs: Any) -> Any:
+    def counting_execute(*args: Any, **kwargs: Any) -> Any:
         # Building the uncapped lineage plans a row-scoped lookup reads collects
-        # nothing; only a materialising execution would redo the preview's work.
+        # nothing; only the first trace's materialising execution runs the DAG.
         if kwargs.get("materialize_node_ids") == frozenset():
             calls["plan_builds"] += 1
-            return original_execute(*args, **kwargs)
-        calls["cold_execute"] += 1
-        raise AssertionError("trace should reuse preview outputs, not execute the DAG")
+        else:
+            calls["cold_execute"] += 1
+        return original_execute(*args, **kwargs)
 
     def timed_correlate(*args: Any, **kwargs: Any) -> Any:
         start = time.perf_counter()
@@ -444,7 +436,7 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
             correlation_seconds.append(time.perf_counter() - start)
 
     monkeypatch.setattr(trace_mod, "_materialize_eager_outputs", counting_materialize)
-    monkeypatch.setattr(trace_mod, "_execute_eager_core", forbidden_cold_execute)
+    monkeypatch.setattr(trace_mod, "_execute_eager_core", counting_execute)
     monkeypatch.setattr(trace_mod, "_correlate_rows_posthoc", timed_correlate)
 
     with structlog.testing.capture_logs() as first_logs:
@@ -456,7 +448,6 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
             column="premium",
             row_limit=_ROW_LIMIT,
             row_values=preview[_TARGET_NODE].preview[7],
-            preview=preview_reader,
         )
         first_seconds = time.perf_counter() - start
     start = time.perf_counter()
@@ -472,7 +463,6 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
             column="risk_bucket",
             row_limit=_ROW_LIMIT,
             row_values=preview[_TARGET_NODE].preview[19],
-            preview=preview_reader,
         )
         second_seconds = time.perf_counter() - start
     start = time.perf_counter()
@@ -480,16 +470,15 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
     second_serialization_seconds = time.perf_counter() - start
 
     assert calls["materialize"] == 1
-    assert calls["cold_execute"] == 0
+    assert calls["cold_execute"] == 1
     # Lineage plans are built at most once per trace request, and never cached.
-    assert calls["plan_builds"] <= 2
-    assert len(preview_lookups) == 1
+    assert calls["plan_builds"] <= 1
     assert len(correlation_seconds) == 2
     assert first.output_value == preview[_TARGET_NODE].preview[7]["premium"]
     assert second.output_value == preview[_TARGET_NODE].preview[19]["risk_bucket"]
     assert first_payload["output_value"] == first.output_value
     assert second_payload["output_value"] == second.output_value
-    assert first.execution_origin == "preview_cache"
+    assert first.execution_origin == "fresh_execution"
     assert second.execution_origin == "trace_cache"
     first_correlation = [
         record for record in first_logs if record.get("event") == "trace_correlation_completed"
@@ -498,7 +487,7 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
         record for record in second_logs if record.get("event") == "trace_correlation_completed"
     ]
     assert len(first_correlation) == len(second_correlation) == 1
-    assert first_correlation[0]["execution_origin"] == "preview_cache"
+    assert first_correlation[0]["execution_origin"] == "fresh_execution"
     assert second_correlation[0]["execution_origin"] == "trace_cache"
     for event in (*first_correlation, *second_correlation):
         _assert_correlation_work_bounds(
@@ -515,15 +504,14 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
         request,
         graph_shape="join",
         rows=_ROW_LIMIT,
-        preview_reuse_ms=round(first_seconds * 1000, 3),
-        preview_reuse_correlation_ms=round(correlation_seconds[0] * 1000, 3),
-        preview_reuse_serialization_ms=round(first_serialization_seconds * 1000, 3),
+        cold_trace_ms=round(first_seconds * 1000, 3),
+        cold_trace_correlation_ms=round(correlation_seconds[0] * 1000, 3),
+        cold_trace_serialization_ms=round(first_serialization_seconds * 1000, 3),
         trace_cache_hit_ms=round(second_seconds * 1000, 3),
         trace_cache_correlation_ms=round(correlation_seconds[1] * 1000, 3),
         trace_cache_serialization_ms=round(second_serialization_seconds * 1000, 3),
     )
 
-    assert first_seconds < 0.8, f"preview-backed first trace took {first_seconds:.3f}s"
     assert second_seconds < 0.3, f"trace-cache hit took {second_seconds:.3f}s"
 
 

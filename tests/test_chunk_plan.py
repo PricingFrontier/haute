@@ -15,6 +15,7 @@ from haute.chunking import (
     chunk_capability_declarations,
     chunk_plan,
     classify_chunk_local_polars_code,
+    classify_row_local_expression,
     validate_chunk_capability_declarations,
 )
 from haute.errors import (
@@ -817,6 +818,48 @@ def test_classifier_reports_the_textually_first_blocking_dict_entry() -> None:
     assert decision.blocking_operator == "sort"
     assert decision.line == 1
     assert decision.column == code.index("df.sort(") + 1
+
+
+@pytest.mark.parametrize(
+    ("expression", "chunk_blocker"),
+    [
+        pytest.param(
+            "pl.when(pl.col('x') > 5).then(pl.lit('a')).when(pl.col('x') > 0)"
+            ".then(pl.lit('b')).otherwise(pl.lit('c'))",
+            "when",
+            id="chained-when",
+        ),
+        pytest.param("pl.min_horizontal(pl.col('a'), pl.col('b'))", "pl.min_horizontal", id="min"),
+        pytest.param("pl.format('{} {}', pl.col('a'), pl.col('b'))", "pl.format", id="format"),
+    ],
+)
+def test_row_semantics_admit_row_local_operations_chunking_has_not_proven(
+    expression: str, chunk_blocker: str
+) -> None:
+    """One row determines these, though chunked execution still rejects them."""
+    assert classify_row_local_expression(expression).eligible
+    chunk = _classify(f"df = df.with_columns(v=({expression}))")
+    assert not chunk.eligible
+    assert chunk.blocking_operator == chunk_blocker
+
+
+@pytest.mark.parametrize(
+    ("expression", "reason", "operator"),
+    [
+        ("pl.col('x').sum().over('g')", "unsupported_expression_method", "sum"),
+        ("pl.col('x').shift(1)", "unsupported_expression_method", "shift"),
+        ("pl.col('x').cum_sum()", "unsupported_expression_method", "cum_sum"),
+        ("pl.col('x').fill_null(strategy='forward')", "unsupported_call_shape", "fill_null"),
+        ("pl.col('d').str.to_date()", "unsupported_call_shape", "to_date"),
+    ],
+)
+def test_row_semantics_reject_what_needs_other_rows_naming_the_operator(
+    expression: str, reason: str, operator: str
+) -> None:
+    decision = classify_row_local_expression(expression)
+    assert not decision.eligible
+    assert decision.reason == reason
+    assert decision.blocking_operator == operator
 
 
 def test_classifier_reports_the_textually_first_ifexp_branch() -> None:

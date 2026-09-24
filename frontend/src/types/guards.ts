@@ -1668,6 +1668,8 @@ function parseTraceCalculation(value: unknown, field: string): NonNullable<Trace
   return {
     substituted_text: expectString("parseTraceResponse", obj.substituted_text, `${field}.substituted_text`),
     result_value: obj.result_value,
+    not_computable_reason: optionalNullableString("parseTraceResponse", obj, "not_computable_reason"),
+    result_source: optionalNullableString("parseTraceResponse", obj, "result_source"),
     input_values: optionalNullableObject("parseTraceResponse", { input_values: obj.input_values }, "input_values") ?? {},
     taken_branch: optionalNullableString("parseTraceResponse", obj, "taken_branch"),
     taken_branch_index: optionalNullableNumber("parseTraceResponse", obj, "taken_branch_index"),
@@ -1683,7 +1685,7 @@ function parseTraceCalculation(value: unknown, field: string): NonNullable<Trace
 function parseExpressionChain(
   value: unknown,
   field: string,
-): Array<{ expression_text: string; target_column: string; substituted_text?: string; result_value?: unknown }> {
+): NonNullable<NonNullable<TraceStep["calculation"]>["expression_chain"]> {
   return parseArray("parseTraceResponse", value, field, (item, itemField) => {
     const obj = expectPlainObject("parseTraceResponse", item, itemField)
     return {
@@ -1693,6 +1695,8 @@ function parseExpressionChain(
         substituted_text: expectString("parseTraceResponse", obj.substituted_text, `${itemField}.substituted_text`),
       }),
       ...(obj.result_value === undefined ? {} : { result_value: obj.result_value }),
+      not_computable_reason: optionalNullableString("parseTraceResponse", obj, "not_computable_reason"),
+      result_source: optionalNullableString("parseTraceResponse", obj, "result_source"),
     }
   })
 }
@@ -1717,6 +1721,8 @@ function parseTraceInputSource(value: unknown, field: string): TraceInputSource 
       substituted_text: expectString("parseTraceResponse", obj.substituted_text, `${field}.substituted_text`),
     }),
     ...(obj.result_value === undefined ? {} : { result_value: obj.result_value }),
+    not_computable_reason: optionalNullableString("parseTraceResponse", obj, "not_computable_reason"),
+    result_source: optionalNullableString("parseTraceResponse", obj, "result_source"),
     input_sources: obj.input_sources === undefined || obj.input_sources === null
       ? null
       : parseTraceInputSources(obj.input_sources, `${field}.input_sources`),

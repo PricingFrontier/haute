@@ -22,9 +22,8 @@ or maintenance issue; `P3` opportunistic work.
 | [Caching](caching.md) | Automatic API-input table snapshots, planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache usage, freshness and retention | `CACHE-S08` |
 | [Deploy](deploy.md) | A slim scoring runtime, offered targets | `DEP-R02` |
 | [Engineering quality](engineering-quality.md) | Dead code, tracked artifacts, specification drift, coverage gates, test organisation | `ENGQ-R01` |
-| [Execution engine](execution-engine.md) | Chunked runner, one execution walker, execution context | `EXEC-R05` |
+| [Execution engine](execution-engine.md) | Chunked runner, one execution walker | `EXEC-R05` |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | — |
-| [Expression parsing](expression-parsing.md) | Traced formulas evaluated by Polars | `EXPR-R01` |
 | [Frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md) | Shared result tabs, target configuration and charts; why a training estimate is unavailable | `FMO-R01` |
 | [Frontend node editors](frontend-node-editors.md) | API Input and Output shared block | `FNE-R01` |
 | [Frontend shared](frontend-shared.md) | Debounce, modal and table bases; results store | `FSH-R02` |
@@ -37,7 +36,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Sandbox security](sandbox-security.md) | One path-containment check, the node-code guard | `SBX-R01` |
 | [Server API](server-api.md) | Error translation, generated browser contract, recovery scope | `API-R01` |
 | [Submodels](submodels.md) | One reuse mechanism | `SUB-R01` |
-| [Tracing](tracing.md) | Row identity for traces, the preview-reader abstraction | `TRACE-R02` |
+| [Tracing](tracing.md) | Row identity for traces | `TRACE-R01` |
 
 ## Codebase review — 23 September 2026
 

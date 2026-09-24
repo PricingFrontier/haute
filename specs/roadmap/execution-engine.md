@@ -21,14 +21,12 @@ the static estimate admits only what no cap bounds.
 |---|---|---:|---|
 | EXEC-R03 | Planned | P3 | The chunked map-reduce planner and runner are removed with their only consumer. |
 | EXEC-R05 | Planned | P2 | One graph walker builds every execution; eager, preview, trace and scoring differ only in their collect policy. |
-| EXEC-R07 | Planned | P3 | `ExecutionContext` is split into cancellation, admission, and evidence parts. |
 
 ## Planned improvements
 
 `EXEC-R03` follows the optimiser's `OPT-P15` if that package removes the
 runner's only consumer. The walker in `EXEC-R05` keeps projection planning, which
 the memory-safety decision retains for uncapped surfaces.
-`EXEC-R07` is independent and can be taken whenever its file is next open.
 
 ### EXEC-R03 — Retire the chunked map-reduce runner
 **Why:** `chunking.py` is a 2,251-line planner and runner, with per-node-type
@@ -37,13 +35,15 @@ hypothesis-based proof suite. It has exactly one production consumer: the
 streaming frontier auto-range job. If `OPT-P15` shows that one streaming
 group-by keeps auto-range within its memory bound and replaces that job, the
 planner and runner are dead. `classify_chunk_local_polars_code` is also used
-for row-locality checks in lazy execution and trace correlation, and
-`EXPR-R01` may use it too, so it can stay while those checks exist.
+for row-locality checks in lazy execution and trace correlation, and trace
+formula evaluation uses its row-semantics mode (`classify_row_local_expression`),
+so the classifier stays while those checks exist.
 
 **Plan:** After `OPT-P15` removes the consumer, delete `chunk_plan`,
 `iter_chunked_frames`, `run_chunked_reduce`, `collect_chunked`, the
-capability declarations and their tests. Move `classify_chunk_local_polars_code` and its helpers to a
-small module next to its remaining callers. Remove the chunked map-reduce text from the
+capability declarations and their tests. Move `classify_chunk_local_polars_code`,
+`classify_row_local_expression` and their helpers to a small module next to their remaining
+callers. Remove the chunked map-reduce text from the
 execution-engine specification in the same change.
 
 **Acceptance:** No production module imports the planner or runner; the
@@ -53,7 +53,7 @@ row-locality classifier keeps its own tests.
 
 **Dependencies:** `OPT-P15` (optimiser); this package does not proceed if
 `OPT-P15` keeps the chunked auto-range path. The classifier survives: lazy
-execution and trace correlation keep using it.
+execution, trace correlation and trace formula evaluation keep using it.
 
 **Evidence:** `src/haute/chunking.py::chunk_plan`;
 `src/haute/chunking.py::iter_chunked_frames`;
@@ -98,27 +98,3 @@ policy over the walker.
 `src/haute/trace.py::_execute_trace_core`;
 `src/haute/deploy/_scorer.py::_score_graph_lazy`;
 `src/haute/pipeline.py::Pipeline`; `docs/COMMIT_STANDARDS.md`.
-
-### EXEC-R07 — Split `ExecutionContext`
-**Why:** `ExecutionContext` is a 1,011-line class that combines the
-cancellation token, admission and memory budget, RSS sampling, stage metrics,
-column-width evidence, estimate calibration, terminal telemetry, evidence
-payloads and request-local fault-injection points. Every execution surface
-depends on all of it.
-
-**Plan:** Separate cancellation, admission and budget enforcement, and
-evidence and telemetry recording into collaborating objects composed by a
-thin context. Move test-only fault injection behind a test seam so production
-code carries no fault points.
-
-**Acceptance:** No class in the module exceeds an agreed size; cancellation
-and admission can be constructed without the evidence recorder; the existing
-execution-context suite passes; `ExecutionFaultPoint` is not reachable from
-production entry points.
-
-**Dependencies:** None. The memory-safety decision keeps calibration and
-estimate evidence for the uncapped surfaces.
-
-**Evidence:** `src/haute/_execution_context.py::ExecutionContext`;
-`src/haute/_execution_context.py::ExecutionFaultPoint`;
-`tests/test_execution_context.py`.

@@ -364,37 +364,6 @@ def test_preview_consumer_ignores_disconnected_runtime_input_changes(
     assert executor._preview_cache.most_recent_key == fingerprint
 
 
-def test_trace_reuses_a_full_preview_with_the_shared_lineage_key(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from haute import executor, trace
-
-    path = tmp_path / "input.parquet"
-    pl.DataFrame({"x": [1]}).write_parquet(path)
-    graph = _graph_with_source_path(path)
-    executor.execute_graph(
-        graph,
-        target_node_id="target",
-        row_limit=10,
-    )
-    monkeypatch.setattr(
-        trace,
-        "_execute_eager_core",
-        lambda *_args, **_kwargs: pytest.fail("trace did not reuse the full preview"),
-    )
-
-    result = trace.execute_trace(
-        graph,
-        target_node_id="target",
-        row_limit=10,
-        preview=executor._preview_cache,
-    )
-
-    assert result.output_value == {"y": 2}
-    assert [step.node_id for step in result.steps] == ["source", "mid", "target"]
-
-
 def test_trace_cache_survives_a_downstream_only_edit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -285,16 +285,15 @@ class TestPreviewMatchJoin:
 
         for row_idx in range(num_rows):
             preview = results["join"].preview[row_idx]
-            # Pass the executor's preview cache explicitly so the trace
-            # correlates against the exact join output ``execute_graph``
-            # populated — a cold re-execution of a non-deterministic
-            # polars join would pick a different row ordering.
+            # A cold re-execution of a non-deterministic polars join may order
+            # rows differently, so the clicked row's values anchor the trace to
+            # the previewed row, as the HTTP route does.
             trace = execute_trace(
                 graph,
                 row_index=row_idx,
                 target_node_id="join",
                 row_limit=_ROW_LIMIT,
-                preview=_preview_cache,
+                row_values=preview,
             )
 
             for col in preview:
@@ -345,7 +344,7 @@ class TestPreviewMatchJoin:
                 row_index=row_idx,
                 target_node_id="join",
                 row_limit=_ROW_LIMIT,
-                preview=_preview_cache,
+                row_values=preview,
             )
 
             a_step = _step_by_id(trace, "a")
@@ -448,15 +447,12 @@ class TestPreviewMatchMultiStep:
         for row_idx in range(results["filt"].row_count):
             preview = results["filt"].preview[row_idx]
             # See the matching comment in
-            # ``test_join_trace_matches_every_preview_row`` — the
-            # preview cache is what keeps a non-deterministic
-            # join+filter's row ordering stable between preview and
-            # trace.
+            # ``test_join_trace_matches_every_preview_row``.
             trace = execute_trace(
                 graph,
                 row_index=row_idx,
                 target_node_id="filt",
-                preview=_preview_cache,
+                row_values=preview,
             )
 
             # Trace output must match the preview row
@@ -522,15 +518,12 @@ class TestPreviewMatchManyToOne:
         for row_idx in range(results["join"].row_count):
             preview = results["join"].preview[row_idx]
             # See the matching comment in
-            # ``test_join_trace_matches_every_preview_row`` — the
-            # preview cache pins a deterministic ordering so the
-            # many-to-one join's row_index means the same thing on
-            # both sides.
+            # ``test_join_trace_matches_every_preview_row``.
             trace = execute_trace(
                 graph,
                 row_index=row_idx,
                 target_node_id="join",
-                preview=_preview_cache,
+                row_values=preview,
             )
 
             # Trace output matches preview
