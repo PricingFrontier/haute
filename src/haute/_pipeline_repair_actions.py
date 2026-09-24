@@ -1,4 +1,4 @@
-"""Bounded current-format submodel updates and single-node resets."""
+"""Bounded single-node resets and settings recovery."""
 
 from __future__ import annotations
 
@@ -21,11 +21,9 @@ from haute._pipeline_repair import (
     _decode_utf8_artifact,
     _find_target,
     _iter_recovery_nodes,
-    _json_object_members,
     _recovery_structure,
     _resolve_config_reference,
     _resolve_project_file,
-    _skip_json_ws,
     _wire_path,
 )
 from haute._python_syntax import (
@@ -33,8 +31,6 @@ from haute._python_syntax import (
     prepend_function_statements,
     replace_source_nodes,
 )
-from haute._submodel_paths import resolve_submodel_reference
-from haute._submodel_recovery import submodel_registration_evidence
 from haute._types import GraphNode, NodeData, NodeType
 from haute.errors import ConfigError, HauteError
 from haute.schemas import (
@@ -100,183 +96,6 @@ def _edit(
         after=after,
         description=description,
     )
-
-
-def _update_submodel(
-    root: Path,
-    parent: Path,
-    target: RecoveryPipelineNode,
-    document: PipelineEditorDocument,
-) -> list[RepairArtifactEdit]:
-    if target.node_type != NodeType.SUBMODEL:
-        raise _unsupported("No current-format update is registered for this node type.")
-    before = parent.read_bytes()
-    tree = _parse(before)
-    matches = [
-        e
-        for statement in tree.body
-        if (e := submodel_registration_evidence(statement)) is not None
-        and e.name == target.authored_id
-    ]
-    if len(matches) != 1:
-        raise _unsupported("The submodel registration is not an unambiguous literal call.")
-    evidence = matches[0]
-    keywords = {kw.arg: kw.value for kw in evidence.call.keywords}
-    if set(keywords) - {
-        "file",
-        "name",
-        "alias",
-        "definition_id",
-        "instance_id",
-        "label",
-        "instance_of",
-    }:
-        raise _unsupported("The submodel registration contains unsupported arguments.")
-    try:
-        child, _config_base = resolve_submodel_reference(
-            evidence.path, pipeline_dir=parent.parent, project_root=root
-        )
-    except ValueError as exc:
-        raise _unsupported("The referenced submodel path is outside the project.") from exc
-    if not child.is_file():
-        raise _unsupported("Restore the missing submodel file before updating its registration.")
-    child_before = child.read_bytes()
-    child_tree = _parse(child_before)
-    constructors = [
-        statement.value
-        for statement in child_tree.body
-        if isinstance(statement, ast.Assign)
-        and len(statement.targets) == 1
-        and isinstance(statement.targets[0], ast.Name)
-        and statement.targets[0].id == "submodel"
-        and isinstance(statement.value, ast.Call)
-    ]
-    if len(constructors) != 1:
-        raise _unsupported("The child must declare exactly one literal Submodel constructor.")
-    constructor = constructors[0]
-    if not (
-        isinstance(constructor.func, ast.Attribute)
-        and isinstance(constructor.func.value, ast.Name)
-        and constructor.func.value.id == "haute"
-        and constructor.func.attr == "Submodel"
-    ):
-        raise _unsupported("The child must declare a haute.Submodel constructor.")
-    fields = {kw.arg: kw.value for kw in constructor.keywords}
-    if (
-        len(fields) != len(constructor.keywords)
-        or not {"definition_id", "input_ports", "output_ports"} <= fields.keys()
-    ):
-        raise _unsupported("The child has duplicate or missing definition/port declarations.")
-    try:
-        definition_id = ast.literal_eval(fields["definition_id"])
-    except (ValueError, TypeError) as exc:
-        raise _unsupported("The child definition id must be literal.") from exc
-    if evidence.definition_id is not None and evidence.definition_id != definition_id:
-        raise _unsupported("The registration and child disagree on the definition id.")
-    child_changes: list[tuple[ast.expr, str]] = []
-    for field in ("input_ports", "output_ports"):
-        for literal in ast.walk(fields[field]):
-            if not isinstance(literal, ast.Dict):
-                continue
-            keys = [
-                key.value
-                for key in literal.keys
-                if isinstance(key, ast.Constant) and isinstance(key.value, str)
-            ]
-            if len(keys) != len(literal.keys) or len(keys) != len(set(keys)):
-                raise _unsupported("Submodel port objects contain duplicate or computed keys.")
-        try:
-            ports = ast.literal_eval(fields[field])
-        except (ValueError, TypeError) as exc:
-            raise _unsupported("Submodel ports must be literal lists.") from exc
-        if not isinstance(ports, list) or any(not isinstance(port, dict) for port in ports):
-            raise _unsupported("Submodel ports must be literal objects.")
-        changed = False
-        for port in ports:
-            if "portId" in port:
-                if "name" in port:
-                    raise _unsupported("A port declares both old and current identities.")
-                port["name"] = port.pop("portId")
-                port.pop("label", None)
-                changed = True
-            elif "label" in port:
-                raise _unsupported(
-                    "A legacy port label without a port id cannot be updated safely."
-                )
-        if changed:
-            child_changes.append((fields[field], repr(ports)))
-    child_after = _replace_spans(child_before, child_changes)
-    from haute._parser_submodels import _extract_definition_contract
-
-    try:
-        _extract_definition_contract(_parse(child_after))
-    except (HauteError, ValueError) as exc:
-        raise _unsupported(
-            "The updated submodel port contract is invalid; correct its source."
-        ) from exc
-    registration = f"pipeline.submodel({evidence.path!r}, {evidence.name!r}"
-    if "instance_of" in keywords:
-        registration += f", instance_of={ast.literal_eval(keywords['instance_of'])!r}"
-    registration += ")"
-    old_keywords = {"definition_id", "instance_id", "alias", "label"}.intersection(keywords)
-    parent_after = (
-        _replace_spans(before, [(evidence.call, registration)]) if old_keywords else before
-    )
-    edits: list[RepairArtifactEdit] = []
-    if before != parent_after:
-        edits.append(
-            _edit(
-                parent,
-                root,
-                before,
-                parent_after,
-                f"Update {evidence.name!r} to the current submodel registration.",
-            )
-        )
-    if child_before != child_after:
-        edits.append(
-            _edit(
-                child,
-                root,
-                child_before,
-                child_after,
-                "Replace legacy port fields with canonical names; retain all child functions.",
-            )
-        )
-    sidecar = parent.with_suffix(".haute.json")
-    if evidence.instance_id and evidence.instance_id != evidence.name and sidecar.is_file():
-        sidecar_before = sidecar.read_bytes()
-        from haute._config_io import reject_duplicate_keys_hook
-
-        try:
-            state = json.loads(sidecar_before, object_pairs_hook=reject_duplicate_keys_hook)
-            positions = state.get("positions", {})
-        except (ValueError, AttributeError) as exc:
-            raise _unsupported("The canvas sidecar cannot be updated safely.") from exc
-        if evidence.instance_id in positions:
-            if evidence.name in positions:
-                raise _unsupported(
-                    "Both old and current submodel positions exist; resolve the conflict first."
-                )
-            prefix, text, _body = _decode_utf8_artifact(sidecar_before, artifact="Canvas sidecar")
-            root_members = _json_object_members(text, _skip_json_ws(text, 0))
-            position_member = next(member for member in root_members if member.key == "positions")
-            members = _json_object_members(text, position_member.value_start)
-            old_member = next(member for member in members if member.key == evidence.instance_id)
-            _old_key, key_end = json.JSONDecoder().raw_decode(text, old_member.key_start)
-            after = prefix + (
-                text[: old_member.key_start] + json.dumps(evidence.name) + text[key_end:]
-            ).encode("utf-8")
-            edits.append(
-                _edit(
-                    sidecar,
-                    root,
-                    sidecar_before,
-                    after,
-                    "Retain the submodel's canvas position under its current occurrence name.",
-                )
-            )
-    return edits
 
 
 def _target_graph(
@@ -544,10 +363,7 @@ def _recover_node(
     from haute._recovery_sources import read_raw_node_settings, require_generated_body
 
     if target.node_type is None or target.node_type in {NodeType.SUBMODEL, "submodelPort"}:
-        raise _unsupported(
-            "Only supported ordinary nodes can be recovered; "
-            "submodels keep Update to current format."
-        )
+        raise _unsupported("Only supported ordinary nodes can be recovered.")
     node_type, raw, raw_changes, function, params, reference = read_raw_node_settings(
         root, document, target
     )
@@ -666,20 +482,14 @@ def build_recovery_action_plan(
     field_changes: list[PipelineRepairFieldChange] = []
     completeness: list[PipelineNodeCompleteness] = []
     previous_config: dict[str, Any] | None = None
-    if request.action == "update":
-        edits = _update_submodel(root, path, target, document)
-    elif request.action == "recover":
+    if request.action == "recover":
         edits, previous_config, field_changes, completeness = _recover_node(
             root, root_path, path, target, document
         )
     else:
         edits = _reset_node(root, root_path, path, target, document)
-    kind: Literal["update_node", "reset_node", "recover_node"] = (
-        "update_node"
-        if request.action == "update"
-        else "recover_node"
-        if request.action == "recover"
-        else "reset_node"
+    kind: Literal["reset_node", "recover_node"] = (
+        "recover_node" if request.action == "recover" else "reset_node"
     )
     return _finalise_action_plan(
         root=root,
@@ -704,7 +514,7 @@ def _finalise_action_plan(
     target: RecoveryPipelineNode,
     document: PipelineEditorDocument,
     source_revision: str,
-    kind: Literal["update_node", "reset_node", "recover_node"],
+    kind: Literal["reset_node", "recover_node"],
     edits: list[RepairArtifactEdit],
     field_changes: list[PipelineRepairFieldChange] | None = None,
     completeness: list[PipelineNodeCompleteness] | None = None,
@@ -713,7 +523,7 @@ def _finalise_action_plan(
     """Verify proposed edits in isolation and bind them to one plan."""
     edits = [edit for edit in edits if edit.before != edit.after]
     if not edits:
-        raise _unsupported("No supported current-format change was found for this node.")
+        raise _unsupported("No supported change was found for this node.")
     preview = _preview(root, root_path, edits)
     recovered = [
         node

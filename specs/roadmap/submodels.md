@@ -4,54 +4,20 @@
 
 Submodel definitions and occurrences, and the other mechanisms for reusing
 logic in a pipeline. Current behaviour is specified in
-[the submodels specification](../submodels/high-level.md). These packages
-come from the [23 September 2026 codebase review](codebase-review-2026-09-23.md)
-and the config-lane round that settled the canonical-input rule.
+[the submodels specification](../submodels/high-level.md). This package
+comes from the [23 September 2026 codebase review](codebase-review-2026-09-23.md).
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| SUB-R02 | Planned | P3 | A legacy submodel registration is rejected with a targeted message instead of migrated. |
 | SUB-R01 | Planned | P3 | One mechanism reuses a node or group of nodes. |
 
 ## Planned improvements
 
-`SUB-R02` is small and independent. `SUB-R01` is best taken before
+`SUB-R01` is best taken before
 `PCFG-R08` and `PCFG-R07` (pipeline config), so the editor-state move and the
 typed config models never have to carry node-level instances.
-
-### SUB-R02 — Reject legacy submodel registrations
-**Why:** The recovery inspector's **Update to current format** action rewrites
-the legacy submodel registration (`definition_id`, `instance_id`, `alias`,
-`label`) and public port (`portId`, `label`) formats into the current
-file/name registration. That is a migration, and the canonical-input rule
-decided for `PCFG-R06` on 24 September 2026 allows none: a removed form gets a
-targeted "X was removed; use Y" rejection, with no migration, silent drop or
-passthrough. The config-lane round kept the action only because neither
-recovery decision named it.
-
-**Plan:** Replace the action with a targeted rejection: loading a legacy
-registration reports which keys were removed and what the current
-registration looks like, and the node is unavailable until the author rewrites
-it (or removes it through the existing remove-node action). Delete the
-update action from the recovery engine, the recovery apply API, the repair
-dialog and the node panel, and update the server-api node-recovery-actions
-and frontend-node-editors specifications first.
-
-**Acceptance:** A pipeline with a legacy registration loads degraded with a
-diagnostic naming the removed keys and the current form; no code path
-rewrites a legacy registration; the recovery apply API has no update action;
-the repair dialog and node panel offer no "Update to current format".
-
-**Dependencies:** None.
-
-**Evidence:** `specs/server-api/node-recovery-actions.md`;
-`specs/frontend-node-editors/high-level.md`;
-`frontend/src/components/PipelineRepairDialog.tsx`;
-`frontend/src/panels/NodePanel.tsx`;
-`src/haute/_pipeline_repair_actions.py::_update_submodel`;
-`src/haute/_submodel_recovery.py`.
 
 ### SUB-R01 — One reuse mechanism
 **Why:** Four mechanisms overlap. Node-level instances (`@pipeline.instance`,

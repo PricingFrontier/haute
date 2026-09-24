@@ -24,7 +24,7 @@ export interface RemoveUnavailableNodeRequest {
   deleteConfig: boolean
 }
 
-export type RecoverUnavailableNodeAction = "update" | "reset" | "recover"
+export type RecoverUnavailableNodeAction = "reset" | "recover"
 
 export interface RecoverUnavailableNodeRequest {
   sourceFile: string
@@ -76,7 +76,7 @@ export interface RemoveUnavailableNodeApplyResponse {
 }
 
 export interface RecoverUnavailableNodeApplyResponse extends Omit<RemoveUnavailableNodeApplyResponse, "repair_kind"> {
-  repair_kind: "update_node" | "reset_node" | "recover_node"
+  repair_kind: "reset_node" | "recover_node"
 }
 
 function uniqueStrings(value: unknown, field: string, nonEmpty: boolean): string[] {
@@ -163,7 +163,7 @@ export function parseRecoverUnavailableNodeApplyResponse(value: unknown): Recove
   const object = expectPlainObject(PARSER, value, "response")
   expectExactKeys(PARSER, object, "response", APPLY_RESPONSE_KEYS)
   return {
-    repair_kind: expectStringLiteral(PARSER, object.repair_kind, "response.repair_kind", ["update_node", "reset_node", "recover_node"]),
+    repair_kind: expectStringLiteral(PARSER, object.repair_kind, "response.repair_kind", ["reset_node", "recover_node"]),
     applied_artifacts: uniqueStrings(object.applied_artifacts, "response.applied_artifacts", true),
     changes: parseChanges(object),
     document: parsePipelineEditorDocument(object.document),

@@ -871,9 +871,8 @@ node when `useDocumentStatusStore.capabilities.can_repair` is true. It passes
 the node's `_recoveryId` and server-supplied `_sourceFile` to the document-level
 repair flow; it never derives or submits source spans.
 Known unavailable ordinary nodes offer `Recover settings` as the primary action
-and `Reset node` as the destructive alternative; known unavailable submodels
-offer `Update to current format`. Instances, unknown types and blocked nodes
-cannot reset or recover. `PipelineRepairTarget.action` chooses the dialog
+and `Reset node` as the destructive alternative. Submodels, instances, unknown
+types and blocked nodes cannot reset or recover. `PipelineRepairTarget.action` chooses the dialog
 transport and confirmation labels. Reset explicitly warns that settings/custom
 code are replaced and configuration may be needed; recover explains that valid
 settings and code are retained and remaining gaps surface as completeness. The

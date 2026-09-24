@@ -481,8 +481,7 @@ implicit downstream consumer, ambiguous identity/span, mixed connection
 chain, shared config, or server verification failure stays visible and leaves
 the recovery inspector open. Success adopts the returned editor document and
 closes the removed node's panel. Blocked and ready nodes never expose this
-action. Known unavailable submodels also offer `Update to current format`; known ordinary
-nodes offer `Recover settings` (primary) and `Reset node`. These actions follow the
+action. Known ordinary unavailable nodes offer `Recover settings` (primary) and `Reset node`. These actions follow the
 server-owned apply contract in
 [node recovery actions](../server-api/node-recovery-actions.md). Blocked nodes expose no
 reset or recover action. Reset confirmation explicitly describes replaced settings/code and

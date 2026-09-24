@@ -595,7 +595,7 @@ class PipelineRepairRemoveRequest(BaseModel):
 
 
 class PipelineRepairRecoverRequest(BaseModel):
-    """Server-owned current-format update or reset, without replacement bytes."""
+    """Server-owned reset or settings recovery, without replacement bytes."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -603,7 +603,7 @@ class PipelineRepairRecoverRequest(BaseModel):
     source_revision: RevisionToken
     target_source_file: str = Field(min_length=1)
     target_recovery_id: str = Field(min_length=1)
-    action: Literal["update", "reset", "recover"]
+    action: Literal["reset", "recover"]
 
 
 class PipelineNodeSaveRequest(BaseModel):
@@ -645,7 +645,7 @@ class PipelineRepairPlanResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    repair_kind: Literal["remove_unavailable_node", "update_node", "reset_node", "recover_node"] = (
+    repair_kind: Literal["remove_unavailable_node", "reset_node", "recover_node"] = (
         "remove_unavailable_node"
     )
     source_file: str = Field(min_length=1)
@@ -665,7 +665,7 @@ class PipelineRepairApplyResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    repair_kind: Literal["remove_unavailable_node", "update_node", "reset_node", "recover_node"] = (
+    repair_kind: Literal["remove_unavailable_node", "reset_node", "recover_node"] = (
         "remove_unavailable_node"
     )
     applied_artifacts: list[str] = Field(min_length=1)

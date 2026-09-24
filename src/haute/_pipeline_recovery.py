@@ -604,7 +604,9 @@ def _recover_ast_submodel_registrations(
                 source_file=source_file,
                 source_span=span,
                 element_id=evidence.name if evidence is not None else None,
-                remediation="Correct the submodel registration identity and file path.",
+                remediation=exc.context.get(
+                    "remediation", "Correct the submodel registration identity and file path."
+                ),
             )
             diagnostics.append(diagnostic)
             if evidence is not None:

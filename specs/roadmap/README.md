@@ -27,7 +27,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Pipeline config](pipeline-config.md) | Project context, typed configs, editor state, node specification | `PCFG-R04` |
 | [Sandbox security](sandbox-security.md) | Every containment comparison through the one check | `SBX-R01` |
 | [Server API](server-api.md) | WebSocket broadcast, error translation, generated browser contract | `API-R05` |
-| [Submodels](submodels.md) | Legacy registrations, one reuse mechanism | `SUB-R02` |
+| [Submodels](submodels.md) | One reuse mechanism | `SUB-R01` |
 | [Tracing](tracing.md) | Identical candidate rows | `TRACE-R03` |
 
 ## Delivery plan — 24 September 2026

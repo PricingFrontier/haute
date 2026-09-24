@@ -44,9 +44,9 @@ describe("pipeline repair response parsers", () => {
     }))).toThrow("diff")
   })
 
-  it("accepts update/reset recovery responses and rejects the removal discriminator", () => {
+  it("accepts reset recovery responses and rejects the removal and retired update discriminators", () => {
     expect(parseRecoverUnavailableNodeApplyResponse(applied({ repair_kind: "reset_node" })).repair_kind).toBe("reset_node")
-    expect(parseRecoverUnavailableNodeApplyResponse(applied({ repair_kind: "update_node" })).repair_kind).toBe("update_node")
+    expect(() => parseRecoverUnavailableNodeApplyResponse(applied({ repair_kind: "update_node" }))).toThrow("repair_kind")
     expect(() => parseRecoverUnavailableNodeApplyResponse(applied())).toThrow("repair_kind")
   })
 

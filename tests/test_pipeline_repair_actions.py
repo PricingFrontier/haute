@@ -1,4 +1,4 @@
-"""Explicit recovery of legacy submodels and reset of unavailable nodes."""
+"""Reset and settings recovery of unavailable nodes; legacy submodel forms are rejected."""
 
 from __future__ import annotations
 
@@ -41,6 +41,22 @@ def _legacy_demo(root: Path) -> Path:
     return parent
 
 
+def _broken_constant(root: Path, *, prefix: str = "") -> Path:
+    """A constant whose config sidecar is malformed: reset rewrites main.py and custom.json."""
+    (root / "haute.toml").write_text('[project]\nname = "demo"\n')
+    (root / "custom.json").write_text("{broken json")
+    parent = root / "main.py"
+    parent.write_text(
+        prefix + "import haute\nimport polars as pl\nfrom pathlib import Path\n"
+        "_HAUTE_CONFIG_BASE = Path(__file__).resolve().parent\n"
+        'pipeline = haute.Pipeline("demo")\n'
+        '@pipeline.constant(config="custom.json")\ndef source():\n    return None\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    return parent
+
+
 def _request(root: Path, target_id: str, action: str):
     from haute.schemas import PipelineRepairRecoverRequest
 
@@ -74,6 +90,16 @@ def test_legacy_registration_retains_submodel_position_connection_and_revision(t
     assert [(edge.source_authored_id, edge.target_authored_id) for edge in document.edges] == [
         ("Inputs", "Polars_3")
     ]
+    diagnostic = next(
+        diagnostic for diagnostic in document.diagnostics if diagnostic.element_id == "Inputs"
+    )
+    assert diagnostic.code == "submodel_registration_invalid"
+    assert diagnostic.message == (
+        "pipeline.submodel() no longer accepts label=; an occurrence's name is the second argument."
+    )
+    assert diagnostic.remediation == (
+        "Write pipeline.submodel(<path>, <name>) and let the child file declare its definition id."
+    )
     child = tmp_path / "modules/Inputs.py"
     child.write_text(child.read_text() + "\n# concurrent edit\n")
     changed = load_pipeline_editor_document(parent, project_root=tmp_path)
@@ -81,54 +107,30 @@ def test_legacy_registration_retains_submodel_position_connection_and_revision(t
     assert parent.read_bytes() == original
 
 
-def test_update_then_reset_demo_preserves_child_and_exposes_consumer(tmp_path):
-    from haute._pipeline_repair import build_recover_unavailable_node_plan
+def test_a_legacy_submodel_registration_has_no_migration_action(tmp_path, client, monkeypatch):
+    from pydantic import ValidationError
 
-    parent = _legacy_demo(tmp_path)
-    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    request = _request(tmp_path, "Inputs", "update")
-    plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
-    assert plan.response.repair_kind == "update_node"
-    assert {p: p.read_bytes() for p in before} == before
-    assert {change.path for change in plan.response.changes} == {
-        "main.py",
-        "modules/Inputs.py",
-        "main.haute.json",
-    }
-    result = _apply(tmp_path, request)
-    nodes = {node.authored_id: node for node in result.document.nodes}
-    assert nodes["Inputs"].availability == "ready"
-    assert nodes["Polars_3"].availability == "unavailable"
-    assert "df = live_switch" in parent.read_text()
-    assert 'df = pl.LazyFrame({"premium": [1]})' in (tmp_path / "modules/Inputs.py").read_text()
-    positions = json.loads(parent.with_suffix(".haute.json").read_text())["positions"]
-    assert positions == {"Inputs": {"x": 12, "y": 34}, "Polars_3": {"x": 56, "y": 78}}
-    child_after_update = (tmp_path / "modules/Inputs.py").read_bytes()
-    reset = _request(tmp_path, "Polars_3", "reset")
-    reset_plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=reset)
-    assert reset_plan.response.repair_kind == "reset_node"
-    reset_result = _apply(tmp_path, reset)
-    assert reset_result.document.load_status == "ready"
-    assert "def Polars_3(output_1: pl.LazyFrame)" in parent.read_text()
-    assert "df = live_switch" not in parent.read_text()
-    assert 'pipeline.connect("Inputs", "Polars_3", source_port="output_1")' in parent.read_text()
-    assert (tmp_path / "modules/Inputs.py").read_bytes() == child_after_update
-    assert (
-        "raise " in parent.read_text()
-    )  # normal incomplete Polars template, no silent passthrough
-
-
-def test_update_rejects_a_stale_child_without_writing(tmp_path):
-    from haute._pipeline_repair import PipelineRepairError
+    from haute.schemas import PipelineRepairRecoverRequest
 
     _legacy_demo(tmp_path)
-    request = _request(tmp_path, "Inputs", "update")
-    child = tmp_path / "modules/Inputs.py"
-    child.write_text(child.read_text() + "\n# new user edit\n")
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    with pytest.raises(PipelineRepairError, match="changed"):
-        _apply(tmp_path, request)
-    assert {p: p.read_bytes() for p in before} == before
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    target = next(node for node in document.nodes if node.authored_id == "Inputs")
+    request = {
+        "source_file": document.source_file,
+        "source_revision": document.source_revision,
+        "target_source_file": target.source_file,
+        "target_recovery_id": target.recovery_id,
+        "action": "update",
+    }
+
+    with pytest.raises(ValidationError, match="action"):
+        PipelineRepairRecoverRequest(**request)
+    monkeypatch.chdir(tmp_path)
+    response = client.post("/api/pipeline/repair/recover/apply", json=request)
+
+    assert response.status_code == 422
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
 
 
 def test_reset_broken_config_uses_palette_defaults_and_retains_reference(tmp_path):
@@ -151,18 +153,18 @@ def test_reset_broken_config_uses_palette_defaults_and_retains_reference(tmp_pat
     assert json.loads(config.read_text()) == {"values": [{"name": "constant_1", "value": "1.0"}]}
 
 
-def test_update_rolls_back_all_artifacts_when_verification_fails(tmp_path, monkeypatch):
+def test_reset_rolls_back_all_artifacts_when_verification_fails(tmp_path, monkeypatch):
     from haute import _pipeline_repair as repair
 
-    _legacy_demo(tmp_path)
-    request = _request(tmp_path, "Inputs", "update")
+    _broken_constant(tmp_path)
+    request = _request(tmp_path, "source", "reset")
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     real_load = repair.load_pipeline_editor_document
 
     def fail_after_write(path, *, project_root):
         if (
             Path(path).resolve() == (tmp_path / "main.py").resolve()
-            and b"instance_id=" not in Path(path).read_bytes()
+            and (tmp_path / "custom.json").read_text() != "{broken json"
         ):
             raise RuntimeError("verification failure")
         return real_load(path, project_root=project_root)
@@ -174,14 +176,13 @@ def test_update_rolls_back_all_artifacts_when_verification_fails(tmp_path, monke
 
 
 def test_recovery_actions_round_trip_through_api(tmp_path, client, monkeypatch):
-    _legacy_demo(tmp_path)
+    _broken_constant(tmp_path)
     monkeypatch.chdir(tmp_path)
-    for node_id, action in (("Inputs", "update"), ("Polars_3", "reset")):
-        request = _request(tmp_path, node_id, action).model_dump()
-        result = client.post("/api/pipeline/repair/recover/apply", json=request)
-        assert result.status_code == 200, result.text
-        assert result.json()["repair_kind"] == f"{action}_node"
-        assert result.json()["changes"]
+    request = _request(tmp_path, "source", "reset").model_dump()
+    result = client.post("/api/pipeline/repair/recover/apply", json=request)
+    assert result.status_code == 200, result.text
+    assert result.json()["repair_kind"] == "reset_node"
+    assert result.json()["changes"]
     assert result.json()["document"]["load_status"] == "ready"
     rejected = client.post(
         "/api/pipeline/repair/recover/apply",
@@ -191,44 +192,6 @@ def test_recovery_actions_round_trip_through_api(tmp_path, client, monkeypatch):
         },
     )
     assert rejected.status_code == 422
-
-
-@pytest.mark.parametrize("case", ["duplicate", "port_conflict", "path_escape"])
-def test_submodel_update_rejects_ambiguous_or_escaping_identity(tmp_path, case):
-    from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
-    from haute.schemas import PipelineRepairRecoverRequest
-
-    _legacy_demo(tmp_path)
-    parent = tmp_path / "main.py"
-    if case == "duplicate":
-        parent.write_text(
-            parent.read_text()
-            + 'pipeline.submodel("modules/Inputs.py", alias="Inputs", instance_id="other")\n'
-        )
-    elif case == "port_conflict":
-        child = tmp_path / "modules/Inputs.py"
-        child.write_text(
-            child.read_text().replace(
-                '"portId": "output_1"', '"name": "other", "portId": "output_1"'
-            )
-        )
-    else:
-        parent.write_text(parent.read_text().replace('"modules/Inputs.py"', '"../outside.py"'))
-    document = load_pipeline_editor_document(parent, project_root=tmp_path)
-    target = next(node for node in document.nodes if node.authored_id == "Inputs")
-    if case == "duplicate":
-        assert len({node.recovery_id for node in document.nodes}) == len(document.nodes)
-    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    request = PipelineRepairRecoverRequest(
-        source_file=document.source_file,
-        source_revision=document.source_revision,
-        target_source_file=target.source_file,
-        target_recovery_id=target.recovery_id,
-        action="update",
-    )
-    with pytest.raises(PipelineRepairError):
-        build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
-    assert {p: p.read_bytes() for p in before} == before
 
 
 @pytest.mark.parametrize("case", ["shared", "required_setting", "missing"])
@@ -268,31 +231,23 @@ def test_config_reset_ownership_and_required_settings(tmp_path, case):
         assert {p: p.read_bytes() for p in before} == before
 
 
-def test_update_preserves_bom_crlf_comments_and_unrelated_sidecar_bytes(tmp_path):
-
-    _legacy_demo(tmp_path)
-    parent = tmp_path / "main.py"
-    source = parent.read_text().replace(
-        "pipeline.submodel(", "# café: preserve comment\npipeline.submodel("
-    )
-    parent.write_bytes(b"\xef\xbb\xbf" + source.replace("\n", "\r\n").encode("utf-8"))
-    sidecar = parent.with_suffix(".haute.json")
-    original_sidecar = sidecar.read_bytes()
-    request = _request(tmp_path, "Inputs", "update")
+def test_reset_preserves_bom_crlf_and_comments(tmp_path):
+    parent = _broken_constant(tmp_path, prefix="# café: preserve comment\n")
+    parent.write_bytes(b"\xef\xbb\xbf" + parent.read_bytes().replace(b"\n", b"\r\n"))
+    request = _request(tmp_path, "source", "reset")
     _apply(tmp_path, request)
     assert parent.read_bytes().startswith(b"\xef\xbb\xbf")
     assert "# café: preserve comment\r\n".encode() in parent.read_bytes()
     assert b"\n" not in parent.read_bytes().replace(b"\r\n", b"")
-    assert sidecar.read_bytes() == original_sidecar.replace(b'"old_instance"', b'"Inputs"')
 
 
 def test_stale_revision_conflict_preserves_authored_bytes(
     tmp_path: Path, client, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _legacy_demo(tmp_path)
+    _broken_constant(tmp_path)
     monkeypatch.chdir(tmp_path)
     before_files = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    request = _request(tmp_path, "Inputs", "update").model_dump()
+    request = _request(tmp_path, "source", "reset").model_dump()
     request["source_revision"] = "0" * 64
 
     response = client.post("/api/pipeline/repair/recover/apply", json=request)
@@ -311,15 +266,13 @@ def test_apply_recover_rollback_on_second_staged_write_restores_artifacts(
 ) -> None:
     import haute.routes._save_pipeline as save_pipeline
 
-    parent = _legacy_demo(tmp_path)
+    parent = _broken_constant(tmp_path)
     monkeypatch.chdir(tmp_path)
-    sidecar = tmp_path / "main.haute.json"
-    child = tmp_path / "modules" / "Inputs.py"
+    config = tmp_path / "custom.json"
     before_parent = parent.read_bytes()
-    before_sidecar = sidecar.read_bytes()
-    before_child = child.read_bytes()
+    before_config = config.read_bytes()
 
-    request = _request(tmp_path, "Inputs", "update").model_dump()
+    request = _request(tmp_path, "source", "reset").model_dump()
 
     real_stage_write = save_pipeline._stage_artifact_write_bytes
     staged_writes_successful = 0
@@ -345,8 +298,7 @@ def test_apply_recover_rollback_on_second_staged_write_restores_artifacts(
     )
     assert staged_writes_successful == 1
     assert (tmp_path / "main.py").read_bytes() == before_parent
-    assert (tmp_path / "main.haute.json").read_bytes() == before_sidecar
-    assert (tmp_path / "modules" / "Inputs.py").read_bytes() == before_child
+    assert (tmp_path / "custom.json").read_bytes() == before_config
 
 
 def test_recover_retains_valid_settings_and_reports_outcomes(tmp_path):

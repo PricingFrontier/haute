@@ -838,7 +838,7 @@ def build_recover_unavailable_node_plan(
     project_root: Path,
     request: PipelineRepairRecoverRequest,
 ) -> PipelineRepairPlan:
-    """Build a current-format update or reset using server-owned source evidence."""
+    """Build a reset or settings recovery using server-owned source evidence."""
     from haute._pipeline_repair_actions import build_recovery_action_plan
 
     return build_recovery_action_plan(project_root=project_root, request=request)

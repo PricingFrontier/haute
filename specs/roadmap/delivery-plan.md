@@ -37,7 +37,6 @@ merges, remove that round from the table.
 
 | Round | Theme | Packages, in order | Needs | Size | Why here |
 |---:|---|---|---|---|---|
-| 1 | Fail-loud fixes | `SUB-R02` | — | M | Small, independent fixes for silent drops, a planning gap and a deploy that always fails. |
 | 2 | Explore and trace | `EDA-E25`, `TRACE-R03` | — | M | Two small user-facing changes; `EDA-E25` regenerates the Explore chart contract. |
 | 3 | Tests and gates | `ENGQ-R06`, `API-R05`, `ENGQ-R04` | — | M | Removes CI noise and narrows the coverage gate before the large refactors, which then work under the lighter rule. |
 | 4 | Optimiser routes | `API-R01`, `MLF-R02`, `OPT-P13` | — | M | All three change `routes/optimiser.py` and `_optimiser_service.py`; `OPT-P13` opens the optimiser chain. |
@@ -47,9 +46,9 @@ merges, remove that round from the table.
 | 8 | Worker primitive | `ROAD-WORKER-05` | 5, 7 | L | One worker primitive and one failure family, mapped once to HTTP and job states, after the estimate has moved and services raise domain errors. |
 | 9 | Project context | `PCFG-R04` | 8 | L | The worker request format changes once, after the primitive. Two or more PRs: the context, accessor, fixture and ratchet with the first modules, then the remaining `chdir` migration and the deletion of the fallbacks. |
 | 10 | Generated contracts | `API-R03`: node data, cache, JSON-cache status and input cache; output write, destination and assemble dry run; one shared execution-metrics validator | 8 | L | The groups that carry no node config or editor document, generated once the job failure records have settled. |
-| 11 | Reuse | `SUB-R01` | 1 | L | Node-level instances go before the editor-state move and the typed configs would have to model them. Its first step proves the one-node submodel form and stops if an instance use is not covered. |
+| 11 | Reuse | `SUB-R01` | — | L | Node-level instances go before the editor-state move and the typed configs would have to model them. Its first step proves the one-node submodel form and stops if an instance use is not covered. |
 | 12 | Editor state | `PCFG-R08`, `CACHE-S25` | 11 | M | `CACHE-S25` keys caches on the whole config once editor state has left it. |
-| 13 | Typed node configs | `PCFG-R07`, then `API-R03`: pipeline load and save, preview, trace, submodel, recovery and repair, and JSON-cache inference | 1, 10, 12 | L | These `API-R03` groups carry node configs or the editor document, so they follow the typed models (and `SUB-R02`'s change to the recovery responses). Completes `API-R03`. |
+| 13 | Typed node configs | `PCFG-R07`, then `API-R03`: pipeline load and save, preview, trace, submodel, recovery and repair, and JSON-cache inference | 10, 12 | L | These `API-R03` groups carry node configs or the editor document, so they follow the typed models. Completes `API-R03`. |
 | 14 | Node specification and results store | `PCFG-R09`, `FSH-R03` | 13 | M | Both build on the typed models and the complete generated contract. |
 | 15 | Cache measurements | `CACHE-S17`, `CACHE-S22`, `CACHE-S18`, `CACHE-S13` | 12 | M | Each runs its measurement and builds only past its gate, once the planner and config changes above have landed. |
 | 16 | Containment | `SBX-R01` | 9 | M | The remaining path comparisons, after the project context has deleted the resolvers that held many of them. |
@@ -66,8 +65,6 @@ round starts.
 
 - `SUB-R01`: `@pipeline.instance` and `instanceOf` are rejected; **Create
   Instance** makes a one-node submodel with a second occurrence.
-- `SUB-R02`: the recovery action **Update to current format** is removed; a
-  legacy submodel registration is rejected with a targeted message.
 - `TRACE-R03`: a step among identical rows shows their values, labelled one
   of N identical rows, instead of a trace gap.
 - `ENGQ-R04`: the changed-code coverage gate blocks only the safety-critical

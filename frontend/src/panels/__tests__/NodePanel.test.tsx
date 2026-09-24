@@ -477,12 +477,13 @@ describe("NodePanel", () => {
     expect(screen.queryByRole("button", { name: "Remove unavailable node" })).not.toBeInTheDocument()
   })
 
-  it("offers update for unavailable submodels and reset for known ordinary nodes only", () => {
+  it("offers no migration for unavailable submodels and reset for known ordinary nodes only", () => {
     const onRemoveUnavailableNode = vi.fn()
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({ load_status: "degraded", capabilities: { can_repair: true } }))
     const { unmount } = renderPanel({ onRemoveUnavailableNode, node: makeNode({ data: { label: "Inputs", description: "", nodeType: "submodel", _loadAvailability: "unavailable", _sourceFile: "main.py", _recoveryId: "inputs@1" } }) })
-    fireEvent.click(screen.getByRole("button", { name: "Update to current format" }))
-    expect(onRemoveUnavailableNode).toHaveBeenCalledWith({ sourceFile: "main.py", recoveryId: "inputs@1", action: "update" })
+    expect(screen.queryByRole("button", { name: "Update to current format" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Reset node" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Recover settings" })).not.toBeInTheDocument()
     unmount()
     onRemoveUnavailableNode.mockClear()
     renderPanel({ onRemoveUnavailableNode, node: makeNode({ data: { label: "Broken", description: "", nodeType: "polars", _loadAvailability: "unavailable", _sourceFile: "main.py", _recoveryId: "broken@1" } }) })
