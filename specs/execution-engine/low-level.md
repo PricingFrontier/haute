@@ -9,6 +9,7 @@
 | `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points (and `plan_projection`, the projection half of `plan_execution_strategy`, for a caller that needs another execution's per-node column demand without planning or admitting it), runtime-input fingerprints, `preview_lineage_cache_key`, and `PREVIEW_EXECUTION_SEMANTICS_VERSION`. It is the stable application import boundary, but is not currently a thin re-export module. |
 | `src/haute/_path_resolution.py` | Cross-component dependency owned by [sandbox-security](../sandbox-security/low-level.md); canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
 | `src/haute/_execute_lazy.py` | The shared execution core: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), `_execute_lazy` (lazy plan + seed-plan seeding and capture), and `_execute_eager_core`/`EagerResult` (eager materialisation and preview error adaptation). |
+| `src/haute/_graph_walker.py` | The graph walker: `walk_graph(graph, build_node_fn, *, policy: CollectPolicy, ...)` walks a graph once and returns a `WalkResult` (each built node's frame, the prepared order, parents, names, and the join and write recipes and pre-shaping frames it built). `WalkRequest` holds the execution-independent inputs, `CollectPolicy` what the walk collects and how it treats each node's frame (`WalkPurpose.SINK`). The Data Output sink walks through it. No function in the module exceeds a cyclomatic complexity of 15, held by ruff's C901 rule scoped to this module alone. |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
 | `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, profile-independent projection decisions, fan-in edge demands, materialisation/opaque boundaries, derivation of each code node's recompute facts (`recompute_facts_by_node(...)`), demand-only source-scan projection (a node's configured column selection bounds what may be demanded but is never pushed into or validated against a physical read), and bounded strategy diagnostics. |
@@ -699,6 +700,20 @@ cardinality in a zero-column frame, so source, edge, and capture projection
 retain exactly one deterministic schema-ordered carrier column. The carrier is a
 physical execution detail, not a logical demand: it is removed naturally by the
 consumer and must never broaden to the whole source or collapse the row count.
+
+**The graph walker (`_graph_walker.walk_graph`).** One walk runs one execution: it
+prepares the graph (`_prepare_execution`), checks a seed plan against the execution
+(`_check_snapshot_plan`), prepares inputs, binds each seed's leased generation, plans the
+strategy and column demand, builds the functions of every node it will invoke (not
+seeds, not pass-through nodes), and visits `run_order` — the prepared order, restricted
+under a plan to its seeds and executed nodes. A sink walk (`CollectPolicy.sink()`) has
+exactly the semantics of the lazy engine described next, with one difference in how a
+planned walk starts: every source is built (invoked, shaped and contract-checked) before
+the walk, then the plan's inputs are verified, and the walk then visits `run_order` as
+written, so a captured source is captured in walk order after the check and records its
+pre-shaping columns like any other capture. `WalkResult.order` is the prepared order,
+as `_execute_lazy` returned it. The Data Output sink (`prepare_data_output`) runs
+through `walk_graph`, and slices its own write by `WalkResult.write_recipes`.
 
 **Sink/lazy execution (`execution.execute_lazy_graph` → `_execute_lazy._execute_lazy`).**
 Consumes the same `PreparedExecution` and `NodeBoundaryRunner` as eager execution,

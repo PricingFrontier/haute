@@ -48,6 +48,7 @@ from haute._env import int_env
 from haute._execute_lazy import lineage_preparation_order
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._graph_walker import CollectPolicy, walk_graph
 from haute._input_preparation import preparation_base_dir, prepare_input_snapshots
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
@@ -78,7 +79,6 @@ from haute.graph_utils import (
     NodeType,
     PipelineGraph,
     _execute_eager_core,
-    _execute_lazy,
     _prune_live_switch_edges,
     ancestors,
 )
@@ -2224,9 +2224,6 @@ def prepare_data_output(
     retain_staging = False
 
     try:
-        # The engine fills this while it runs; the Data Output's own write reads
-        # its entry to slice the frame rather than sink the whole of it.
-        output_write_recipes: dict[str, Any] = {}
         # Pin a preamble fingerprint snapshot at admission so chunk execution
         # shares one namespace without re-hashing.
         pinned = preamble_execution_fingerprint(
@@ -2239,7 +2236,7 @@ def prepare_data_output(
             execution_fingerprint=pinned,
         )
 
-        def _run_lazy() -> pl.LazyFrame:
+        def _run_lazy() -> tuple[pl.LazyFrame, Any]:
             plan = plans.enter_context(
                 SeedPlan.adopt(seed_plan)
                 if seed_plan is not None
@@ -2253,9 +2250,10 @@ def prepare_data_output(
                     execution_context=execution_context,
                 )
             )
-            lazy_outputs, _order, _parents, _names = _execute_lazy(
+            walked = walk_graph(
                 graph,
                 _build_node_fn,
+                policy=CollectPolicy.sink(),
                 target_node_id=output_node_id,
                 preamble_ns=preamble_ns or None,
                 source=output_scenario,
@@ -2264,14 +2262,15 @@ def prepare_data_output(
                 execution_context=execution_context,
                 prepare_inputs=False,
                 snapshot_plan=plan,
-                write_recipes=output_write_recipes,
             )
-            lf = lazy_outputs.get(output_node_id)
+            lf = walked.frames.get(output_node_id)
             if lf is None:
                 raise RuntimeError("Failed to compute Data Output input")
-            return lf
+            # The Data Output's own write slices the frame by this recipe
+            # rather than sink the whole of it.
+            return lf, walked.write_recipes.get(output_node_id)
 
-        lf = _run_lazy()
+        lf, output_write_recipe = _run_lazy()
 
         # Log the lazy plan so we can diagnose streaming failures.
         try:
@@ -2296,7 +2295,7 @@ def prepare_data_output(
                 frame,
                 config,
                 resolved_path=staging_out or out,
-                recipe=output_write_recipes.get(output_node_id),
+                recipe=output_write_recipe,
                 execution_context=execution_context,
                 node_id=output_node_id,
             )

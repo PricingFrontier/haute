@@ -515,6 +515,17 @@ keep reporting the failing line so the editor can name the failing step.
   batch sink run *the same per-node logic*, differing only in when the result is
   collected. Divergence between "what preview shows" and "what the batch run
   produces" would otherwise be a permanent trust problem for users.
+- **One graph walker.** `_graph_walker.walk_graph` walks a graph once under a
+  `CollectPolicy` that says what the walk collects and how it treats each node's frame.
+  The Data Output sink runs on it; preview, trace, deploy scoring and the other lazy
+  callers still run on the cores above until each moves (`EXEC-R05`). Two decisions
+  bound it. Its functions stay at a cyclomatic complexity of 15 or below, held by ruff's
+  C901 rule scoped to the walker module only; the rest of the package is not held to
+  that limit. And the decorator pipeline's `Pipeline.run`/`score` keeps its own loop over
+  the Python functions it registered, sharing only the one topological sort
+  (`topo_sort_ids`) and frame picking (`_pick_source_frame`) with the walker: the walker
+  runs config-built nodes, and routing the decorator path through it would need
+  `Pipeline.to_graph()` to rebuild every live node losslessly.
 - **Eager-with-caching for interactivity, lazy-with-captures for throughput.**
   Interactive preview needs low click-to-result latency on the *same* graph across
   many small edits — caching materialised DataFrames keyed by a graph fingerprint

@@ -6,6 +6,7 @@ from pathlib import Path
 BOUNDED_EXECUTION_MODULES = (
     "src/haute/_edge_join.py",
     "src/haute/_execute_lazy.py",
+    "src/haute/_graph_walker.py",
     "src/haute/_output_assembler.py",
     "src/haute/chunking.py",
     "src/haute/routes/_optimiser_service.py",

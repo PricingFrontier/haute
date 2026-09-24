@@ -1618,13 +1618,13 @@ class TestExecuteSink:
         captured_sources: list[str] = []
         from unittest.mock import patch
 
-        from haute._execute_lazy import _execute_lazy as original_execute_lazy
+        from haute._graph_walker import walk_graph as original_execute_lazy
 
         def spy(*args, **kwargs):
             captured_sources.append(kwargs.get("source", "???"))
             return original_execute_lazy(*args, **kwargs)
 
-        with patch("haute.executor._execute_lazy", side_effect=spy):
+        with patch("haute.executor.walk_graph", side_effect=spy):
             write_data_output(graph, output_node_id="sink", source="live")
 
         assert captured_sources == ["batch"]
@@ -1636,13 +1636,13 @@ class TestExecuteSink:
         captured_sources: list[str] = []
         from unittest.mock import patch
 
-        from haute._execute_lazy import _execute_lazy as original_execute_lazy
+        from haute._graph_walker import walk_graph as original_execute_lazy
 
         def spy(*args, **kwargs):
             captured_sources.append(kwargs.get("source", "???"))
             return original_execute_lazy(*args, **kwargs)
 
-        with patch("haute.executor._execute_lazy", side_effect=spy):
+        with patch("haute.executor.walk_graph", side_effect=spy):
             write_data_output(graph, output_node_id="sink", source="my_custom")
 
         assert captured_sources == ["my_custom"]
@@ -1724,7 +1724,7 @@ class TestExecuteSink:
 
         from unittest.mock import patch
 
-        from haute._execute_lazy import _execute_lazy as original
+        from haute._graph_walker import walk_graph as original
 
         captured_kwargs: list[dict] = []
 
@@ -1732,7 +1732,7 @@ class TestExecuteSink:
             captured_kwargs.append(kwargs)
             return original(*args, **kwargs)
 
-        with patch("haute.executor._execute_lazy", side_effect=spy):
+        with patch("haute.executor.walk_graph", side_effect=spy):
             write_data_output(graph, output_node_id="sink")
 
         assert len(captured_kwargs) == 1
@@ -1746,7 +1746,7 @@ class TestExecuteSink:
 
         from unittest.mock import patch
 
-        from haute._execute_lazy import _execute_lazy as original
+        from haute._graph_walker import walk_graph as original
 
         plans: list = []
 
@@ -1754,7 +1754,7 @@ class TestExecuteSink:
             plans.append(kwargs["snapshot_plan"])
             return original(*args, **kwargs)
 
-        with patch("haute.executor._execute_lazy", side_effect=spy):
+        with patch("haute.executor.walk_graph", side_effect=spy):
             write_data_output(graph, output_node_id="sink")
 
         assert len(plans) == 1
@@ -1811,13 +1811,13 @@ class TestExecuteSink:
         captured_sources: list[str] = []
         from unittest.mock import patch
 
-        from haute._execute_lazy import _execute_lazy as original_execute_lazy
+        from haute._graph_walker import walk_graph as original_execute_lazy
 
         def spy(*args, **kwargs):
             captured_sources.append(kwargs.get("source", "???"))
             return original_execute_lazy(*args, **kwargs)
 
-        with patch("haute.executor._execute_lazy", side_effect=spy):
+        with patch("haute.executor.walk_graph", side_effect=spy):
             write_data_output(graph, output_node_id="sink", source="live")
 
         # Should resolve to "nb_batch" from the ISM, not generic "batch"

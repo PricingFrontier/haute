@@ -3126,9 +3126,11 @@ def test_execute_sink_forwards_execution_context_to_lazy_executor(tmp_path) -> N
 
     def fake_execute_lazy(*_args, **kwargs):
         captured.update(kwargs)
-        return {"sink": pl.DataFrame({"a": [1]}).lazy()}, ["sink"], {}, {}
+        from haute._graph_walker import WalkResult
 
-    with patch("haute.executor._execute_lazy", side_effect=fake_execute_lazy):
+        return WalkResult(frames={"sink": pl.DataFrame({"a": [1]}).lazy()})
+
+    with patch("haute.executor.walk_graph", side_effect=fake_execute_lazy):
         result = write_data_output(graph, "sink", execution_context=context)
 
     assert result.status == "ok"
