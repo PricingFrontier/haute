@@ -51,6 +51,12 @@ describe("PipelineRepairDialog", () => {
     vi.clearAllMocks()
   })
 
+  it("names the failed step when a rejection carries no detail", async () => {
+    dryRunRemoveUnavailableNode.mockRejectedValueOnce(new ApiError("HTTP 500", 500))
+    renderDialog()
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not preview this repair.")
+  })
+
   it("dry-runs before apply and displays the bounded plan", async () => {
     dryRunRemoveUnavailableNode.mockResolvedValueOnce(plan())
     renderDialog()
@@ -111,7 +117,7 @@ describe("PipelineRepairDialog", () => {
     const { onClose } = renderDialog()
     await screen.findByText("Remove broken node.")
     fireEvent.click(screen.getByRole("button", { name: "Remove node" }))
-    expect(await screen.findByRole("alert")).toHaveTextContent("repair_plan_stale: Plan changed.")
+    expect(await screen.findByRole("alert")).toHaveTextContent(/^Plan changed.$/)
     expect(screen.getByTestId("pipeline-repair-dialog")).toBeInTheDocument()
     expect(onClose).not.toHaveBeenCalled()
   })
@@ -152,7 +158,7 @@ describe("PipelineRepairDialog", () => {
       action: "reset",
       planHash: hash("r"),
     }))
-    expect(await screen.findByRole("alert")).toHaveTextContent("repair_plan_stale: Plan changed.")
+    expect(await screen.findByRole("alert")).toHaveTextContent(/^Plan changed.$/)
     expect(screen.getByTestId("pipeline-repair-dialog")).toBeInTheDocument()
   })
 

@@ -7,9 +7,10 @@ import {
   ChartEmptyState,
   ChartSvg,
   ChartValueGrid,
-  ResponsiveChart,
+  ChartValuesTable,
   MODELLING_CHART_AXIS_FONT_SIZE as FONT,
   MODELLING_CHART_AXIS_TEXT_COLOR as TEXT,
+  ResponsiveChart,
 } from "./ChartScaffold"
 import {
   chartAxisLabel,
@@ -223,27 +224,12 @@ function PdpChart({ data }: { data: PdpFeatureRow }) {
           )}
         </div>
       )}
-      <details className="validation-values">
-        <summary>View prediction values</summary>
-        <div className="overflow-x-auto">
-          <table className="validation-value-table" aria-label="PDP values">
-            <thead>
-              <tr>
-                <th>{data.feature}</th>
-                <th>Average prediction</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.grid.map((point, i) => (
-                <tr key={i}>
-                  <td>{levelLabel(point.value)}</td>
-                  <td>{point.avg_prediction}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </details>
+      <ChartValuesTable
+        summary="View prediction values"
+        ariaLabel="PDP values"
+        headers={[data.feature, "Average prediction"]}
+        rows={data.grid.map((point) => [levelLabel(point.value), point.avg_prediction])}
+      />
     </>
   )
 }

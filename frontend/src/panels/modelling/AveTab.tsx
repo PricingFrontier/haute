@@ -8,9 +8,10 @@ import {
   ChartLegend,
   ChartSvg,
   ChartValueGrid,
-  ResponsiveChart,
+  ChartValuesTable,
   MODELLING_CHART_AXIS_FONT_SIZE as FONT,
   MODELLING_CHART_AXIS_TEXT_COLOR as TEXT,
+  ResponsiveChart,
 } from "./ChartScaffold"
 import {
   chartAxisLabel,
@@ -215,31 +216,12 @@ function AveChart({ data }: { data: TrainAvePerFeatureRow }) {
           <span>Hover or focus a bin to inspect its values.</span>
         )}
       </div>
-      <details className="validation-values">
-        <summary>View bin values</summary>
-        <div className="overflow-x-auto">
-          <table className="validation-value-table" aria-label="AvE bin values">
-            <thead>
-              <tr>
-                <th>Bin</th>
-                <th>Actual</th>
-                <th>Expected</th>
-                <th>Exposure</th>
-              </tr>
-            </thead>
-            <tbody>
-              {bins.map((bin, i) => (
-                <tr key={i}>
-                  <td>{bin.label}</td>
-                  <td>{bin.avg_actual}</td>
-                  <td>{bin.avg_predicted}</td>
-                  <td>{bin.exposure.toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </details>
+      <ChartValuesTable
+        summary="View bin values"
+        ariaLabel="AvE bin values"
+        headers={["Bin", "Actual", "Expected", "Exposure"]}
+        rows={bins.map((bin) => [bin.label, bin.avg_actual, bin.avg_predicted, bin.exposure.toLocaleString()])}
+      />
     </>
   )
 }

@@ -2,10 +2,10 @@ import type { ExploreHistogram } from "../../api/types"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
 import { formatChartNumber } from "../../utils/chartHelpers"
 import { distributionText } from "./distribution"
+import { MUTED_STYLE } from "./exploreTableStyles"
 
 const WIDTH = 96
 const HEIGHT = 22
-const MUTED_STYLE = { color: "var(--text-muted)" } as const
 
 /**
  * A numeric field's server-binned distribution as a small bar chart, or a word
