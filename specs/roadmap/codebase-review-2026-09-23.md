@@ -357,7 +357,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §3.1 HTTP types in services | `API-R02` ([server API](server-api.md)) |
 | §3.1 Three worker mechanisms | `ROAD-WORKER-05` ([background jobs](background-jobs-api.md)) |
 | §3.1 Process-memory probes ×4 | `EXEC-R06` ([execution engine](execution-engine.md)) |
-| §3.1 Two stores, three freshness proofs, hand-rolled LRUs | `CACHE-S08` and `CACHE-S24` ([caching](caching.md)) |
+| §3.1 Two stores, three freshness proofs, hand-rolled LRUs | `CACHE-S08` and `CACHE-S24` (caching, delivered) |
 | §3.1 Graph traversal ×5 | `EXEC-R08` ([execution engine](execution-engine.md)) |
 | §3.1 Legacy modelling check ×2 | `PCFG-R06` ([pipeline config](pipeline-config.md)) |
 | §3.1 Git outside the chokepoint | `DEP-R04` (deploy, delivered; its roadmap file is retired) |

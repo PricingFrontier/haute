@@ -28,6 +28,9 @@ layer is primary and caching is a consumer.
 - `LineageCacheKeyRequest` carries graph, target node/port, upstream lineage, prepared
   runtime switch state, and utility-file evidence for `lineage_cache_key()`.
 - `LRUCache` stores values in an `OrderedDict` with timestamps, optional sizes, and pins.
+  `get` promotes an entry; `peek` reads without promoting, for a read that must not count as
+  use. The assistant's `PlanStore` and `SessionStore` are built on it, pinning an applying
+  plan and a session with a running turn.
 - `StatGatedCache` stores `(freshness token, value)` in an `LRUCache`, plus participant-
   counted per-key load gates that are dropped as soon as no caller waits. The default maximum
   is 256 entries. A forked child replaces its locks and starts empty.
@@ -558,8 +561,8 @@ cache lifecycle changes.
   `tests/test_graph_fingerprint_cached.py`, and `tests/test_hashing.py` cover canonical
   encoding, injectivity, field completeness, versioning, live switches, utility files,
   memoisation, and shared primitive behaviour.
-- `tests/test_lru_cache.py` covers entry/byte/TTL eviction, pins, oversized retention, and
-  concurrency.
+- `tests/test_lru_cache.py` covers entry/byte/TTL eviction, pins, oversized retention,
+  non-promoting reads, and concurrency.
 - `tests/test_stat_gated_cache.py` covers hit/reload, LRU bounds, single flight, moving
   gates, exceptions, clear, and load-gate reclamation.
 - `tests/test_input_cache_route.py` covers an API Input's status before and after a build,

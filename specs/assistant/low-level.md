@@ -39,10 +39,13 @@ is a **readiness error**, not a warn-and-default — a silently substituted cost
 precisely the wrong-fallback class the project forbids.
 Retention constants in `_session.py`, not env knobs: the provider request carries the most
 recent **complete turns** fitting a 40-message budget; stored history is capped at 200
-messages by evicting whole oldest turns; live-session LRU cap 32 (least-recently-used
-*idle* session evicted on create beyond the cap — dropping only the in-memory record, the
-persisted file revives it on next lookup; a session with a running turn is never
-evicted); persisted session files cap at 100 (`MAX_PERSISTED_SESSIONS`), pruning the
+messages by evicting whole oldest turns; live-session LRU cap 32 idle sessions, held in
+the shared `LRUCache` (a session with a running turn is pinned from `reserve_turn` until
+its reservation is released, so it is never evicted and does not count against the cap;
+when a create, a revival or the end of a turn leaves more idle sessions than the cap, the
+least-recently-used idle session is evicted — dropping only the in-memory record, the
+persisted file revives it on next lookup; a read that must not count as use, such as a
+listing or a resume refused for another pipeline, does not promote it); persisted session files cap at 100 (`MAX_PERSISTED_SESSIONS`), pruning the
 oldest by session-file modification time at session creation after removing abandoned
 atomic-write temp files. Pruning always cuts at turn boundaries — an
 assistant tool call and its result are never separated (both provider APIs reject
@@ -186,7 +189,7 @@ orphaned halves).
   their node and key; the stored normalized
   operation remains the authority for its requested value.
 - **`PlanStore`**: process-local, size- and TTL-bounded records keyed by plan
-  hash. It owns validated/applying/applied/aborted state transitions under a
+  hash, held in the shared `LRUCache`. It owns validated/applying/applied/aborted state transitions under a
   lock. An applied record cannot return to validated. A failed pre-commit
   application becomes aborted and cannot be applied directly again; an
   identical fresh dry-run may replace that aborted record and reissue the same
@@ -418,11 +421,12 @@ excluded count; its path and content never cross the tool boundary.
    retrying the mutation.
 
 `PlanStore` is bounded for plans awaiting use, but an `applying` record is a
-non-evictable lease until `complete_apply` or `abort_apply` records its
-terminal result. TTL expiry and capacity pressure may remove only
-non-applying records. If every slot is leased, a new distinct dry-run fails
-with `plan_store_busy` rather than losing authority evidence for a save that
-may already be committing.
+pinned, non-evictable lease until `complete_apply` or `abort_apply` records its
+terminal result; a lease does not count against the bound, and when it ends the
+least-recently-used plan beyond the bound is dropped. TTL expiry and capacity
+pressure may remove only non-applying records. If as many applies are in flight
+as the bound, a new distinct dry-run fails with `plan_store_busy` rather than
+losing authority evidence for a save that may already be committing.
 
 **Status** (`GET /api/assistant/status`): `_config.assistant_readiness()` — read `haute.toml`
 (malformed or unknown `[assistant]` key → `ConfigError` → 400), check
@@ -856,9 +860,10 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   complete turns within a 40-message budget plus the always-complete system prompt; stored
   history caps at 200 messages by evicting whole oldest turns. No pruning boundary ever
   separates an assistant tool call from its result (an orphaned half is an invalid provider
-  conversation). Live sessions are LRU-capped at 32 with least-recently-used *idle*
-  eviction — a session holding a running turn is never evicted, and eviction drops only
-  the in-memory record: the persisted file revives the id transparently on next lookup.
+  conversation). Live sessions are LRU-capped at 32 idle sessions with least-recently-used
+  eviction — a session holding a running turn is pinned, never evicted and outside the cap,
+  and eviction drops only the in-memory record: the persisted file revives the id
+  transparently on next lookup.
 - **Dataset discovery and schema inspection share one safety contract**: installed readable path
   extensions come from `routes.files._installed_input_extensions()` and are matched by
   case-folded filename suffix (including compound extensions). The resolved project-relative

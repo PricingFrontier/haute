@@ -128,6 +128,23 @@ class LRUCache(Generic[K, V]):
             self._data.move_to_end(key)
             return value  # type: ignore[return-value]
 
+    def peek(self, key: K) -> V | None:
+        """Return the cached value without promoting it, or ``None`` on miss.
+
+        For a read that must not count as use: a listing, or a lookup whose
+        caller may still refuse the entry. A TTL-expired entry reads as a miss
+        and is left for :meth:`get` to evict.
+        """
+        with self._lock:
+            value = self._data.get(key, _MISSING)
+            if value is _MISSING:
+                return None
+            if self._ttl is not None:
+                stored_at = self._timestamps.get(key, 0.0)
+                if (_time.monotonic() - stored_at) > self._ttl:
+                    return None
+            return value  # type: ignore[return-value]
+
     def pop(self, key: K) -> V | None:
         """Remove *key* and return its value, or ``None`` when absent or expired."""
         with self._lock:

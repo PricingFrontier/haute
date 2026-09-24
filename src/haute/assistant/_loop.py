@@ -638,10 +638,11 @@ class TurnReservation:
     or leak.
     """
 
-    __slots__ = ("_released", "session")
+    __slots__ = ("_released", "_store", "session")
 
-    def __init__(self, session: AssistantSession) -> None:
+    def __init__(self, session: AssistantSession, store: SessionStore) -> None:
         self.session = session
+        self._store = store
         self._released = False
 
     def release(self) -> None:
@@ -649,6 +650,7 @@ class TurnReservation:
             return
         self._released = True
         self.session.lock.release()
+        self._store.unpin_running_turn(self.session)
 
 
 async def reserve_turn(store: SessionStore, session_id: str) -> TurnReservation:
@@ -666,7 +668,9 @@ async def reserve_turn(store: SessionStore, session_id: str) -> TurnReservation:
     if session.lock.locked():
         raise ConcurrentTurnError(session_id)
     await session.lock.acquire()
-    return TurnReservation(session)
+    # A free lock is acquired without suspending, so the pin follows at once.
+    store.pin_running_turn(session)
+    return TurnReservation(session, store)
 
 
 async def run_turn(

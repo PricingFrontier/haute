@@ -102,6 +102,30 @@ class TestEviction:
         assert cache.get("b") is None
         assert cache.get("c") == 3
 
+    def test_peek_reads_without_promoting(self) -> None:
+        cache: LRUCache[str, int] = LRUCache(max_size=2)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        assert cache.peek("a") == 1  # a read that is not a use
+        assert cache.peek("missing") is None
+        cache.put("c", 3)  # "a" is still least recently used
+        assert cache.get("a") is None
+        assert cache.get("b") == 2
+
+    def test_peek_treats_an_expired_entry_as_a_miss_and_leaves_it(self, monkeypatch) -> None:
+        import haute._lru_cache as _mod
+
+        now = 1000.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        cache: LRUCache[str, int] = LRUCache(max_size=2, ttl=5.0)
+        cache.put("a", 1)
+        now = 1006.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        assert cache.peek("a") is None
+        assert len(cache) == 1
+        assert cache.get("a") is None
+        assert len(cache) == 0
+
     def test_put_overwrite_promotes_entry(self) -> None:
         cache: LRUCache[str, int] = LRUCache(max_size=2)
         cache.put("a", 1)

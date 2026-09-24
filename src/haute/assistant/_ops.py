@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import ast
 import json
-from collections import OrderedDict
 from collections.abc import Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -27,6 +26,7 @@ from pydantic import BaseModel, ValidationError
 from haute._config_io import NODE_TYPE_TO_FOLDER
 from haute._config_validation import VALID_KEYS
 from haute._graph_utils import _edge_id, _sanitize_func_name
+from haute._lru_cache import LRUCache
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -1684,14 +1684,21 @@ class _StoredPlan:
 
 
 class PlanStore:
-    """Thread-safe, bounded single-use plan authority ledger."""
+    """Thread-safe, bounded single-use plan authority ledger.
+
+    Plans awaiting use live in a bounded :class:`LRUCache`. An ``applying``
+    record is a pinned lease: neither capacity pressure nor its TTL removes it
+    until ``complete_apply`` or ``abort_apply`` records its terminal result.
+    """
 
     def __init__(self, *, max_size: int = 100, ttl_seconds: float = 600.0) -> None:
         if max_size < 1 or ttl_seconds <= 0:
             raise ValueError("max_size and ttl_seconds must be positive")
         self._max_size = max_size
         self._ttl_seconds = ttl_seconds
-        self._records: OrderedDict[str, _StoredPlan] = OrderedDict()
+        # Expiry stays per record: an applying lease must outlive its TTL, which
+        # the cache's own TTL would not allow for a pinned entry.
+        self._records: LRUCache[str, _StoredPlan] = LRUCache(max_size=max_size)
         self._lock = RLock()
 
     def _record(self, plan_hash: str) -> _StoredPlan:
@@ -1699,9 +1706,8 @@ class PlanStore:
         if record is None:
             raise AssistantOperationError("plan_not_found")
         if record.state != "applying" and monotonic() >= record.expires_at:
-            del self._records[plan_hash]
+            self._records.pop(plan_hash)
             raise AssistantOperationError("plan_expired")
-        self._records.move_to_end(plan_hash)
         return record
 
     def __len__(self) -> int:
@@ -1710,35 +1716,29 @@ class PlanStore:
 
     def put(self, plan: GraphEditPlan) -> None:
         with self._lock:
+            # A hit is promoted, which is all a still-valid identical plan needs.
             existing = self._records.get(plan.plan_hash)
             if existing is not None:
                 if existing.state == "aborted":
-                    del self._records[plan.plan_hash]
+                    self._records.pop(plan.plan_hash)
                 elif existing.state == "applying" or monotonic() < existing.expires_at:
-                    self._records.move_to_end(plan.plan_hash)
                     return
                 else:
-                    del self._records[plan.plan_hash]
+                    self._records.pop(plan.plan_hash)
 
-            while len(self._records) >= self._max_size:
-                evictable = next(
-                    (
-                        stored_hash
-                        for stored_hash, record in self._records.items()
-                        if record.state != "applying"
-                    ),
-                    None,
+            leased = sum(
+                1
+                for stored_hash in self._records
+                if (record := self._records.peek(stored_hash)) is not None
+                and record.state == "applying"
+            )
+            if leased >= self._max_size:
+                raise AssistantOperationError(
+                    "plan_store_busy",
+                    "Every plan-store slot is reserved by an in-flight apply; "
+                    "retry the dry-run after those saves settle.",
                 )
-                if evictable is None:
-                    raise AssistantOperationError(
-                        "plan_store_busy",
-                        "Every plan-store slot is reserved by an in-flight apply; "
-                        "retry the dry-run after those saves settle.",
-                    )
-                del self._records[evictable]
-
-            self._records[plan.plan_hash] = _StoredPlan(plan, monotonic() + self._ttl_seconds)
-            self._records.move_to_end(plan.plan_hash)
+            self._records.put(plan.plan_hash, _StoredPlan(plan, monotonic() + self._ttl_seconds))
 
     def get(self, plan_hash: str) -> GraphEditPlan:
         with self._lock:
@@ -1756,6 +1756,7 @@ class PlanStore:
             if record.state in {"applying", "applied"}:
                 raise AssistantOperationError("plan_already_applied")
             record.state = "applying"
+            self._records.pin(plan_hash)
             return record.plan
 
     def complete_apply(self, plan_hash: str, result: object) -> None:
@@ -1765,6 +1766,7 @@ class PlanStore:
                 raise AssistantOperationError("plan_already_applied")
             record.state = "applied"
             record.result = _frozen_json(result)
+            self._records.unpin(plan_hash)
 
     def abort_apply(self, plan_hash: str) -> None:
         """Invalidate a reserved plan after a pre-save failure.
@@ -1779,6 +1781,7 @@ class PlanStore:
             if record.state == "applying":
                 record.state = "aborted"
                 record.result = _frozen_json({"error": "plan_aborted"})
+                self._records.unpin(plan_hash)
 
 
 __all__ = [

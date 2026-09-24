@@ -36,7 +36,6 @@ import math
 import os
 import re
 import time
-from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +44,7 @@ from uuid import uuid4
 
 from haute._credential_security import redact_sensitive_text
 from haute._logging import get_logger
+from haute._lru_cache import LRUCache
 
 logger = get_logger(component="assistant.session")
 
@@ -583,6 +583,12 @@ class SessionStore:
     The store is used on the asyncio event-loop thread, so its synchronous
     mutations are atomic with respect to other store calls.  The per-session
     :attr:`AssistantSession.lock` remains the one-turn guard for async work.
+
+    Live sessions are an :class:`LRUCache` bounded at ``max_live_sessions``
+    idle sessions. A session with a running turn is pinned for the turn's
+    length (:meth:`pin_running_turn`), so it is never evicted and does not
+    count against the bound; eviction happens only when an insert, or the end
+    of a turn, leaves more idle sessions than the bound.
     """
 
     def __init__(
@@ -607,7 +613,7 @@ class SessionStore:
         # A factory, not a Path: the project root is the server's cwd, which
         # is resolved per call like the tool layer does, never at import.
         self._storage_dir = storage_dir
-        self._sessions: OrderedDict[str, AssistantSession] = OrderedDict()
+        self._sessions: LRUCache[str, AssistantSession] = LRUCache(max_size=max_live_sessions)
 
     @staticmethod
     def _validate_limit(name: str, value: int) -> None:
@@ -623,36 +629,30 @@ class SessionStore:
 
     def _touch(self, session: AssistantSession) -> None:
         session.last_used = self._clock()
-        self._sessions.move_to_end(session.id)
+        self._sessions.get(session.id)  # promotes to most recently used
 
     def _require(self, session_ref: SessionRef) -> AssistantSession:
         if isinstance(session_ref, AssistantSession):
-            session = self._sessions.get(session_ref.id)
+            session = self._sessions.peek(session_ref.id)
             if session is not session_ref:
                 raise KeyError(session_ref.id)
             return session
         if not isinstance(session_ref, str):
             raise TypeError("session reference must be a session id or AssistantSession")
-        session = self._sessions.get(session_ref)
+        session = self._sessions.peek(session_ref)
         if session is None:
             raise KeyError(session_ref)
         return session
 
-    def _evict_idle(self, *, exclude: frozenset[str] = frozenset()) -> None:
-        """Evict oldest idle sessions until the configured bound is met."""
+    def pin_running_turn(self, session: AssistantSession) -> None:
+        """Keep a session whose turn is running out of eviction until it ends."""
 
-        while len(self._sessions) > self.max_live_sessions:
-            candidate_id: str | None = None
-            for session_id, session in self._sessions.items():
-                if session_id in exclude or session.lock.locked():
-                    continue
-                candidate_id = session_id
-                break
-            if candidate_id is None:
-                # All retained sessions are active.  Keeping them is required
-                # to avoid invalidating a turn that is already in flight.
-                return
-            del self._sessions[candidate_id]
+        self._sessions.pin(session.id)
+
+    def unpin_running_turn(self, session: AssistantSession) -> None:
+        """End a turn's pin; the session is idle and evictable again."""
+
+        self._sessions.unpin(session.id)
 
     def _persist(self, session: AssistantSession) -> None:
         """Write one session's file atomically; failure warns, never raises.
@@ -739,9 +739,8 @@ class SessionStore:
             return None
         if expected_source_file is not None and session.source_file != expected_source_file:
             return None
-        self._sessions[session_id] = session
-        self._sessions.move_to_end(session_id)
-        self._evict_idle(exclude=frozenset({session_id}))
+        # Inserted most recently used, so eviction takes an older idle session.
+        self._sessions.put(session_id, session)
         return session
 
     def create(self, source_file: str | os.PathLike[str]) -> AssistantSession:
@@ -758,10 +757,9 @@ class SessionStore:
             created_at=now,
             last_used=now,
         )
-        self._sessions[session_id] = session
-        # Never evict the object just returned.  It is the caller's newly
-        # created session even when every older session is currently busy.
-        self._evict_idle(exclude=frozenset({session_id}))
+        # Inserted most recently used, so eviction takes an older idle session,
+        # never the one just returned: busy sessions are pinned and do not count.
+        self._sessions.put(session_id, session)
         self._persist(session)
         self._prune_persisted(session_id)
         return session
@@ -824,8 +822,9 @@ class SessionStore:
                 summary = self._persisted_summary(path)
                 if summary is not None and summary[0] == source:
                     summaries[summary[1].session_id] = summary[1]
-        for session in self._sessions.values():
-            if session.source_file != source:
+        for session_id in self._sessions:
+            session = self._sessions.peek(session_id)
+            if session is None or session.source_file != source:
                 continue
             summaries[session.id] = SessionSummary(
                 session_id=session.id,
@@ -854,7 +853,7 @@ class SessionStore:
 
         if not isinstance(session_id, str):
             raise TypeError("session id must be a string")
-        session = self._sessions.get(session_id)
+        session = self._sessions.peek(session_id)
         if session is None:
             session = self._revive(session_id)
         if session is None:
@@ -874,7 +873,7 @@ class SessionStore:
         if not isinstance(session_id, str):
             raise TypeError("session id must be a string")
         source = self._source_file_text(source_file)
-        session = self._sessions.get(session_id)
+        session = self._sessions.peek(session_id)
         if session is not None and session.source_file != source:
             return None
         if session is None:
@@ -952,7 +951,7 @@ class SessionStore:
     def __contains__(self, session_id: object) -> bool:
         """Return whether *session_id* is currently retained."""
 
-        return session_id in self._sessions
+        return isinstance(session_id, str) and session_id in self._sessions
 
 
 __all__ = [
