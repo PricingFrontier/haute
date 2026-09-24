@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import polars as pl
@@ -222,3 +223,146 @@ def test_a_trace_keeps_the_gap_when_source_rows_differ_in_a_dropped_column(tmp_p
     ]
     shaped = next(step for step in result.steps if step.node_id == "shaped")
     assert shaped.identical_row_count is None
+
+
+def test_float_tolerant_key_matches_are_not_taken_as_identical_rows() -> None:
+    # The matcher's float comparison accepts rows 0 and 1 for the key; they
+    # differ in premium, so they are not identical, whatever row 2 holds.
+    frame = pl.DataFrame({"key": [10000000.009, 10000000.0, 10000000.018], "premium": [10, 20, 10]})
+    diagnostics: list[dict[str, object]] = []
+
+    row, index = _find_matching_row(frame, {"key": 10000000.0}, diagnostics=diagnostics)
+
+    assert (row, index) == (None, -1)
+    assert [diagnostic["reason"] for diagnostic in diagnostics] == ["duplicate_exact_match"]
+
+
+def test_a_multi_frame_parent_keeps_the_winning_frames_identical_row_count() -> None:
+    node_map = {
+        "api": _node("api", NodeType.API_INPUT),
+        "edge": GraphNode(
+            id="edge",
+            data=NodeData(
+                label="edge",
+                nodeType=NodeType.EDGE_JOIN,
+                config={"how": "inner", "on": ["policy_id"], "suffix": "_right"},
+            ),
+        ),
+    }
+    policies = pl.DataFrame({"policy_id": ["P1"], "premium": [100]})
+    rates = pl.DataFrame({"policy_id": ["P1", "P1"], "premium": [999, 999], "rate": [1.2, 1.2]})
+    edge = policies.join(rates, on="policy_id", how="inner", suffix="_right")
+    diagnostics: list[dict[str, Any]] = []
+
+    rows = _correlate_rows_posthoc(
+        {"api": {"policies": policies, "rates": rates}, "edge": edge},
+        order=["api", "edge"],
+        parents_of={"edge": ["api"]},
+        target_node_id="edge",
+        row_index=0,
+        node_map=node_map,
+        edge_metadata={("api", "edge"): [("policies", "base"), ("rates", "join")]},
+        traced_column="rate",
+        diagnostics=diagnostics,
+    )
+
+    assert rows["api"] == {"policy_id": "P1", "premium": 999, "rate": 1.2}
+    assert [(d["code"], d["node_id"], d["candidate_count"]) for d in diagnostics] == [
+        ("identical_row_match", "api", 2)
+    ]
+
+
+def test_a_row_scope_port_keeps_the_winning_ports_identical_row_count() -> None:
+    from haute._trace_correlation import RowScopeResolver
+    from haute._types import GraphEdge
+    from haute.trace import _trace_lineage_alignments
+
+    code = "df = policies.join(rates, how='cross', maintain_order='left_right')"
+    node_map = {
+        "api": _node("api", NodeType.API_INPUT),
+        "priced": _node("priced", NodeType.POLARS, code),
+    }
+    edges = [
+        GraphEdge(id=f"e_{handle}", source="api", target="priced", sourceHandle=handle)
+        for handle in ("policies", "rates")
+    ]
+    alignments, input_names, child_input_names, _aliases = _trace_lineage_alignments(
+        SimpleNamespace(relevant_edges=edges, node_map=node_map, submodels=None)
+    )
+    policies = pl.LazyFrame({"x": [1]})
+    rates = pl.LazyFrame({"y": [5, 5, 5], "premium": [7, 7, 7]})
+    priced = policies.join(rates, how="cross", maintain_order="left_right")
+    plans = {"api": {"policies": policies, "rates": rates}, "priced": priced}
+    edge_metadata = {("api", "priced"): [("policies", None), ("rates", None)]}
+    frames: dict[str, Any] = {"priced": priced.head(2).collect()}
+    resolver = RowScopeResolver(
+        node_map=node_map,
+        prefixes={"priced": 2},
+        alignments=alignments,
+        edge_metadata=edge_metadata,
+        input_names=input_names,
+        child_input_names=child_input_names,
+        plans=lambda: plans,
+        frames=frames,
+        head_resolved={"priced"},
+    )
+    diagnostics: list[dict[str, Any]] = []
+
+    rows = _correlate_rows_posthoc(
+        frames,
+        order=["api", "priced"],
+        parents_of={"priced": ["api"]},
+        target_node_id="priced",
+        row_index=0,
+        node_map=node_map,
+        edge_metadata=edge_metadata,
+        traced_column="premium",
+        row_scope=resolver,
+        diagnostics=diagnostics,
+    )
+
+    # The lookup holds two rows; the count is over the whole rates plan.
+    assert rows["api"] == {"y": 5, "premium": 7}
+    assert [(d["code"], d["node_id"], d["candidate_count"]) for d in diagnostics] == [
+        ("identical_row_match", "api", 3)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected_count", "expected_omissions"),
+    [
+        # Three identical candidates: the two-row lookup cannot count them.
+        ({"id": [7, 7, 7], "region": ["north"] * 3, "premium": [10] * 3}, 3, []),
+        # The first two candidates are identical, the third differs in `id`.
+        (
+            {"id": [7, 7, 8], "region": ["north"] * 3, "premium": [10] * 3},
+            None,
+            [("source", "duplicate_exact_match")],
+        ),
+    ],
+    ids=["three_identical", "third_differs"],
+)
+def test_a_trace_counts_identity_over_the_whole_source(
+    tmp_path, rows: dict[str, list[Any]], expected_count: int | None, expected_omissions
+) -> None:
+    path = tmp_path / "source.parquet"
+    pl.DataFrame(rows).write_parquet(path)
+    graph = make_graph(
+        {
+            "nodes": [
+                make_source_node("source", str(path)),
+                make_transform_node(
+                    "shaped", 'df = source.select("region", "premium").sort("region")'
+                ),
+            ],
+            "edges": [make_edge("source", "shaped")],
+        }
+    )
+
+    result = execute_trace(graph, row_index=0, target_node_id="shaped", column="premium")
+
+    assert [(omission.node_id, omission.reason) for omission in result.omissions] == (
+        expected_omissions
+    )
+    counts = {step.node_id: step.identical_row_count for step in result.steps}
+    assert counts.get("source") == expected_count

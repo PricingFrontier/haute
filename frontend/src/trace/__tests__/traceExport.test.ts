@@ -129,15 +129,16 @@ describe("trace export projection", () => {
       .toBe("duplicate_exact_match")
   })
 
-  it("exports a step's identical-row count only when it is one of several identical rows", () => {
+  it("exports \"One of N identical rows\" only for a step that is one of several identical rows", () => {
     const trace = traceFixture()
     trace.steps[0] = { ...trace.steps[0], identical_row_count: 3 }
     const rows = buildTraceExportRows(trace)
 
-    const counts = rows.filter((row) => row.field === "identical_row_count")
-    expect(counts).toEqual([
-      expect.objectContaining({ section: "step", nodeId: trace.steps[0].node_id, value: "3" }),
+    expect(rows.filter((row) => row.field === "identical_rows")).toEqual([
+      expect.objectContaining({ section: "step", nodeId: trace.steps[0].node_id }),
     ])
+    expect(traceToMarkdown(trace)).toContain("One of 3 identical rows")
+    expect(traceToCsv(trace)).toContain("One of 3 identical rows")
   })
 
   it("escapes Markdown and CSV without changing the projected values", () => {

@@ -100,7 +100,9 @@ export function buildTraceExportRows(trace: TraceResult): TraceExportRow[] {
       fieldRow("step", "row_lineage_type", item.row_lineage_type, item),
     )
     if (typeof item.identical_row_count === "number") {
-      rows.push(fieldRow("step", "identical_row_count", item.identical_row_count, item))
+      rows.push(
+        fieldRow("step", "identical_rows", `One of ${item.identical_row_count} identical rows`, item),
+      )
     }
   }
 

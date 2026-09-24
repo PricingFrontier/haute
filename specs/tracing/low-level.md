@@ -401,13 +401,16 @@ identical matching logic:
    (no physical row is chosen) and records an informational
    `identical_row_match` diagnostic (severity `info`, reason `identical_rows`,
    `candidate_count`). Identity is proven over every candidate, not the capped
-   index list: one pass counts the rows matching the child and the rows equal
-   to the first candidate in every column, and the two counts must agree. The
-   pass runs over the frame being matched, or, for a row-scope lookup (which
-   reads at most two rows), over the node's uncapped plan. A column whose value
-   cannot be compared by `_typed_value_match_expr` leaves the tie a
-   `duplicate_exact_match` omission, as do relaxed ties and candidates that
-   differ in any column. A position of `-1` never feeds positional alignment
+   index list: the rows the matcher's comparison accepts must form exactly one
+   distinct row across every column, compared exactly in their own dtypes (a
+   float key the matcher accepts within tolerance does not make two rows
+   identical). The count runs over the frame being matched, or, for a row-scope
+   lookup (which reads at most two rows), over the node's uncapped plan. A key
+   `_typed_value_match_expr` cannot compare, or columns Polars cannot
+   de-duplicate, leave the tie a `duplicate_exact_match` omission, as do
+   relaxed ties and candidates that differ in any column. When several frames or
+   ports of one parent compete, each keeps its own diagnostics and only the
+   winner's `identical_row_match` is recorded. A position of `-1` never feeds positional alignment
    (the fast path and head alignment require a known index), so correlation
    above such a step is by value only.
    `allow_relaxed` is forced to `False` for an edge-join's JOIN-role parent
