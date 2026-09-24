@@ -152,24 +152,6 @@ def sliceable(lf: pl.LazyFrame) -> bool:
         return False
 
 
-def reads_only_memory(lf: pl.LazyFrame) -> bool:
-    """Whether every input ``lf`` reads is an in-memory frame the caller already holds."""
-    try:
-        traverser = lf._ldf.visit()
-        if traverser.version()[0] != _SUPPORTED_IR_MAJOR:
-            return False
-        pending = [traverser.get_node()]
-        while pending:
-            traverser.set_node(pending.pop())
-            inputs = traverser.get_inputs()
-            if not inputs and type(traverser.view_current_node()).__name__ != "DataFrameScan":
-                return False
-            pending.extend(inputs)
-        return True
-    except Exception:  # noqa: BLE001 - an unreadable plan is not proven in memory
-        return False
-
-
 def row_count(lf: pl.LazyFrame, *, execution_context: ExecutionContext | None = None) -> int:
     return int(execution_collect(lf.select(pl.len()), execution_context=execution_context).item())
 
@@ -1283,15 +1265,3 @@ def _validate_uniqueness(
         )
     ):
         raise pl.exceptions.ComputeError(f"join keys did not fulfill {validate} validation")
-
-
-def iter_slices(
-    lf: pl.LazyFrame,
-    *,
-    chunk_rows: int,
-    execution_context: ExecutionContext | None = None,
-) -> Iterator[pl.DataFrame]:
-    """Collect a sliceable ``lf`` one slice at a time, in order."""
-    total = row_count(lf, execution_context=execution_context)
-    for offset in range(0, total, chunk_rows):
-        yield execution_collect(lf.slice(offset, chunk_rows), execution_context=execution_context)
