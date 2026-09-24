@@ -24,7 +24,7 @@ import {
   chartLabelIndices,
   chartTicks,
   formatChartNumber,
-} from "./chartGeometry"
+} from "../../utils/chartHelpers"
 import { FeatureBrowser } from "./FeatureBrowser"
 
 const SCORE_NOTE =

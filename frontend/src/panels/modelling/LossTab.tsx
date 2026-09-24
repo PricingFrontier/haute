@@ -11,6 +11,7 @@ import {
   ChartLegend,
   ResponsiveChart,
   ChartSvg,
+  ChartValueGrid,
   MODELLING_CHART_AXIS_FONT_SIZE,
   MODELLING_CHART_AXIS_TEXT_COLOR,
   MODELLING_CHART_GRID_COLOR,
@@ -120,30 +121,7 @@ function LossTabChart({ result, width, height }: Required<LossTabProps>) {
       <ChartSvg width={width} height={height} ariaLabel="Loss history chart">
         <title>Loss history by iteration</title>
         {/* Horizontal grid lines + y-axis labels */}
-        {gridYValues.map((v, i) => {
-          const y = yScale(v)
-          return (
-            <g key={`gy-${i}`}>
-              <line
-                x1={marginLeft}
-                y1={y}
-                x2={marginLeft + chartW}
-                y2={y}
-                stroke={MODELLING_CHART_GRID_COLOR}
-                strokeWidth={1}
-              />
-              <text
-                x={marginLeft - 6}
-                y={y + 3}
-                textAnchor="end"
-                fontSize={MODELLING_CHART_AXIS_FONT_SIZE}
-                fill={MODELLING_CHART_AXIS_TEXT_COLOR}
-              >
-                {v.toPrecision(3)}
-              </text>
-            </g>
-          )
-        })}
+        <ChartValueGrid ticks={gridYValues} left={marginLeft} right={marginLeft + chartW} y={yScale} />
 
         {/* Vertical grid lines + x-axis labels */}
         {gridXIndices.map((idx, i) => {

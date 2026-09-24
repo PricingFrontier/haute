@@ -13,7 +13,7 @@ import {
   Search,
 } from "lucide-react"
 import { CHART_COLORS } from "../theme/colors"
-import { formatAxisLabel, yTicks } from "../utils/chartHelpers"
+import { chartTicks, formatChartNumber } from "../utils/chartHelpers"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import type { PreviewData } from "./DataPreview"
 import { computeScenarioStatsBySeries, type ScenarioStats } from "./optimiserScenarioStats"
@@ -99,7 +99,7 @@ function buildSeriesScale(
   if (!Number.isFinite(vMin)) vMin = 0
   if (!Number.isFinite(vMax)) vMax = 1
   const rawRange = vMax - vMin || 1
-  const ticks = yTicks(vMin, vMax)
+  const ticks = chartTicks(vMin, vMax, 5)
 
   const pad = rawRange * yPadFraction
   const adjMin = vMin - pad
@@ -174,7 +174,7 @@ function ChartGrid({
             fontSize={9}
             fill={SERIES_COLORS[allSeries.indexOf(primaryColumn) % SERIES_COLORS.length]}
           >
-            {formatAxisLabel(t)}
+            {formatChartNumber(t)}
           </text>
         </g>
       ))}
@@ -226,7 +226,7 @@ function ChartGrid({
                   fontSize={9}
                   fill={color}
                 >
-                  {formatAxisLabel(t)}
+                  {formatChartNumber(t)}
                 </text>
               </g>
             ))}

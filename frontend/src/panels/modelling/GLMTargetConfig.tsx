@@ -6,10 +6,10 @@ import { configField } from "../../utils/configField"
 import { effectiveMetrics } from "../../utils/trainingObjective"
 import { toggleButtonStyle } from "./styles"
 import { FailoverHelp } from "./FailoverHelp"
-import { OffsetFieldLabel } from "./OffsetFieldLabel"
 import { GLM_FAMILY_LINKS, isGlmFamily, type GlmFamily } from "./glmFamilies"
 import { ColumnSelector } from "./ColumnSelector"
-import { isNumericDtype } from "../../utils/polarsDtypes"
+import { modelColumnChoices } from "./modelColumns"
+import WeightOffsetFields from "./WeightOffsetFields"
 import useToastStore from "../../stores/useToastStore"
 
 type Column = { name: string; dtype: string }
@@ -86,9 +86,7 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
   const linkUnavailable = link !== "" && !links.includes(link)
   const theta = config.theta
   const offset = configField(config, "offset", "")
-  const targetColumns = columns.filter((column) => column.name !== weight && column.name !== offset)
-  const weightColumns = columns.filter((column) => isNumericDtype(column.dtype) && column.name !== target && column.name !== offset)
-  const offsetColumns = columns.filter((column) => isNumericDtype(column.dtype) && column.name !== target && column.name !== weight)
+  const { targetColumns, weightColumns, offsetColumns } = modelColumnChoices(columns, { target, weight, offset })
 
   const handleEstimate = async (param: DispersionParam) => {
     if (!onEstimateDispersion || estimating) return
@@ -292,17 +290,13 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
         )}
 
         <h3 className="text-[14px] font-semibold" style={{ color: "var(--text-primary)" }}>Weight and offset</h3>
-        {/* Weight */}
-        <div>
-          <label className="text-[13px]" style={{ color: "var(--text-secondary)" }}>Weight column (optional)</label>
-          <ColumnSelector label="Weight column" value={weight} columns={weightColumns} onChange={(next) => onUpdate("weight", next)} optional />
-        </div>
-
-        {/* Offset */}
-        <div>
-          <OffsetFieldLabel />
-          <ColumnSelector label="Offset column" value={offset} columns={offsetColumns} onChange={(next) => onUpdate("offset", next || null)} optional />
-        </div>
+        <WeightOffsetFields
+          weight={weight}
+          offset={offset}
+          weightColumns={weightColumns}
+          offsetColumns={offsetColumns}
+          onUpdate={onUpdate}
+        />
 
         {/* Intercept */}
         <label className="flex items-center gap-2 cursor-pointer select-none">

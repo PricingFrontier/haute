@@ -6,6 +6,7 @@ import {
   type ReactNode,
   type SVGProps,
 } from "react"
+import { formatChartNumber } from "../../utils/chartHelpers"
 
 export const MODELLING_CHART_GRID_COLOR = "var(--border)"
 export const MODELLING_CHART_AXIS_TEXT_COLOR = "var(--text-muted)"
@@ -136,5 +137,44 @@ export function ChartLegend({ items, compact = false }: ChartLegendProps) {
         )
       })}
     </div>
+  )
+}
+
+/**
+ * Horizontal gridlines across the plot with each tick's value to the left of
+ * the axis: the value axis every validation chart draws.
+ */
+export function ChartValueGrid({
+  ticks,
+  left,
+  right,
+  y,
+  labelGap = 6,
+}: {
+  ticks: number[]
+  /** The plot's left edge; labels end `labelGap` pixels before it. */
+  left: number
+  /** The plot's right edge. */
+  right: number
+  y: (value: number) => number
+  labelGap?: number
+}) {
+  return (
+    <>
+      {ticks.map((value) => (
+        <g key={value} data-testid="chart-value-tick">
+          <line x1={left} y1={y(value)} x2={right} y2={y(value)} stroke={MODELLING_CHART_GRID_COLOR} />
+          <text
+            x={left - labelGap}
+            y={y(value) + 4}
+            textAnchor="end"
+            fontSize={MODELLING_CHART_AXIS_FONT_SIZE}
+            fill={MODELLING_CHART_AXIS_TEXT_COLOR}
+          >
+            {formatChartNumber(value)}
+          </text>
+        </g>
+      ))}
+    </>
   )
 }

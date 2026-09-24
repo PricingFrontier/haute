@@ -8,7 +8,7 @@
 import { useState, useMemo } from "react"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { MODEL_COLORS } from "../../theme/colors"
-import { formatChartNumber } from "./chartGeometry"
+import { formatChartNumber } from "../../utils/chartHelpers"
 
 interface FeaturesTabProps {
   result: TrainResult

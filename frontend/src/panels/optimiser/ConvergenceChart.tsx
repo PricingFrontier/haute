@@ -7,6 +7,8 @@
  */
 
 import { formatNumber } from "../../utils/formatValue"
+import { chartDomain } from "../../utils/chartHelpers"
+import { ChartSvg } from "../modelling/ChartScaffold"
 import { CHART_COLORS } from "../../theme/colors"
 import type { OptimiserSolveResult } from "../../api/types"
 
@@ -20,15 +22,13 @@ export default function ConvergenceChart({ result }: ConvergenceChartProps) {
   const w = 400, h = 140, px = 6, py = 6
   const chartW = w - px * 2, chartH = h - py * 2
 
-  const objVals = hist.map(e => e.total_objective)
-  const lcVals = hist.map(e => e.max_lambda_change)
-  const objMin = Math.min(...objVals), objMax = Math.max(...objVals)
-  const lcMin = Math.min(...lcVals), lcMax = Math.max(...lcVals)
-  const objRange = objMax - objMin || 1, lcRange = lcMax - lcMin || 1
+  // Each series has its own padded domain, so both lines use the full height.
+  const [objLow, objHigh] = chartDomain(hist.map(e => e.total_objective))
+  const [lcLow, lcHigh] = chartDomain(hist.map(e => e.max_lambda_change))
 
   const xScale = (i: number) => px + (i / Math.max(hist.length - 1, 1)) * chartW
-  const yObj = (v: number) => py + chartH - ((v - objMin) / objRange) * chartH
-  const yLc = (v: number) => py + chartH - ((v - lcMin) / lcRange) * chartH
+  const yObj = (v: number) => py + chartH - ((v - objLow) / (objHigh - objLow)) * chartH
+  const yLc = (v: number) => py + chartH - ((v - lcLow) / (lcHigh - lcLow)) * chartH
 
   const objPath = hist.map((e, i) => `${i === 0 ? "M" : "L"}${xScale(i).toFixed(1)},${yObj(e.total_objective).toFixed(1)}`).join(" ")
   const lcPath = hist.map((e, i) => `${i === 0 ? "M" : "L"}${xScale(i).toFixed(1)},${yLc(e.max_lambda_change).toFixed(1)}`).join(" ")
@@ -37,10 +37,10 @@ export default function ConvergenceChart({ result }: ConvergenceChartProps) {
     <div className="flex gap-6 flex-wrap">
       <div>
         <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Convergence</label>
-        <svg width={w} height={h} className="mt-1" style={{ background: "var(--bg-input)", borderRadius: 6, border: "1px solid var(--border)" }}>
+        <ChartSvg width={w} height={h} className="mt-1" ariaLabel="Objective and lambda change by iteration" style={{ background: "var(--bg-input)", borderRadius: 6, border: "1px solid var(--border)" }}>
           <path d={objPath} fill="none" stroke={CHART_COLORS.objective} strokeWidth={1.5} />
           <path d={lcPath} fill="none" stroke={CHART_COLORS.lambdaChange} strokeWidth={1.5} />
-        </svg>
+        </ChartSvg>
         <div className="flex gap-3 mt-0.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
           <span><span style={{ color: CHART_COLORS.objective }}>--</span> Objective</span>
           <span><span style={{ color: CHART_COLORS.lambdaChange }}>--</span> Lambda change</span>

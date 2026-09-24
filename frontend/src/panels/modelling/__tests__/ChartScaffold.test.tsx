@@ -4,6 +4,7 @@ import {
   ChartEmptyState,
   ChartLegend,
   ChartSvg,
+  ChartValueGrid,
   ResponsiveChart,
   MODELLING_CHART_AXIS_FONT_SIZE,
   MODELLING_CHART_AXIS_TEXT_COLOR,
@@ -100,5 +101,26 @@ describe("ChartScaffold", () => {
     expect(swatches[1].getAttribute("style")).toContain("border-top: 1px dashed gold")
     expect(swatches[2]).toHaveClass("w-3", "h-2", "rounded-sm")
     expect(swatches[2]).toHaveStyle({ background: "grey", opacity: "0.7" })
+  })
+
+  it("draws a gridline and a right-aligned compact label for every value tick", () => {
+    render(
+      <svg>
+        <ChartValueGrid ticks={[0, 12_345]} left={60} right={300} y={(value) => 200 - value / 100} labelGap={8} />
+      </svg>,
+    )
+
+    const ticks = screen.getAllByTestId("chart-value-tick")
+    expect(ticks).toHaveLength(2)
+    const [line, label] = [ticks[1].querySelector("line")!, ticks[1].querySelector("text")!]
+    expect(line.getAttribute("x1")).toBe("60")
+    expect(line.getAttribute("x2")).toBe("300")
+    expect(line.getAttribute("y1")).toBe(String(200 - 123.45))
+    expect(line.getAttribute("y2")).toBe(String(200 - 123.45))
+    expect(label.getAttribute("y")).toBe(String(200 - 123.45 + 4))
+    expect(line.getAttribute("stroke")).toBe(MODELLING_CHART_GRID_COLOR)
+    expect(label.textContent).toBe("12.3K")
+    expect(label.getAttribute("x")).toBe("52")
+    expect(label.getAttribute("text-anchor")).toBe("end")
   })
 })
