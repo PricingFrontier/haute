@@ -3,38 +3,48 @@ import { describe, expect, it } from "vitest"
 import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import { makeTrainResult } from "../../test-utils/factories"
 import {
-  parseApplyOptimiserResponse,
   parsePreviewInputsResponse,
   parseDissolveSubmodelResponse,
-  parseExplorePivotMembersResponse,
-  parseExplorePivotRunResponse,
-  parseExplorePivotStatusResponse,
-  parseFrontierAutoRangeResponse,
-  parseFrontierAutoRangeStatusResponse,
-  parseFrontierResponse,
-  parseFrontierSelectResponse,
-  gitStorageClaimFromDetail,
-  parseGitPushRejection,
-  parseGitMilestoneFork,
-  parseHauteSessionResponse,
+  explorePivotMembersFromContract,
+  explorePivotRunFromContract,
+  explorePivotStatusFromContract,
+  frontierAutoRangeStatusFromContract,
+  frontierStatusFromContract,
+  optimiserStatusFromContract,
   parseInputCacheSnapshotResponse,
   parseJsonCacheSchemaInferenceResponse,
-  parseFileListResponse,
-  parseMlflowLogResponse,
   parseOutputAssembleDryRunResponse,
-  parseOptimiserEstimateResponse,
-  parseOptimiserStatusResponse,
   parsePreviewNodeResponse,
   parseSavePipelineResponse,
-  parseSaveOptimiserResponse,
   parseTraceResponse,
   parseSubmodelCreateResponse,
   parseSubmodelGraphResponse,
-  parseSolveOptimiserResponse,
   parseExecutionStrategyDiagnostic,
-  parseNodeDataProfileResponse,
-  parseRatingLevelsResponse,
+  parseNodeDataProfile,
 } from "../guards"
+import {
+  validateExplorePivotMembersResponse,
+  validateExplorePivotRunResponse,
+  validateExplorePivotStatusResponse,
+  validateNodeDataProfileResponse,
+} from "../../generated/api-contracts.explore.validators.mjs"
+import { validateRatingLevelsResponse } from "../../generated/api-contracts.factors.validators.mjs"
+import {
+  validateBrowseFilesResponse,
+  validateSessionStatusResponse,
+} from "../../generated/api-contracts.session.validators.mjs"
+import { parseGitMilestoneFork, parseGitPushRejection } from "../../api/client"
+import {
+  validateOptimiserApplyResponse,
+  validateOptimiserEstimateResponse,
+  validateOptimiserFrontierAutoRangeStatusResponse,
+  validateOptimiserFrontierSelectResponse,
+  validateOptimiserFrontierStatusResponse,
+  validateOptimiserMlflowLogResponse,
+  validateOptimiserSaveResponse,
+  validateOptimiserSolveResponse,
+  validateOptimiserStatusResponse,
+} from "../../generated/api-contracts.optimiser.validators.mjs"
 import {
   validateMlflowDestinationsResponse,
   validateMlflowExperimentList,
@@ -131,6 +141,7 @@ function tunedTrainResponseFixture() {
       validation_method: "single",
       validation_fit_count: 1,
       fit_count: 6,
+      refit_on_development: true,
       development_rows: 100,
       final_test_rows: 10,
       selection_fits: [{
@@ -312,6 +323,84 @@ function executionMetricsFixture() {
     },
   }
 }
+
+// Explore and factor responses are checked by their generated validators
+// (API-R03); the pivot responses then get the UI's member-key and matrix checks.
+const parseExplorePivotRunResponse = (value: unknown) =>
+  explorePivotRunFromContract(
+    expectGeneratedContract("ExplorePivotRunResponse", validateExplorePivotRunResponse, value),
+  )
+const parseExplorePivotStatusResponse = (value: unknown) =>
+  explorePivotStatusFromContract(
+    expectGeneratedContract("ExplorePivotStatusResponse", validateExplorePivotStatusResponse, value),
+  )
+const parseExplorePivotMembersResponse = (value: unknown) =>
+  explorePivotMembersFromContract(
+    expectGeneratedContract("ExplorePivotMembersResponse", validateExplorePivotMembersResponse, value),
+  )
+const parseNodeDataProfileResponse = (value: unknown) =>
+  expectGeneratedContract("NodeDataProfileResponse", validateNodeDataProfileResponse, value)
+const parseRatingLevelsResponse = (value: unknown) =>
+  expectGeneratedContract("RatingLevelsResponse", validateRatingLevelsResponse, value)
+
+// Optimiser responses are checked by their generated validators (API-R03);
+// the UI then keeps one summary per frontier point and parses execution
+// metrics with the shared parser. A frontier and an auto-range result reach
+// the browser inside their job status, so they are checked through it.
+const parseOptimiserStatusResponse = (value: unknown) =>
+  optimiserStatusFromContract(
+    expectGeneratedContract("OptimiserStatusResponse", validateOptimiserStatusResponse, value),
+  )
+const parseSolveOptimiserResponse = (value: unknown) =>
+  expectGeneratedContract("OptimiserSolveResponse", validateOptimiserSolveResponse, value)
+const parseOptimiserEstimateResponse = (value: unknown) =>
+  expectGeneratedContract("OptimiserEstimateResponse", validateOptimiserEstimateResponse, value)
+const parseApplyOptimiserResponse = (value: unknown) =>
+  expectGeneratedContract("OptimiserApplyResponse", validateOptimiserApplyResponse, value)
+const parseFrontierSelectResponse = (value: unknown) =>
+  expectGeneratedContract("OptimiserFrontierSelectResponse", validateOptimiserFrontierSelectResponse, value)
+const parseSaveOptimiserResponse = (value: unknown) =>
+  expectGeneratedContract("OptimiserSaveResponse", validateOptimiserSaveResponse, value)
+const parseMlflowLogResponse = (value: unknown) =>
+  expectGeneratedContract("OptimiserMlflowLogResponse", validateOptimiserMlflowLogResponse, value)
+const parseFrontierAutoRangeStatusResponse = (value: unknown) =>
+  frontierAutoRangeStatusFromContract(
+    expectGeneratedContract(
+      "OptimiserFrontierAutoRangeStatusResponse",
+      validateOptimiserFrontierAutoRangeStatusResponse,
+      value,
+    ),
+  )
+const completedJob = (result: unknown) => ({
+  status: "completed",
+  progress: 1,
+  message: "",
+  elapsed_seconds: 0,
+  result,
+  terminal_reason: null,
+  error_code: null,
+  http_status_code: null,
+  error_detail: null,
+  execution_metrics: null,
+})
+const parseFrontierResponse = (value: unknown) =>
+  frontierStatusFromContract(
+    expectGeneratedContract(
+      "OptimiserFrontierStatusResponse",
+      validateOptimiserFrontierStatusResponse,
+      completedJob(value),
+    ),
+  ).result!
+const parseFrontierAutoRangeResponse = (value: unknown) =>
+  parseFrontierAutoRangeStatusResponse(completedJob(value)).result!
+// A complete execution-metrics payload, as the server sends it.
+const completeExecutionMetrics = () =>
+  loadUiContractFixture<Record<string, unknown>>("train_status_metrics_response").execution_metrics
+
+const sessionStatus = (value: unknown) =>
+  expectGeneratedContract("SessionStatusResponse", validateSessionStatusResponse, value)
+const browseFiles = (value: unknown) =>
+  expectGeneratedContract("BrowseFilesResponse", validateBrowseFilesResponse, value)
 
 // MLflow responses are checked by their generated validators (API-R03).
 const mlflowDestinations = (value: unknown) =>
@@ -1728,8 +1817,12 @@ describe("API response guards", () => {
     const parsed = parseTrainResponse(fixture)
 
     expect(parsed.evaluation?.strategy).toBe("random")
-    expect(() => parseTrainResponse({ ...fixture, metrics: { rmse: 1 } })).toThrow(/legacy/i)
-    expect(() => parseTrainResponse({ ...fixture, cross_validation: {} })).toThrow(/legacy/i)
+    expect(() => parseTrainResponse({ ...fixture, metrics: { rmse: 1 } })).toThrow(
+      "TrainResponse: invalid contract at /: additionalProperties",
+    )
+    expect(() => parseTrainResponse({ ...fixture, cross_validation: {} })).toThrow(
+      "TrainResponse: invalid contract at /: additionalProperties",
+    )
   })
 
   it("accepts a saved holdout validation fit without a final refit", () => {
@@ -1761,17 +1854,6 @@ describe("API response guards", () => {
     expect(parsed.tuning?.total_fit_count).toBe(6)
   })
 
-  it("accepts a tuned refit whose winner used a round-count alias (MOD-F01)", () => {
-    const fixture = tunedTrainResponseFixture()
-    for (const trial of fixture.tuning.trials) {
-      Object.assign(trial.resolved_params, { n_estimators: 50, early_stopping_rounds: 5 })
-    }
-    // The backend projection drops every round-count spelling and the
-    // validation-only keys, writing only CatBoost's ``iterations``.
-    const parsed = parseTrainResponse(fixture)
-    expect(parsed.tuning?.final_params).toEqual({ depth: 4, iterations: 7 })
-  })
-
   it("keeps the final fit's evidence (MOD-F01)", () => {
     const fixture = {
       ...tunedTrainResponseFixture(),
@@ -1779,7 +1861,9 @@ describe("API response guards", () => {
         threads: 4,
         rounds_configured: 500,
         rounds_fitted: 120,
+        term_update_steps: null,
         stopping_reason: "validation",
+        device: null,
       },
     }
     expect(parseTrainResponse(fixture).fit_evidence).toEqual({
@@ -1795,7 +1879,7 @@ describe("API response guards", () => {
         ...fixture,
         fit_evidence: { ...fixture.fit_evidence, stopping_reason: "bored" },
       }),
-    ).toThrow(/stopping_reason/)
+    ).toThrow("TrainResponse: invalid contract at /fit_evidence/stopping_reason: enum")
   })
 
   it("parses the XGBoost GPU status (MOD-F06)", () => {
@@ -1807,43 +1891,36 @@ describe("API response guards", () => {
   })
 
   it("keeps the device an XGBoost GPU fit trained on (MOD-F06)", () => {
-    const gpu = parseTrainResponse({
-      ...tunedTrainResponseFixture(),
-      fit_evidence: { threads: 4, rounds_configured: 100, rounds_fitted: 100, stopping_reason: "none", device: "cuda:0" },
-    })
+    const evidence = {
+      threads: 4, rounds_configured: 100, rounds_fitted: 100, term_update_steps: null, stopping_reason: "none", device: "cuda:0",
+    }
+    const gpu = parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: evidence })
     expect(gpu.fit_evidence?.device).toBe("cuda:0")
     expect(() =>
-      parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: { threads: 4, device: "" } }),
-    ).toThrow(/fit_evidence.device/)
+      parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: { ...evidence, device: "" } }),
+    ).toThrow("TrainResponse: invalid contract at /fit_evidence/device: minLength")
   })
 
-  it("accepts fit evidence whose null fields the backend dropped (MOD-F04)", () => {
-    // A GLM's evidence arrives as its thread allotment alone.
-    const glm = parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: { threads: 4 } })
-    expect(glm.fit_evidence).toEqual({
-      threads: 4,
-      rounds_configured: null,
-      rounds_fitted: null,
-      term_update_steps: null,
-      stopping_reason: null,
-      device: null,
-    })
+  it("requires fit evidence to carry its null fields (MOD-F04)", () => {
+    // The server sends every evidence field; a GLM's is its thread allotment and nulls.
+    const glmEvidence = {
+      threads: 4, rounds_configured: null, rounds_fitted: null, term_update_steps: null, stopping_reason: null, device: null,
+    }
+    expect(parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: glmEvidence }).fit_evidence).toEqual(glmEvidence)
     const ebm = parseTrainResponse({
       ...tunedTrainResponseFixture(),
-      fit_evidence: {
-        threads: 1,
-        rounds_configured: 200,
-        stopping_reason: "none",
-        term_update_steps: [400, 200],
-      },
+      fit_evidence: { ...glmEvidence, threads: 1, rounds_configured: 200, stopping_reason: "none", term_update_steps: [400, 200] },
     })
     expect(ebm.fit_evidence?.term_update_steps).toEqual([400, 200])
     expect(() =>
-      parseTrainResponse({
-        ...tunedTrainResponseFixture(),
-        fit_evidence: { threads: 1, trees: 3 },
-      }),
-    ).toThrow(/fit_evidence has unexpected or missing fields/)
+      parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: { threads: 4 } }),
+    ).toThrow("TrainResponse: invalid contract at /fit_evidence/rounds_configured: required")
+    expect(() =>
+      parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: { ...glmEvidence, trees: 3 } }),
+    ).toThrow("TrainResponse: invalid contract at /fit_evidence: additionalProperties")
+    expect(() =>
+      parseTrainResponse({ ...tunedTrainResponseFixture(), fit_evidence: { ...glmEvidence, term_update_steps: [-1] } }),
+    ).toThrow("TrainResponse: invalid contract at /fit_evidence/term_update_steps/0: minimum")
   })
 
   it("accepts an EBM study that refits with the winning budget and no tree count (MOD-F04)", () => {
@@ -1858,29 +1935,19 @@ describe("API response guards", () => {
       trial.sampled_params = index === 0 ? {} : { max_rounds: 100 * (index + 1) }
       for (const fit of trial.fits) Object.assign(fit, { best_iteration: null })
     }
-    const { final_tree_count: _dropped, ...tuning } = fixture.tuning
-    void _dropped
+    // A fixed-budget refit has no tree count; the server sends null.
     const ebm = {
       ...fixture,
       tuning: {
-        ...tuning,
+        ...fixture.tuning,
+        final_tree_count: null,
         best_sampled_params: { max_rounds: 200 },
         final_params: { max_rounds: 200, interactions: 0 },
       },
     }
     const parsed = parseTrainResponse(ebm)
     expect(parsed.tuning?.final_params).toEqual({ max_rounds: 200, interactions: 0 })
-    expect(parsed.tuning?.final_tree_count).toBeUndefined()
-    // A fixed-budget refit reuses the winner's parameters exactly, with no tree count.
-    expect(() =>
-      parseTrainResponse({ ...ebm, tuning: { ...ebm.tuning, final_tree_count: 7 } }),
-    ).toThrow(/final parameter projection/)
-    expect(() =>
-      parseTrainResponse({
-        ...ebm,
-        tuning: { ...ebm.tuning, final_params: { max_rounds: 300, interactions: 0 } },
-      }),
-    ).toThrow(/final parameter projection/)
+    expect(parsed.tuning?.final_tree_count).toBeNull()
   })
 
   it("parses EBM term shapes and surfaces and rejects scores that miss their axes (MOD-F04)", () => {
@@ -1915,52 +1982,6 @@ describe("API response guards", () => {
         ebm_terms: [{ ...terms[1], scores: [[0, 0.1], [0.3, 0.4]] }],
       }),
     ).toThrow(/scores must match its axes/)
-  })
-
-  it("rejects evaluation summaries that disagree with persisted selection fits", () => {
-    const fixture = tunedTrainResponseFixture()
-    fixture.evaluation.selection_metrics.rmse.mean = 0.6
-
-    expect(() => parseTrainResponse(fixture)).toThrow(/aggregate.*selection fits/i)
-  })
-
-  it("rejects tuning evidence with non-finite or inconsistent trial results", () => {
-    const nonFinite = tunedTrainResponseFixture()
-    nonFinite.tuning.trials[1]!.objective = Number.POSITIVE_INFINITY
-    expect(() => parseTrainResponse(nonFinite)).toThrow(/objective.*finite/i)
-
-    const inconsistentAggregate = tunedTrainResponseFixture()
-    inconsistentAggregate.tuning.trials[1]!.aggregate_metrics.rmse = 0.41
-    expect(() => parseTrainResponse(inconsistentAggregate)).toThrow(
-      /aggregate.*validation fits/i,
-    )
-
-    const wrongWinner = tunedTrainResponseFixture()
-    wrongWinner.tuning.winner_trial_index = 2
-    expect(() => parseTrainResponse(wrongWinner)).toThrow(
-      /baseline, winner, or improvement/i,
-    )
-
-    const wrongSampledProjection = tunedTrainResponseFixture()
-    wrongSampledProjection.tuning.best_sampled_params = { depth: 99 }
-    expect(() => parseTrainResponse(wrongSampledProjection)).toThrow(
-      /sampled parameters/i,
-    )
-
-    const wrongFinalProjection = tunedTrainResponseFixture()
-    wrongFinalProjection.tuning.final_params = { depth: 99, iterations: 7 }
-    expect(() => parseTrainResponse(wrongFinalProjection)).toThrow(
-      /final parameter projection/i,
-    )
-
-    const wrongDirection = tunedTrainResponseFixture()
-    wrongDirection.tuning.direction = "maximize"
-    wrongDirection.tuning.winner_trial_index = 3
-    wrongDirection.tuning.winner_objective = 0.6
-    wrongDirection.tuning.improvement = 0.1
-    wrongDirection.tuning.best_sampled_params = { depth: 6 }
-    wrongDirection.tuning.final_params = { depth: 6, iterations: 7 }
-    expect(() => parseTrainResponse(wrongDirection)).toThrow(/metric direction/i)
   })
 
   it("preserves per-feature PDP diagnostic errors", () => {
@@ -2075,7 +2096,7 @@ describe("API response guards", () => {
     expect(parsed.train_loss.learn).toBe(0.1)
   })
 
-  it("strictly validates bounded tuning progress", () => {
+  it("validates the bounds of tuning progress", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>(
       "train_status_response",
     )
@@ -2092,32 +2113,20 @@ describe("API response guards", () => {
     }
     expect(parseTrainStatusResponse(progress).phase).toBe("trial_fit")
 
-    expect(() => parseTrainStatusResponse({
-      ...progress,
-      phase: "publication",
-      trial_index: 1,
-      fold_index: null,
-    })).toThrow(/must not contain trial\/fold indices/i)
-    expect(() => parseTrainStatusResponse({
-      ...progress,
-      trial_index: 6,
-    })).toThrow(/index exceeds its count/i)
-    expect(() => parseTrainStatusResponse({
-      ...progress,
-      best_objective: Number.POSITIVE_INFINITY,
-    })).toThrow(/best_objective.*finite/i)
+    // The phase/index relationships are the server's (TrainStatusResponse);
+    // the browser checks the generated bounds.
     expect(() => parseTrainStatusResponse({
       ...progress,
       trial_count: 4,
-    })).toThrow(/trial_count.*bounds/i)
+    })).toThrow("TrainStatusResponse: invalid contract at /trial_count: minimum")
     expect(() => parseTrainStatusResponse({
       ...progress,
       fold_count: 11,
-    })).toThrow(/fold_count.*bounds/i)
+    })).toThrow("TrainStatusResponse: invalid contract at /fold_count: maximum")
     expect(() => parseTrainStatusResponse({
       ...progress,
-      total_fits: 12,
-    })).toThrow(/total_fits.*fit count/i)
+      phase: "stalled",
+    })).toThrow("TrainStatusResponse: invalid contract at /phase: enum")
   })
 
   it("retains the authoritative live loss-history snapshot and truncation flag", () => {
@@ -2137,16 +2146,15 @@ describe("API response guards", () => {
     expect(parsed.train_loss_history_truncated).toBe(true)
   })
 
-  it("leaves absent live loss history absent", () => {
+  it("requires the live loss history the server always sends", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>(
       "train_status_response",
     )
     delete fixture.train_loss_history
-    delete fixture.train_loss_history_truncated
-    const parsed = parseTrainStatusResponse(fixture)
 
-    expect(parsed.train_loss_history).toBeUndefined()
-    expect(parsed.train_loss_history_truncated).toBeUndefined()
+    expect(() => parseTrainStatusResponse(fixture)).toThrow(
+      "TrainStatusResponse: invalid contract at /train_loss_history: required",
+    )
   })
 
   it.each([
@@ -2285,12 +2293,13 @@ describe("API response guards", () => {
   it("rejects malformed pivot path/cell/member payloads", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("explore_pivot_run_response")
     const result = fixture.result as Record<string, unknown>
+    const cell = (result.cells as Record<string, unknown>[])[0]
     expect(() =>
       parseExplorePivotRunResponse({
         ...fixture,
-        result: { ...result, cells: [{ row_index: -1, column_index: 0, value_id: "v", value: 1 }] },
+        result: { ...result, cells: [{ ...cell, row_index: -1 }] },
       }),
-    ).toThrow(/parseExplorePivot/i)
+    ).toThrow("ExplorePivotRunResponse: invalid contract at /result/cells/0/row_index: minimum")
 
     expect(() =>
       parseExplorePivotMembersResponse({
@@ -2299,10 +2308,46 @@ describe("API response guards", () => {
         members: [{ key: { kind: "wat", value: null }, label: "bad", count: 1 }],
         failure: null,
       }),
-    ).toThrow(/parseExplorePivot/i)
+    ).toThrow("ExplorePivotMembersResponse: invalid contract at /members/0/key/kind: enum")
   })
 
-  it("reads rating levels, defaulting the counts a cache-required answer omits", () => {
+  it("keeps the pivot matrix closed and each member key's value true to its kind", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("explore_pivot_run_response")
+    const result = fixture.result as Record<string, unknown>
+    const cell = (result.cells as Record<string, unknown>[])[0]
+    const rowCount = (result.row_paths as unknown[]).length
+
+    expect(() =>
+      parseExplorePivotRunResponse({
+        ...fixture,
+        result: { ...result, cells: [{ ...cell, row_index: rowCount }] },
+      }),
+    ).toThrow("parseExplorePivotResult: pivot cell index is outside the declared matrix")
+    expect(() =>
+      parseExplorePivotRunResponse({
+        ...fixture,
+        result: { ...result, cells: [{ ...cell, value_id: "undeclared" }] },
+      }),
+    ).toThrow("parseExplorePivotResult: pivot cell references an unknown value id")
+    expect(() =>
+      parseExplorePivotMembersResponse({
+        status: "ok",
+        field: "region",
+        members: [{ key: { kind: "null", value: "North" }, label: "bad", count: 1 }],
+        failure: null,
+      }),
+    ).toThrow("parseExplorePivotMemberKey: expected members[0].key.value to be null for null")
+    expect(() =>
+      parseExplorePivotMembersResponse({
+        status: "ok",
+        field: "policy_count",
+        members: [{ key: { kind: "integer", value: "1.5" }, label: "bad", count: 1 }],
+        failure: null,
+      }),
+    ).toThrow("parseExplorePivotMemberKey: expected members[0].key.value to be a canonical integer")
+  })
+
+  it("reads rating levels, and requires the counts a cache-required answer sends", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("rating_levels_response")
 
     const answered = parseRatingLevelsResponse(fixture)
@@ -2313,15 +2358,19 @@ describe("API response guards", () => {
     ])
     expect(answered.columns[0].distinct_count).toBe(3)
 
-    // A cache-required answer carries the point and nothing else; the reader
-    // must not invent levels, and must not throw over their absence either.
+    // A cache-required answer sends its empty levels and zero counts.
     const unanswered = parseRatingLevelsResponse({
       status: "cache_required",
       point: fixture.point,
+      data_version: null,
+      total_rows: 0,
+      columns: [],
     })
     expect(unanswered.columns).toEqual([])
     expect(unanswered.total_rows).toBe(0)
-    expect(unanswered.data_version).toBeNull()
+    expect(() =>
+      parseRatingLevelsResponse({ status: "cache_required", point: fixture.point }),
+    ).toThrow("RatingLevelsResponse: invalid contract at /data_version: required")
   })
 
   it("rejects rating levels that are not levels", () => {
@@ -2329,19 +2378,19 @@ describe("API response guards", () => {
 
     expect(() =>
       parseRatingLevelsResponse({ ...fixture, status: "partial" }),
-    ).toThrow(/parseRatingLevels/i)
+    ).toThrow("RatingLevelsResponse: invalid contract at /status: enum")
     expect(() =>
       parseRatingLevelsResponse({
         ...fixture,
         columns: [{ column: 7, values: [], distinct_count: 0, null_count: 0 }],
       }),
-    ).toThrow(/columns\[0\]\.column/)
+    ).toThrow("RatingLevelsResponse: invalid contract at /columns/0/column: type")
     expect(() =>
       parseRatingLevelsResponse({
         ...fixture,
-        columns: [{ column: "region", values: [{ value: null, count: 1 }] }],
+        columns: [{ column: "region", values: [{ value: null, count: 1 }], distinct_count: 1, null_count: 0 }],
       }),
-    ).toThrow(/columns\[0\]\.values\[0\]\.value/)
+    ).toThrow("RatingLevelsResponse: invalid contract at /columns/0/values/0/value: type")
   })
 
   it("rejects malformed profile payloads", () => {
@@ -2353,10 +2402,16 @@ describe("API response guards", () => {
         ...fixture,
         result: { ...result, row_count: "bad" },
       }),
-    ).toThrow(/parseNodeDataProfile/i)
+    ).toThrow("NodeDataProfileResponse: invalid contract at /result/row_count: type")
   })
 
   describe("parseExploreColumnStat (via parseNodeDataProfile.columns)", () => {
+    // The node-data status still reads its profile with this hand parser until
+    // the node-data responses are generated (API-R03).
+    function parseProfileOf(response: Record<string, unknown>) {
+      return { result: parseNodeDataProfile(response.result) }
+    }
+
     function withColumns(columns: unknown): Record<string, unknown> {
       const fixture = loadUiContractFixture<Record<string, unknown>>(
         "node_data_profile_response",
@@ -2401,7 +2456,7 @@ describe("API response guards", () => {
         non_finite_count: 1,
         skipped_reason: null,
       }
-      const parsed = parseNodeDataProfileResponse(
+      const parsed = parseProfileOf(
         withColumns([
           { ...numericColumn, histogram },
           { ...numericColumn, name: "no_histogram" },
@@ -2422,7 +2477,7 @@ describe("API response guards", () => {
         non_finite_count: 0,
         skipped_reason: "integer_precision",
       }
-      const parsed = parseNodeDataProfileResponse(withColumns([{ ...numericColumn, histogram }]))
+      const parsed = parseProfileOf(withColumns([{ ...numericColumn, histogram }]))
       expect(parsed.result!.columns[0].histogram).toEqual(histogram)
     })
 
@@ -2432,12 +2487,12 @@ describe("API response guards", () => {
       ["an unknown skip reason", { status: "skipped", bins: [], finite_count: null, non_finite_count: null, skipped_reason: "budget" }, /skipped_reason/],
     ])("rejects a histogram with %s", (_label, histogram, message) => {
       expect(() =>
-        parseNodeDataProfileResponse(withColumns([{ ...numericColumn, histogram }])),
+        parseProfileOf(withColumns([{ ...numericColumn, histogram }])),
       ).toThrow(message)
     })
 
     it("parses a fully populated column stat", () => {
-      const parsed = parseNodeDataProfileResponse(
+      const parsed = parseProfileOf(
         withColumns([
           {
             name: "premium",
@@ -2483,7 +2538,7 @@ describe("API response guards", () => {
     })
 
     it("accepts null distinct_count", () => {
-      const parsed = parseNodeDataProfileResponse(
+      const parsed = parseProfileOf(
         withColumns([
           {
             name: "sparse",
@@ -2506,7 +2561,7 @@ describe("API response guards", () => {
     })
 
     it("accepts a profile without columns as an empty column list", () => {
-      const parsed = parseNodeDataProfileResponse(withoutResultField("columns"))
+      const parsed = parseProfileOf(withoutResultField("columns"))
 
       expect(parsed.result?.columns).toEqual([])
     })
@@ -2514,21 +2569,21 @@ describe("API response guards", () => {
     it.each(["row_count", "column_count", "generated_at", "data_version"])(
       "throws when %s is missing from a profile",
       (field) => {
-        expect(() => parseNodeDataProfileResponse(withoutResultField(field))).toThrow(
+        expect(() => parseProfileOf(withoutResultField(field))).toThrow(
           /parseNodeDataProfile/i,
         )
       },
     )
 
     it("throws when overview_summary is missing from a cache report", () => {
-      expect(() => parseNodeDataProfileResponse(withoutResultField("overview_summary"))).toThrow(
+      expect(() => parseProfileOf(withoutResultField("overview_summary"))).toThrow(
         /parseExploreOverviewSummary/i,
       )
     })
 
     it("throws when distinct_count is missing", () => {
       expect(() =>
-        parseNodeDataProfileResponse(
+        parseProfileOf(
           withColumns([
             { name: "minimal", dtype: "Int64", kind: "Numeric", null_count: 0 },
           ]),
@@ -2544,7 +2599,7 @@ describe("API response guards", () => {
       const overview = result.overview_summary as Record<string, unknown>
 
       expect(() =>
-        parseNodeDataProfileResponse({
+        parseProfileOf({
           ...fixture,
           result: {
             ...result,
@@ -2567,7 +2622,7 @@ describe("API response guards", () => {
       const result = fixture.result as Record<string, unknown>
       const overview = result.overview_summary as Record<string, unknown>
 
-      const parsed = parseNodeDataProfileResponse({
+      const parsed = parseProfileOf({
         ...fixture,
         result: {
           ...result,
@@ -2609,7 +2664,7 @@ describe("API response guards", () => {
       const overview = result.overview_summary as Record<string, unknown>
 
       expect(() =>
-        parseNodeDataProfileResponse({
+        parseProfileOf({
           ...fixture,
           result: {
             ...result,
@@ -2632,7 +2687,7 @@ describe("API response guards", () => {
 
     it("throws when name is missing", () => {
       expect(() =>
-        parseNodeDataProfileResponse(
+        parseProfileOf(
           withColumns([
             {
               dtype: "Float64",
@@ -2647,7 +2702,7 @@ describe("API response guards", () => {
 
     it("throws when dtype is missing", () => {
       expect(() =>
-        parseNodeDataProfileResponse(
+        parseProfileOf(
           withColumns([
             {
               name: "x",
@@ -2662,7 +2717,7 @@ describe("API response guards", () => {
 
     it("throws when kind is missing", () => {
       expect(() =>
-        parseNodeDataProfileResponse(
+        parseProfileOf(
           withColumns([
             {
               name: "x",
@@ -2677,7 +2732,7 @@ describe("API response guards", () => {
 
     it("throws when kind is invalid", () => {
       expect(() =>
-        parseNodeDataProfileResponse(
+        parseProfileOf(
           withColumns([
             {
               name: "x",
@@ -2693,7 +2748,7 @@ describe("API response guards", () => {
 
     it("throws when null_count is missing", () => {
       expect(() =>
-        parseNodeDataProfileResponse(
+        parseProfileOf(
           withColumns([
             {
               name: "x",
@@ -2708,7 +2763,7 @@ describe("API response guards", () => {
 
     it("throws when null_count is a string", () => {
       expect(() =>
-        parseNodeDataProfileResponse(
+        parseProfileOf(
           withColumns([
             {
               name: "x",
@@ -2724,7 +2779,7 @@ describe("API response guards", () => {
 
     it("throws when numeric profile counts are malformed", () => {
       expect(() =>
-        parseNodeDataProfileResponse(
+        parseProfileOf(
           withColumns([
             {
               name: "premium",
@@ -2741,10 +2796,7 @@ describe("API response guards", () => {
   })
 
   it("preserves typed execution metrics on train status responses", () => {
-    const parsed = parseTrainStatusResponse({
-      ...loadUiContractFixture<Record<string, unknown>>("train_status_response"),
-      execution_metrics: executionMetricsFixture(),
-    })
+    const parsed = parseTrainStatusResponse(loadUiContractFixture("train_status_metrics_response"))
 
     expect(parsed.execution_metrics?.admission?.budget_policy).toBe("adaptive_local")
     expect(parsed.execution_metrics?.memory_pressure_events[0]?.threshold_percent).toBe(75)
@@ -2760,7 +2812,7 @@ describe("API response guards", () => {
   it("preserves typed execution metrics on optimiser status responses", () => {
     const parsed = parseOptimiserStatusResponse({
       ...loadUiContractFixture<Record<string, unknown>>("optimiser_status_response"),
-      execution_metrics: executionMetricsFixture(),
+      execution_metrics: completeExecutionMetrics(),
     })
 
     expect(parsed.execution_metrics?.admission?.os_reserve_bytes).toBe(2000)
@@ -3009,6 +3061,10 @@ describe("API response guards", () => {
     expect(apply.preview[0]?.scenario).toBe("A")
     const parsedApply = parseApplyOptimiserResponse({
       status: "ok",
+      total_objective: 0,
+      constraints: {},
+      from_artifact: false,
+      error: null,
       preview: [{ scenario: "A" }],
       row_count: 200,
       preview_row_count: 100,
@@ -3025,7 +3081,11 @@ describe("API response guards", () => {
       message: "Superseded by a newer request.",
       elapsed_seconds: 1.5,
       result: null,
-      execution_metrics: executionMetricsFixture(),
+      terminal_reason: "superseded",
+      error_code: null,
+      http_status_code: null,
+      error_detail: null,
+      execution_metrics: completeExecutionMetrics(),
     }).status).toBe("superseded")
     const contractErrorStatus = parseFrontierAutoRangeStatusResponse({
       status: "contract_error",
@@ -3037,6 +3097,7 @@ describe("API response guards", () => {
       error_code: "contract_error",
       http_status_code: 422,
       error_detail: "Fan-in projection contract does not cover columns required by the node.",
+      execution_metrics: null,
     })
     expect(contractErrorStatus.status).toBe("contract_error")
     expect(contractErrorStatus.terminal_reason).toBe("contract_error")
@@ -3048,7 +3109,11 @@ describe("API response guards", () => {
       message: "done",
       elapsed_seconds: 2.5,
       result: loadUiContractFixture("optimiser_frontier_auto_range_response"),
-      execution_metrics: executionMetricsFixture(),
+      terminal_reason: null,
+      error_code: null,
+      http_status_code: null,
+      error_detail: null,
+      execution_metrics: completeExecutionMetrics(),
     }).execution_metrics?.admission?.budget_policy).toBe("adaptive_local")
     expect(parseFrontierResponse({
       status: "ok",
@@ -3073,6 +3138,7 @@ describe("API response guards", () => {
       constraint_names: ["loss"],
       points_limit: 2000,
       points_truncated: true,
+      job_id: null,
     }).points_truncated).toBe(true)
     expect(selected.lambdas.loss).toBe(0.3)
     expect(saved.path).toBe("optimiser_output.py")
@@ -3104,8 +3170,11 @@ describe("API response guards", () => {
         constraint_names: ["loss"],
         points_limit: 2000,
         points_truncated: false,
+        job_id: null,
       }),
-    ).toThrow(/one summary per point, got 1 for 2 points/)
+    ).toThrow(
+      "parseOptimiserStatusResponse: expected result.point_summaries to hold one summary per point, got 1 for 2 points",
+    )
   })
 
   it("rejects a frontier point summary missing a field but accepts it as null", () => {
@@ -3133,9 +3202,12 @@ describe("API response guards", () => {
       constraint_names: ["loss"],
       points_limit: 2000,
       points_truncated: false,
+      job_id: null,
     })
     const { warning: _warning, ...withoutWarning } = summary; void _warning
-    expect(() => parseFrontierResponse(payload(withoutWarning))).toThrow(/point_summaries`\[0\]\.warning to be present/)
+    expect(() => parseFrontierResponse(payload(withoutWarning))).toThrow(
+      "OptimiserFrontierStatusResponse: invalid contract at /result/point_summaries/0/warning: required",
+    )
     expect(parseFrontierResponse(payload(summary)).point_summaries[0]?.warning).toBeNull()
   })
 
@@ -3152,7 +3224,10 @@ describe("API response guards", () => {
       iterations: 19,
       cd_iterations: 4,
       clamp_rate: 0.01,
-      history: [{ iteration: 1, total_objective: 150, max_lambda_change: 0.1 }],
+      history: [{
+        iteration: 1, total_objective: 150, max_lambda_change: 0.1,
+        all_constraints_satisfied: null, lambdas: {}, total_constraints: {},
+      }],
       scenario_value_stats: stats,
       scenario_value_histogram: { counts: [1, 2], edges: [0.9, 1.0, 1.1] },
       factor_tables: { region: [{ __factor_group__: "North", optimal_scenario_value: 1.05 }] },
@@ -3168,12 +3243,10 @@ describe("API response guards", () => {
       constraint_names: ["loss"],
       points_limit: 2000,
       points_truncated: false,
+      job_id: null,
     }).point_summaries[0]
 
-    expect(parsed).toMatchObject({
-      ...summary,
-      history: [{ iteration: 1, total_objective: 150, max_lambda_change: 0.1 }],
-    })
+    expect(parsed).toEqual(summary)
     expect(() =>
       parseFrontierResponse({
         status: "ok",
@@ -3184,8 +3257,11 @@ describe("API response guards", () => {
         constraint_names: ["loss"],
         points_limit: 2000,
         points_truncated: false,
+        job_id: null,
       }),
-    ).toThrow(/scenario_value_histogram\.counts\[0\]/)
+    ).toThrow(
+      "OptimiserFrontierStatusResponse: invalid contract at /result/point_summaries/0/scenario_value_histogram/counts/0: type",
+    )
   })
 
   it("rejects malformed execution metric pressure and admission fields", () => {
@@ -3204,20 +3280,23 @@ describe("API response guards", () => {
       }),
     ).toThrow(/budget_policy/i)
 
+    const completeMetrics = completeExecutionMetrics() as typeof metrics
     expect(() =>
       parseOptimiserStatusResponse({
         ...loadUiContractFixture<Record<string, unknown>>("optimiser_status_response"),
         execution_metrics: {
-          ...metrics,
+          ...completeMetrics,
           memory_pressure_events: [
             {
-              ...metrics.memory_pressure_events[0],
+              ...completeMetrics.memory_pressure_events[0],
               pressure_ratio: "high",
             },
           ],
         },
       }),
-    ).toThrow(/pressure_ratio/i)
+    ).toThrow(
+      "OptimiserStatusResponse: invalid contract at /execution_metrics/memory_pressure_events/0/pressure_ratio: type",
+    )
   })
 
   it("parses git action payloads", () => {
@@ -3232,32 +3311,31 @@ describe("API response guards", () => {
     // CLAUDE.md: do not silently fall back.  A present histogram object
     // missing one of its required arrays is a contract violation; throw so
     // we surface the bug instead of rendering with empty arrays.
+    const selected = {
+      status: "ok",
+      point_index: 0,
+      total_objective: 1,
+      constraints: { loss: 1 },
+      baseline_objective: 1,
+      baseline_constraints: { loss: 1 },
+      lambdas: { loss: 0.1 },
+      converged: true,
+      iterations: null,
+      cd_iterations: null,
+      factor_tables: {},
+      history: null,
+      warning: null,
+      scenario_value_stats: null,
+      scenario_value_histogram: null,
+      clamp_rate: null,
+      error: null,
+    }
     expect(() =>
-      parseFrontierSelectResponse({
-        status: "ok",
-        point_index: 0,
-        total_objective: 1,
-        constraints: { loss: 1 },
-        baseline_objective: 1,
-        baseline_constraints: { loss: 1 },
-        lambdas: { loss: 0.1 },
-        converged: true,
-        scenario_value_histogram: { counts: [1, 2] },
-      }),
-    ).toThrow(/scenario_value_histogram\.edges/)
+      parseFrontierSelectResponse({ ...selected, scenario_value_histogram: { counts: [1, 2] } }),
+    ).toThrow("OptimiserFrontierSelectResponse: invalid contract at /scenario_value_histogram/edges: required")
     expect(() =>
-      parseFrontierSelectResponse({
-        status: "ok",
-        point_index: 0,
-        total_objective: 1,
-        constraints: { loss: 1 },
-        baseline_objective: 1,
-        baseline_constraints: { loss: 1 },
-        lambdas: { loss: 0.1 },
-        converged: true,
-        scenario_value_histogram: { edges: [0, 1, 2] },
-      }),
-    ).toThrow(/scenario_value_histogram\.counts/)
+      parseFrontierSelectResponse({ ...selected, scenario_value_histogram: { edges: [0, 1, 2] } }),
+    ).toThrow("OptimiserFrontierSelectResponse: invalid contract at /scenario_value_histogram/counts: required")
   })
 
   it("rejects malformed optimiser lambda maps", () => {
@@ -3272,7 +3350,7 @@ describe("API response guards", () => {
           lambdas: { loss: "bad" },
         },
       }),
-    ).toThrow(/lambdas/i)
+    ).toThrow("OptimiserStatusResponse: invalid contract at /result/lambdas/loss: type")
   })
 
   it("parses a Data Input input-cache snapshot with tables null", () => {
@@ -3612,24 +3690,6 @@ describe("API response guards", () => {
     expect(parsed.target_url).toBe("uc://workspace.default.projects/demo-fork")
   })
 
-  it("reads a claim-shaped 409 detail and rejects non-claim shapes", () => {
-    const claim = gitStorageClaimFromDetail({
-      app_name: "other-app",
-      user: "colleague@example.com",
-      refreshed_at: "2026-08-04T17:00:00+00:00",
-      message: "This storage location is in use by app 'other-app'.",
-    })
-    expect(claim).not.toBeNull()
-    expect(claim?.app_name).toBe("other-app")
-    expect(claim?.user).toBe("colleague@example.com")
-    // A plain-string detail (older backend, other error) is not a claim.
-    expect(gitStorageClaimFromDetail("location is busy")).toBeNull()
-    expect(gitStorageClaimFromDetail({ message: "no holder name" })).toBeNull()
-    // Missing optionals degrade to null rather than throwing.
-    const bare = gitStorageClaimFromDetail({ app_name: "a", message: "m" })
-    expect(bare).toEqual({ app_name: "a", user: null, refreshed_at: null, message: "m" })
-  })
-
   // --- P7 remote catch-up surface: per-leg divergence, fast-forward, branch-away,
   //     and the two 409 advisory bodies (push rejection + milestone fork). ---
 
@@ -3724,8 +3784,8 @@ describe("API response guards", () => {
     expect(parsed.set_aside_as).toBe("dev-2026-06-21")
   })
 
-  it("parses a 409 push-rejection body, including a rewrite flag", () => {
-    const parsed = parseGitPushRejection({
+  it("parses a 409 push-rejection body, including a rewrite flag", async () => {
+    const parsed = await parseGitPushRejection({
       status: "rejected_diverged",
       remote: "origin",
       working: { status: "diverged", ahead: 1, behind: 2 },
@@ -3740,28 +3800,30 @@ describe("API response guards", () => {
     expect(parsed?.is_rewrite).toBe(true)
   })
 
-  it("returns null for a push-rejection body of the wrong status", () => {
-    expect(parseGitPushRejection({ status: "ok" })).toBeNull()
+  it("returns null for a push-rejection body of the wrong status", async () => {
+    await expect(parseGitPushRejection({ status: "ok" })).resolves.toBeNull()
   })
 
-  it("throws for a malformed matching push-rejection body", () => {
-    expect(() => parseGitPushRejection({ status: "rejected_diverged" })).toThrow()
-    expect(() => parseGitPushRejection({
+  it("throws for a malformed matching push-rejection body", async () => {
+    await expect(parseGitPushRejection({ status: "rejected_diverged" })).rejects.toThrow(
+      "GitPushRejection: invalid contract at /remote: required",
+    )
+    await expect(parseGitPushRejection({
       status: "rejected_diverged",
       remote: "origin",
       working: { status: "diverged", ahead: 1, behind: 2 },
       ledger: null,
       message: "Remote has work you don't.",
       is_rewrite: "yes",
-    })).toThrow()
+    })).rejects.toThrow("GitPushRejection: invalid contract at /is_rewrite: type")
   })
 
-  it("returns null for a non-object push-rejection discriminator", () => {
-    expect(parseGitPushRejection(null)).toBeNull()
+  it("returns null for a non-object push-rejection discriminator", async () => {
+    await expect(parseGitPushRejection(null)).resolves.toBeNull()
   })
 
-  it("parses a 409 milestone-fork body", () => {
-    const parsed = parseGitMilestoneFork({
+  it("parses a 409 milestone-fork body", async () => {
+    const parsed = await parseGitMilestoneFork({
       status: "would_fork",
       remote: "origin",
       working: { status: "diverged", ahead: 1, behind: 1 },
@@ -3772,15 +3834,15 @@ describe("API response guards", () => {
     expect(parsed?.working.status).toBe("diverged")
   })
 
-  it("returns null for a milestone-fork body of the wrong status", () => {
-    expect(parseGitMilestoneFork({ status: "ok" })).toBeNull()
+  it("returns null for a milestone-fork body of the wrong status", async () => {
+    await expect(parseGitMilestoneFork({ status: "ok" })).resolves.toBeNull()
   })
 
-  it("throws for a malformed matching milestone-fork body", () => {
-    expect(() => parseGitMilestoneFork({
+  it("throws for a malformed matching milestone-fork body", async () => {
+    await expect(parseGitMilestoneFork({
       status: "would_fork",
       remote: "origin",
-    })).toThrow()
+    })).rejects.toThrow("GitMilestoneFork: invalid contract at /working: required")
   })
 
   it("parses a create-working-branch response", () => {
@@ -3802,7 +3864,7 @@ describe("API response guards", () => {
   })
 
   it("parses shared client trust-boundary payloads", () => {
-    expect(parseHauteSessionResponse({ ok: true })).toEqual({ ok: true })
+    expect(sessionStatus({ ok: true })).toEqual({ ok: true })
     expect(parseOutputAssembleDryRunResponse({ status: "ok", document: [{ premium: 1 }], row_count: 1, error: null })).toMatchObject({ status: "ok", row_count: 1 })
     expect(parseJsonCacheSchemaInferenceResponse({ tables: [{ name: "drivers" }] }).tables).toEqual([{ name: "drivers" }])
     expect(mlflowExperiments([{ experiment_id: "1", name: "pricing" }])[0]?.name).toBe("pricing")
@@ -3817,8 +3879,12 @@ describe("API response guards", () => {
     expect(() =>
       mlflowModelVersions([{ version: "1", run_id: "r", status: "READY", creation_timestamp: null, description: "", params: {}, aliases: [1] }]),
     ).toThrow(/aliases/)
-    expect(parseFileListResponse({ items: [{ name: "data", path: "/data", type: "directory" }] }).items?.[0]?.type).toBe("directory")
-    expect(parseFileListResponse({ items: [{ name: "data", path: "/data", type: "directory", size: null }] }).items?.[0]?.size).toBeNull()
+    expect(browseFiles({ dir: "/", items: [{ name: "data", path: "/data", type: "directory", size: null }] }).items[0]?.size).toBeNull()
+    expect(browseFiles({ dir: "/", items: [{ name: "a.csv", path: "/a.csv", type: "file", size: 12 }] }).items[0]?.size).toBe(12)
+    // The server sends every file field, a directory's null size included.
+    expect(() => browseFiles({ dir: "/", items: [{ name: "data", path: "/data", type: "directory" }] })).toThrow(
+      "BrowseFilesResponse: invalid contract at /items/0/size: required",
+    )
     expect(gitGraph({
       working_branch: "main",
       order: ["main"],
@@ -3827,10 +3893,10 @@ describe("API response guards", () => {
   })
 
   it.each([
-    ["session boolean", () => parseHauteSessionResponse({ ok: "yes" })],
+    ["session boolean", () => sessionStatus({ ok: "yes" })],
     ["output document", () => parseOutputAssembleDryRunResponse({ status: "ok", document: {}, row_count: 1 })],
     ["inferred nested table", () => parseJsonCacheSchemaInferenceResponse({ tables: ["bad"] })],
-    ["file item type", () => parseFileListResponse({ items: [{ name: "x", path: "/x", type: "link" }] })],
+    ["file item type", () => browseFiles({ dir: "/", items: [{ name: "x", path: "/x", type: "link", size: null }] })],
     ["git graph nested parents", () => gitGraph({ working_branch: null, order: [], branches: [{ name: "main", is_archived: false, is_current: true, tip_sha: "a", fork_point_sha: null, fork_of: null, fork_source_sha: null, fork_credit_sha: null, truncated: false, entries: [{ sha: "a", short_sha: "a", message: "init", timestamp: "today", version_label: null, is_root: true, parents: [1] }] }] })],
   ])("rejects malformed shared client payload: %s", (_name, parse) => {
     expect(parse).toThrow()

@@ -7,7 +7,7 @@ import useNodeResultsStore, {
   MAX_CACHED_TRAIN_RESULTS,
 } from "../../stores/useNodeResultsStore"
 import type { OptimiserSolveResult } from "../../api/types"
-import { makeTrainResult } from "../../test-utils/factories"
+import { makeTrainResult, makeSolveResult as makeSolveResultFactory } from "../../test-utils/factories"
 
 function resetStore() {
   useNodeResultsStore.setState({
@@ -24,7 +24,7 @@ function resetStore() {
 function makeSolveResult(
   overrides: Partial<OptimiserSolveResult> = {},
 ): OptimiserSolveResult {
-  return {
+  return makeSolveResultFactory({
     total_objective: 100,
     baseline_objective: 80,
     constraints: { premium: 50 },
@@ -32,7 +32,7 @@ function makeSolveResult(
     lambdas: { premium: 0.1 },
     converged: true,
     ...overrides,
-  }
+  })
 }
 
 describe("useNodeResultsStore render-pure preview getters", () => {

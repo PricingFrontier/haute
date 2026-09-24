@@ -535,8 +535,8 @@ describe("useSettingsStore", () => {
 
     it("setFileListCache then getFileListCache returns items within TTL", () => {
       const items = [
-        { name: "data.csv", path: "/data/data.csv", type: "file" as const },
-        { name: "models", path: "/data/models", type: "directory" as const },
+        { name: "data.csv", path: "/data/data.csv", type: "file" as const, size: 12 },
+        { name: "models", path: "/data/models", type: "directory" as const, size: null },
       ]
 
       useSettingsStore.getState().setFileListCache("dir|csv", items)
@@ -550,7 +550,7 @@ describe("useSettingsStore", () => {
     })
 
     it("cache expires after 30 seconds", () => {
-      const items = [{ name: "test.csv", path: "/test.csv", type: "file" as const }]
+      const items = [{ name: "test.csv", path: "/test.csv", type: "file" as const, size: 12 }]
       useSettingsStore.getState().setFileListCache("key1", items)
 
       // Still fresh at 29 seconds
@@ -563,7 +563,7 @@ describe("useSettingsStore", () => {
     })
 
     it("cache is exactly expired at 30001ms", () => {
-      const items = [{ name: "a.csv", path: "/a.csv", type: "file" as const }]
+      const items = [{ name: "a.csv", path: "/a.csv", type: "file" as const, size: 12 }]
       useSettingsStore.getState().setFileListCache("k", items)
 
       vi.advanceTimersByTime(30_001)

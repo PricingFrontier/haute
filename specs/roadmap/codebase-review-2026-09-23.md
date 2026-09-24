@@ -340,7 +340,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §1.4 Project-root resolvers | `PCFG-R04` ([pipeline config](pipeline-config.md)) |
 | §1.5 Silent config-key drop | `PCFG-R05` ([pipeline config](pipeline-config.md)) |
 | §1.6 Frontier point derived twice | `OPT-P18` ([optimiser](optimiser.md)) |
-| §1.7 Swallowed exceptions | `MLF-R01` ([MLflow model registry](mlflow-model-registry.md)), `MOD-T09` ([modelling](modelling.md)), `OPT-P17` ([optimiser](optimiser.md)) |
+| §1.7 Swallowed exceptions | `MLF-R01` ([MLflow model registry](mlflow-model-registry.md)), `MOD-T09` (modelling, delivered; its roadmap file is retired), `OPT-P17` ([optimiser](optimiser.md)) |
 | §1.8 Unbounded poll loop | `FSH-R01` ([frontend shared](frontend-shared.md)) |
 | §1.8 Three non-finite float encodings | `JSON-R01` ([JSON shredding](json-shredding.md)) |
 | §1.8 Permissive dtype names; dtype mapping ×7 | `IO-R01` (IO layer, delivered; its roadmap file is retired) |
@@ -366,7 +366,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §3.2 Editor clones and the read-only dispatcher | `FNE-R01` (frontend node editors, delivered; its roadmap file is retired) |
 | §3.2 Modelling tab and chart clones | `FMO-R01` (frontend modelling and optimiser UI, delivered; its roadmap file is retired) |
 | §3.2 Results store | `FSH-R03` ([frontend shared](frontend-shared.md)) |
-| §3.3 Invariants validated three times | `MOD-T10` ([modelling](modelling.md)) |
+| §3.3 Invariants validated three times | `MOD-T10` (modelling, delivered; its roadmap file is retired) |
 | §3.3 Editor state inside node config | `PCFG-R08` ([pipeline config](pipeline-config.md)) |
 | §4.1 Static memory analysis versus hard caps | `EXEC-R04` ([execution engine](execution-engine.md)) |
 | §4.2 One execution walker | `EXEC-R05` ([execution engine](execution-engine.md)) |

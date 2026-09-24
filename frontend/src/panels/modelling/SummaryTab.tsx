@@ -552,7 +552,7 @@ export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: Summ
                     {completedElapsedSeconds !== null && (
                       <> · {completedElapsedSeconds.toFixed(1)}s elapsed</>
                     )}{" "}
-                    {tuning.final_tree_count !== undefined
+                    {tuning.final_tree_count !== null
                       ? `· final tree count ${tuning.final_tree_count.toLocaleString()}`
                       : "· refit with the winning round budget"}
                   </p>

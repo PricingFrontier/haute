@@ -5,6 +5,7 @@ import type { OptimiserPreviewData, FrontierData } from "../OptimiserPreview"
 import type { FrontierPointSummary, MlflowDestinationEntry, OptimiserSolveResult } from "../../api/types"
 import type { SimpleNode } from "../editors"
 import type { MlflowInventoryState } from "../../utils/mlflowDestinations"
+import { makeSolveResult as makeSolveResultFactory, makeHistoryEntry } from "../../test-utils/factories"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -97,7 +98,7 @@ function optimiserNode(config: Record<string, unknown> = {}): SimpleNode {
 function makeSolveResult(
   overrides: Partial<OptimiserSolveResult> = {},
 ): OptimiserSolveResult {
-  return {
+  return makeSolveResultFactory({
     total_objective: 1234567,
     baseline_objective: 1200000,
     constraints: { loss_ratio: 0.65 },
@@ -107,11 +108,11 @@ function makeSolveResult(
     iterations: 15,
     n_quotes: 50000,
     history: [
-      { iteration: 1, total_objective: 1100000, max_lambda_change: 0.1, all_constraints_satisfied: false },
-      { iteration: 2, total_objective: 1200000, max_lambda_change: 0.01, all_constraints_satisfied: true },
+      makeHistoryEntry({ iteration: 1, total_objective: 1100000, max_lambda_change: 0.1, all_constraints_satisfied: false }),
+      makeHistoryEntry({ iteration: 2, total_objective: 1200000, max_lambda_change: 0.01, all_constraints_satisfied: true }),
     ],
     ...overrides,
-  }
+  })
 }
 
 function makePointSummary(overrides: Partial<FrontierPointSummary> = {}): FrontierPointSummary {

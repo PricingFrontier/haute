@@ -25,9 +25,16 @@ from pydantic_core import core_schema
 from haute._execution_schemas import ExecutionStrategyDiagnosticPayload
 from haute._explore_chart_contracts import ExploreChartsConfig
 from haute.schemas import (
+    BandingStatsResponse,
+    BrowseFilesResponse,
     CatalogListResponse,
     DispersionEstimateResponse,
     DispersionEstimateStatusResponse,
+    EditorIdentitiesResponse,
+    ExecutionSettings,
+    ExplorePivotMembersResponse,
+    ExplorePivotRunResponse,
+    ExplorePivotStatusResponse,
     GitArchiveResponse,
     GitBindStorageResponse,
     GitBranchAwayResponse,
@@ -39,9 +46,11 @@ from haute.schemas import (
     GitForkStorageResponse,
     GitGraphResponse,
     GitLedgerSavesResponse,
+    GitMilestoneFork,
     GitMilestonesResponse,
     GitMoveResponse,
     GitPrefs,
+    GitPushRejection,
     GitPushResponse,
     GitRemotesResponse,
     GitRestoreResponse,
@@ -51,6 +60,7 @@ from haute.schemas import (
     GitUpstreamStatusResponse,
     GitWorkingBranchesResponse,
     GitWorkingBranchResponse,
+    IoCapabilitiesResponse,
     LogExperimentResponse,
     MlflowDestinationsResponse,
     MlflowExperimentList,
@@ -61,10 +71,26 @@ from haute.schemas import (
     MlflowTestConnectionResponse,
     ModellingGpuStatusResponse,
     ModelSaveDestinationResponse,
+    NodeDataProfileResponse,
+    OptimiserApplyResponse,
+    OptimiserEstimateResponse,
+    OptimiserFrontierAutoRangeStartResponse,
+    OptimiserFrontierAutoRangeStatusResponse,
+    OptimiserFrontierSelectResponse,
+    OptimiserFrontierStatusResponse,
+    OptimiserMlflowLogResponse,
+    OptimiserSaveResponse,
+    OptimiserSolveResponse,
+    OptimiserStatusResponse,
+    PolarsStepsRenderResponse,
+    RatingLevelsResponse,
     SaveModelResponse,
     SchemaListResponse,
+    SessionStatusResponse,
     TableListResponse,
     TrainEstimateResponse,
+    TrainResponse,
+    TrainStatusResponse,
     UtilityDeleteResponse,
     UtilityListResponse,
     UtilityReadResponse,
@@ -139,6 +165,45 @@ RESPONSE_CONTRACT_GROUPS: dict[str, tuple[type[BaseModel], ...]] = {
         GitBindStorageResponse,
         GitForkStorageResponse,
         GitUpstreamStatusResponse,
+        # 409 advisory bodies the push and milestone controls read.
+        GitPushRejection,
+        GitMilestoneFork,
+    ),
+    "training": (
+        TrainResponse,
+        TrainStatusResponse,
+    ),
+    "explore": (
+        ExplorePivotRunResponse,
+        ExplorePivotStatusResponse,
+        ExplorePivotMembersResponse,
+        NodeDataProfileResponse,
+    ),
+    "factors": (
+        BandingStatsResponse,
+        RatingLevelsResponse,
+    ),
+    "io": (IoCapabilitiesResponse,),
+    "session": (
+        SessionStatusResponse,
+        BrowseFilesResponse,
+    ),
+    "editor": (
+        EditorIdentitiesResponse,
+        PolarsStepsRenderResponse,
+        ExecutionSettings,
+    ),
+    "optimiser": (
+        OptimiserSolveResponse,
+        OptimiserEstimateResponse,
+        OptimiserStatusResponse,
+        OptimiserApplyResponse,
+        OptimiserSaveResponse,
+        OptimiserMlflowLogResponse,
+        OptimiserFrontierStatusResponse,
+        OptimiserFrontierAutoRangeStartResponse,
+        OptimiserFrontierAutoRangeStatusResponse,
+        OptimiserFrontierSelectResponse,
     ),
 }
 
@@ -191,6 +256,92 @@ def _merge_definition(
     previous = definitions.setdefault(name, candidate)
     if previous != candidate:
         raise RuntimeError(f"conflicting generated JSON Schema definition: {name}")
+
+
+_SERIALIZED_SUFFIX = "Output"
+
+
+def _renamed_ref(reference: str, renames: Mapping[str, str]) -> str:
+    name = reference.removeprefix("#/$defs/")
+    return f"#/$defs/{renames.get(name, name)}"
+
+
+def _with_renamed_refs(value: Any, renames: Mapping[str, str]) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: (
+                _renamed_ref(item, renames)
+                if key == "$ref" and isinstance(item, str) and item.startswith("#/$defs/")
+                else _with_renamed_refs(item, renames)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_with_renamed_refs(item, renames) for item in value]
+    return value
+
+
+def _local_references(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        found = set()
+        for key, item in value.items():
+            if key == "$ref" and isinstance(item, str) and item.startswith("#/$defs/"):
+                found.add(item.removeprefix("#/$defs/"))
+            else:
+                found |= _local_references(item)
+        return found
+    if isinstance(value, list):
+        return set().union(*(_local_references(item) for item in value))
+    return set()
+
+
+def _serialized_definitions(
+    response_definitions: Mapping[str, Any],
+    bundle_definitions: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Name a response's serialization-mode copies apart from validation-mode ones.
+
+    A model shared with a validation-mode contract (the execution-strategy
+    pilot, whose other routes omit its defaulted fields) serializes with every
+    field required, so it is a different contract and gets its own
+    ``<Name>Output`` definition. Anything that refers to a renamed definition
+    differs too and is renamed with it.
+    """
+    renames: dict[str, str] = {}
+
+    def conflicts(name: str) -> bool:
+        rewritten = _with_renamed_refs(response_definitions[name], renames)
+        return name in bundle_definitions and bundle_definitions[name] != rewritten
+
+    # A definition is compared only once the ones it refers to are named, so a
+    # copy an earlier response already stored with renamed references matches.
+    pending = set(response_definitions)
+    while pending:
+        ready = sorted(
+            name
+            for name in pending
+            if not (_local_references(response_definitions[name]) - {name}) & pending
+        )
+        if not ready:
+            # Mutually recursive definitions: rename until nothing conflicts.
+            while conflicting := {name for name in pending - set(renames) if conflicts(name)}:
+                renames.update({name: f"{name}{_SERIALIZED_SUFFIX}" for name in conflicting})
+            break
+        for name in ready:
+            if conflicts(name):
+                renames[name] = f"{name}{_SERIALIZED_SUFFIX}"
+        pending.difference_update(ready)
+    rewritten = {
+        name: _with_renamed_refs(definition, renames)
+        for name, definition in response_definitions.items()
+    }
+    serialized: dict[str, Any] = {}
+    for name, definition in rewritten.items():
+        new_name = renames.get(name, name)
+        if new_name != name and definition.get("title") == name:
+            definition = {**definition, "title": new_name}
+        serialized[new_name] = definition
+    return serialized
 
 
 def _definitions_for(
@@ -255,11 +406,16 @@ def build_contract_bundle() -> dict[str, Any]:
         if re.fullmatch(r"[a-z][a-z0-9-]*", group) is None or not models:
             raise RuntimeError(f"invalid response contract group: {group!r}")
         for response_model in models:
-            response_definitions = _definitions_for(
-                response_model,
-                mode="serialization",
-                schema_generator=_ResponseJsonSchema,
+            response_definitions = _serialized_definitions(
+                _definitions_for(
+                    response_model,
+                    mode="serialization",
+                    schema_generator=_ResponseJsonSchema,
+                ),
+                definitions,
             )
+            if response_model.__name__ not in response_definitions:
+                raise RuntimeError(f"response root was renamed: {response_model.__name__}")
             for name, definition in response_definitions.items():
                 _merge_definition(definitions, name=name, value=definition)
             root = response_model.__name__

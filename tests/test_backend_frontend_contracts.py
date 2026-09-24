@@ -75,6 +75,7 @@ _FIXTURE_MODELS: list[tuple[str, type[Any]]] = [
     ("train_response", TrainResponse),
     ("train_started_response", TrainResponse),
     ("train_status_response", TrainStatusResponse),
+    ("train_status_metrics_response", TrainStatusResponse),
     ("explore_pivot_run_response", ExplorePivotRunResponse),
     ("explore_pivot_status_response", ExplorePivotStatusResponse),
     ("explore_pivot_members_response", ExplorePivotMembersResponse),

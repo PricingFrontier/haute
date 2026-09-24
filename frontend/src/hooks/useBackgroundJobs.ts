@@ -99,7 +99,7 @@ export default function useBackgroundJobs() {
   const failSolveJob = useNodeResultsStore((s) => s.failSolveJob)
 
   const solvePollFn = useCallback(
-    (jobId: string, signal: AbortSignal) => getOptimiserStatus<SolveProgress>(jobId, { signal }),
+    (jobId: string, signal: AbortSignal) => getOptimiserStatus(jobId, { signal }),
     [],
   )
   const solveOnComplete = useCallback(
@@ -140,7 +140,7 @@ export default function useBackgroundJobs() {
   const failTrainJob = useNodeResultsStore((s) => s.failTrainJob)
 
   const trainPollFn = useCallback(
-    (jobId: string, signal: AbortSignal) => getTrainStatus<TrainProgress>(jobId, { signal }),
+    (jobId: string, signal: AbortSignal) => getTrainStatus(jobId, { signal }),
     [],
   )
   const trainOnComplete = useCallback(

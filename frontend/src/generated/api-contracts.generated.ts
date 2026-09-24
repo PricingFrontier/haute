@@ -254,6 +254,619 @@ export interface TableItem {
   name: string;
   table_type: string;
 }
+export interface EditorIdentitiesResponse {
+  identities: EditorIdentityResponseNode[];
+}
+export interface EditorIdentityResponseNode {
+  config_reference: string | null;
+  default_input_name: string | null;
+  function_name: string;
+  node_id: string;
+  source_handle_input_names: {
+    [k: string]: string;
+  };
+}
+/**
+ * Either the rendered code with per-step line ranges or the failing step.
+ *
+ * A step validation failure is data (``ok`` false with ``step_index`` and
+ * ``message``), never a transport error, so a half-built step list renders
+ * as an editor message rather than a failed request.
+ */
+export interface PolarsStepsRenderResponse {
+  code: string;
+  message: string;
+  ok: boolean;
+  step_index: number | null;
+  step_lines: number[][];
+}
+/**
+ * The editor's execution settings: one value for the server process.
+ */
+export interface ExecutionSettings {
+  streaming_chunk_size: number;
+}
+export interface ExplorePivotRunResponse {
+  cached: boolean;
+  failure: ExplorePivotFailure | null;
+  job_id: string | null;
+  message: string;
+  result: ExplorePivotResult | null;
+  status: 'started' | 'completed' | 'cache_required';
+}
+export interface ExplorePivotFailure {
+  dimensions: {
+    [k: string]: string | number;
+  };
+  message: string;
+  reason_code: string;
+  remediation: string;
+}
+export interface ExplorePivotResult {
+  calculation_key: string;
+  cells: ExplorePivotCell[];
+  column_fields: string[];
+  column_paths: ExplorePivotPath[];
+  data_version: string;
+  execution_metrics: ExecutionMetricsPayload | null;
+  generated_at: number;
+  node_id: string;
+  pivot_id: string;
+  row_fields: string[];
+  row_paths: ExplorePivotPath[];
+  source: string;
+  values: ExplorePivotValueIdentity[];
+  version: 1;
+  warnings: string[];
+}
+export interface ExplorePivotCell {
+  column_index: number;
+  row_index: number;
+  value: string | number | boolean | null;
+  value_id: string;
+}
+export interface ExplorePivotPath {
+  is_grand_total: boolean;
+  members: ExplorePivotMemberKey[];
+}
+export interface ExplorePivotMemberKey {
+  kind: 'null' | 'string' | 'boolean' | 'integer' | 'float' | 'nan' | 'date' | 'datetime' | 'time' | 'decimal';
+  value: string | number | boolean | null;
+}
+export interface ExecutionMetricsPayload {
+  admission: ExecutionAdmissionPayload | null;
+  bytes_read: number | null;
+  bytes_written: number | null;
+  cache_proof: ExecutionCacheProofPayload;
+  cancellation_latency_ms: number | null;
+  checkpoint_count: number;
+  chunk_count: number;
+  column_widths: ExecutionColumnWidthsCollectionPayload;
+  data_output_write_input_slices: number | null;
+  data_output_write_native_reason: string | null;
+  data_output_write_strategy: string | null;
+  estimate_admission_basis: 'provided' | 'projected_columns' | 'complete_width_fallback' | null;
+  estimate_calibration_factor_basis_points: number | null;
+  estimated_bytes: number | null;
+  execution_strategy: ExecutionStrategyDiagnosticPayloadOutput | null;
+  input_preparation: InputPreparationRecordPayload[];
+  job_id: string | null;
+  max_rss_bytes: number | null;
+  memory_baseline_bytes: number | null;
+  memory_limit_bytes: number | null;
+  memory_pressure_event_count: number;
+  memory_pressure_events: ExecutionMemoryPressureEventPayload[];
+  memory_pressure_events_truncated: boolean;
+  n_checkpoints: number;
+  n_collects: number;
+  node_elapsed_ms: {
+    [k: string]: number;
+  };
+  observed_peak_rss_bytes: number | null;
+  observed_peak_rss_growth_bytes: number | null;
+  operation: string;
+  physically_scanned_column_width_total: number | null;
+  profile: string;
+  raw_estimated_bytes: number | null;
+  requested_column_width_total: number | null;
+  retained_memory_pressure_event_count: number;
+  retained_stage_count: number;
+  rss_delta_bytes: number | null;
+  rss_end_bytes: number | null;
+  rss_limit_bytes: number | null;
+  rss_peak_bytes: number | null;
+  rss_start_bytes: number | null;
+  schema_version: number;
+  shared_snapshot_capture_skips: SharedSnapshotCaptureSkipPayload[];
+  shared_snapshot_captures: SharedSnapshotCapturePayload[];
+  shared_snapshot_seeds: SharedSnapshotSeedPayload[];
+  stage_count: number;
+  stage_elapsed_ms: {
+    [k: string]: number;
+  };
+  stages: ExecutionStageMetricsPayload[];
+  stages_truncated: boolean;
+  status: string | null;
+  streamability: 'streaming' | 'materialising' | null;
+  streamability_evidence: ExecutionStreamabilityEvidencePayload;
+  terminal_reason: string | null;
+  total_elapsed_ms: number;
+  training_write_blocking_operator: string | null;
+  training_write_input_slices: number | null;
+  training_write_native_reason: string | null;
+  training_write_strategy: string | null;
+  truncated_memory_pressure_event_count: number;
+  truncated_stage_count: number;
+  warnings: ExecutionWarningPayload[];
+}
+export interface ExecutionAdmissionPayload {
+  admitted: boolean;
+  available_ram_bytes: number | null;
+  budget_policy: string;
+  config_key: string;
+  headroom_bytes: number | null;
+  memory_limit_bytes: number;
+  operation: string;
+  os_reserve_bytes: number | null;
+  process_rss_limit_bytes: number | null;
+  profile: string;
+  reason: string;
+  rss_at_admission_bytes: number | null;
+  rss_limit_bytes: number | null;
+}
+export interface ExecutionCacheProofPayload {
+  direct_fallbacks: number;
+  hits: number;
+  miss_reason_counts: ExecutionCacheProofMissReasonCountsPayload;
+  misses: number;
+}
+export interface ExecutionCacheProofMissReasonCountsPayload {
+  artifact_integrity_schema_failure: number;
+  metadata_source_mismatch: number;
+  proof_unavailable: number;
+  unreadable_artifact: number;
+}
+export interface ExecutionColumnWidthsCollectionPayload {
+  /**
+   * @maxItems 128
+   */
+  items: ExecutionColumnWidthsPayload[];
+  state: 'available' | 'truncated';
+  total_count: number;
+}
+export interface ExecutionColumnWidthsPayload {
+  input_width: number | null;
+  node_id: string;
+  output_width: number | null;
+  physically_scanned_width: number | null;
+  requested_width: number | null;
+}
+/**
+ * Strict V1 API DTO for one shared execution-planning decision.
+ */
+export interface ExecutionStrategyDiagnosticPayloadOutput {
+  assumptions: string[];
+  blocking_node_id: string | null;
+  blocking_operator: string | null;
+  boundaries: ExecutionStrategyBoundaryCollectionPayload;
+  boundedness: 'bounded' | 'unbounded' | 'unknown';
+  detail_state: 'available' | 'unavailable' | 'truncated';
+  estimate_admission_basis: 'provided' | 'projected_columns' | 'complete_width_fallback' | null;
+  estimate_calibration_factor_basis_points: number | null;
+  estimated_peak_bytes: number | null;
+  headroom_bytes: number | null;
+  profile:
+    | 'preview_eager'
+    | 'lazy_sink'
+    | 'training_prep'
+    | 'optimiser_setup'
+    | 'explore_analysis'
+    | 'auto_range'
+    | 'deploy_live'
+    | 'deploy_batch'
+    | 'chunked_map_reduce'
+    | 'node_snapshot';
+  provenance: ExecutionStrategyProvenanceCollectionPayloadOutput;
+  raw_estimated_peak_bytes: number | null;
+  reason_code: string;
+  reasons: ExecutionStrategyReasonCollectionPayloadOutput;
+  remediation: string | null;
+  schema_version: 1;
+  status: 'projected' | 'admitted_eager' | 'boundary' | 'warned' | 'rejected' | 'not_planned';
+  strategy:
+    | 'projected'
+    | 'schema-all-except'
+    | 'full-width-admitted-eager'
+    | 'unprojected-streaming-boundary'
+    | 'materialisation-boundary'
+    | 'full-width-conservative'
+    | 'unsupported'
+    | 'not-planned';
+}
+export interface ExecutionStrategyProvenanceCollectionPayloadOutput {
+  /**
+   * @maxItems 128
+   */
+  items: ExecutionStrategyProvenancePayloadOutput[];
+  state: 'available' | 'unavailable' | 'truncated';
+  total_count: number | null;
+}
+export interface ExecutionStrategyProvenancePayloadOutput {
+  column: string;
+  origin_kind: 'seed' | 'contract' | 'expression' | 'join_key' | 'conservative_boundary';
+  source_column: string | null;
+  source_node_id: string | null;
+}
+export interface ExecutionStrategyReasonCollectionPayloadOutput {
+  /**
+   * @maxItems 32
+   */
+  items: ExecutionStrategyReasonPayloadOutput[];
+  state: 'available' | 'unavailable' | 'truncated';
+  total_count: number | null;
+}
+export interface ExecutionStrategyReasonPayloadOutput {
+  message: string | null;
+  node_id: string | null;
+  operator: string | null;
+  parent_node_id: string | null;
+  reason_code: string;
+  topological_rank: number | null;
+}
+/**
+ * One Data Input's automatic preparation record: digests and counts only.
+ */
+export interface InputPreparationRecordPayload {
+  action: 'reused' | 'built' | 'refreshed';
+  build_class: string;
+  elapsed_seconds: number;
+  execution: 'in_process' | 'worker';
+  generation_id: string | null;
+  identity_digest: string;
+  memory_limit_bytes: number | null;
+  node_id: string;
+  row_count: number | null;
+  size_bytes: number | null;
+  warning_code: string | null;
+}
+export interface ExecutionMemoryPressureEventPayload {
+  available_ram_bytes: number | null;
+  baseline_rss_bytes: number | null;
+  budget_policy: string | null;
+  config_key: string | null;
+  event: 'memory_pressure';
+  headroom_bytes: number;
+  headroom_used_bytes: number;
+  job_id: string | null;
+  label: string | null;
+  memory_baseline_bytes: number | null;
+  memory_limit_bytes: number | null;
+  node_id: string | null;
+  operation: string;
+  os_reserve_bytes: number | null;
+  pressure_ratio: number;
+  profile: string;
+  rss_bytes: number;
+  rss_limit_bytes: number;
+  rss_peak_bytes: number;
+  schema_version: number;
+  stage: string | null;
+  threshold_percent: number;
+  threshold_ratio: number;
+}
+/**
+ * One candidate capture point skipped under cost gating.
+ */
+export interface SharedSnapshotCaptureSkipPayload {
+  node_id: string;
+  reason: 'cheap_segment' | 'slice_transparent_feeder';
+}
+/**
+ * One full-data materialisation an execution wrote to shared snapshots.
+ *
+ * ``published`` names the generation the execution continued from; otherwise
+ * it continued from its own staged artifact and ``generation_id`` is null.
+ */
+export interface SharedSnapshotCapturePayload {
+  columns: 'all' | string[];
+  generation_id: string | null;
+  identity_digest: string;
+  kind: 'structural' | 'materialising' | 'model_score' | 'consumed';
+  node_id: string;
+  outcome: 'published' | 'superseded';
+  write_blocking_operator: string | null;
+  write_chunk_rows: number | null;
+  write_input_slices: number | null;
+  write_native_reason: string | null;
+  write_parts: number | null;
+  write_staged_inputs: number | null;
+  write_strategy: 'chunked_join' | 'sliced' | 'input_sliced' | 'native' | 'prewritten' | null;
+}
+/**
+ * One node output an execution read from a shared snapshot generation.
+ */
+export interface SharedSnapshotSeedPayload {
+  columns: 'all' | string[];
+  generation_id: string;
+  identity_digest: string;
+  node_id: string;
+}
+export interface ExecutionStageMetricsPayload {
+  bytes_read: number | null;
+  bytes_written: number | null;
+  columns_scanned: number | null;
+  elapsed_ms: number;
+  job_id: string | null;
+  n_checkpoints: number;
+  n_collects: number;
+  name: string;
+  node_id: string | null;
+  operation: string;
+  profile: string;
+  rows_in: number | null;
+  rows_out: number | null;
+  rss_delta_bytes: number | null;
+  rss_end_bytes: number | null;
+  rss_peak_bytes: number | null;
+  rss_start_bytes: number | null;
+  schema_version: number;
+}
+export interface ExecutionStreamabilityEvidencePayload {
+  /**
+   * @maxItems 32
+   */
+  items: string[];
+  state: 'available' | 'unavailable' | 'truncated';
+  total_count: number | null;
+}
+/**
+ * A non-fatal condition an execution continued past.
+ */
+export interface ExecutionWarningPayload {
+  code: string;
+  node_id: string | null;
+  reason: string | null;
+}
+export interface ExplorePivotValueIdentity {
+  aggregation: 'sum' | 'count' | 'average' | 'min' | 'max' | 'median' | 'distinct_count' | 'formula';
+  field: string;
+  id: string;
+}
+export interface ExplorePivotStatusResponse {
+  execution_metrics: ExecutionMetricsPayload | null;
+  failure: ExplorePivotFailure | null;
+  message: string;
+  progress: number;
+  result: ExplorePivotResult | null;
+  status:
+    'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
+  terminal_reason: string | null;
+}
+export interface ExplorePivotMembersResponse {
+  failure: ExplorePivotFailure | null;
+  field: string | null;
+  members: ExplorePivotMemberOption[];
+  status: 'ok' | 'cache_required' | 'error';
+}
+export interface ExplorePivotMemberOption {
+  count: number;
+  key: ExplorePivotMemberKey;
+  label: string;
+}
+export interface NodeDataProfileResponse {
+  job_id: string | null;
+  message: string;
+  point: NodeDataPointResponse;
+  result: NodeDataProfile | null;
+  status: 'completed' | 'started' | 'joined' | 'cache_required';
+}
+export interface NodeDataPointResponse {
+  build_endpoint: string | null;
+  clear_endpoint: string | null;
+  consumer_node_id: string;
+  data_version: string | null;
+  demand: string[] | 'all';
+  generation: NodeDataGeneration | null;
+  job: NodeDataJob | null;
+  kind: 'data_input' | 'api_input_table' | 'node_output';
+  point: NodeDataPointRef;
+  reads_directly: boolean;
+  retention: 'pinned' | 'automatic' | null;
+  row_count: number | null;
+  size_bytes: number | null;
+  slot_key: string;
+  state: 'current' | 'stale' | 'partial' | 'missing' | 'building' | 'corrupt';
+}
+/**
+ * The node-output generation a slot currently holds for the consumer's signature.
+ */
+export interface NodeDataGeneration {
+  column_count: number;
+  columns: string[] | 'all';
+  created_at: number;
+  fresh: boolean;
+  generation_id: string;
+  retention: 'pinned' | 'automatic';
+  row_count: number;
+  size_bytes: number;
+}
+export interface NodeDataJob {
+  job_id: string;
+  message: string;
+  progress: number;
+}
+export interface NodeDataPointRef {
+  port_label: string | null;
+  producer_node_id: string;
+}
+/**
+ * Per-column statistics and overview summary of one data version of a point.
+ */
+export interface NodeDataProfile {
+  column_count: number;
+  columns: ExploreColumnStat[];
+  data_version: string;
+  generated_at: number;
+  overview_summary: ExploreOverviewSummary;
+  row_count: number;
+}
+/**
+ * Per-column stats captured at Explore cache-materialisation time.
+ *
+ * Missingness is reported as a three-way split rather than a valid/invalid
+ * dichotomy: ``null_count`` (absent values), ``nan_count`` (float NaN — an
+ * invalid-numeric value that a stream unable to distinguish string from int
+ * materialises for non-numeric input), and everything else is valid. Polars
+ * ``null_count`` ignores NaN, so an all-NaN float column would otherwise look
+ * fully populated. ``nan_count`` is None for non-float dtypes (not
+ * applicable), mirroring ``zero_count``/``negative_count`` on non-numeric
+ * columns.
+ *
+ * ``distinct_count`` counts distinct non-null values (the null bucket is
+ * excluded) and may be None when the dtype is not hashable (Object columns),
+ * in which case the UI renders an em-dash.
+ */
+export interface ExploreColumnStat {
+  distinct_count: number | null;
+  dtype: string;
+  histogram: ExploreHistogram | null;
+  is_high_cardinality: boolean;
+  is_identifier_candidate: boolean;
+  kind: 'Numeric' | 'Text' | 'Temporal' | 'Boolean' | 'Nested' | 'Other';
+  max_value: string | null;
+  mean_value: string | null;
+  median_value: string | null;
+  min_value: string | null;
+  name: string;
+  nan_count: number | null;
+  negative_count: number | null;
+  null_count: number;
+  p25_value: string | null;
+  p75_value: string | null;
+  std_value: string | null;
+  temporal_span: string | null;
+  text_max_length: number | null;
+  text_mean_length: number | null;
+  text_min_length: number | null;
+  unique_ratio: number | null;
+  zero_count: number | null;
+}
+/**
+ * Equal-width bins over a numeric column's finite values.
+ *
+ * ``ok``: ``bins`` holds up to ``HISTOGRAM_BIN_COUNT`` equal-width bins
+ * spanning the finite minimum to maximum, each ``[start, end)`` except the
+ * last, which includes its end. Integer columns have integer boundaries and,
+ * when their range is narrower than the bin count, one bin per value.
+ * ``constant``: every finite value is equal, so there is one bin with
+ * ``start == end``. ``empty``: no finite values. ``skipped``: the column is
+ * past the profile's histogram column limit (``column_limit``; nothing was
+ * computed) or an integer column with values beyond 2**53 - 1
+ * (``integer_precision``), whose boundaries a browser would round together.
+ * Null, NaN and infinite values never enter a bin; ``non_finite_count``
+ * counts the NaN and infinite ones.
+ */
+export interface ExploreHistogram {
+  bins: ExploreHistogramBin[];
+  finite_count: number | null;
+  non_finite_count: number | null;
+  skipped_reason: 'column_limit' | 'integer_precision' | null;
+  status: 'ok' | 'constant' | 'empty' | 'skipped';
+}
+export interface ExploreHistogramBin {
+  count: number;
+  end: number;
+  start: number;
+}
+export interface ExploreOverviewSummary {
+  categorical_summary: ExploreCategoricalColumnProfile[];
+  data_quality: ExploreDataQualitySummary;
+}
+export interface ExploreCategoricalColumnProfile {
+  distinct_count: number | null;
+  expandable: boolean;
+  field: string;
+  values: ExploreDistinctValueCount[];
+  values_truncated: boolean;
+}
+export interface ExploreDistinctValueCount {
+  count: number;
+  value: string | null;
+}
+export interface ExploreDataQualitySummary {
+  duplicate_ratio: number | null;
+  duplicate_row_count: number | null;
+  issue_count: number;
+  issues: ExploreDataQualityIssue[];
+}
+export interface ExploreDataQualityIssue {
+  detail: string;
+  label: string;
+  severity: 'warning' | 'danger';
+}
+/**
+ * Whole-dataset statistics for one factor, or why there are none.
+ */
+export interface BandingStatsResponse {
+  bins: BandingHistogramBin[];
+  data_version: string | null;
+  distinct_count: number | null;
+  maximum: number | null;
+  minimum: number | null;
+  non_finite_count: number | null;
+  null_count: number;
+  other_count: number | null;
+  point: NodeDataPointResponse;
+  rule_counts: number[];
+  status: 'ok' | 'cache_required';
+  total_rows: number;
+  unmatched_count: number | null;
+  values: BandingValueCount[];
+}
+/**
+ * One `[lower, upper)` interval of a numeric distribution, the last closed.
+ */
+export interface BandingHistogramBin {
+  count: number;
+  lower: number;
+  upper: number;
+}
+/**
+ * One categorical value, as the text execution matches it by.
+ */
+export interface BandingValueCount {
+  count: number;
+  value: string;
+}
+/**
+ * Whole-dataset levels for the columns asked about, or why there are none.
+ */
+export interface RatingLevelsResponse {
+  columns: RatingLevelColumn[];
+  data_version: string | null;
+  point: NodeDataPointResponse;
+  status: 'ok' | 'cache_required';
+  total_rows: number;
+}
+/**
+ * What one column offers as rating levels.
+ *
+ * `distinct_count` counts the levels that could be chosen — neither missing
+ * nor blank — so it is the number `values` would hold without the cap.
+ */
+export interface RatingLevelColumn {
+  column: string;
+  distinct_count: number;
+  null_count: number;
+  values: RatingLevelValue[];
+}
+/**
+ * One level, keyed the way the rating lookup keys it.
+ */
+export interface RatingLevelValue {
+  count: number;
+  value: string;
+}
 export interface GitWorkingBranchResponse {
   current_branch: string;
   eligible_branches: string[];
@@ -489,6 +1102,71 @@ export interface GitUpstreamStatusResponse {
   parent_url: string;
   working: GitRemoteLeg;
 }
+export interface GitPushRejection {
+  is_rewrite: boolean;
+  ledger: GitRemoteLeg | null;
+  message: string;
+  remote: string;
+  status: 'rejected_diverged';
+  working: GitRemoteLeg;
+}
+export interface GitMilestoneFork {
+  message: string;
+  remote: string;
+  status: 'would_fork';
+  working: GitRemoteLeg;
+}
+export interface IoCapabilitiesResponse {
+  groups: IoCapabilityGroup[];
+  schema_version: 1;
+}
+export interface IoCapabilityGroup {
+  cache_modes: ('direct' | 'snapshot')[];
+  formats: IoFormatCapability[];
+  input_available: boolean;
+  input_fields: IoFieldCapability[];
+  label: string;
+  name: 'file' | 'database' | 'lakehouse' | 'databricks' | 'inline';
+  output_available: boolean;
+  output_fields: IoFieldCapability[];
+}
+export interface IoFormatCapability {
+  extensions: string[];
+  group: 'file' | 'database' | 'lakehouse' | 'inline';
+  input: IoInputCapability | null;
+  label: string;
+  name: string;
+  output: IoOutputCapability | null;
+  unstable: boolean;
+}
+export interface IoInputCapability {
+  arguments: {
+    [k: string]: string[];
+  };
+  cache_mode: 'direct' | 'snapshot';
+  cached_read: boolean;
+  direct_bounded: boolean;
+  engines_missing: string[];
+  modes: ('scan' | 'read')[];
+  needs_schema_when_bounded: boolean;
+  snapshot_build: 'bounded' | 'admitted_eager' | 'unsupported';
+}
+export interface IoOutputCapability {
+  arguments: {
+    [k: string]: string[];
+  };
+  eager_writer: boolean;
+  engines_missing: string[];
+  modes: ('sink' | 'write')[];
+  native_sink: boolean;
+  publication: 'atomic_file' | 'transactional';
+}
+export interface IoFieldCapability {
+  kind: 'path' | 'connection' | 'text' | 'query' | 'table' | 'records';
+  label: string;
+  name: string;
+  required: boolean;
+}
 export interface MlflowDestinationsResponse {
   destinations: MlflowDestinationEntry[];
   detail: string;
@@ -649,6 +1327,601 @@ export interface SaveModelResponse {
   feature_contract_path: string;
   path: string;
   status: 'ok';
+}
+export interface OptimiserSolveResponse {
+  error: string | null;
+  job_id: string | null;
+  status: 'started' | 'error';
+}
+/**
+ * Result shape for ``POST /api/optimiser/estimate``.
+ */
+export interface OptimiserEstimateResponse {
+  expanded_row_count: number | null;
+  quote_count: number | null;
+  scenarios_per_quote_max: number | null;
+  scenarios_per_quote_mean: number | null;
+  scenarios_per_quote_min: number | null;
+  total_rows: number | null;
+}
+export interface OptimiserStatusResponse {
+  elapsed_seconds: number;
+  execution_metrics: ExecutionMetricsPayload | null;
+  frontier: OptimiserFrontierResponse | null;
+  message: string;
+  progress: number;
+  result: OptimiserSolveResult | null;
+  status:
+    'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
+  terminal_reason: string | null;
+}
+export interface OptimiserFrontierResponse {
+  constraint_names: string[];
+  job_id: string | null;
+  n_points: number;
+  point_summaries: OptimiserFrontierPointSummary[];
+  points: {
+    [k: string]: unknown;
+  }[];
+  points_limit: number | null;
+  points_returned: number;
+  points_truncated: boolean;
+  status: string;
+}
+/**
+ * Every result field of one frontier point that differs from its solve.
+ *
+ * ``None`` means the point has no such field: applying the summary to the
+ * solve's result removes it.
+ */
+export interface OptimiserFrontierPointSummary {
+  cd_iterations: number | null;
+  clamp_rate: number | null;
+  constraints: {
+    [k: string]: number;
+  };
+  converged: boolean;
+  factor_tables: {
+    [k: string]: {
+      [k: string]: unknown;
+    }[];
+  } | null;
+  frontier_error: string | null;
+  history: OptimiserHistoryEntry[] | null;
+  iterations: number | null;
+  lambdas: {
+    [k: string]: number;
+  };
+  scenario_value_histogram: OptimiserScenarioValueHistogram | null;
+  scenario_value_stats: OptimiserScenarioValueStats | null;
+  total_objective: number;
+  warning: string | null;
+}
+export interface OptimiserHistoryEntry {
+  all_constraints_satisfied: boolean | null;
+  iteration: number;
+  lambdas: {
+    [k: string]: number;
+  };
+  max_lambda_change: number;
+  total_constraints: {
+    [k: string]: number;
+  };
+  total_objective: number;
+}
+export interface OptimiserScenarioValueHistogram {
+  counts: number[];
+  edges: number[];
+}
+export interface OptimiserScenarioValueStats {
+  max: number;
+  mean: number;
+  min: number;
+  p25: number;
+  p5: number;
+  p50: number;
+  p75: number;
+  p95: number;
+  pct_decrease: number;
+  pct_increase: number;
+  std: number;
+}
+export interface OptimiserSolveResult {
+  baseline_constraints: {
+    [k: string]: number;
+  };
+  baseline_objective: number;
+  cd_iterations: number | null;
+  clamp_rate: number | null;
+  constraints: {
+    [k: string]: number;
+  };
+  converged: boolean;
+  factor_tables: {
+    [k: string]: {
+      [k: string]: unknown;
+    }[];
+  };
+  frontier: OptimiserFrontierResponse | null;
+  frontier_error: string | null;
+  history: OptimiserHistoryEntry[] | null;
+  iterations: number | null;
+  lambdas: {
+    [k: string]: number;
+  };
+  mode: string | null;
+  n_quotes: number | null;
+  n_steps: number | null;
+  scenario_value_histogram: OptimiserScenarioValueHistogram | null;
+  scenario_value_stats: OptimiserScenarioValueStats | null;
+  selected_frontier_point: number | null;
+  total_objective: number;
+  warning: string | null;
+}
+export interface OptimiserApplyResponse {
+  constraints: {
+    [k: string]: number;
+  };
+  error: string | null;
+  from_artifact: boolean;
+  preview: {
+    [k: string]: unknown;
+  }[];
+  preview_row_count: number;
+  preview_row_limit: number | null;
+  preview_truncated: boolean;
+  row_count: number;
+  status: string;
+  total_objective: number;
+}
+export interface OptimiserSaveResponse {
+  message: string;
+  path: string | null;
+  status: string;
+}
+export interface OptimiserMlflowLogResponse {
+  backend: string;
+  error: string | null;
+  experiment_name: string;
+  run_id: string | null;
+  run_url: string | null;
+  status: 'ok' | 'error';
+  tracking_uri: string;
+}
+export interface OptimiserFrontierStatusResponse {
+  elapsed_seconds: number;
+  error_code: string | null;
+  error_detail:
+    | ExecutionMemoryLimitErrorPayload
+    | {
+        [k: string]: unknown;
+      }
+    | string
+    | null;
+  execution_metrics: ExecutionMetricsPayload | null;
+  http_status_code: number | null;
+  message: string;
+  progress: number;
+  result: OptimiserFrontierResponse | null;
+  status:
+    'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
+  terminal_reason: string | null;
+}
+export interface ExecutionMemoryLimitErrorPayload {
+  baseline_rss_bytes: number | null;
+  error_code: 'memory_limit';
+  headroom_bytes: number | null;
+  job_id: string | null;
+  memory_limit_bytes: number | null;
+  operation: string;
+  process_rss_limit_bytes: number | null;
+  profile: string | null;
+  reason: string;
+  rss_at_admission_bytes: number | null;
+  rss_bytes: number | null;
+  rss_limit_bytes: number | null;
+}
+export interface OptimiserFrontierAutoRangeStartResponse {
+  error: string | null;
+  job_id: string | null;
+  status: 'started' | 'error';
+}
+export interface OptimiserFrontierAutoRangeStatusResponse {
+  elapsed_seconds: number;
+  error_code: string | null;
+  error_detail:
+    | ExecutionMemoryLimitErrorPayload
+    | {
+        [k: string]: unknown;
+      }
+    | string
+    | null;
+  execution_metrics: ExecutionMetricsPayload | null;
+  http_status_code: number | null;
+  message: string;
+  progress: number;
+  result: OptimiserFrontierAutoRangeResponse | null;
+  status:
+    'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
+  terminal_reason: string | null;
+}
+export interface OptimiserFrontierAutoRangeResponse {
+  chunk_fallback: OptimiserChunkFallback | null;
+  method: string;
+  ranges: {
+    [k: string]: OptimiserFrontierRange;
+  };
+  status: string;
+  warning: string | null;
+}
+/**
+ * A lost chunk optimisation recorded on an auto-range job.
+ *
+ * Chunk ineligibility never fails the request, so this record is the only
+ * place the reason survives; typing it keeps the emitted keys and the three
+ * stable codes part of the API contract.
+ */
+export interface OptimiserChunkFallback {
+  code: 'chunk_user_code_ineligible' | 'model_score_ineligible' | 'chunk_plan_unsupported';
+  column: number | null;
+  line: number | null;
+  message: string;
+  node_id: string | null;
+  operator: string | null;
+  reason: string | null;
+}
+export interface OptimiserFrontierRange {
+  max: number;
+  min: number;
+}
+export interface OptimiserFrontierSelectResponse {
+  baseline_constraints: {
+    [k: string]: number;
+  };
+  baseline_objective: number;
+  cd_iterations: number | null;
+  clamp_rate: number | null;
+  constraints: {
+    [k: string]: number;
+  };
+  converged: boolean;
+  error: string | null;
+  factor_tables: {
+    [k: string]: {
+      [k: string]: unknown;
+    }[];
+  };
+  history: OptimiserHistoryEntry[] | null;
+  iterations: number | null;
+  lambdas: {
+    [k: string]: number;
+  };
+  point_index: number | null;
+  scenario_value_histogram: OptimiserScenarioValueHistogram | null;
+  scenario_value_stats: OptimiserScenarioValueStats | null;
+  status: string;
+  total_objective: number;
+  warning: string | null;
+}
+export interface SessionStatusResponse {
+  ok: boolean;
+}
+export interface BrowseFilesResponse {
+  dir: string;
+  items: FileItem[];
+}
+export interface FileItem {
+  name: string;
+  path: string;
+  size: number | null;
+  type: 'file' | 'directory';
+}
+export interface TrainResponse {
+  actual_vs_predicted: {
+    [k: string]: number;
+  }[];
+  ave_per_feature: {
+    [k: string]: unknown;
+  }[];
+  best_iteration: number | null;
+  cat_features: string[];
+  development_rows: number;
+  diagnostic_metrics: {
+    [k: string]: number;
+  };
+  diagnostics_errors: {
+    [k: string]: string;
+  }[];
+  diagnostics_set: 'development' | 'validation' | 'final_test';
+  double_lift: {
+    [k: string]: unknown;
+  }[];
+  ebm_terms: {
+    [k: string]: unknown;
+  }[];
+  error: string | null;
+  evaluation?: EvaluationReportPayload;
+  feature_importance: {
+    [k: string]: unknown;
+  }[];
+  feature_importance_loss: {
+    [k: string]: unknown;
+  }[];
+  feature_selection: TrainingFeatureSelectionDiagnosticPayload | null;
+  features: string[];
+  final_test_metrics: {
+    [k: string]: number;
+  };
+  final_test_rows: number;
+  final_tree_count: number | null;
+  fit_evidence: FitEvidencePayload | null;
+  glm_coefficients: {
+    [k: string]: unknown;
+  }[];
+  glm_fit_statistics: {
+    [k: string]: number;
+  };
+  glm_inference: {
+    [k: string]: unknown;
+  } | null;
+  glm_regularization: {
+    [k: string]: unknown;
+  } | null;
+  glm_relativities: {
+    [k: string]: unknown;
+  }[];
+  glm_smooth_terms: {
+    [k: string]: unknown;
+  }[];
+  job_id: string | null;
+  lorenz_curve: {
+    [k: string]: number;
+  }[];
+  lorenz_curve_perfect: {
+    [k: string]: number;
+  }[];
+  loss_history: {
+    [k: string]: number;
+  }[];
+  loss_history_truncated: boolean;
+  model_path: string;
+  pdp_data: {
+    [k: string]: unknown;
+  }[];
+  residuals_histogram: {
+    [k: string]: unknown;
+  }[];
+  residuals_stats: {
+    [k: string]: number;
+  };
+  shap_summary: {
+    [k: string]: unknown;
+  }[];
+  status: 'started' | 'completed' | 'error';
+  total_source_rows: number | null;
+  tuning?: TuningReportPayload;
+  warning: string | null;
+}
+/**
+ * The evaluation run as published; its invariants are checked where the
+ * plan, results and report artifacts are produced and reloaded
+ * (``haute.modelling._evaluation``), not here.
+ */
+export interface EvaluationReportPayload {
+  development_rows: number;
+  final_test_rows: number;
+  fit_count: number;
+  plan_path: string;
+  plan_sha256: string;
+  refit_on_development: boolean;
+  report_path: string;
+  results_path: string;
+  results_sha256: string;
+  schema_version: 1;
+  /**
+   * @maxItems 10
+   */
+  selection_fits: EvaluationFitPayload[];
+  selection_metrics: {
+    [k: string]: EvaluationMetricSummaryPayload;
+  };
+  strategy: 'random' | 'group' | 'temporal';
+  summary: EvaluationSummaryPayload;
+  validation_fit_count: number;
+  validation_method: 'none' | 'single' | 'cross_validation';
+}
+export interface EvaluationFitPayload {
+  best_iteration: number | null;
+  fit_index: number;
+  metrics: {
+    [k: string]: number;
+  };
+  schema_version: 1;
+  train_rows: number;
+  validation_rows: number;
+}
+export interface EvaluationMetricSummaryPayload {
+  fit_count: number;
+  max: number;
+  mean: number;
+  min: number;
+  stddev: number;
+  validation_rows: number;
+}
+export interface EvaluationSummaryPayload {
+  development_date_count: number | null;
+  development_group_count: number | null;
+  development_rows: number;
+  test_date_count: number | null;
+  test_group_count: number | null;
+  test_rows: number;
+  validation_fit_count: number;
+}
+export interface TrainingFeatureSelectionDiagnosticPayload {
+  detail_state: 'available' | 'truncated';
+  excluded_columns: TrainingFeatureColumnReasonCollectionPayload;
+  feature_count: number;
+  features: TrainingFeatureNameCollectionPayload;
+  mode: 'explicit' | 'all_except' | 'glm_terms';
+  retained_metadata: TrainingFeatureColumnReasonCollectionPayload;
+  schema_version: 1;
+}
+export interface TrainingFeatureColumnReasonCollectionPayload {
+  /**
+   * @maxItems 128
+   */
+  items: TrainingFeatureColumnReasonPayload[];
+  state: 'available' | 'truncated';
+  total_count: number;
+}
+export interface TrainingFeatureColumnReasonPayload {
+  column: string;
+  reason:
+    | 'target'
+    | 'weight'
+    | 'offset'
+    | 'fold'
+    | 'identifier'
+    | 'evaluation'
+    | 'configured_exclusion'
+    | 'not_selected'
+    | 'not_in_formula';
+}
+export interface TrainingFeatureNameCollectionPayload {
+  /**
+   * @maxItems 128
+   */
+  items: string[];
+  state: 'available' | 'truncated';
+  total_count: number;
+}
+/**
+ * The final fit's thread allotment, round ceiling, fitted rounds, and stop reason.
+ */
+export interface FitEvidencePayload {
+  device: string | null;
+  rounds_configured: number | null;
+  rounds_fitted: number | null;
+  stopping_reason: 'none' | 'validation' | 'native_exhaustion' | null;
+  term_update_steps: number[] | null;
+  threads: number;
+}
+/**
+ * The tuning study as published; its invariants are checked where the
+ * plan, trials and report artifacts are produced and reloaded
+ * (``haute.modelling._tuning``), not here.
+ */
+export interface TuningReportPayload {
+  baseline_objective: number;
+  best_sampled_params: {
+    [k: string]: unknown;
+  };
+  direction: 'maximize' | 'minimize';
+  evaluation_plan_sha256: string;
+  final_params: {
+    [k: string]: unknown;
+  };
+  final_tree_count: number | null;
+  improvement: number;
+  metric: string;
+  plan_path: string;
+  plan_sha256: string;
+  report_path: string;
+  schema_version: 1;
+  total_fit_count: number;
+  trial_count: number;
+  trial_fit_count: number;
+  /**
+   * @minItems 5
+   * @maxItems 50
+   */
+  trials: TuningTrialPayload[];
+  trials_path: string;
+  trials_sha256: string;
+  winner_objective: number;
+  winner_trial_index: number;
+}
+export interface TuningTrialPayload {
+  aggregate_metrics: {
+    [k: string]: number;
+  };
+  elapsed_seconds: number;
+  /**
+   * @minItems 1
+   * @maxItems 10
+   */
+  fits: EvaluationFitPayload[];
+  label: 'baseline' | 'sampled';
+  objective: number;
+  resolved_params: {
+    [k: string]: unknown;
+  };
+  sampled_params: {
+    [k: string]: unknown;
+  };
+  schema_version: 1;
+  trial_index: number;
+}
+export interface TrainStatusResponse {
+  best_objective: number | null;
+  completed_fits: number | null;
+  elapsed_seconds: number;
+  error_code: string | null;
+  error_detail: unknown;
+  execution_metrics: ExecutionMetricsPayload | null;
+  export_receipts: TrainExportReceipts;
+  feature_selection: TrainingFeatureSelectionDiagnosticPayload | null;
+  fold_count: number | null;
+  fold_index: number | null;
+  http_status_code: number | null;
+  iteration: number;
+  message: string;
+  phase: 'planning' | 'trial_fit' | 'trial_complete' | 'final_fit' | 'publication' | 'completed' | null;
+  progress: number;
+  result: TrainResponse | null;
+  status:
+    'running' | 'completed' | 'error' | 'cancelled' | 'superseded' | 'timed_out' | 'memory_limited' | 'contract_error';
+  terminal_reason: string | null;
+  total_fits: number | null;
+  total_iterations: number;
+  train_loss: {
+    [k: string]: number;
+  };
+  train_loss_history: {
+    [k: string]: number;
+  }[];
+  train_loss_history_truncated: boolean;
+  trial_count: number | null;
+  trial_index: number | null;
+  warning: string | null;
+}
+/**
+ * Where a completed training result has been exported, oldest first.
+ */
+export interface TrainExportReceipts {
+  mlflow: MlflowExportReceipt[];
+  model_files: ModelFileExportReceipt[];
+}
+/**
+ * A completed log of a training job to MLflow.
+ */
+export interface MlflowExportReceipt {
+  backend: string;
+  destination: '' | 'databricks' | 'server' | 'local';
+  experiment_name: string;
+  logged_at: string;
+  operation_id: string;
+  run_id: string;
+  run_url: string | null;
+  tracking_uri: string;
+}
+/**
+ * A completed save of a training job's model to a project file.
+ */
+export interface ModelFileExportReceipt {
+  feature_contract_path: string;
+  path: string;
+  saved_at: string;
 }
 export interface UtilityListResponse {
   files: UtilityFileItem[];

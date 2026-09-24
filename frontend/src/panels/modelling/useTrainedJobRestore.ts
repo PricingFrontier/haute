@@ -2,10 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { ApiError, getTrainStatus } from "../../api/client"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useGraphStore from "../../stores/useGraphStore"
-import useNodeResultsStore, {
-  type CachedTrainResult,
-  type TrainProgress,
-} from "../../stores/useNodeResultsStore"
+import useNodeResultsStore, { type CachedTrainResult } from "../../stores/useNodeResultsStore"
 import {
   clearTrainedJobHandle,
   readTrainedJobHandle,
@@ -49,7 +46,7 @@ export function useTrainedJobRestore(
       clearTrainedJobHandle(sourceFile, nodeId)
       setExpiredJobId(handle.jobId)
     }
-    getTrainStatus<TrainProgress>(handle.jobId, { signal: controller.signal }).then(
+    getTrainStatus(handle.jobId, { signal: controller.signal }).then(
       (status) => {
         if (controller.signal.aborted) return
         if (status.status === "completed" && status.result && status.result.status !== "error") {

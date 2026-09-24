@@ -149,7 +149,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "frontend-shared",
     "json-shredding",
     "mlflow-model-registry",
-    "modelling",
     "optimiser",
     "pipeline-config",
     "sandbox-security",

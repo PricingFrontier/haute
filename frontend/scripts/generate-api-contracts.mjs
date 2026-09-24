@@ -224,6 +224,48 @@ function visitLocalDefinitionReferences(value, enqueue) {
 }
 
 export function extractContractSchema(schema, definitionName) {
+  const reachable = reachableDefinitionNames(schema, definitionName);
+  const definitions = Object.fromEntries(
+    [...reachable]
+      .filter((name) => name !== definitionName)
+      .sort()
+      .map((name) => [name, schema.$defs[name]]),
+  );
+  return {
+    schema: stripValidationAnnotations(compactNullableSchemas({
+      $schema: schema.$schema,
+      $id: contractSchemaId(schema, definitionName),
+      $defs: definitions,
+      ...schema.$defs[definitionName],
+    })),
+    reachableDefinitionCount: reachable.size,
+  };
+}
+
+/**
+ * One schema holding every definition a module's contracts reach, so a
+ * definition shared by several of them compiles to one validator function.
+ */
+export function extractModuleContractSchema(schema, module) {
+  const reachable = new Set();
+  for (const { definitionName } of module.validators) {
+    for (const name of reachableDefinitionNames(schema, definitionName)) reachable.add(name);
+  }
+  return stripValidationAnnotations(compactNullableSchemas({
+    $schema: schema.$schema,
+    $id: contractSchemaId(schema, module.validatorFilename.replace(/\.validators\.mjs$/, "")),
+    $defs: Object.fromEntries([...reachable].sort().map((name) => [name, schema.$defs[name]])),
+  }));
+}
+
+function contractSchemaId(schema, name) {
+  const schemaId = new URL(schema.$id);
+  schemaId.pathname = `${schemaId.pathname.replace(/\.json$/, "")}/contracts/${name}.json`;
+  schemaId.hash = "";
+  return schemaId.href;
+}
+
+function reachableDefinitionNames(schema, definitionName) {
   if (!schema.$defs?.[definitionName]) {
     throw new Error(`Missing contract definition: ${definitionName}`);
   }
@@ -239,25 +281,7 @@ export function extractContractSchema(schema, definitionName) {
     reachable.add(current);
     visitLocalDefinitionReferences(definition, (reference) => pending.push(reference));
   }
-  const definitions = Object.fromEntries(
-    [...reachable]
-      .filter((name) => name !== definitionName)
-      .sort()
-      .map((name) => [name, schema.$defs[name]]),
-  );
-  const schemaId = new URL(schema.$id);
-  schemaId.pathname =
-    `${schemaId.pathname.replace(/\.json$/, "")}/contracts/${definitionName}.json`;
-  schemaId.hash = "";
-  return {
-    schema: stripValidationAnnotations(compactNullableSchemas({
-      $schema: schema.$schema,
-      $id: schemaId.href,
-      $defs: definitions,
-      ...schema.$defs[definitionName],
-    })),
-    reachableDefinitionCount: reachable.size,
-  };
+  return reachable;
 }
 
 function requiredNode(schema, definitionName, ...segments) {
@@ -326,6 +350,8 @@ async function generateTypes(schema) {
   const declarations = await compile(typeDeclarationSchema(schema, definitionNames), TYPE_ROOT_NAME, {
     additionalProperties: false,
     bannerComment: "",
+    // Array bounds stay in the validators; as types they would become tuple unions.
+    ignoreMinAndMaxItems: true,
     style: { singleQuote: true },
   });
   // The synthetic root only gathers the contracts; nothing may use it.
@@ -372,10 +398,17 @@ async function generateValidator(schema, module) {
     code: { source: true, esm: true, optimize: 2 },
   });
   const exports = {};
-  for (const { definitionName, exportName } of module.validators) {
+  if (module.validators.length === 1) {
+    const [{ definitionName, exportName }] = module.validators;
     const extracted = extractContractSchema(schema, definitionName);
     ajv.addSchema(extracted.schema);
     exports[exportName] = extracted.schema.$id;
+  } else {
+    const moduleSchema = extractModuleContractSchema(schema, module);
+    ajv.addSchema(moduleSchema);
+    for (const { definitionName, exportName } of module.validators) {
+      exports[exportName] = `${moduleSchema.$id}#/$defs/${definitionName}`;
+    }
   }
   const standalone = standaloneCode(ajv, exports);
   const validatorSource = module.allErrors

@@ -1,0 +1,384 @@
+{
+  "status": "completed",
+  "progress": 1.0,
+  "message": "done",
+  "iteration": 10,
+  "total_iterations": 10,
+  "train_loss": {
+    "learn": 0.1
+  },
+  "train_loss_history": [],
+  "train_loss_history_truncated": false,
+  "elapsed_seconds": 4.0,
+  "result": {
+    "status": "completed",
+    "job_id": "job-1",
+    "diagnostic_metrics": {
+      "rmse": 0.1
+    },
+    "final_test_metrics": {
+      "rmse": 0.1
+    },
+    "feature_importance": [
+      {
+        "feature": "x",
+        "importance": 1
+      }
+    ],
+    "model_path": "outputs/model.cbm",
+    "development_rows": 100,
+    "final_test_rows": 10,
+    "diagnostics_set": "final_test",
+    "features": [
+      "x"
+    ],
+    "cat_features": [],
+    "error": null,
+    "best_iteration": 7,
+    "final_tree_count": 8,
+    "fit_evidence": null,
+    "loss_history": [
+      {
+        "iteration": 1.0,
+        "learn": 0.5
+      }
+    ],
+    "loss_history_truncated": false,
+    "double_lift": [
+      {
+        "decile": 1,
+        "actual": 0.3,
+        "predicted": 0.2,
+        "count": 10
+      }
+    ],
+    "shap_summary": [
+      {
+        "feature": "x",
+        "mean_abs_shap": 0.4
+      }
+    ],
+    "feature_importance_loss": [
+      {
+        "feature": "x",
+        "importance": 0.9
+      }
+    ],
+    "ave_per_feature": [
+      {
+        "feature": "x",
+        "type": "numeric",
+        "bins": [
+          {
+            "label": "all",
+            "exposure": 1,
+            "avg_actual": 2,
+            "avg_predicted": 2.1
+          }
+        ]
+      }
+    ],
+    "residuals_histogram": [
+      {
+        "bin_center": 0,
+        "count": 2,
+        "weighted_count": 2
+      }
+    ],
+    "residuals_stats": {
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "actual_vs_predicted": [
+      {
+        "actual": 1.0,
+        "predicted": 1.1,
+        "weight": 1.0
+      }
+    ],
+    "lorenz_curve": [
+      {
+        "cum_weight_frac": 0.5,
+        "cum_actual_frac": 0.4
+      }
+    ],
+    "lorenz_curve_perfect": [
+      {
+        "cum_weight_frac": 0.5,
+        "cum_actual_frac": 0.5
+      }
+    ],
+    "pdp_data": [
+      {
+        "feature": "x",
+        "type": "numeric",
+        "grid": [
+          {
+            "value": 1,
+            "avg_prediction": 1.2
+          }
+        ]
+      }
+    ],
+    "glm_coefficients": [
+      {
+        "feature": "x",
+        "coefficient": 0.1,
+        "std_error": null,
+        "z_value": null,
+        "p_value": null,
+        "significance": null
+      }
+    ],
+    "glm_relativities": [
+      {
+        "feature": "x",
+        "relativity": 1.1,
+        "ci_lower": null,
+        "ci_upper": null
+      }
+    ],
+    "glm_fit_statistics": {
+      "deviance": 12.5,
+      "total_edf": 4.2
+    },
+    "glm_inference": {
+      "status": "naive_after_cv_selection",
+      "valid": false,
+      "standard_errors": null,
+      "reason": "The penalty was chosen by cross-validation, so standard errors and p-values are not valid."
+    },
+    "glm_smooth_terms": [
+      {
+        "term": "x",
+        "k": 10,
+        "edf": 3.2,
+        "lambda": 21.5
+      }
+    ],
+    "glm_regularization": {
+      "penalty": "ridge",
+      "mode": "cross_validation",
+      "alpha": 0.01,
+      "l1_ratio": 0,
+      "n_nonzero": 4,
+      "cv_folds": 5,
+      "cv_selection": "min",
+      "cv_seed": 42
+    },
+    "ebm_terms": [],
+    "diagnostics_errors": [
+      {
+        "diagnostic": "shap",
+        "error": "too small",
+        "error_type": "ValueError"
+      }
+    ],
+    "warning": null,
+    "total_source_rows": 110,
+    "feature_selection": null,
+    "evaluation": {
+      "schema_version": 1,
+      "strategy": "random",
+      "validation_method": "none",
+      "validation_fit_count": 0,
+      "fit_count": 1,
+      "refit_on_development": true,
+      "development_rows": 100,
+      "final_test_rows": 10,
+      "selection_fits": [],
+      "selection_metrics": {},
+      "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "results_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "plan_path": "outputs/plan.json",
+      "results_path": "outputs/results.json",
+      "report_path": "outputs/report.json",
+      "summary": {
+        "development_rows": 100,
+        "test_rows": 10,
+        "validation_fit_count": 0,
+        "development_group_count": null,
+        "test_group_count": null,
+        "development_date_count": null,
+        "test_date_count": null
+      }
+    }
+  },
+  "warning": null,
+  "terminal_reason": "completed",
+  "execution_metrics": {
+    "schema_version": 1,
+    "operation": "pipeline_preview",
+    "profile": "preview_eager",
+    "job_id": "job-1",
+    "status": "completed",
+    "terminal_reason": null,
+    "stage_count": 1,
+    "retained_stage_count": 1,
+    "truncated_stage_count": 0,
+    "stages_truncated": false,
+    "total_elapsed_ms": 12.5,
+    "node_elapsed_ms": {
+      "score": 12.5
+    },
+    "stage_elapsed_ms": {
+      "collect": 12.5
+    },
+    "rss_start_bytes": 1000,
+    "rss_end_bytes": 1800,
+    "rss_delta_bytes": 800,
+    "rss_peak_bytes": 1800,
+    "max_rss_bytes": 1800,
+    "n_collects": 1,
+    "n_checkpoints": 2,
+    "memory_pressure_event_count": 1,
+    "retained_memory_pressure_event_count": 1,
+    "truncated_memory_pressure_event_count": 0,
+    "memory_pressure_events_truncated": false,
+    "memory_limit_bytes": 2000,
+    "memory_baseline_bytes": 1000,
+    "rss_limit_bytes": 3000,
+    "admission": {
+      "admitted": true,
+      "operation": "pipeline_preview",
+      "profile": "preview_eager",
+      "memory_limit_bytes": 2000,
+      "rss_at_admission_bytes": 1000,
+      "rss_limit_bytes": 3000,
+      "process_rss_limit_bytes": null,
+      "headroom_bytes": 2000,
+      "config_key": "HAUTE_PREVIEW_MEMORY_LIMIT_MB",
+      "budget_policy": "adaptive_local",
+      "available_ram_bytes": 8000,
+      "os_reserve_bytes": 2000,
+      "reason": "within_memory_budget"
+    },
+    "stages": [
+      {
+        "schema_version": 1,
+        "name": "collect",
+        "operation": "pipeline_preview",
+        "profile": "preview_eager",
+        "elapsed_ms": 12.5,
+        "node_id": "score",
+        "job_id": "job-1",
+        "rss_start_bytes": 1000,
+        "rss_end_bytes": 1800,
+        "rss_delta_bytes": 800,
+        "rss_peak_bytes": 1800,
+        "rows_in": 10,
+        "rows_out": 2,
+        "bytes_read": 512,
+        "bytes_written": 128,
+        "columns_scanned": 4,
+        "n_collects": 1,
+        "n_checkpoints": 2
+      }
+    ],
+    "memory_pressure_events": [
+      {
+        "schema_version": 1,
+        "event": "memory_pressure",
+        "operation": "pipeline_preview",
+        "profile": "preview_eager",
+        "job_id": "job-1",
+        "node_id": "score",
+        "stage": "collect",
+        "label": "after_collect",
+        "threshold_ratio": 0.75,
+        "threshold_percent": 75,
+        "rss_bytes": 1750,
+        "rss_limit_bytes": 3000,
+        "headroom_bytes": 2000,
+        "headroom_used_bytes": 1500,
+        "rss_peak_bytes": 1800,
+        "memory_limit_bytes": 2000,
+        "memory_baseline_bytes": 1000,
+        "baseline_rss_bytes": 1000,
+        "budget_policy": "adaptive_local",
+        "config_key": "HAUTE_PREVIEW_MEMORY_LIMIT_MB",
+        "available_ram_bytes": 8000,
+        "os_reserve_bytes": 2000,
+        "pressure_ratio": 0.75
+      }
+    ],
+    "execution_strategy": null,
+    "streamability": null,
+    "streamability_evidence": {
+      "state": "unavailable",
+      "total_count": null,
+      "items": []
+    },
+    "column_widths": {
+      "state": "available",
+      "total_count": 0,
+      "items": []
+    },
+    "requested_column_width_total": null,
+    "physically_scanned_column_width_total": null,
+    "cache_proof": {
+      "hits": 1,
+      "misses": 2,
+      "direct_fallbacks": 1,
+      "miss_reason_counts": {
+        "metadata_source_mismatch": 1,
+        "artifact_integrity_schema_failure": 0,
+        "unreadable_artifact": 0,
+        "proof_unavailable": 1
+      }
+    },
+    "bytes_read": null,
+    "bytes_written": null,
+    "estimated_bytes": null,
+    "raw_estimated_bytes": null,
+    "estimate_calibration_factor_basis_points": null,
+    "estimate_admission_basis": null,
+    "checkpoint_count": 0,
+    "chunk_count": 0,
+    "observed_peak_rss_bytes": null,
+    "observed_peak_rss_growth_bytes": null,
+    "cancellation_latency_ms": null,
+    "input_preparation": [
+      {
+        "node_id": "policies",
+        "identity_digest": "digest-1",
+        "action": "reused",
+        "build_class": "in_memory",
+        "execution": "in_process",
+        "memory_limit_bytes": 2000,
+        "elapsed_seconds": 0.25,
+        "row_count": 10,
+        "size_bytes": 512,
+        "generation_id": "gen-1",
+        "warning_code": null
+      }
+    ],
+    "shared_snapshot_seeds": [],
+    "shared_snapshot_captures": [],
+    "shared_snapshot_capture_skips": [],
+    "warnings": [],
+    "training_write_strategy": null,
+    "training_write_input_slices": null,
+    "training_write_native_reason": null,
+    "training_write_blocking_operator": null,
+    "data_output_write_strategy": null,
+    "data_output_write_input_slices": null,
+    "data_output_write_native_reason": null
+  },
+  "feature_selection": null,
+  "error_code": null,
+  "http_status_code": null,
+  "error_detail": null,
+  "phase": null,
+  "trial_index": null,
+  "trial_count": null,
+  "fold_index": null,
+  "fold_count": null,
+  "completed_fits": null,
+  "total_fits": null,
+  "best_objective": null,
+  "export_receipts": {
+    "mlflow": [],
+    "model_files": []
+  }
+}
