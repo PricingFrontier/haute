@@ -4411,8 +4411,8 @@ class OptimiserSolveService:
             fields=failure.fields,
             execution_context=execution_context,
         )
-        # Raised outside the handler, as the steps used to raise it: the answer
-        # carries no chain back to the step's frames.
+        # No explicit cause. Python still sets the setup error as the answer's
+        # implicit context, which the worker's memory-error detection walks.
         raise failure.http_exception()
 
     def _resolve_data_input_frame(
