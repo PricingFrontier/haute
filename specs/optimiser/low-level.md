@@ -443,9 +443,15 @@ mapping, a missing total objective, missing or malformed ratebook factor-table/d
 atomically write it to disk
 (`atomic_write_text`, with `allow_nan=False` as a defence-in-depth backstop behind the explicit
 validation) or attach it as an MLflow run artifact alongside metrics/params and (if present) a
-frontier-points CSV. Tracking-URI/registry setup and experiment-name resolution for `mlflow_log`
-go through the same shared `configure_mlflow_tracking(destination)` / `resolve_experiment_name()` /
-`build_run_url()` helpers in `haute.modelling._mlflow_log` that `routes/modelling.py` uses
+frontier-points CSV. `mlflow_log` logs through an `MlflowClient` bound to the destination
+`resolve_tracking_backend(destination)` resolves (registry from `registry_uri_for_tracking`),
+selects the experiment with `ensure_experiment`, creates the run with `client.create_run`,
+logs parameters, metrics, tags and artifacts through the client, and terminates the run
+as `FINISHED` or, in a `finally`, `FAILED`. It logs no model, so it never enters
+`mlflow_fluent_operation()`, never waits for another log, and never writes the tracking URI
+into the environment. Experiment-name resolution and the run URL use the same shared
+`resolve_experiment_name()` / `build_run_url(..., tracking_uri=...)` helpers in
+`haute.modelling._mlflow_log` that `routes/modelling.py` uses
 (see [modelling low-level](../modelling/low-level.md#shared-mlflow-trackingexperiment-name-resolution))
 without calling `log_experiment()` itself, since the optimiser's artifact shape (solver params, frontier CSV,
 `optimiser_result.json`) doesn't fit `log_experiment()`'s model-diagnostics-shaped signature.

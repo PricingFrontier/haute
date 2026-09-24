@@ -23,8 +23,9 @@ from haute._execution_context import (
 from haute._file_ops import atomic_write_text
 from haute._logging import get_logger
 from haute._mlflow_utils import (
-    mlflow_fluent_operation,
-    set_experiment_creating_workspace_folder,
+    allow_file_store_if_local,
+    ensure_experiment,
+    registry_uri_for_tracking,
 )
 from haute._polars_utils import streaming_collect
 from haute._rating import is_rating_dtype_descriptor
@@ -2117,108 +2118,135 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
                 ),
             )
 
-    import mlflow
-
     try:
-        with mlflow_fluent_operation():
-            from haute.modelling._mlflow_log import (
-                build_run_url,
-                configure_mlflow_tracking,
-                resolve_experiment_name,
-            )
-
-            tracking_uri, backend = configure_mlflow_tracking(body.destination)
-
-            node_label = job.get("node_label", "optimiser")
-            # Invariant from the setup at the top of this function:
-            #   ``selected_frontier_point is None`` IFF ``selected_result is None``
-            # When that's the case, ``solver`` is non-None — the ``else`` branch
-            # above validated it (lines 1421-1441).  mypy doesn't track the
-            # cross-branch invariant, so cast through ``Any`` rather than adding
-            # runtime "fail-loudly" guards that double-check what the surrounding
-            # code already enforces.
-            if selected_frontier_point is None:
-                summary = cast(Any, solver).summary(solve_result)
-            else:
-                summary = _frontier_point_mlflow_summary(
-                    job,
-                    cast(dict[str, Any], selected_result),
-                    selected_frontier_point,
-                )
-
-            # The request carries the node's current setting; the job's
-            # solve-time config snapshot is never a fallback.
-            experiment_name = resolve_experiment_name(
-                explicit=body.experiment_name,
-                node_label=node_label,
-                backend=backend,
-            )
-            set_experiment_creating_workspace_folder(mlflow, experiment_name)
-
-            with mlflow.start_run(run_name=node_label) as run:
-                mlflow.log_params(summary["params"])
-                mlflow.log_metrics(summary["metrics"])
-
-                # Log artifacts as JSON files
-                import tempfile
-
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    artifacts = summary.get("artifacts", {})
-                    for name, data in artifacts.items():
-                        if data is None:
-                            continue
-                        artifact_path = Path(tmpdir) / f"{name}.json"
-                        artifact_path.write_text(json.dumps(data, indent=2, default=str))
-                        mlflow.log_artifact(str(artifact_path))
-
-                    # Also log the complete artifact used by OPTIMISER_APPLY
-                    complete_payload = _build_artifact_payload(
-                        job,
-                        solve_result,
-                        selected_frontier_point=selected_frontier_point,
-                    )
-                    complete_path = Path(tmpdir) / "optimiser_result.json"
-                    complete_path.write_text(json.dumps(complete_payload, indent=2, default=str))
-                    mlflow.log_artifact(str(complete_path))
-
-                    # Log frontier CSV artifact + provenance tags
-                    frontier_data = job.get("frontier_data")
-                    if frontier_data and frontier_data.get("points"):
-                        import csv
-                        import io
-
-                        points = frontier_data["points"]
-                        buf = io.StringIO()
-                        writer = csv.DictWriter(buf, fieldnames=points[0].keys())
-                        writer.writeheader()
-                        writer.writerows(points)
-                        frontier_path = Path(tmpdir) / "frontier.csv"
-                        frontier_path.write_text(buf.getvalue())
-                        mlflow.log_artifact(str(frontier_path))
-                        mlflow.set_tag("frontier.n_points", str(frontier_data["n_points"]))
-
-                    selected_idx = (
-                        selected_frontier_point
-                        if selected_frontier_point is not None
-                        else job.get("selected_frontier_point")
-                    )
-                    if selected_idx is not None:
-                        mlflow.set_tag("frontier.selected_point_index", str(selected_idx))
-
-                run_id = run.info.run_id
-                run_url = build_run_url(backend, experiment_name, run_id)
-
-            response = OptimiserMlflowLogResponse(
-                status="ok",
-                backend=backend,
-                experiment_name=experiment_name,
-                run_id=run_id,
-                run_url=run_url,
-                tracking_uri=tracking_uri,
-            )
-            _clear_result_data_after_user_action(body.job_id)
-            return response
+        response = _log_optimiser_run(
+            body,
+            job,
+            solve_result=solve_result,
+            solver=solver,
+            selected_result=selected_result,
+            selected_frontier_point=selected_frontier_point,
+        )
     except HTTPException:
         raise
     except Exception as exc:
         raise mlflow_log_http_exception(exc, job_id=body.job_id) from None
+    _clear_result_data_after_user_action(body.job_id)
+    return response
+
+
+def _log_optimiser_run(
+    body: OptimiserMlflowLogRequest,
+    job: Mapping[str, Any],
+    *,
+    solve_result: SolveResultLike,
+    solver: Any | None,
+    selected_result: dict[str, Any] | None,
+    selected_frontier_point: int | None,
+) -> OptimiserMlflowLogResponse:
+    """Log one optimiser run through a client bound to the resolved destination.
+
+    The run logs no model, so no call touches MLflow's process-global tracking
+    state: logs to different destinations proceed concurrently, and the
+    tracking URI never reaches the environment.
+    """
+    import csv
+    import io
+    import tempfile
+    import time
+
+    from mlflow.entities import Metric, Param
+    from mlflow.tracking import MlflowClient
+
+    from haute.modelling._mlflow_log import (
+        build_run_url,
+        resolve_experiment_name,
+        resolve_tracking_backend,
+    )
+
+    tracking_uri, backend = resolve_tracking_backend(body.destination)
+    allow_file_store_if_local(tracking_uri, backend)
+    client = MlflowClient(
+        tracking_uri=tracking_uri, registry_uri=registry_uri_for_tracking(tracking_uri)
+    )
+
+    node_label = job.get("node_label", "optimiser")
+    # ``selected_frontier_point is None`` IFF ``selected_result is None``; in
+    # that case the caller has already required a non-None ``solver``.
+    if selected_frontier_point is None:
+        summary = cast(Any, solver).summary(solve_result)
+    else:
+        summary = _frontier_point_mlflow_summary(
+            job,
+            cast(dict[str, Any], selected_result),
+            selected_frontier_point,
+        )
+
+    # The request carries the node's current setting; the job's solve-time
+    # config snapshot is never a fallback.
+    experiment_name = resolve_experiment_name(
+        explicit=body.experiment_name,
+        node_label=node_label,
+        backend=backend,
+    )
+    experiment_id = ensure_experiment(client, tracking_uri, experiment_name)
+    run_id = client.create_run(experiment_id, run_name=node_label).info.run_id
+    status = "FAILED"
+    try:
+        timestamp = int(time.time() * 1000)
+        client.log_batch(
+            run_id,
+            metrics=[Metric(key, value, timestamp, 0) for key, value in summary["metrics"].items()],
+            params=[Param(key, str(value)) for key, value in summary["params"].items()],
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for name, data in summary.get("artifacts", {}).items():
+                if data is None:
+                    continue
+                artifact_path = Path(tmpdir) / f"{name}.json"
+                artifact_path.write_text(json.dumps(data, indent=2, default=str))
+                client.log_artifact(run_id, str(artifact_path))
+
+            # The complete artifact OPTIMISER_APPLY reads.
+            complete_payload = _build_artifact_payload(
+                job,
+                solve_result,
+                selected_frontier_point=selected_frontier_point,
+            )
+            complete_path = Path(tmpdir) / "optimiser_result.json"
+            complete_path.write_text(json.dumps(complete_payload, indent=2, default=str))
+            client.log_artifact(run_id, str(complete_path))
+
+            # The frontier CSV and its provenance tags.
+            frontier_data = job.get("frontier_data")
+            if frontier_data and frontier_data.get("points"):
+                points = frontier_data["points"]
+                buffer = io.StringIO()
+                writer = csv.DictWriter(buffer, fieldnames=points[0].keys())
+                writer.writeheader()
+                writer.writerows(points)
+                frontier_path = Path(tmpdir) / "frontier.csv"
+                frontier_path.write_text(buffer.getvalue())
+                client.log_artifact(run_id, str(frontier_path))
+                client.set_tag(run_id, "frontier.n_points", str(frontier_data["n_points"]))
+
+            selected_index = (
+                selected_frontier_point
+                if selected_frontier_point is not None
+                else job.get("selected_frontier_point")
+            )
+            if selected_index is not None:
+                client.set_tag(run_id, "frontier.selected_point_index", str(selected_index))
+        status = "FINISHED"
+    finally:
+        client.set_terminated(run_id, status)
+
+    return OptimiserMlflowLogResponse(
+        status="ok",
+        backend=backend,
+        experiment_name=experiment_name,
+        run_id=run_id,
+        run_url=build_run_url(backend, experiment_name, run_id, tracking_uri=tracking_uri),
+        tracking_uri=tracking_uri,
+    )

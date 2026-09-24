@@ -383,7 +383,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §4.10 Cache identity framework | `CACHE-S25` ([caching](caching.md)) |
 | §4.10 Scaffolding for unimplemented targets | `DEP-R03` (deploy, delivered; its roadmap file is retired) |
 | §4.10 No automatic retention | `CACHE-S26` (caching, delivered) |
-| §4.10 Process-global library state | `EXEC-R01` (execution engine, delivered; its roadmap file is retired), `MLF-R02` ([MLflow model registry](mlflow-model-registry.md)) |
+| §4.10 Process-global library state | `EXEC-R01` (execution engine, delivered; its roadmap file is retired), `MLF-R02` (MLflow model registry, delivered; its roadmap file is retired) |
 | §5.1 Generated browser contract | `API-R03` ([server API](server-api.md)) |
 | §5.2 Exception handlers | `API-R01` (server API, delivered); the job-failure record duplication moved to `API-R02` ([server API](server-api.md)) |
 | §5.3 Process-memory library | `EXEC-R06` (execution engine, delivered; its roadmap file is retired) |

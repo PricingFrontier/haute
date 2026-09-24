@@ -2,7 +2,6 @@
 
 Shared helpers (used by training, optimiser, and model-loading routes):
 - ``resolve_tracking_backend()`` — resolve a destination key ("" = local) to a tracking URI.
-- ``configure_mlflow_tracking()`` — set tracking/registry URIs.
 - ``resolve_experiment_name()`` — the requested experiment, else the backend default.
 - ``build_run_url()`` — build a Databricks run URL from experiment name + run ID.
 
@@ -91,33 +90,6 @@ def resolve_experiment_name(
     if backend == "databricks":
         return f"/Shared/haute/{node_label}"
     return node_label
-
-
-def configure_mlflow_tracking(destination: str = "") -> tuple[str, str]:
-    """Resolve the MLflow backend and configure tracking/registry URIs.
-
-    Calls :func:`resolve_tracking_backend` with *destination*, then sets
-    the tracking URI and matching registry URI while preserving the
-    configured environment. Call inside :func:`mlflow_fluent_operation`
-    so another writer cannot change the destination before the run finishes.
-
-    Returns:
-        ``(tracking_uri, backend)`` — same pair as
-        :func:`resolve_tracking_backend`.
-    """
-    import mlflow
-
-    tracking_uri, backend = resolve_tracking_backend(destination)
-    if backend == "local":
-        # mlflow 3.14 puts the local filesystem tracking backend into
-        # "maintenance mode" and raises MlflowException at FileStore
-        # construction unless MLFLOW_ALLOW_FILE_STORE=true. haute's local
-        # workflow logs to ./mlruns, so opt in here. setdefault keeps a user
-        # who set the variable explicitly in control.
-        os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
-    set_tracking_uri_preserving_env(mlflow, tracking_uri)
-    mlflow.set_registry_uri(registry_uri_for_tracking(tracking_uri))
-    return tracking_uri, backend
 
 
 def build_run_url(

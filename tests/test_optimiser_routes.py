@@ -46,6 +46,7 @@ from tests._projection_helpers import pair_value
 from tests.conftest import build_test_input_snapshot, make_edge, make_graph
 from tests.job_store_support import replace_job, seed_job
 from tests.optimiser_fixtures import frontier_result as _frontier_result
+from tests.optimiser_fixtures import logged_json_artifacts, use_local_mlflow_store
 from tests.optimiser_fixtures import poll_frontier_until_done as _poll_frontier_until_done
 
 
@@ -6949,7 +6950,7 @@ class TestOptimiserMlflowLog:
         )
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_mlflow_log_after_real_solve(self, client, scored_data):
+    def test_mlflow_log_after_real_solve(self, client, scored_data, tmp_path, monkeypatch):
         """A completed solve keeps the solver available for later MLflow logging."""
         graph = _make_optimiser_graph(scored_data)
         resp = client.post(
@@ -6960,37 +6961,18 @@ class TestOptimiserMlflowLog:
         status = _poll_until_done(client, job_id)
         assert status["status"] == "completed"
 
-        mock_mlflow = MagicMock()
-        mock_run = MagicMock()
-        mock_run.info.run_id = "real-solve-run"
-        mock_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-        mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
-
-        with (
-            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
-            patch(
-                "haute.modelling._mlflow_log.configure_mlflow_tracking",
-                return_value=("http://localhost:5000", "local"),
-            ),
-            patch(
-                "haute.modelling._mlflow_log.resolve_experiment_name",
-                return_value="/optimiser",
-            ),
-            patch(
-                "haute.modelling._mlflow_log.build_run_url",
-                return_value="http://localhost:5000/real-solve-run",
-            ),
-        ):
-            resp = client.post(
-                "/api/optimiser/mlflow/log",
-                json={"job_id": job_id, "experiment_name": "/optimiser"},
-            )
+        store = use_local_mlflow_store(tmp_path, monkeypatch)
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={"job_id": job_id, "experiment_name": "optimiser"},
+        )
 
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert data["run_id"] == "real-solve-run"
-        mock_mlflow.log_metrics.assert_called_once()
+        run = store.get_run(data["run_id"])
+        assert run.info.status == "FINISHED"
+        assert run.data.metrics
 
     @staticmethod
     def _seed_opt_job(job_store, job_id, config_extra=None):
@@ -12097,17 +12079,7 @@ class TestMlflowLogExtended:
         seed_job(clean_job_store, job_id, job)
         return mock_solver
 
-    @staticmethod
-    def _make_mlflow_mock():
-        """Create a mock mlflow module with working context manager."""
-        mock_mlflow = MagicMock()
-        mock_run = MagicMock()
-        mock_run.info.run_id = "run123"
-        mock_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-        mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
-        return mock_mlflow
-
-    def test_mlflow_log_success_with_frontier(self, client, clean_job_store):
+    def test_mlflow_log_success_with_frontier(self, client, clean_job_store, tmp_path, monkeypatch):
         """MLflow log with frontier data logs frontier CSV and tags."""
         frontier_data = {
             "status": "ok",
@@ -12132,36 +12104,23 @@ class TestMlflowLogExtended:
             frontier_data=frontier_data,
             selected_frontier_point=1,
         )
-        mock_mlflow = self._make_mlflow_mock()
+        store = use_local_mlflow_store(tmp_path, monkeypatch)
 
-        with (
-            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
-            patch(
-                "haute.modelling._mlflow_log.configure_mlflow_tracking",
-                return_value=("http://localhost:5000", "local"),
-            ),
-            patch(
-                "haute.modelling._mlflow_log.resolve_experiment_name",
-                return_value="/test_exp",
-            ),
-            patch(
-                "haute.modelling._mlflow_log.build_run_url",
-                return_value="http://localhost:5000/run123",
-            ),
-        ):
-            resp = client.post(
-                "/api/optimiser/mlflow/log",
-                json={"job_id": "mlf_ok", "experiment_name": "/test_exp"},
-            )
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={"job_id": "mlf_ok", "experiment_name": "test_exp"},
+        )
 
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert data["run_id"] == "run123"
-        assert data["experiment_name"] == "/test_exp"
-        # Verify frontier tags were set
-        mock_mlflow.set_tag.assert_any_call("frontier.n_points", "2")
-        mock_mlflow.set_tag.assert_any_call("frontier.selected_point_index", "1")
+        assert data["experiment_name"] == "test_exp"
+        run = store.get_run(data["run_id"])
+        assert run.info.status == "FINISHED"
+        assert run.data.tags["frontier.n_points"] == "2"
+        assert run.data.tags["frontier.selected_point_index"] == "1"
+        logged = {artifact.path for artifact in store.list_artifacts(data["run_id"])}
+        assert {"frontier.csv", "optimiser_result.json"} <= logged
         job = clean_job_store.require_job("mlf_ok")
         assert "solver" in job
         assert "solve_result" not in job
@@ -12171,50 +12130,27 @@ class TestMlflowLogExtended:
         self,
         client,
         clean_job_store,
+        tmp_path,
+        monkeypatch,
     ):
-        import json as json_mod
-
         mock_solver, mock_grid, factor_contexts = _make_ratebook_frontier_materialisation_job(
             clean_job_store,
             "mlf_rb_frontier",
         )
-        mock_mlflow = self._make_mlflow_mock()
-        logged_json: dict[str, dict] = {}
+        store = use_local_mlflow_store(tmp_path, monkeypatch)
 
-        def capture_artifact(path: str) -> None:
-            artifact_path = Path(path)
-            if artifact_path.suffix == ".json":
-                logged_json[artifact_path.name] = json_mod.loads(
-                    artifact_path.read_text(encoding="utf-8")
-                )
-
-        mock_mlflow.log_artifact.side_effect = capture_artifact
-
-        with (
-            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
-            patch(
-                "haute.modelling._mlflow_log.configure_mlflow_tracking",
-                return_value=("http://localhost:5000", "local"),
-            ),
-            patch(
-                "haute.modelling._mlflow_log.resolve_experiment_name",
-                return_value="/ratebook_exp",
-            ),
-            patch(
-                "haute.modelling._mlflow_log.build_run_url",
-                return_value="http://localhost:5000/run-rb",
-            ),
-        ):
-            resp = client.post(
-                "/api/optimiser/mlflow/log",
-                json={
-                    "job_id": "mlf_rb_frontier",
-                    "experiment_name": "/ratebook_exp",
-                    "point_index": 0,
-                },
-            )
+        resp = client.post(
+            "/api/optimiser/mlflow/log",
+            json={
+                "job_id": "mlf_rb_frontier",
+                "experiment_name": "ratebook_exp",
+                "point_index": 0,
+            },
+        )
 
         assert resp.status_code == 200
+        run_id = resp.json()["run_id"]
+        logged_json = logged_json_artifacts(store, run_id, tmp_path / "logged")
         optimiser_result = logged_json["optimiser_result.json"]
         assert optimiser_result["total_objective"] == 222.0
         assert optimiser_result["factor_tables"] == _expected_region_factor_tables()
@@ -12226,39 +12162,21 @@ class TestMlflowLogExtended:
         assert args[0] is mock_grid
         assert args[1] is factor_contexts
         assert mock_solver.solve.call_args.kwargs["lambdas"] == {"volume": 0.7}
-        mock_mlflow.set_tag.assert_any_call("frontier.selected_point_index", "0")
+        assert store.get_run(run_id).data.tags["frontier.selected_point_index"] == "0"
 
-    def test_mlflow_log_no_frontier(self, client, clean_job_store):
+    def test_mlflow_log_no_frontier(self, client, clean_job_store, tmp_path, monkeypatch):
         """MLflow log without frontier data still succeeds."""
         self._make_mlflow_job(clean_job_store, "mlf_nf")
-        mock_mlflow = self._make_mlflow_mock()
+        store = use_local_mlflow_store(tmp_path, monkeypatch)
 
-        with (
-            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
-            patch(
-                "haute.modelling._mlflow_log.configure_mlflow_tracking",
-                return_value=("http://localhost:5000", "local"),
-            ),
-            patch(
-                "haute.modelling._mlflow_log.resolve_experiment_name",
-                return_value="/test",
-            ),
-            patch(
-                "haute.modelling._mlflow_log.build_run_url",
-                return_value="http://localhost:5000/run456",
-            ),
-        ):
-            resp = client.post(
-                "/api/optimiser/mlflow/log",
-                json={"job_id": "mlf_nf"},
-            )
+        resp = client.post("/api/optimiser/mlflow/log", json={"job_id": "mlf_nf"})
 
         assert resp.status_code == 200
         # No frontier tags should be set when no frontier data
-        frontier_calls = [c for c in mock_mlflow.set_tag.call_args_list if "frontier" in str(c)]
-        assert len(frontier_calls) == 0
+        tags = store.get_run(resp.json()["run_id"]).data.tags
+        assert not [tag for tag in tags if tag.startswith("frontier.")]
 
-    def test_mlflow_log_artifacts_skips_none(self, client, clean_job_store):
+    def test_mlflow_log_artifacts_skips_none(self, client, clean_job_store, tmp_path, monkeypatch):
         """Artifacts with None data are skipped during logging."""
         mock_solver = MagicMock()
         mock_solver.summary.return_value = {
@@ -12287,32 +12205,53 @@ class TestMlflowLogExtended:
                 "completed_at": time.time(),
             },
         )
-        mock_mlflow = self._make_mlflow_mock()
+        store = use_local_mlflow_store(tmp_path, monkeypatch)
 
-        with (
-            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
-            patch(
-                "haute.modelling._mlflow_log.configure_mlflow_tracking",
-                return_value=("http://localhost:5000", "local"),
-            ),
-            patch(
-                "haute.modelling._mlflow_log.resolve_experiment_name",
-                return_value="/test",
-            ),
-            patch(
-                "haute.modelling._mlflow_log.build_run_url",
-                return_value="http://localhost:5000/run789",
-            ),
-        ):
-            resp = client.post(
-                "/api/optimiser/mlflow/log",
-                json={"job_id": "mlf_skip"},
-            )
+        resp = client.post("/api/optimiser/mlflow/log", json={"job_id": "mlf_skip"})
 
         assert resp.status_code == 200
-        # log_artifact calls: 1 for lambdas, 0 for empty_one (None), 1 for optimiser_result.json
-        artifact_calls = mock_mlflow.log_artifact.call_args_list
-        assert len(artifact_calls) == 2  # lambdas.json + optimiser_result.json
+        # The None artifact is skipped: lambdas.json + optimiser_result.json only.
+        logged = {artifact.path for artifact in store.list_artifacts(resp.json()["run_id"])}
+        assert logged == {"lambdas.json", "optimiser_result.json"}
+
+    def test_the_log_runs_while_another_writer_holds_the_fluent_state(
+        self, client, clean_job_store, tmp_path, monkeypatch
+    ):
+        """The optimiser logs no model, so it never waits for MLflow's
+        process-global fluent state, and never writes the tracking URI into
+        the environment."""
+        import os
+
+        from haute._mlflow_utils import mlflow_fluent_operation
+
+        self._make_mlflow_job(clean_job_store, "mlf_concurrent")
+        store = use_local_mlflow_store(tmp_path, monkeypatch)
+        held = threading.Event()
+        release = threading.Event()
+
+        def hold_fluent_state() -> None:
+            with mlflow_fluent_operation():
+                held.set()
+                release.wait()
+
+        holder = threading.Thread(target=hold_fluent_state, daemon=True)
+        holder.start()
+        assert held.wait(10)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                request = executor.submit(
+                    client.post,
+                    "/api/optimiser/mlflow/log",
+                    json={"job_id": "mlf_concurrent", "experiment_name": "concurrent"},
+                )
+                resp = request.result(timeout=30)
+        finally:
+            release.set()
+            holder.join(10)
+
+        assert resp.status_code == 200, resp.text
+        assert store.get_run(resp.json()["run_id"]).info.status == "FINISHED"
+        assert "MLFLOW_TRACKING_URI" not in os.environ
 
 
 class TestSolveStatusTimeout:
@@ -15259,6 +15198,8 @@ class TestMlflowLogExceptionPath:
         self,
         client,
         clean_job_store,
+        tmp_path,
+        monkeypatch,
     ):
         """MLflow logging reserves solver and solve result before summary work."""
         mock_solver = MagicMock()
@@ -15292,28 +15233,9 @@ class TestMlflowLogExceptionPath:
                 "node_label": "opt",
             },
         )
-        mock_mlflow = MagicMock()
-        mock_run = MagicMock()
-        mock_run.info.run_id = "touch-run"
-        mock_mlflow.start_run.return_value.__enter__ = MagicMock(return_value=mock_run)
-        mock_mlflow.start_run.return_value.__exit__ = MagicMock(return_value=False)
+        use_local_mlflow_store(tmp_path, monkeypatch)
 
-        with (
-            patch("haute.routes._job_store.time.time", return_value=940.0),
-            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
-            patch(
-                "haute.modelling._mlflow_log.configure_mlflow_tracking",
-                return_value=("http://localhost:5000", "local"),
-            ),
-            patch(
-                "haute.modelling._mlflow_log.resolve_experiment_name",
-                return_value="/test",
-            ),
-            patch(
-                "haute.modelling._mlflow_log.build_run_url",
-                return_value="http://localhost:5000/touch-run",
-            ),
-        ):
+        with patch("haute.routes._job_store.time.time", return_value=940.0):
             resp = client.post(
                 "/api/optimiser/mlflow/log",
                 json={"job_id": "mlf_touch"},
@@ -15321,7 +15243,7 @@ class TestMlflowLogExceptionPath:
 
         assert resp.status_code == 200
 
-    def test_mlflow_log_internal_error(self, client, clean_job_store):
+    def test_mlflow_log_internal_error(self, client, clean_job_store, tmp_path, monkeypatch):
         """When mlflow logging raises, endpoint returns 500."""
         mock_solver = MagicMock()
         mock_solver.summary.side_effect = RuntimeError("summary boom")
@@ -15344,18 +15266,8 @@ class TestMlflowLogExceptionPath:
                 "completed_at": time.time(),
             },
         )
-        mock_mlflow = MagicMock()
-        with (
-            patch.dict("sys.modules", {"mlflow": mock_mlflow}),
-            # Destination resolution binds the real MLflow's Databricks credential
-            # globals, which the stub module cannot provide; this test is about the
-            # summary failure, so tracking is configured as in the sibling test.
-            patch(
-                "haute.modelling._mlflow_log.configure_mlflow_tracking",
-                return_value=("http://localhost:5000", "local"),
-            ),
-            patch("haute.routes._mlflow_log_errors.logger.error") as log_error,
-        ):
+        use_local_mlflow_store(tmp_path, monkeypatch)
+        with patch("haute.routes._mlflow_log_errors.logger.error") as log_error:
             resp = client.post(
                 "/api/optimiser/mlflow/log",
                 json={"job_id": "mlf_err"},
