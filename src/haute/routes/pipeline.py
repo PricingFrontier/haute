@@ -1162,6 +1162,12 @@ def _execute_preview_worker(
                 staging_token=staging_token,
             )
             return _preview_response_from_results(graph, body, results, context)
+        except PUBLIC_CONTRACT_ERROR_TYPES:
+            # Some public contract errors are also schema or config errors
+            # (a missing rating factor, a node config the builder rejects).
+            # They leave the worker with their payload, as the thread-mode
+            # route maps them, instead of flattening into a node result.
+            raise
         except (ContractMismatchError, SchemaMismatchError, ParseError, ConfigError) as exc:
             return PreviewNodeResponse(node_id=body.node_id, status="error", error=str(exc))
     finally:

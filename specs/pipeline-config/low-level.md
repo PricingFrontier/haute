@@ -423,6 +423,15 @@ forwards projection/profile fields; external-file resolution validates
   both listed in the message — a one-port source accepts only the exact one-key dict); and a
   dict seed of any content against a zero-port source (source-only pipelines take a bare
   frame).
+- **`NodeConfigError`** (`haute.errors`; a `ConfigError` and a `HauteValidationError`, so
+  also a `ValueError`) — a node setting the builder cannot run with, raised by
+  `scenario_step_count` for a missing, non-whole or non-positive `stepCount`. It carries the
+  stable public code `node_config_invalid` and the safe field `setting`, so the shared
+  contract adapter returns it as HTTP 422 / background `contract_error` with the message.
+  Bare `ValueError`s that signal an internal invariant (registry misuse, optimiser input
+  wiring, ratebook artifact arity) stay bare and remain a sanitized 500. The retained-input
+  `path` and external-file `fileType` checks run when the node executes, where preview already
+  reports the failure on the node, so they stay `ValueError`.
 - **`ValueError`** — empty live pipeline; an unwired non-source node or missing upstream result
   during `Pipeline.run()`/`score()`; unknown source or target node in `connect()`; empty-string
   port name; submodel identity errors (non-canonical submodel name, name conflicting with a registered

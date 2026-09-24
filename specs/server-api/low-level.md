@@ -83,6 +83,7 @@ lines without manual formatting:
 ```
 HauteError
 ├── ConfigError
+│   └── NodeConfigError (also a HauteValidationError)
 ├── ParseError
 ├── ExecutionError
 │   ├── PreambleError
@@ -886,7 +887,7 @@ later write and cleanup checks still compare against the captured identities.
 
 | Raised as | Route(s) | HTTP status | Notes |
 |---|---|---|---|
-| `ConfigError` | save, preview, output-assemble dry-run | 400 / embedded `NodeResult.error` / 422 | Save: bad `haute.toml`. Preview: swallowed into the node result so the canvas shows it in-situ. |
+| `ConfigError` | save, preview, output-assemble dry-run | 400 / embedded `NodeResult.error` / 422 | Save: bad `haute.toml`. Preview: swallowed into the node result so the canvas shows it in-situ. A public contract error that is also a `ConfigError` or `SchemaMismatchError` (`NodeConfigError`, `RatingFactorMissingError`) is not swallowed: in thread and process mode alike the preview answers its public 422, and the preview worker re-raises it with its payload. |
 | `ContractMismatchError` | trace, preview, output-assemble dry-run | 422 / embedded `NodeResult.error` / 422 | Message already names the node + symmetric column diff. |
 | `SchemaMismatchError` | preview | embedded `NodeResult.error` | Adapted identically to `ContractMismatchError`, so a propagated join-key dtype mismatch never becomes a generic 500. |
 | `ParseError` | preview | embedded `NodeResult.error` | Preview surfaces graph-shape issues per node. An unreadable document on the editor-document routes propagates to the request-ID backstop as a sanitized 500 (authored failures arrive as 200 degraded/source-only documents). |
@@ -919,6 +920,7 @@ use the same stable codes and named fields under terminal `contract_error` (or `
 | `RatingFactorMissingError` | `rating_factor_missing` | `table`, `factor` |
 | `RatingFactorDtypeContractError` | `rating_factor_dtype_contract` | `table`, `factor`, `saved_dtype`, `input_dtype` |
 | `LiveSwitchScenarioError` | `live_switch_scenario_missing` | `switch`, `scenario`, `available_mappings` |
+| `NodeConfigError` | `node_config_invalid` | `setting` |
 | `OutputNestingKeyError` | `output_nesting_key_null` | `frame`, `output_path`, `key` |
 | `SnapshotPlanInputsChangedError` | `snapshot_plan_inputs_changed` | `target_node_id` |
 | `SnapshotCorruptError` | `snapshot_corrupt` | `node_id`, `node_label` |
