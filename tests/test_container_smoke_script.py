@@ -56,7 +56,7 @@ class TestPrepareBuildDirectory:
             assert (build_dir / "artifacts").is_dir()
 
             dockerfile_text = (build_dir / "Dockerfile").read_text(encoding="utf-8")
-            assert "RUN pip install --no-cache-dir haute==" in dockerfile_text
+            assert "RUN pip install --no-cache-dir --no-deps haute==" in dockerfile_text
             assert "polars==" in dockerfile_text
             assert "fastapi==" in dockerfile_text
             assert "uvicorn[standard]==" in dockerfile_text
@@ -82,7 +82,7 @@ class TestPrepareBuildDirectory:
             assert (build_dir / "haute-9.9.9-py3-none-any.whl").is_file()
             dockerfile_text = (build_dir / "Dockerfile").read_text(encoding="utf-8")
             assert "COPY haute-9.9.9-py3-none-any.whl ." in dockerfile_text
-            assert "./haute-9.9.9-py3-none-any.whl" in dockerfile_text
+            assert "--no-deps ./haute-9.9.9-py3-none-any.whl" in dockerfile_text
             assert "haute==" not in dockerfile_text
 
             manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -162,3 +162,123 @@ class TestContainerSmokeServeCheck:
         quote = json.loads(result.stdout.split("POST /quote response:", 1)[1])
         assert quote["row_count"] == 1
         assert quote["rows"] == [{"fixture_value": 10}]
+
+
+_SLIM_APP_CHILD = """
+import importlib.abc, json, sys
+
+blocked = set(json.loads(sys.argv[2]))
+
+
+class _NotInTheImage(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] in blocked:
+            raise ModuleNotFoundError(f"{name} is not installed in the image", name=name)
+        return None
+
+
+sys.meta_path.insert(0, _NotInTheImage())
+sys.path.insert(0, ".")
+from fastapi.testclient import TestClient
+
+import app
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    request = json.load(handle)
+response = TestClient(app.app).post("/quote", json=request)
+print(json.dumps({"status": response.status_code, "body": response.json()}))
+"""
+
+
+def _requirement_closure(requirements: list[str]) -> set[str]:
+    """Canonical names of *requirements* and everything they install, from metadata."""
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import requires as dist_requires
+
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    seen: set[tuple[str, frozenset[str]]] = set()
+    names: set[str] = set()
+    stack = [Requirement(text) for text in requirements]
+    while stack:
+        requirement = stack.pop()
+        key = (canonicalize_name(requirement.name), frozenset(requirement.extras))
+        if key in seen:
+            continue
+        seen.add(key)
+        names.add(key[0])
+        try:
+            children = dist_requires(requirement.name) or []
+        except PackageNotFoundError:
+            continue  # a platform-marked requirement not installed here
+        for text in children:
+            child = Requirement(text)
+            extras = requirement.extras or {""}
+            if child.marker is None or any(
+                child.marker.evaluate({"extra": extra}) for extra in extras
+            ):
+                stack.append(child)
+    return names
+
+
+def _modules_outside_the_image(runtime_requirements: list[str]) -> list[str]:
+    """Import names that haute's dependencies provide and the image does not install."""
+    from importlib.metadata import packages_distributions
+    from importlib.metadata import requires as dist_requires
+
+    from packaging.utils import canonicalize_name
+
+    # The in-process test client (httpx) is the harness, not the image.
+    installed = _requirement_closure([*runtime_requirements, "httpx"])
+    haute_environment = _requirement_closure(
+        [text for text in dist_requires("haute") or [] if "extra ==" not in text]
+    )
+    outside = haute_environment - installed
+    return sorted(
+        module
+        for module, distributions in packages_distributions().items()
+        if {canonicalize_name(name) for name in distributions} & outside
+        and not {canonicalize_name(name) for name in distributions} & installed
+    )
+
+
+class TestScoringRuntime:
+    def test_generated_app_scores_with_only_the_scoring_runtime_installed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DEP-R02: the image installs haute --no-deps plus the pinned scoring runtime.
+
+        Serve the smoke example's golden request in a fresh interpreter in which
+        every haute dependency the Dockerfile does not install — and nothing the
+        runtime pulls in — cannot be imported, so an import the slim image lacks
+        fails here instead of in the weekly container build.
+        """
+        resolved = _resolve_minimal_live_quote(tmp_path, monkeypatch)
+        try:
+            build_dir = tmp_path / "image"
+            manifest_path = prepare_build_directory(resolved, build_dir)
+        finally:
+            resolved.close()
+        runtime = json.loads(manifest_path.read_text(encoding="utf-8"))["container_dependencies"][
+            1:
+        ]
+        blocked = _modules_outside_the_image(runtime)
+        assert {"anthropic", "openai", "optuna", "libcst", "mlflow"} <= set(blocked)
+
+        child = tmp_path / "serve_one_quote.py"
+        child.write_text(_SLIM_APP_CHILD, encoding="utf-8")
+        request = tmp_path / "project" / "golden_request.json"
+        completed = subprocess.run(
+            [sys.executable, str(child), str(request), json.dumps(blocked)],
+            cwd=build_dir,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+        assert completed.returncode == 0, completed.stderr[-4000:]
+        result = json.loads(completed.stdout.strip().splitlines()[-1])
+        assert result["status"] == 200, result
+        assert result["body"]["row_count"] >= 1

@@ -32,7 +32,7 @@ reviewed by Codex until approved.
 ## Benchmarks
 
 `mod-f05-release-benchmarks.py` fits each family through its Haute adapter;
-[`mod-f05-release-benchmarks.json`](mod-f05-release-benchmarks.json) holds the raw run
+[`mod-f05-release-benchmarks.json`](../../scripts/benchmarks/mod-f05-release-benchmarks.json) holds the raw run
 (Windows, Python 3.11.13, 22 threads). Peak memory is resident memory above the
 pre-fit baseline.
 

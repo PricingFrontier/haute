@@ -170,7 +170,7 @@ extend-exclude = [
     ".providers-pytest-temp/",
     ".pytest-tmp*/",
     "modules/",
-    "rating/",
+    "examples/",
     "outputs/",
 ]
 

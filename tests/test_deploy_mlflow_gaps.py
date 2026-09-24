@@ -85,6 +85,12 @@ def mock_mlflow_deploy():
         registered = MagicMock()
         registered.version = "1"
         m_client.return_value.search_model_versions.return_value = [registered]
+        # Deploy logs through a destination-bound client: an active experiment
+        # and the run it creates.
+        m_client.return_value.get_experiment_by_name.return_value = MagicMock(
+            experiment_id="1", lifecycle_stage="active"
+        )
+        m_client.return_value.create_run.return_value.info.run_id = "run-1"
         m_run.return_value.__enter__ = MagicMock()
         m_run.return_value.__exit__ = MagicMock(return_value=False)
 

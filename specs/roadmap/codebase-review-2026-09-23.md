@@ -335,14 +335,14 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | Finding | Package |
 |---|---|
 | §1.1 Global Polars-config lock | `EXEC-R01` (execution engine, delivered; its roadmap file is retired) |
-| §1.2 Deploy omits `utility/` | `DEP-R01` ([deploy](deploy.md)) |
+| §1.2 Deploy omits `utility/` | `DEP-R01` (deploy, delivered; its roadmap file is retired) |
 | §1.3 User docs describe removed nodes | `BUILD-R01` (build and distribution, delivered; its roadmap file is retired) |
 | §1.4 Project-root resolvers | `PCFG-R04` ([pipeline config](pipeline-config.md)) |
 | §1.5 Silent config-key drop | `PCFG-R05` ([pipeline config](pipeline-config.md)) |
 | §1.6 Frontier point derived twice | `OPT-P18` ([optimiser](optimiser.md)) |
 | §1.7 Swallowed exceptions | `MLF-R01` ([MLflow model registry](mlflow-model-registry.md)), `MOD-T09` (modelling, delivered; its roadmap file is retired), `OPT-P17` ([optimiser](optimiser.md)) |
 | §1.8 Unbounded poll loop | `FSH-R01` (frontend shared, delivered) |
-| §1.8 Three non-finite float encodings | `JSON-R01` ([JSON shredding](json-shredding.md)) |
+| §1.8 Three non-finite float encodings | `JSON-R01` (JSON shredding, delivered; its roadmap file is retired) |
 | §1.8 Permissive dtype names; dtype mapping ×7 | `IO-R01` (IO layer, delivered; its roadmap file is retired) |
 | §1.8 Fixed-name atomic write; lock wrappers | `IO-R02` (IO layer, delivered; its roadmap file is retired) |
 | §1.8 Path containment ×5 | `SBX-R01` ([sandbox security](sandbox-security.md)) |
@@ -351,16 +351,16 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §2.2 Chunked runner and streaming auto-range | `OPT-P15` (optimiser, delivered) kept the chunked auto-range path, so the runner's retirement (`EXEC-R03`) was dropped and the runner became a walker policy in `EXEC-R05` (execution engine, delivered) |
 | §2.3 Unreferenced and test-only code | `ENGQ-R01` ([engineering quality](engineering-quality.md)); the preview-reader protocol is `TRACE-R02` ([tracing](tracing.md)) |
 | §2.4 Per-request chunk-size knob | `EXEC-R01` (execution engine, delivered; its roadmap file is retired), with §1.1 |
-| §2.5 Assistant legacy catalogue and harnesses | `ASSIST-R01` ([assistant](assistant.md)) |
-| §2.6 Tracked artifacts and the `rating/` reference | `ENGQ-R02` ([engineering quality](engineering-quality.md)); the external assembler document is `JSON-R02` ([JSON shredding](json-shredding.md)) |
+| §2.5 Assistant legacy catalogue and harnesses | `ASSIST-R01` (assistant, delivered; its roadmap file is retired) |
+| §2.6 Tracked artifacts and the `rating/` reference | `ENGQ-R02` (engineering quality, delivered); the external assembler document is `JSON-R02` (JSON shredding, delivered; its roadmap file is retired) |
 | §3.1 Error translation | `API-R01` ([server API](server-api.md)) |
 | §3.1 HTTP types in services | `API-R02` ([server API](server-api.md)) |
 | §3.1 Three worker mechanisms | `ROAD-WORKER-05` ([background jobs](background-jobs-api.md)) |
 | §3.1 Process-memory probes ×4 | `EXEC-R06` (execution engine, delivered; its roadmap file is retired) |
-| §3.1 Two stores, three freshness proofs, hand-rolled LRUs | `CACHE-S08` and `CACHE-S24` ([caching](caching.md)) |
+| §3.1 Two stores, three freshness proofs, hand-rolled LRUs | `CACHE-S08` and `CACHE-S24` (caching, delivered) |
 | §3.1 Graph traversal ×5 | `EXEC-R08` (execution engine, delivered; its roadmap file is retired) |
 | §3.1 Legacy modelling check ×2 | `PCFG-R06` ([pipeline config](pipeline-config.md)) |
-| §3.1 Git outside the chokepoint | `DEP-R04` ([deploy](deploy.md)) |
+| §3.1 Git outside the chokepoint | `DEP-R04` (deploy, delivered; its roadmap file is retired) |
 | §3.2 Polling | `FSH-R01` (frontend shared, delivered) |
 | §3.2 Error, format, debounce, modal and table helpers | `FSH-R02` (frontend shared, delivered) |
 | §3.2 Editor clones and the read-only dispatcher | `FNE-R01` (frontend node editors, delivered; its roadmap file is retired) |
@@ -375,20 +375,20 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §4.5 Trace row identity | `TRACE-R01` ([tracing](tracing.md)) |
 | §4.6 Recovery and repair scope | `API-R04` ([server API](server-api.md)) |
 | §4.7 Four reuse mechanisms | `SUB-R01` ([submodels](submodels.md)) |
-| §4.8 Implicit-join output assembly | `JSON-R02` ([JSON shredding](json-shredding.md)) |
+| §4.8 Implicit-join output assembly | `JSON-R02` (JSON shredding, delivered; its roadmap file is retired) |
 | §4.9 Node-code guard | `SBX-R02` ([sandbox security](sandbox-security.md)) |
 | §4.10 Codegen decorator splice | `CODEGEN-R01` (codegen, delivered; its roadmap file is retired) |
 | §4.10 Node registry | `PCFG-R09` ([pipeline config](pipeline-config.md)) |
 | §4.10 `ExecutionContext` size | `EXEC-R07` (execution engine, delivered; its roadmap file is retired) |
 | §4.10 Cache identity framework | `CACHE-S25` ([caching](caching.md)) |
-| §4.10 Scaffolding for unimplemented targets | `DEP-R03` ([deploy](deploy.md)) |
+| §4.10 Scaffolding for unimplemented targets | `DEP-R03` (deploy, delivered; its roadmap file is retired) |
 | §4.10 No automatic retention | `CACHE-S26` (caching, delivered) |
 | §4.10 Process-global library state | `EXEC-R01` (execution engine, delivered; its roadmap file is retired), `MLF-R02` ([MLflow model registry](mlflow-model-registry.md)) |
 | §5.1 Generated browser contract | `API-R03` ([server API](server-api.md)) |
 | §5.2 Exception handlers | `API-R01` ([server API](server-api.md)) |
 | §5.3 Process-memory library | `EXEC-R06` (execution engine, delivered; its roadmap file is retired) |
 | §5.4 Typed node configs | `PCFG-R07` ([pipeline config](pipeline-config.md)) |
-| §5.5 Slim scoring runtime | `DEP-R02` ([deploy](deploy.md)) |
+| §5.5 Slim scoring runtime | `DEP-R02` (deploy, delivered; its roadmap file is retired) |
 | §6 Canonical-only policy versus the code | `PCFG-R06` ([pipeline config](pipeline-config.md)) |
 | §6 Specification drift | `ENGQ-R03` ([engineering quality](engineering-quality.md)), plus `CACHE-S23`, `CODEGEN-R01` and `PCFG-R04` for their own statements |
 | §6 Governance pointed inward | `ENGQ-R04` ([engineering quality](engineering-quality.md)) |

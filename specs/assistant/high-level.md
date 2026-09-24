@@ -177,8 +177,6 @@ that durable fact, in its original position after the mutation tool row.
   and credential-shaped fields are always redacted, but the remaining shape is
   still treated as `restricted` and is refused unless the configured policy
   permits that class.
-- `list_node_types` — the node-type catalog: every `NodeType`, its config keys and shapes,
-  its wiring rules (singleton status, sidecar folder convention), and a usage note.
 - `list_datasets` / `get_dataset_schema` — the data files visible to the project
   and a file's column names and dtypes, with no preview collection or row values.
   Listing names visible subdirectories and accepts a bounded recursive traversal. Recursive
@@ -447,8 +445,9 @@ returns `unsupported_capability`; malformed closed input returns
 `invalid_capability_query`. These are tool-level failures and never trigger a
 prompt-owned fallback vocabulary.
 
-`list_node_types` is a compatibility view generated from the manifest. It does
-not own facts independently.
+The manifest is the assistant's only node catalogue. The former `list_node_types`
+tool is removed; a call to it is refused with `tool_removed`, naming the manifest
+operations that replace it.
 
 ## Application services and mutation authority
 

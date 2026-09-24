@@ -68,7 +68,6 @@ or where it will not hold at scale.
 | CACHE-S22 | Planned | P3 | The shapes that cannot carry a write recipe at all can. |
 | CACHE-S17 | Planned | P3 | Planning cost stays flat as graphs grow, a lease validates each part once per process, and the store's bookkeeping files are swept. |
 | CACHE-S18 | Planned | P3 | Full joins are written with a bounded number of scans. Measured 24-Sep-2026: about 2 s over native at 10M × 10M rows, so not yet worth building. |
-| CACHE-S24 | Planned | P3 | The assistant's two hand-rolled LRUs move onto the shared cache primitive. |
 | CACHE-S25 | Planned | P3 | Cache identity hashes the whole canonical node config instead of classifying every field. |
 
 ## Planned improvements
@@ -81,7 +80,7 @@ whose refusals it would have shown are removed, and a failed build already
 reports its error through the shared job poller. `CACHE-S13` moved down on 20-Sep-2026 because measurement showed
 no preview near its timeout. The packages from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md)
-(`CACHE-S24` and `CACHE-S25`) sit outside that order: `CACHE-S24` goes first; `CACHE-S25` follows the
+(`CACHE-S25`) sits outside that order: it follows the
 pipeline-config package `PCFG-R08`. Every full-frame write is now bounded, so what
 is left is measured against cost rather than shape. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
@@ -495,29 +494,6 @@ joins).
 **Dependencies:** None.
 
 **Evidence:** `src/haute/_chunked_writes.py`.
-
-### CACHE-S24 — The assistant's bounded caches on the shared primitive
-**Why:** One freshness proof and one bounded-cache primitive landed on
-24-Sep-2026: every source kind asks `_json_shred/_source_proof.py` whether a
-file changed (a native revision, or a settled stat where the platform has
-none), one shared content signature serves Data Input and API Input snapshot
-freshness, runtime identity and utility hashes, and `StatGatedCache`, the
-signature memo and the parked Python-scan failures are built on `LRUCache`. Two
-hand-rolled `OrderedDict` LRUs remain, both in the assistant, which another
-lane owns: the plan records of `PlanStore` and the sessions of `SessionStore`.
-
-**Plan:** Replace both with `LRUCache`: `get` already moves an entry to most
-recently used, and `max_size` is the bound.
-
-**Acceptance:** No `OrderedDict`-based LRU remains outside the shared primitive.
-
-**Dependencies:** None.
-
-**Owning specifications:** [caching](../caching/high-level.md);
-[assistant](../assistant/high-level.md).
-
-**Evidence:** `src/haute/assistant/_ops.py::PlanStore`;
-`src/haute/assistant/_session.py::SessionStore`; `src/haute/_lru_cache.py::LRUCache`.
 
 ### CACHE-S25 — Hash the whole canonical node config
 **Why:** The cache-identity framework declares a versioned field set for nine

@@ -12,7 +12,7 @@ from haute._types import GraphEdge, PipelineGraph
 from haute.assistant._config import AssistantConfig, EgressPolicy
 from haute.assistant._providers import ProviderUsage, ToolCallRequest, TurnStop
 from haute.assistant._render import render_pipeline_graph
-from haute.assistant._self_test import (
+from scripts.run_assistant_self_test import (
     SelfTestCase,
     SelfTestExpectations,
     SelfTestGraph,
@@ -195,7 +195,7 @@ class TestSelfTestGraphReading:
         missing no matter what the assistant built.
         """
 
-        from haute.assistant import _self_test
+        from scripts import run_assistant_self_test as _self_test
 
         monkeypatch.setattr(
             _self_test,
@@ -238,7 +238,7 @@ class TestSelfTestGraphReading:
 
 class TestSelfTestScoring:
     def test_last_explicit_multi_round_outcome_marker_wins(self) -> None:
-        from haute.assistant._self_test import _outcome
+        from scripts.run_assistant_self_test import _outcome
 
         graph = _graph(node_types={"quotes": "polars"})
 

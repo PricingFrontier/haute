@@ -109,8 +109,8 @@
   | `scenarioExpander` | `config/expander/` |
   | `constant` | `config/constant/` |
   | `polars` | `config/polars/` (optional: written only for a stepped transform) |
-- **`TARGETS`** (`_scaffold.py`) — `dict[str, _TargetConfig]`, the 7-entry registry (one per
-  supported `--target`) that every scaffold template dispatches through: `label` (for the
+- **`TARGETS`** (`_scaffold.py`) — `dict[str, _TargetConfig]`, the 5-entry registry (one per
+  offered `--target`) that every scaffold template dispatches through: `label` (for the
   `.env.example` header), `env_body` (literal credential block), `secrets` (ordered CI
   secret/env-var names), and `toml_section` (a `Callable[[str], str]` building that target's
   `[deploy.*]` TOML block from the project name). `_get_target` raises `ValueError` on an

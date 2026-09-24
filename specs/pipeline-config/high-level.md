@@ -145,8 +145,11 @@ removes a root `main.py`, creates no `prompts/` directory, and creates no node s
 
 **CI/CD generation.** `haute init --ci` supports three providers today — GitHub Actions,
 GitLab CI, Azure DevOps — plus `none`, which writes no workflow files at all, crossed against
-seven `--target` deploy targets (`databricks`, `container`, `azure-container-apps`, `aws-ecs`,
-`gcp-run`, `sagemaker`, `azure-ml`). Whichever provider is chosen, the generated workflow
+five `--target` deploy targets (`databricks`, `container`, `azure-container-apps`, `aws-ecs`,
+`gcp-run`; the last three are labelled build and push only in the generated `haute.toml`,
+`.env.example` and CI files, because deploy pushes their image only when a registry is
+configured and does not update their service yet). Whichever
+provider is chosen, the generated workflow
 encodes the same fixed release flow: a validate job (lint, type check, test, pipeline lint,
 `haute deploy --dry-run`), an automatic deploy-to-staging job, a smoke test against staging
 (scores `tests/quotes/*.json`), an impact-analysis job comparing staging against production,

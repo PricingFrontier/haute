@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 from haute._scaffold import (
+    BUILD_AND_PUSH_ONLY_TARGETS,
     TARGETS,
     azure_devops_yml,
     env_example,
@@ -28,25 +29,15 @@ class TestHauteToml:
         result = haute_toml("motor", "databricks", "github")
         assert "[deploy.databricks]" in result
         assert "[deploy.docker]" not in result
-        assert "[deploy.sagemaker]" not in result
-        assert "[deploy.azure-ml]" not in result
+        assert "[deploy.aws-ecs]" not in result
+        assert "[deploy.gcp-run]" not in result
 
     def test_container_only_contains_container_section(self) -> None:
         result = haute_toml("motor", "container", "github")
         assert "[deploy.container]" in result
         assert "[deploy.databricks]" not in result
-        assert "[deploy.sagemaker]" not in result
-        assert "[deploy.azure-ml]" not in result
-
-    def test_sagemaker_only_contains_sagemaker_section(self) -> None:
-        result = haute_toml("motor", "sagemaker", "gitlab")
-        assert "[deploy.sagemaker]" in result
-        assert "[deploy.databricks]" not in result
-
-    def test_azure_ml_only_contains_azure_section(self) -> None:
-        result = haute_toml("motor", "azure-ml", "github")
-        assert "[deploy.azure-ml]" in result
-        assert "[deploy.databricks]" not in result
+        assert "[deploy.aws-ecs]" not in result
+        assert "[deploy.gcp-run]" not in result
 
     def test_project_name_substituted(self) -> None:
         result = haute_toml("my_pipeline", "databricks", "github")
@@ -127,18 +118,6 @@ class TestEnvExample:
         assert "AWS_ACCESS_KEY" not in result
         assert "AZURE_" not in result
 
-    def test_sagemaker_creds_only(self) -> None:
-        result = env_example("sagemaker")
-        assert "AWS_ACCESS_KEY_ID" in result
-        assert "SAGEMAKER_ROLE_ARN" in result
-        assert "DATABRICKS_" not in result
-
-    def test_azure_creds_only(self) -> None:
-        result = env_example("azure-ml")
-        assert "AZURE_SUBSCRIPTION_ID" in result
-        assert "DATABRICKS_" not in result
-        assert "AWS_" not in result
-
     def test_container_creds_only(self) -> None:
         result = env_example("container")
         assert "DOCKER_USERNAME" in result
@@ -205,10 +184,10 @@ class TestGithubDeployYml:
         assert "secrets.DATABRICKS_TOKEN " not in result
         assert "secrets.AWS_ACCESS_KEY_ID" not in result
 
-    def test_sagemaker_secrets(self) -> None:
-        result = github_deploy_yml("sagemaker")
+    def test_aws_ecs_secrets(self) -> None:
+        result = github_deploy_yml("aws-ecs")
         assert "secrets.AWS_ACCESS_KEY_ID" in result
-        assert "secrets.SAGEMAKER_ROLE_ARN" in result
+        assert "secrets.DOCKER_USERNAME" in result
         assert "secrets.DATABRICKS_RATING_HOST" not in result
 
     def test_contains_staging_and_impact(self) -> None:
@@ -591,12 +570,12 @@ class TestYamlStructure:
         assert "$(DATABRICKS_RATING_HOST)" in result
         assert "$(DATABRICKS_RATING_TOKEN)" in result
 
-    def test_sagemaker_secrets(self) -> None:
+    def test_aws_ecs_secrets(self) -> None:
         from haute._scaffold import azure_devops_yml
 
-        result = azure_devops_yml("sagemaker")
+        result = azure_devops_yml("aws-ecs")
         assert "$(AWS_ACCESS_KEY_ID)" in result
-        assert "$(SAGEMAKER_ROLE_ARN)" in result
+        assert "$(DOCKER_USERNAME)" in result
         assert "$(DATABRICKS_RATING_HOST)" not in result
 
 
@@ -733,18 +712,6 @@ class TestTomlStructure:
         assert "deploy" in doc
         assert "container" in doc["deploy"]
         assert "databricks" not in doc["deploy"]
-
-    def test_sagemaker_toml_parses(self) -> None:
-        raw = haute_toml("motor", "sagemaker", "gitlab")
-        doc = tomllib.loads(raw)
-        assert "deploy" in doc
-        assert "sagemaker" in doc["deploy"]
-
-    def test_azure_ml_toml_parses(self) -> None:
-        raw = haute_toml("motor", "azure-ml", "github")
-        doc = tomllib.loads(raw)
-        assert "deploy" in doc
-        assert "azure-ml" in doc["deploy"]
 
     def test_azure_container_apps_toml_parses(self) -> None:
         raw = haute_toml("motor", "azure-container-apps", "github")
@@ -1060,3 +1027,48 @@ class TestStarterPipelineContent:
         result = starter_pipeline("test")
         assert "import haute" in result
         assert "import polars" not in result
+
+
+class TestOfferedTargets:
+    """``haute init`` offers only targets that deploy, or labels them build and push only."""
+
+    def test_offered_targets_are_the_targets_deploy_accepts(self) -> None:
+        from haute.deploy import _CONTAINER_PLATFORM_TARGETS, _SUPPORTED_TARGETS
+
+        assert set(TARGETS) == _SUPPORTED_TARGETS | _CONTAINER_PLATFORM_TARGETS
+        assert set(BUILD_AND_PUSH_ONLY_TARGETS) == _CONTAINER_PLATFORM_TARGETS
+
+    @staticmethod
+    def _generated_files(target: str) -> dict[str, str]:
+        return {
+            "haute.toml": haute_toml("motor", target, "github"),
+            ".env.example": env_example(target),
+            "deploy.yml": github_deploy_yml(target),
+            "deploy-production.yml": github_deploy_prod_yml(target),
+            ".gitlab-ci.yml": gitlab_ci_yml(target),
+            "azure-pipelines.yml": azure_devops_yml(target),
+        }
+
+    @pytest.mark.parametrize("target", BUILD_AND_PUSH_ONLY_TARGETS)
+    def test_build_and_push_only_targets_are_labelled_in_every_generated_file(
+        self, target: str
+    ) -> None:
+        label = TARGETS[target]["label"]
+        for name, content in self._generated_files(target).items():
+            assert f"# Build and push only: for {label}," in content, name
+            assert "when [deploy.container] names a registry" in content, name
+            assert "(otherwise\n# the image stays local)" in content, name
+            assert "is not implemented yet" in content, name
+
+    @pytest.mark.parametrize("target", ["databricks", "container"])
+    def test_end_to_end_targets_carry_no_label(self, target: str) -> None:
+        for name, content in self._generated_files(target).items():
+            assert "Build and push only" not in content, name
+
+    @pytest.mark.parametrize("target", BUILD_AND_PUSH_ONLY_TARGETS)
+    def test_the_labelled_files_still_parse(self, target: str) -> None:
+        files = self._generated_files(target)
+        assert target in tomllib.loads(files["haute.toml"])["deploy"]
+        for name in ("deploy.yml", "deploy-production.yml", ".gitlab-ci.yml"):
+            assert isinstance(yaml.safe_load(files[name]), dict), name
+        assert isinstance(yaml.safe_load(files["azure-pipelines.yml"]), dict)

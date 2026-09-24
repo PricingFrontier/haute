@@ -10,7 +10,7 @@ from collections.abc import Callable
 
 # ── Per-target configuration ─────────────────────────────────────────
 #
-# Central registry of every deploy target.  Each entry carries:
+# Central registry of every deploy target ``haute init`` offers.  Each entry carries:
 #   label        – human-readable name for .env.example header
 #   env_body     – literal body appended after the .env.example header
 #   secrets      – ordered list of CI secret / env-var names
@@ -163,54 +163,13 @@ service = "{name}"
 """
         ),
     },
-    "sagemaker": {
-        "label": "AWS SageMaker",
-        "env_body": """
-AWS_ACCESS_KEY_ID=
-AWS_SECRET_ACCESS_KEY=
-AWS_DEFAULT_REGION=eu-west-1
-SAGEMAKER_ROLE_ARN=arn:aws:iam::123456789012:role/SageMakerRole
-""",
-        "secrets": [
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
-            "AWS_DEFAULT_REGION",
-            "SAGEMAKER_ROLE_ARN",
-        ],
-        "toml_section": lambda name: (
-            """\
-[deploy.sagemaker]
-region = "eu-west-1"
-instance_type = "ml.m5.large"
-initial_instance_count = 1
-"""
-        ),
-    },
-    "azure-ml": {
-        "label": "Azure ML",
-        "env_body": """
-AZURE_SUBSCRIPTION_ID=
-AZURE_TENANT_ID=
-AZURE_CLIENT_ID=
-AZURE_CLIENT_SECRET=
-""",
-        "secrets": [
-            "AZURE_SUBSCRIPTION_ID",
-            "AZURE_TENANT_ID",
-            "AZURE_CLIENT_ID",
-            "AZURE_CLIENT_SECRET",
-        ],
-        "toml_section": lambda name: (
-            """\
-[deploy.azure-ml]
-resource_group = ""
-workspace_name = ""
-instance_type = "Standard_DS3_v2"
-instance_count = 1
-"""
-        ),
-    },
 }
+
+
+# Container platforms whose service update is not implemented: ``haute deploy``
+# builds and pushes the image, then stops before updating the service. The same
+# set as ``haute.deploy._CONTAINER_PLATFORM_TARGETS`` (a test keeps them equal).
+BUILD_AND_PUSH_ONLY_TARGETS = ("azure-container-apps", "aws-ecs", "gcp-run")
 
 
 def _get_target(target: str) -> _TargetConfig:
@@ -220,6 +179,22 @@ def _get_target(target: str) -> _TargetConfig:
     except KeyError:
         msg = f"Unknown target: {target}"
         raise ValueError(msg) from None
+
+
+def _build_only_notice(target: str) -> str:
+    """The comment that labels a build-and-push-only target in its generated files.
+
+    Empty for a target that deploys end to end.
+    """
+    if target not in BUILD_AND_PUSH_ONLY_TARGETS:
+        return ""
+    return (
+        f"# Build and push only: for {_get_target(target)['label']}, `haute deploy` builds the\n"
+        "# scoring image and pushes it when [deploy.container] names a registry (otherwise\n"
+        "# the image stays local), then stops with an error, because updating the service\n"
+        "# is not implemented yet. Point the service at the image yourself; the error\n"
+        "# message names the image tag.\n"
+    )
 
 
 # ── haute.toml ────────────────────────────────────────────────────────
@@ -265,7 +240,7 @@ def _target_section(name: str, target: str) -> str:
     cfg = _get_target(target)
     fn = cfg["toml_section"]
     assert callable(fn)
-    return fn(name)
+    return _build_only_notice(target) + fn(name)
 
 
 # ── .env.example ──────────────────────────────────────────────────────
@@ -286,7 +261,8 @@ def env_example(target: str) -> str:
     assert isinstance(label, str)
     env_body = cfg["env_body"]
     assert isinstance(env_body, str)
-    return _ENV_EXAMPLE_HEADER.format(label=label) + env_body
+    notice = _build_only_notice(target)
+    return _ENV_EXAMPLE_HEADER.format(label=label) + (f"#\n{notice}" if notice else "") + env_body
 
 
 # ── CI secrets helpers ────────────────────────────────────────────────
@@ -427,7 +403,9 @@ def github_deploy_yml(target: str) -> str:
     """
     secrets_env = _github_secrets_env(target)
 
-    return f"""\
+    return (
+        _build_only_notice(target)
+        + f"""\
 name: Deploy
 
 on:
@@ -528,6 +506,7 @@ jobs:
         run: >-
           echo "Staged commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
 """
+    )
 
 
 def github_deploy_prod_yml(target: str) -> str:
@@ -544,7 +523,9 @@ def github_deploy_prod_yml(target: str) -> str:
     """
     secrets_env = _github_secrets_env(target)
 
-    return f"""\
+    return (
+        _build_only_notice(target)
+        + f"""\
 name: Deploy → Production
 
 on:
@@ -595,6 +576,7 @@ jobs:
           git tag "deploy/v$VERSION"
           git push origin "deploy/v$VERSION"
 """
+    )
 
 
 # ── GitLab CI ────────────────────────────────────────────────────────
@@ -611,7 +593,9 @@ def gitlab_ci_yml(target: str) -> str:
     """
     secrets_env = _gitlab_secrets_env(target)
 
-    return f"""\
+    return (
+        _build_only_notice(target)
+        + f"""\
 stages:
   - validate
   - deploy-staging
@@ -699,6 +683,7 @@ deploy-production:
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 """
+    )
 
 
 # ── Azure DevOps ─────────────────────────────────────────────────────
@@ -720,7 +705,9 @@ def azure_devops_yml(target: str) -> str:
     # its secret keys must sit at 20 — deeper than the 14-space job-level block.
     secrets_env_production = _azure_devops_secrets_env(target, indent=" " * 20)
 
-    return f"""\
+    return (
+        _build_only_notice(target)
+        + f"""\
 trigger:
   branches:
     include: [main]
@@ -917,6 +904,7 @@ stages:
                     git push origin "deploy/v$VERSION"
                   displayName: Tag release
 """
+    )
 
 
 # ── Pre-commit hook ───────────────────────────────────────────────────

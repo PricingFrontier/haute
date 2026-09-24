@@ -127,27 +127,22 @@ def _examples_root() -> Traversable:
     return _asset_root().joinpath(_EXAMPLES_DIR)
 
 
+# Examples that were removed, and the bundle that replaces each. A request for
+# one is refused with the replacement named rather than as an unknown name.
+_REMOVED_EXAMPLES: dict[str, str] = {"joined_reference": "reference_join"}
+
+
 @cache
 def _example_resources() -> tuple[tuple[str, Traversable], ...]:
-    """Return all exemplar resources in stable, source-file order."""
+    """Return every example bundle's pipeline source, in stable name order."""
 
-    examples_root = _examples_root()
-    legacy_examples = tuple(
+    examples = tuple(
         sorted(
-            (
-                Path(resource.name).stem,
-                resource,
-            )
-            for resource in examples_root.iterdir()
-            if resource.is_file() and resource.name.endswith(".py")
+            (bundle.name, bundle.joinpath("pipeline.py"))
+            for bundle in _examples_root().iterdir()
+            if bundle.is_dir() and bundle.joinpath("manifest.json").is_file()
         )
     )
-    bundles = tuple(
-        (bundle.name, bundle.joinpath("pipeline.py"))
-        for bundle in examples_root.iterdir()
-        if bundle.is_dir() and bundle.joinpath("manifest.json").is_file()
-    )
-    examples = tuple(sorted((*legacy_examples, *bundles)))
     if not examples:
         raise RuntimeError("No assistant exemplar pipeline assets were found.")
     return examples
@@ -187,12 +182,6 @@ def _module_notes(source: str, *, resource_name: str) -> str:
             f"Assistant exemplar {resource_name!r} must start its module docstring with a summary."
         )
     return notes
-
-
-def _resource_for_name(name: str) -> Traversable | None:
-    """Find an exemplar by its filename stem."""
-
-    return dict(_example_resources()).get(name)
 
 
 def _bundle_root(name: str) -> Traversable | None:
@@ -842,8 +831,23 @@ def example_index() -> list[tuple[str, str]]:
 
 
 def _unknown_example_error(name: str) -> dict[str, object]:
-    """Build the structured error passed back to the model for an unknown name."""
+    """Build the structured error passed back to the model for an unknown name.
 
+    A removed example is refused by name with the bundle that replaces it.
+    """
+
+    replacement = _REMOVED_EXAMPLES.get(name)
+    if replacement is not None:
+        return {
+            "error": {
+                "code": "example_removed",
+                "message": (
+                    f"Assistant example {name!r} was removed; use {replacement!r} instead."
+                ),
+                "name": name,
+                "replacement": replacement,
+            }
+        }
     valid_names = [example_name for example_name, _summary in example_index()]
     message = f"Unknown assistant example {name!r}. Choose one of: {', '.join(valid_names)}."
     return {
@@ -857,44 +861,19 @@ def _unknown_example_error(name: str) -> dict[str, object]:
 
 
 def load_example(name: str) -> dict[str, object]:
-    """Return an exemplar's notes and parser-produced graph rendering.
+    """Return an example bundle's notes and parser-produced graph rendering.
 
-    Exemplars are parsed as source files and never imported. The complete
-    example resource tree is materialised together so parser-relative config
-    sidecars work for both filesystem and zip-backed package importers.
+    Bundle sources are parsed, never imported. The bundle's resource tree is
+    materialised together so parser-relative config sidecars work for both
+    filesystem and zip-backed package importers.
     """
 
     bundle = _bundle_root(name)
-    if bundle is not None:
-        manifest = _read_bundle_manifest(bundle)
-        _validate_bundle(bundle, manifest)
-        return _load_bundle(bundle, manifest)
-    resource = _resource_for_name(name)
-    if resource is None:
+    if bundle is None:
         return _unknown_example_error(name)
-
-    source = _read_resource(resource)
-    notes = _module_notes(source, resource_name=resource.name)
-
-    from haute.routes._helpers import parse_pipeline_to_graph
-
-    with TemporaryDirectory(prefix="haute-assistant-example-") as temp_dir:
-        examples_path = Path(temp_dir) / _EXAMPLES_DIR
-        _materialize_resource_tree(_examples_root(), examples_path)
-        graph = parse_pipeline_to_graph(examples_path / resource.name)
-
-    return {
-        "name": name,
-        "attribution": _example_attribution(
-            name=name,
-            version="legacy",
-            summary=notes.splitlines()[0].strip(),
-            assertion_tier="ordinary",
-            review_class="engineering",
-        ),
-        "narrative": notes,
-        "graph": render_pipeline_graph(graph),
-    }
+    manifest = _read_bundle_manifest(bundle)
+    _validate_bundle(bundle, manifest)
+    return _load_bundle(bundle, manifest)
 
 
 __all__ = [

@@ -40,9 +40,9 @@ Their inventories are evidence supplements, not independent approvals:
 
 - [Cache inventory and CI evidence](pr-227-cache-evidence.md).
 - [Materialisation inventory and join measurements](pr-227-materialisation-evidence.md).
-- [Executable backend review probes](pr-227-review-probes.py).
-- [Frontend regression probes](pr-227-frontend-probes.test.tsx).
-- [Benchmark harness](pr-227-join-benchmark.py) and [raw results](pr-227-join-benchmark.json).
+- [Executable backend review probes](../../scripts/benchmarks/pr-227-review-probes.py).
+- [Frontend regression probes](../../scripts/benchmarks/pr-227-frontend-probes.test.tsx).
+- [Benchmark harness](../../scripts/benchmarks/pr-227-join-benchmark.py) and [raw results](../../scripts/benchmarks/pr-227-join-benchmark.json).
 
 Production code has not been changed as part of this review.
 
@@ -334,7 +334,7 @@ The backend review probe exits successfully after recording the defective
 observations; its exit code is not a correctness pass. Run it with:
 
 ```text
-uv run python specs/roadmap/pr-227-review-probes.py
+uv run python scripts/benchmarks/pr-227-review-probes.py
 ```
 
 The frontend review source lives outside the normal suite. To reproduce,
@@ -350,7 +350,7 @@ npm --prefix frontend test -- src/hooks/__tests__/pr-227-review-probes.test.tsx
 The benchmark can be rerun with:
 
 ```text
-uv run python specs/roadmap/pr-227-join-benchmark.py
+uv run python scripts/benchmarks/pr-227-join-benchmark.py
 ```
 
 It replaces its review JSON artifact, uses a private temporary workspace, and

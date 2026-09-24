@@ -25,7 +25,11 @@ from haute._api_input_schema import (
 )
 from haute._json_shred._inference import infer_v2_schema_from_data
 from haute._json_shred._shred import shred_to_buffers
-from haute._output_assembler import assemble_output_from_mapping
+from haute._output_assembler import (
+    OutputMappingSchemaError,
+    assemble_output_from_mapping,
+    validate_v2_output_mapping,
+)
 from haute.errors import HauteError
 
 # ---------------------------------------------------------------------------
@@ -242,51 +246,39 @@ def _col(name: str, path: str, type_: str = "str") -> dict:
     return {"name": name, "path": path, "type": type_, "selected": True}
 
 
-class TestOutputGluingInvariantUnderObjectNesting:
-    """Task-1 output check: mapping values into key-OBJECT pairs instead of
-    key-primitive pairs (NOT arrays) must not change the gluing. Object nesting
-    only re-addresses; the relational level (and hence which rows join) is set
-    by array (``[:]``) depth alone.
+class TestOutputLevelInvariantUnderObjectNesting:
+    """Mapping values into key-OBJECT pairs instead of key-primitive pairs (NOT
+    arrays) must not change the level a frame emits at. Object nesting only
+    re-addresses; the relational level is set by array (``[:]``) depth alone.
     """
 
-    def test_shared_key_glues_the_same_nested_or_flat(self) -> None:
-        frames = {
-            "a": pl.DataFrame({"k": [1, 2], "va": ["a1", "a2"]}).lazy(),
-            "b": pl.DataFrame({"k": [1, 2], "vb": ["b1", "b2"]}).lazy(),
-        }
+    def test_object_nesting_does_not_move_a_frame_off_its_level(self) -> None:
+        # Two frames at the root are rejected whether or not their paths pass
+        # through a 1-1 object: the level is the same, so it takes one frame.
         flat = [
             _entry("a", "k", "$[:].k"),
             _entry("a", "va", "$[:].va"),
             _entry("b", "k", "$[:].k"),
             _entry("b", "vb", "$[:].vb"),
         ]
-        # Same data, every path wrapped in a 1-1 ``meta`` object.
         nested = [
             _entry("a", "k", "$[:].meta.k"),
             _entry("a", "va", "$[:].meta.va"),
             _entry("b", "k", "$[:].meta.k"),
             _entry("b", "vb", "$[:].meta.vb"),
         ]
-        doc_flat = assemble_output_from_mapping(frames, flat)
-        doc_nested = assemble_output_from_mapping(frames, nested)
-        # The join actually happened (k bound va to vb per row)...
-        assert {(o["k"], o["va"], o["vb"]) for o in doc_flat} == {(1, "a1", "b1"), (2, "a2", "b2")}
-        # ...and object nesting changed NOTHING about the gluing — same count,
-        # same join, just wrapped one level deeper.
-        assert doc_nested == [{"meta": obj} for obj in doc_flat]
+        for mapping in (flat, nested):
+            with pytest.raises(OutputMappingSchemaError, match="same array level"):
+                validate_v2_output_mapping(mapping)
 
-    def test_deep_sibling_object_branches_glue_at_one_level(self) -> None:
-        # Nick's claim: g at $[:].a.b.c.d.e.f.g and r at $[:].p.q.r are SIBLINGS
-        # — different (even deep) object chains glue at the same root level.
-        frames = {
-            "a": pl.DataFrame({"k": [1], "g": ["G"]}).lazy(),
-            "b": pl.DataFrame({"k": [1], "r": ["R"]}).lazy(),
-        }
+    def test_deep_sibling_object_branches_sit_at_one_level(self) -> None:
+        # g at $[:].a.b.c.d.e.f.g and r at $[:].p.q.r are SIBLINGS: different
+        # (even deep) object chains are fields of the same root object.
+        frames = {"a": pl.DataFrame({"k": [1], "g": ["G"], "r": ["R"]}).lazy()}
         mapping = [
             _entry("a", "k", "$[:].id"),
             _entry("a", "g", "$[:].a.b.c.d.e.f.g"),
-            _entry("b", "k", "$[:].id"),
-            _entry("b", "r", "$[:].p.q.r"),
+            _entry("a", "r", "$[:].p.q.r"),
         ]
         doc = assemble_output_from_mapping(frames, mapping)
         assert doc == [

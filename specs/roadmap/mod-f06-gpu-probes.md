@@ -7,7 +7,7 @@ behaviour authority.
 
 ## Method
 
-[`mod-f06-gpu-probes.py`](mod-f06-gpu-probes.py) fits real models on an NVIDIA
+[`mod-f06-gpu-probes.py`](../../scripts/benchmarks/mod-f06-gpu-probes.py) fits real models on an NVIDIA
 GeForce RTX 4070 Laptop GPU (8 GiB, driver 616.56) with 200,000 training and
 50,000 validation rows × 21 features (20 numeric, one 30-level categorical), and
 re-scores every GPU-trained XGBoost artifact in a second interpreter that has
@@ -15,8 +15,8 @@ only `xgboost-cpu`. It ran twice:
 
 | Run | Platform | Results |
 |---|---|---|
-| Windows | Windows 11, Python 3.11 | [`mod-f06-gpu-probes.json`](mod-f06-gpu-probes.json) |
-| Linux | Ubuntu under WSL2, Python 3.12 | [`mod-f06-gpu-probes-linux.json`](mod-f06-gpu-probes-linux.json) |
+| Windows | Windows 11, Python 3.11 | [`mod-f06-gpu-probes.json`](../../scripts/benchmarks/mod-f06-gpu-probes.json) |
+| Linux | Ubuntu under WSL2, Python 3.12 | [`mod-f06-gpu-probes-linux.json`](../../scripts/benchmarks/mod-f06-gpu-probes-linux.json) |
 
 Both runs used XGBoost 3.2.0 (the full wheel, CUDA 12.9) and LightGBM 4.7.0.
 

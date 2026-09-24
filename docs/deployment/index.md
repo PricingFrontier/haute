@@ -49,7 +49,7 @@ A **target** is where your pipeline will run in production. Haute supports sever
 | [**AWS ECS**](targets/aws.md) | Teams on AWS (with IT support) | An AWS account and a manual ECS service-update handoff; the built image is pushed before Haute exits with an unimplemented-adapter failure |
 | [**Azure Container Apps**](targets/azure.md) | Teams on Azure (with IT support) | An Azure subscription and a manual Container Apps revision handoff; the built image is pushed before Haute exits with an unimplemented-adapter failure |
 | GCP Cloud Run | Teams on GCP (with IT support) | Config target is recognised, but its service update is not implemented; use the image tag in the failure message for a manual update |
-| SageMaker / Azure ML | Planned targets | Recognised by scaffolding/configuration but rejected before deployment with `NotImplementedError` |
+| SageMaker / Azure ML | Planned targets | Not offered by `haute init`; a `haute.toml` naming one is rejected before deployment with `NotImplementedError` |
 
 You pick your target once when you set up the project. The command is:
 

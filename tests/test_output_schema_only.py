@@ -497,11 +497,16 @@ def test_missing_source_column_is_a_typed_rejection() -> None:
 
 
 def test_conflicting_dtypes_on_one_output_path_is_a_typed_rejection() -> None:
+    # The child frame carries the parent's key path with a different dtype.
     frames = {
         "a": pl.LazyFrame({"k": pl.Series([1, 2], dtype=pl.Int64)}),
-        "b": pl.LazyFrame({"k": pl.Series(["1", "2"], dtype=pl.String)}),
+        "b": pl.LazyFrame({"k": pl.Series(["1", "2"], dtype=pl.String), "x": pl.Series([1, 2])}),
     }
-    mapping = [_entry("a", "k", "$[:].k"), _entry("b", "k", "$[:].k")]
+    mapping = [
+        _entry("a", "k", "$[:].k"),
+        _entry("b", "k", "$[:].k"),
+        _entry("b", "x", "$[:].items[:].x"),
+    ]
     with pytest.raises(OutputMappingSchemaError, match="different types"):
         output_document_schema(_source_schemas(frames), mapping)
 

@@ -108,14 +108,13 @@ _REPOSITORY_PATH_PREFIXES = (
     ".github/",
     "docs/",
     "frontend/",
+    "examples/",
     "mutation/",
-    "rating/",
     "scripts/",
     "specs/",
     "src/",
     "tests/",
     "security/",
-    "repro/",
 )
 _REQUIRED_HIGH_LEVEL_HEADINGS = (
     "## Purpose",
@@ -139,14 +138,11 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
     "## Planned improvements",
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
-    "assistant",
     "background-jobs-api",
     "caching",
-    "deploy",
     "engineering-quality",
     "explore-eda",
     "frontend-shared",
-    "json-shredding",
     "mlflow-model-registry",
     "optimiser",
     "pipeline-config",
@@ -1619,12 +1615,12 @@ def _repository_operational_sources() -> list[Path]:
 
     paths.extend(
         path
-        for path in (ROOT / "rating").rglob("*")
+        for path in (ROOT / "examples").rglob("*")
         if path.is_file()
         and path in tracked
-        and path.suffix in {".json", ".py", ".rsglm"}
+        and path.suffix in {".csv", ".json", ".py"}
         and not {"__pycache__", "output", "outputs"}.intersection(
-            path.relative_to(ROOT / "rating").parts
+            path.relative_to(ROOT / "examples").parts
         )
     )
 

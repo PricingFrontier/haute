@@ -946,12 +946,13 @@ class TestReadTools:
 
         assert get_node_config("main.py", "ghost")["error"]["code"] == "unknown_node"
 
-    def test_list_node_types_covers_all_19(self, project_root: Path):
-        from haute.assistant._tools import list_node_types
+    def test_the_manifest_node_index_covers_all_19(self, project_root: Path):
+        from haute.assistant._tools import get_capability_descriptors, get_capability_manifest
 
-        entries = list_node_types()["node_types"]
-        assert len(entries) == 19
-        assert all("usage_note" in entry for entry in entries)
+        node_ids = [entry["id"] for entry in get_capability_manifest()["node_index"]]
+        assert len(node_ids) == 19
+        descriptors = get_capability_descriptors("node", node_ids[:12])["descriptors"]
+        assert all(descriptor["usage"] for descriptor in descriptors)
 
     def test_capability_manifest_and_descriptor_batch_are_registry_views(self, project_root: Path):
         from haute.assistant._catalog import capability_manifest
@@ -1741,6 +1742,19 @@ class TestToolExecutorDispatch:
         assert result["error"]["code"] == "invalid_request"
         assert "not-json" not in result["error"]["message"]
 
+    async def test_the_removed_node_catalogue_tool_names_its_replacement(self, project_root: Path):
+        from haute.assistant._tools import TOOL_DEFINITIONS, build_tool_executor
+
+        assert "list_node_types" not in {definition["name"] for definition in TOOL_DEFINITIONS}
+        execute_tool = build_tool_executor("main.py")
+        result = await execute_tool("list_node_types", {})
+        assert result["error"]["code"] == "tool_removed"
+        assert result["error"]["name"] == "list_node_types"
+        assert result["error"]["message"].startswith(
+            "list_node_types was removed; use get_capability_manifest"
+        )
+        assert "get_capability_descriptors" in result["error"]["message"]
+
     async def test_combined_apply_graph_edits_tool_is_not_provider_visible(
         self, project_root: Path
     ):
@@ -1807,7 +1821,6 @@ class TestExecutorArms:
 
         execute_tool = build_tool_executor("main.py")
         assert "config" in await execute_tool("get_node_config", {"node": "quotes"})
-        assert len((await execute_tool("list_node_types", {}))["node_types"]) == 19
         listed = await execute_tool("list_datasets", {"project_root": "data"})
         assert listed["datasets"][0]["name"] == "quotes.parquet"
         schema = await execute_tool("get_dataset_schema", {"path": "data/quotes.parquet"})

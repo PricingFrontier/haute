@@ -92,6 +92,10 @@ def calls() -> Iterator[DeployCalls]:
         registered = MagicMock()
         registered.version = "1"
         mlflow_client.return_value.search_model_versions.return_value = [registered]
+        mlflow_client.return_value.get_experiment_by_name.return_value = MagicMock(
+            experiment_id="1", lifecycle_stage="active"
+        )
+        mlflow_client.return_value.create_run.return_value.info.run_id = "run-1"
         start_run.return_value.__enter__ = MagicMock()
         start_run.return_value.__exit__ = MagicMock(return_value=False)
         yield DeployCalls(
@@ -164,6 +168,7 @@ def test_mlflow_pair_drives_mlflow_while_rating_pair_drives_serving(
 
     calls.set_tracking_uri.assert_called_once_with("databricks")
     calls.set_registry_uri.assert_called_once_with("databricks-uc")
+    calls.mlflow_client.assert_any_call(tracking_uri="databricks", registry_uri="databricks-uc")
     [connectivity_request] = [call.args[0] for call in calls.urlopen.call_args_list]
     assert connectivity_request.full_url.startswith(f"{RATING_HOST}/")
     assert connectivity_request.get_header("Authorization") == f"Bearer {RATING_TOKEN}"
@@ -183,6 +188,9 @@ def test_profile_tracking_uri_selects_the_profile_for_tracking_and_registry(
 
     calls.set_tracking_uri.assert_called_once_with("databricks://team")
     calls.set_registry_uri.assert_called_once_with("databricks-uc://team")
+    calls.mlflow_client.assert_any_call(
+        tracking_uri="databricks://team", registry_uri="databricks-uc://team"
+    )
     calls.workspace_client.assert_called_once_with(host=RATING_HOST, token=RATING_TOKEN)
 
 
