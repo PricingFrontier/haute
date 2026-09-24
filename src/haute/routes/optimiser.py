@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import json
 import math
-import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, Literal, Protocol, cast
+from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException
 
@@ -42,27 +40,21 @@ from haute._rating import is_rating_dtype_descriptor
 from haute._sandbox import _get_project_root, contained_path
 from haute._types import SolveResultLike
 from haute._worker_isolation import resolve_worker_memory_enforcement
-from haute.routes._background_jobs import (
-    BackgroundJobStoppedError,
-    CancellableJobRegistry,
-)
-from haute.routes._frontier_point_summary import (
-    NON_CONVERGED_WARNING,
-    FrontierPointDataError,
-    apply_frontier_point_summary,
-    finite_frontier_value,
-    frontier_point_summary,
-)
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
-from haute.routes._job_lifecycle import JobLifecycle, TerminalReason, require_job_status
-from haute.routes._job_store import JobSnapshot, RunningJobFields, get_job_store
+from haute.routes._job_lifecycle import require_job_status
+from haute.routes._job_store import get_job_store
 from haute.routes._mlflow_log_errors import mlflow_log_http_exception, require_mlflow_installed
 from haute.routes._optimiser_artifacts import (
     _APPLY_RESULT_HANDLE_KEY,
-    _RATEBOOK_FACTORS_HANDLE_KEY,
-    _cleanup_apply_result_artifact,
     _load_apply_result_artifact,
-    _persist_apply_result_artifact,
+)
+from haute.routes._optimiser_frontier import (
+    OptimiserFrontierService,
+    _artifact_handles_or_raise,
+    _dataframe_or_raise,
+    _frontier_point_mlflow_summary,
+    _job_has_frontier_points,
+    _reject_ratebook_apply_detail,
+    _selected_or_requested_frontier_point,
 )
 from haute.routes._optimiser_input import (
     ESTIMATE_MAPPED_ERRORS,
@@ -71,27 +63,12 @@ from haute.routes._optimiser_input import (
     estimate_failure_http_exception,
 )
 from haute.routes._optimiser_limits import (
-    FrontierComputeBudgetExceededError,
-    enforce_frontier_compute_budget,
     limited_apply_preview_payload,
-    limited_frontier_payload,
 )
 from haute.routes._optimiser_service import (
-    _FRONTIER_GENERATION_KEY,
-    _FRONTIER_RECOMPUTE_JOB_TYPE,
-    _JOB_TYPE_KEY,
-    _RATEBOOK_FACTOR_LEVEL_ORDER_KEY,
     OptimiserSolveService,
-    _auto_frontier_ranges_from_config,
-    _build_ratebook_factor_contexts,
-    _compute_frontier,
     _job_elapsed_seconds,
-    _ratebook_factor_dtypes_from_artifact,
-    _ratebook_factor_level_counts_from_artifact,
-    _serialise_ratebook_factor_tables,
-    _solve_timeout_from_config,
     _with_flattened_optimiser_graph,
-    solver_worker_context,
 )
 from haute.routes._optimiser_worker import OptimiserEstimateOutcome, optimiser_estimate_worker
 from haute.routes.pipeline import (
@@ -131,31 +108,7 @@ router = APIRouter(prefix="/api/optimiser", tags=["optimiser"])
 # truth for every importer.
 _store = get_job_store("optimiser")
 _solve_service = OptimiserSolveService(_store)
-_FRONTIER_APPLY_HANDLE_PREFIX = "frontier_apply_result:"
-_MAX_FRONTIER_APPLY_ARTIFACTS = 8
-_frontier_state_lock = threading.RLock()
-_frontier_jobs = CancellableJobRegistry()
-_CONSTRAINT_THRESHOLD_KEYS = ("min", "max", "min_pct", "max_pct")
-
-
-class _FrontierRecomputeRunningJob(RunningJobFields):
-    job_type: Literal["frontier_recompute"]
-    progress: float
-    parent_job_id: str
-    start_time: float
-    timeout: int | None
-
-
-# The real ``price_contour.RatebookResult`` carries factor tables and
-# portfolio aggregates only — there is NO per-quote dataframe to serve, so
-# the ``/apply`` ("Load detail") affordance has no ratebook backend.  Pinned
-# by ``tests/test_optimiser_routes_real_library.py``.
-_RATEBOOK_APPLY_DETAIL_UNSUPPORTED = (
-    "Per-quote apply detail is not available for ratebook optimiser results: "
-    "the ratebook solver produces factor tables, not per-quote scenario "
-    "selections. Use the factor tables on the result (Rates tab), or save the "
-    "result and apply it with an Optimiser Apply node."
-)
+_frontier_service = OptimiserFrontierService(_store)
 
 
 def _prepare_optimiser_execution_request(
@@ -168,46 +121,6 @@ def _prepare_optimiser_execution_request(
     return body.model_copy(update={"graph": graph})
 
 
-def _job_mode(job: Mapping[str, Any]) -> str:
-    """Resolve the optimiser mode for a completed job (config wins)."""
-    result = job.get("result")
-    result_mode = result.get("mode", "online") if isinstance(result, dict) else "online"
-    return str(job.get("config", {}).get("mode", result_mode))
-
-
-def _reject_ratebook_apply_detail(job: Mapping[str, Any]) -> None:
-    """Gate ``/apply`` for ratebook jobs with an explicit contract error.
-
-    Raising here — before any heavy-state lookups or solver work — keeps the
-    failure cheap and actionable.  Without the gate the request either dies
-    on the missing ``RatebookResult.dataframe`` (opaque 500) or, worse, an
-    ``apply_from_grid`` fallback would return per-quote selections that
-    ignore the solved factor tables: silently wrong output.
-    """
-    if _job_mode(job) == "ratebook":
-        raise HTTPException(status_code=422, detail=_RATEBOOK_APPLY_DETAIL_UNSUPPORTED)
-
-
-class _DataFrameResultLike(Protocol):
-    @property
-    def dataframe(self) -> Any: ...  # pragma: no cover  (typing-only stub)
-
-
-def _dataframe_or_raise(result: Any, *, context: str) -> Any:
-    """Read ``.dataframe`` from a solver/apply result, with a typed error.
-
-    The Protocol-cast at call sites is a pure type-checker hint and gives
-    no runtime guarantee.  Without this guard a missing attribute surfaces as
-    an ``AttributeError`` and an opaque 500 from the application handler.
-    """
-    if not hasattr(result, "dataframe"):
-        raise HTTPException(
-            status_code=500,
-            detail=f"{context} is missing a 'dataframe' attribute",
-        )
-    return cast(_DataFrameResultLike, result).dataframe
-
-
 def _touch_heavy_objects_or_raise(
     job_id: str,
     *,
@@ -217,26 +130,6 @@ def _touch_heavy_objects_or_raise(
     """Reserve completed-job heavy runtime state before using it."""
     if not _store.touch_heavy_objects(job_id, required_keys=required_keys):
         raise HTTPException(status_code=400, detail=detail)
-
-
-def _cleanup_orphan_apply_artifact(
-    handle: dict[str, Any],
-    *,
-    job_id: str,
-    event: str = "frontier_select_orphan_apply_artifact_cleanup_failed",
-) -> None:
-    """Clean up a request-created apply artifact without masking the main failure."""
-    try:
-        _cleanup_apply_result_artifact(handle)
-    except Exception as cleanup_exc:
-        raw_path = handle.get("directory") or handle.get("path") or "<unknown>"
-        logger.warning(
-            event,
-            job_id=job_id,
-            path=str(raw_path),
-            error=str(cleanup_exc),
-            exc_info=True,
-        )
 
 
 def _estimate_timeout() -> float:
@@ -308,217 +201,6 @@ def _optimiser_input_metrics_in_worker(
     return outcome.metrics
 
 
-def _frontier_ranges_for_request(
-    body: OptimiserFrontierRequest,
-    job: Mapping[str, Any],
-) -> dict[str, tuple[float, float]]:
-    """Resolve explicit or config-derived absolute frontier ranges.
-
-    The request-body shape is already validated by ``OptimiserFrontierRequest``'s
-    Pydantic field validator, so explicit ranges only need to be tupled here.
-    Config-derived ranges still go through validation because configs are
-    arbitrary user JSON, not schema-validated bodies.
-    """
-    if body.threshold_ranges:
-        return {
-            str(name): (float(value[0]), float(value[1]))
-            for name, value in body.threshold_ranges.items()
-        }
-
-    try:
-        ranges = _auto_frontier_ranges_from_config(job.get("config", {}))
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if not ranges:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "No frontier threshold ranges provided and the job has no configured "
-                "constraints to derive automatic ranges from."
-            ),
-        )
-    return ranges
-
-
-def _frontier_apply_handle_key(point_index: int) -> str:
-    return f"{_FRONTIER_APPLY_HANDLE_PREFIX}{point_index}"
-
-
-def _frontier_generation_or_raise(job: Mapping[str, Any]) -> int:
-    """Return the store-stable generation for the parent's current frontier."""
-    generation = job.get(_FRONTIER_GENERATION_KEY, 0)
-    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
-        raise HTTPException(
-            status_code=500,
-            detail="Job frontier generation is invalid",
-        )
-    return int(generation)
-
-
-def _with_bounded_frontier_apply_handle(
-    existing_handles: dict[str, Any],
-    handle_key: str,
-    new_handle: dict[str, Any],
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Append one point artifact and evict the oldest point handles over the cap."""
-    updated_handles = dict(existing_handles)
-    updated_handles.pop(handle_key, None)
-    updated_handles[handle_key] = new_handle
-    frontier_keys = [
-        key for key in updated_handles if key.startswith(_FRONTIER_APPLY_HANDLE_PREFIX)
-    ]
-    evicted_handles: list[dict[str, Any]] = []
-    for stale_key in frontier_keys[:-_MAX_FRONTIER_APPLY_ARTIFACTS]:
-        stale_handle = updated_handles.pop(stale_key)
-        if not isinstance(stale_handle, dict):
-            raise HTTPException(
-                status_code=500,
-                detail="Job frontier apply artifact handle is invalid",
-            )
-        evicted_handles.append(stale_handle)
-    return updated_handles, evicted_handles
-
-
-def _as_finite_float(value: Any, *, field: str) -> float:
-    try:
-        return finite_frontier_value(value, field=field)
-    except FrontierPointDataError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-
-
-def _frontier_points_or_raise(
-    job: Mapping[str, Any],
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    frontier_data = job.get("frontier_data")
-    if not isinstance(frontier_data, dict) or not frontier_data.get("points"):
-        raise HTTPException(status_code=400, detail="Job has no frontier data")
-    points = frontier_data["points"]
-    if not isinstance(points, list) or not all(isinstance(point, dict) for point in points):
-        raise HTTPException(status_code=500, detail="Job frontier data is invalid")
-    return points, frontier_data
-
-
-def _frontier_point_or_raise(
-    job: Mapping[str, Any],
-    point_index: int,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    points, frontier_data = _frontier_points_or_raise(job)
-    total_points = int(frontier_data.get("n_points", len(points)))
-    points_returned = int(frontier_data.get("points_returned", len(points)))
-    points_limit = frontier_data.get("points_limit", points_returned)
-    if point_index >= total_points:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Point index {point_index} out of range [0, {total_points})",
-        )
-    if point_index >= len(points):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Point index {point_index} is not available in the capped frontier "
-                f"payload. Only {points_returned} of {total_points} points are retained "
-                f"(limit {points_limit}). Re-run the frontier with narrower ranges or "
-                "fewer points per dimension."
-            ),
-        )
-    return points[point_index], frontier_data
-
-
-def _base_result_for_frontier(job: Mapping[str, Any]) -> dict[str, Any]:
-    base_result = job.get("base_result")
-    if isinstance(base_result, dict):
-        return base_result
-    result = job.get("result")
-    if isinstance(result, dict):
-        return result
-    raise HTTPException(status_code=500, detail="Job summary is missing")
-
-
-def _base_result_for_frontier_recompute(job: Mapping[str, Any]) -> dict[str, Any]:
-    base_result = job.get("base_result")
-    if isinstance(base_result, dict):
-        result = dict(base_result)
-    else:
-        current_result = job.get("result")
-        if job.get("selected_frontier_point") is not None or (
-            isinstance(current_result, dict) and "selected_frontier_point" in current_result
-        ):
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    "Job base optimiser result is missing. Re-run the solve before "
-                    "recomputing the frontier."
-                ),
-            )
-        if not isinstance(current_result, dict):
-            return {}
-        result = dict(current_result)
-    result.pop("selected_frontier_point", None)
-    return result
-
-
-def _frontier_point_result_dict(job: Mapping[str, Any], point_index: int) -> dict[str, Any]:
-    point, frontier_data = _frontier_point_or_raise(job, point_index)
-    constraint_names = frontier_data.get("constraint_names", [])
-    if not isinstance(constraint_names, list) or not all(
-        isinstance(name, str) for name in constraint_names
-    ):
-        raise HTTPException(status_code=500, detail="Job frontier constraint names are invalid")
-    try:
-        summary = frontier_point_summary(point, constraint_names)
-    except FrontierPointDataError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-
-    base_result = _base_result_for_frontier(job)
-    result_dict = apply_frontier_point_summary(base_result, summary)
-    result_dict["baseline_objective"] = float(base_result.get("baseline_objective", 0.0))
-    result_dict["baseline_constraints"] = dict(base_result.get("baseline_constraints", {}))
-    result_dict["selected_frontier_point"] = point_index
-    return result_dict
-
-
-def _frontier_point_constraints_override(
-    job: Mapping[str, Any],
-    point_index: int,
-) -> dict[str, dict[str, Any]]:
-    point, frontier_data = _frontier_point_or_raise(job, point_index)
-    raw_constraints = job.get("config", {}).get("constraints")
-    if not isinstance(raw_constraints, dict):
-        raise HTTPException(status_code=500, detail="Job optimiser constraints are invalid")
-
-    overrides: dict[str, dict[str, Any]] = {}
-    for name, spec in raw_constraints.items():
-        if not isinstance(name, str) or not isinstance(spec, dict):
-            raise HTTPException(status_code=500, detail="Job optimiser constraints are invalid")
-        overrides[name] = dict(spec)
-
-    constraint_names = frontier_data.get("constraint_names", [])
-    if not isinstance(constraint_names, list):
-        raise HTTPException(status_code=500, detail="Job frontier constraint names are invalid")
-
-    for name in constraint_names:
-        if not isinstance(name, str):
-            raise HTTPException(status_code=500, detail="Job frontier constraint names are invalid")
-        spec = overrides.get(name)
-        if spec is None:
-            raise HTTPException(status_code=500, detail="Job frontier constraint is missing")
-        threshold_keys = [key for key in _CONSTRAINT_THRESHOLD_KEYS if key in spec]
-        if len(threshold_keys) != 1:
-            raise HTTPException(
-                status_code=500,
-                detail="Job optimiser constraint threshold is invalid",
-            )
-        threshold_field = f"threshold_{name}"
-        if threshold_field not in point:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Frontier point field {threshold_field!r} is missing",
-            )
-        spec[threshold_keys[0]] = _as_finite_float(point[threshold_field], field=threshold_field)
-
-    return overrides
-
-
 def _frontier_select_response(result: dict[str, Any]) -> OptimiserFrontierSelectResponse:
     return OptimiserFrontierSelectResponse(
         status="ok",
@@ -540,14 +222,6 @@ def _frontier_select_response(result: dict[str, Any]) -> OptimiserFrontierSelect
     )
 
 
-def _job_has_frontier_points(job: Mapping[str, Any]) -> bool:
-    frontier_data = job.get("frontier_data")
-    if not isinstance(frontier_data, dict):
-        return False
-    points = frontier_data.get("points")
-    return isinstance(points, list) and len(points) > 0
-
-
 def _clear_result_data_after_user_action(job_id: str) -> None:
     """Slim result data without ending an active frontier-analysis session."""
 
@@ -556,533 +230,6 @@ def _clear_result_data_after_user_action(job_id: str) -> None:
         _store.clear_result_data(job_id, keys=("solve_result",))
         return
     _store.clear_result_data(job_id)
-
-
-def _cached_result_matches_frontier_selection(result: dict[str, Any], point_index: int) -> bool:
-    selected_point = result.get("selected_frontier_point")
-    return (
-        isinstance(selected_point, int)
-        and not isinstance(selected_point, bool)
-        and (selected_point == point_index)
-    )
-
-
-def _lambda_mappings_match(cached_lambdas: Any, expected_lambdas: Any) -> bool:
-    if not isinstance(cached_lambdas, dict) or not isinstance(expected_lambdas, dict):
-        return False
-    if set(cached_lambdas) != set(expected_lambdas):
-        return False
-    for name in expected_lambdas:
-        try:
-            cached_value = float(cached_lambdas[name])
-            expected_value = float(expected_lambdas[name])
-        except (TypeError, ValueError):
-            return False
-        if abs(cached_value - expected_value) > 1e-9:
-            return False
-    return True
-
-
-def _summary_solve_result(result: dict[str, Any]) -> SolveResultLike:
-    return SimpleNamespace(
-        lambdas=result["lambdas"],
-        total_objective=result["total_objective"],
-        total_constraints=result["constraints"],
-        baseline_objective=result.get("baseline_objective", 0.0),
-        baseline_constraints=result.get("baseline_constraints", {}),
-        converged=result["converged"],
-        iterations=result.get("iterations"),
-        cd_iterations=result.get("cd_iterations"),
-        clamp_rate=result.get("clamp_rate"),
-        factor_tables=result.get("factor_tables"),
-    )
-
-
-def _selected_or_requested_frontier_point(
-    job: Mapping[str, Any],
-    requested_point_index: int | None,
-) -> int | None:
-    if requested_point_index is not None:
-        return requested_point_index
-    selected = job.get("selected_frontier_point")
-    return selected if isinstance(selected, int) and not isinstance(selected, bool) else None
-
-
-def _frontier_point_result_for_job(job: Mapping[str, Any], point_index: int) -> dict[str, Any]:
-    return _frontier_point_result_dict(
-        {**job, "base_result": _base_result_for_frontier(job)},
-        point_index,
-    )
-
-
-def _result_mode(job: Mapping[str, Any], result: dict[str, Any]) -> str:
-    return str(job.get("config", {}).get("mode", result.get("mode", "online")))
-
-
-def _cached_materialised_ratebook_frontier_result(
-    job: Mapping[str, Any],
-    point_index: int,
-    expected_lambdas: dict[str, Any],
-) -> dict[str, Any] | None:
-    result = job.get("result")
-    if (
-        isinstance(result, dict)
-        and _cached_result_matches_frontier_selection(result, point_index)
-        and isinstance(result.get("factor_tables"), dict)
-        and isinstance(result.get("factor_dtypes"), dict)
-        and _lambda_mappings_match(result.get("lambdas"), expected_lambdas)
-    ):
-        return result
-    return None
-
-
-def _materialised_ratebook_result_dict(
-    result_dict: dict[str, Any],
-    solve_result: SolveResultLike,
-    factor_level_counts: dict[str, dict[str, int]],
-    factor_level_order: dict[str, list[str]],
-    factor_dtypes: dict[str, list[dict[str, Any]]],
-) -> dict[str, Any]:
-    materialised = dict(result_dict)
-    materialised.update(
-        {
-            "total_objective": solve_result.total_objective,
-            "baseline_objective": solve_result.baseline_objective,
-            "constraints": solve_result.total_constraints,
-            "baseline_constraints": solve_result.baseline_constraints,
-            "lambdas": solve_result.lambdas,
-            "converged": solve_result.converged,
-            "cd_iterations": getattr(solve_result, "cd_iterations", None),
-            "clamp_rate": getattr(solve_result, "clamp_rate", None),
-            "factor_tables": _serialise_ratebook_factor_tables(
-                getattr(solve_result, "factor_tables", None),
-                factor_level_counts,
-                factor_level_order,
-                factor_dtypes,
-            ),
-            "factor_dtypes": factor_dtypes,
-            "history": None,
-        }
-    )
-    if materialised["converged"]:
-        materialised.pop("warning", None)
-    else:
-        materialised["warning"] = NON_CONVERGED_WARNING
-    return materialised
-
-
-def _ratebook_runtime_state_or_raise(
-    job_id: str,
-) -> tuple[JobSnapshot, Any, Any, Any, list[list[str]]]:
-    if not _store.touch_heavy_objects(
-        job_id,
-        required_keys=("solver", "quote_grid"),
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Ratebook runtime state is not available for this job. Re-run the "
-                "solve to materialise this frontier point."
-            ),
-        )
-
-    job = _store.require_completed_job(job_id)
-    solver = job.get("solver")
-    quote_grid = job.get("quote_grid")
-    factor_columns = job.get("factor_columns_valid")
-    if solver is None or quote_grid is None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Ratebook runtime state is not available for this job. Re-run the "
-                "solve to materialise this frontier point."
-            ),
-        )
-    factor_contexts = job.get("ratebook_factor_contexts")
-    artifact_handles = _artifact_handles_or_raise(job)
-    factors_handle = artifact_handles.get(_RATEBOOK_FACTORS_HANDLE_KEY)
-    has_factor_source = factor_contexts is not None or isinstance(factors_handle, dict)
-    if factor_columns is None and not has_factor_source:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Ratebook runtime state is not available for this job. Re-run the "
-                "solve to materialise this frontier point."
-            ),
-        )
-    if not isinstance(factor_columns, list) or not all(
-        isinstance(group, list) and all(isinstance(col, str) for col in group)
-        for group in factor_columns
-    ):
-        raise HTTPException(status_code=500, detail="Ratebook factor column metadata is invalid")
-    if factor_contexts is None:
-        if not isinstance(factors_handle, dict):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Ratebook runtime state is not available for this job. Re-run the "
-                    "solve to materialise this frontier point."
-                ),
-            )
-        factor_contexts = _build_ratebook_factor_contexts(
-            factors_handle,
-            quote_grid,
-            job.get("config", {}),
-            factor_columns,
-        )
-    return job, solver, quote_grid, factor_contexts, factor_columns
-
-
-def _materialise_ratebook_frontier_point(
-    job_id: str,
-    point_index: int,
-    result_dict: dict[str, Any],
-) -> tuple[Mapping[str, Any], dict[str, Any], SolveResultLike]:
-    job = _store.require_completed_job(job_id)
-    cached_result = _cached_materialised_ratebook_frontier_result(
-        job,
-        point_index,
-        result_dict["lambdas"],
-    )
-    if cached_result is not None:
-        return job, cached_result, _summary_solve_result(cached_result)
-
-    job, solver, quote_grid, factor_contexts, factor_columns = _ratebook_runtime_state_or_raise(
-        job_id,
-    )
-    base_result = _base_result_for_frontier(job)
-    constraints_override = _frontier_point_constraints_override(job, point_index)
-    solve_result = solver.solve(
-        quote_grid,
-        factor_contexts,
-        factor_columns=factor_columns,
-        lambdas=result_dict["lambdas"],
-        _constraints_override=constraints_override,
-    )
-    factor_level_counts = job.get("factor_level_counts")
-    if not isinstance(factor_level_counts, dict):
-        artifact_handles = _artifact_handles_or_raise(job)
-        factors_handle = artifact_handles.get(_RATEBOOK_FACTORS_HANDLE_KEY)
-        if not isinstance(factors_handle, dict):
-            raise HTTPException(status_code=500, detail="Ratebook factor artifact is missing")
-        factor_level_counts = _ratebook_factor_level_counts_from_artifact(
-            factors_handle,
-            factor_columns,
-        )
-    factor_level_order = job.get(_RATEBOOK_FACTOR_LEVEL_ORDER_KEY) or {}
-    factor_dtypes = job.get("factor_dtypes")
-    if not isinstance(factor_dtypes, dict):
-        result_with_dtypes = job.get("result")
-        if isinstance(result_with_dtypes, dict):
-            factor_dtypes = result_with_dtypes.get("factor_dtypes")
-    if not isinstance(factor_dtypes, dict):
-        artifact_handles = _artifact_handles_or_raise(job)
-        factors_handle = artifact_handles.get(_RATEBOOK_FACTORS_HANDLE_KEY)
-        if not isinstance(factors_handle, dict):
-            raise HTTPException(
-                status_code=500,
-                detail="Ratebook factor dtype metadata is missing",
-            )
-        factor_dtypes = _ratebook_factor_dtypes_from_artifact(
-            factors_handle,
-            factor_columns,
-        )
-    materialised = _materialised_ratebook_result_dict(
-        result_dict,
-        solve_result,
-        factor_level_counts,
-        factor_level_order,
-        factor_dtypes,
-    )
-    updated_job = _store.atomic_update(
-        job_id,
-        {
-            "base_result": base_result,
-            "selected_frontier_point": point_index,
-            "result": materialised,
-        },
-        expected_status="completed",
-    )
-    if updated_job is None:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Optimiser job state changed while materialising the frontier point. "
-                "Re-run the solve to materialise it again."
-            ),
-        )
-    return updated_job, materialised, solve_result
-
-
-def _solve_result_for_selected_frontier_point(
-    job_id: str,
-    job: Mapping[str, Any],
-    point_index: int,
-) -> tuple[Mapping[str, Any], dict[str, Any], SolveResultLike]:
-    selected_result = _frontier_point_result_for_job(job, point_index)
-    if _result_mode(job, selected_result) == "ratebook":
-        updated_job, selected_result, _materialised_solve_result = (
-            _materialise_ratebook_frontier_point(
-                job_id,
-                point_index,
-                selected_result,
-            )
-        )
-        return updated_job, selected_result, _summary_solve_result(selected_result)
-    return job, selected_result, _summary_solve_result(selected_result)
-
-
-def _frontier_point_mlflow_summary(
-    job: Mapping[str, Any],
-    result: dict[str, Any],
-    point_index: int,
-) -> dict[str, dict[str, Any]]:
-    job_config = job.get("config", {})
-    metrics: dict[str, float] = {
-        "total_objective": float(result["total_objective"]),
-        "converged": 1.0 if result.get("converged") is True else 0.0,
-    }
-    for name, value in result.get("constraints", {}).items():
-        metrics[f"constraint.{name}"] = float(value)
-    for name, value in result.get("lambdas", {}).items():
-        metrics[f"lambda.{name}"] = float(value)
-
-    params = {
-        "mode": str(job_config.get("mode", result.get("mode", "online"))),
-        "objective": str(job_config.get("objective", "")),
-        "selected_frontier_point": str(point_index),
-    }
-    return {
-        "params": params,
-        "metrics": metrics,
-        "artifacts": {
-            "lambdas": result.get("lambdas", {}),
-            "frontier_point_summary": result,
-        },
-    }
-
-
-def _artifact_handles_or_raise(job: Mapping[str, Any]) -> dict[str, Any]:
-    artifact_handles = job.get("artifact_handles", {})
-    if not isinstance(artifact_handles, dict):
-        raise HTTPException(status_code=500, detail="Job artifact handles are invalid")
-    return artifact_handles
-
-
-def _invalidate_frontier_apply_artifact_handles(
-    job: Mapping[str, Any],
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    artifact_handles = _artifact_handles_or_raise(job)
-    retained_handles: dict[str, Any] = {}
-    invalidated_handles: list[dict[str, Any]] = []
-    for key, handle in artifact_handles.items():
-        if key.startswith(_FRONTIER_APPLY_HANDLE_PREFIX):
-            if not isinstance(handle, dict):
-                raise HTTPException(
-                    status_code=500,
-                    detail="Job frontier apply artifact handle is invalid",
-                )
-            invalidated_handles.append(handle)
-        else:
-            retained_handles[key] = handle
-    return retained_handles, invalidated_handles
-
-
-def _materialise_frontier_point_apply(
-    job_id: str,
-    point_index: int,
-) -> tuple[Any, dict[str, Any], bool]:
-    """Return ``(dataframe, result_summary, from_cached_artifact)`` for a frontier point.
-
-    Online-mode only: ratebook jobs are rejected by the route-level gate
-    (and the guard below) because the real ``RatebookResult`` has no
-    per-quote dataframe to materialise — see
-    ``_RATEBOOK_APPLY_DETAIL_UNSUPPORTED``.
-    """
-    with _frontier_state_lock:
-        job = _store.require_completed_job(job_id)
-        # Defense in depth behind the route gate: running ``apply_from_grid``
-        # for a ratebook job would silently discard the solved factor tables.
-        _reject_ratebook_apply_detail(job)
-        base_result = _base_result_for_frontier(job)
-        result_dict = _frontier_point_result_dict(
-            {**job, "base_result": base_result},
-            point_index,
-        )
-        frontier_generation = _frontier_generation_or_raise(job)
-        artifact_handles = _artifact_handles_or_raise(job)
-        handle_key = _frontier_apply_handle_key(point_index)
-        existing_handle = artifact_handles.get(handle_key)
-        if existing_handle is not None:
-            if not isinstance(existing_handle, dict):
-                raise HTTPException(
-                    status_code=500,
-                    detail="Job frontier apply artifact handle is invalid",
-                )
-            updated_job = _store.atomic_update(
-                job_id,
-                {
-                    "base_result": base_result,
-                    "selected_frontier_point": point_index,
-                    "result": result_dict,
-                },
-                expected_status="completed",
-            )
-            if updated_job is None:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "Optimiser job state changed while loading the frontier point. "
-                        "Re-run the solve to materialise it again."
-                    ),
-                )
-            return _load_apply_result_artifact(existing_handle), result_dict, True
-
-    new_handle: dict[str, Any] | None = None
-    owns_new_handle = False
-    try:
-        if not _store.touch_heavy_objects(job_id, required_keys=("quote_grid",)):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Quote grid is not available for this job. Re-run the solve to "
-                    "materialise this frontier point."
-                ),
-            )
-        with _frontier_state_lock:
-            job = _store.require_completed_job(job_id)
-            if _frontier_generation_or_raise(job) != frontier_generation:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "The frontier changed while materialising the selected point. "
-                        "Select a point from the current frontier and try again."
-                    ),
-                )
-            quote_grid = job.get("quote_grid")
-            if quote_grid is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Quote grid is not available for this job. Re-run the solve to "
-                        "materialise this frontier point."
-                    ),
-                )
-
-        from price_contour import apply_from_grid
-
-        apply_result = apply_from_grid(
-            quote_grid,
-            lambdas=result_dict["lambdas"],
-            constraints=job.get("config", {}).get("constraints", {}),
-        )
-        df = _dataframe_or_raise(apply_result, context="Apply result")
-        new_handle = _persist_apply_result_artifact(apply_result)
-        if new_handle is None:
-            with _frontier_state_lock:
-                latest_job = _store.require_completed_job(job_id)
-                if _frontier_generation_or_raise(latest_job) != frontier_generation:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            "The frontier changed while materialising the selected point. "
-                            "Select a point from the current frontier and try again."
-                        ),
-                    )
-                updated_job = _store.atomic_update(
-                    job_id,
-                    {
-                        "base_result": base_result,
-                        "selected_frontier_point": point_index,
-                        "result": result_dict,
-                    },
-                    expected_status="completed",
-                )
-                if updated_job is None:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            "Optimiser job state changed while materialising the frontier "
-                            "point. Re-run the solve to materialise it again."
-                        ),
-                    )
-            return df, result_dict, False
-
-        owns_new_handle = True
-        duplicate_handle = False
-        evicted_handles: list[dict[str, Any]] = []
-        with _frontier_state_lock:
-            latest_job = _store.require_completed_job(job_id)
-            if _frontier_generation_or_raise(latest_job) != frontier_generation:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "The frontier changed while materialising the selected point. "
-                        "Select a point from the current frontier and try again."
-                    ),
-                )
-            latest_handles = _artifact_handles_or_raise(latest_job)
-            existing_latest_handle = latest_handles.get(handle_key)
-            if existing_latest_handle is not None:
-                if not isinstance(existing_latest_handle, dict):
-                    raise HTTPException(
-                        status_code=500,
-                        detail="Job frontier apply artifact handle is invalid",
-                    )
-                duplicate_handle = True
-                updated_job = _store.atomic_update(
-                    job_id,
-                    {
-                        "base_result": base_result,
-                        "selected_frontier_point": point_index,
-                        "result": result_dict,
-                    },
-                    expected_status="completed",
-                )
-            else:
-                updated_handles, evicted_handles = _with_bounded_frontier_apply_handle(
-                    latest_handles,
-                    handle_key,
-                    new_handle,
-                )
-                updated_job = _store.atomic_update_if_heavy_present(
-                    job_id,
-                    {
-                        "artifact_handles": updated_handles,
-                        "base_result": base_result,
-                        "selected_frontier_point": point_index,
-                        "result": result_dict,
-                    },
-                    required_keys=("quote_grid",),
-                    expected_status="completed",
-                )
-                if updated_job is not None:
-                    owns_new_handle = False
-            if updated_job is None:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "Optimiser runtime state changed while materialising the frontier "
-                        "point. Re-run the solve to materialise it again."
-                    ),
-                )
-
-        if duplicate_handle:
-            _cleanup_orphan_apply_artifact(new_handle, job_id=job_id)
-            owns_new_handle = False
-        for evicted_handle in evicted_handles:
-            _cleanup_orphan_apply_artifact(
-                evicted_handle,
-                job_id=job_id,
-                event="frontier_apply_artifact_cap_cleanup_failed",
-            )
-        return df, result_dict, False
-    except Exception:
-        # A request-created apply artifact is removed on any failure; the
-        # failure itself propagates to the application handlers.
-        if owns_new_handle and new_handle is not None:
-            _cleanup_orphan_apply_artifact(new_handle, job_id=job_id)
-        raise
 
 
 @router.post("/solve", response_model=OptimiserSolveResponse)
@@ -1241,7 +388,7 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
 
     target_point_index = _selected_or_requested_frontier_point(job, body.point_index)
     if target_point_index is not None:
-        df, result, from_artifact = _materialise_frontier_point_apply(
+        df, result, from_artifact = _frontier_service.materialise_point_apply(
             body.job_id,
             target_point_index,
         )
@@ -1298,20 +445,6 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
     return response
 
 
-_frontier_lifecycle = JobLifecycle(_store)
-
-
-def _raise_if_frontier_stopped(frontier_job_id: str) -> None:
-    reason = _frontier_jobs.cancellation_reason(frontier_job_id)
-    if reason is not None:
-        raise BackgroundJobStoppedError(frontier_job_id, reason)
-    job = _store.require_job(frontier_job_id)
-    if job.get("status") != "running":
-        terminal_reason = job.get("terminal_reason")
-        reason_text = terminal_reason if isinstance(terminal_reason, str) else str(job["status"])
-        raise BackgroundJobStoppedError(frontier_job_id, reason_text)
-
-
 def _frontier_status_response(job: Mapping[str, Any]) -> OptimiserFrontierStatusResponse:
     stored_status = require_job_status(job)
     result = None
@@ -1334,139 +467,6 @@ def _frontier_status_response(job: Mapping[str, Any]) -> OptimiserFrontierStatus
     )
 
 
-def _has_running_frontier_job(parent_job_id: str) -> bool:
-    def _matches(job: JobSnapshot) -> bool:
-        return (
-            job.get("status") == "running"
-            and job.get(_JOB_TYPE_KEY) == _FRONTIER_RECOMPUTE_JOB_TYPE
-            and job.get("parent_job_id") == parent_job_id
-        )
-
-    return _store.has_job_matching(_matches)
-
-
-def _run_frontier_sweep(
-    *,
-    frontier_job_id: str,
-    parent_job_id: str,
-    solver: Any,
-    quote_grid: Any,
-    mode: str,
-    ratebook_factors: Any,
-    factor_columns: Any,
-    ranges: dict[str, tuple[float, float]],
-    n_points_per_dim: int,
-    initial_lambdas: Any,
-    base_result: dict[str, Any],
-    start_time: float,
-) -> None:
-    """Run the frontier sweep off the request thread and record the outcome.
-
-    The sweep is hundreds of sequential re-solves at 2-3 constraints; it must
-    never block a FastAPI worker.  On success the parent solve job is updated
-    exactly as the old inline route did, and the sweep job completes with the
-    frontier payload as its result.
-    """
-    try:
-        with solver_worker_context():
-            _raise_if_frontier_stopped(frontier_job_id)
-            frontier_result = _compute_frontier(
-                solver,
-                quote_grid,
-                mode=mode,
-                ratebook_factors=ratebook_factors,
-                factor_columns=factor_columns,
-                threshold_ranges=ranges,
-                n_points_per_dim=n_points_per_dim,
-                initial_lambdas=initial_lambdas,
-                check_cancelled=lambda: _raise_if_frontier_stopped(frontier_job_id),
-            )
-            _raise_if_frontier_stopped(frontier_job_id)
-        response = OptimiserFrontierResponse(
-            **limited_frontier_payload(
-                frontier_result.points,
-                constraint_names=list(ranges.keys()),
-            )
-        )
-        frontier_dict = response.model_dump(exclude={"job_id"})
-        result_dict = dict(base_result)
-        result_dict["frontier"] = frontier_dict
-        result_dict.pop("frontier_error", None)
-        result_dict.pop("selected_frontier_point", None)
-        with _frontier_state_lock:
-            _raise_if_frontier_stopped(frontier_job_id)
-            latest_job = _store.require_completed_job(parent_job_id)
-            next_frontier_generation = _frontier_generation_or_raise(latest_job) + 1
-            retained_handles, invalidated_handles = _invalidate_frontier_apply_artifact_handles(
-                latest_job
-            )
-            updated_job = _store.atomic_update(
-                parent_job_id,
-                {
-                    "result": result_dict,
-                    "base_result": dict(result_dict),
-                    "frontier_data": frontier_dict,
-                    _FRONTIER_GENERATION_KEY: next_frontier_generation,
-                    "selected_frontier_point": None,
-                    "artifact_handles": retained_handles,
-                },
-                expected_status="completed",
-            )
-            if updated_job is None:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "Optimiser job state changed while recomputing the frontier. "
-                        "Re-run the solve to compute a new frontier."
-                    ),
-                )
-            for handle in invalidated_handles:
-                _cleanup_orphan_apply_artifact(
-                    handle,
-                    job_id=parent_job_id,
-                    event="frontier_recompute_stale_apply_artifact_cleanup_failed",
-                )
-            completed_job = _frontier_lifecycle.transition(
-                frontier_job_id,
-                to="completed",
-                message="Frontier computed",
-                fields={"result": frontier_dict},
-                elapsed_seconds=time.monotonic() - start_time,
-            )
-            if completed_job is None:
-                _raise_if_frontier_stopped(frontier_job_id)
-                raise RuntimeError("Frontier completion could not be recorded")
-    except BackgroundJobStoppedError:
-        return
-    except HTTPException as exc:
-        reason: TerminalReason = "contract_error" if exc.status_code in (400, 409, 422) else "error"
-        with _frontier_state_lock:
-            _frontier_lifecycle.transition(
-                frontier_job_id,
-                to=reason,
-                message=str(exc.detail),
-                fields={"http_status_code": exc.status_code, "error_detail": exc.detail},
-                elapsed_seconds=time.monotonic() - start_time,
-            )
-    except Exception as exc:
-        logger.error(
-            "frontier_failed",
-            error=str(exc),
-            job_id=parent_job_id,
-            frontier_job_id=frontier_job_id,
-            exc_info=True,
-        )
-        with _frontier_state_lock:
-            _frontier_lifecycle.transition(
-                frontier_job_id,
-                to="error",
-                message=_INTERNAL_ERROR_DETAIL,
-                elapsed_seconds=time.monotonic() - start_time,
-            )
-    finally:
-        _frontier_jobs.release(frontier_job_id)
-
-
 @router.post("/frontier", response_model=OptimiserFrontierResponse)
 def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
     """Start an efficient-frontier sweep for a completed optimisation job.
@@ -1477,146 +477,14 @@ def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
     background thread; the response carries a pollable job handle for
     ``GET /frontier/status/{job_id}``.
     """
-    job: Mapping[str, Any] = _store.require_completed_job(body.job_id)
-    mode = _job_mode(job)
-    missing_runtime_detail = (
-        "Solver and quote grid are not available for this job. "
-        "Re-run the solve to compute a new frontier."
-    )
-    if mode == "ratebook":
-        (
-            job,
-            solver,
-            quote_grid,
-            ratebook_factors,
-            factor_columns,
-        ) = _ratebook_runtime_state_or_raise(body.job_id)
-    else:
-        _touch_heavy_objects_or_raise(
-            body.job_id,
-            required_keys=("solver", "quote_grid"),
-            detail=missing_runtime_detail,
-        )
-        job = _store.require_completed_job(body.job_id)
-        solver = job.get("solver")
-        quote_grid = job.get("quote_grid")
-        ratebook_factors = None
-        factor_columns = None
-        if solver is None or quote_grid is None:
-            raise HTTPException(status_code=400, detail=missing_runtime_detail)
-
-    base_result = _base_result_for_frontier_recompute(job)
-    ranges = _frontier_ranges_for_request(body, job)
-    try:
-        enforce_frontier_compute_budget(
-            n_points_per_dim=body.n_points_per_dim,
-            n_constraints=len(ranges),
-        )
-    except FrontierComputeBudgetExceededError as exc:
-        # 422: the request is well-formed but its projected solver
-        # workload exceeds the library cap; the message names both the
-        # projection and the cap.
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    with _frontier_state_lock:
-        if _has_running_frontier_job(body.job_id):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "A frontier computation is already running for this job. "
-                    "Wait for it to finish before starting another sweep."
-                ),
-            )
-        start_time = time.monotonic()
-        initial_job: _FrontierRecomputeRunningJob = {
-            "status": "running",
-            "job_type": _FRONTIER_RECOMPUTE_JOB_TYPE,
-            "progress": 0.0,
-            "message": "Computing efficient frontier",
-            "parent_job_id": body.job_id,
-            "start_time": start_time,
-            "timeout": _solve_timeout_from_config(job.get("config", {})),
-        }
-        frontier_job_id = _store.create_job(initial_job)
-        _frontier_jobs.register_latest(
-            (_FRONTIER_RECOMPUTE_JOB_TYPE, body.job_id),
-            frontier_job_id,
-        )
-
-    def _frontier_background() -> None:
-        _run_frontier_sweep(
-            frontier_job_id=frontier_job_id,
-            parent_job_id=body.job_id,
-            solver=solver,
-            quote_grid=quote_grid,
-            mode=mode,
-            ratebook_factors=ratebook_factors,
-            factor_columns=factor_columns,
-            ranges=ranges,
-            n_points_per_dim=body.n_points_per_dim,
-            initial_lambdas=base_result.get("lambdas"),
-            base_result=base_result,
-            start_time=start_time,
-        )
-
-    thread = threading.Thread(target=_frontier_background, daemon=True)
-    try:
-        thread.start()
-    except Exception as exc:
-        logger.error(
-            "frontier_worker_start_failed",
-            error=str(exc),
-            job_id=body.job_id,
-            frontier_job_id=frontier_job_id,
-            exc_info=True,
-        )
-        with _frontier_state_lock:
-            _frontier_lifecycle.transition(
-                frontier_job_id,
-                to="error",
-                message=f"Failed to start frontier worker: {exc}",
-                elapsed_seconds=time.monotonic() - start_time,
-            )
-            _frontier_jobs.release(frontier_job_id)
-        raise HTTPException(
-            status_code=500,
-            detail="Frontier worker failed to start. Check the server logs for details.",
-        ) from exc
+    frontier_job_id = _frontier_service.start_sweep(body)
     return OptimiserFrontierResponse(status="started", job_id=frontier_job_id)
 
 
 @router.get("/frontier/status/{job_id}", response_model=OptimiserFrontierStatusResponse)
 def frontier_status(job_id: str) -> OptimiserFrontierStatusResponse:
     """Return status for a background frontier sweep job."""
-    with _frontier_state_lock:
-        job = _store.require_job(job_id)
-        if job.get(_JOB_TYPE_KEY) != _FRONTIER_RECOMPUTE_JOB_TYPE:
-            raise HTTPException(status_code=404, detail=f"Frontier job '{job_id}' not found")
-
-        if job.get("status") == "running":
-            start = job.get("start_time")
-            timeout = job.get("timeout")
-            if (
-                isinstance(start, int | float)
-                and not isinstance(start, bool)
-                and isinstance(timeout, int | float)
-                and not isinstance(timeout, bool)
-                and timeout > 0
-                and (time.monotonic() - start) > timeout
-            ):
-                _frontier_jobs.cancel(job_id, reason="timed_out")
-                updated_job = _frontier_lifecycle.transition(
-                    job_id,
-                    to="timed_out",
-                    message=(
-                        f"Frontier timed out after {timeout}s. "
-                        "Reduce the sweep resolution or increase the solve timeout."
-                    ),
-                    elapsed_seconds=time.monotonic() - start,
-                )
-                job = updated_job if updated_job is not None else _store.require_job(job_id)
-
-        return _frontier_status_response(job)
+    return _frontier_status_response(_frontier_service.sweep_status(job_id))
 
 
 @router.post(
@@ -1625,92 +493,13 @@ def frontier_status(job_id: str) -> OptimiserFrontierStatusResponse:
 )
 def cancel_frontier(job_id: str) -> OptimiserFrontierStatusResponse:
     """Cancel a background frontier sweep without allowing late publication."""
-    with _frontier_state_lock:
-        job = _store.require_job(job_id)
-        if job.get(_JOB_TYPE_KEY) != _FRONTIER_RECOMPUTE_JOB_TYPE:
-            raise HTTPException(status_code=404, detail=f"Frontier job '{job_id}' not found")
-        if job.get("status") == "running":
-            _frontier_jobs.cancel(job_id, reason="cancelled")
-            start = job.get("start_time")
-            elapsed_seconds = job.get("elapsed_seconds", 0.0)
-            if isinstance(start, int | float) and not isinstance(start, bool):
-                elapsed_seconds = time.monotonic() - start
-            updated_job = _frontier_lifecycle.transition(
-                job_id,
-                to="cancelled",
-                message="Frontier cancelled",
-                elapsed_seconds=elapsed_seconds,
-            )
-            job = updated_job if updated_job is not None else _store.require_job(job_id)
-        return _frontier_status_response(job)
+    return _frontier_status_response(_frontier_service.cancel_sweep(job_id))
 
 
 @router.post("/frontier/select", response_model=OptimiserFrontierSelectResponse)
 def select_frontier_point(body: OptimiserFrontierSelectRequest) -> OptimiserFrontierSelectResponse:
     """Select a frontier summary point without re-solving the optimiser."""
-    job = _store.require_completed_job(body.job_id)
-
-    if (
-        body.point_index is not None
-        and job.get("selected_frontier_point") == body.point_index
-        and isinstance(job.get("result"), dict)
-        and _cached_result_matches_frontier_selection(job["result"], body.point_index)
-        and not _job_has_frontier_points(job)
-    ):
-        return _frontier_select_response(job["result"])
-
-    existing_base_result = job.get("base_result")
-    base_result = (
-        existing_base_result
-        if isinstance(existing_base_result, dict)
-        else dict(job.get("result", {}))
-    )
-    if body.point_index is None:
-        result_dict = dict(base_result)
-        result_dict.pop("selected_frontier_point", None)
-        selected_point: int | None = None
-    else:
-        result_dict = _frontier_point_result_dict(
-            {**job, "base_result": base_result},
-            body.point_index,
-        )
-        selected_point = body.point_index
-        if (
-            body.include_ratebook_tables
-            and _result_mode({**job, "base_result": base_result}, result_dict) == "ratebook"
-        ):
-            _materialised_job, materialised_result, _solve_result = (
-                _materialise_ratebook_frontier_point(
-                    body.job_id,
-                    selected_point,
-                    result_dict,
-                )
-            )
-            _store.clear_result_data(body.job_id, keys=("solve_result",))
-            return _frontier_select_response(materialised_result)
-
-    updated_job = _store.atomic_update(
-        body.job_id,
-        {
-            "base_result": base_result,
-            "selected_frontier_point": selected_point,
-            "result": result_dict,
-        },
-        expected_status="completed",
-    )
-    if updated_job is None:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Optimiser job state changed while selecting the frontier point. "
-                "Re-run the solve to select a new point."
-            ),
-        )
-
-    if selected_point is not None:
-        _store.clear_result_data(body.job_id, keys=("solve_result",))
-
-    return _frontier_select_response(result_dict)
+    return _frontier_select_response(_frontier_service.select_point(body))
 
 
 def _build_artifact_payload(
@@ -1913,7 +702,7 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
     selected_frontier_point = _selected_or_requested_frontier_point(job, body.point_index)
     solve_result: SolveResultLike
     if selected_frontier_point is not None:
-        job, _selected_result, solve_result = _solve_result_for_selected_frontier_point(
+        job, _selected_result, solve_result = _frontier_service.solve_result_for_selected_point(
             body.job_id,
             job,
             selected_frontier_point,
@@ -1987,7 +776,7 @@ def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
     solve_result: SolveResultLike
     solver: Any | None = None
     if selected_frontier_point is not None:
-        job, selected_result, solve_result = _solve_result_for_selected_frontier_point(
+        job, selected_result, solve_result = _frontier_service.solve_result_for_selected_point(
             body.job_id,
             job,
             selected_frontier_point,

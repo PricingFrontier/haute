@@ -449,7 +449,7 @@ def test_frontier_apply_cleans_new_artifact_after_unexpected_store_failure(
     with (
         patch("price_contour.apply_from_grid", return_value=apply_result),
         patch(
-            "haute.routes.optimiser._persist_apply_result_artifact",
+            "haute.routes._optimiser_frontier._persist_apply_result_artifact",
             return_value=orphan_handle,
         ),
         patch.object(
@@ -699,7 +699,7 @@ def test_frontier_select_unhandled_exception_logged_and_500(
     # Make the in-route helper raise an unexpected error mid-flow.
     with (
         patch(
-            "haute.routes.optimiser._frontier_point_result_dict",
+            "haute.routes._optimiser_frontier._frontier_point_result_dict",
             side_effect=ZeroDivisionError("kaboom"),
         ),
         patch("haute.server.logger.error") as log_error,
@@ -1034,7 +1034,7 @@ def test_apply_falls_back_to_in_memory_when_persistence_unavailable(
 
     with (
         patch("price_contour.apply_from_grid", return_value=apply_result),
-        patch("haute.routes.optimiser._persist_apply_result_artifact", return_value=None),
+        patch("haute.routes._optimiser_frontier._persist_apply_result_artifact", return_value=None),
     ):
         resp = client.post(
             "/api/optimiser/apply",
@@ -1116,7 +1116,7 @@ def test_apply_cleans_up_orphan_artifact_when_atomic_update_loses_race(
     with (
         patch("price_contour.apply_from_grid", return_value=apply_result),
         patch(
-            "haute.routes.optimiser._persist_apply_result_artifact",
+            "haute.routes._optimiser_frontier._persist_apply_result_artifact",
             return_value=new_handle,
         ),
         patch.object(
@@ -1125,7 +1125,7 @@ def test_apply_cleans_up_orphan_artifact_when_atomic_update_loses_race(
             return_value=None,
         ),
         patch(
-            "haute.routes.optimiser._cleanup_apply_result_artifact",
+            "haute.routes._optimiser_frontier._cleanup_apply_result_artifact",
         ) as cleanup_mock,
     ):
         resp = client.post(

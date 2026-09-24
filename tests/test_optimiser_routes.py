@@ -5898,6 +5898,7 @@ class TestFrontierRoute:
     ):
         """A failed frontier launch must leave no running job or cancellation token."""
         import haute.routes.optimiser as optimiser_routes
+        from haute.routes import _optimiser_frontier
         from haute.schemas import OptimiserFrontierRequest
 
         seed_job(
@@ -5933,7 +5934,7 @@ class TestFrontierRoute:
         frontier_threading = MagicMock()
         frontier_threading.Thread.return_value = failed_thread
         with (
-            patch.object(optimiser_routes, "threading", frontier_threading),
+            patch.object(_optimiser_frontier, "threading", frontier_threading),
             pytest.raises(HTTPException) as exc_info,
         ):
             optimiser_routes.run_frontier(body)
@@ -5953,7 +5954,7 @@ class TestFrontierRoute:
         assert frontier_job["status"] == "error"
         assert frontier_job["terminal_reason"] == "error"
         assert frontier_job["message"] == "Failed to start frontier worker: thread boom"
-        assert optimiser_routes._frontier_jobs.cancel(frontier_job_id) is False
+        assert optimiser_routes._frontier_service.sweeps.cancel(frontier_job_id) is False
 
     def test_frontier_cancel_stops_late_parent_publication(
         self,
@@ -6026,11 +6027,14 @@ class TestFrontierRoute:
 
         deadline = time.monotonic() + 3
         while (
-            optimiser_routes._frontier_jobs.cancellation_reason(frontier_job_id) is not None
+            optimiser_routes._frontier_service.sweeps.cancellation_reason(frontier_job_id)
+            is not None
             and time.monotonic() < deadline
         ):
             time.sleep(0.01)
-        assert optimiser_routes._frontier_jobs.cancellation_reason(frontier_job_id) is None
+        assert (
+            optimiser_routes._frontier_service.sweeps.cancellation_reason(frontier_job_id) is None
+        )
         parent = clean_job_store.require_job("cancel_frontier_parent")
         assert parent["frontier_data"] == original_frontier
         assert parent["result"] == base_result
@@ -6051,6 +6055,7 @@ class TestFrontierRoute:
             {
                 "status": "running",
                 "job_type": "frontier_recompute",
+                "parent_job_id": "running_frontier_parent",
                 "start_time": time.monotonic() - 5,
                 "timeout": timeout,
                 "progress": 0.4,
@@ -6147,11 +6152,14 @@ class TestFrontierRoute:
 
         deadline = time.monotonic() + 3
         while (
-            optimiser_routes._frontier_jobs.cancellation_reason(frontier_job_id) is not None
+            optimiser_routes._frontier_service.sweeps.cancellation_reason(frontier_job_id)
+            is not None
             and time.monotonic() < deadline
         ):
             time.sleep(0.01)
-        assert optimiser_routes._frontier_jobs.cancellation_reason(frontier_job_id) is None
+        assert (
+            optimiser_routes._frontier_service.sweeps.cancellation_reason(frontier_job_id) is None
+        )
         parent = clean_job_store.require_job("timeout_frontier_parent")
         assert parent.get("frontier_data") is None
         assert parent["result"] == base_result
@@ -9171,7 +9179,7 @@ class TestFrontierSelect:
 
         with (
             patch(
-                "haute.routes.optimiser._persist_apply_result_artifact",
+                "haute.routes._optimiser_frontier._persist_apply_result_artifact",
                 side_effect=AssertionError("selection must not persist apply artifacts"),
             ),
             patch.object(
@@ -11775,7 +11783,7 @@ class TestSelectFrontierPointResolve:
         cleanup_error = RuntimeError("cleanup denied")
         with (
             patch(
-                "haute.routes.optimiser._cleanup_apply_result_artifact",
+                "haute.routes._optimiser_frontier._cleanup_apply_result_artifact",
                 side_effect=cleanup_error,
             ),
             patch("haute.routes.optimiser.logger.warning") as log_warning,
@@ -14767,7 +14775,7 @@ class TestFrontierException:
                 "completed_at": time.time(),
             },
         )
-        with patch("haute.routes.optimiser.logger.error") as log_error:
+        with patch("haute.routes._optimiser_frontier.logger.error") as log_error:
             resp = client.post(
                 "/api/optimiser/frontier",
                 json={
@@ -15507,7 +15515,7 @@ class TestOptimiserHelperValidators:
     """Direct tests for defensive validators in routes/optimiser.py."""
 
     def test_as_finite_float_rejects_bool(self) -> None:
-        from haute.routes.optimiser import _as_finite_float
+        from haute.routes._optimiser_frontier import _as_finite_float
 
         with pytest.raises(HTTPException) as exc:
             _as_finite_float(True, field="x")
@@ -15515,41 +15523,41 @@ class TestOptimiserHelperValidators:
         assert "x" in exc.value.detail
 
     def test_as_finite_float_rejects_non_numeric(self) -> None:
-        from haute.routes.optimiser import _as_finite_float
+        from haute.routes._optimiser_frontier import _as_finite_float
 
         with pytest.raises(HTTPException) as exc:
             _as_finite_float("not a number", field="y")
         assert exc.value.status_code == 500
 
     def test_as_finite_float_rejects_nan(self) -> None:
-        from haute.routes.optimiser import _as_finite_float
+        from haute.routes._optimiser_frontier import _as_finite_float
 
         with pytest.raises(HTTPException) as exc:
             _as_finite_float(float("nan"), field="z")
         assert "not finite" in exc.value.detail
 
     def test_as_finite_float_rejects_inf(self) -> None:
-        from haute.routes.optimiser import _as_finite_float
+        from haute.routes._optimiser_frontier import _as_finite_float
 
         with pytest.raises(HTTPException) as exc:
             _as_finite_float(float("inf"), field="z")
         assert "not finite" in exc.value.detail
 
     def test_as_finite_float_accepts_valid_value(self) -> None:
-        from haute.routes.optimiser import _as_finite_float
+        from haute.routes._optimiser_frontier import _as_finite_float
 
         assert _as_finite_float(3.14, field="ok") == 3.14
         assert _as_finite_float(7, field="ok") == 7.0
 
     def test_frontier_points_or_raise_missing_data(self) -> None:
-        from haute.routes.optimiser import _frontier_points_or_raise
+        from haute.routes._optimiser_frontier import _frontier_points_or_raise
 
         with pytest.raises(HTTPException) as exc:
             _frontier_points_or_raise({"frontier_data": None})
         assert exc.value.status_code == 400
 
     def test_frontier_points_or_raise_invalid_points_type(self) -> None:
-        from haute.routes.optimiser import _frontier_points_or_raise
+        from haute.routes._optimiser_frontier import _frontier_points_or_raise
 
         # ``"not a list"`` is truthy, so it bypasses the 400 (no points) branch
         # and trips the 500 (invalid shape) branch — both are desired loud
@@ -15559,14 +15567,14 @@ class TestOptimiserHelperValidators:
         assert exc.value.status_code == 500
 
     def test_frontier_points_or_raise_non_dict_point(self) -> None:
-        from haute.routes.optimiser import _frontier_points_or_raise
+        from haute.routes._optimiser_frontier import _frontier_points_or_raise
 
         with pytest.raises(HTTPException) as exc:
             _frontier_points_or_raise({"frontier_data": {"points": [{"ok": 1}, 42]}})
         assert exc.value.status_code == 500
 
     def test_frontier_point_or_raise_out_of_range(self) -> None:
-        from haute.routes.optimiser import _frontier_point_or_raise
+        from haute.routes._optimiser_frontier import _frontier_point_or_raise
 
         job = {"frontier_data": {"points": [{"a": 1}], "n_points": 5}}
         with pytest.raises(HTTPException) as exc:
@@ -15575,7 +15583,7 @@ class TestOptimiserHelperValidators:
         assert "out of range" in exc.value.detail
 
     def test_frontier_point_or_raise_capped_payload(self) -> None:
-        from haute.routes.optimiser import _frontier_point_or_raise
+        from haute.routes._optimiser_frontier import _frontier_point_or_raise
 
         # n_points (50) > len(points) (1) → capped payload branch.
         job = {
@@ -15649,31 +15657,31 @@ class TestOptimiserHelperValidators:
         assert frontier_point_scenario_value_stats({"total_objective": 1.0}) is None
 
     def test_base_result_for_frontier_uses_base_when_present(self) -> None:
-        from haute.routes.optimiser import _base_result_for_frontier
+        from haute.routes._optimiser_frontier import _base_result_for_frontier
 
         job = {"base_result": {"a": 1}, "result": {"a": 2}}
         assert _base_result_for_frontier(job)["a"] == 1
 
     def test_base_result_for_frontier_falls_back_to_result(self) -> None:
-        from haute.routes.optimiser import _base_result_for_frontier
+        from haute.routes._optimiser_frontier import _base_result_for_frontier
 
         assert _base_result_for_frontier({"result": {"b": 7}})["b"] == 7
 
     def test_base_result_for_frontier_missing_raises(self) -> None:
-        from haute.routes.optimiser import _base_result_for_frontier
+        from haute.routes._optimiser_frontier import _base_result_for_frontier
 
         with pytest.raises(HTTPException) as exc:
             _base_result_for_frontier({})
         assert exc.value.status_code == 500
 
     def test_base_result_for_recompute_when_no_selection_returns_empty(self) -> None:
-        from haute.routes.optimiser import _base_result_for_frontier_recompute
+        from haute.routes._optimiser_frontier import _base_result_for_frontier_recompute
 
         assert _base_result_for_frontier_recompute({}) == {}
 
     def test_base_result_for_recompute_with_orphan_selection_raises(self) -> None:
         """If the job is mid-selection but has lost its base_result, fail loud."""
-        from haute.routes.optimiser import _base_result_for_frontier_recompute
+        from haute.routes._optimiser_frontier import _base_result_for_frontier_recompute
 
         job = {"selected_frontier_point": 1}  # selection set, no base_result
         with pytest.raises(HTTPException) as exc:
@@ -15681,7 +15689,7 @@ class TestOptimiserHelperValidators:
         assert "Re-run the solve" in exc.value.detail
 
     def test_base_result_for_recompute_strips_selected_point(self) -> None:
-        from haute.routes.optimiser import _base_result_for_frontier_recompute
+        from haute.routes._optimiser_frontier import _base_result_for_frontier_recompute
 
         job = {"base_result": {"x": 1, "selected_frontier_point": 0}}
         result = _base_result_for_frontier_recompute(job)
@@ -15689,7 +15697,7 @@ class TestOptimiserHelperValidators:
         assert result["x"] == 1
 
     def test_frontier_point_result_dict_invalid_constraint_names(self) -> None:
-        from haute.routes.optimiser import _frontier_point_result_dict
+        from haute.routes._optimiser_frontier import _frontier_point_result_dict
 
         job = {
             "frontier_data": {
@@ -15706,7 +15714,7 @@ class TestOptimiserHelperValidators:
         assert exc.value.status_code == 500
 
     def test_frontier_point_result_dict_non_string_constraint_name(self) -> None:
-        from haute.routes.optimiser import _frontier_point_result_dict
+        from haute.routes._optimiser_frontier import _frontier_point_result_dict
 
         job = {
             "frontier_data": {
@@ -15723,7 +15731,7 @@ class TestOptimiserHelperValidators:
         assert exc.value.status_code == 500
 
     def test_frontier_point_result_dict_missing_converged(self) -> None:
-        from haute.routes.optimiser import _frontier_point_result_dict
+        from haute.routes._optimiser_frontier import _frontier_point_result_dict
 
         job = {
             "frontier_data": {
@@ -15738,7 +15746,7 @@ class TestOptimiserHelperValidators:
         assert "converged" in exc.value.detail
 
     def test_frontier_point_constraints_override_invalid_config(self) -> None:
-        from haute.routes.optimiser import _frontier_point_constraints_override
+        from haute.routes._optimiser_frontier import _frontier_point_constraints_override
 
         job = {
             "frontier_data": {
@@ -15753,7 +15761,7 @@ class TestOptimiserHelperValidators:
         assert exc.value.status_code == 500
 
     def test_frontier_point_constraints_override_invalid_name(self) -> None:
-        from haute.routes.optimiser import _frontier_point_constraints_override
+        from haute.routes._optimiser_frontier import _frontier_point_constraints_override
 
         job = {
             "frontier_data": {
@@ -15767,7 +15775,7 @@ class TestOptimiserHelperValidators:
             _frontier_point_constraints_override(job, 0)
 
     def test_frontier_point_constraints_override_missing_threshold(self) -> None:
-        from haute.routes.optimiser import _frontier_point_constraints_override
+        from haute.routes._optimiser_frontier import _frontier_point_constraints_override
 
         # config defines "a" but with neither min/max/min_pct/max_pct.
         job = {
@@ -15783,7 +15791,7 @@ class TestOptimiserHelperValidators:
         assert "threshold is invalid" in exc.value.detail
 
     def test_frontier_point_constraints_override_missing_threshold_field(self) -> None:
-        from haute.routes.optimiser import _frontier_point_constraints_override
+        from haute.routes._optimiser_frontier import _frontier_point_constraints_override
 
         job = {
             "frontier_data": {
@@ -15812,27 +15820,27 @@ class TestOptimiserHelperValidators:
         assert exc.value.status_code == 500
 
     def test_lambda_mappings_match_returns_false_for_mismatched_keys(self) -> None:
-        from haute.routes.optimiser import _lambda_mappings_match
+        from haute.routes._optimiser_frontier import _lambda_mappings_match
 
         assert _lambda_mappings_match({"a": 1.0}, {"b": 1.0}) is False
 
     def test_lambda_mappings_match_returns_false_for_unequal_values(self) -> None:
-        from haute.routes.optimiser import _lambda_mappings_match
+        from haute.routes._optimiser_frontier import _lambda_mappings_match
 
         assert _lambda_mappings_match({"a": 1.0}, {"a": 2.0}) is False
 
     def test_lambda_mappings_match_returns_false_for_non_numeric(self) -> None:
-        from haute.routes.optimiser import _lambda_mappings_match
+        from haute.routes._optimiser_frontier import _lambda_mappings_match
 
         assert _lambda_mappings_match({"a": "bad"}, {"a": 1.0}) is False
 
     def test_lambda_mappings_match_returns_true_within_tolerance(self) -> None:
-        from haute.routes.optimiser import _lambda_mappings_match
+        from haute.routes._optimiser_frontier import _lambda_mappings_match
 
         assert _lambda_mappings_match({"a": 1.0}, {"a": 1.0 + 1e-10}) is True
 
     def test_lambda_mappings_match_returns_false_for_non_dict(self) -> None:
-        from haute.routes.optimiser import _lambda_mappings_match
+        from haute.routes._optimiser_frontier import _lambda_mappings_match
 
         assert _lambda_mappings_match("not a dict", {"a": 1.0}) is False
         assert _lambda_mappings_match({"a": 1.0}, "not a dict") is False
@@ -15871,8 +15879,8 @@ class TestOptimiserHelperValidators:
         primary error path.  When ``_cleanup_apply_result_artifact`` raises,
         log a warning and continue without re-raising.
         """
-        from haute.routes import optimiser as optimiser_module
-        from haute.routes.optimiser import _cleanup_orphan_apply_artifact
+        from haute.routes import _optimiser_frontier as optimiser_module
+        from haute.routes._optimiser_frontier import _cleanup_orphan_apply_artifact
 
         with patch.object(
             optimiser_module,
@@ -15886,8 +15894,8 @@ class TestOptimiserHelperValidators:
             )
 
     def test_cleanup_orphan_apply_artifact_uses_path_when_directory_missing(self) -> None:
-        from haute.routes import optimiser as optimiser_module
-        from haute.routes.optimiser import _cleanup_orphan_apply_artifact
+        from haute.routes import _optimiser_frontier as optimiser_module
+        from haute.routes._optimiser_frontier import _cleanup_orphan_apply_artifact
 
         with patch.object(
             optimiser_module,
@@ -15899,7 +15907,7 @@ class TestOptimiserHelperValidators:
 
     def test_frontier_point_result_dict_includes_optional_diagnostics(self) -> None:
         """Cover the optional iterations/cd_iterations/clamp_rate branches."""
-        from haute.routes.optimiser import _frontier_point_result_dict
+        from haute.routes._optimiser_frontier import _frontier_point_result_dict
 
         job = {
             "frontier_data": {
@@ -15925,7 +15933,7 @@ class TestOptimiserHelperValidators:
         assert result["clamp_rate"] == 0.05
 
     def test_frontier_point_result_dict_emits_non_converged_warning(self) -> None:
-        from haute.routes.optimiser import _frontier_point_result_dict
+        from haute.routes._optimiser_frontier import _frontier_point_result_dict
 
         job = {
             "frontier_data": {
@@ -15946,7 +15954,7 @@ class TestOptimiserHelperValidators:
         assert "did not converge" in result["warning"]
 
     def test_frontier_point_result_dict_drops_warning_when_converged(self) -> None:
-        from haute.routes.optimiser import _frontier_point_result_dict
+        from haute.routes._optimiser_frontier import _frontier_point_result_dict
 
         job = {
             "frontier_data": {
@@ -15968,7 +15976,7 @@ class TestOptimiserHelperValidators:
 
     def test_frontier_point_constraints_override_uses_threshold_value(self) -> None:
         """Happy path: walks through every step of constraints_override."""
-        from haute.routes.optimiser import _frontier_point_constraints_override
+        from haute.routes._optimiser_frontier import _frontier_point_constraints_override
 
         job = {
             "frontier_data": {
@@ -16003,7 +16011,7 @@ class TestOptimiserHelperValidators:
 
     def test_frontier_point_constraints_override_invalid_constraint_names_list(self) -> None:
         """Cover the branch where ``frontier_data.constraint_names`` is not a list."""
-        from haute.routes.optimiser import _frontier_point_constraints_override
+        from haute.routes._optimiser_frontier import _frontier_point_constraints_override
 
         job = {
             "frontier_data": {
@@ -16019,7 +16027,7 @@ class TestOptimiserHelperValidators:
 
     def test_frontier_point_constraints_override_non_string_in_names(self) -> None:
         """Cover the branch where ``constraint_names`` contains a non-string entry."""
-        from haute.routes.optimiser import _frontier_point_constraints_override
+        from haute.routes._optimiser_frontier import _frontier_point_constraints_override
 
         job = {
             "frontier_data": {
@@ -16035,7 +16043,7 @@ class TestOptimiserHelperValidators:
 
     def test_frontier_point_constraints_override_unknown_constraint(self) -> None:
         """Cover the branch where a constraint_name has no matching config spec."""
-        from haute.routes.optimiser import _frontier_point_constraints_override
+        from haute.routes._optimiser_frontier import _frontier_point_constraints_override
 
         job = {
             "frontier_data": {
@@ -16050,7 +16058,7 @@ class TestOptimiserHelperValidators:
         assert "constraint is missing" in exc.value.detail
 
     def test_summary_solve_result_round_trips_optional_fields(self) -> None:
-        from haute.routes.optimiser import _summary_solve_result
+        from haute.routes._optimiser_frontier import _summary_solve_result
 
         result = {
             "lambdas": {"a": 0.1},
@@ -16071,7 +16079,7 @@ class TestOptimiserHelperValidators:
         assert ns.factor_tables == {"region": [{"value": 1.0}]}
 
     def test_cached_result_matches_frontier_selection_rejects_bools(self) -> None:
-        from haute.routes.optimiser import _cached_result_matches_frontier_selection
+        from haute.routes._optimiser_frontier import _cached_result_matches_frontier_selection
 
         # bool is technically int in Python — must be explicitly rejected.
         assert (
@@ -16098,8 +16106,8 @@ class TestOptimiserHelperValidators:
 
     def test_cleanup_orphan_apply_artifact_uses_unknown_for_missing_path(self) -> None:
         """Covers the ``"<unknown>"`` fallback in the warning log."""
-        from haute.routes import optimiser as optimiser_module
-        from haute.routes.optimiser import _cleanup_orphan_apply_artifact
+        from haute.routes import _optimiser_frontier as optimiser_module
+        from haute.routes._optimiser_frontier import _cleanup_orphan_apply_artifact
 
         with patch.object(
             optimiser_module,
@@ -16145,7 +16153,7 @@ class TestOptimiserMutationBoundaries:
         round-trips and (potentially) across restarts.  A drift to a
         different prefix would orphan every previously-saved handle.
         """
-        from haute.routes.optimiser import (
+        from haute.routes._optimiser_frontier import (
             _FRONTIER_APPLY_HANDLE_PREFIX,
             _frontier_apply_handle_key,
         )
@@ -16215,7 +16223,7 @@ class TestOptimiserMutationBoundaries:
         Test both ``True`` and ``False`` to defend against a mutation
         that drops only one of the bool checks.
         """
-        from haute.routes.optimiser import _cached_result_matches_frontier_selection
+        from haute.routes._optimiser_frontier import _cached_result_matches_frontier_selection
 
         # True looks like 1 numerically — but must be rejected.
         assert (
