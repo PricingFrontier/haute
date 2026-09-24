@@ -23,7 +23,6 @@ from pydantic import BaseModel, Field
 
 from haute._env import float_env
 from haute._execution_admission import (
-    ExecutionAdmissionError,
     IsolatedExecutionBudget,
     create_admitted_execution_context,
     create_isolated_execution_context,
@@ -48,14 +47,12 @@ from haute.routes._contract_errors import (
     PUBLIC_CONTRACT_ERROR_TYPES,
     contract_error_http_exception,
 )
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._timeouts import (
     BlockingWorkTimeoutError,
     run_blocking_with_response_timeout,
 )
 from haute.routes.pipeline import (
     _interactive_affinity_key,
-    _memory_limit_http_exception,
     _raise_interactive_remote_http_error,
     _raise_interactive_worker_crash_http_error,
     _validate_runtime_input_paths,
@@ -223,13 +220,6 @@ async def output_assemble_dry_run(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (ConfigError, ContractMismatchError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except ExecutionAdmissionError as exc:
-        raise _memory_limit_http_exception(exc) from None
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("output_assemble_dry_run failed")
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
 
     else:
         node_result = results.get(body.node_id)

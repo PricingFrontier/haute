@@ -124,7 +124,7 @@ after the transport returns cannot change the branch recorded for that publish.
 
 ## Error handling
 
-`StorageConfigError` → 400 with the setting named; `StorageUnavailableError` → 503; a malformed or unparseable pointer record raises `StorageConfigError` (terminal — a corrupted pointer cannot be published past by retrying, so the sync chip must not promise "will publish on the next save"); `GitPushRejectedError` → 409 with the structured rejection; other `GitError` → the existing `_handle_git_error` sanitiser. `_with_storage_state` never raises: storage is additive to git readiness, and a storage fault must not blank the branch indicator — it surfaces through the sync state instead. Clone and push failures log stderr server-side and return hand-authored prose, per the MAGINOT low-context-error class.
+`StorageConfigError` → 400 with the setting named; `StorageUnavailableError` → 503; a malformed or unparseable pointer record raises `StorageConfigError` (terminal — a corrupted pointer cannot be published past by retrying, so the sync chip must not promise "will publish on the next save"); `GitPushRejectedError` → 409 with the structured rejection; other `GitError` → the application's `GitError` handler (`git_error_http_exception`). `_with_storage_state` never raises: storage is additive to git readiness, and a storage fault must not blank the branch indicator — it surfaces through the sync state instead. Clone and push failures log stderr server-side and return hand-authored prose, per the MAGINOT low-context-error class.
 
 ## Testing
 

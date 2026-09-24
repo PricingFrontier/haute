@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
+from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 
 _SAFE_DETAIL = "Operation failed. Check the server logs for details."
@@ -214,7 +215,7 @@ class TestSubmodelCreateValueErrorSanitisation:
 
 
 class TestGitErrorSanitisation:
-    """``_handle_git_error`` raises ``HTTPException(detail=str(e))`` for
+    """The git error mapping once returned ``HTTPException(detail=str(e))`` for
     every non-guardrail GitError.  ``_run_git`` constructs GitError
     messages from ``result.stderr.strip()`` — raw git subprocess stderr,
     which commonly contains absolute paths, hostnames, SSL errors, and
@@ -420,12 +421,13 @@ class TestSchemaBroadExceptionStructuralFix:
         ``exc_info=True`` so the full stack trace is captured.
     """
 
-    def test_schema_handler_logs_exc_info_on_unexpected_failure(
+    def test_schema_handler_logs_traceback_on_unexpected_failure(
         self,
         project_client: TestClient,
         parquet_file: Path,
     ) -> None:
-        """The error log must carry ``exc_info`` for server-side diagnosis."""
+        """The application's unexpected-exception handler logs the error class
+        and traceback for server-side diagnosis."""
         import structlog.testing
 
         def boom(*a, **kw):
@@ -442,10 +444,10 @@ class TestSchemaBroadExceptionStructuralFix:
 
         assert resp.status_code == 500
         assert resp.json()["detail"] == _SAFE_DETAIL
-        error_events = [e for e in captured if e.get("event") == "schema_read_failed"]
+        error_events = [e for e in captured if e.get("event") == "unhandled_exception"]
         assert error_events, "#24: unexpected schema failure produced no structured error log"
-        assert error_events[-1].get("exc_info") is True
         assert error_events[-1].get("error_class") == "RuntimeError"
+        assert "native parquet decoder exploded" in error_events[-1]["traceback"]
 
 
 # ---------------------------------------------------------------------------
@@ -563,3 +565,104 @@ class TestApiWsNotFoundReturnsJson:
         assert resp.headers["content-type"].startswith("text/html"), (
             f"expected text/html for SPA route, got {resp.headers['content-type']!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Application exception handlers translate each error family once
+# ---------------------------------------------------------------------------
+
+
+def _handlers_app(*, raise_server_exceptions: bool = False) -> TestClient:
+    """A bare app with the production handlers and request-ID middleware."""
+    from haute._execution_admission import ExecutionAdmissionError
+    from haute._execution_context import ExecutionProfile
+    from haute._git import GitDomainError, GitError, GitGuardrailError
+    from haute.errors import PreambleError
+    from haute.routes._error_handlers import install_exception_handlers
+    from haute.server import _RequestIdMiddleware
+
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.add_middleware(_RequestIdMiddleware)
+    raised = {
+        "contract": PreambleError("Preamble line 3 failed", source_line=3),
+        "admission": ExecutionAdmissionError(
+            "pipeline_preview",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+            memory_limit_bytes=1024,
+            rss_at_admission_bytes=None,
+            reason="memory_sampler_unavailable",
+        ),
+        "guardrail": GitGuardrailError("protected branch"),
+        "domain": GitDomainError("nothing to save"),
+        "git": GitError("fatal: /home/admin/.ssh/id_rsa"),
+        "unexpected": RuntimeError("/home/secretuser/pipelines/main.py"),
+    }
+
+    @app.get("/raise/{kind}")
+    def _raise(kind: str) -> None:
+        raise raised[kind]
+
+    @app.websocket("/ws/raise")
+    async def _ws_raise(websocket: WebSocket) -> None:
+        await websocket.accept()
+        raise raised["guardrail"]
+
+    return TestClient(app, raise_server_exceptions=raise_server_exceptions)
+
+
+class TestApplicationExceptionHandlers:
+    """A route that does not map an error itself gets the application's one
+    mapping for that family; anything unclaimed is a sanitized 500."""
+
+    def test_public_contract_error_returns_its_stable_payload(self) -> None:
+        resp = _handlers_app().get("/raise/contract")
+        assert resp.status_code == 422
+        assert resp.json() == {
+            "detail": {
+                "error_code": "preamble_failed",
+                "message": "Preamble line 3 failed",
+                "source_line": 3,
+            }
+        }
+
+    def test_memory_admission_refusal_returns_507_with_its_payload(self) -> None:
+        resp = _handlers_app().get("/raise/admission")
+        assert resp.status_code == 507
+        detail = resp.json()["detail"]
+        assert detail["error_code"] == "memory_limit"
+        assert detail["reason"] == "memory_sampler_unavailable"
+        assert "message" not in detail
+
+    @pytest.mark.parametrize(
+        ("kind", "status", "detail"),
+        [
+            ("guardrail", 403, "protected branch"),
+            ("domain", 400, "nothing to save"),
+            ("git", 400, _SAFE_DETAIL),
+        ],
+    )
+    def test_git_errors_keep_their_safe_mapping(self, kind: str, status: int, detail: str) -> None:
+        resp = _handlers_app().get(f"/raise/{kind}")
+        assert resp.status_code == status
+        assert resp.json() == {"detail": detail}
+
+    def test_unclaimed_exception_is_a_sanitized_500_with_request_id(self) -> None:
+        import structlog.testing
+
+        with structlog.testing.capture_logs() as captured:
+            resp = _handlers_app().get("/raise/unexpected")
+        assert resp.status_code == 500
+        assert resp.json() == {"detail": _SAFE_DETAIL}
+        assert "secretuser" not in resp.text
+        assert resp.headers["x-request-id"]
+        events = [e for e in captured if e.get("event") == "unhandled_exception"]
+        assert events and events[-1]["error_class"] == "RuntimeError"
+
+    def test_websocket_error_is_not_answered_with_an_http_response(self) -> None:
+        from haute._git import GitGuardrailError
+
+        client = _handlers_app(raise_server_exceptions=True)
+        with pytest.raises(GitGuardrailError):
+            with client.websocket_connect("/ws/raise") as ws:
+                ws.receive_text()

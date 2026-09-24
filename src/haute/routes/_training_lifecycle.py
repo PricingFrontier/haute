@@ -480,6 +480,9 @@ class TrainService:
                 plan,
                 date_values=date_values,
             )
+        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+            # First: a node config the builder rejects is also a ValueError.
+            raise contract_error_http_exception(exc) from None
         except (TypeError, ValueError) as exc:
             raise HTTPException(
                 status_code=422,
@@ -487,8 +490,6 @@ class TrainService:
             ) from exc
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
             raise _memory_limit_http_exception(exc) from None
-        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-            raise contract_error_http_exception(exc) from None
         except BoundedMemoryUnsupportedError as exc:
             raise HTTPException(
                 status_code=422,
@@ -1271,12 +1272,14 @@ class TrainService:
                 role_columns=_training_metadata_reasons(config),
             )
             return preamble_ns
+        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+            # First: a node config the builder rejects is also a
+            # HauteValidationError.
+            raise contract_error_http_exception(exc) from None
         except HauteValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
             raise _memory_limit_http_exception(exc) from None
-        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
-            raise contract_error_http_exception(exc) from None
         except (ParseError, ConfigError, pl.exceptions.PolarsError, ValueError) as exc:
             # A graph shape the engine cannot resolve (an unfed modelling node
             # raises a bare ValueError before the resolver's own guard) is the

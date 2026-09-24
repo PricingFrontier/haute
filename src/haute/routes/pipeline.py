@@ -396,14 +396,6 @@ def _prepare_data_output_request(
     return graph, output_node, config, project_root
 
 
-def _memory_limit_http_exception(exc: ExecutionAdmissionError) -> HTTPException:
-    return HTTPException(status_code=507, detail=exc.to_payload())
-
-
-def _memory_budget_http_exception(exc: ExecutionMemoryLimitExceededError) -> HTTPException:
-    return HTTPException(status_code=507, detail=exc.to_payload())
-
-
 def _supersession_key(
     operation: str,
     graph: PipelineGraph,
@@ -988,9 +980,6 @@ async def read_json_file(body: ReadJsonRequest) -> ReadJsonResponse:
     except ValueError as exc:
         logger.warning("read_json_invalid_payload", path=body.path, error=str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from None
-    except Exception as exc:
-        logger.error("read_json_failed", path=body.path, error=str(exc))
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
 
 
 def _occurrence_output_columns(
@@ -1173,6 +1162,12 @@ def _execute_preview_worker(
                 staging_token=staging_token,
             )
             return _preview_response_from_results(graph, body, results, context)
+        except PUBLIC_CONTRACT_ERROR_TYPES:
+            # Some public contract errors are also schema or config errors
+            # (a missing rating factor, a node config the builder rejects).
+            # They leave the worker with their payload, as the thread-mode
+            # route maps them, instead of flattening into a node result.
+            raise
         except (ContractMismatchError, SchemaMismatchError, ParseError, ConfigError) as exc:
             return PreviewNodeResponse(node_id=body.node_id, status="error", error=str(exc))
     finally:
@@ -1320,10 +1315,6 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
         # ``TraceResponse`` in the worker. Encode it directly so the event
         # loop does not walk the full payload again.
         return JSONResponse({"status": "ok", "trace": trace_dict})
-    except ExecutionAdmissionError as e:
-        raise _memory_limit_http_exception(e) from None
-    except ExecutionMemoryLimitExceededError as e:
-        raise _memory_budget_http_exception(e) from None
     except InteractiveWorkerMemoryLimitError as e:
         raise HTTPException(status_code=507, detail=e.to_payload()) from None
     except InteractiveWorkerTimeoutError:
@@ -1357,8 +1348,6 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
             status_code=504,
             detail=f"Trace execution timed out ({_trace_timeout():.0f}s limit)",
         )
-    except HTTPException:
-        raise
     except PUBLIC_CONTRACT_ERROR_TYPES as e:
         logger.warning("trace_public_contract_error", **contract_error_payload(e))
         raise contract_error_http_exception(e) from None
@@ -1387,11 +1376,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
         if detail.startswith("Target node ") and "not found in graph" in detail:
             logger.warning("trace_target_not_found", error=detail)
             raise HTTPException(status_code=404, detail=detail)
-        logger.error("trace_failed", error=detail)
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
-    except Exception as e:
-        logger.error("trace_failed", error=str(e))
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+        raise
     finally:
         if trace_context is not None:
             trace_context.release_admission(preserve_primary_error=True)
@@ -1491,10 +1476,6 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
             superseded_message="Preview request superseded by a newer request",
         )
         return response
-    except ExecutionAdmissionError as e:
-        raise _memory_limit_http_exception(e) from None
-    except ExecutionMemoryLimitExceededError as e:
-        raise _memory_budget_http_exception(e) from None
     except InteractiveWorkerMemoryLimitError as e:
         raise HTTPException(status_code=507, detail=e.to_payload()) from None
     except InteractiveWorkerTimeoutError:
@@ -1529,8 +1510,6 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
             status_code=504,
             detail=f"Preview execution timed out ({_preview_timeout():.0f}s limit)",
         )
-    except HTTPException:
-        raise
     except PUBLIC_CONTRACT_ERROR_TYPES as e:
         logger.warning("preview_public_contract_error", **contract_error_payload(e))
         raise contract_error_http_exception(e) from None
@@ -1566,9 +1545,6 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
         raise HTTPException(status_code=400, detail=str(e)) from None
     except _PreviewTargetNotReturnedError as e:
         raise HTTPException(status_code=404, detail=str(e)) from None
-    except Exception as e:
-        logger.error("preview_failed", error=str(e))
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
     finally:
         if preview_context is not None:
             preview_context.release_admission(preserve_primary_error=True)
@@ -1633,13 +1609,8 @@ async def preview_inputs(body: PreviewInputsRequest) -> PreviewInputsResponse:
             status_code=504,
             detail=f"Preview input resolution timed out ({_preview_timeout():.0f}s limit)",
         ) from None
-    except HTTPException:
-        raise
     except PUBLIC_CONTRACT_ERROR_TYPES as e:
         raise contract_error_http_exception(e) from None
-    except Exception as e:
-        logger.error("preview_inputs_failed", error=str(e))
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
     return PreviewInputsResponse(input_node_ids=list(node_ids))
 
 
@@ -2228,10 +2199,6 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
                 total_elapsed_ms=result.execution_metrics.total_elapsed_ms,
             )
         return result
-    except ExecutionAdmissionError as e:
-        raise _memory_limit_http_exception(e) from None
-    except ExecutionMemoryLimitExceededError as e:
-        raise _memory_budget_http_exception(e) from None
     except _OutputWriteWorkerError as e:
         if e.kind == "contract":
             raise HTTPException(status_code=422, detail=e.payload or e.detail) from None
@@ -2321,11 +2288,6 @@ async def write_output_node(body: WriteOutputRequest) -> WriteOutputResponse:
             error=repr(e.__cause__),
         )
         raise HTTPException(status_code=500, detail=str(e)) from None
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("sink_failed", error=str(e))
-        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
     finally:
         if output_context is not None:
             output_context.release_admission(preserve_primary_error=True)

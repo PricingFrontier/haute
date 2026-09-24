@@ -53,7 +53,9 @@ from haute._logging import configure_logging, get_logger
 from haute._pipeline_recovery import pipeline_document_fingerprint
 from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
+from haute.routes._error_handlers import install_exception_handlers
 from haute.routes._helpers import (
+    _INTERNAL_ERROR_DETAIL,
     _ensure_pipeline_index,
     broadcast,
     discover_pipelines,
@@ -458,6 +460,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Haute", version=__version__, lifespan=_lifespan)
+install_exception_handlers(app)
 _TRUSTED_LOCAL_HOSTS = ["localhost", "127.0.0.1", "::1"]
 
 
@@ -487,7 +490,12 @@ def _select_request_id(value: str | None) -> tuple[str, dict[str, str | int] | N
 
 
 class _RequestIdMiddleware(BaseHTTPMiddleware):
-    """Bind request_id, log every request with timing, capture 500 tracebacks."""
+    """Bind request_id, log every request with timing, capture 500 tracebacks.
+
+    It is also the application's handler for unexpected exceptions: anything
+    the registered exception handlers do not claim is logged here with its
+    traceback and answered with the sanitized ``_INTERNAL_ERROR_DETAIL``.
+    """
 
     async def dispatch(self, request: Request, call_next: Any) -> Any:
         rid, rejection = _select_request_id(request.headers.get("x-request-id"))
@@ -502,18 +510,19 @@ class _RequestIdMiddleware(BaseHTTPMiddleware):
 
         try:
             response = await call_next(request)
-        except Exception:
+        except Exception as exc:
             duration_ms = round((time.monotonic() - t0) * 1000, 1)
             logger.error(
                 "unhandled_exception",
                 method=method,
                 path=path,
                 duration_ms=duration_ms,
+                error_class=type(exc).__name__,
                 traceback=traceback.format_exc(),
             )
             response = JSONResponse(
                 status_code=500,
-                content={"detail": "Internal server error"},
+                content={"detail": _INTERNAL_ERROR_DETAIL},
             )
             response.headers["x-request-id"] = rid
             return response
