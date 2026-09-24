@@ -62,8 +62,6 @@ from haute._pipeline_repair import (
     PipelineRepairError,
     apply_recover_unavailable_node_plan,
     apply_remove_unavailable_node_plan,
-    build_recover_unavailable_node_plan,
-    build_remove_unavailable_node_plan,
 )
 from haute._pipeline_repair_actions import apply_scoped_node_save
 from haute._polars_io_registry import (
@@ -74,7 +72,7 @@ from haute._polars_io_registry import (
 )
 from haute._polars_steps import PolarsStepError, render_polars_steps
 from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
-from haute._sandbox import _get_project_root
+from haute._sandbox import _get_project_root, contained_path
 from haute._seed_plans import (
     ListedSeed,
     ReadGeneration,
@@ -145,7 +143,6 @@ from haute.routes._helpers import (
     pipeline_dir,
     raise_pipeline_not_found,
     save_lock,
-    validate_safe_path,
 )
 from haute.routes._isolated_worker_async import (
     WorkerCancellationGate,
@@ -171,12 +168,9 @@ from haute.schemas import (
     OutputDestinationResponse,
     PipelineEditorDocument,
     PipelineNodeSaveRequest,
-    PipelineRepairApplyRequest,
     PipelineRepairApplyResponse,
-    PipelineRepairDryRunRequest,
-    PipelineRepairPlanResponse,
-    PipelineRepairRecoverApplyRequest,
     PipelineRepairRecoverRequest,
+    PipelineRepairRemoveRequest,
     PipelineSummary,
     PolarsStepsRenderRequest,
     PolarsStepsRenderResponse,
@@ -765,42 +759,13 @@ def _pipeline_recovery_error_response(
 
 
 @router.post(
-    "/pipeline/repair/remove/dry-run",
-    response_model=PipelineRepairPlanResponse,
-)
-async def dry_run_remove_unavailable_node(
-    body: PipelineRepairDryRunRequest,
-) -> PipelineRepairPlanResponse | JSONResponse:
-    """Plan one exact remove-only recovery repair without writing."""
-    try:
-        async with save_lock:
-            plan = await run_in_threadpool(
-                build_remove_unavailable_node_plan,
-                project_root=Path.cwd().resolve(),
-                request=body,
-            )
-        return plan.response
-    except PipelineRepairError as exc:
-        return _pipeline_recovery_error_response(exc.status_code, exc.detail())
-    except OSError as exc:
-        logger.warning("pipeline_repair_dry_run_io_failed", error=str(exc))
-        return _pipeline_recovery_error_response(
-            409,
-            {
-                "code": "repair_artifact_unavailable",
-                "message": "A repair artifact could not be read; reload and try again.",
-            },
-        )
-
-
-@router.post(
     "/pipeline/repair/remove/apply",
     response_model=PipelineRepairApplyResponse,
 )
 async def apply_remove_unavailable_node(
-    body: PipelineRepairApplyRequest,
+    body: PipelineRepairRemoveRequest,
 ) -> PipelineRepairApplyResponse | JSONResponse:
-    """Apply one freshly recomputed and explicitly confirmed repair plan."""
+    """Plan and apply one explicitly confirmed removal against its named revision."""
     try:
         async with save_lock:
             return await run_in_threadpool(
@@ -850,37 +815,11 @@ async def scoped_node_save(
         )
 
 
-@router.post("/pipeline/repair/recover/dry-run", response_model=PipelineRepairPlanResponse)
-async def dry_run_recover_unavailable_node(
-    body: PipelineRepairRecoverRequest,
-) -> PipelineRepairPlanResponse | JSONResponse:
-    """Preview an explicit current-format update or reset without writing."""
-    try:
-        async with save_lock:
-            plan = await run_in_threadpool(
-                build_recover_unavailable_node_plan,
-                project_root=Path.cwd().resolve(),
-                request=body,
-            )
-        return plan.response
-    except PipelineRepairError as exc:
-        return _pipeline_recovery_error_response(exc.status_code, exc.detail())
-    except OSError as exc:
-        logger.warning("pipeline_repair_dry_run_io_failed", error=str(exc))
-        return _pipeline_recovery_error_response(
-            409,
-            {
-                "code": "repair_artifact_unavailable",
-                "message": "A repair artifact could not be read; reload and try again.",
-            },
-        )
-
-
 @router.post("/pipeline/repair/recover/apply", response_model=PipelineRepairApplyResponse)
 async def apply_recover_unavailable_node(
-    body: PipelineRepairRecoverApplyRequest,
+    body: PipelineRepairRecoverRequest,
 ) -> PipelineRepairApplyResponse | JSONResponse:
-    """Commit the recomputed, confirmed update/reset through the shared transaction."""
+    """Plan and commit one confirmed update, reset or recover through the shared transaction."""
     try:
         async with save_lock:
             return await run_in_threadpool(
@@ -919,7 +858,7 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
         async with save_lock:
             project_root = Path.cwd().resolve()
             if body.source_file.strip():
-                target = validate_safe_path(project_root, body.source_file)
+                target = contained_path(project_root, body.source_file)
                 if target.is_file():
                     current_document = await run_in_threadpool(
                         load_pipeline_editor_document,
@@ -965,7 +904,7 @@ async def save_pipeline(body: SavePipelineRequest) -> SavePipelineResponse:
 @router.post("/pipeline/read-json", response_model=ReadJsonResponse)
 async def read_json_file(body: ReadJsonRequest) -> ReadJsonResponse:
     """Read a JSON artifact from the project root and return its object payload."""
-    target = validate_safe_path(_get_project_root(), body.path)
+    target = contained_path(_get_project_root(), body.path)
     if target.suffix.lower() != ".json":
         raise HTTPException(status_code=400, detail="Only .json files are supported")
     if not target.is_file():
@@ -1841,7 +1780,7 @@ async def recovery_preview_node(
     try:
         _ensure_printable_lookup_id(body.target_recovery_id, "target_recovery_id")
         project_root = _get_project_root().resolve()
-        source_path = validate_safe_path(project_root, body.source_file)
+        source_path = contained_path(project_root, body.source_file)
         if not source_path.is_file():
             raise _recovery_preview_error(
                 "pipeline_source_not_found",

@@ -15,7 +15,7 @@ Each test class targets a specific attack surface:
 10. SSRFViaDatabricksTable      -- SQL injection with SSRF in table param
 11. SymlinkTraversalBrowse      -- symlink following outside base dir
 12. SecondOrderCodeInjection    -- stored config with malicious code
-13. PathURLSchemeRejection      -- URL schemes rejected by validate_safe_path/read_source
+13. PathURLSchemeRejection      -- URL schemes rejected by contained_path/read_source
 14. NullByteHTTPParam           -- null bytes in HTTP path parameters
 15. DoubleEncodedHTTPTraversal  -- double-encoded ../ in HTTP requests
 16. W8bLocalSessionProtection   -- server-level Host/Origin/session guards
@@ -34,6 +34,7 @@ from haute._databricks_io import (
 from haute._git import GitError, _validate_ref_name
 from haute._topo import topo_sort_ids
 from haute._types import GraphEdge
+from haute.errors import InvalidPathError, PathOutsideProjectError
 from tests.conftest import make_file_output_config
 
 # =========================================================================
@@ -254,77 +255,69 @@ class TestCommandInjectionGitRef:
 class TestPathTraversalURLEncoded:
     """URL-encoded traversal sequences (%2e%2e%2f) are typically decoded by
     the web framework before reaching route handlers.  These tests verify
-    that validate_safe_path blocks traversal regardless of whether the
+    that contained_path blocks traversal regardless of whether the
     percent-encoding has been decoded or remains literal.
 
     When percent-encoding is NOT decoded (literal '%2e%2e'), the resulting
     path stays within the base directory (it's a literal filename containing
-    '%' characters), so validate_safe_path correctly allows it.
+    '%' characters), so contained_path correctly allows it.
 
-    When percent-encoding IS decoded (becomes '..'), validate_safe_path
+    When percent-encoding IS decoded (becomes '..'), contained_path
     must block the traversal.
     """
 
     def test_decoded_dotdot_blocked(self, tmp_path: Path):
-        from fastapi import HTTPException
 
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "../../etc/passwd")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, "../../etc/passwd")
 
     def test_literal_percent_encoded_stays_within_base(self, tmp_path: Path):
         """Literal '%2e%2e%2f' is NOT '..' — it's an odd filename.
         Path resolution treats it as a child of base, so it is allowed.
         """
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        result = validate_safe_path(tmp_path, "%2e%2e%2f%2e%2e%2fetc%2fpasswd")
+        result = contained_path(tmp_path, "%2e%2e%2f%2e%2e%2fetc%2fpasswd")
         assert result.is_relative_to(tmp_path.resolve())
 
     def test_literal_double_encoded_stays_within_base(self, tmp_path: Path):
         """Literal '%252e%252e' is NOT '..' after single decode — still an odd filename."""
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        result = validate_safe_path(tmp_path, "%252e%252e/%252e%252e/etc/passwd")
+        result = contained_path(tmp_path, "%252e%252e/%252e%252e/etc/passwd")
         assert result.is_relative_to(tmp_path.resolve())
 
     def test_manually_decoded_double_dot_blocked(self, tmp_path: Path):
-        """If the framework decodes '%2e%2e' to '..', validate_safe_path blocks it."""
+        """If the framework decodes '%2e%2e' to '..', contained_path blocks it."""
         from urllib.parse import unquote
 
-        from fastapi import HTTPException
-
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         raw = "%2e%2e/%2e%2e/etc/passwd"
         decoded = unquote(raw)
         assert decoded == "../../etc/passwd"
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, decoded)
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, decoded)
 
     def test_manually_double_decoded_blocked(self, tmp_path: Path):
         """Double-decode of '%252e%252e' yields '..' which must be blocked."""
         from urllib.parse import unquote
 
-        from fastapi import HTTPException
-
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         raw = "%252e%252e/%252e%252e/etc/passwd"
         decoded = unquote(unquote(raw))
         assert decoded == "../../etc/passwd"
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, decoded)
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, decoded)
 
 
 # =========================================================================
-# 5. Path Traversal — Null bytes in validate_safe_path
+# 5. Path Traversal — Null bytes in contained_path
 # =========================================================================
 
 
@@ -333,24 +326,20 @@ class TestPathTraversalNullByteSafePath:
     ValueError for embedded nulls in Path operations, which is correct.
     """
 
-    def test_null_byte_in_validate_safe_path(self, tmp_path: Path):
+    def test_null_byte_in_contained_path(self, tmp_path: Path):
         """Null bytes must be rejected before pathlib or filesystem calls."""
-        from fastapi import HTTPException
 
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "file\x00../../etc/passwd")
-        assert exc_info.value.status_code == 400
+        with pytest.raises(InvalidPathError):
+            contained_path(tmp_path, "file\x00../../etc/passwd")
 
     def test_null_byte_mid_path(self, tmp_path: Path):
-        from fastapi import HTTPException
 
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "data/file.json\x00.txt")
-        assert exc_info.value.status_code == 400
+        with pytest.raises(InvalidPathError):
+            contained_path(tmp_path, "data/file.json\x00.txt")
 
 
 # =========================================================================
@@ -611,42 +600,12 @@ class TestSymlinkTraversalBrowse:
     def test_symlink_traversal_blocked(
         self, dir_with_symlink: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        from fastapi import HTTPException
 
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         base = dir_with_symlink
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(base, "escape_link")
-        assert exc_info.value.status_code == 403
-
-
-# =========================================================================
-# 12. Second-order injection via stored config
-# =========================================================================
-
-
-class TestSecondOrderCodeInjection:
-    """Code stored in a node config must be rejected by validate_user_code
-    if it contains dangerous constructs like __import__ or os.system.
-    """
-
-    @pytest.mark.parametrize(
-        "malicious_code",
-        [
-            "__import__('os').system('echo pwned')",
-            "__import__('subprocess').call(['rm', '-rf', '/'])",
-            'eval(\'__import__("os").system("id")\')',
-            "exec('import socket')",
-            "getattr(__builtins__, '__import__')('os')",
-            "type('X', (), {'__del__': lambda s: None})()",
-        ],
-    )
-    def test_malicious_code_in_config_rejected(self, malicious_code: str):
-        from haute._sandbox import UnsafeCodeError, validate_user_code
-
-        with pytest.raises((UnsafeCodeError, SyntaxError)):
-            validate_user_code(malicious_code)
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(base, "escape_link")
 
 
 # =========================================================================
@@ -655,7 +614,7 @@ class TestSecondOrderCodeInjection:
 
 
 class TestPathURLSchemeRejection:
-    """validate_safe_path or read_source must reject paths starting with URL schemes."""
+    """contained_path or read_source must reject paths starting with URL schemes."""
 
     @pytest.mark.parametrize(
         "scheme_path",
@@ -666,10 +625,10 @@ class TestPathURLSchemeRejection:
             "file:///etc/shadow",
         ],
     )
-    def test_url_scheme_in_validate_safe_path(self, tmp_path: Path, scheme_path: str):
-        from haute.routes._helpers import validate_safe_path
+    def test_url_scheme_in_contained_path(self, tmp_path: Path, scheme_path: str):
+        from haute._sandbox import contained_path
 
-        result = validate_safe_path(tmp_path, scheme_path)
+        result = contained_path(tmp_path, scheme_path)
         assert result.is_relative_to(tmp_path.resolve()), (
             f"URL-scheme path '{scheme_path}' should resolve within base, "
             "not trigger external access"
@@ -736,7 +695,7 @@ class TestDoubleEncodedHTTPTraversal:
     FastAPI/Starlette performs a single URL-decode before routing.
     After single decode, %252e%252e%252f becomes %2e%2e%2f (a literal
     filename, not ..).  After double decode it becomes ../ which is dangerous.
-    validate_safe_path must ensure the resolved path stays within the base
+    contained_path must ensure the resolved path stays within the base
     regardless of encoding.
     """
 

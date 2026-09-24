@@ -60,7 +60,12 @@ from haute._path_resolution import (
     runtime_project_root_scope,
 )
 from haute._registry import ensure_registry_ready
-from haute._sandbox import safe_globals, validate_user_code
+from haute._sandbox import (
+    compile_project_code,
+    project_code_module,
+    safe_globals,
+    validate_user_code,
+)
 from haute._seed_plans import (
     ReadGeneration,
     SeedPlan,
@@ -376,10 +381,11 @@ def _preamble_has_imports(preamble: str) -> bool:
 
 
 def _exec_preamble_namespace(preamble: str) -> dict[str, Any]:
-    ns = safe_globals(pl=pl, allow_imports=True)
+    ns = safe_globals(pl=pl)
     base_keys = set(ns.keys())
     try:
-        exec(preamble, ns)  # noqa: S102  — single dict = shared globals
+        with project_code_module(ns):
+            exec(compile_project_code(preamble), ns)  # noqa: S102  — single dict = shared globals
     except Exception as exc:
         # Extract the most useful line number and source file from
         # the traceback or exception attributes.
@@ -481,11 +487,10 @@ def _compile_preamble_into_cell(
     """Compile preamble bytes into a namespace. Caller holds ``_preamble_lock``.
 
     The lock covers the entire path-prioritisation/import/exec window. Even
-    preambles without literal import statements execute with
-    ``allow_imports=True`` and can consult process-global import state via
-    helpers such as ``__import__``.
+    preambles without literal import statements execute with the ordinary
+    ``__import__`` and can consult process-global import state.
     """
-    validate_user_code(preamble, allow_imports=True)
+    validate_user_code(preamble)
     imports_utility = preamble_imports_utility(preamble)
     _prioritise_preamble_import_paths(cwd, pipeline_dir_str)
     if imports_utility:

@@ -35,7 +35,7 @@ In scope:
 Out of scope (owned by neighbouring components, cross-linked below):
 - Writing pipeline files back to disk / formatting-preserving edits — [codegen](../codegen/high-level.md).
 - AST utility primitives (`_ast_helpers`) and user-code extraction (`_code_extraction`) that this
-  component's `parser.py` and `_parser_regex.py` call into — owned by
+  component's `parser.py` calls into — owned by
   [codegen](../codegen/high-level.md).
 - Config-dict construction (`_config_builder`) and conversion of parsed node/edge data into
   `GraphNode`/`GraphEdge` models (`_graph_builders`) — owned by
@@ -191,7 +191,7 @@ Out of scope (owned by neighbouring components, cross-linked below):
   and the server API layer — changes here are visible everywhere a pipeline is rendered or run.
 - The expression-parsing half is consumed by the trace/execution-engine enrichment layer, which
   attaches `ParsedExpression`/`EvaluatedExpression` to each executed step for the trace UI.
-- Uses [sandbox-security](../sandbox-security/high-level.md)'s code validator and restricted
+- Uses [sandbox-security](../sandbox-security/high-level.md)'s accident guard and execution
   globals to build the one expression `evaluate_expression` evaluates, and the
   [execution engine](../execution-engine/low-level.md)'s row-locality classifier to decide
   whether one row determines it.

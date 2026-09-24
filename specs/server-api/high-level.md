@@ -377,8 +377,8 @@ request is a transport error. The endpoint reads and writes no project state.
   document is rejected with a `409` `stale_document_revision` conflict before any artifact
   changes; the client keeps its unsaved work and must reload before saving again. There is
   no unconditional overwrite and no automatic retry.
-- **Path allowlisting at multiple layers.** `validate_safe_path` guards ad-hoc file/schema
-  reads; `SavePipelineService._validate_output_rel_path` separately allowlists *codegen
+- **Path allowlisting at multiple layers.** The sandbox's one containment check,
+  `contained_path`, guards every path a request supplies; `SavePipelineService._validate_output_rel_path` separately allowlists *codegen
   output* paths (only the declared main file or `modules/<name>.py`, no traversal, no
   Windows-reserved device names, casefold-collision-checked) because codegen output paths
   come from a different trust boundary (generated strings, not direct user path input) and
@@ -451,7 +451,8 @@ describes. Stale, changed or already-applied plans fail before
   `collect_node_configs` / `config_path_for_node` to decide which config JSON sidecars a
   save writes, and owns the on-disk config layout under `<pipeline>/config/`.
 - **[sandbox-security](../sandbox-security/high-level.md)** — `_get_project_root()` anchors
-  `validate_safe_path` and the `/pipeline/read-json` route.
+  the `/pipeline/read-json` route, and `contained_path` is the containment check
+  behind every request path.
 - **[frontend-shared](../frontend-shared/high-level.md)** — the sole consumer of every
   schema and route this component (and the routers it hosts) exposes; the WebSocket resync
   protocol and browser call to `/api/session/bootstrap` are frontend-facing contracts owned
@@ -491,7 +492,7 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   workers are terminated and joined before the terminal response or job transition. Parent
   cleanup then removes the exact private staging artifact, and admission is released only after
   both worker termination and cleanup have completed.
-- **Path-safety violations** (`validate_safe_path`, the save-time output-path allowlist,
+- **Path-safety violations** (`contained_path`, the save-time output-path allowlist,
   runtime-input-path validation) return 400 for malformed input (null bytes, empty codegen
   paths, traversal segments) and 403 for a resolved path that escapes its allowed root —
   never a 500, since these are user-input-shaped failures, not internal ones.
@@ -535,6 +536,16 @@ misroute subsequent saves and loads.
 
 ## Pipeline recovery, preview, and live-sync contract
 
+**Supported hand-editing scope.** The `.py` file is the source of truth and may be edited
+outside Haute. The editor supports hand edits to node bodies and to the preamble. A file that is
+valid Python loads per node: a node whose body, decorator or sidecar no longer resolves becomes an
+unavailable (or blocked) recovery node while the rest of the canvas stays loaded, and the remove,
+reset and recover actions repair it. A file that is not valid Python has no canvas. Its editor
+document is `source_only`, carrying the Python syntax error's location with the remediation to open
+the source there in an editor and correct it; the editor shows that parse error and the current
+source, never a recovered or earlier canvas. There is no textual recovery of syntax-invalid source.
+The same `source_only` document contains an unexpected recovery defect, with an incident id.
+
 Editor loads are conservation-oriented. Every top-level authored node decorator is discovered before
 support is checked; unknown types and duplicate identities remain editor-only recovery elements.
 Connection declarations that do not resolve to one unique pair remain typed unresolved structures,
@@ -551,8 +562,8 @@ preview execution service. Other execution and persistence capabilities remain f
 WebSocket sync publishes versioned `pipeline_document_update` frames for ready, degraded, and
 source-only states. Status, capabilities, diagnostics, source identity, and revision are authoritative
 even when a dirty client retains its local graph. Sidecar changes are dependency events. A source-only
-update may leave a prior canvas visible only as an explicitly stale read-only reference; it is never
-treated as the current graph or accepted by save/execution routes. If the editor document itself cannot
+update replaces the canvas with the parse-error view; no earlier canvas stays visible, and a dirty
+local graph stays in the client, fenced and hidden, until a renderable document arrives. If the editor document itself cannot
 be read or built, the server logs the underlying exception and sends a sanitized
 `parse_error`; that frame carries only document transport failure — authored errors always
 arrive as degraded or source-only documents.
@@ -562,19 +573,18 @@ arrive as degraded or source-only documents.
 Structured repair includes `Remove unavailable node` and the explicit update/reset
 actions defined in [node recovery actions](node-recovery-actions.md). Removal is not a
 recovery-graph Save and does not accept source bytes, source spans, replacement
-graphs, or migration instructions from the client. Dry-run identifies the
-current document by source file and raw-artifact revision, resolves the target
-recovery node on the server, and returns a deterministic plan hash, bounded
-human-readable patches, the exact touched-artifact manifest, retained config
-artifacts, warnings, and predicted recovery state without writing.
-
-Apply takes the same identities, revision, explicit config-deletion choice,
-and confirmed plan hash. Under the shared save lock it reloads recovery state,
-recomputes the plan, rejects revision or plan drift, then uses the existing
-atomic staged-write/rollback machinery. It removes only the selected
+graphs, or migration instructions from the client. Each action is one confirmed
+apply request naming the current document by source file and raw-artifact
+revision, the target recovery node and, for removal, the explicit config-deletion
+choice; there is no dry-run preview or plan hash. Under the shared save lock the
+server reloads recovery state, rejects a stale revision, resolves the target,
+computes the plan itself and applies it through the existing atomic
+staged-write/rollback machinery, then returns the authoritative editor document
+with the touched-artifact manifest and bounded human-readable patches of what it
+changed. Removal removes only the selected
 decorator/function block, standalone explicit connection declarations that
 reference it, and its position entry. A referenced config JSON file is
-retained unless it is separately enumerated and explicitly approved. A
+retained unless the request explicitly asks for its deletion. A
 shared config, config path overlapping a pipeline source/position artifact,
 duplicate authored identity, ambiguous span, mixed connection chain, authored
 content sharing a connection's removal line, or downstream function parameter

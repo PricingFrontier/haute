@@ -137,17 +137,13 @@ def validate_sqlite_project_path(
     if database_path == ":memory:":
         return None
 
-    resolved = Path(database_path).resolve()
-    root = Path(project_root).resolve()
-    resolved_norm = os.path.normcase(str(resolved))
-    root_norm = os.path.normcase(str(root))
+    from haute._sandbox import contained_path
+    from haute.errors import PathOutsideProjectError
+
     try:
-        common = os.path.commonpath([root_norm, resolved_norm])
-    except ValueError:
-        common = None
-    if common != root_norm:
-        raise ValueError("SQLite database path resolves outside the project root")
-    return resolved
+        return contained_path(Path(project_root), Path(database_path).resolve())
+    except PathOutsideProjectError:
+        raise ValueError("SQLite database path resolves outside the project root") from None
 
 
 def canonical_database_locator(

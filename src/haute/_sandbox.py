@@ -1,43 +1,39 @@
-"""Security sandbox for user-code execution and file deserialization.
+"""Accident guard for project code, and restricted deserialization.
 
-Two layers of defence for ``exec()``-based user code:
+Project code (node text, the preamble, pivot formulas, expression steps) is
+trusted: it runs with the privileges of the haute process, and nothing here
+contains it. Its ``exec()``/``eval()`` call sites use two helpers:
 
-1. **AST validation** (``validate_user_code``) — parses the code string
-   and walks the tree *before* execution, rejecting dangerous patterns:
-   dunder attribute access (``__class__``, ``__subclasses__``), reflection
-   helpers (``getattr``, ``type``, ``vars``), import statements, class
-   definitions, and scope-escaping keywords (``global``, ``nonlocal``).
-   This closes known CPython sandbox-escape vectors at the structural
-   level.
-
-2. **Restricted builtins** (``safe_globals``) — runtime defence-in-depth
-   that removes ``__import__``, ``open``, ``eval``, ``exec``, ``compile``,
-   ``breakpoint``, ``globals``, ``locals``, and ``input`` from the
-   namespace passed to ``exec()``.
+1. ``validate_user_code`` parses the code and rejects only a direct call that
+   would hang or stop the server it runs in (``input``, ``exit``, ``quit``,
+   ``breakpoint``). Everything else is ordinary Python.
+2. ``safe_globals`` builds the execution namespace: the ordinary builtins
+   without those four calls, plus caller bindings such as ``pl``.
 
 Also provides:
 - ``safe_unpickle(path)`` — a ``RestrictedUnpickler`` that narrows pickle
   globals to expected ML/data libraries (numpy, sklearn, catboost, etc.).
-- ``validate_project_path(path)`` — ensures a path resolves inside the
-  project root directory, preventing directory-traversal attacks.
+- ``contained_path(root, path)`` — the one path-containment check, and
+  ``validate_project_path(path)``, the same check against the project root.
 """
 
 from __future__ import annotations
 
 import ast
 import builtins
-import os
+import itertools
 import pickle
-import string
+import sys
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import CodeType
 from typing import Any
 
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
-from haute.errors import HauteError
+from haute.errors import HauteError, InvalidPathError, PathOutsideProjectError
 
 logger = get_logger(component="sandbox")
 
@@ -62,362 +58,162 @@ def set_project_root(root: Path) -> None:
     _PROJECT_ROOT = root.resolve()
 
 
-def validate_project_path(path: str | Path) -> Path:
-    """Resolve *path* and verify it is inside the project root.
+_OUTSIDE_PROJECT = "Cannot access paths outside the project root"
 
-    Containment is checked with ``os.path.commonpath`` over
-    ``os.path.normcase``-folded, fully-resolved paths rather than a raw
-    ``Path.is_relative_to`` string prefix.  ``is_relative_to`` is
-    case-sensitive, so on case-insensitive filesystems (macOS/APFS,
-    Windows/NTFS) a case-variant path such as ``PROJECT/../SECRET`` could
-    slip past a case-sensitive prefix check while still resolving to the
-    same real file.  Folding both sides through ``normcase`` closes that
-    bypass; on case-sensitive POSIX filesystems ``normcase`` is the
-    identity so behaviour there is unchanged.
+
+def contained_path(root: Path, path: str | Path) -> Path:
+    """Return *path* resolved against *root*, refusing one that leaves *root*.
+
+    The one containment check: every caller that must keep a path inside a
+    directory calls this. *path* may be relative (joined to *root*) or
+    absolute. The policy:
+
+    - An absolute *path* that is not lexically inside the resolved *root* is
+      refused before anything resolves it, so a request can never make the
+      process touch an outside location (a network share, a device) just to
+      check it. Such a path is refused even if it would resolve back inside.
+    - Otherwise the joined path is resolved: ``..`` segments collapse and
+      symbolic links and Windows junctions are followed, so a link inside the
+      root that points outside is refused and one that points inside is
+      accepted. Callers that must refuse links altogether check that
+      themselves.
+    - The resolved path must lie under the resolved *root*, compared
+      component-wise: case-insensitively on Windows, case-sensitively
+      elsewhere. On a case-insensitive macOS volume a differently-cased
+      spelling of an inside path can therefore be refused; it can never let an
+      outside path through.
 
     Raises:
-        ValueError: If the path escapes the project directory.
+        InvalidPathError: *path* holds a NUL byte.
+        PathOutsideProjectError: *path* leaves *root*.
     """
-    resolved = Path(path).resolve()
-    root = _get_project_root()
-    root_norm = os.path.normcase(str(root))
-    resolved_norm = os.path.normcase(str(resolved))
-    try:
-        common = os.path.commonpath([root_norm, resolved_norm])
-    except ValueError:
-        # Different drives / mixed absolute-relative — cannot share a root.
-        common = None
-    if common != root_norm:
-        raise ValueError(
-            f"Path '{path}' resolves to '{resolved}' which is outside the project root '{root}'"
-        )
-    return resolved
+    if "\x00" in str(path):
+        raise InvalidPathError("Invalid path")
+    base = root.resolve()
+    raw = Path(path)
+    if raw.is_absolute() and not raw.is_relative_to(base):
+        raise PathOutsideProjectError(_OUTSIDE_PROJECT, path=str(path))
+    target = (base / raw).resolve()
+    if not target.is_relative_to(base):
+        raise PathOutsideProjectError(_OUTSIDE_PROJECT, path=str(path))
+    return target
+
+
+def validate_project_path(path: str | Path) -> Path:
+    """Resolve *path* (relative to the working directory) inside the project root.
+
+    Used before a project file is deserialised. The path comes from project
+    configuration, not from a request, so it is resolved before
+    :func:`contained_path` compares it with :func:`_get_project_root`.
+    """
+    return contained_path(_get_project_root(), Path(path).resolve())
 
 
 # ---------------------------------------------------------------------------
-# Restricted builtins for exec()
+# Accident guard for project code run inside the server
 # ---------------------------------------------------------------------------
 
-# Builtins that allow arbitrary code execution or system access.
-_BLOCKED_BUILTINS = frozenset(
-    {
-        "__import__",
-        "breakpoint",
-        "compile",
-        "eval",
-        "exec",
-        "getattr",
-        "setattr",
-        "delattr",
-        "globals",
-        "locals",
-        "open",
-        "input",
-        "memoryview",
-        "vars",
-        "dir",
-        "type",
-        "hasattr",
-        "exit",
-        "quit",
-        "help",
-        "super",
-    }
-)
+# Builtins whose direct call hangs or stops the server process that runs
+# project code. Everything else, reflection, classes and imports included, is
+# ordinary Python: project code is trusted, and this is not a sandbox.
+_SERVER_STOPPING_CALLS: dict[str, str] = {
+    "input": "waits for console input the server never receives",
+    "exit": "stops the server process",
+    "quit": "stops the server process",
+    "breakpoint": "waits for a debugger on the server's console",
+}
 
-# Base mapping of safe builtins *without* the ``__builtins__`` self-reference.
-# Each ``safe_globals`` call layers a fresh ``__builtins__`` dict on top of a
-# copy of this, so no returned namespace ever aliases module-global mutable
-# state (mutating one exec namespace's builtins must not leak into the next).
-_SAFE_BUILTINS: dict[str, Any] = {
-    name: getattr(builtins, name)
-    for name in dir(builtins)
-    if not name.startswith("_") and name not in _BLOCKED_BUILTINS
+# The prefix of the module name project code runs under, so a class it
+# defines records where it came from instead of claiming to be a builtin. It is
+# deliberately not ``__main__``: a script's ``if __name__ == "__main__":`` block
+# must not run inside the server. Each namespace gets its own numbered name, so
+# concurrent executions never resolve each other's names.
+PROJECT_CODE_MODULE = "haute_project_code"
+_project_code_numbers = itertools.count(1)
+
+# The ordinary builtins without the server-stopping calls. Each
+# ``safe_globals`` call copies this, so no returned namespace aliases
+# module-global mutable state.
+_EXEC_BUILTINS: dict[str, Any] = {
+    name: value for name, value in vars(builtins).items() if name not in _SERVER_STOPPING_CALLS
 }
 
 
-def safe_globals(*, allow_imports: bool = False, **extra: Any) -> dict[str, Any]:
-    """Build a restricted global namespace for ``exec()``.
+def safe_globals(**extra: Any) -> dict[str, Any]:
+    """Build the global namespace for ``exec()``/``eval()`` of project code.
 
-    Includes safe builtins + any extra bindings (e.g. ``pl=polars``).
-    Blocks ``__import__``, ``open``, ``eval``, ``exec``, ``compile``,
-    ``breakpoint``, ``globals``, ``locals``, and ``input``.
-
-    *allow_imports* restores ``__import__`` — used for preamble code
-    that legitimately imports from project utilities.
-
-    A fresh ``__builtins__`` dict is built per call so mutations to one
-    namespace's builtins cannot leak into subsequent exec namespaces.
+    The ordinary builtins without the calls that would hang or stop the
+    server, plus any extra bindings (e.g. ``pl=polars``). A fresh
+    ``__builtins__`` dict is built per call so mutations to one namespace's
+    builtins cannot leak into subsequent exec namespaces.
     """
-    inner: dict[str, Any] = dict(_SAFE_BUILTINS)
-    if allow_imports:
-        inner["__import__"] = builtins.__import__
-    # Keep __builtins__ pointing at the restricted set so nested lookups
-    # (e.g. list comprehensions) resolve names correctly.
-    inner["__builtins__"] = inner
-    ns: dict[str, Any] = dict(inner)
-    if allow_imports:
-        ns["__import__"] = builtins.__import__
+    inner: dict[str, Any] = dict(_EXEC_BUILTINS)
+    ns: dict[str, Any] = {name: value for name, value in inner.items() if not name.startswith("_")}
+    # Nested scopes (comprehensions, helpers) resolve builtins through this.
+    ns["__builtins__"] = inner
+    ns["__name__"] = f"{PROJECT_CODE_MODULE}_{next(_project_code_numbers)}"
     ns.update(extra)
     return ns
 
 
-# ---------------------------------------------------------------------------
-# AST-level code validation — runs BEFORE exec()
-# ---------------------------------------------------------------------------
+class _ProjectCodeModule:
+    """Stands in for a module in ``sys.modules``; its ``__dict__`` is the namespace."""
 
-# Attribute names that enable sandbox escapes via the Python type system.
-_BLOCKED_ATTRS = frozenset(
-    {
-        "__subclasses__",
-        "__bases__",
-        "__mro__",
-        "__class__",
-        "__globals__",
-        "__code__",
-        "__func__",
-        "__self__",
-        "__module__",
-        "__dict__",
-        "__init_subclass__",
-        "__set_name__",
-        "__reduce__",
-        "__reduce_ex__",
-        "__getattr__",
-        "__getattribute__",
-        "__setattr__",
-        "__delattr__",
-        "__import__",
-        "__builtins__",
-        "__loader__",
-        "__spec__",
-        "__closure__",
-        # Type-system traversal siblings of the entries above — each is a
-        # reachable escape route if left off the list (e.g. ``__base__``
-        # reaches a parent type just like ``__bases__``; ``__class_getitem__``
-        # and ``__subclasshook__`` expose the type machinery; the pickle
-        # state hooks let crafted objects drive ``__setstate__`` logic).
-        "__base__",
-        "__subclasshook__",
-        "__class_getitem__",
-        "__getstate__",
-        "__setstate__",
-    }
-)
-
-# Non-dunder attribute names that enable frame/traceback inspection escapes.
-_BLOCKED_FRAME_ATTRS = frozenset(
-    {
-        "__traceback__",
-        "tb_frame",
-        "tb_next",
-        "f_globals",
-        "f_locals",
-        "f_builtins",
-        "f_code",
-        "gi_frame",
-        "gi_code",
-        "cr_frame",
-        "cr_code",
-        "ag_frame",
-        "ag_code",
-    }
-)
-
-# Built-in function names that can be used to bypass attribute restrictions.
-_BLOCKED_CALLS = frozenset(
-    {
-        "getattr",
-        "setattr",
-        "delattr",
-        "type",
-        "vars",
-        "dir",
-        "hasattr",
-        "classmethod",
-        "staticmethod",
-        "super",
-        "__import__",
-        "eval",
-        "exec",
-        "compile",
-        "open",
-        "breakpoint",
-        "globals",
-        "locals",
-        "input",
-        "exit",
-        "quit",
-        "help",
-    }
-)
+    def __init__(self, namespace: dict[str, Any]) -> None:
+        self.__dict__ = namespace
 
 
-# Parse ``str.format`` replacement fields, including fields nested inside
-# format specs. Bare dunder-named fields remain harmless; traversal through an
-# attribute or item into one is rejected.
-_FORMATTER = string.Formatter()
+@contextmanager
+def project_code_module(namespace: dict[str, Any]) -> Iterator[None]:
+    """Register *namespace* as its module while project code runs in it.
 
-
-def _format_template_has_dunder_traversal(template: str) -> bool:
-    """Return whether *template* traverses into a dunder format field.
-
-    ``Formatter.parse`` understands nested replacement fields in format specs,
-    unlike the former regular expression. Format specs are parsed recursively
-    because they may contain their own field traversal.
+    ``dataclasses`` and ``typing.get_type_hints`` resolve a class's string
+    annotations through ``sys.modules[cls.__module__]``, so a quoted annotation
+    or a ``from __future__ import annotations`` in project code needs the
+    namespace to be findable there. The entry is removed afterwards, so a
+    long-lived server does not accumulate one module per execution.
     """
-    pending = [template]
-    while pending:
-        current = pending.pop()
-        for _literal, field_name, format_spec, _conversion in _FORMATTER.parse(current):
-            if field_name is not None:
-                traverses = "." in field_name or "[" in field_name
-                if traverses and "__" in field_name:
-                    return True
-            if format_spec:
-                pending.append(format_spec)
-    return False
+    name = namespace["__name__"]
+    sys.modules[name] = _ProjectCodeModule(namespace)  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        sys.modules.pop(name, None)
 
 
-# ``str`` methods that consume a *template string* and parse replacement fields
-# (``{0.__globals__}``) out of it at runtime.  These are guarded at the call
-# layer (``_ASTValidator.visit_Call``): the template must be a single string
-# literal we can statically vet, because ``ast.parse`` does not constant-fold
-# ``+``, so a template assembled at runtime (``'{0.' + '__globals__}'`` or a
-# name-bound string) would otherwise smuggle dunder traversal past a
-# literal-only scan.
-_FORMAT_METHOD_NAMES = frozenset({"format", "format_map", "vformat", "get_field", "format_field"})
+def compile_project_code(code: str) -> CodeType:
+    """Compile project code for ``exec()`` as an ordinary module would be.
 
-# Name bound to the polars module inside the sandbox namespace
-# (``safe_globals(pl=pl)``).  ``pl.format("{}", expr)`` is the polars string
-# builder — its receiver is the module, not a template string, and polars only
-# understands positional ``{}`` placeholders (no attribute traversal), so it is
-# carved out of the template guard below.
-_POLARS_MODULE_ALIAS = "pl"
+    ``dont_inherit`` keeps haute's own ``from __future__`` imports (postponed
+    annotations) out of the project's code, so a dataclass or a
+    ``get_type_hints`` call in node code sees the annotations Python gives a
+    module that does not ask for postponement.
+    """
+    return compile(code, "<string>", "exec", dont_inherit=True)
 
 
 class UnsafeCodeError(HauteError):
-    """Raised when AST validation detects a dangerous pattern."""
+    """Raised when project code calls a server-stopping builtin or cannot be parsed."""
 
 
-class _ASTValidator(ast.NodeVisitor):
-    """Walk an AST and raise ``UnsafeCodeError`` on dangerous patterns.
+class _AccidentGuard(ast.NodeVisitor):
+    """Reject a direct call to a server-stopping builtin the code does not rebind."""
 
-    Blocks:
-    - Dunder attribute access (``obj.__class__``, ``obj.__subclasses__()``)
-    - Calls to reflection helpers (``getattr``, ``type``, ``vars``, etc.)
-    - Import statements (unless ``allow_imports=True``)
-    - ``class`` and ``async`` definitions
-    - ``global`` / ``nonlocal`` scope-escaping statements
-    - ``__builtins__[...]`` subscript access
-    - ``str.format`` / ``.format_map`` / ``.vformat`` calls whose template is
-      not a single statically-vettable string literal (``"{0.__globals__}"
-      .format(obj)`` reads secrets via a format field the attribute-visitor
-      never sees; a runtime-assembled template such as ``('{0.' +
-      '__globals__}').format(obj)`` would slip past a literal-only scan).
-    """
-
-    def __init__(
-        self,
-        *,
-        allow_imports: bool = False,
-        polars_alias_shadowed: bool = False,
-    ) -> None:
+    def __init__(self, bound_names: set[str]) -> None:
         super().__init__()
-        self.allow_imports = allow_imports
-        self.polars_alias_shadowed = polars_alias_shadowed
-
-    def visit_Attribute(self, node: ast.Attribute) -> None:
-        if node.attr.startswith("__") and node.attr.endswith("__"):
-            if node.attr in _BLOCKED_ATTRS:
-                raise UnsafeCodeError(f"Access to '{node.attr}' is blocked in pipeline code")
-        # Block traceback frame access — prevents sandbox escape via
-        # exception handler: e.__traceback__.tb_frame.f_globals
-        if node.attr in _BLOCKED_FRAME_ATTRS:
-            raise UnsafeCodeError(f"Access to '{node.attr}' is blocked in pipeline code")
-        self.generic_visit(node)
+        self.bound_names = bound_names
 
     def visit_Call(self, node: ast.Call) -> None:
-        # Block calls to dangerous built-in names
-        if isinstance(node.func, ast.Name) and node.func.id in _BLOCKED_CALLS:
-            raise UnsafeCodeError(f"Call to '{node.func.id}()' is blocked in pipeline code")
-        # Guard ``str.format`` / ``.format_map`` / ``.vformat`` at the call
-        # layer.  A literal-only scan is bypassable because ``ast.parse`` does
-        # not constant-fold ``+`` — ``('{0.' + '__globals__}').format(g)`` and
-        # ``tmpl = '{0.__globals__}'; tmpl.format(g)`` both leave a template the
-        # scan never reconstructs.  Requiring the template to be a single vetted
-        # string literal closes that side channel.
-        if isinstance(node.func, ast.Attribute) and node.func.attr in _FORMAT_METHOD_NAMES:
-            self._check_format_call(node.func)
-        self.generic_visit(node)
-
-    def _check_format_call(self, func: ast.Attribute) -> None:
-        """Reject a ``.format``-family call whose template cannot be vetted.
-
-        The template of ``str.format``/``.format_map``/``.vformat`` is the
-        *receiver* (``func.value``).  polars' ``pl.format(...)`` is a distinct
-        module-level builder — its receiver is the polars module, not a
-        template string, and it only parses positional ``{}`` placeholders — so
-        it is carved out.  Every other receiver shape is rejected: a string
-        literal is admitted only when it contains no dunder-traversing field;
-        anything non-literal (a ``BinOp`` concatenation, a name-bound template,
-        a call result) cannot be statically vetted and is blocked.
-        """
-        receiver = func.value
-        # polars ``pl.format("{}", expr)`` — receiver is the module, not a str.
+        func = node.func
         if (
-            isinstance(receiver, ast.Name)
-            and receiver.id == _POLARS_MODULE_ALIAS
-            and not self.polars_alias_shadowed
+            isinstance(func, ast.Name)
+            and func.id in _SERVER_STOPPING_CALLS
+            and func.id not in self.bound_names
         ):
-            return
-        if isinstance(receiver, ast.Constant) and isinstance(receiver.value, str):
-            try:
-                has_dunder_traversal = _format_template_has_dunder_traversal(receiver.value)
-            except ValueError as exc:
-                raise UnsafeCodeError(
-                    f"Format-string template could not be statically parsed: {exc}"
-                ) from exc
-            if has_dunder_traversal:
-                raise UnsafeCodeError(
-                    "Format-string templates that traverse dunder attributes "
-                    f"(e.g. '{{0.__globals__}}') are blocked in pipeline code — "
-                    f"'.{func.attr}()' template rejected"
-                )
-            return
-        raise UnsafeCodeError(
-            f"'.{func.attr}()' requires a single string-literal template that "
-            "can be statically vetted; a runtime-assembled or name-bound format "
-            "template is blocked in pipeline code (it can hide dunder traversal "
-            "such as '{0.__globals__}')"
-        )
-
-    def visit_Subscript(self, node: ast.Subscript) -> None:
-        # Block __builtins__["getattr"] style access — prevents retrieving
-        # blocked callables via dict subscription on the builtins namespace.
-        if isinstance(node.value, ast.Name) and node.value.id == "__builtins__":
-            raise UnsafeCodeError("Subscript access to '__builtins__' is blocked in pipeline code")
+            raise UnsafeCodeError(
+                f"'{func.id}()' {_SERVER_STOPPING_CALLS[func.id]}, so pipeline code cannot call it."
+            )
         self.generic_visit(node)
-
-    def visit_Import(self, node: ast.Import) -> None:
-        if not self.allow_imports:
-            raise UnsafeCodeError("import statements are blocked in pipeline code")
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if not self.allow_imports:
-            raise UnsafeCodeError("import statements are blocked in pipeline code")
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        raise UnsafeCodeError("class definitions are blocked in pipeline code")
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        raise UnsafeCodeError("async function definitions are blocked in pipeline code")
-
-    def visit_Global(self, node: ast.Global) -> None:
-        raise UnsafeCodeError("global statements are blocked in pipeline code")
-
-    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
-        raise UnsafeCodeError("nonlocal statements are blocked in pipeline code")
 
 
 # Bounded cache of validated code strings.  A long-lived server previews and
@@ -425,15 +221,14 @@ class _ASTValidator(ast.NodeVisitor):
 # entry per fragment forever.  Reuse the codebase's bounded ``LRUCache`` (the
 # same primitive backing ``_feature_validation_cache``) so the cache self-caps.
 _VALIDATION_CACHE_MAX_SIZE = 1024
-_validation_cache: LRUCache[tuple[str, bool], bool] = LRUCache(max_size=_VALIDATION_CACHE_MAX_SIZE)
+_validation_cache: LRUCache[str, bool] = LRUCache(max_size=_VALIDATION_CACHE_MAX_SIZE)
 
 
 def _bound_names(tree: ast.AST) -> set[str]:
     """Return names bound anywhere in *tree*.
 
-    Used conservatively for the sandbox's special ``pl.format`` carve-out:
-    if user code binds ``pl`` in any scope, ``pl.format`` is no longer assumed
-    to be the trusted polars module function.
+    A call to a name the code binds itself (``def input(): ...``) is the
+    code's own function, not the builtin, so the guard leaves it alone.
     """
     names: set[str] = set()
     for node in ast.walk(tree):
@@ -445,10 +240,7 @@ def _bound_names(tree: ast.AST) -> set[str]:
             names.add(node.arg)
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                bound = alias.asname or alias.name.split(".", 1)[0]
-                if alias.name == "polars" and bound == _POLARS_MODULE_ALIAS:
-                    continue
-                names.add(bound)
+                names.add(alias.asname or alias.name.split(".", 1)[0])
         elif isinstance(node, ast.ImportFrom):
             for alias in node.names:
                 if alias.name != "*":
@@ -464,51 +256,24 @@ def _bound_names(tree: ast.AST) -> set[str]:
     return names
 
 
-def validate_user_code(code: str, *, allow_imports: bool = False) -> None:
-    """Parse *code* and check for dangerous AST patterns.
+def validate_user_code(code: str) -> None:
+    """Parse *code* and reject a direct call that would hang or stop the server.
 
-    Raises ``UnsafeCodeError`` if the code contains blocked constructs
-    (dunder access, imports, getattr, class defs, etc.).
+    Raises ``UnsafeCodeError`` for a call to ``input``, ``exit``, ``quit`` or
+    ``breakpoint`` by that bare name (unless the code binds the name itself),
+    and for code that cannot be parsed, chaining the ``SyntaxError``.
 
-    Called by ``_exec_user_code`` before ``exec()`` so dangerous code
-    is rejected at the structural level — not just at runtime via
-    restricted builtins.
-
-    *allow_imports* permits ``import`` / ``from … import`` statements,
-    used for preamble code which legitimately imports from utility modules.
-
-    Results for safe code are cached by code string so repeated
-    executions of the same node (preview, trace) skip the AST parse.
+    Called before project code runs inside the server. Results for accepted
+    code are cached by code string so repeated executions of the same node
+    (preview, trace) skip the parse.
     """
-    _validate_user_code_cached(code, allow_imports=allow_imports)
-
-
-def _validate_user_code_cached(
-    code: str,
-    *,
-    allow_imports: bool = False,
-) -> None:
-    """Inner validation with per-code-string caching.
-
-    Uses a bounded ``LRUCache`` keyed by ``(code, allow_imports)``.
-    Safe-code results (``True``) are cached; unsafe code always raises
-    before caching.  The cache is thread-safe internally, so no external
-    lock is needed.
-    """
-    cache_key = (code, allow_imports)
-    if _validation_cache.get(cache_key) is not None:
+    if _validation_cache.get(code) is not None:
         return
-
     # _try_parse_code raises UnsafeCodeError (wrapping the SyntaxError)
     # when the code cannot be parsed as standalone Python.
     tree = _try_parse_code(code)
-
-    v = _ASTValidator(
-        allow_imports=allow_imports,
-        polars_alias_shadowed=_POLARS_MODULE_ALIAS in _bound_names(tree),
-    )
-    v.visit(tree)
-    _validation_cache.put(cache_key, True)
+    _AccidentGuard(_bound_names(tree)).visit(tree)
+    _validation_cache.put(code, True)
 
 
 def _try_parse_code(code: str) -> ast.Module:

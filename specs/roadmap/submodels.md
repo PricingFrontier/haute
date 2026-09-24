@@ -37,8 +37,8 @@ removed ones' parser, codegen, executor and editor paths.
 mechanisms; the removed mechanism has no parser, codegen, executor or editor
 path; the documentation describes only supported mechanisms.
 
-**Dependencies:** `PCFG-R06` (pipeline config) for the canonical-input rule
-that applies to removed forms.
+**Dependencies:** None. The canonical-input rule that applies to removed forms
+is in the [specification README](../README.md#canonical-only-format-policy).
 
 **Evidence:** `src/haute/pipeline.py::instance`;
 `src/haute/_submodel_instances.py`; `src/haute/_flatten.py`;

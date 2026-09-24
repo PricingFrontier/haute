@@ -33,6 +33,7 @@ from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import edge_input_name
 from haute._logging import get_logger
+from haute._sandbox import contained_path
 from haute._source_cache import SourceCacheError
 from haute._types import GraphNode, NodeType, PipelineGraph
 from haute.assistant._application import CommittedVerificationError, PipelineApplicationService
@@ -55,7 +56,7 @@ from haute.assistant._project_knowledge import build_project_knowledge, query_pr
 from haute.assistant._recipes import RecipeError
 from haute.assistant._recipes import plan_recipe as _plan_recipe
 from haute.assistant._render import render_pipeline_graph
-from haute.errors import HauteError
+from haute.errors import HauteError, InvalidPathError, PathOutsideProjectError
 from haute.execution import execute_lazy_graph
 from haute.executor import (
     _build_node_fn,
@@ -68,7 +69,6 @@ from haute.routes._helpers import (
     parse_pipeline_to_graph,
     pipeline_dir,
     save_lock,
-    validate_safe_path,
 )
 
 logger = get_logger(component="assistant.tools")
@@ -129,6 +129,9 @@ def _error(code: str, message: str, **fields: object) -> dict[str, object]:
 def _error_message(exc: Exception, *, operation: str) -> str:
     """Keep analyst-facing Haute errors, but do not leak internal details."""
 
+    if isinstance(exc, (PathOutsideProjectError, InvalidPathError)):
+        # The bare refusal, as the API gives it; the refused path stays in the log context.
+        return exc.message
     if isinstance(exc, (HauteError, SourceCacheError)):
         return str(exc)
     if isinstance(exc, HTTPException):
@@ -866,7 +869,7 @@ def list_datasets(
         if not isinstance(recursive, bool):
             return _error("invalid_request", "recursive must be a boolean.")
         base = Path.cwd().resolve()
-        target = validate_safe_path(base, project_root or ".")
+        target = contained_path(base, project_root or ".")
         if _dataset_path_forbidden(target, base):
             return _error(
                 "dataset_path_forbidden",
@@ -898,7 +901,7 @@ def get_dataset_schema(
 
     try:
         base = Path.cwd().resolve()
-        target = validate_safe_path(base, path)
+        target = contained_path(base, path)
         if _dataset_path_forbidden(target, base):
             return _error(
                 "dataset_path_forbidden",
@@ -1544,7 +1547,7 @@ def _observe_project_source_evidence(
         raw_digest = result.get("source_digest")
         if isinstance(raw_path, str) and isinstance(raw_digest, str):
             observed[("schema", raw_path)] = ProjectSourceEvidence(
-                path=validate_safe_path(project_root, raw_path),
+                path=contained_path(project_root, raw_path),
                 digest=raw_digest,
                 kind="schema",
             )
@@ -1563,7 +1566,7 @@ def _observe_project_source_evidence(
         ):
             raw_source = item["source"]
             observed[("content", raw_source)] = ProjectSourceEvidence(
-                path=validate_safe_path(project_root, raw_source),
+                path=contained_path(project_root, raw_source),
                 digest=item["source_digest"],
                 kind="content",
             )

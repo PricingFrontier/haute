@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from copy import deepcopy
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from haute._config_io import _prepare_config_for_sidecar, config_path_for_node, node_emits_sidecar
 from haute._config_validation import reject_unrecognized_config_keys
@@ -22,7 +22,6 @@ from haute._pipeline_repair import (
     _find_target,
     _iter_recovery_nodes,
     _json_object_members,
-    _plan_hash,
     _recovery_structure,
     _resolve_config_reference,
     _resolve_project_file,
@@ -49,6 +48,9 @@ from haute.schemas import (
     RecoveryGraphSnapshot,
     RecoveryPipelineNode,
 )
+
+if TYPE_CHECKING:
+    from haute._node_config_recovery import RecoveryIssue
 
 
 def _unsupported(message: str) -> PipelineRepairError:
@@ -105,7 +107,7 @@ def _update_submodel(
     parent: Path,
     target: RecoveryPipelineNode,
     document: PipelineEditorDocument,
-) -> tuple[list[RepairArtifactEdit], list[str]]:
+) -> list[RepairArtifactEdit]:
     if target.node_type != NodeType.SUBMODEL:
         raise _unsupported("No current-format update is registered for this node type.")
     before = parent.read_bytes()
@@ -274,22 +276,7 @@ def _update_submodel(
                     "Retain the submodel's canvas position under its current occurrence name.",
                 )
             )
-    warnings = [
-        "Child nodes, their configuration and downstream custom code are preserved. "
-        "Other invalid nodes may still need repair."
-    ]
-    references = [
-        node.authored_id
-        for node in _iter_recovery_nodes(document)
-        if node.node_type == NodeType.SUBMODEL and node.config_reference == target.config_reference
-    ]
-    if len(references) > 1:
-        warnings.append(
-            "This child definition is shared by: "
-            + ", ".join(references)
-            + ". Its port update affects every occurrence."
-        )
-    return edits, warnings
+    return edits
 
 
 def _target_graph(
@@ -323,7 +310,7 @@ def _reset_node(
     shared_config_confirmed: bool = False,
     recover: bool = False,
     allow_blocked_sources: bool = False,
-) -> tuple[list[RepairArtifactEdit], list[str]]:
+) -> list[RepairArtifactEdit]:
     from haute._graph_utils import executable_input_name
     from haute.codegen import _node_to_code
 
@@ -537,18 +524,7 @@ def _reset_node(
             else f"Recreate {target.authored_id!r} using the current {node_type.value} template.",
         ),
     )
-    if recover:
-        return edits, [
-            "Recover settings retains valid values and code. "
-            "Its identity, position and connections are retained.",
-            "Complete any remaining highlighted settings before running.",
-        ]
-    return edits, [
-        "Reset replaces this node's settings and custom code. "
-        "Its identity, position and connections are retained.",
-        "Configure the node before running it. An empty Polars node requires code "
-        "and deliberately raises until configured.",
-    ]
+    return edits
 
 
 def _recover_node(
@@ -559,7 +535,6 @@ def _recover_node(
     document: PipelineEditorDocument,
 ) -> tuple[
     list[RepairArtifactEdit],
-    list[str],
     dict[str, Any],
     list[PipelineRepairFieldChange],
     list[PipelineNodeCompleteness],
@@ -590,7 +565,7 @@ def _recover_node(
         receiver="pipeline" if path == root_path else "submodel",
         config_base_depth=len(path.parent.relative_to(root_path.parent).parts),
     )
-    edits, warnings = _reset_node(
+    edits = _reset_node(
         root,
         root_path,
         path,
@@ -609,29 +584,38 @@ def _recover_node(
     ]
     return (
         edits,
-        warnings,
         raw,
         field_changes,
-        _recover_completeness(node_type, result.config, target.recovery_id),
+        _recover_completeness(node_type, result.config, target.recovery_id, result.issues),
     )
 
 
 def _recover_completeness(
-    node_type: NodeType, config: dict[str, Any], recovery_id: str
+    node_type: NodeType,
+    config: dict[str, Any],
+    recovery_id: str,
+    issues: Sequence[RecoveryIssue],
 ) -> list[PipelineNodeCompleteness]:
+    """What the recover could not fix: provider gaps plus unresolved engine errors."""
     from haute._polars_io_registry import data_input_completeness, data_output_completeness
 
     if node_type is NodeType.DATA_INPUT:
-        gaps = data_input_completeness(config)
+        gaps = [(gap.path, gap.code, gap.message) for gap in data_input_completeness(config)]
     elif node_type is NodeType.DATA_OUTPUT:
-        gaps = data_output_completeness(config)
+        gaps = [(gap.path, gap.code, gap.message) for gap in data_output_completeness(config)]
     else:
-        return []
+        gaps = []
+    # An error the engine could not resolve must never read as fixed: the
+    # recover applies and the node shows it as unfinished.
+    for issue in issues:
+        if issue.severity != "error":
+            continue
+        entry = (issue.path or "/", issue.code, issue.message[:1024])
+        if entry not in gaps:
+            gaps.append(entry)
     return [
-        PipelineNodeCompleteness(
-            element_id=recovery_id, path=gap.path, code=gap.code, message=gap.message
-        )
-        for gap in gaps
+        PipelineNodeCompleteness(element_id=recovery_id, path=path, code=code, message=message)
+        for path, code, message in gaps
     ]
 
 
@@ -683,13 +667,13 @@ def build_recovery_action_plan(
     completeness: list[PipelineNodeCompleteness] = []
     previous_config: dict[str, Any] | None = None
     if request.action == "update":
-        edits, warnings = _update_submodel(root, path, target, document)
+        edits = _update_submodel(root, path, target, document)
     elif request.action == "recover":
-        edits, warnings, previous_config, field_changes, completeness = _recover_node(
+        edits, previous_config, field_changes, completeness = _recover_node(
             root, root_path, path, target, document
         )
     else:
-        edits, warnings = _reset_node(root, root_path, path, target, document)
+        edits = _reset_node(root, root_path, path, target, document)
     kind: Literal["update_node", "reset_node", "recover_node"] = (
         "update_node"
         if request.action == "update"
@@ -706,7 +690,6 @@ def build_recovery_action_plan(
         source_revision=request.source_revision,
         kind=kind,
         edits=edits,
-        warnings=warnings,
         field_changes=field_changes,
         completeness=completeness,
         previous_config=previous_config,
@@ -723,12 +706,11 @@ def _finalise_action_plan(
     source_revision: str,
     kind: Literal["update_node", "reset_node", "recover_node"],
     edits: list[RepairArtifactEdit],
-    warnings: list[str],
     field_changes: list[PipelineRepairFieldChange] | None = None,
     completeness: list[PipelineNodeCompleteness] | None = None,
     previous_config: dict[str, Any] | None = None,
 ) -> PipelineRepairPlan:
-    """Verify proposed edits in isolation and bind them to one confirmable plan."""
+    """Verify proposed edits in isolation and bind them to one plan."""
     edits = [edit for edit in edits if edit.before != edit.after]
     if not edits:
         raise _unsupported("No supported current-format change was found for this node.")
@@ -765,15 +747,6 @@ def _finalise_action_plan(
         target_recovery_id=target.recovery_id,
         target_authored_id=target.authored_id,
         delete_config=False,
-        plan_hash=_plan_hash(
-            source_revision=source_revision,
-            source_file=document.source_file,
-            target_source_file=_wire_path(path, root),
-            target_recovery_id=target.recovery_id,
-            delete_config=False,
-            edits=edits,
-            repair_kind=kind,
-        ),
         changes=[
             PipelineRepairChange(
                 path=edit.wire_path,
@@ -784,8 +757,6 @@ def _finalise_action_plan(
             )
             for edit in edits
         ],
-        warnings=warnings,
-        predicted_load_status=preview.load_status,
         field_changes=field_changes or [],
         completeness=completeness or [],
         previous_config=previous_config,
@@ -849,7 +820,7 @@ def apply_scoped_node_save(
         )
     except ValueError as exc:
         raise _unsupported(f"The proposed settings are not loadable: {exc}") from exc
-    edits, _warnings = _reset_node(
+    edits = _reset_node(
         root,
         root_path,
         path,
@@ -870,8 +841,5 @@ def apply_scoped_node_save(
         source_revision=request.source_revision,
         kind="recover_node",
         edits=edits,
-        warnings=[],
     )
-    return _commit_repair_plan(
-        project_root=root, plan=plan, plan_hash=plan.response.plan_hash
-    ).document
+    return _commit_repair_plan(project_root=root, plan=plan).document

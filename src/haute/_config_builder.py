@@ -261,12 +261,14 @@ def _attach_code_from_body(
 
 
 def _is_contract_resolve_fallback_exception(exc: BaseException) -> bool:
-    """Return whether *exc* should fall back to an opaque parse-time contract.
+    """Return whether *exc* is a named infrastructure failure.
 
-    Matches the execution boundary check while avoiding an eager module import of
-    MLflow just to populate an ``except`` tuple at import time.
+    Only a missing or unreadable file, a missing optional dependency or an
+    MLflow failure degrades the parse-time check to an opaque contract; a
+    configuration or programmer error propagates. MLflow is imported lazily
+    rather than to populate an ``except`` tuple at import time.
     """
-    if isinstance(exc, (ConfigError, OSError, ImportError, RuntimeError)):
+    if isinstance(exc, (OSError, ImportError)):
         return True
     try:
         from mlflow.exceptions import MlflowException
@@ -294,13 +296,14 @@ def _derive_parse_time_contract(node_type: NodeType, config: dict[str, Any]) -> 
 def resolve_parse_time_contract(node_type: NodeType, config: dict[str, Any]) -> Contract:
     """Return the builder contract a parse-time declaration is checked against.
 
-    If the builder contract cannot be resolved right now (for example a
-    missing artifact file or temporarily unavailable external dependency),
-    the builder is treated as fully opaque. The check re-runs at execution
-    time when runtime resources are actually loaded, so a drifted annotation
-    still surfaces - just not at offline parse-time. Programmer errors
-    (AttributeError / TypeError / KeyError) propagate so they aren't masked
-    as a "harmless parse-time fallback to opaque".
+    If the builder contract cannot be resolved right now because of a named
+    infrastructure failure (a missing artifact file, a missing optional
+    dependency, an unreachable MLflow server), the builder is treated as fully
+    opaque. The check re-runs at execution time when runtime resources are
+    actually loaded, so a drifted annotation still surfaces - just not at
+    offline parse-time. Configuration errors (``ConfigError``) and programmer
+    errors propagate so they aren't masked as a "harmless parse-time fallback
+    to opaque".
     """
     try:
         return _derive_parse_time_contract(node_type, config)
@@ -367,9 +370,9 @@ def _sidecar_required_error(node_type: NodeType, func_name: str) -> ConfigError:
 
     Names the concrete config folder resolved from ``NODE_TYPE_TO_FOLDER`` (not a
     ``<type>`` placeholder), states that any inline keyword arguments were
-    ignored, and points at ``haute init`` as a starter-sidecar generator. Shared
-    by the healthy parse path (:func:`_resolve_node_config`) and the syntax-error
-    recovery path (``_parser_regex``) so both surface the same guidance.
+    ignored, and points at ``haute init`` as a starter-sidecar generator. Raised
+    from the parse path (:func:`_resolve_node_config`), which editor recovery
+    shares, so both surface the same guidance.
     """
     folder = NODE_TYPE_TO_FOLDER[node_type]
     return ConfigError(

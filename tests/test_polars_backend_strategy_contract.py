@@ -66,16 +66,6 @@ _STATUS_BY_STRATEGY = {
 }
 
 
-def test_prepared_planner_ignores_a_missing_parent_when_deriving_input_names() -> None:
-    result = plan_prepared_execution_strategy(
-        [],
-        {"missing": ["child"]},
-        {},
-        profile=ExecutionProfile.LAZY_SINK,
-    )
-    assert result is not None
-
-
 def test_join_headroom_rejection_mentions_the_validate_contract() -> None:
     """An unbounded join is reported as unproven, and says how to bound it."""
     from haute.execution import MANY_TO_MANY_JOIN_DETAIL, _materialisation_rejection
@@ -1079,6 +1069,7 @@ def test_prepared_and_request_planners_return_the_same_contract() -> None:
         prepared.node_map,
         profile=request.profile,
         required_columns_by_node=request.required_columns_by_node,
+        relevant_edges=prepared.relevant_edges,
     )
 
     assert prepared_result.diagnostic.to_dict() == request_result.diagnostic.to_dict()
@@ -1364,6 +1355,7 @@ def test_prepared_planner_without_edges_detects_a_parent_label_frame_receiver() 
             prepared.node_map,
             profile=ExecutionProfile.LAZY_SINK,
             materialisation_estimate=None,
+            relevant_edges=prepared.relevant_edges,
         )
 
 

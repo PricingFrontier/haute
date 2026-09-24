@@ -1,10 +1,10 @@
 """Tests for path traversal fixes in optimiser and submodel routes (S1, S2, S3).
 
-S1: optimiser.py save_result — replaced str.startswith with validate_safe_path
-S2: submodel.py get_submodel — added validate_safe_path for name parameter
-S3: submodel.py dissolve_submodel — added validate_safe_path for source_file
-S3b: submodel.py create_submodel — added validate_safe_path for source_file
-S3c: submodel.py dissolve_submodel — sm_file traversal via validate_safe_path
+S1: optimiser.py save_result — replaced str.startswith with contained_path
+S2: submodel.py get_submodel — added contained_path for name parameter
+S3: submodel.py dissolve_submodel — added contained_path for source_file
+S3b: submodel.py create_submodel — added contained_path for source_file
+S3c: submodel.py dissolve_submodel — sm_file traversal via contained_path
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
 
+from haute.errors import InvalidPathError, PathOutsideProjectError
 from tests.conftest import make_file_input_config
 from tests.job_store_support import seed_job
 
@@ -115,7 +115,7 @@ def _graph_with_submodel() -> dict:
 
 # =========================================================================
 # S1: optimiser save_result — smoke tests confirming endpoint uses
-# validate_safe_path (comprehensive validation is in TestValidateSafePath)
+# contained_path (comprehensive validation is in TestContainedPath)
 # =========================================================================
 
 
@@ -123,8 +123,8 @@ class TestOptimiserSavePathTraversal:
     """S1: Smoke tests that the optimiser save endpoint enforces path safety.
 
     The old str.startswith check was subtly broken for prefix attacks.
-    validate_safe_path (via is_relative_to) is now used instead.
-    Comprehensive attack vector coverage is in TestValidateSafePath.
+    contained_path (via is_relative_to) is now used instead.
+    Comprehensive attack vector coverage is in TestContainedPath.
     """
 
     def test_valid_relative_path(self, client, clean_job_store, tmp_path):
@@ -169,7 +169,7 @@ class TestGetSubmodelPathTraversal:
     """S2: Smoke tests that get_submodel enforces path safety on name parameter.
 
     The name URL parameter was used unsanitised in path construction.
-    Comprehensive attack vector coverage is in TestValidateSafePath.
+    Comprehensive attack vector coverage is in TestContainedPath.
     """
 
     def test_valid_submodel_name(self, client, tmp_path):
@@ -215,17 +215,16 @@ pipeline = haute.Pipeline("main")
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"].lower()
 
-    def test_validate_safe_path_blocks_traversal_directly(self, tmp_path):
+    def test_contained_path_blocks_traversal_directly(self, tmp_path):
         """Defense-in-depth: if a name with '..' somehow reaches the endpoint,
-        validate_safe_path blocks it at the function level."""
-        from haute.routes._helpers import validate_safe_path
+        contained_path blocks it at the function level."""
+        from haute._sandbox import contained_path
 
         modules_dir = tmp_path / "modules"
         modules_dir.mkdir()
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(modules_dir, "../../etc/passwd.py")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(modules_dir, "../../etc/passwd.py")
 
 
 # =========================================================================
@@ -238,7 +237,7 @@ class TestDissolveSubmodelPathTraversal:
 
     A crafted source_file like '../../etc/cron.d/evil' could write arbitrary
     code to the filesystem. Comprehensive attack vector coverage is in
-    TestValidateSafePath.
+    TestContainedPath.
     """
 
     def test_valid_source_file(self, client, tmp_path):
@@ -317,12 +316,12 @@ pipeline.submodel(
 
 
 # =========================================================================
-# validate_safe_path unit tests — comprehensive validation of all attack vectors
+# contained_path unit tests — comprehensive validation of all attack vectors
 # =========================================================================
 
 
-class TestValidateSafePath:
-    """Direct unit tests for the validate_safe_path helper.
+class TestContainedPath:
+    """Direct unit tests for the contained_path helper.
 
     This is the single comprehensive test class for all path traversal
     attack vectors. Endpoint-specific tests above are smoke tests that
@@ -330,73 +329,69 @@ class TestValidateSafePath:
     """
 
     def test_valid_relative(self, tmp_path):
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        result = validate_safe_path(tmp_path, "subdir/file.txt")
+        result = contained_path(tmp_path, "subdir/file.txt")
         assert result == (tmp_path / "subdir" / "file.txt").resolve()
 
     def test_valid_just_filename(self, tmp_path):
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        result = validate_safe_path(tmp_path, "file.txt")
+        result = contained_path(tmp_path, "file.txt")
         assert result == (tmp_path / "file.txt").resolve()
 
     def test_traversal_blocked(self, tmp_path):
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "../../etc/passwd")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, "../../etc/passwd")
 
     def test_prefix_trick_blocked(self, tmp_path):
         """The critical bug: sibling directories with shared prefix."""
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         base = tmp_path / "project"
         base.mkdir()
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(base, "../project_evil/file.txt")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(base, "../project_evil/file.txt")
 
     def test_absolute_path_outside_base_blocked(self, tmp_path):
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "/etc/passwd")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, "/etc/passwd")
 
     def test_dotdot_within_base_allowed(self, tmp_path):
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         # sub/../file.txt resolves to file.txt — still within base
-        result = validate_safe_path(tmp_path, "sub/../file.txt")
+        result = contained_path(tmp_path, "sub/../file.txt")
         assert result == (tmp_path / "file.txt").resolve()
 
     def test_path_object_input(self, tmp_path):
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        result = validate_safe_path(tmp_path, Path("subdir/file.txt"))
+        result = contained_path(tmp_path, Path("subdir/file.txt"))
         assert result == (tmp_path / "subdir" / "file.txt").resolve()
 
     def test_base_itself_allowed(self, tmp_path):
         """Resolving '.' should give back the base itself."""
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        result = validate_safe_path(tmp_path, ".")
+        result = contained_path(tmp_path, ".")
         assert result == tmp_path.resolve()
 
     def test_null_byte_in_path_blocked(self, tmp_path):
         """Null bytes in path components must not bypass validation.
 
-        On Linux, null bytes in filenames raise ValueError from Path.resolve().
-        validate_safe_path should not let this propagate as a 500; the
-        ValueError from pathlib is acceptable (caught before file I/O).
+        The containment check refuses a NUL byte before resolving anything;
+        the API answers 400.
         """
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        with pytest.raises((HTTPException, ValueError)):
-            validate_safe_path(tmp_path, "file\x00.txt")
+        with pytest.raises(InvalidPathError):
+            contained_path(tmp_path, "file\x00.txt")
 
     @pytest.mark.skipif(
         sys.platform == "win32",
@@ -408,7 +403,7 @@ class TestValidateSafePath:
         Even though the path is within the base before resolution,
         resolve() follows symlinks, so the resolved path escapes.
         """
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         # Create a symlink inside base that points outside
         outside = tmp_path / "outside"
@@ -419,39 +414,37 @@ class TestValidateSafePath:
         inside.mkdir()
         (inside / "escape").symlink_to(outside)
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(inside, "escape/secret.txt")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(inside, "escape/secret.txt")
 
     def test_double_encoded_dotdot_blocked(self, tmp_path):
         """Literal %2e%2e in a path segment is not traversal (it's a filename).
 
-        validate_safe_path operates on already-decoded strings, so URL
+        contained_path operates on already-decoded strings, so URL
         encoding is irrelevant.  But a literal '%2e%2e' filename should
         resolve safely within the base (it is NOT '..' after decode).
         """
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         # '%2e%2e' is a literal filename, not '..'
-        result = validate_safe_path(tmp_path, "%2e%2e/file.txt")
+        result = contained_path(tmp_path, "%2e%2e/file.txt")
         assert result.is_relative_to(tmp_path)
 
     def test_very_long_path_handled(self, tmp_path):
         """Extremely long paths should not cause unexpected behavior."""
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
         long_segment = "a" * 200
         long_path = "/".join([long_segment] * 5) + "/file.txt"
-        result = validate_safe_path(tmp_path, long_path)
+        result = contained_path(tmp_path, long_path)
         assert result.is_relative_to(tmp_path)
 
     def test_dotdot_in_middle_blocked(self, tmp_path):
         """Paths like sub/../../../etc/passwd must be blocked."""
-        from haute.routes._helpers import validate_safe_path
+        from haute._sandbox import contained_path
 
-        with pytest.raises(HTTPException) as exc_info:
-            validate_safe_path(tmp_path, "sub/../../../etc/passwd")
-        assert exc_info.value.status_code == 403
+        with pytest.raises(PathOutsideProjectError):
+            contained_path(tmp_path, "sub/../../../etc/passwd")
 
 
 # =========================================================================
@@ -462,7 +455,7 @@ class TestValidateSafePath:
 class TestCreateSubmodelPathTraversal:
     """S3b: Smoke tests that create_submodel enforces path safety on source_file.
 
-    Comprehensive attack vector coverage is in TestValidateSafePath.
+    Comprehensive attack vector coverage is in TestContainedPath.
     """
 
     def _minimal_create_body(

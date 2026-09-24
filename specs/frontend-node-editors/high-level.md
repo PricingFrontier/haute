@@ -469,25 +469,25 @@ remain available.
 
 An unavailable node inspector may offer `Remove node` only when the validated
 document capability allows repair and the node has a server recovery identity.
-The action first opens a dry-run confirmation surface; it never invokes normal
-node deletion, graph Save, codegen, or a client-authored source rewrite. The
-surface lists every file that will change or be deleted, renders the bounded
-server patch, states that the referenced config is retained by default, and
-requires a separate explicit choice before config deletion is added to the
-plan. Changing that choice obtains a new plan and plan hash.
+The action first opens a confirmation surface; it never invokes normal node
+deletion, graph Save, codegen, or a client-authored source rewrite. The surface
+states what the action does and offers an explicit choice to delete the config
+file the node references, if it has one (kept by default; the server deletes
+exactly the authored reference and refuses a shared or managed file). There is
+no preview of the patch before applying.
 
-Confirmation applies exactly the displayed plan hash. A revision conflict,
+Confirmation applies the action against the displayed document revision. A revision conflict,
 implicit downstream consumer, ambiguous identity/span, mixed connection
 chain, shared config, or server verification failure stays visible and leaves
 the recovery inspector open. Success adopts the returned editor document and
 closes the removed node's panel. Blocked and ready nodes never expose this
 action. Known unavailable submodels also offer `Update to current format`; known ordinary
 nodes offer `Recover settings` (primary) and `Reset node`. These actions follow the
-server-owned preview/apply contract in
+server-owned apply contract in
 [node recovery actions](../server-api/node-recovery-actions.md). Blocked nodes expose no
 reset or recover action. Reset confirmation explicitly describes replaced settings/code and
-required reconfiguration; recover confirmation collapses its source diffs by default and, on
-success, records a dismissible session summary of retained/defaulted/needs-input/removed
+required reconfiguration; a successful recover records a dismissible session summary, with
+what it could not fix listed as still to complete, of retained/defaulted/needs-input/removed
 fields with on-demand previous-configuration and diff views; updating a submodel preserves
 its contents and consumer code. In degraded documents, `scoped_editable` nodes keep their
 normal editors and save through the node-scoped save, which adopts the authoritative

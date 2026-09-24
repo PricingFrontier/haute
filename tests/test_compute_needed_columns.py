@@ -37,7 +37,7 @@ from haute._types import (
 )
 from haute.errors import ContractMismatchError
 from haute.projection import compute_prepared_plan
-from tests._projection_helpers import pair_value
+from tests._projection_helpers import adjacency_edges, pair_value
 from tests.conftest import make_output_config
 
 # ---------------------------------------------------------------------------
@@ -105,6 +105,7 @@ def _needed_by_node(
         children_of,
         node_map,
         required_columns_by_node,
+        relevant_edges=adjacency_edges(order, children_of),
     ).needed_by_node
 
 
@@ -783,6 +784,7 @@ class TestEdgeCases:
             children_of,
             node_map,
             required_columns_by_node={"join_premiums": required},
+            relevant_edges=adjacency_edges(order, children_of),
         )
 
         assert plan.needed_by_node["join_premiums"] == required
@@ -840,6 +842,7 @@ class TestEdgeCases:
             children_of,
             node_map,
             required_columns_by_node={"ratebook_optimiser": required},
+            relevant_edges=adjacency_edges(order, children_of),
         )
 
         assert plan.needed_by_node["ratebook_optimiser"] == required
@@ -896,6 +899,7 @@ class TestEdgeCases:
             children_of,
             node_map,
             required_columns_by_node={"scored": required},
+            relevant_edges=adjacency_edges(order, children_of),
         )
 
         assert plan.needed_by_node["ratebook_optimiser"] is None
@@ -947,6 +951,7 @@ class TestEdgeCases:
             children_of,
             node_map,
             required_columns_by_node={"ratebook_optimiser": required},
+            relevant_edges=adjacency_edges(order, children_of),
         )
 
         assert plan.needed_by_node["shared"] == {*required, "territory_band"}
@@ -988,6 +993,7 @@ class TestEdgeCases:
                 children_of,
                 node_map,
                 required_columns_by_node={"ratebook_optimiser": {"quote_id", "expected_income"}},
+                relevant_edges=adjacency_edges(order, children_of),
             )
 
     def test_multi_parent_optimiser_rejects_missing_data_input(self):
@@ -1014,6 +1020,7 @@ class TestEdgeCases:
                 children_of,
                 node_map,
                 required_columns_by_node={"online_optimiser": {"quote_id", "expected_income"}},
+                relevant_edges=adjacency_edges(order, children_of),
             )
 
     def test_multi_parent_optimiser_rejects_disconnected_data_input(self):
@@ -1044,6 +1051,7 @@ class TestEdgeCases:
                 children_of,
                 node_map,
                 required_columns_by_node={"online_optimiser": {"quote_id", "expected_income"}},
+                relevant_edges=adjacency_edges(order, children_of),
             )
 
     def test_multi_parent_ratebook_optimiser_rejects_disconnected_banding_source(self):
@@ -1077,6 +1085,7 @@ class TestEdgeCases:
                 children_of,
                 node_map,
                 required_columns_by_node={"ratebook_optimiser": {"quote_id", "expected_income"}},
+                relevant_edges=adjacency_edges(order, children_of),
             )
 
     def test_multi_parent_inputs_by_parent_preserves_unambiguous_passthrough_parent_columns(self):
@@ -1121,6 +1130,7 @@ class TestEdgeCases:
             children_of,
             node_map,
             required_columns_by_node={"preview_target": required},
+            relevant_edges=adjacency_edges(order, children_of),
         )
 
         assert plan.needed_by_node["join_scoring"] == required
@@ -1192,6 +1202,7 @@ class TestEdgeCases:
             children_of,
             node_map,
             required_columns_by_node={"join_premiums": required},
+            relevant_edges=adjacency_edges(order, children_of),
         )
 
         assert plan.needed_by_node["join_policy_data"] == {
@@ -1242,6 +1253,7 @@ class TestEdgeCases:
             children_of,
             node_map,
             required_columns_by_node={"join": required},
+            relevant_edges=adjacency_edges(order, children_of),
         )
 
         assert plan.needed_by_node["policies"] == {"quote_id", "premium"}
@@ -1279,6 +1291,7 @@ class TestEdgeCases:
                 children_of,
                 node_map,
                 required_columns_by_node={"join": required},
+                relevant_edges=adjacency_edges(order, children_of),
             )
 
     def test_multi_parent_inputs_by_parent_rejects_unknown_parent(self):
@@ -1311,6 +1324,7 @@ class TestEdgeCases:
                 children_of,
                 node_map,
                 required_columns_by_node={"join": required},
+                relevant_edges=adjacency_edges(order, children_of),
             )
 
     def test_multi_parent_inputs_by_parent_rejects_opaque_parent_mapping(self):
@@ -1343,6 +1357,7 @@ class TestEdgeCases:
                 children_of,
                 node_map,
                 required_columns_by_node={"join": required},
+                relevant_edges=adjacency_edges(order, children_of),
             )
 
 

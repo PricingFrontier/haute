@@ -28,7 +28,7 @@ from haute._mlflow_utils import (
 )
 from haute._polars_utils import streaming_collect
 from haute._rating import is_rating_dtype_descriptor
-from haute._sandbox import _get_project_root
+from haute._sandbox import _get_project_root, contained_path
 from haute._types import SolveResultLike
 from haute.errors import BoundedMemoryUnsupportedError
 from haute.routes._background_jobs import (
@@ -46,7 +46,7 @@ from haute.routes._frontier_point_summary import (
     finite_frontier_value,
     frontier_point_summary,
 )
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, validate_safe_path
+from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._job_lifecycle import JobLifecycle, TerminalReason, require_job_status
 from haute.routes._job_store import JobSnapshot, RunningJobFields, get_job_store
 from haute.routes._memory_messages import memory_limit_user_message
@@ -2064,7 +2064,7 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
         base = _get_project_root()
     else:
         base = pipeline_dir()
-    out = validate_safe_path(base, body.output_path)
+    out = contained_path(base, body.output_path)
 
     try:
         out.parent.mkdir(parents=True, exist_ok=True)

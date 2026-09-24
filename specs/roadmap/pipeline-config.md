@@ -7,123 +7,21 @@ sidecar, repaired when they no longer parse, validated before they are
 written back, and read by the executor when the node runs. Current behaviour
 is specified in [the pipeline-config specification](../pipeline-config/low-level.md).
 
-These packages close one gap that runs through all four of those stages: a
-node config that **cannot execute** can be produced by repair, persisted by
-save, and then reported to the user as an internal server error. Each stage
-knows enough to prevent it and none of them acts.
-
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| PCFG-R01 | Planned | P2 | A repair never reports success while leaving a node unrunnable. |
-| PCFG-R03 | Planned | P3 | Save refuses a config the executor cannot build. |
 | PCFG-R04 | Planned | P2 | One project context, resolved once, replaces a dozen project-root and pipeline-directory resolvers. |
-| PCFG-R06 | Decision | P2 | One stated rule for non-canonical input, and code that follows it. |
 | PCFG-R07 | Planned | P2 | Every node type has a typed config model that is the single validation boundary. |
 | PCFG-R08 | Planned | P3 | Editor-only state travels beside the node config, not inside it. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
 
-The delivery order is `PCFG-R01` → `PCFG-R03`. `R01` stops new
-unrunnable configs being written; `R03` closes the remaining write path.
-The ones already on disk are legible: a builder's config rejection is a
-`NodeConfigError`, which the public contract returns as a 422 naming the
-setting.
-
 `PCFG-R04` to `PCFG-R09` come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md).
-`PCFG-R07` builds on `PCFG-R03`; `PCFG-R08` should precede it
-so the models do not have to carry editor state.
-
-## Worked example
-
-The three packages were found from one failure, which is worth keeping
-because it exercises all of them in sequence. A Scenario Expander sidecar
-written before `e9b37e6e` carried the pre-rename grid-size key `steps: 11`.
-After the rename, `steps` means the step list, so the parser rejected the
-config outright (`scenarioExpander 'steps' must be a list.`) and the
-pipeline would not load.
-
-Repair then ran. It replaced the invalid `steps` with the audited default
-`[]`, reported that field as `defaulted`, and — correctly — raised
-`incomplete_range: "Scenario range and stepCount are required."` The repair
-applied anyway, that issue never reached the user, and the sidecar was
-written without any grid size. The pipeline now loaded and every preview of
-that node failed in `_build_scenario_expander` with a bare `ValueError`,
-which the preview route cannot classify, so the browser received
-`500 Operation failed. Check the server logs for details.` and the server
-log recorded only `interactive_worker_remote_failure … remote_type=ValueError`.
-
-Three defects, one user-visible symptom: an opaque 500 on a node the system
-had already diagnosed precisely. The last of them is fixed (the preview now
-answers 422 with the engine's message); `PCFG-R01` and `PCFG-R03` remain.
+`PCFG-R08` should precede `PCFG-R07` so the models do not have to carry
+editor state.
 
 ## Planned improvements
-
-### PCFG-R01 — A repair states what it could not fix
-**Why:** `reconcile_config` returns the issues it found alongside the repaired
-config, and `_recover_node` discards them. Its own comment says engine issues
-are surfaced as completeness, but `_recover_completeness` returns `[]` for
-every node type except `DATA_INPUT` and `DATA_OUTPUT`, so for every other
-node an error-level issue is dropped. The repair plan then reports success.
-Field changes are still reported, so a dropped required key is shown to the
-user as `defaulted` — which reads as *fixed*.
-
-**Plan:** Carry `ConfigRecoveryResult.issues` through `_recover_node` into the
-plan. Report an error-level issue as node completeness for every node type,
-not only the two Data provider families; `_recover_completeness` keeps its
-provider-specific gap detail and gains the engine issues as its general case.
-Decide and record one product rule for an error-level issue that survives a
-repair: either the plan reports the node incomplete and applies (the node is
-visibly unfinished, matching a declared-incomplete Data Input), or the repair
-is refused and the user is offered reset. Do not resolve this by consulting
-`node_defaults.json` on the recover path — `reconcile_config(reset=False)`
-deliberately does not adopt defaults, because a recover must not invent
-settings the user never chose.
-
-**Acceptance:** A recover of a Scenario Expander whose config lacks `stepCount`
-reports that node as incomplete with the engine's own message, and a test
-asserts the issue reaches the plan rather than the engine's return value. A
-recover that resolves every issue still reports no completeness gaps. The
-chosen rule for applying-versus-refusing is specified in the pipeline-config
-low-level spec before the behaviour changes.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_pipeline_repair_actions.py` (`_recover_node`,
-`_recover_completeness`); `src/haute/_node_config_recovery.py`
-(`reconcile_config`, `_validator_issues`).
-
-### PCFG-R03 — Save refuses a config the executor cannot build
-**Why:** `_validate_strict_node_configs` runs `validate_node_config` for
-`DATA_INPUT`, `DATA_OUTPUT` and `BANDING` only. Every other node type is
-written to its sidecar unchecked, so a config missing a key its builder
-requires is persisted without complaint and fails at the next preview. The
-file that produced the worked example above was written by a save.
-
-**Plan:** Extend strict save-time validation past the three discriminated
-families to any node type whose builder has a required setting, reusing the
-`require_complete=False` distinction already established: a *declared
-incomplete* node (a Data Input with no locator yet) stays saveable, while a
-config that names a setting invalidly, or omits one with no incomplete form,
-is rejected with a `400` naming the node and the reason. Decide per node type
-which required settings have a legitimate incomplete form — a node the user
-has not finished configuring must remain saveable, because refusing to save
-work in progress is worse than the deferred error.
-
-**Acceptance:** Saving a pipeline whose Scenario Expander has no `stepCount`
-is rejected with a message naming the node and the setting; saving a
-deliberately unfinished node of each type that has an incomplete form still
-succeeds. Tests cover both directions per node type touched.
-
-**Dependencies:** PCFG-R01 (a repair should stop producing these configs
-before save starts refusing them, or a user with an already-damaged project
-can neither repair nor save). The save route is owned by server-api; this
-package changes the validation it calls, not the route's contract.
-
-**Evidence:** `src/haute/routes/_save_pipeline.py`
-(`_validate_strict_node_configs`); `src/haute/_config_validation.py`
-(`validate_node_config`).
 
 ### PCFG-R04 — One project context
 **Why:** About a dozen functions resolve the project root or pipeline
@@ -171,46 +69,10 @@ tests `chdir` into a temporary project today).
 `src/haute/assistant/_config.py::_normalise_project_root`;
 `src/haute/executor.py::_pipeline_dir`; `src/haute/_cache.py::_pipeline_dir`.
 
-### PCFG-R06 — One rule for non-canonical input
-**Why:** The specification README says the implementation "has no branches or
-diagnostics that recognise historical Haute input". The code recognises
-retired keys in config recovery (`baseInput`, `joinInput`, `scored_input`,
-`factors_input`), retired Edge Join decorator arguments, removed config keys
-in validation, and legacy modelling `split`/`cross_validation` objects in two
-places. Projection synthesises identity "for legacy callers". The assistant's
-legacy catalogue and single-file examples are removed, and a call to a removed
-tool or example is refused with its replacement named. Explore display validators preserve
-unknown keys so "a newer UI can round-trip through an older parser". The
-parse-time contract check falls
-back to an opaque contract on `ConfigError`, `OSError`, `ImportError`,
-`RuntimeError` or `MlflowException`, which this component's own specification
-calls broader than infrastructure-only failure.
-
-**Plan:** Decide the rule and write it in the specification README, for
-example: targeted rejection messages for removed fields are allowed; no
-migration, no silent drop, no forward-compatibility passthrough; fallbacks
-only for named infrastructure failures. Then make each listed site follow it,
-and give the modelling legacy check one home.
-
-**Acceptance:** The README states the rule; each listed site other than the
-assistant's either follows it or is removed; one test per site pins the
-behaviour; the legacy modelling check exists once.
-
-**Dependencies:** None. `SUB-R01` (submodels) depends on the rule this
-package decides.
-
-**Evidence:** `src/haute/_node_config_recovery.py::reconcile_config`;
-`src/haute/_edge_join.py::_LEGACY_ROLE_DECORATOR_ARGS`;
-`src/haute/_config_validation.py::reject_removed_config_keys`;
-`src/haute/modelling/_train_config.py::build_training_job_kwargs`;
-`src/haute/routes/_training_lifecycle.py::_validate_config`;
-`src/haute/projection.py::_projection_edges`;
-`src/haute/_explore_overview.py::validate_explore_overview`;
-`src/haute/_config_builder.py::_is_contract_resolve_fallback_exception`.
-
 ### PCFG-R07 — Typed config models per node type
 **Why:** `NodeData.config` is `dict[str, Any]`. The shared validator is strict
-only for Data Input, Data Output and Banding; every other type is validated
+only for Data Input, Data Output, Banding and the Scenario Expander's grid
+size; every other type is validated
 piecemeal by the save service, the optimiser and training services, the
 recovery validators and the runtime builders, and the `TypedDict`s only drive
 a key allowlist. Config shape is therefore defined in several places, and the
@@ -219,15 +81,18 @@ browser's copy is written by hand.
 **Plan:** Define one Pydantic model per node type, discriminated by
 `nodeType`, and make it the validation boundary for parse, save, recovery and
 execution. Derive the sidecar allowlist from the models, and generate the
-browser types from them through `API-R03`.
+browser types from them through `API-R03`. Generate the node-reference config
+tables (`docs/building-models/nodes/`) from the models, so
+`tests/test_node_reference_docs.py` checks generated tables instead of
+hand-written ones.
 
 **Acceptance:** Every node type has a model; the scattered per-type
 validators are either deleted or called only from the model's validators; an
 invalid config for any node type fails at save with the model's message; the
-frontend node-config types are generated.
+frontend node-config types and the node-reference config tables are generated.
 
-**Dependencies:** `PCFG-R03`, `PCFG-R08`; `API-R03` (server API)
-for generated browser types.
+**Dependencies:** `PCFG-R08`; `API-R03` (server API) for generated browser
+types.
 
 **Evidence:** `src/haute/_types.py::NodeData`;
 `src/haute/_config_validation.py::validate_node_config`;

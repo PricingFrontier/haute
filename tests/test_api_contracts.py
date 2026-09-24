@@ -689,26 +689,14 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
     },
     "/api/pipeline/repair/recover/apply": {
         "POST": {
-            "request_ref": "#/components/schemas/PipelineRepairRecoverApplyRequest",
-            "success_schema": {"$ref": "#/components/schemas/PipelineRepairApplyResponse"},
-        },
-    },
-    "/api/pipeline/repair/recover/dry-run": {
-        "POST": {
             "request_ref": "#/components/schemas/PipelineRepairRecoverRequest",
-            "success_schema": {"$ref": "#/components/schemas/PipelineRepairPlanResponse"},
+            "success_schema": {"$ref": "#/components/schemas/PipelineRepairApplyResponse"},
         },
     },
     "/api/pipeline/repair/remove/apply": {
         "POST": {
-            "request_ref": "#/components/schemas/PipelineRepairApplyRequest",
+            "request_ref": "#/components/schemas/PipelineRepairRemoveRequest",
             "success_schema": {"$ref": "#/components/schemas/PipelineRepairApplyResponse"},
-        },
-    },
-    "/api/pipeline/repair/remove/dry-run": {
-        "POST": {
-            "request_ref": "#/components/schemas/PipelineRepairDryRunRequest",
-            "success_schema": {"$ref": "#/components/schemas/PipelineRepairPlanResponse"},
         },
     },
     "/api/pipeline/output-destination": {

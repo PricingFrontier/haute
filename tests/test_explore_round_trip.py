@@ -150,42 +150,6 @@ def test_explicit_false_overview_values_round_trip(tmp_path: Path) -> None:
     }
 
 
-def test_unknown_sane_overview_values_round_trip(tmp_path: Path) -> None:
-    """Unknown overview keys with simple literal values must be preserved."""
-    graph = _explore_graph(
-        {
-            "schema": True,
-            "custom_card": {
-                "label": "Loss ratio",
-                "columns": ["premium", "claims"],
-                "enabled": False,
-                "empty": None,
-            },
-        }
-    )
-
-    code = graph_to_code(graph, pipeline_name="round_trip_overview_unknown")
-    _write_configs(graph, tmp_path)
-
-    parsed = parse_pipeline_source(
-        code,
-        source_file=str(tmp_path / "pipeline.py"),
-        _base_dir=tmp_path,
-    )
-
-    node_map = {n.id: n for n in parsed.nodes}
-    explore_node = node_map["inspect_claims"]
-    assert explore_node.data.config.get("overview") == {
-        "schema": True,
-        "custom_card": {
-            "label": "Loss ratio",
-            "columns": ["premium", "claims"],
-            "enabled": False,
-            "empty": None,
-        },
-    }
-
-
 def test_empty_overview_does_not_round_trip_into_config(tmp_path: Path) -> None:
     """An empty ``overview`` dict must be dropped, not emitted into the .py file."""
     graph = _explore_graph({})

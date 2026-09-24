@@ -40,7 +40,7 @@ The recovery inspector extends removal with three explicitly confirmed actions:
   replaced only when exclusively owned by this node. Unknown types, node instances,
   submodels and ambiguous/shared artifacts cannot be reset. Resetting an empty Polars
   node produces the normal explicit incomplete-code template; it never invents a
-  passthrough. The preview explains that configuration/code may be needed before running.
+  passthrough. The confirmation explains that configuration/code may be needed before running.
   Palette defaults with declared-incomplete required values (for example a file input's
   empty path) persist as loadable incomplete configurations reported through the
   document's completeness list; reset is never blocked by completeness, only by unknown
@@ -54,7 +54,10 @@ The recovery inspector extends removal with three explicitly confirmed actions:
   never fills a default from a different provider/format/mode branch. Unrecoverable
   collection entries are excluded from the candidate and reported with their original
   value, never emitted as null placeholders. Missing required values use the
-  declared-incomplete form and surface as completeness, not as a blocked plan. Authored
+  declared-incomplete form and surface as completeness, not as a blocked plan. Every
+  error-level engine issue that survives the recover, for any node type, is reported
+  as a completeness entry on the target with the engine's own message, so nothing
+  unresolved reads as fixed. Authored
   code bytes in declared code slots are retained; only recognised generated scaffolding
   is regenerated. The applied node must load (available, or blocked only by an upstream
   failure) — completeness and execution-readiness are explicitly not plan gates.
@@ -74,17 +77,17 @@ Updating a submodel may reveal a separately invalid consumer signature. Attribut
 failure to the consumer and make its recovery inspector available. Do not rewrite or
 erase custom consumer code as part of a submodel update.
 
-## Recovery dry-run and apply API
+## Recovery apply API
 
-`POST /api/pipeline/repair/recover/dry-run` accepts source file/revision, target source
-file/recovery id, and `action: update | reset | recover`. Apply uses the same fields plus
-the displayed plan hash. Responses use the existing repair change/plan shape with
-`repair_kind: update_node | reset_node | recover_node` and `delete_config: false`.
-Recover responses additionally carry the engine's field-outcome report (`field_changes`:
-path, `outcome: retained | defaulted | needs_input | removed`, reason), the target's
-completeness entries, and the exact previous configuration (`previous_config`) for
-optional display; dry-run and apply return the same shapes. Existing removal routes
-retain their contract. No request accepts replacement bytes or source spans.
+`POST /api/pipeline/repair/recover/apply` accepts source file/revision, target source
+file/recovery id, and `action: update | reset | recover`; there is no dry-run step or
+plan hash. Responses carry `repair_kind: update_node | reset_node | recover_node`, the
+applied artifacts, their bounded display diffs (`changes`) and the authoritative
+document. Recover responses additionally carry the engine's field-outcome report
+(`field_changes`: path, `outcome: retained | defaulted | needs_input | removed`, reason),
+the target's completeness entries, and the exact previous configuration
+(`previous_config`) for optional display. The removal route shares this contract with
+its explicit `delete_config` choice. No request accepts replacement bytes or source spans.
 
 ## Engine coverage and limits
 
@@ -123,9 +126,9 @@ write scope. No persistent draft is created anywhere in this flow.
 
 ## Verification, rollback, and save-lock transactions
 
-Plans are computed on the server, bound to the entire raw-artifact revision and exact
-before/after bytes, and previewed without changing project files. Application recomputes
-the plan under the shared save lock, rejects stale revisions/hashes/artifacts, stages all
+Plans are computed on the server under the shared save lock, bound to the entire
+raw-artifact revision and exact before/after bytes. Application rejects a stale revision
+or artifact, stages all
 edits using the existing rollback boundary, and reloads the authoritative document.
 Verification must conserve all node/edge identities except the explicit old-to-current
 registration identity mapping; the target must cease being unavailable. Other invalid
@@ -137,6 +140,6 @@ Acceptance evidence includes a minimal copy of the demo's legacy registration, o
 port and stale Polars signature: both nodes and the connection remain visible; update
 preserves the child/config and exposes the consumer error; resetting that consumer uses
 its current connected input and returns a ready but deliberately incomplete Polars node.
-Also cover unchanged dry-run bytes, stale child/config revisions and plan hashes,
-shared/path-escaping artifacts, duplicate identities, rollback, strict transport parsing,
-and the UI's action-specific preview/apply and failure behaviour.
+Also cover stale child/config revisions, shared/path-escaping artifacts, duplicate
+identities, rollback, strict transport parsing, and the UI's action-specific
+confirmation/apply and failure behaviour.

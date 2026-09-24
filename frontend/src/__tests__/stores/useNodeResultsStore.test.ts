@@ -199,7 +199,6 @@ describe("useNodeResultsStore", () => {
           source_file: "rating/main.py",
           source_revision: "r2",
         }),
-        null,
         true,
         "live-fingerprint",
       )
@@ -522,7 +521,6 @@ describe("useNodeResultsStore", () => {
           source_file: "rating/main.py",
           source_revision: "r2",
         }),
-        null,
         true,
         "live-fingerprint",
       )

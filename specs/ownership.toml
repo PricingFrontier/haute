@@ -348,12 +348,6 @@ consumers = ["caching"]
 reason = "I/O owns node-output snapshot publication, leases, and retention in the shared store; caching consumes the checked node-snapshot signature and class mappings."
 
 [[shared_file]]
-path = "src/haute/_parser_regex.py"
-primary = "expression-parsing"
-consumers = ["pipeline-config"]
-reason = "Expression parsing owns neutral textual recovery; pipeline configuration consumes its fragments only through editor recovery."
-
-[[shared_file]]
 path = "src/haute/_parser_submodels.py"
 primary = "expression-parsing"
 consumers = ["submodels"]

@@ -64,9 +64,9 @@ uses a separate recovery entry point and separate models. It first records autho
 connection skeletons with source spans, then resolves known nodes independently. An expected
 node-local configuration or contract failure becomes an unavailable recovery node without
 inventing config or mutating its referenced file; an unexpected exception is isolated only
-at that recovery boundary and receives a logged incident id. Syntax-invalid source may use
-the regex extractor only through recovery. If it cannot produce a trustworthy skeleton the
-result is `source_only`, never a successful empty canonical graph.
+at that recovery boundary and receives a logged incident id. Syntax-invalid source has no
+skeleton: the result is `source_only`, carrying the syntax error, never a recovered canvas or a
+successful empty canonical graph.
 
 The editor's `.haute.json` read distinguishes absent, valid, corrupt, and unreadable states.
 Only a valid sidecar supplies source selection. Corrupt or unreadable content leaves its raw
@@ -398,11 +398,11 @@ rating table leaves the prior sidecar untouched.
 
 Contract validation at parse time deliberately avoids contacting MLflow for model-scoring nodes:
 their input side is treated as opaque while the locally configured output column is still
-checked. For other node types, a `ConfigError`, `OSError`, `ImportError`, `RuntimeError`, or
-`MlflowException` raised while deriving a contract causes that comparison to use an opaque
-contract; programmer-shaped errors such as `TypeError`, `AttributeError`, and `KeyError`
-propagate. This fallback is broader than infrastructure-only failure because `ConfigError` and
-`RuntimeError` are included by the implementation.
+checked. For other node types, only a named infrastructure failure raised while deriving a
+contract (`OSError`, `ImportError` or `MlflowException`) makes that comparison use an opaque
+contract, as the [canonical-input rule](../README.md#canonical-only-format-policy) allows. A
+`ConfigError`, a `RuntimeError` and programmer-shaped errors such as `TypeError`,
+`AttributeError` and `KeyError` propagate, so the node fails to load with that error.
 
 Windows-reserved device filenames (`CON`, `NUL`, `COM1`, etc.) are rejected on every
 platform, not only when running on Windows, so a project saved on Linux or macOS stays

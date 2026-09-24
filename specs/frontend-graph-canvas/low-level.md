@@ -38,8 +38,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/components/PipelineRecoveryBanner.tsx` | Accessible degraded-document summary and issues entry point. |
 | `frontend/src/components/SourceRecoveryView.tsx` | Read-only current-source and document-diagnostic surface used when no trustworthy graph skeleton exists. |
 | `frontend/src/components/PipelineLoadFailureView.tsx` | Dedicated initial-load system-failure surface that keeps transport, permission, discovery, and unreadable-file failures distinct from authored recovery diagnostics. |
-| `frontend/src/components/StalePipelineReferenceBanner.tsx` | Labels a retained last-renderable canvas with its prior revision and prevents it from being mistaken for the current source. |
-| `frontend/src/components/PipelineRepairDialog.tsx` | Minimal unavailable-node dry-run/diff/confirmation surface. It submits only document/target identities and a confirmed plan hash, retains config by default, and never authors replacement bytes. A failed preview or apply shows `apiErrorMessage` text (a structured rejection's `message`), with a per-step fallback. |
+| `frontend/src/components/PipelineRepairDialog.tsx` | Minimal repair confirmation surface. It submits only document/target identities and the document revision, retains config by default, and never authors replacement bytes. |
 | `frontend/src/nodes/UnavailablePipelineNode.tsx` | Dedicated inaccessible node card for unknown decorators and recovery elements that cannot use a canonical node renderer. |
 | `frontend/src/hooks/ensureInputSnapshots.ts` | Pre-preview snapshot orchestration owned behaviourally by [caching](../caching/high-level.md): derives the graph's snapshot-backed Data Inputs (direct Parquet skipped), checks status, starts or joins the server's choice of build in one call, waits for jobs to a terminal state through the shared `waitForJob`, and notifies at most once when a build starts. An aborted signal cancels the job it is polling and waits for that job to reach a terminal state, because a point reports itself as building until then and nothing else is polling it; a refused cancellation, a status it cannot read afterwards, or a build still running 48 seconds after the cancellation all raise `CancellationFailedError` instead of being reported as a completed cancellation, because whether the build stopped is then unknown. `cancelInputSnapshotBuild` performs that cancel-and-wait for a caller holding a job id, and `onJobStarted` reports each build's id so a caller can use it. Its `force` option is for a caller that wants the data recomputed rather than served as it is: it skips the readiness probe, asks the input-snapshot build to `refresh`, and removes a structured Quote Input's working cache first, because the JSON build endpoint answers a still-valid working cache with no work. |
 | `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, document-fingerprint resync, applying accepted `pipeline_document_update` frames through one atomic clean-snapshot transition with the authoritative status fence (including preserved-block/revision refs and graph-scoped dirty blocking), treating `parse_error` as a document system failure, and session expiry. |
@@ -904,7 +903,7 @@ reconciliation rather than dropping them or committing a second mutation.
     mutation remains fenced, `can_repair` independently admits this one document-level
     command. The dialog consumes only the strict validated DTOs from
     `frontend/src/types/pipelineRepair.ts`. Explicit update/reset actions share the
-    preview/apply dialog; see [node recovery actions](../server-api/node-recovery-actions.md).
+    confirmation dialog; see [node recovery actions](../server-api/node-recovery-actions.md).
     Failed literal submodel registrations retain an unavailable SUBMODEL card and
     disabled handles for authored connections even when no canonical definition exists.
 25. **Active node reveal (`useActiveNodeReveal`).** `FlowEditor` passes
@@ -1143,12 +1142,10 @@ array-only payload or omitted-edge compatibility branch is supported.
   visible to validation — `HTMLInputElement` silently strips newlines
   before JavaScript ever sees them, which would let one slip past the
   unsafe-character check.
-- **Live document application and recovery snapshot retention.** Live document
-  application retains the last renderable snapshot in memory, keyed with its revision.
-  Clean updates replace graph/status atomically from the user's perspective. Dirty
-  updates apply status first and retain graph/history. Source-only rendering either shows
-  current source alone or labels the retained snapshot stale; all mutation and execution
-  handlers consume the shared capability fence. A current-source system `parse_error` sets
+- **Live document application.** Clean updates replace graph/status atomically from
+  the user's perspective. Dirty updates apply status first and retain graph/history.
+  Source-only rendering shows the current source and diagnostics alone, never a retained
+  snapshot; all mutation and execution handlers consume the shared capability fence. A current-source system `parse_error` sets
   the document store's `systemFailure`, marks graph state unsynchronised, and renders
   `PipelineLoadFailureView`; the next valid document transition clears the failure before
   publishing its graph.

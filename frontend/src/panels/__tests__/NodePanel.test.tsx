@@ -3340,6 +3340,36 @@ describe("scoped editing in degraded documents", () => {
     expect(status).not.toHaveTextContent("Unrelated.")
   })
 
+  it("shows what a recover could not fix, once, beside the document's own gaps", async () => {
+    const { useRecoverySummaryStore } = await import("../../stores/useRecoverySummaryStore")
+    useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument({
+      completeness: [
+        { element_id: "scoped@1", path: "path", code: "required", message: "Format 'parquet' requires a non-empty 'path'." },
+      ],
+    }))
+    const documentSourceFile = useDocumentStatusStore.getState().sourceFile
+    useRecoverySummaryStore.getState().reset()
+    useRecoverySummaryStore.getState().recordSummary({
+      sourceFile: documentSourceFile,
+      recoveryId: "scoped@1",
+      fieldChanges: [{ path: "/steps", outcome: "defaulted", reason: "Invalid value replaced." }],
+      completeness: [
+        { element_id: "scoped@1", path: "/", code: "incomplete_range", message: "Scenario range and stepCount are required." },
+        { element_id: "scoped@1", path: "path", code: "required", message: "Format 'parquet' requires a non-empty 'path'." },
+      ],
+      previousConfig: null,
+      changes: [{ path: "main.py", operation: "update", description: "Regenerate.", diff: "", diff_truncated: false }],
+    })
+    const node = scopedNode()
+    ;(node.data as Record<string, unknown>)._loadAvailability = "ready"
+    delete (node.data as Record<string, unknown>)._loadBlockingPath
+    renderPanel({ node })
+    const status = screen.getByTestId("node-recovery-status")
+    expect(status).toHaveTextContent("Still to complete:")
+    expect(status).toHaveTextContent("Scenario range and stepCount are required.")
+    expect(screen.getAllByText(/requires a non-empty 'path'/)).toHaveLength(1)
+  })
+
   it("shows and dismisses the transient recovery summary", async () => {
     const { useRecoverySummaryStore } = await import("../../stores/useRecoverySummaryStore")
     useDocumentStatusStore.getState().loadDocumentStatus(makePipelineEditorDocument())

@@ -14,7 +14,7 @@
 | `src/haute/_event_bus.py` | `EventBus` — thread-safe synchronous pub/sub with typed `parse.error` and `pipeline.document.update` overloads; `default_bus` is the module-level singleton the watcher and server wire together. |
 | `src/haute/_types.py` | `NodeType` (`StrEnum`), the decorator↔NodeType maps, every per-node-type config `TypedDict`, the `SolveResultLike` Protocol family, and the canonical `NodeData` / `GraphNode` / `GraphEdge` / `PipelineGraph` Pydantic models (with `PipelineGraph`'s cached-property-invalidating `model_copy` override). |
 | `src/haute/_pipeline_revision.py` | [submodels](../submodels/low-level.md)-owned canonical parsed-graph revision plus the editor recovery revision over a contained, role-qualified raw-artifact manifest with explicit missing sentinels. |
-| `src/haute/_pipeline_recovery.py` | Side-effect-free editor loader: AST/regex skeleton discovery, isolated node resolution, availability/diagnostic propagation, typed sidecar merge, raw-artifact revision assembly, and ready/degraded/source-only classification, plus `pipeline_document_fingerprint`, the one digest of a dumped editor document shared by the load routes, resync, and live-sync frames. It never returns a canonical `PipelineGraph`. |
+| `src/haute/_pipeline_recovery.py` | Side-effect-free editor loader: AST skeleton discovery (a syntax-invalid file becomes a source-only document carrying the syntax error), isolated node resolution, availability/diagnostic propagation, typed sidecar merge, raw-artifact revision assembly, and ready/degraded/source-only classification, plus `pipeline_document_fingerprint`, the one digest of a dumped editor document shared by the load routes, resync, and live-sync frames. It never returns a canonical `PipelineGraph`. |
 | `src/haute/_pipeline_repair.py` | Unavailable-node removal planner and shared revision/plan verification, conservation and rollback service for explicit removal, current-format update and reset. It never accepts client-authored bytes. |
 | `src/haute/_pipeline_repair_actions.py` | Bounded submodel-format update and ordinary-node reset planners; single-node codegen, shared palette defaults, isolated artifact-only preview and strict postconditions. Node-scoped saves and resets write a sidecar for every node that emits one (`node_emits_sidecar`), so a stepped transform's optional polars sidecar is updated alongside its regenerated body. |
 | `src/haute/_submodel_recovery.py` | Literal submodel registration identity evidence used only by recovery, raw revision discovery and explicitly requested updates. |
@@ -37,7 +37,7 @@
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview and trace. |
 | `src/haute/routes/output_assemble.py` | `POST /api/output-assemble/dry-run` — validates an unsaved `outputMapping`, swaps it into the target node's in-memory config, executes up to that node, returns the rendered document. |
 | `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching contract-error fields for background jobs. Also owns `memory_limit_http_exception`, the one memory-limit → 507 mapping; a job-backed surface passes its operation noun so the detail also carries the curated message. |
-| `src/haute/routes/_error_handlers.py` | The application exception handlers, installed by `install_exception_handlers(app)`: public contract errors → `contract_error_http_exception`, `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → `memory_limit_http_exception`, `GitError` → `git_error_http_exception`. A handler reached from a WebSocket re-raises, because an HTTP response cannot answer it. |
+| `src/haute/routes/_error_handlers.py` | The application exception handlers, installed by `install_exception_handlers(app)`: public contract errors → `contract_error_http_exception`, `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → `memory_limit_http_exception`, `GitError` → `git_error_http_exception`, `PathOutsideProjectError` / `InvalidPathError` → 403 / 400 with the bare message. A handler reached from a WebSocket re-raises, because an HTTP response cannot answer it. |
 | `src/haute/routes/_runtime_path_errors.py` | Closed HTTP mapping for runtime-path failures: malformed path → 400, project-root escape → 403, selected by concrete exception type rather than message text. |
 | `src/haute/_node_config_recovery.py` | Current contracts and field reconciliation. |
 | `src/haute/_artifact_paths.py` | Contained project-relative artifact paths (traversal/alias/reparse-point rejection) and bounded artifact reads shared by recovery and the mutation lock. |
@@ -899,6 +899,7 @@ later write and cleanup checks still compare against the captured identities.
 | `ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError` | any synchronous route (application handler) | 507 | Payload is `exc.to_payload()`, nested under `detail`, through `memory_limit_http_exception`; training and the optimiser pass an operation noun that adds the curated `message`. |
 | Public contract errors (closed set below) | any synchronous route (application handler) | 422 / 507 / 409 | Routes that also log or order them against a broader clause keep an explicit clause with the same mapping. |
 | `GitError` family | any route (application handler) | 403 / 400 | `git_error_http_exception`: guardrail → 403 verbatim, domain → 400 verbatim, plain `GitError` → 400 sanitized. |
+| `PathOutsideProjectError`, `InvalidPathError` | any route (application handler) | 403 / 400 | Raised by the sandbox's `contained_path` for a request path; detail is the bare message ("Cannot access paths outside the project root" / "Invalid path"), never the refused path. |
 | `InteractiveWorkerCrashedError` (memory-classified), remote `builtins.MemoryError`, remote `NativeMemoryLimitUnsupportedError` | preview, trace, output-assemble dry-run | 507 | Parent-authored data-free detail with `error_code="memory_limit"`, the operation, and a closed reason; a non-memory pool-worker crash stays a redacted 500. Mirrors the write-output worker classification. |
 | `BoundedMemoryUnsupportedError` | output write | 422 | Distinguishes "cannot stream safely" from a hard resource limit. |
 | `DataOutputDestinationExistsError` | `POST /api/pipeline/write-output` | 409 | `overwrite=false` refuses an existing file/table before publication and returns the destination in the detail. |
@@ -1055,7 +1056,7 @@ for route-level tests, and direct unit tests for the pure-function modules.
   correctness: the shared `save_lock` serialises concurrent saves/submodel operations; the
   WebSocket broadcaster's per-client serialization under concurrent rapid sends.
 - **`test_route_helpers.py`** / **`test_route_helpers_contracts.py`** — `SidecarModel`
-  defaults, `validate_safe_path` traversal/absolute-path rejection, the pipeline index's
+  defaults, `contained_path` traversal/absolute-path rejection, the pipeline index's
   double-checked-locking and invalidation contract, module-dependency casefold matching.
 - **`test_save_precondition_properties.py`** — the generated editing/version-state family
   (ENG-T11): 1..6 generated load/edit/save/external-write operations for two clients are
@@ -1157,11 +1158,11 @@ alternate sidecar identifiers. Ordinary current-schema validation and safe error
 
 ## Minimal pipeline repair implementation contract
 
-`PipelineRepairDryRunRequest` and `PipelineRepairApplyRequest` are
-forbidden-extra models carrying the root document source, raw-artifact
-revision, target source/recovery identity, and explicit `delete_config`
-choice; apply additionally requires the 64-hex plan hash returned by dry-run.
-The response contains no executable graph and no replacement bytes.
+`PipelineRepairRemoveRequest` is a forbidden-extra model carrying the root
+document source, raw-artifact revision, target source/recovery identity, and
+explicit `delete_config` choice. There is no plan hash: the request applies
+against the revision it names. The response contains no executable graph and
+no replacement bytes.
 
 `_pipeline_repair.py` locates one unavailable target by server-produced source
 identity and recovery id. It rejects blocked/ready nodes, duplicate authored
@@ -1169,22 +1170,16 @@ identity, absent or ambiguous spans, downstream signature consumers, shared
 or managed-artifact config deletion, a connection line containing other
 authored content, and a chain whose unrelated link would otherwise be removed.
 Source edits operate on exact line-bounded bytes and are applied in descending
-offsets. Both recovery span sources are decorator-inclusive: AST skeletons span
-from the first matched decorator line and regex fragments from their decorator
-anchor line through the last body line, so removing a node from a syntax-broken
-parent never strands decorator text. Position JSON editing preserves unrelated
-bytes and rejects duplicate positions/target keys as ambiguous. The
-public patch is bounded; the plan hash covers the complete untruncated edits,
-revision, identities, options, and touched-artifact manifest.
-`predicted_load_status` treats as removed the target's own diagnostics,
-diagnostics anchored inside the target's span in its file, and diagnostics of
-unresolved connections naming the target's authored id — exactly what a
-successful plan provably deletes; any other diagnostic or unavailable node
-keeps the prediction `degraded`. The post-apply document remains authoritative.
+offsets. AST skeleton spans are decorator-inclusive (from the first matched
+decorator line through the last body line), so removing a node never strands
+decorator text; syntax-broken source is refused with `repair_syntax_unsupported`.
+Position JSON editing preserves unrelated bytes and rejects duplicate
+positions/target keys as ambiguous. The display patch in the apply response is
+bounded; the server writes the complete untruncated edits. The post-apply
+document is authoritative.
 
-Both routes acquire `save_lock`. Dry-run writes nothing. Apply reloads the
-document and recomputes the complete plan under the lock; a stale revision or
-different plan hash is HTTP 409 before staging. Staged writes/deletes and
+Each apply route acquires `save_lock`, reloads the document and computes the
+complete plan under the lock; a stale revision is HTTP 409 before staging. Staged writes/deletes and
 rollback reuse `_save_pipeline.py`'s touched-file and `Writer` primitives so
 each forward and rollback write participates in self-write suppression. After
 staging, recovery parsing must conserve the remaining source and the selected
@@ -1192,19 +1187,20 @@ identity must be absent. Strict parse success is recorded by the returned
 editor document; an independent authored error may validly remain degraded.
 Any verification or write failure rolls back all touched artifacts.
 
-The additional `/api/pipeline/repair/recover/dry-run` and `/apply` routes accept
-`PipelineRepairRecoverRequest` / `PipelineRepairRecoverApplyRequest`, replacing the
-removal-only `delete_config` option with `action: update | reset | recover`. Their plan
-responses use `update_node` / `reset_node` / `recover_node`, keep `delete_config` false
-and otherwise share the bounded repair transport; recover responses add the engine's
+The additional `/api/pipeline/repair/recover/apply` route accepts
+`PipelineRepairRecoverRequest`, replacing the removal-only `delete_config` option with
+`action: update | reset | recover`. Its responses use `update_node` / `reset_node` /
+`recover_node` and otherwise share the bounded repair transport; recover responses add the engine's
 `field_changes` outcome report, the target's completeness entries, and `previous_config`.
 The full scope and acceptance criteria are defined in
 [node recovery actions](node-recovery-actions.md). Updates, resets, and recovers retain
 the target; application checks its recovered availability and compares the complete
-staged structure against the isolated preview. Python replacements use the shared LibCST
+staged structure against the plan's isolated single-node preview. Python replacements use the shared LibCST
 boundary. Ordinary saves validate Data Input/Output structure strictly but tolerate
 declared-incomplete locators (`require_complete=False`), so a loadable incomplete node
-round-trips through save. `POST /api/pipeline/node/save` provides the node-scoped save
+round-trips through save. They refuse a Scenario Expander without a valid `stepCount` with a
+400 naming the node and the setting: the grid size has no incomplete form. The per-node-type
+rule is in the [pipeline-config specification](../pipeline-config/low-level.md). `POST /api/pipeline/node/save` provides the node-scoped save
 for `scoped_editable` nodes in degraded documents, per the same specification.
 
 ## No persistent recovery state

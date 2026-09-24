@@ -7,7 +7,7 @@
 | `frontend/src/panels/NodePanel.tsx` | Composes the selected-node panel and memoised per-edge `InputSource` list. Its recovery inspector, generic tab strip, schema-warning banner, and editor body are pure local view components; scoped UI transitions are delegated to `useNodePanelSession`, and editor routing to `NodeConfigEditor`. |
 | `frontend/src/panels/useNodePanelSession.ts` | The single module authority for scoped panel UI: a node-keyed reducer owns the active generic tab and dismissed schema-warning identity, while its label-keyed rename session owns pending/error/request-generation state. Keyed scope replacement exposes defaults in the replacement render; asynchronous rename completions apply only while the initiating label session remains mounted and current. |
 | `frontend/src/panels/NodeConfigEditor.tsx` | The one per-type editor dispatch: a pure router over node type and supplied graph/config callbacks that owns no node-switch lifecycle state. Its `readOnly` mode serves the comparison view: node types without a read-only editor (Explore, Edge Join, submodel port, unknown) render a plain config dump, and the Polars editor gets no replace-config callback, so its step/code switch stays disabled. |
-| `frontend/src/components/PipelineRepairDialog.tsx` | [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)-owned remove-only dry-run and confirmation UI invoked from the unavailable-node inspector. |
+| `frontend/src/components/PipelineRepairDialog.tsx` | [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)-owned confirmation UI for the remove, update, reset and recover actions, invoked from the unavailable-node inspector. |
 | `frontend/src/panels/PreviewPanelTabs.tsx` | Generic ARIA tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md) and used by the node panel for algorithm-specific modelling panes and the active-training indicator. |
 | `frontend/src/panels/NodePalette.tsx` | Renders draggable node templates. |
 | `frontend/src/panels/LazyNodeEditors.tsx` | Central dynamic-import registry and loading boundaries for editor bodies. |
@@ -880,18 +880,19 @@ settings and code are retained and remaining gaps surface as completeness. The
 palette and reset service share `src/haute/node_defaults.json`. Healthy-node
 panel headers carry no recovery affordance.
 
-The confirmation dialog requests a strict dry-run plan, displays each touched
-artifact and bounded unified diff, and distinguishes retained config from an
-explicitly requested config deletion. Toggling config deletion invalidates the
-old confirmation and requests a fresh plan. Apply submits the unchanged plan
-identity/hash and disables duplicate confirmation while in flight. Expected
+The confirmation dialog states the action and, for a removal, offers the
+explicit choice to delete the config file the node references, if any (kept by
+default). It shows no client-derived path: the server resolves the authored
+reference.
+Apply submits the document revision and target identity and disables duplicate
+confirmation while in flight. Expected
 409/422 detail is rendered in the dialog with focus retained; success closes
 the panel only after App has atomically adopted the returned editor document.
 
-Component tests pin unavailable-only visibility, capability gating, dry-run
-before apply, touched-file/diff presentation, default config retention,
-replanning for explicit config deletion, stale-plan errors, duplicate-submit
-suppression, and successful document adoption. There is no migration UI.
+Component tests pin unavailable-only visibility, capability gating, one apply
+per confirmation, default config retention and the explicit deletion choice,
+stale-revision errors, duplicate-submit suppression, and successful document
+adoption. There is no migration UI.
 # Analysis request identity (PR #227 corrective contract)
 
 Banding statistics and Rating Step levels belong to the complete analysis request:

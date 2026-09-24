@@ -479,7 +479,7 @@ describe("useWebSocketSync", () => {
       })
 
       expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["local-edit"])
-      expect(useDocumentStatusStore.getState().retainedCanvas?.kind).toBe("local_dirty")
+      expect(useDocumentStatusStore.getState().loadStatus).toBe("source_only")
       expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(
         expect.stringContaining("unsaved changes"),
       )
@@ -711,11 +711,6 @@ describe("useWebSocketSync", () => {
         loadStatus: "source_only",
         sourceRevision: "r2",
         sourceText: "this is not recoverable Python",
-        retainedCanvas: {
-          kind: "last_renderable",
-          sourceRevision: "r1",
-          loadStatus: "ready",
-        },
         graphSynchronized: false,
       })
 
@@ -737,11 +732,6 @@ describe("useWebSocketSync", () => {
         loadStatus: "source_only",
         sourceRevision: "r3",
         sourceText: "this is still not recoverable Python",
-        retainedCanvas: {
-          kind: "last_renderable",
-          sourceRevision: "r1",
-          loadStatus: "ready",
-        },
         graphSynchronized: false,
       })
     })
@@ -763,7 +753,7 @@ describe("useWebSocketSync", () => {
         }))
       })
 
-      expect(useDocumentStatusStore.getState().retainedCanvas).toBeNull()
+      expect(useDocumentStatusStore.getState().loadStatus).toBe("source_only")
       expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
     })
 

@@ -53,7 +53,7 @@ In scope:
 Out of scope (owned by neighbouring components):
 
 - Orchestrating emitted `.py` files back into a `PipelineGraph` —
-  `src/haute/parser.py`, `src/haute/_parser_regex.py`, and
+  `src/haute/parser.py` and
   `src/haute/_parser_submodels.py` are owned by
   [expression-parsing](../expression-parsing/high-level.md). Parsed node/config conversion in
   `src/haute/_graph_builders.py` is owned by
@@ -324,7 +324,6 @@ rendering passed through the same finaliser its kind's extraction ends with.
   topological ordering before any source is emitted.
 - **Shares** `src/haute/_ast_helpers.py` with the parser
   (`src/haute/parser.py`, `src/haute/_graph_builders.py`,
-  `src/haute/_parser_regex.py`,
   `src/haute/_parser_submodels.py`) and `src/haute/_code_extraction.py` with
   `src/haute/_builders.py`, `src/haute/_config_builder.py` and
   `src/haute/assistant/_tools.py` — generation and extraction

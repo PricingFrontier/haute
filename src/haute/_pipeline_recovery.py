@@ -21,12 +21,10 @@ from haute._ast_helpers import (
     _extract_preamble,
     _extract_preserved_blocks,
     _get_decorator_kwargs,
-    _get_docstring,
     _is_pipeline_authored_decorator,
     _is_submodel_authored_decorator,
 )
 from haute._cache import canonical_json
-from haute._config_builder import _resolve_node_config
 from haute._editor_identities import (
     recoverable_api_input_source_handles,
     resolve_editor_identity,
@@ -41,11 +39,6 @@ from haute._graph_utils import edge_input_name, executable_input_name
 from haute._hashing import content_hash_bytes
 from haute._io import read_user_bytes_and_text, read_user_text
 from haute._logging import get_logger
-from haute._parser_regex import (
-    RecoveredFunctionFragment,
-    _parse_decorator_kwargs_regex,
-    recover_pipeline_fragments,
-)
 from haute._parser_submodels import (
     SubmodelRegistration,
     _extract_definition_contract,
@@ -231,7 +224,7 @@ def _node_failure_code(exc: BaseException) -> str:
 
 
 def _unavailable_candidate(
-    authored: PipelineNodeSkeleton | RecoveredFunctionFragment,
+    authored: PipelineNodeSkeleton,
     *,
     recovery_id: str,
     node_type: NodeType | None,
@@ -368,139 +361,6 @@ def _candidate_from_ast(
         config_reference=config_reference,
         param_names=tuple(str(value) for value in raw_node["param_names"]),
         edge_param_names=tuple(str(value) for value in raw_node["edge_param_names"]),
-        span=span,
-        availability="ready",
-        diagnostic_ids=[],
-    )
-
-
-def _candidate_from_regex(
-    fragment: RecoveredFunctionFragment,
-    *,
-    recovery_id: str,
-    source_file: str,
-    base_dir: Path,
-    diagnostics: list[PipelineRecoveryDiagnostic],
-) -> _RecoveredCandidate:
-    span = _span(fragment.start_line, 0, fragment.end_line, 0)
-    config_reference: str | None = None
-    description = ""
-    try:
-        decorator_kwargs = _parse_decorator_kwargs_regex(fragment.decorator_text)
-        raw_reference = decorator_kwargs.get("config")
-        if isinstance(raw_reference, str) and raw_reference.strip():
-            config_reference = raw_reference.replace("\\", "/")
-
-        if fragment.explicit_node_type is None:
-            return _unavailable_candidate(
-                fragment,
-                recovery_id=recovery_id,
-                node_type=None,
-                description="",
-                config_reference=config_reference,
-                span=span,
-                diagnostic=_diagnostic(
-                    code="node_decorator_unknown",
-                    scope="node",
-                    message=(
-                        f"The authored @{fragment.decorator_name} node type is not "
-                        "available in this Haute version."
-                    ),
-                    source_file=source_file,
-                    element_id=recovery_id,
-                    source_span=span,
-                    remediation=(
-                        "Install a compatible node implementation or update the source explicitly."
-                    ),
-                ),
-                diagnostics=diagnostics,
-            )
-
-        function_source = (
-            f"{fragment.decorator_text}\n"
-            f"def {fragment.authored_id}({fragment.params_text}):\n"
-            f"{fragment.body_text}"
-        )
-        function_tree = ast.parse(function_source)
-        function = next(
-            (item for item in function_tree.body if isinstance(item, ast.FunctionDef)),
-            None,
-        )
-        if function is None:
-            raise ParseError("The decorated function could not be recovered.")
-        description = _get_docstring(function)
-        node_type, config = _resolve_node_config(
-            decorator_kwargs,
-            fragment.body_text,
-            list(fragment.param_names),
-            len(fragment.param_names),
-            base_dir,
-            func_name=fragment.authored_id,
-            explicit_node_type=fragment.explicit_node_type,
-            edge_param_names=list(fragment.edge_param_names),
-        )
-    except (HauteError, SyntaxError) as exc:
-        return _unavailable_candidate(
-            fragment,
-            recovery_id=recovery_id,
-            node_type=fragment.explicit_node_type,
-            description=description,
-            config_reference=config_reference,
-            span=span,
-            diagnostic=_diagnostic(
-                code=(
-                    "node_syntax_invalid"
-                    if isinstance(exc, SyntaxError)
-                    else _node_failure_code(exc)
-                ),
-                scope="node",
-                message=_exception_message(exc),
-                source_file=source_file,
-                element_id=recovery_id,
-                source_span=span,
-                remediation="Open the referenced source or config and correct this node.",
-            ),
-            diagnostics=diagnostics,
-        )
-    except Exception:
-        incident_id = uuid4().hex
-        logger.error(
-            "pipeline_recovery_regex_node_unexpected",
-            source_file=source_file,
-            node_id=fragment.authored_id,
-            incident_id=incident_id,
-            exc_info=True,
-        )
-        return _unavailable_candidate(
-            fragment,
-            recovery_id=recovery_id,
-            node_type=fragment.explicit_node_type,
-            description=description,
-            config_reference=config_reference,
-            span=span,
-            diagnostic=_diagnostic(
-                code="node_recovery_internal_error",
-                scope="node",
-                message="This node could not be recovered because of an internal error.",
-                source_file=source_file,
-                element_id=recovery_id,
-                source_span=span,
-                remediation="Check the server logs with the incident id and report the defect.",
-                incident_id=incident_id,
-            ),
-            diagnostics=diagnostics,
-        )
-
-    return _RecoveredCandidate(
-        authored_id=fragment.authored_id,
-        recovery_id=recovery_id,
-        decorator_name=fragment.decorator_name,
-        node_type=node_type,
-        description=description,
-        config=config,
-        config_reference=config_reference,
-        param_names=fragment.param_names,
-        edge_param_names=fragment.edge_param_names,
         span=span,
         availability="ready",
         diagnostic_ids=[],
@@ -1699,19 +1559,8 @@ def _source_references(
     try:
         tree = ast.parse(source)
     except SyntaxError:
-        try:
-            fragments = recover_pipeline_fragments(source)
-        except HauteError:
-            return config_refs, registrations
-        for function in fragments.functions:
-            try:
-                kwargs = _parse_decorator_kwargs_regex(function.decorator_text)
-            except HauteError:
-                continue
-            reference = kwargs.get("config")
-            if isinstance(reference, str) and reference.strip():
-                config_refs.append(reference)
-        registrations.extend(fragments.submodel_registrations)
+        # A syntax-invalid file is a source-only document: it references no
+        # config or submodel artifact the revision could depend on.
         return config_refs, registrations
 
     bodies = _extract_function_bodies(source, tree=tree)
@@ -1991,81 +1840,17 @@ def _load_readable_pipeline_editor_document(
                     message="Pipeline source contains invalid Python syntax.",
                     source_file=source_file,
                     source_span=syntax_span,
-                    remediation="Open the source at this location and correct the syntax.",
+                    remediation=(
+                        "Open the source at this location in your editor and correct the syntax."
+                    ),
                 )
             )
-            try:
-                fragments = recover_pipeline_fragments(source)
-            except Exception:  # noqa: BLE001 - named source recovery isolation boundary
-                source_wide_failed = True
-                incident_id = uuid4().hex
-                logger.error(
-                    "pipeline_source_recovery_unexpected",
-                    source_file=source_file,
-                    incident_id=incident_id,
-                    exc_info=True,
-                )
-                diagnostics.append(
-                    _diagnostic(
-                        code="pipeline_recovery_internal_error",
-                        scope="pipeline",
-                        message=(
-                            "The pipeline source could not be reconstructed because of an "
-                            "internal error."
-                        ),
-                        source_file=source_file,
-                        remediation=(
-                            "Check the server logs with the incident id and report the defect."
-                        ),
-                        incident_id=incident_id,
-                    )
-                )
-                pipeline_name = path.stem
-                pipeline_description = ""
-                preamble = _extract_preamble(source)
-                preserved_blocks = _extract_preserved_blocks(source)
-            else:
-                pipeline_name = fragments.pipeline_name or path.stem
-                pipeline_description = fragments.pipeline_description
-                preamble = fragments.preamble
-                preserved_blocks = list(fragments.preserved_blocks)
-                connections = list(fragments.connections)
-                registrations = list(fragments.submodel_registrations)
-                identities = [
-                    (fragment.authored_id, fragment.start_line) for fragment in fragments.functions
-                ]
-                candidates = [
-                    _candidate_from_regex(
-                        fragment,
-                        recovery_id=recovery_id,
-                        source_file=source_file,
-                        base_dir=path.parent,
-                        diagnostics=diagnostics,
-                    )
-                    for fragment, recovery_id in zip(
-                        fragments.functions,
-                        _candidate_ids(identities),
-                        strict=True,
-                    )
-                ]
-                submodels, submodel_occurrences = _recover_registered_submodels(
-                    registrations,
-                    parent_path=path,
-                    project_root=root,
-                    source_file=source_file,
-                    diagnostics=diagnostics,
-                    captures=captures,
-                )
-                candidates.extend(submodel_occurrences)
-                nodes, edges, unresolved = _build_recovery_graph(
-                    candidates,
-                    connections,
-                    source_file=source_file,
-                    positions=positions,
-                    diagnostics=diagnostics,
-                )
-                if not candidates:
-                    source_wide_failed = True
+            # There is no textual recovery of syntax-invalid source: the
+            # document is source-only and the canvas shows this parse error.
+            source_wide_failed = True
+            pipeline_name = path.stem
+            pipeline_description = ""
+            preserved_blocks = _extract_preserved_blocks(source)
         else:
             pipeline_name, pipeline_description = _extract_pipeline_meta(tree)
             pipeline_name = pipeline_name or path.stem

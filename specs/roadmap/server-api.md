@@ -15,15 +15,13 @@ come from the [23 September 2026 codebase review](codebase-review-2026-09-23.md)
 | API-R01 | Planned | P2 | The optimiser and JSON-cache routes join the application exception handlers. |
 | API-R02 | Planned | P3 | Domain services raise domain errors; only routes speak HTTP. |
 | API-R03 | Planned | P2 | Every browser type and response parser is generated from the Pydantic models. |
-| API-R04 | Decision | P3 | The editor recovery and repair subsystem is scoped to what hand-editing actually needs. |
 
 ## Planned improvements
 
 `API-R03` has the largest payoff: the hand-maintained contract files are the
 most-changed files in the repository. The application exception handlers
 from `API-R01` are in place; what remains of it sits in files owned by the
-optimiser and caching work and can land with `API-R02`. `API-R04` is a
-product decision.
+optimiser and caching work and can land with `API-R02`.
 
 ### API-R01 — Translate errors once at the application edge
 **Why:** The application exception handlers exist (`routes/_error_handlers.py`:
@@ -140,33 +138,3 @@ models to the generated set.
 `frontend/src/api/types.ts`; `frontend/src/api/client.ts`;
 `src/haute/schemas.py`; `tests/fixtures/ui_contracts`;
 `frontend/src/types/__tests__/guards.contract.test.ts`.
-
-### API-R04 — Scope the editor recovery subsystem
-**Why:** Because the `.py` file is the source of truth and may be hand-edited
-anywhere, the editor keeps working on broken files through about 6,100
-backend lines: `_pipeline_recovery.py` (2,316 lines; `_build_recovery_graph`
-is 368 lines with complexity 77), `_pipeline_repair.py` (1,003),
-`_pipeline_repair_actions.py` (858), `_node_config_recovery.py` (727), a
-second, regex-based parser for syntax-invalid files (894), and recovery
-sources and submodel recovery. Around it sit degraded and source-only
-document states, recovery previews, and plan-hash dry-run/apply repairs.
-
-**Plan:** Decide what hand-editing the product supports. One option: users
-hand-edit node bodies and the preamble; anything else that breaks the file
-shows the parse error with an "open in editor" action and no recovered
-canvas. Specify the chosen scope, then remove the recovery states, repair
-actions and regex parser that fall outside it.
-
-**Acceptance:** The server-api specification states the supported
-hand-editing scope and what the editor shows for a file outside it; code
-outside that scope is removed with its tests; loading, saving and live sync
-of well-formed files are unchanged.
-
-**Dependencies:** `PCFG-R01` (pipeline config) should not be built further
-if this decision removes the repair it improves.
-
-**Evidence:** `src/haute/_pipeline_recovery.py::load_pipeline_editor_document`;
-`src/haute/_pipeline_repair.py::build_remove_unavailable_node_plan`;
-`src/haute/_pipeline_repair_actions.py::build_recovery_action_plan`;
-`src/haute/_node_config_recovery.py::reconcile_config`;
-`src/haute/_parser_regex.py`; `tests/test_pipeline_recovery.py`.

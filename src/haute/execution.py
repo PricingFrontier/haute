@@ -37,7 +37,7 @@ from haute._cache import (
 )
 from haute._estimate_calibration import calibrate_materialisation_bytes
 from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute._graph_utils import _sanitize_func_name, upstream_node_ids
+from haute._graph_utils import upstream_node_ids
 from haute._hashing import HASH_ALGO, content_hash_bytes
 from haute._json_shred._source_proof import file_signature
 from haute._native_memory_limit import current_native_memory_backend
@@ -72,7 +72,6 @@ from haute.projection import (
     build_execution_strategy_result,
     compute_prepared_plan,
     first_materialising_operators,
-    materialising_operator_sequences_by_input_names,
     materialising_operator_sequences_by_node,
     normalise_required_columns_by_node,
     prepare_graph,
@@ -343,7 +342,7 @@ def plan_prepared_execution_strategy(
     execution_context: ExecutionContext | None = None,
     materialisation_estimate: MaterialisationEstimate | None = None,
     schema_only: bool = False,
-    relevant_edges: Iterable[GraphEdge] | None = None,
+    relevant_edges: Iterable[GraphEdge],
     submodels: Mapping[str, Any] | None = None,
     selector_aliases: frozenset[str] = frozenset(),
     materialising_node_ids: Iterable[str] | None = None,
@@ -354,10 +353,10 @@ def plan_prepared_execution_strategy(
     collects a frame or invokes a sink. The group-by admission gate below
     bounds peak memory *during materialisation*; schema resolution
     materialises nothing, so under that declaration the gate is not evaluated
-    and no materialisation boundary is inserted. When supplied, prepared
-    ``relevant_edges`` retain API-input port identity for projection diagnostics.
+    and no materialisation boundary is inserted. The prepared
+    ``relevant_edges`` carry API-input port identity for projection diagnostics.
     """
-    prepared_relevant_edges = tuple(relevant_edges) if relevant_edges is not None else None
+    prepared_relevant_edges = tuple(relevant_edges)
     required_columns_by_node = normalise_required_columns_by_node(
         required_columns_by_node,
         order,
@@ -371,45 +370,22 @@ def plan_prepared_execution_strategy(
         submodels=submodels,
         selector_aliases=selector_aliases,
     )
-    if prepared_relevant_edges is not None:
-        projection_plan = with_api_input_port_projection_boundaries(
-            projection_plan,
-            node_map,
-            prepared_relevant_edges,
+    projection_plan = with_api_input_port_projection_boundaries(
+        projection_plan,
+        node_map,
+        prepared_relevant_edges,
+    )
+    materialising_operators = first_materialising_operators(
+        _only_nodes(
+            materialising_operator_sequences_by_node(
+                order,
+                node_map,
+                relevant_edges=prepared_relevant_edges,
+                submodels=submodels,
+            ),
+            materialising_node_ids,
         )
-    if prepared_relevant_edges is not None:
-        materialising_operators = first_materialising_operators(
-            _only_nodes(
-                materialising_operator_sequences_by_node(
-                    order,
-                    node_map,
-                    relevant_edges=prepared_relevant_edges,
-                    submodels=submodels,
-                ),
-                materialising_node_ids,
-            )
-        )
-    else:
-        # Without edges the parent labels still reproduce what
-        # ``edge_input_name`` yields for every non-apiInput edge; apiInput
-        # frame labels live on the edge handle and are therefore only known
-        # when edges are supplied.
-        input_names_by_node: dict[str, set[str]] = {}
-        for parent, children in children_of.items():
-            parent_node = node_map.get(parent)
-            if parent_node is None:
-                continue
-            name = _sanitize_func_name(parent_node.data.label)
-            for child in children:
-                input_names_by_node.setdefault(child, set()).add(name)
-        materialising_operators = first_materialising_operators(
-            _only_nodes(
-                materialising_operator_sequences_by_input_names(
-                    order, node_map, input_names_by_node
-                ),
-                materialising_node_ids,
-            )
-        )
+    )
     result = _finalise_execution_strategy(
         projection_plan,
         profile=profile,

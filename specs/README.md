@@ -94,9 +94,21 @@ accepts exactly its current canonical Haute representation. Production code must
 obsolete Haute format through conversion, fallback, deprecated aliases, temporary
 response keys, old generated-code recognition, warning-only handling, or historical-path cleanup.
 
-The implementation has no branches or diagnostics that recognise historical Haute input. Such
-input has no special status and is subject only to the ordinary validation of the current
-canonical schema. All maintained call sites use current symbols and old symbols are removed.
+Non-canonical input follows one rule:
+
+- A removed field, argument or shape may be rejected with a targeted message that names it and
+  its replacement ("`X` was removed; use `Y`"). Apart from such a message, historical input has
+  no special status: it meets the ordinary validation of the current canonical schema.
+- Nothing migrates it: no branch converts an old form into the current one.
+- Nothing drops it silently. An explicit recover may remove a field it cannot keep, and reports
+  each removal.
+- No boundary passes unknown fields through for a newer version to read (no
+  forward-compatibility passthrough): an unknown key is rejected by name.
+- A check may degrade instead of failing only on a named infrastructure failure: a missing or
+  unreadable file (`OSError`), a missing optional dependency (`ImportError`) or an unreachable
+  MLflow server (`MlflowException`). A configuration error or a programmer error propagates.
+
+All maintained call sites use current symbols and old symbols are removed.
 Compatibility required for supported Python/platform/browser/dependency versions and explicitly
 current public aliases is not historical Haute-format support and remains in scope.
 

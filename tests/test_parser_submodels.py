@@ -80,6 +80,22 @@ class TestExtractSubmodelRegistrations:
             )
         ]
 
+    def test_accepts_the_file_and_name_keywords(self) -> None:
+        tree = ast.parse('pipeline.submodel(file="modules/pricing.py", name="pricing")')
+
+        assert extract_submodel_registrations(tree) == [
+            SubmodelRegistration(path="modules/pricing.py", name="pricing", line=1)
+        ]
+
+    @pytest.mark.parametrize(
+        "source",
+        ["pipeline.submodel()", 'pipeline.submodel(name="pricing")'],
+        ids=["no-arguments", "name-only"],
+    )
+    def test_rejects_a_registration_without_a_file_path(self, source: str) -> None:
+        with pytest.raises(ParseError, match="requires a file path"):
+            extract_submodel_registrations(ast.parse(source))
+
     def test_preserves_chained_registration_order(self) -> None:
         tree = ast.parse(
             'pipeline.submodel("modules/pricing.py", "pricing")'

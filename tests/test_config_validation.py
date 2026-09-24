@@ -441,51 +441,6 @@ class TestBuildNodeConfigProducesValidKeys:
                 ["df"],
             )
 
-    def test_explore_overview_preserves_unknown_round_trippable_values(self):
-        """Unknown overview keys are kept when their values are simple literals."""
-        from haute._config_builder import _build_node_config
-
-        config = _build_node_config(
-            NodeType.EXPLORE,
-            {
-                "overview": {
-                    "dataset_snapshot": True,
-                    "custom_card": {
-                        "label": "Loss ratio",
-                        "columns": ["premium", "claims"],
-                        "enabled": False,
-                        "threshold": 0.7,
-                        "empty": None,
-                    },
-                }
-            },
-            "",
-            ["df"],
-        )
-
-        assert config["overview"] == {
-            "dataset_snapshot": True,
-            "custom_card": {
-                "label": "Loss ratio",
-                "columns": ["premium", "claims"],
-                "enabled": False,
-                "threshold": 0.7,
-                "empty": None,
-            },
-        }
-
-    def test_explore_overview_rejects_unknown_unserialisable_values(self):
-        """Unknown keys should not smuggle arbitrary Python objects into config."""
-        from haute._config_builder import _build_node_config
-
-        with pytest.raises(ConfigError, match="round-trip"):
-            _build_node_config(
-                NodeType.EXPLORE,
-                {"overview": {"custom_card": object()}},
-                "",
-                ["df"],
-            )
-
 
 # ---------------------------------------------------------------------------
 # B7: selected_columns is universally valid (executor applies it to all nodes)

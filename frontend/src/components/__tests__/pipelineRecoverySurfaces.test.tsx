@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import PipelineLoadFailureView from "../PipelineLoadFailureView"
 import PipelineRecoveryBanner from "../PipelineRecoveryBanner"
 import SourceRecoveryView from "../SourceRecoveryView"
-import StalePipelineReferenceBanner from "../StalePipelineReferenceBanner"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import { makePipelineEditorDocument } from "../../testSupport/pipelineDocumentFixture"
 
@@ -70,35 +69,6 @@ describe("pipeline recovery surfaces", () => {
     )
     expect(screen.getByLabelText("Current pipeline source")).toHaveTextContent("def broken(")
     expect(screen.getByText("rating/main.py:7")).toBeInTheDocument()
-  })
-
-  it("labels a retained canvas with distinct stale and current revisions", () => {
-    const sourceOnly = makePipelineEditorDocument({
-      load_status: "source_only",
-      source_file: "rating/main.py",
-      source_revision: "current-r2",
-      source_text: "def broken(:\n",
-      diagnostics: [diagnostic],
-    })
-    useDocumentStatusStore.getState().loadLiveDocumentStatus(sourceOnly, {
-      kind: "last_renderable",
-      sourceRevision: "last-good-r1",
-      loadStatus: "ready",
-    }, false, "live-fingerprint")
-
-    render(<StalePipelineReferenceBanner />)
-
-    expect(screen.getByTestId("stale-pipeline-reference-banner")).toHaveTextContent(
-      "stale read-only reference",
-    )
-    expect(screen.getByTestId("stale-pipeline-reference-banner")).toHaveTextContent(
-      "canvas last-good-r1; current current-r2",
-    )
-    fireEvent.click(screen.getByText("Review current source and diagnostics"))
-    expect(screen.getByLabelText("Current pipeline source")).toHaveTextContent("def broken(")
-    expect(screen.getByLabelText("Current source diagnostics")).toHaveTextContent(
-      "invalid Python syntax",
-    )
   })
 
   it("distinguishes a system load failure from authored recovery", () => {

@@ -77,6 +77,7 @@ from haute.modelling._train_config import (
     is_glm_config,
     parse_evaluation_config,
     parse_tuning_config,
+    reject_removed_evaluation_fields,
     training_objective_issue,
     validate_training_device,
 )
@@ -1204,12 +1205,7 @@ class TrainService:
         if objective_issue is not None:
             raise HTTPException(status_code=400, detail=objective_issue)
         try:
-            legacy_fields = [key for key in ("split", "cross_validation") if key in config]
-            if legacy_fields:
-                raise TrainingConfigError(
-                    "Invalid legacy modelling config: public split/cross_validation "
-                    "fields were replaced by the canonical versioned evaluation object."
-                )
+            reject_removed_evaluation_fields(config)
             evaluation = parse_evaluation_config(config.get("evaluation"))
             validate_training_device(config)
             metrics = config.get("metrics") or []

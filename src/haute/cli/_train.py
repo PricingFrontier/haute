@@ -15,8 +15,6 @@ from pathlib import Path
 
 import click
 
-from haute._io import read_user_text
-
 
 @dataclass
 class TrainConfig:
@@ -67,16 +65,9 @@ def handle_train(config: TrainConfig) -> None:
 
     click.echo(f"Running training script: {filepath}")
 
-    # Validate the script for dangerous patterns before execution
-    from haute._sandbox import UnsafeCodeError, validate_user_code
-
-    try:
-        validate_user_code(read_user_text(filepath), allow_imports=True)
-    except UnsafeCodeError as e:
-        click.echo(f"Error: Training script failed safety validation: {e}", err=True)
-        raise SystemExit(1)
-
-    # Load the script as a module
+    # The script is trusted project code run in this CLI process, where console
+    # input, a debugger and exit() are ordinary; the server's accident guard
+    # does not apply. Load it as a module.
     spec = importlib.util.spec_from_file_location("training_script", filepath)
     if spec is None or spec.loader is None:
         click.echo(f"Error: Cannot load {filepath}", err=True)

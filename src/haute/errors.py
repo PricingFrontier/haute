@@ -85,6 +85,17 @@ def is_public_contract_error(exc: BaseException) -> TypeGuard[HauteError]:
     return isinstance(exc, HauteError) and exc.error_code is not None
 
 
+class PathOutsideProjectError(HauteError):
+    """A path leaves the directory it must stay inside.
+
+    Raised by :func:`haute._sandbox.contained_path`; the API answers 403.
+    """
+
+
+class InvalidPathError(HauteError):
+    """A path string that cannot name a file (it holds a NUL byte); the API answers 400."""
+
+
 class ConfigError(HauteError):
     """Configuration loading or validation failure."""
 

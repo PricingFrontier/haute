@@ -159,8 +159,8 @@ _EXPECTED_DEBT_IDS = {
     "4ae118442dafce1e",
     "8a0f7160d9044069",
     "a78fb6a12665d489",
-    "3512c808a6273e35",
-    "b47ee7c16fbf5755",
+    "44ff20785c028602",
+    "707535b7903ffedc",
     "9b58538ec2c90223",
     "6881417aa251afb7",
     "fb0e81ff682c42ba",
@@ -260,6 +260,12 @@ _EXPECTED_DEBT_IDS = {
     # other symlink-guard tests. See tests/test_files_routes.py
     # ::TestBrowseFilesUnresolvedCwd._symlinked_project.
     "e29ebc6050519fc5",
+    # Windows symlink privilege — the SBX-R01 containment matrix proves every
+    # former caller refuses a symlink escape, but symlink creation needs a
+    # privilege Windows withholds by default (WinError 1314). Only the symlink
+    # cases skip; Linux CI runs them. See tests/test_path_containment.py
+    # ::_require_links.
+    "4f163427364999ba",
     # Assistant containment uses real directory/file symlinks to prove that
     # project-knowledge reads/cache writes and durable-session revival cannot
     # escape the project. Windows without Developer Mode or symlink privilege

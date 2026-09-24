@@ -7,6 +7,8 @@ from pathlib import Path
 
 from haute._config_io import is_windows_reserved_filename
 from haute._pipeline_repair import PipelineRepairError
+from haute._sandbox import contained_path
+from haute.errors import PathOutsideProjectError
 
 MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
 
@@ -45,8 +47,10 @@ def safe_path(root: Path, relative: str, *, private: bool = False) -> Path:
             raise conflict("Recovery cannot replace a multiply linked artifact.")
         if not stat.S_ISREG(info.st_mode) and not stat.S_ISDIR(info.st_mode):
             raise conflict("Recovery artifacts must be ordinary files.")
-    if not current.resolve().is_relative_to(root):
-        raise conflict("Recovery artifact is outside the project.")
+    try:
+        contained_path(root, current)
+    except PathOutsideProjectError:
+        raise conflict("Recovery artifact is outside the project.") from None
     return current
 
 

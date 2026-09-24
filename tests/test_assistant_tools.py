@@ -1019,6 +1019,19 @@ class TestReadTools:
 
             assert returned_ids == ids
 
+    @pytest.mark.parametrize("tool", ["list_datasets", "get_dataset_schema"])
+    def test_a_path_outside_the_project_reports_the_bare_containment_message(
+        self, project_root: Path, tool: str
+    ):
+        from haute.assistant._tools import get_dataset_schema, list_datasets
+
+        if tool == "list_datasets":
+            result = list_datasets("../outside")
+        else:
+            result = get_dataset_schema("../outside/quotes.parquet")
+
+        assert result["error"]["message"] == "Cannot access paths outside the project root"
+
     def test_list_datasets_uses_the_installed_input_extension_registry(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ):

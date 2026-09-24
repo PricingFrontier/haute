@@ -699,6 +699,18 @@ function NodeRecoveryStatus({
     () => (recoveryId ? completeness.filter((entry) => entry.element_id === recoveryId) : []),
     [completeness, recoveryId],
   )
+  // What the recover could not fix. The document lists provider gaps itself;
+  // an engine issue (a missing grid size, an invalid range) only reaches the
+  // panel through the recover's own report.
+  const unresolved = useMemo(
+    () =>
+      summary
+        ? summary.completeness.filter(
+            (entry) => !entries.some((known) => known.path === entry.path && known.code === entry.code),
+          )
+        : [],
+    [entries, summary],
+  )
   const saving = scopedSaving
   const [saveError, setSaveError] = useState<string | null>(null)
   if (!summary && entries.length === 0 && blockedPath === null && !scopedSave) return null
@@ -743,6 +755,18 @@ function NodeRecoveryStatus({
               <X size={12} />
             </button>
           </div>
+          {unresolved.length > 0 && (
+            <div className="mt-1" aria-label="Still to complete">
+              <p style={{ color: "var(--warning)" }}>Still to complete:</p>
+              <ul className="mt-0.5" style={{ color: "var(--text-secondary)" }}>
+                {unresolved.map((entry) => (
+                  <li key={`${entry.path}:${entry.code}`}>
+                    <span className="font-mono">{entry.path}</span> - {entry.message}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <details className="mt-1">
             <summary className="cursor-pointer" style={{ color: "var(--text-secondary)" }}>
               Field details

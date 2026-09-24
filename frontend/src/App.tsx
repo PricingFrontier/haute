@@ -40,7 +40,6 @@ import PipelineLoadFailureView from "./components/PipelineLoadFailureView"
 import PipelineRecoveryBanner from "./components/PipelineRecoveryBanner"
 import type { PipelineRepairTarget } from "./components/PipelineRepairDialog"
 import SourceRecoveryView from "./components/SourceRecoveryView"
-import StalePipelineReferenceBanner from "./components/StalePipelineReferenceBanner"
 import ImportsPanel from "./panels/ImportsPanel"
 import type { ComparisonInspect } from "./components/ComparisonView"
 import EdgeJoinInsertionFeedback from "./components/EdgeJoinInsertionFeedback"
@@ -793,7 +792,6 @@ function FlowEditor() {
   )
   const documentSourceRevision = useDocumentStatusStore((s) => s.sourceRevision)
   const documentSourceFile = useDocumentStatusStore((s) => s.sourceFile)
-  const retainedPipelineCanvas = useDocumentStatusStore((s) => s.retainedCanvas)
   const documentGraphSynchronized = useDocumentStatusStore((s) => s.graphSynchronized)
   const documentSystemFailure = useDocumentStatusStore((s) => s.systemFailure)
   const documentSourceSelectionTrusted = useDocumentStatusStore(
@@ -1485,7 +1483,7 @@ function FlowEditor() {
 
       {loadError || documentSystemFailure ? (
         <PipelineLoadFailureView detail={loadError ?? documentSystemFailure ?? "Unknown failure"} />
-      ) : documentLoadStatus === "source_only" && retainedPipelineCanvas === null ? (
+      ) : documentLoadStatus === "source_only" ? (
         <SourceRecoveryView />
       ) : comparison ? (
         <div className="flex-1 flex min-h-0">
@@ -1559,7 +1557,6 @@ function FlowEditor() {
         </nav>
 
         <main className="flex-1 flex flex-col min-w-0">
-          <StalePipelineReferenceBanner />
           <PipelineRecoveryBanner onSelectElement={handleSelectRecoveryElement} />
           {sessionExpired && (
             <div

@@ -1275,6 +1275,7 @@ def chunk_plan(request: ChunkPlanRequest) -> ChunkPlan:
         profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
         required_columns_by_node=request.required_columns_by_node,
         schema_only=True,
+        relevant_edges=prepared.relevant_edges,
         selector_aliases=preamble_selector_aliases(request.graph.preamble or ""),
     )
     source_node_ids: list[str] = []

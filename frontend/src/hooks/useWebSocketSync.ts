@@ -9,9 +9,7 @@ import {
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
-import useDocumentStatusStore, {
-  type RetainedPipelineCanvas,
-} from "../stores/useDocumentStatusStore"
+import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import {
   adaptPipelineEditorDocument,
   parsePipelineEditorDocument,
@@ -161,21 +159,6 @@ function parsePipelineDocumentUpdateFrame(
     document,
     documentFingerprint,
     sourceFile: message.source_file,
-  }
-}
-
-function retainedCanvasFor(
-  document: PipelineEditorDocument,
-  dirty: boolean,
-): RetainedPipelineCanvas | null {
-  if (document.load_status !== "source_only") return null
-  const current = useDocumentStatusStore.getState()
-  if (current.loadStatus === "source_only") return current.retainedCanvas
-  if (current.loadStatus !== "ready" && current.loadStatus !== "degraded") return null
-  return {
-    kind: dirty ? "local_dirty" : "last_renderable",
-    sourceRevision: current.sourceRevision,
-    loadStatus: current.loadStatus,
   }
 }
 
@@ -334,14 +317,12 @@ export default function useWebSocketSync({
           const updateSeq = ++graphUpdateSeq
           const graphState = useGraphStore.getState()
           const dirty = graphState.dirty
-          const retainedCanvas = retainedCanvasFor(frame.document, dirty)
 
           // The document fence is authoritative independently of whether the
           // renderable graph can be replaced. Mirror its revision first so
           // request admission can never race a stale ready state.
           useDocumentStatusStore.getState().loadLiveDocumentStatus(
             frame.document,
-            retainedCanvas,
             false,
             frame.documentFingerprint,
           )

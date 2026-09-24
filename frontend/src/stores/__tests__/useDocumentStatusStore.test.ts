@@ -50,7 +50,7 @@ describe("useDocumentStatusStore", () => {
     store.loadDocumentStatus(loaded, false, "loaded-fp")
     expect(useDocumentStatusStore.getState().documentFingerprint).toBe("loaded-fp")
 
-    store.loadLiveDocumentStatus({ ...loaded, source_revision: "r2" }, null, true, "live-fp")
+    store.loadLiveDocumentStatus({ ...loaded, source_revision: "r2" }, true, "live-fp")
     expect(useDocumentStatusStore.getState().documentFingerprint).toBe("live-fp")
 
     store.setSystemFailure("load failed")
@@ -66,29 +66,6 @@ describe("useDocumentStatusStore", () => {
     useDocumentStatusStore.getState().loadDocumentStatus(loaded, false, null)
     expect(useDocumentStatusStore.getState().documentFingerprint).toBeNull()
     useDocumentStatusStore.getState().reset()
-  })
-
-  it("tracks a live source-only canvas reference separately from current document state", () => {
-    const sourceOnly = { ...loaded, load_status: "source_only" as const, source_revision: "r2" }
-    useDocumentStatusStore.getState().loadLiveDocumentStatus(sourceOnly, {
-      kind: "last_renderable",
-      sourceRevision: "r1",
-      loadStatus: "ready",
-    }, false, "live-fingerprint")
-
-    expect(useDocumentStatusStore.getState()).toMatchObject({
-      loadStatus: "source_only",
-      sourceRevision: "r2",
-      retainedCanvas: {
-        kind: "last_renderable",
-        sourceRevision: "r1",
-        loadStatus: "ready",
-      },
-      graphSynchronized: false,
-    })
-
-    useDocumentStatusStore.getState().loadDocumentStatus(loaded)
-    expect(useDocumentStatusStore.getState().retainedCanvas).toBeNull()
   })
 
   it("blocks a retained canvas for a live system failure and clears on recovery", () => {

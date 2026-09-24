@@ -55,16 +55,10 @@ def _request(root: Path, target_id: str, action: str):
     )
 
 
-def _apply(root: Path, request, plan):
+def _apply(root: Path, request):
     from haute._pipeline_repair import apply_recover_unavailable_node_plan
-    from haute.schemas import PipelineRepairRecoverApplyRequest
 
-    return apply_recover_unavailable_node_plan(
-        project_root=root,
-        request=PipelineRepairRecoverApplyRequest(
-            **request.model_dump(), plan_hash=plan.response.plan_hash
-        ),
-    )
+    return apply_recover_unavailable_node_plan(project_root=root, request=request)
 
 
 def test_legacy_registration_retains_submodel_position_connection_and_revision(tmp_path):
@@ -101,7 +95,7 @@ def test_update_then_reset_demo_preserves_child_and_exposes_consumer(tmp_path):
         "modules/Inputs.py",
         "main.haute.json",
     }
-    result = _apply(tmp_path, request, plan)
+    result = _apply(tmp_path, request)
     nodes = {node.authored_id: node for node in result.document.nodes}
     assert nodes["Inputs"].availability == "ready"
     assert nodes["Polars_3"].availability == "unavailable"
@@ -113,8 +107,7 @@ def test_update_then_reset_demo_preserves_child_and_exposes_consumer(tmp_path):
     reset = _request(tmp_path, "Polars_3", "reset")
     reset_plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=reset)
     assert reset_plan.response.repair_kind == "reset_node"
-    assert reset_plan.response.warnings
-    reset_result = _apply(tmp_path, reset, reset_plan)
+    reset_result = _apply(tmp_path, reset)
     assert reset_result.document.load_status == "ready"
     assert "def Polars_3(output_1: pl.LazyFrame)" in parent.read_text()
     assert "df = live_switch" not in parent.read_text()
@@ -125,26 +118,20 @@ def test_update_then_reset_demo_preserves_child_and_exposes_consumer(tmp_path):
     )  # normal incomplete Polars template, no silent passthrough
 
 
-@pytest.mark.parametrize("drift", ["child", "plan"])
-def test_update_rejects_stale_child_or_plan_without_writing(tmp_path, drift):
-    from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
+def test_update_rejects_a_stale_child_without_writing(tmp_path):
+    from haute._pipeline_repair import PipelineRepairError
 
     _legacy_demo(tmp_path)
     request = _request(tmp_path, "Inputs", "update")
-    plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
-    if drift == "child":
-        child = tmp_path / "modules/Inputs.py"
-        child.write_text(child.read_text() + "\n# new user edit\n")
-    else:
-        plan.response.plan_hash = "0" * 64
+    child = tmp_path / "modules/Inputs.py"
+    child.write_text(child.read_text() + "\n# new user edit\n")
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     with pytest.raises(PipelineRepairError, match="changed"):
-        _apply(tmp_path, request, plan)
+        _apply(tmp_path, request)
     assert {p: p.read_bytes() for p in before} == before
 
 
 def test_reset_broken_config_uses_palette_defaults_and_retains_reference(tmp_path):
-    from haute._pipeline_repair import build_recover_unavailable_node_plan
 
     (tmp_path / "haute.toml").write_text('[project]\nname = "demo"\n')
     config = tmp_path / "custom.json"
@@ -157,8 +144,7 @@ def test_reset_broken_config_uses_palette_defaults_and_retains_reference(tmp_pat
         '@pipeline.constant(config="custom.json")\ndef source():\n    return None\n'
     )
     request = _request(tmp_path, "source", "reset")
-    plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
-    result = _apply(tmp_path, request, plan)
+    result = _apply(tmp_path, request)
     assert result.document.load_status == "ready"
     assert "custom.json" in parent.read_text()
     assert "source" in parent.read_text()
@@ -170,7 +156,6 @@ def test_update_rolls_back_all_artifacts_when_verification_fails(tmp_path, monke
 
     _legacy_demo(tmp_path)
     request = _request(tmp_path, "Inputs", "update")
-    plan = repair.build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     real_load = repair.load_pipeline_editor_document
 
@@ -184,7 +169,7 @@ def test_update_rolls_back_all_artifacts_when_verification_fails(tmp_path, monke
 
     monkeypatch.setattr(repair, "load_pipeline_editor_document", fail_after_write)
     with pytest.raises(RuntimeError, match="verification failure"):
-        _apply(tmp_path, request, plan)
+        _apply(tmp_path, request)
     assert {p: p.read_bytes() for p in before} == before
 
 
@@ -193,34 +178,13 @@ def test_recovery_actions_round_trip_through_api(tmp_path, client, monkeypatch):
     monkeypatch.chdir(tmp_path)
     for node_id, action in (("Inputs", "update"), ("Polars_3", "reset")):
         request = _request(tmp_path, node_id, action).model_dump()
-        before = (tmp_path / "main.py").read_bytes()
-        response = client.post("/api/pipeline/repair/recover/dry-run", json=request)
-        assert response.status_code == 200, response.text
-        plan = response.json()
-        assert (tmp_path / "main.py").read_bytes() == before
-        assert plan["repair_kind"] == f"{action}_node"
-        assert plan["delete_config"] is False
-        forged = client.post(
-            "/api/pipeline/repair/recover/apply",
-            json={
-                **request,
-                "plan_hash": "0" * 64,
-            },
-        )
-        assert forged.status_code == 409
-        assert (tmp_path / "main.py").read_bytes() == before
-        result = client.post(
-            "/api/pipeline/repair/recover/apply",
-            json={
-                **request,
-                "plan_hash": plan["plan_hash"],
-            },
-        )
+        result = client.post("/api/pipeline/repair/recover/apply", json=request)
         assert result.status_code == 200, result.text
         assert result.json()["repair_kind"] == f"{action}_node"
+        assert result.json()["changes"]
     assert result.json()["document"]["load_status"] == "ready"
     rejected = client.post(
-        "/api/pipeline/repair/recover/dry-run",
+        "/api/pipeline/repair/recover/apply",
         json={
             **request,
             "replacement_source": "arbitrary replacement",
@@ -288,14 +252,12 @@ def test_config_reset_ownership_and_required_settings(tmp_path, case):
     request = _request(tmp_path, "source", "reset")
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     if case == "missing":
-        plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
-        _apply(tmp_path, request, plan)
+        _apply(tmp_path, request)
         assert (tmp_path / "custom.json").is_file()
     elif case == "required_setting":
         # Palette defaults with an empty required path persist as a loadable
         # incomplete configuration; reset is never blocked by completeness.
-        plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
-        result = _apply(tmp_path, request, plan)
+        result = _apply(tmp_path, request)
         written = json.loads((tmp_path / "custom.json").read_text())
         assert written["inputType"] == "file"
         assert written["path"] == ""
@@ -307,7 +269,6 @@ def test_config_reset_ownership_and_required_settings(tmp_path, case):
 
 
 def test_update_preserves_bom_crlf_comments_and_unrelated_sidecar_bytes(tmp_path):
-    from haute._pipeline_repair import build_recover_unavailable_node_plan
 
     _legacy_demo(tmp_path)
     parent = tmp_path / "main.py"
@@ -318,15 +279,14 @@ def test_update_preserves_bom_crlf_comments_and_unrelated_sidecar_bytes(tmp_path
     sidecar = parent.with_suffix(".haute.json")
     original_sidecar = sidecar.read_bytes()
     request = _request(tmp_path, "Inputs", "update")
-    plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
-    _apply(tmp_path, request, plan)
+    _apply(tmp_path, request)
     assert parent.read_bytes().startswith(b"\xef\xbb\xbf")
     assert "# café: preserve comment\r\n".encode() in parent.read_bytes()
     assert b"\n" not in parent.read_bytes().replace(b"\r\n", b"")
     assert sidecar.read_bytes() == original_sidecar.replace(b'"old_instance"', b'"Inputs"')
 
 
-def test_dry_run_stale_revision_conflict_preserves_authored_bytes(
+def test_stale_revision_conflict_preserves_authored_bytes(
     tmp_path: Path, client, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _legacy_demo(tmp_path)
@@ -335,7 +295,7 @@ def test_dry_run_stale_revision_conflict_preserves_authored_bytes(
     request = _request(tmp_path, "Inputs", "update").model_dump()
     request["source_revision"] = "0" * 64
 
-    response = client.post("/api/pipeline/repair/recover/dry-run", json=request)
+    response = client.post("/api/pipeline/repair/recover/apply", json=request)
     assert response.status_code == 409
     assert response.json()["detail"] == {
         "code": "repair_revision_conflict",
@@ -344,38 +304,6 @@ def test_dry_run_stale_revision_conflict_preserves_authored_bytes(
         ),
     }
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before_files
-
-
-def test_dry_run_planner_io_error_sanitizes_message_and_preserves_artifacts(
-    tmp_path: Path, client, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import haute.routes.pipeline as pipeline_routes
-
-    parent = _legacy_demo(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    sidecar = tmp_path / "main.haute.json"
-    child = tmp_path / "modules" / "Inputs.py"
-    before_parent = parent.read_bytes()
-    before_sidecar = sidecar.read_bytes()
-    before_child = child.read_bytes()
-
-    def fail_planner(*_args: object, **_kwargs: object) -> None:
-        raise PermissionError("private marker")
-
-    monkeypatch.setattr(pipeline_routes, "build_recover_unavailable_node_plan", fail_planner)
-    request = _request(tmp_path, "Inputs", "update").model_dump()
-    response = client.post("/api/pipeline/repair/recover/dry-run", json=request)
-
-    assert response.status_code == 409
-    payload = response.json()
-    assert payload["detail"]["code"] == "repair_artifact_unavailable"
-    assert payload["detail"]["message"] == (
-        "A repair artifact could not be read; reload and try again."
-    )
-    assert "private marker" not in response.text
-    assert parent.read_bytes() == before_parent
-    assert sidecar.read_bytes() == before_sidecar
-    assert child.read_bytes() == before_child
 
 
 def test_apply_recover_rollback_on_second_staged_write_restores_artifacts(
@@ -392,9 +320,6 @@ def test_apply_recover_rollback_on_second_staged_write_restores_artifacts(
     before_child = child.read_bytes()
 
     request = _request(tmp_path, "Inputs", "update").model_dump()
-    dry_run_response = client.post("/api/pipeline/repair/recover/dry-run", json=request)
-    assert dry_run_response.status_code == 200, dry_run_response.text
-    plan_hash = dry_run_response.json()["plan_hash"]
 
     real_stage_write = save_pipeline._stage_artifact_write_bytes
     staged_writes_successful = 0
@@ -410,7 +335,7 @@ def test_apply_recover_rollback_on_second_staged_write_restores_artifacts(
 
     response = client.post(
         "/api/pipeline/repair/recover/apply",
-        json={**request, "plan_hash": plan_hash},
+        json=request,
     )
     assert response.status_code == 409
     payload = response.json()
@@ -457,7 +382,7 @@ def test_recover_retains_valid_settings_and_reports_outcomes(tmp_path):
     assert ("/cacheMode", "removed") in outcomes
     assert ("/path", "retained") in outcomes
     assert plan.response.completeness == []
-    result = _apply(tmp_path, request, plan)
+    result = _apply(tmp_path, request)
     assert result.repair_kind == "recover_node"
     assert result.previous_config is not None
     assert result.document.load_status == "ready"
@@ -473,6 +398,73 @@ def test_recover_retains_valid_settings_and_reports_outcomes(tmp_path):
     assert 'pl.col("premium") > 1234' in str((node.config or {}).get("code", ""))
     # The sidecar never stores the code slot: the .py body is authoritative.
     assert "code" not in written
+
+
+def test_recover_reports_what_it_could_not_fix_as_completeness(tmp_path):
+    """The worked example: a Scenario Expander sidecar from before the stepCount rename
+    (`steps: 11`, no `stepCount`). The recover applies, and the engine's own issue
+    reaches the plan as completeness instead of being dropped."""
+    from haute._config_io import collect_node_configs
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
+    from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+    from haute.codegen import graph_to_code
+
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="quotes",
+                data=NodeData(
+                    label="quotes",
+                    nodeType=NodeType.CONSTANT,
+                    config={"values": [{"name": "quote_id", "value": "1"}]},
+                ),
+            ),
+            GraphNode(
+                id="grid",
+                data=NodeData(
+                    label="grid",
+                    nodeType=NodeType.SCENARIO_EXPANDER,
+                    config={
+                        "quote_id": "quote_id",
+                        "column_name": "price",
+                        "step_column": "scenario_index",
+                        "min_value": 0.1,
+                        "max_value": 0.3,
+                        "stepCount": 3,
+                        "steps": [],
+                    },
+                ),
+            ),
+        ],
+        edges=[GraphEdge(id="e_quotes_grid", source="quotes", target="grid")],
+    )
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(graph_to_code(graph, pipeline_name="demo"))
+    for rel_path, content in collect_node_configs(graph).items():
+        config_file = tmp_path / rel_path
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(content)
+    sidecar = tmp_path / "config/expander/grid.json"
+    stale = json.loads(sidecar.read_text())
+    del stale["stepCount"]
+    stale["steps"] = 11
+    sidecar.write_text(json.dumps(stale))
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    target = next(node for node in document.nodes if node.authored_id == "grid")
+    assert target.availability == "unavailable"
+
+    request = _request(tmp_path, "grid", "recover")
+    plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
+
+    assert [(entry.path, entry.code, entry.message) for entry in plan.response.completeness] == [
+        ("/", "incomplete_range", "Scenario range and stepCount are required.")
+    ]
+    assert all(entry.element_id == target.recovery_id for entry in plan.response.completeness)
+    result = _apply(tmp_path, request)
+    assert [entry.code for entry in result.completeness] == ["incomplete_range"]
+    applied = next(node for node in result.document.nodes if node.authored_id == "grid")
+    assert applied.availability == "ready"
+    assert "stepCount" not in json.loads(sidecar.read_text())
 
 
 def test_recover_empty_locator_applies_as_incomplete(tmp_path):
@@ -501,7 +493,7 @@ def test_recover_empty_locator_applies_as_incomplete(tmp_path):
     assert [(entry.path, entry.code) for entry in plan.response.completeness] == [
         ("path", "required")
     ]
-    result = _apply(tmp_path, request, plan)
+    result = _apply(tmp_path, request)
     assert result.document.load_status == "ready"
     node = next(item for item in result.document.nodes if item.authored_id == "source")
     assert node.availability == "ready"
@@ -574,7 +566,6 @@ def test_recover_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path):
     # its authored bindings stay trustworthy, and the applied node may remain
     # blocked solely by the still-broken upstream.
     from haute._config_io import config_path_for_node
-    from haute._pipeline_repair import build_recover_unavailable_node_plan
     from haute._types import GraphNode, NodeData, NodeType
     from haute.codegen import _node_to_code
 
@@ -618,8 +609,7 @@ def test_recover_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path):
     upstream_bytes = (tmp_path / "a.json").read_bytes()
 
     request = _request(tmp_path, "sink", "recover")
-    plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
-    result = _apply(tmp_path, request, plan)
+    result = _apply(tmp_path, request)
     node = next(item for item in result.document.nodes if item.authored_id == "sink")
     assert node.availability == "blocked"
     written = json.loads(sink_reference.read_text())

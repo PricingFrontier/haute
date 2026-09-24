@@ -467,6 +467,21 @@ def _effective_monotone_constraints(config: Mapping[str, Any]) -> Any:
     return effective or None
 
 
+_REMOVED_EVALUATION_FIELDS = ("split", "cross_validation")
+
+
+def reject_removed_evaluation_fields(config: Mapping[str, Any]) -> None:
+    """Reject the removed top-level split fields, naming their replacement."""
+    removed = [key for key in _REMOVED_EVALUATION_FIELDS if key in config]
+    if removed:
+        names = " and ".join(repr(key) for key in removed)
+        raise TrainingConfigError(
+            f"The modelling config field{'s' if len(removed) > 1 else ''} {names} "
+            f"{'were' if len(removed) > 1 else 'was'} removed; use the versioned "
+            "'evaluation' object."
+        )
+
+
 def training_objective_issue(config: Mapping[str, Any]) -> str | None:
     """Return an actionable message when the training objective is incomplete.
 
@@ -606,12 +621,7 @@ def build_training_job_kwargs(
     if objective_issue is not None:
         raise TrainingConfigError(objective_issue)
     variance_power = config.get("var_power") if glm else config.get("variance_power")
-    legacy_fields = [key for key in ("split", "cross_validation") if key in config]
-    if legacy_fields:
-        raise TrainingConfigError(
-            "Invalid legacy modelling config: public split/cross_validation fields "
-            "were replaced by the canonical versioned evaluation object."
-        )
+    reject_removed_evaluation_fields(config)
     evaluation = parse_evaluation_config(config.get("evaluation"))
     metrics = effective_metrics(config)
     tuning = parse_tuning_config(

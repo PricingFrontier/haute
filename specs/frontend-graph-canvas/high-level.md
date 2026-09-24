@@ -391,8 +391,10 @@ candidate, with the error toast.
   store directly. `ready` documents retain normal behaviour. A `degraded` document renders
   every recoverable element, marks unavailable or blocked nodes separately from transient
   execution status, shows one summary banner, and exposes the selected element's diagnostic
-  and source/config location. A `source_only` document replaces the canvas with the readable
-  current source and document diagnostics. Authored recovery states do not produce the
+  and source/config location. A `source_only` document (a file that is not valid Python, or an
+  unexpected recovery defect) replaces the canvas with the readable current source and
+  document diagnostics, including the syntax error's location and the instruction to open the
+  source there in an editor. Authored recovery states do not produce the
   generic load-failure toast; transport, authentication, unreadable-source, and response-
   contract failures render the dedicated load-failure surface. A dedicated document-status
   store is authoritative for status, capabilities, diagnostics, revision, and source-only
@@ -791,9 +793,9 @@ candidate, with the error toast.
   of the canvases, rather than crashing the comparison view.
 - When live sync reports a degraded document, a clean canvas atomically adopts the recovered snapshot; a
   dirty canvas retains local graph/history but immediately adopts the authoritative read-only capability
-  fence. Source-only state shows the current source and diagnostics. If a renderable snapshot existed in
-  this browser session, it may remain behind an explicit stale-reference label with its own prior revision;
-  it cannot be saved, executed, or mistaken for current state. A versioned system load failure replaces
+  fence. Source-only state shows the current source and diagnostics in place of the canvas; no
+  earlier canvas stays visible. A dirty local graph remains in the graph store behind that view,
+  and the dirty-graph guard applies when a renderable document arrives. A versioned system load failure replaces
   the editor with the dedicated failure surface and marks any retained canvas unsynchronised; the next
   valid document update clears that failure atomically. A failed or stale repair leaves the current recovery
   canvas unchanged; no migration or upgrade action exists.

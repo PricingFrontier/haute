@@ -20,12 +20,12 @@ or maintenance issue; `P3` opportunistic work.
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
 | [Caching](caching.md) | Planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache usage, freshness and retention | `CACHE-S17` |
 | [Engineering quality](engineering-quality.md) | Dead code, coverage gates, test organisation | `ENGQ-R01` |
-| [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | — |
+| [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E25` |
 | [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
 | [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients for the optimiser log | `MLF-R02` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers, auto-range, input isolation | `OPT-P13` |
-| [Pipeline config](pipeline-config.md) | Repair, save validation, the error a rejected config reports, project context, typed configs, node specification | `PCFG-R01` |
-| [Sandbox security](sandbox-security.md) | One path-containment check, the node-code guard | `SBX-R01` |
+| [Pipeline config](pipeline-config.md) | Project context, non-canonical input, typed configs, editor state, node specification | `PCFG-R04` |
+| [Sandbox security](sandbox-security.md) | Every containment comparison through the one check | `SBX-R01` |
 | [Server API](server-api.md) | Error translation, generated browser contract, recovery scope | `API-R01` |
 | [Submodels](submodels.md) | One reuse mechanism | `SUB-R01` |
 | [Tracing](tracing.md) | Row identity for traces | `TRACE-R01` |

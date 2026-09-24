@@ -23,17 +23,10 @@ interface DocumentStatusState {
   activeSource: string | null
   sourceSelectionTrusted: boolean
   hasAuthoredContent: boolean
-  retainedCanvas: RetainedPipelineCanvas | null
   graphSynchronized: boolean
   systemFailure: string | null
   /** Server fingerprint of the accepted document, or null when the accepting response named none. */
   documentFingerprint: string | null
-}
-
-export interface RetainedPipelineCanvas {
-  kind: "last_renderable" | "local_dirty"
-  sourceRevision: string | null
-  loadStatus: Exclude<PipelineLoadStatus, "source_only">
 }
 
 /**
@@ -55,7 +48,6 @@ export interface DocumentStatusStore extends DocumentStatusState {
   ) => void
   loadLiveDocumentStatus: (
     document: PipelineEditorDocument,
-    retainedCanvas: RetainedPipelineCanvas | null,
     graphSynchronized: boolean,
     documentFingerprint: string,
   ) => void
@@ -82,7 +74,6 @@ function initialState(): DocumentStatusState {
     activeSource: null,
     sourceSelectionTrusted: false,
     hasAuthoredContent: false,
-    retainedCanvas: null,
     graphSynchronized: false,
     systemFailure: null,
     documentFingerprint: null,
@@ -91,7 +82,6 @@ function initialState(): DocumentStatusState {
 
 function documentState(
   document: PipelineEditorDocument,
-  retainedCanvas: RetainedPipelineCanvas | null,
   graphSynchronized: boolean,
   executionGeneration: number,
   documentFingerprint: string | null,
@@ -114,7 +104,6 @@ function documentState(
     activeSource: document.active_source,
     sourceSelectionTrusted: document.source_selection_trusted,
     hasAuthoredContent: document.has_authored_content,
-    retainedCanvas,
     graphSynchronized,
     systemFailure: null,
     documentFingerprint,
@@ -125,11 +114,11 @@ const useDocumentStatusStore = create<DocumentStatusStore>()((set) => ({
   ...initialState(),
   loadDocumentStatus: (document, graphSynchronized = true, documentFingerprint = null) =>
     set((state) => documentState(
-      document, null, graphSynchronized, state.executionGeneration + 1, documentFingerprint,
+      document, graphSynchronized, state.executionGeneration + 1, documentFingerprint,
     )),
-  loadLiveDocumentStatus: (document, retainedCanvas, graphSynchronized, documentFingerprint) =>
+  loadLiveDocumentStatus: (document, graphSynchronized, documentFingerprint) =>
     set((state) => documentState(
-      document, retainedCanvas, graphSynchronized, state.executionGeneration + 1, documentFingerprint,
+      document, graphSynchronized, state.executionGeneration + 1, documentFingerprint,
     )),
   setGraphSynchronized: (graphSynchronized) => set({ graphSynchronized }),
   // No document was accepted, so the next resync must ask for the current one.

@@ -388,7 +388,8 @@ def validate_node_config(
     """Strictly validate configs whose runtime contract is discriminated.
 
     Data Input/Output provider branches control which keys and capabilities
-    are legal. Banding's discriminant controls its rule schema. Invalid
+    are legal. Banding's discriminant controls its rule schema. A Scenario
+    Expander's grid size is required with no incomplete form. Invalid
     configured branches must not be silently persisted and ignored.
     ``require_complete=False`` tolerates absent/empty required Data
     Input/Output locators (declared-incomplete forms); structural rules and
@@ -412,4 +413,10 @@ def validate_node_config(
         from haute._rating import validate_banding_config
 
         validate_banding_config(config)
+    if nt == NodeType.SCENARIO_EXPANDER:
+        from haute._node_apply import scenario_step_count
+
+        # The grid size has no incomplete form: a new node carries an
+        # explicit count, so its absence is a defect the builder would reject.
+        scenario_step_count(config)
     return dict(config)
