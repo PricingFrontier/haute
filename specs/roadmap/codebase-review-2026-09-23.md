@@ -334,7 +334,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 
 | Finding | Package |
 |---|---|
-| §1.1 Global Polars-config lock | `EXEC-R01` ([execution engine](execution-engine.md)) |
+| §1.1 Global Polars-config lock | `EXEC-R01` (execution engine, delivered; its roadmap file is retired) |
 | §1.2 Deploy omits `utility/` | `DEP-R01` ([deploy](deploy.md)) |
 | §1.3 User docs describe removed nodes | `BUILD-R01` (build and distribution, delivered; its roadmap file is retired) |
 | §1.4 Project-root resolvers | `PCFG-R04` ([pipeline config](pipeline-config.md)) |
@@ -348,17 +348,17 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §1.8 Path containment ×5 | `SBX-R01` ([sandbox security](sandbox-security.md)) |
 | §1.8 Client picks the build profile from error text | `CACHE-S27` ([caching](caching.md)) |
 | §2.1 Dead dataframe execution cache | `CACHE-S23` ([caching](caching.md)) |
-| §2.2 Chunked runner and streaming auto-range | `OPT-P15` (optimiser, delivered) kept the chunked auto-range path, so the runner's retirement (`EXEC-R03`) was dropped and the runner becomes a walker policy in `EXEC-R05` ([execution engine](execution-engine.md)) |
+| §2.2 Chunked runner and streaming auto-range | `OPT-P15` (optimiser, delivered) kept the chunked auto-range path, so the runner's retirement (`EXEC-R03`) was dropped and the runner became a walker policy in `EXEC-R05` (execution engine, delivered) |
 | §2.3 Unreferenced and test-only code | `ENGQ-R01` ([engineering quality](engineering-quality.md)); the preview-reader protocol is `TRACE-R02` ([tracing](tracing.md)) |
-| §2.4 Per-request chunk-size knob | `EXEC-R01` ([execution engine](execution-engine.md)), with §1.1 |
+| §2.4 Per-request chunk-size knob | `EXEC-R01` (execution engine, delivered; its roadmap file is retired), with §1.1 |
 | §2.5 Assistant legacy catalogue and harnesses | `ASSIST-R01` ([assistant](assistant.md)) |
 | §2.6 Tracked artifacts and the `rating/` reference | `ENGQ-R02` ([engineering quality](engineering-quality.md)); the external assembler document is `JSON-R02` ([JSON shredding](json-shredding.md)) |
 | §3.1 Error translation | `API-R01` ([server API](server-api.md)) |
 | §3.1 HTTP types in services | `API-R02` ([server API](server-api.md)) |
 | §3.1 Three worker mechanisms | `ROAD-WORKER-05` ([background jobs](background-jobs-api.md)) |
-| §3.1 Process-memory probes ×4 | `EXEC-R06` ([execution engine](execution-engine.md)) |
+| §3.1 Process-memory probes ×4 | `EXEC-R06` (execution engine, delivered; its roadmap file is retired) |
 | §3.1 Two stores, three freshness proofs, hand-rolled LRUs | `CACHE-S08` and `CACHE-S24` ([caching](caching.md)) |
-| §3.1 Graph traversal ×5 | `EXEC-R08` ([execution engine](execution-engine.md)) |
+| §3.1 Graph traversal ×5 | `EXEC-R08` (execution engine, delivered; its roadmap file is retired) |
 | §3.1 Legacy modelling check ×2 | `PCFG-R06` ([pipeline config](pipeline-config.md)) |
 | §3.1 Git outside the chokepoint | `DEP-R04` ([deploy](deploy.md)) |
 | §3.2 Polling | `FSH-R01` ([frontend shared](frontend-shared.md)) |
@@ -368,8 +368,8 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §3.2 Results store | `FSH-R03` ([frontend shared](frontend-shared.md)) |
 | §3.3 Invariants validated three times | `MOD-T10` ([modelling](modelling.md)) |
 | §3.3 Editor state inside node config | `PCFG-R08` ([pipeline config](pipeline-config.md)) |
-| §4.1 Static memory analysis versus hard caps | `EXEC-R04` ([execution engine](execution-engine.md)) |
-| §4.2 One execution walker | `EXEC-R05` ([execution engine](execution-engine.md)) |
+| §4.1 Static memory analysis versus hard caps | `EXEC-R04` (execution engine, delivered; its roadmap file is retired) |
+| §4.2 One execution walker | `EXEC-R05` (execution engine, delivered; its roadmap file is retired) |
 | §4.3 Optimiser pipeline in a capped worker | `OPT-P16` ([optimiser](optimiser.md)) |
 | §4.4 Hand-written Polars interpreter | `EXPR-R01`; the [expression-parsing specification](../expression-parsing/high-level.md) records the outcome |
 | §4.5 Trace row identity | `TRACE-R01` ([tracing](tracing.md)) |
@@ -379,14 +379,14 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §4.9 Node-code guard | `SBX-R02` ([sandbox security](sandbox-security.md)) |
 | §4.10 Codegen decorator splice | `CODEGEN-R01` (codegen, delivered; its roadmap file is retired) |
 | §4.10 Node registry | `PCFG-R09` ([pipeline config](pipeline-config.md)) |
-| §4.10 `ExecutionContext` size | `EXEC-R07` ([execution engine](execution-engine.md)) |
+| §4.10 `ExecutionContext` size | `EXEC-R07` (execution engine, delivered; its roadmap file is retired) |
 | §4.10 Cache identity framework | `CACHE-S25` ([caching](caching.md)) |
 | §4.10 Scaffolding for unimplemented targets | `DEP-R03` ([deploy](deploy.md)) |
 | §4.10 No automatic retention | `CACHE-S26` ([caching](caching.md)) |
-| §4.10 Process-global library state | `EXEC-R01` ([execution engine](execution-engine.md)), `MLF-R02` ([MLflow model registry](mlflow-model-registry.md)) |
+| §4.10 Process-global library state | `EXEC-R01` (execution engine, delivered; its roadmap file is retired), `MLF-R02` ([MLflow model registry](mlflow-model-registry.md)) |
 | §5.1 Generated browser contract | `API-R03` ([server API](server-api.md)) |
 | §5.2 Exception handlers | `API-R01` ([server API](server-api.md)) |
-| §5.3 Process-memory library | `EXEC-R06` ([execution engine](execution-engine.md)) |
+| §5.3 Process-memory library | `EXEC-R06` (execution engine, delivered; its roadmap file is retired) |
 | §5.4 Typed node configs | `PCFG-R07` ([pipeline config](pipeline-config.md)) |
 | §5.5 Slim scoring runtime | `DEP-R02` ([deploy](deploy.md)) |
 | §6 Canonical-only policy versus the code | `PCFG-R06` ([pipeline config](pipeline-config.md)) |
