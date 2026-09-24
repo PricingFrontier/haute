@@ -13,8 +13,11 @@ from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_walker import (
     CollectPolicy,
     WalkPurpose,
+    WalkRequest,
     WalkResult,
+    _Walk,
     prepare_walk,
+    project_output,
     walk_graph,
 )
 from haute._node_snapshots import NodeSnapshotStore
@@ -408,3 +411,175 @@ def test_a_chunk_walk_refuses_a_demand_its_node_does_not_produce() -> None:
 
     with pytest.raises(ContractMismatchError, match="Chunk projection references columns"):
         walk.run({"start": pl.LazyFrame({"x": [1]})})
+
+
+# ---------------------------------------------------------------------------
+# Failure paths every walk keeps
+# ---------------------------------------------------------------------------
+
+
+def _two_node_graph() -> PipelineGraph:
+    return PipelineGraph(
+        nodes=[_node("src", NodeType.DATA_INPUT), _node("child", NodeType.POLARS)],
+        edges=[_edge("src", "child")],
+    )
+
+
+def _builder(
+    source_result: object, child: Callable[..., Any] | None = None
+) -> Callable[..., tuple[str, Callable[..., Any], bool]]:
+    def build(node: GraphNode, **_kwargs: Any) -> tuple[str, Callable[..., Any], bool]:
+        if node.id == "src":
+            return node.id, lambda: source_result, True
+        return node.id, child or (lambda frame: frame), False
+
+    return build
+
+
+def test_a_sink_walk_records_the_width_of_a_collected_source() -> None:
+    context = ExecutionContext(operation="walk", profile=ExecutionProfile.LAZY_SINK)
+
+    walked = walk_graph(
+        _two_node_graph(),
+        _builder(pl.DataFrame({"x": [1], "y": [2]})),
+        policy=CollectPolicy.sink(),
+        enforce_contracts=False,
+        execution_context=context,
+    )
+
+    assert isinstance(walked.frames["src"], pl.LazyFrame)
+    widths = cast(dict[str, Any], context.metrics_payload(status="completed")["column_widths"])
+    by_node = {item["node_id"]: item for item in widths["items"]}
+    assert by_node["src"]["output_width"] == 2
+
+
+@pytest.mark.parametrize("record_failures", [False, True])
+def test_a_display_walk_refuses_a_result_that_is_not_a_frame(record_failures: bool) -> None:
+    policy = CollectPolicy.display(record_failures=record_failures)
+    if not record_failures:
+        with pytest.raises(TypeError, match="returned int; expected a Polars frame"):
+            walk_graph(_two_node_graph(), _builder(7), policy=policy, enforce_contracts=False)
+        return
+
+    walked = walk_graph(_two_node_graph(), _builder(7), policy=policy, enforce_contracts=False)
+
+    assert walked.errors["src"] == "Node 'src' returned int; expected a Polars frame."
+    assert walked.errors["child"].startswith("Upstream node(s) failed: src: ")
+
+
+def test_a_display_walk_refuses_a_bundle_frame_that_is_not_a_frame() -> None:
+    bundle = {"quotes": pl.LazyFrame({"x": [1]}), "broken": "not a frame"}
+
+    with pytest.raises(TypeError, match="frame 'broken' is not a Polars frame"):
+        walk_graph(
+            _two_node_graph(),
+            _builder(bundle),
+            policy=CollectPolicy.display(),
+            enforce_contracts=False,
+            target_node_id="src",
+        )
+
+
+def test_a_display_walk_refuses_a_projection_its_node_does_not_produce() -> None:
+    """The caller's demand, carried to a parent that lacks the column, fails loudly."""
+    graph = PipelineGraph(
+        nodes=[
+            _node("src", NodeType.DATA_INPUT),
+            _node("child", NodeType.POLARS, code="df = src.with_columns(b=pl.col('a') + 1)"),
+        ],
+        edges=[_edge("src", "child")],
+    )
+
+    def build(node: GraphNode, **kwargs: Any) -> tuple[str, Callable[..., Any], bool]:
+        if node.id == "src":
+            return node.id, lambda: pl.LazyFrame({"x": [1]}), True
+        return _build_node_fn(node, **kwargs)
+
+    with pytest.raises(ContractMismatchError, match="Eager projection references columns"):
+        walk_graph(
+            graph,
+            build,
+            policy=CollectPolicy.display(),
+            required_columns_by_node={"child": ["b"]},
+            enforce_contracts=False,
+        )
+
+
+def test_a_planned_sink_walk_stops_at_a_source_that_fails_to_build(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing source stops the walk while sources bind: nothing is captured first.
+
+    The captured source binds before the failing one, so a walk that held the
+    failure until the node's turn would capture it before reporting.
+    """
+    store = NodeSnapshotStore(project)
+    captured = _shaped_source_graph(project)
+    good = captured.nodes[0].model_copy(update={"id": "good"})
+    good.data.label = "good"
+    bad = _source(project, "bad", pl.DataFrame({"id": [0], "w": [1]}), code="df = df")
+    graph = PipelineGraph(
+        nodes=[
+            good,
+            bad,
+            _node("J", NodeType.POLARS, code="df = good.join(bad, on='id', how='left')"),
+            _node("T", NodeType.MODELLING),
+        ],
+        edges=[_edge("good", "J"), _edge("bad", "J"), _edge("J", "T")],
+        source_file=str(project / "main.py"),
+    )
+    context = _context(ExecutionProfile.TRAINING_PREP)
+    staged: list[str] = []
+    real_stage = NodeSnapshotStore.stage_node_output
+
+    def recording_stage(self: NodeSnapshotStore, identity: Any, **kwargs: Any) -> Any:
+        staged.append(identity.digest)
+        return real_stage(self, identity, **kwargs)
+
+    def failing(node: GraphNode, **kwargs: Any) -> tuple[str, Callable[..., Any], bool]:
+        name, fn, is_source = _build_node_fn(node, **kwargs)
+        if node.id != "bad":
+            return name, fn, is_source
+
+        def broken() -> pl.LazyFrame:
+            raise RuntimeError("the source cannot be read")
+
+        return name, broken, is_source
+
+    request = SeedPlanRequest(
+        graph=graph, target_node_id="T", source="live", profile=ExecutionProfile.TRAINING_PREP
+    )
+    with open_seed_plan(request, store=store, execution_context=context) as plan:
+        assert "good" in plan.decision.captures
+        monkeypatch.setattr(NodeSnapshotStore, "stage_node_output", recording_stage)
+        with pytest.raises(RuntimeError, match="the source cannot be read"):
+            walk_graph(
+                graph,
+                failing,
+                policy=CollectPolicy.sink(),
+                target_node_id="T",
+                execution_context=context,
+                prepare_inputs=False,
+                snapshot_plan=plan,
+            )
+
+    assert staged == []
+
+
+def test_a_walk_refuses_a_node_whose_parent_frame_is_missing() -> None:
+    """A defensive invariant: every parent is built or seeded before its children."""
+    walk = _Walk(
+        WalkRequest(graph=_two_node_graph(), build_node_fn=_builder(pl.LazyFrame({"x": [1]}))),
+        CollectPolicy.sink(),
+    )
+    walk.prepare()
+    walk._init_walk_state()
+
+    with pytest.raises(ValueError, match=r"Node 'child' is missing input\(s\) from: \['src'\]"):
+        walk._visit("child")
+
+
+def test_projecting_to_no_demand_keeps_the_frame() -> None:
+    frame = pl.LazyFrame({"x": [1]})
+
+    assert project_output(frame, None, node=_node("n", NodeType.POLARS)) is frame

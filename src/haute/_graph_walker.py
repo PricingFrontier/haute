@@ -438,9 +438,8 @@ class _Walk:
         """How many edges read each producer frame, counted by the selected source frame."""
         counts: dict[tuple[str, str | None], int] = {}
         for edge in self.graph_plan.relevant_edges:
-            if edge.source in self.node_map and edge.target in self.node_map:
-                key = (edge.source, edge.sourceHandle)
-                counts[key] = counts.get(key, 0) + 1
+            key = (edge.source, edge.sourceHandle)
+            counts[key] = counts.get(key, 0) + 1
         return counts
 
     # ------------------------------------------------------------------ run
