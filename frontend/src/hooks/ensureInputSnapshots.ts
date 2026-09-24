@@ -1,6 +1,5 @@
 import type { Node } from "@xyflow/react"
 import {
-  ApiError,
   buildInputCache,
   cancelInputCacheJob,
   getInputCacheJob,
@@ -162,27 +161,15 @@ function quoteInputSource(config: Record<string, unknown>): SnapshotSource {
 }
 
 /**
- * Start (or join) the build and return its job id.
+ * Start (or join) the server's choice of build and return its job id.
  *
- * The request itself is never aborted: once the server has admitted a job,
- * only its id can stop it, so an abort that arrives meanwhile is handled by
- * `waitForBuild`, which cancels the job it was handed.
+ * The server chooses how the snapshot is built. The request itself is never
+ * aborted: once the server has admitted a job, only its id can stop it, so an
+ * abort that arrives meanwhile is handled by `waitForBuild`, which cancels the
+ * job it was handed.
  */
 async function startBuild(source: SnapshotSource, refresh = false): Promise<string> {
-  const payload = { ...source, refresh }
-  try {
-    return (await buildInputCache({ ...payload, profile: "lazy_sink" as const })).job_id
-  } catch (caught) {
-    const detail = caught instanceof ApiError ? caught.detail ?? "" : ""
-    if (
-      caught instanceof ApiError &&
-      caught.status === 400 &&
-      detail.startsWith("snapshot_build_unsupported")
-    ) {
-      return (await buildInputCache({ ...payload, profile: "preview_eager" as const })).job_id
-    }
-    throw caught
-  }
+  return (await buildInputCache({ ...source, refresh })).job_id
 }
 
 /**

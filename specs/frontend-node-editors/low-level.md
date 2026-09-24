@@ -266,8 +266,8 @@ and a not-cached hint, while ready snapshots offer `Refresh Cache` with
 generation statistics and a clear action. Direct Parquet renders no cache
 control; a stored `read`-mode Parquet input is snapshot-backed and renders
 the cache control like any other snapshot input. Snapshot build classification is execution metadata and is not shown
-as technical diagnostic copy in the editor. Builds use `lazy_sink`, except admitted-eager formats use
-`preview_eager`, and refresh a ready snapshot. The adapter waits for jobs to a
+as technical diagnostic copy in the editor. A build request carries no profile (the
+server chooses how the snapshot is built) and refreshes a ready snapshot. The adapter waits for jobs to a
 terminal result through the shared `waitForJob`, reports each running status of that
 wait as the button's progress (so a build is polled once, not also by a progress
 timer), stops polling (leaving the build running) when it unmounts or its

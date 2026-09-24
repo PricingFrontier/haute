@@ -326,7 +326,7 @@ describe("client runtime contracts", () => {
 
   it("input-cache build rejects a malformed V1 response", async () => {
     mockFetch.mockReturnValue(jsonResponse({ schema_version: 2, job_id: "job", identity_digest: "digest", status: "running", joined: false }))
-    await expect(buildInputCache({ schema_version: 1, config: {}, refresh: false, profile: "lazy_sink" })).rejects.toThrow(/parseInputCacheBuildResponse/i)
+    await expect(buildInputCache({ schema_version: 1, config: {}, refresh: false })).rejects.toThrow(/parseInputCacheBuildResponse/i)
   })
 
   it("previewInputs asks which inputs a preview reads", async () => {

@@ -30,10 +30,10 @@ product decision.
 public contract errors, memory refusals and overruns, the `GitError`
 family; `_RequestIdMiddleware` answers anything unclaimed with
 `_INTERNAL_ERROR_DETAIL`), and the git, pipeline, files, Databricks,
-modelling and OUTPUT dry-run routes no longer catch `Exception` to log it
-and answer 500. Files owned by the optimiser and caching work were left
-alone: `routes/optimiser.py` still has five catch-log-500 blocks (one also
-cleans up an orphaned apply artifact first), `routes/json_cache.py` two, and
+modelling, OUTPUT dry-run and JSON-cache routes no longer catch `Exception`
+to log it and answer 500. The optimiser's files were left alone:
+`routes/optimiser.py` still has five catch-log-500 blocks (one also cleans
+up an orphaned apply artifact first), and
 `_optimiser_service._memory_limit_http_exception` is a second copy of the
 memory-limit mapping. Turning an `HTTPException` detail into a job failure
 record is still implemented twice, in `_optimiser_service._http_error_job_update`
@@ -47,15 +47,14 @@ jobs stop carrying HTTP types at all.
 
 **Acceptance:** No route contains a generic `except Exception` that only logs
 and returns the internal-error detail; `memory_limit_http_exception` is the
-only memory-limit mapping; the optimiser and JSON-cache status-code and
-sanitised-error tests pass unchanged.
+only memory-limit mapping; the optimiser status-code and sanitised-error tests
+pass unchanged.
 
 **Dependencies:** None; best taken with `API-R02` in the optimiser work.
 
 **Evidence:** `src/haute/routes/optimiser.py` (`apply_lambdas`,
 `run_frontier`, `select_frontier_point`, `save_result`,
-`_materialise_frontier_point_apply`); `src/haute/routes/json_cache.py`
-(`build_json_cache`, `infer_json_cache_schema`);
+`_materialise_frontier_point_apply`);
 `src/haute/routes/_optimiser_service.py::_memory_limit_http_exception`;
 `src/haute/routes/_optimiser_service.py::_http_error_job_update`;
 `src/haute/routes/_training_preparation.py::_http_failure_job_parts`.
