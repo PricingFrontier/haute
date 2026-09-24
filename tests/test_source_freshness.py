@@ -363,6 +363,10 @@ def _record_path(path: Path) -> Path:
     return _source_proof._proof_record_path(path.resolve())
 
 
+def _replace_record(record_path: Path, raw: bytes) -> None:
+    record_path.write_bytes(raw)
+
+
 def _record(path: Path) -> dict[str, Any]:
     return json.loads(_record_path(path).read_bytes())
 
@@ -459,7 +463,7 @@ def test_an_invalid_record_is_rejected_and_replaced(
                 "file_identity": [1, "0" * 32],
             }
         raw = json.dumps(record).encode("utf-8")
-    _record_path(path).write_bytes(raw)
+    _replace_record(_record_path(path), raw)
 
     clear_file_signatures()
 
