@@ -119,12 +119,18 @@ its quote-count scan on the request thread, and auto-range preparation's
 byte-budgeted chunk planning samples a bounded number of rows of the target
 plan before the job starts.
 
-**Plan:** First decide how an estimate pays for isolation: a spawn worker per
-estimate (several seconds of start-up on Windows, on a request the canvas
-makes while the user edits) or a warm interactive worker, as preview and trace
-use. Then run the estimate's execution and scan there, answering the same
-typed 400/507 contract, and move auto-range chunk planning into the auto-range
+**Decided (24 September 2026):** the estimate runs on the warm interactive
+worker pool that preview and trace use. A spawn worker per estimate would add
+several seconds of start-up on Windows to a request the canvas makes while the
+user edits, and `ROAD-WORKER-05` makes the warm pool the single worker
+primitive anyway.
+
+**Plan:** Add an estimate request to the interactive worker pool that runs
+the pipeline and the quote-count scan under the pool's memory limit and
+answers the same typed 400/507 contract; the route keeps only admission and
+response assembly. Move auto-range chunk planning into the auto-range spawn
 worker, which then reports the recorded `chunk_fallback` with its totals.
+Update the optimiser and background-jobs specifications first.
 
 **Acceptance:** No optimiser code path collects or sinks a pipeline frame in
 the server process; a memory-limited estimate answers the typed 507; the
@@ -134,6 +140,7 @@ estimate's single-scan cost contract still holds.
 background jobs; `ROAD-WORKER-04` remains the package for the solver itself.
 
 **Evidence:** `src/haute/routes/optimiser.py::_optimiser_input_metrics`;
+`src/haute/_interactive_workers.py::InteractiveWorkerPool`;
 `src/haute/routes/_optimiser_service.py::_prepare_frontier_auto_range`;
 `src/haute/routes/_optimiser_worker.py::frontier_auto_range_worker`;
 `tests/test_optimiser_routes_real_library.py`.

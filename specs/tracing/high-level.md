@@ -249,7 +249,21 @@ Out of scope (owned elsewhere, linked where relevant):
   because it guarantees byte-for-byte agreement with what the preview already
   computed and requires no changes to user-authored node code, at the cost of
   needing careful, node-type-aware matching logic (see the edge-join
-  provenance rules below).
+  provenance rules below). The choice was re-examined on 24 September 2026
+  against a row identity carried only where user code cannot see it (through
+  Haute-built nodes, or outside the frame for provably row- and
+  order-preserving nodes), and value matching was kept. Measured by tracing
+  clicked rows as the route does: the 15 bundled examples (82 traces, 283
+  lineage-node rows) resolved every row with no ambiguity diagnostic, and nine
+  synthetic pricing-shaped pipelines of 1,000 quotes each resolved every row
+  whenever the rows carried a unique key. Ambiguity arose only in two shapes:
+  keyless rows whose matched columns are exact duplicates after a step that
+  moves rows (sort, filter, `unique()` without a subset), and a traced node
+  above an aggregate, where a summary row has no single source row by design.
+  In the duplicate case every candidate is value-identical, so the omission
+  is conservative, never wrong. An injected identity cannot be invisible to
+  all-column selectors, `unique()` or schema-reading user code, so its cost
+  would buy almost no observable gain.
 - **Trace does not read the preview cache.** A truthful trace needs every
   head-framed ancestor materialised, while the HTTP preview route publishes
   target-only cache entries. The two shapes deliberately never share a key, so a

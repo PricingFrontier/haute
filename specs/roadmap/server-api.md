@@ -12,7 +12,8 @@ come from the [23 September 2026 codebase review](codebase-review-2026-09-23.md)
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| API-R01 | Planned | P2 | The optimiser and JSON-cache routes join the application exception handlers. |
+| API-R05 | Reverify | P3 | Concurrent broadcasts and disconnects never remove a live WebSocket client. |
+| API-R01 | Planned | P2 | The optimiser routes join the application exception handlers. |
 | API-R02 | Planned | P3 | Domain services raise domain errors; only routes speak HTTP. |
 | API-R03 | Planned | P2 | Every browser type and response parser is generated from the Pydantic models. |
 
@@ -20,8 +21,41 @@ come from the [23 September 2026 codebase review](codebase-review-2026-09-23.md)
 
 `API-R03` has the largest payoff: the hand-maintained contract files are the
 most-changed files in the repository. The application exception handlers
-from `API-R01` are in place; what remains of it sits in files owned by the
-optimiser and caching work and can land with `API-R02`.
+from `API-R01` are in place; what remains of it sits in the optimiser's route
+and service files and lands with the optimiser work, before `API-R02`.
+`API-R05` is an independent reproduction.
+
+### API-R05 — Broadcasts never drop a live client
+**Why:** `tests/test_server_concurrency.py::TestWsClientsConcurrentMutation::test_concurrent_broadcast_while_client_disconnects`
+fails intermittently in CI with "live client was accidentally removed"; it
+recurred on several runs on 24 September 2026 and passes on rerun. Two
+broadcasts on separate event loops race a disconnector over 50 mock clients.
+`broadcast` gives every send a hard `_WS_SEND_TIMEOUT_SECONDS` (1 s) timeout,
+discards and closes a client whose send times out, and coalesces concurrent
+sends to one client through the process-wide `_ws_send_inflight` and
+`_ws_send_pending` state. Either the 1 s hard timeout fires for a live client
+on a loaded runner, which a real server under load could also do to a slow
+browser, or the shared send state misbehaves when two loops send to the same
+client. Which one is not yet known.
+
+**Plan:** Reproduce the failure deterministically: control the clock or the
+send latency rather than relying on runner load, and record which path
+discarded the live client. If the timeout fires on a merely slow send, decide
+from the reproduction whether a live client may be dropped after one stall
+(the browser reconnects) and specify it; if the shared send state is wrong
+across loops, fix it under `_ws_send_state_lock`. In both cases make the test
+deterministic.
+
+**Acceptance:** The server-api specification states when a broadcast drops a
+client; the concurrency test reproduces the old failure deterministically
+before the fix and passes after it; the test no longer depends on runner
+load.
+
+**Dependencies:** None.
+
+**Evidence:** `src/haute/routes/_helpers.py::broadcast`;
+`src/haute/routes/_helpers.py::_WS_SEND_TIMEOUT_SECONDS`;
+`tests/test_server_concurrency.py`.
 
 ### API-R01 — Translate errors once at the application edge
 **Why:** The application exception handlers exist (`routes/_error_handlers.py`:
@@ -113,15 +147,18 @@ caller left and is deleted; the optimiser responses (solve, estimate, status,
 apply, save, MLflow log, frontier status, auto-range start and status, frontier
 select).
 
-**Remaining:** pipeline load and save, preview,
-trace and submodel responses (they carry node configs, so after `PCFG-R07`);
-recovery and repair; node data, cache, JSON cache and input cache (the
-converted Explore, banding and rating responses keep the node-data point and
-profile on their hand types until then); output write, destination and assemble
-dry run; and the shared execution-metrics parser, which the converted status
-responses still apply after their generated check (each group's validator
-carries its own copy of the metrics contract, about 13 KiB gzip; one shared
-execution-metrics validator module would remove both).
+**Remaining:** two sets. Responses that carry node configs or the editor
+document come after `PCFG-R07`: pipeline load and save, preview, trace,
+submodel, recovery and repair (`PipelineRepairApplyResponse.document` is a
+`PipelineEditorDocument`), and JSON-cache inference (its tables merge into the
+API Input config). The rest carry none and can go first: node data, cache,
+JSON-cache status and input cache (the converted Explore, banding and rating
+responses keep the node-data point and profile on their hand types until
+then); output write, destination and assemble dry run; and the shared
+execution-metrics parser, which the converted status responses still apply
+after their generated check (each group's validator carries its own copy of
+the metrics contract, about 13 KiB gzip; one shared execution-metrics
+validator module would remove both).
 
 **Acceptance:** Every response the client parses is validated by generated
 code; `guards.ts`, `trainGuards.ts` and `api/types.ts` contain no structural

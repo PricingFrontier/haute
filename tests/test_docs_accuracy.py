@@ -140,9 +140,11 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "background-jobs-api",
     "caching",
+    "deploy",
     "engineering-quality",
     "explore-eda",
     "frontend-shared",
+    "json-shredding",
     "mlflow-model-registry",
     "optimiser",
     "pipeline-config",
@@ -152,19 +154,8 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "tracing",
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
-    "mod-f00-engine-probes.md",
-    "mod-f05-release-check.md",
-    "mod-f06-gpu-probes.md",
     "codebase-review-2026-09-23.md",
-    "pipeline-cache-memory-design.md",
-    "pr-227-cache-evidence.md",
-    "pr-227-ci-implementation-evidence.md",
-    "pr-227-fable-5.1-review.md",
-    "pr-227-fable-reconciliation.md",
-    "pr-227-fable-review-request.md",
-    "pr-227-implementation-progress.md",
-    "pr-227-materialisation-evidence.md",
-    "pr-227-review.md",
+    "delivery-plan.md",
 )
 _COMPONENT_PACKAGE_HEADING = re.compile(
     r"^###\s+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b",

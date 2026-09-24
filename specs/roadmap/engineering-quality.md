@@ -12,14 +12,47 @@ These packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
+| ENGQ-R06 | Planned | P3 | Tests leave the source tree alone: no test writes into the package, and source walks cannot race another worker's bytecode cache. |
+| ENGQ-R04 | Planned | P3 | Coverage and documentation gates are pointed at risk and at user-facing documents. |
 | ENGQ-R01 | Planned | P3 | Production code that nothing calls, or only tests call, is removed. |
-| ENGQ-R04 | Decision | P3 | Coverage and documentation gates are pointed at risk and at user-facing documents. |
 | ENGQ-R05 | Planned | P3 | Tests are organised by component and behaviour, not by coverage campaign. |
 
 ## Planned improvements
 
-`ENGQ-R01` is an independent clean-up. `ENGQ-R05` is easier after
-`ENGQ-R04` has set the coverage rule the reorganised suite must meet.
+`ENGQ-R06` and `ENGQ-R01` are independent clean-ups; `ENGQ-R01` is cheapest
+after the larger refactors have deleted what they replace. `ENGQ-R05` comes
+after `ENGQ-R04` has set the coverage rule the reorganised suite must meet.
+
+### ENGQ-R06 — Tests leave the source tree alone
+**Why:** Two test-hygiene defects surfaced on 24 September 2026. An ignored
+MLflow store (`mlruns/`) appeared inside
+`src/haute/assistant/assets/examples/model_lifecycle/` after a local run, so
+some test opens an MLflow store rooted in the package tree; the write-sandbox
+lint did not catch it because MLflow's default `./mlruns` is relative to the
+working directory, not a spelled path. And a CI run on `main` failed
+`test_no_forbidden_tokens_in_src` with `FileNotFoundError` on
+`src/haute/__pycache__`: the test walks `src/haute` with `rglob("*.py")` while
+another xdist worker removes a bytecode cache directory. About fifteen test
+modules walk `src/` or `tests/` the same way.
+
+**Plan:** Find the test that points MLflow at the package tree (search for
+MLflow use after a `chdir` into packaged example assets, or run the assistant
+example tests with a sentinel that fails on a new `mlruns/` under `src/`) and
+give it a `tmp_path` tracking URI; extend the MLflow isolation fixture in
+`tests/conftest.py` so an unset tracking URI can never default into the
+working directory. Give the source-walking tests one helper that lists the
+tracked Python files (`git ls-files`, or a walk that prunes `__pycache__`), and
+find what deletes `src/haute/__pycache__` during a run.
+
+**Acceptance:** A full CI run leaves no untracked file under `src/`, checked by
+the repository-hygiene test; every test that walks source files uses the one
+helper; no test deletes a bytecode cache under `src/`.
+
+**Dependencies:** None.
+
+**Evidence:** `tests/conftest.py`; `tests/test_submodel_port_names.py::test_no_forbidden_tokens_in_src`;
+`tests/test_repository_hygiene.py`; `tests/test_write_sandbox_lint.py`;
+`src/haute/assistant/assets/examples/model_lifecycle`.
 
 ### ENGQ-R01 — Remove unreferenced and test-only production code
 **Why:** Several production functions have no caller at all:
@@ -35,7 +68,8 @@ facade that re-exports private names mainly for tests. In the frontend, knip
 reports 8 unused files (including the banding and rating editor barrels), the
 whole `panels/editors/index.ts` barrel of 22 editors (consumers use the lazy
 editors), 33 unused exports, 91 unused exported types and an unlisted
-`@lezer/highlight` dependency.
+`@lezer/highlight` dependency. The API client's `checkHauteSession` has no
+production caller left.
 
 **Plan:** Delete the unreferenced code. For test-only functions, either move
 the tests to the production entry point the function was meant to serve or
@@ -66,7 +100,8 @@ consumer), so the reviewed allowlist covers it.
 `src/haute/_registry.py::get_exec`; `src/haute/routes/_train_service.py`;
 `frontend/src/panels/editors/index.ts`;
 `frontend/src/panels/editors/banding/index.ts`;
-`frontend/src/panels/editors/rating/index.ts`.
+`frontend/src/panels/editors/rating/index.ts`;
+`frontend/src/api/client.ts::checkHauteSession`.
 
 ### ENGQ-R04 — Point the gates at risk and at users
 **Why:** About 5,000 lines of tests, plus a 1,360-line coverage ledger, keep
@@ -77,22 +112,41 @@ covers a user-facing document. CI requires 100% statement and branch coverage of
 code in the execution-critical surface, which rewards line-shaped tests (see
 `ENGQ-R05`).
 
-**Plan:** Decide the coverage rule: keep mutation and critical-file ratchets
-for the safety-critical code (rating, deploy scoring, feature contracts,
-cache identity) and use risk-based review elsewhere, or keep the current
-gate with a reason. Decide which further documentation checks should cover
-`docs/`. Review whether each internal governance check still pays for
-its maintenance.
+**Decided (24 September 2026):** the 23 September 2026 codebase review's
+recommendation. The changed-code gate (100% statement and branch coverage of
+changed lines), the per-file critical floors and the mutation targets apply
+only to the safety-critical code, whose silent failure changes a computed
+price or corrupts persisted work: rating, deploy scoring, feature contracts,
+cache identity and snapshot publication. Everywhere else the changed-code
+report is shown in the job summary but does not fail the build, and coverage
+is judged in review against risk. The global coverage floor stays. The
+generated node-reference tables and `mkdocs build --strict` are the
+user-facing documentation checks. An internal governance check stays only
+if it guards something a user or a later change relies on.
+
+**Plan:** State the rule and the safety-critical module list in the
+engineering-quality specification. Rewrite
+`[tool.haute.changed_coverage].paths` and the critical-coverage file list to
+that set (the changed-code list still names the deleted
+`_dataframe_execution_cache.py`), narrow the mutation target plan to it, and
+make `check_changed_coverage.py` report without failing for other paths.
+Review `test_docs_accuracy.py`, `test_workflow_coverage.py` with its ledger,
+`test_test_debt.py` and the corpus inventory against the retention rule, and
+record in the specification which checks stay and why; delete the rest.
 
 **Acceptance:** The engineering-quality specification states the coverage
-rule and which documentation checks cover user-facing documents; CI enforces
-it.
+rule, the safety-critical list and which documentation checks cover
+user-facing documents; CI enforces exactly that; each internal governance
+check still in the suite has a recorded reason.
 
 **Dependencies:** None.
 
 **Evidence:** `tests/test_docs_accuracy.py`; `tests/test_workflow_coverage.py`;
 `tests/workflow_coverage.toml`; `tests/test_test_debt.py`;
-`scripts/check_changed_coverage.py`; `scripts/spec_corpus_inventory.py`.
+`scripts/check_changed_coverage.py`; `scripts/check_critical_coverage.py`;
+`scripts/run_mutation_suite.py`; `scripts/spec_corpus_inventory.py`;
+`pyproject.toml` (`[tool.haute.changed_coverage]`,
+`[tool.haute.critical_coverage]`); `.github/workflows/ci.yml`.
 
 ### ENGQ-R05 — Organise tests by behaviour
 **Why:** Backend tests total 421,000 lines, 2.3 times the source they test;

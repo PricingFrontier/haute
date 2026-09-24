@@ -4,53 +4,55 @@
 
 Row correlation and trace assembly for the "why is this cell this value"
 feature. Current behaviour is specified in
-[the tracing specification](../tracing/high-level.md). These packages come
-from the [23 September 2026 codebase review](codebase-review-2026-09-23.md).
+[the tracing specification](../tracing/high-level.md), which also records why
+correlation stays value matching rather than a carried row identity.
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| TRACE-R01 | Decision | P3 | Trace rows are correlated by a row identity wherever it can be carried without user code seeing it. |
+| TRACE-R03 | Planned | P3 | A step whose candidate rows are identical in every column shows their values as one of N identical rows instead of a trace gap, without choosing a physical row. |
 
 ## Planned improvements
 
-### TRACE-R01 — Row identity for trace executions
-**Why:** Trace matches rows across nodes after the fact by value, because the
-design rejects injecting a row id. That choice costs `_trace_correlation.py`
-(2,355 lines): a row-scope resolver, carried-value proofs, ambiguity
-diagnostics and edge-join suffix provenance. Trace now re-executes under its
-own plan (the first trace after a preview is cold by specification), so an
-extra column would not have to match a cached preview frame.
+### TRACE-R03 — Identical candidate rows are not a trace gap
+**Why:** When value matching finds several parent rows for one child row,
+`_find_matching_row` records `duplicate_exact_match` and the step becomes a
+trace gap ("One upstream row could not be identified unambiguously").
+The 24 September 2026 measurement in the tracing specification found this is
+the only ambiguity outside aggregates, and in every measured case the
+candidate rows were value-identical. The
+trace then hides a row whose values it knows exactly. It must not pretend to
+know which physical row it is, though: `_match_parent_row` trusts a parent row
+at the child's position on order-preserving paths, and a projection that
+drops a distinguishing column can make two different source rows identical
+downstream. Choosing one candidate's position would attach whichever source
+row sits there.
 
-An injected column is not invisible, though. User code receives the frames
-themselves, so a row-id column changes the result of all-column selectors
-(`pl.all()`, `pl.sum_horizontal(pl.all())`, dtype selectors), makes a
-`unique()` without a subset keep every row, and alters any code that
-inspects the schema or column count. Dropping the column at the output cannot
-undo a value it has already changed, and the tracing specification requires
-trace to be a pure observation layer that never modifies pipeline execution
-or its outputs.
+**Plan:** When an exact match is ambiguous, test whether the candidate rows
+are identical in every column of the parent frame, not only in the shared
+columns the match used. If they are, the step shows those values with an
+informational diagnostic carrying the candidate count, and its position stays
+unresolved: correlation above it continues only by value matching from those
+values, and any step that would need the unresolved position (the positional
+fast path, head alignment) records the ambiguity exactly as today. The trace
+panel and the trace export show the step with "one of N identical rows". A
+relaxed-match ambiguity, or candidates that differ in any column, stay a gap
+as today. Specify the rule in the tracing low-level specification first.
 
-**Plan:** Measure how often value matching is ambiguous or unproven on
-representative pipelines. Then decide whether, and where, trace runs carry an
-internal row identity. The decision must say how the identity stays invisible
-to user code: for example, carry it only through node types Haute builds
-itself (joins, filters it generates, banding and rating steps) and keep value
-matching across user-code nodes, or attach the identity outside the frame
-where the node is provably row- and order-preserving. Value matching remains
-across aggregations and row-expanding steps either way.
+**Acceptance:** Tracing a keyless pipeline through `unique()` without a
+subset, a sort on a non-unique column and a filter shows the duplicated step
+labelled one of N identical rows instead of a gap; two different source rows
+made identical by a projection that drops a column and then multiplied by an
+order-preserving left join show the identical step, while the source step
+stays ambiguous rather than naming one source row; candidates that differ in
+a parent column still produce the `duplicate_exact_match` gap; relaxed
+ambiguity is unchanged; the export carries the same label.
 
-**Acceptance:** The tracing specification records the decision and its
-measurement; if adopted, correlation through the covered node types uses the
-row identity and the corresponding value-matching code is removed; a fixture
-set including all-column selectors, `unique()` without a subset and
-schema-inspecting user code produces outputs identical to an untraced run.
+**Dependencies:** None.
 
-**Dependencies:** None. Every trace execution is a display walk of the graph
-walker (`src/haute/_graph_walker.py`), which is where a trace-only execution
-policy would live.
-
-**Evidence:** `src/haute/_trace_correlation.py::RowScopeResolver`;
-`src/haute/trace.py::execute_trace`; `src/haute/_user_exec.py::_exec_user_code`;
-`specs/tracing/high-level.md`; `tests/test_trace_integration.py`.
+**Evidence:** `src/haute/_trace_correlation.py::_find_matching_row`;
+`src/haute/_trace_correlation.py::_match_parent_row`;
+`src/haute/_trace_correlation.py::_record_ambiguous_row_match`;
+`frontend/src/panels/TracePanel.tsx::omissionSummary`;
+`frontend/src/trace/traceExport.ts`; `specs/tracing/low-level.md`.
