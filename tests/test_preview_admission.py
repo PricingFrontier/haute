@@ -70,6 +70,18 @@ def _joined(project: Path, policies: tuple[NodeType, dict[str, Any]]) -> Pipelin
     )
 
 
+_ID_TABLE: dict[str, Any] = {
+    "tables": [
+        {
+            "label": "root",
+            "path": "$[:]",
+            "emit": True,
+            "columns": [{"name": "id", "path": "$[:].id", "type": "int", "selected": True}],
+        }
+    ]
+}
+
+
 def _csv_api_input(project: Path, **declared: Any) -> tuple[NodeType, dict[str, Any]]:
     return NodeType.API_INPUT, {"path": str(project / "policies.csv"), **declared}
 
@@ -156,14 +168,16 @@ def test_preview_inputs_of_an_unadmitted_lineage_are_every_input_it_reads(
     graph = _graph(
         project,
         [
-            ("quotes", NodeType.API_INPUT, {"path": str(project / "quotes.json")}),
+            ("quotes", NodeType.API_INPUT, {"path": str(project / "quotes.json"), **_ID_TABLE}),
+            ("untabled", NodeType.API_INPUT, {"path": str(project / "quotes.json")}),
             ("policies", *_csv_api_input(project)),
             ("snap", *_csv_data_input(project)),
-            ("J", NodeType.POLARS, _code("df = pl.concat([quotes, policies, snap])")),
+            ("J", NodeType.POLARS, _code("df = pl.concat([quotes, untabled, policies, snap])")),
         ],
-        [("quotes", "J"), ("policies", "J"), ("snap", "J")],
+        [("quotes", "J"), ("untabled", "J"), ("policies", "J"), ("snap", "J")],
     )
     assert preview_lineage_admitted(graph, "J", source="live") is False
-    # Structured API inputs and snapshot-backed Data Inputs; a flat-file API
-    # input has nothing to prepare.
+    # Structured API inputs (their tables are input snapshots) and
+    # snapshot-backed Data Inputs; a flat-file API input, or a structured one
+    # with no table schema, has nothing to prepare.
     assert preview_input_node_ids(graph, "J", source="live") == ("quotes", "snap")
