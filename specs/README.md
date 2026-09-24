@@ -141,8 +141,8 @@ The system has three tiers:
   generic `container` target builds and pushes a FastAPI scoring image but deliberately does not
   choose a hosting platform. Azure Container Apps, AWS ECS, and GCP Cloud Run currently validate,
   build, and push that image, then fail loudly before service update because their SDK adapters are
-  not implemented. SageMaker and Azure ML remain scaffold-visible planned targets and are rejected
-  by deploy. See [deploy](deploy/high-level.md).
+  not implemented; `haute init` labels them build and push only. SageMaker and Azure ML are named
+  future targets that `haute init` does not offer and deploy rejects. See [deploy](deploy/high-level.md).
 
 **One authored pipeline, one derived deploy graph.** Authors maintain one pipeline. Deployment
 derives a scoring-only graph from it by retaining the selected output's ancestors and collapsing

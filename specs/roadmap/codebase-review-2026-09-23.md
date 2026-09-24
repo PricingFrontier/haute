@@ -335,7 +335,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | Finding | Package |
 |---|---|
 | §1.1 Global Polars-config lock | `EXEC-R01` ([execution engine](execution-engine.md)) |
-| §1.2 Deploy omits `utility/` | `DEP-R01` ([deploy](deploy.md)) |
+| §1.2 Deploy omits `utility/` | `DEP-R01` (deploy, delivered; its roadmap file is retired) |
 | §1.3 User docs describe removed nodes | `BUILD-R01` (build and distribution, delivered; its roadmap file is retired) |
 | §1.4 Project-root resolvers | `PCFG-R04` ([pipeline config](pipeline-config.md)) |
 | §1.5 Silent config-key drop | `PCFG-R05` ([pipeline config](pipeline-config.md)) |
@@ -360,7 +360,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §3.1 Two stores, three freshness proofs, hand-rolled LRUs | `CACHE-S08` and `CACHE-S24` ([caching](caching.md)) |
 | §3.1 Graph traversal ×5 | `EXEC-R08` ([execution engine](execution-engine.md)) |
 | §3.1 Legacy modelling check ×2 | `PCFG-R06` ([pipeline config](pipeline-config.md)) |
-| §3.1 Git outside the chokepoint | `DEP-R04` ([deploy](deploy.md)) |
+| §3.1 Git outside the chokepoint | `DEP-R04` (deploy, delivered; its roadmap file is retired) |
 | §3.2 Polling | `FSH-R01` ([frontend shared](frontend-shared.md)) |
 | §3.2 Error, format, debounce, modal and table helpers | `FSH-R02` ([frontend shared](frontend-shared.md)) |
 | §3.2 Editor clones and the read-only dispatcher | `FNE-R01` ([frontend node editors](frontend-node-editors.md)) |
@@ -381,14 +381,14 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §4.10 Node registry | `PCFG-R09` ([pipeline config](pipeline-config.md)) |
 | §4.10 `ExecutionContext` size | `EXEC-R07` ([execution engine](execution-engine.md)) |
 | §4.10 Cache identity framework | `CACHE-S25` ([caching](caching.md)) |
-| §4.10 Scaffolding for unimplemented targets | `DEP-R03` ([deploy](deploy.md)) |
+| §4.10 Scaffolding for unimplemented targets | `DEP-R03` (deploy, delivered; its roadmap file is retired) |
 | §4.10 No automatic retention | `CACHE-S26` ([caching](caching.md)) |
 | §4.10 Process-global library state | `EXEC-R01` ([execution engine](execution-engine.md)), `MLF-R02` ([MLflow model registry](mlflow-model-registry.md)) |
 | §5.1 Generated browser contract | `API-R03` ([server API](server-api.md)) |
 | §5.2 Exception handlers | `API-R01` ([server API](server-api.md)) |
 | §5.3 Process-memory library | `EXEC-R06` ([execution engine](execution-engine.md)) |
 | §5.4 Typed node configs | `PCFG-R07` ([pipeline config](pipeline-config.md)) |
-| §5.5 Slim scoring runtime | `DEP-R02` ([deploy](deploy.md)) |
+| §5.5 Slim scoring runtime | `DEP-R02` (deploy, delivered; its roadmap file is retired) |
 | §6 Canonical-only policy versus the code | `PCFG-R06` ([pipeline config](pipeline-config.md)) |
 | §6 Specification drift | `ENGQ-R03` ([engineering quality](engineering-quality.md)), plus `CACHE-S23`, `CODEGEN-R01` and `PCFG-R04` for their own statements |
 | §6 Governance pointed inward | `ENGQ-R04` ([engineering quality](engineering-quality.md)) |

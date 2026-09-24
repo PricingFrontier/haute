@@ -142,7 +142,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "assistant",
     "background-jobs-api",
     "caching",
-    "deploy",
     "engineering-quality",
     "execution-engine",
     "explore-eda",

@@ -664,12 +664,14 @@ def handle_init(config: InitConfig) -> None:
             "azure-container-apps",
             "aws-ecs",
             "gcp-run",
-            "sagemaker",
-            "azure-ml",
         ]
     ),
     default="databricks",
-    help="Deploy target (default: databricks).",
+    help=(
+        "Deploy target (default: databricks). azure-container-apps, aws-ecs and gcp-run "
+        "are build and push only: deploy builds the image and pushes it when a registry "
+        "is configured, but does not update the service yet."
+    ),
 )
 @click.option(
     "--ci",
@@ -694,7 +696,7 @@ def init(target: str, ci: str, force: bool) -> None:
     Examples:
       haute init                                  # databricks + github
       haute init --target container --ci none      # container, no CI
-      haute init --target sagemaker --ci github   # AWS + github
+      haute init --target aws-ecs --ci github     # AWS ECS (build and push only)
       haute init --force                          # overwrite existing scaffold
     """
     config = InitConfig(target=target, ci=ci, force=force)

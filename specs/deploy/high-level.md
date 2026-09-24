@@ -240,9 +240,12 @@ approving it.
   Container Apps, Cloud Run, Kubernetes, a VM, a laptop) instead of being tied to one
   platform's compute pricing — and it lets the implemented container-platform targets
   share one build instead of requiring a bespoke packaging pipeline per platform.
-  SageMaker and Azure ML (`sagemaker`, `azure-ml`) are currently only planned target
-  names: `_validate_target` raises `NotImplementedError` before resolution and makes no
-  promise about their eventual packaging design. Databricks remains
+  SageMaker and Azure ML (`sagemaker`, `azure-ml`) are named future targets only:
+  `haute init` does not offer them, and a `haute.toml` naming one is rejected by
+  `_validate_target` with `NotImplementedError` before resolution, which makes no promise
+  about their eventual packaging design. `haute init` labels Azure Container Apps, AWS
+  ECS and GCP Cloud Run build and push only in its generated files and `--target` help,
+  because their service update is not implemented. Databricks remains
   first-class for teams already on that platform, with a documented pandas bridge
   (`_model_code.py::HauteModel.predict`) as the one place the "Polars-native" rule is
   deliberately broken, because MLflow's `pyfunc` protocol requires it.
