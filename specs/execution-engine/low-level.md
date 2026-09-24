@@ -16,6 +16,7 @@
 | `src/haute/_execution_schemas.py` | Canonical Pydantic API DTOs for execution-strategy diagnostic boundaries, reasons, provenance, bounded collections, calibration, and the versioned diagnostic payload. `src/haute/schemas.py` re-exports the public models so existing imports remain stable. |
 | `src/haute/_column_lineage.py` | Fail-closed AST interpreter for linear Polars frame programs: exact forward schema transfer, per-input backward column demand, and a closed row-effect class (row-preserving, row-non-increasing, bounded-expansion, or unavailable) for the supported operation vocabulary, plus the audited per-namespace registry of `str`/`dt` expression methods whose bare string arguments Polars parses as literals and the audited `_LITERAL_ARGUMENT_EXPRESSION_METHODS` registry of plain-expression replacement methods whose arguments it parses as literals. |
 | `src/haute/_polars_operations.py` | The closed, receiver-aware registry of recognised Polars operations (`PolarsOperation` entries keyed by receiver, namespace, and name) with their class, recompute cost (`costly_to_recompute=`), slice transparency (`slice_transparent=`), evidence-backed policy, expansion, chunk-proof status, lineage support, and materialisation memory factor in basis points, plus the lookup helpers the chunk classifier, the lineage/cardinality analyser, and the planner derive their vocabularies from. Import-time validation rejects duplicate keys and class/policy/expansion combinations that contradict each other. |
+| `src/haute/_polars_call_shapes.py` | The literal call-shape rules shared by the chunk classifier, the row-semantics classifier and the planner's recompute analysis: `replace_call_has_literal_mapping`, `replace_strict_call_has_literal_mapping`, and the literal-scalar, literal-collection and `pl`-dtype helpers. |
 | `src/haute/_polars_selectors.py` | Literal Polars column selectors: `preamble_selector_aliases` (the preamble's `polars.selectors` import aliases), `literal_selector` (the closed grammar that rebuilds a selector written with literal arguments as the Polars object, accepted only when Polars reports a pure column selection), `selector_root` (the selector a computation starts from), and `expand_literal_selector` (expansion against a column set by Polars, refusing positional selectors and dtype-dependent selectors without every dtype). |
 | `src/haute/_execution_context.py` | `ExecutionContext`, the thin per-run composition, and its parts: `ExecutionCancellationToken`, `ExecutionMemoryBudget` (limits, RSS probe, enforcement and memory-pressure thresholds), `ExecutionLease` (cleanup precedence and the one admission release), `ExecutionMetricsRecorder`, `ExecutionEvidence` (aggregate counters, cancellation latency and estimate calibration), `ExecutionProvenance` (input preparation, snapshot seeds and captures, write outcomes and warnings, exchanged with workers) and `ExecutionTelemetry` (bounded opt-in terminal telemetry); plus `ExecutionProfile`. No class in the module exceeds 300 lines. Contexts created directly may be unbudgeted; admitted contexts carry the resolved limits. |
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
@@ -1733,7 +1734,10 @@ present a structural or schema result as execution evidence.
     constructions and not reported. A namespace receiver uses its `namespace` registry entry
     when registered, else is unregistered (cheap, not transparent). A non-frame receiver
     uses its `expr` entry when registered, else is unresolved when any argument is a proven
-    or may-frame, else unregistered (cheap, not transparent). A proven-frame receiver uses
+    or may-frame, else unregistered (cheap, not transparent). A `replace_strict` call counts as
+    registered only with a literal mapping (`_polars_call_shapes`, the rule the classifiers
+    use): a mapping or default taken from an expression or a name reads whole columns, so
+    the call is classified as an unregistered one is. A proven-frame receiver uses
     its `frame` entry when registered, else is an unregistered frame method (costly). A
     may-frame receiver checks all registered `frame` and `expr` entries for the name: costly
     if any is, transparent only if all are, full-input work if any is; if neither is
@@ -1815,7 +1819,9 @@ present a structural or schema result as execution evidence.
   cites a chunked-equals-full proof case and the inventory test keeps the allowlists and
   proofs one-to-one. `Expr.replace` is admitted only with a literal scalar mapping (a
   dict of scalars, or literal `old`/`new` sequences; the deprecated `default=` form is
-  rejected); `str`/`dt` methods are admitted only with literal arguments, and
+  rejected). `Expr.replace_strict` has no chunk proof and is never chunk-admitted; its
+  validator (the same literal forms, plus a literal `default=` and a Polars-dtype
+  `return_dtype=`) guards only the row-semantics mode; `str`/`dt` methods are admitted only with literal arguments, and
   `str.to_date`, `str.to_datetime`, `str.to_time`, and `str.strptime` additionally
   require an explicit non-empty literal `format`, because Polars otherwise infers the
   format from the data and two chunks can infer differently. Methods whose validator

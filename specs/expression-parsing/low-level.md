@@ -175,8 +175,11 @@ no alias or migration shim; direct test callers use the same current contract.
   the Polars operation registry classes as row-local, whether or not chunked execution has a
   proof for it (`pl.min_horizontal`, `pl.format` and a `when` chained on a conditional are
   admitted), and keeps the chunk classifier's argument guards (`fill_null(strategy=...)`,
-  format-inferring `str.to_date()`). An operation missing from the registry (`pow`,
-  `replace_strict`, `dt.total_days` today) is not proven and reports `not_row_local`.
+  format-inferring `str.to_date()`). An operation missing from the registry is not proven
+  and reports `not_row_local`. `pow`, `replace_strict` and `dt.total_days` are registered
+  row-local without a chunk proof; `replace_strict` is admitted only with `replace`'s
+  literal mapping forms (plus a literal `default=` and a dtype `return_dtype=`), and an
+  unmapped value without a default raises Polars' error, as it does for the column.
 - **A bare string in `then`/`otherwise` is a column**: Polars reads `.then("high")` as
   `pl.col("high")`, so an arm written that way reports `column_unavailable: high` unless the row
   has such a column.

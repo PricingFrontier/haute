@@ -23,6 +23,13 @@ from haute._execution_context import ExecutionProfile
 from haute._input_providers import resolve_data_input
 from haute._logging import get_logger
 from haute._node_apply import scenario_step_count
+from haute._polars_call_shapes import (
+    is_literal_collection,
+    is_literal_scalar,
+    is_pl_dtype_reference,
+    replace_call_has_literal_mapping,
+    replace_strict_call_has_literal_mapping,
+)
 from haute._polars_io_registry import (
     PolarsIoConfigError,
     validate_data_input_config,
@@ -493,12 +500,6 @@ _ROW_SEMANTICS_ADMISSION = _RowLocalAdmission(
 )
 
 
-def _is_literal_scalar(node: ast.expr) -> bool:
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.UAdd | ast.USub):
-        return isinstance(node.operand, ast.Constant)
-    return isinstance(node, ast.Constant)
-
-
 def _fill_null_call_is_chunk_local(call: ast.Call) -> bool:
     """Admit only the literal-value form: ``fill_null(<value>)`` / ``fill_null(value=...)``.
 
@@ -546,50 +547,7 @@ def _is_in_call_is_chunk_local(call: ast.Call) -> bool:
     collection = call.args[0]
     if not isinstance(collection, ast.List | ast.Tuple | ast.Set):
         return False
-    return all(_is_literal_scalar(element) for element in collection.elts)
-
-
-def _is_literal_collection(node: ast.expr) -> bool:
-    return isinstance(node, ast.List | ast.Tuple) and all(
-        _is_literal_scalar(element) for element in node.elts
-    )
-
-
-def _replace_call_is_chunk_local(call: ast.Call) -> bool:
-    """Admit only a literal mapping: ``replace({old: new})`` or ``replace(old=[...], new=[...])``.
-
-    A non-literal mapping (an expression or column) would let the replacement
-    table depend on data outside the current chunk, so only constants are
-    admitted.  The deprecated ``default=`` form is rejected: the pinned Polars
-    only tolerates it with a deprecation warning, and an upgrade would remove
-    it silently from under a proof.
-    """
-    keywords = {keyword.arg: keyword.value for keyword in call.keywords if keyword.arg is not None}
-    if len(keywords) != len(call.keywords):
-        return False
-    if call.args:
-        if len(call.args) != 1 or keywords:
-            return False
-        mapping = call.args[0]
-        return isinstance(mapping, ast.Dict) and all(
-            key is not None and _is_literal_scalar(key) and _is_literal_scalar(value)
-            for key, value in zip(mapping.keys, mapping.values, strict=True)
-        )
-    if set(keywords) != {"old", "new"}:
-        return False
-    old, new = keywords["old"], keywords["new"]
-    if not _is_literal_collection(old) or not _is_literal_collection(new):
-        return False
-    return len(old.elts) == len(new.elts)  # type: ignore[attr-defined]
-
-
-def _is_pl_dtype_reference(node: ast.expr) -> bool:
-    """``pl.Date`` and friends: a module-level dtype constant, not row data."""
-    return (
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "pl"
-    )
+    return all(is_literal_scalar(element) for element in collection.elts)
 
 
 def _namespace_call_args_are_literal(call: ast.Call) -> bool:
@@ -599,9 +557,9 @@ def _namespace_call_args_are_literal(call: ast.Call) -> bool:
     column reference into the argument, which is not provably chunk-local.
     """
     for argument in (*call.args, *(keyword.value for keyword in call.keywords)):
-        if _is_literal_scalar(argument) or _is_literal_collection(argument):
+        if is_literal_scalar(argument) or is_literal_collection(argument):
             continue
-        if _is_pl_dtype_reference(argument):
+        if is_pl_dtype_reference(argument):
             continue
         return False
     return True
@@ -665,7 +623,8 @@ _CHUNK_LOCAL_CALL_SHAPE_VALIDATORS: Mapping[str, Callable[[ast.Call], bool]] = M
         "cast": _cast_call_is_chunk_local,
         "fill_null": _fill_null_call_is_chunk_local,
         "is_in": _is_in_call_is_chunk_local,
-        "replace": _replace_call_is_chunk_local,
+        "replace": replace_call_has_literal_mapping,
+        "replace_strict": replace_strict_call_has_literal_mapping,
     }
 )
 

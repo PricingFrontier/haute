@@ -406,25 +406,18 @@ def test_supported_comparison_still_works() -> None:
 
 
 def test_replace_strict_incomplete_raises() -> None:
-    # replace_strict is not registered as row-local, so an incomplete mapping
-    # never reaches Polars for a single row: it is simply not computable.
+    # Polars computes the row, so an incomplete mapping raises exactly as it
+    # does for the column the pipeline ran.
     code = 'df = df.with_columns(pl.col("x").replace_strict({"a": 1}).alias("r"))'
-    result = evaluate_expression(code, "r", {"x": "b"})
-    assert result.result_value is None
-    assert result.not_computable_reason == "not_row_local: replace_strict"
+    with pytest.raises(pl.exceptions.InvalidOperationError, match="incomplete mapping"):
+        evaluate_expression(code, "r", {"x": "b"})
 
 
 def test_replace_strict_complete_and_default_ok() -> None:
-    # replace_strict is not registered as row-local at all, complete mapping
-    # or not, so it is never computed from a single row.
     code = 'df = df.with_columns(pl.col("x").replace_strict({"a": 1, "b": 2}).alias("r"))'
-    result = evaluate_expression(code, "r", {"x": "b"})
-    assert result.result_value is None
-    assert result.not_computable_reason == "not_row_local: replace_strict"
+    assert evaluate_expression(code, "r", {"x": "b"}).result_value == 2
     code_d = 'df = df.with_columns(pl.col("x").replace_strict({"a": 1}, default=0).alias("r"))'
-    result_d = evaluate_expression(code_d, "r", {"x": "z"})
-    assert result_d.result_value is None
-    assert result_d.not_computable_reason == "not_row_local: replace_strict"
+    assert evaluate_expression(code_d, "r", {"x": "z"}).result_value == 0
 
 
 def test_non_strict_replace_leaves_unmapped_unchanged() -> None:
@@ -443,12 +436,10 @@ def test_malformed_code_argument_raises() -> None:
 
 
 def test_replace_strict_failure_propagates_out_of_evaluate() -> None:
-    # replace_strict is not registered as row-local, so this is simply not
-    # computable — the pre-existing row_values["r"] must never be laundered in.
+    # The failure propagates: the pre-existing row_values["r"] is never laundered in.
     code = 'df = df.with_columns(pl.col("x").replace_strict({"a": 1}).alias("r"))'
-    result = evaluate_expression(code, "r", {"x": "b", "r": "LAUNDERED"})
-    assert result.result_value is None
-    assert result.not_computable_reason == "not_row_local: replace_strict"
+    with pytest.raises(pl.exceptions.InvalidOperationError, match="incomplete mapping"):
+        evaluate_expression(code, "r", {"x": "b", "r": "LAUNDERED"})
 
 
 # ---------------------------------------------------------------------------
