@@ -55,6 +55,7 @@
 | `frontend/src/components/NodeSearch.tsx` | Ctrl+K command palette: dynamically imported by `App.tsx` only while open, filters/windows the current React Flow node list, supports arrow-key navigation, and hands the chosen node to `App.tsx`, which selects it and asks `useActiveNodeReveal` to centre it at zoom 0.8 within the canvas area the inspector leaves (see [frontend-graph-canvas](../frontend-graph-canvas/high-level.md), Active node visibility). |
 | `frontend/src/components/BreadcrumbBar.tsx` | Pipeline → submodel navigation trail; renders nothing at stack depth ≤ 1. |
 | `frontend/src/hooks/useClickOutside.ts` | Attaches/detaches a `mousedown` listener that fires `onClose` when the click lands outside `ref`, only while `active`. |
+| `frontend/src/hooks/useDebouncedCallback.ts` | The one debounce for a scheduled call: `schedule(args, delayMs?)` runs the latest callback with the latest arguments once the delay passes without another schedule (a per-call delay overrides the hook's), `flush()` runs a waiting call now and returns its result, `cancel()` drops it, and `pending()` reads its arguments. On unmount a waiting call is dropped, or run when the owner asks for `onUnmount: "flush"`. The code editor's change commit, the utility panel's autosave and the canvas preview fetch use it; a delayed request inside an effect, whose cleanup clears the timer and aborts the request, stays in that effect. |
 | `frontend/src/hooks/useDragResize.ts` | Bottom-panel drag-to-resize: DOM-direct mutation while dragging, commits to React state on mouseup. |
 | `frontend/src/hooks/useJobPolling.ts` | Thin React adapter that keeps one `JobPollingController` configured, reconciles the current job record after commit, and disposes it on unmount. |
 | `frontend/src/hooks/jobPollingController.ts` | The single state authority for generic background polling: active poller identities, timers, abort controllers, interval ramp, progress throttling, replacement, terminal completion/error, and disposal. Also exports `waitForJob`, the only way to await one job's terminal status inside an operation, and its `JobWaitTimeoutError`. |
@@ -770,6 +771,8 @@ same Vitest config.
   stale save is rejected, the local edit survives until an explicit reload, and a fresh save
   succeeds afterwards.
 - **Generic hooks**: `frontend/src/__tests__/hooks/useClickOutside.test.ts` + `frontend/src/__tests__/hooks/useClickOutside.gaps.test.tsx`,
+  `frontend/src/hooks/__tests__/useDebouncedCallback.test.ts` (latest arguments and callback,
+  per-call delay, flush result, cancel, stable object, drop or flush on unmount),
   `frontend/src/__tests__/hooks/useDragResize.test.ts`, `frontend/src/__tests__/hooks/useJobPolling.test.ts` (root-level, generic
   poller mechanics) plus the colocated dedup/progress-throttle variants and
   `frontend/src/hooks/__tests__/jobPollingController.test.ts` (controller

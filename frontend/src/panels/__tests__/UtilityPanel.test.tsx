@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react"
 import UtilityPanel from "../UtilityPanel"
 
@@ -254,6 +254,36 @@ describe("UtilityPanel auto-save", () => {
     await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith("features", "x = 99\n"))
     // And the switch still completed — the new file was loaded after the flush.
     await waitFor(() => expect(mockReadFile).toHaveBeenCalledWith("helpers"))
+  })
+
+  it("persists a pending edit when the panel unmounts", async () => {
+    mockUpdateFile.mockResolvedValue({ status: "ok", name: "features.py", module: "features", import_line: "", error: null, error_line: null })
+
+    const { unmount } = render(<UtilityPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toBeInTheDocument())
+
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "x = 5\n" } })
+    expect(mockUpdateFile).not.toHaveBeenCalled()
+
+    unmount()
+    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith("features", "x = 5\n"))
+    expect(mockUpdateFile).toHaveBeenCalledTimes(1)
+  })
+
+  it("discards a pending edit when its file is deleted", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true)
+    onTestFinished(() => confirmSpy.mockRestore())
+    mockDeleteFile.mockResolvedValue({ status: "ok" })
+
+    render(<UtilityPanel {...defaultProps} />)
+    await waitFor(() => expect(screen.getByTestId("code-editor")).toBeInTheDocument())
+
+    fireEvent.change(screen.getByTestId("code-editor"), { target: { value: "x = 6\n" } })
+    fireEvent.click(screen.getByTitle("Delete features"))
+    await waitFor(() => expect(mockDeleteFile).toHaveBeenCalledWith("features"))
+
+    await act(async () => { vi.advanceTimersByTime(600) })
+    expect(mockUpdateFile).not.toHaveBeenCalled()
   })
 
   it("does not switch files when flushing a dirty draft fails", async () => {
