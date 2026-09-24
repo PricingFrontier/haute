@@ -42,10 +42,9 @@ class TestTrain:
     ) -> None:
         """The script runs in the CLI process, where input() reads the terminal:
         the server's accident guard does not apply to it."""
-        script = _write_training_script(tmp_path)
-        script.write_text(
-            "rows = int(input())\n" + script.read_text().replace("1000", "rows"),
-            encoding="utf-8",
+        default = _write_training_script(tmp_path).read_text()
+        script = _write_training_script(
+            tmp_path, body="rows = int(input())\n" + default.replace("1000", "rows")
         )
 
         result = runner.invoke(cli, ["train", str(script)], input="1234\n")
