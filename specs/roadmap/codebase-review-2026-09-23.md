@@ -382,7 +382,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §4.10 `ExecutionContext` size | `EXEC-R07` ([execution engine](execution-engine.md)) |
 | §4.10 Cache identity framework | `CACHE-S25` ([caching](caching.md)) |
 | §4.10 Scaffolding for unimplemented targets | `DEP-R03` ([deploy](deploy.md)) |
-| §4.10 No automatic retention | `CACHE-S26` ([caching](caching.md)) |
+| §4.10 No automatic retention | `CACHE-S26` (caching, delivered) |
 | §4.10 Process-global library state | `EXEC-R01` ([execution engine](execution-engine.md)), `MLF-R02` ([MLflow model registry](mlflow-model-registry.md)) |
 | §5.1 Generated browser contract | `API-R03` ([server API](server-api.md)) |
 | §5.2 Exception handlers | `API-R01` ([server API](server-api.md)) |

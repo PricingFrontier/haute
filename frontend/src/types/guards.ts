@@ -17,6 +17,7 @@ import type {
   CacheNodeEntry,
   CacheNodesResponse,
   CacheOwnerEntry,
+  CacheUsageResponse,
   DissolveSubmodelResponse,
   EditorIdentityBatchResponse,
   ExecutionAdmission,
@@ -2008,6 +2009,17 @@ export function parseCacheClearResponse(value: unknown): CacheClearResponse {
     schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"),
     cleared: parseArray(p, obj.cleared, "field `cleared`", (v, at) => expectNonBlankString(p, v, at)),
     freed_bytes: expectNonNegativeInteger(p, obj.freed_bytes, "field `freed_bytes`"),
+  }
+}
+
+export function parseCacheUsageResponse(value: unknown): CacheUsageResponse {
+  const p = "parseCacheUsageResponse"
+  const obj = expectPlainObject(p, value)
+  return {
+    schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"),
+    total_bytes: expectNonNegativeInteger(p, obj.total_bytes, "field `total_bytes`"),
+    automatic_bytes: expectNonNegativeInteger(p, obj.automatic_bytes, "field `automatic_bytes`"),
+    automatic_budget_bytes: expectNonNegativeInteger(p, obj.automatic_budget_bytes, "field `automatic_budget_bytes`"),
   }
 }
 

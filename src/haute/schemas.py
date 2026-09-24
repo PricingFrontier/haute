@@ -1522,6 +1522,21 @@ class CacheClearResponse(BaseModel):
     freed_bytes: int = Field(ge=0)
 
 
+class CacheUsageResponse(BaseModel):
+    """The snapshot store's size, and its automatic captures against their budget.
+
+    Only node-output captures no pin protects count toward the budget; input
+    snapshots and explicit builds are kept until the user clears them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    total_bytes: int = Field(ge=0)
+    automatic_bytes: int = Field(ge=0)
+    automatic_budget_bytes: int = Field(ge=0)
+
+
 class CacheNodesResponse(BaseModel):
     """Every node of the graph, and everything else the store holds."""
 

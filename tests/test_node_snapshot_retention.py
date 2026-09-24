@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import json
 import os
 import shutil
+import threading
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import polars as pl
 import pyarrow.parquet as pq
@@ -21,11 +26,14 @@ from haute._execution_context import ExecutionProfile
 from haute._hashing import content_hash
 from haute._node_config_recovery import _DISCRIMINANTS
 from haute._node_snapshots import (
+    AUTOMATIC_CAPTURE_BUDGET_CEILING_BYTES,
+    AUTOMATIC_CAPTURE_BUDGET_ENV,
     BOUNDED_SEMANTICS_CLASS,
     NodeSnapshotColumns,
     NodeSnapshotPublication,
     NodeSnapshotSlot,
     NodeSnapshotStore,
+    automatic_capture_budget,
     snapshot_read_classes,
     snapshot_write_class,
 )
@@ -107,6 +115,17 @@ def _published_id(store: NodeSnapshotStore, identity: SourceCacheIdentity, frame
         assert publication.outcome == "published"
         assert publication.generation is not None
         return publication.generation.generation_id
+
+
+def _current_dir(store: NodeSnapshotStore, identity: SourceCacheIdentity) -> Path:
+    latest = store.latest_generation(identity)
+    assert latest is not None
+    return latest.generation.directory
+
+
+def _last_used_at(store: NodeSnapshotStore, identity: SourceCacheIdentity, when: float) -> None:
+    """Set when a generation was last leased, which orders the budget's evictions."""
+    os.utime(_current_dir(store, identity) / "meta.json", (when, when))
 
 
 def test_write_and_read_class_mappings() -> None:
@@ -361,30 +380,290 @@ def test_retired_directories_are_swept_once_per_process(
     assert sweeps[0] == first.inputs_root
 
 
-def test_node_cache_keeps_datasets_until_explicit_clear(
+def test_automatic_captures_beyond_the_budget_evict_the_least_recently_leased_first(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("HAUTE_NODE_SNAPSHOT_MAX_BYTES", "1")
-    monkeypatch.setenv("HAUTE_NODE_SNAPSHOT_MAX_GENERATIONS", "1")
     store = NodeSnapshotStore(tmp_path)
-    identities = [_slot(tmp_path, name).identity("s1") for name in ("a", "b", "c")]
-    with _publish(store, identities[0], pl.DataFrame({"a": [0]}), explicit=True):
+    frame = pl.DataFrame({"a": [1]})
+    older, newer, latest = (_slot(tmp_path, name).identity("s1") for name in ("o", "n", "l"))
+    _published_id(store, older, frame)
+    _published_id(store, newer, frame)
+    now = time.time()
+    _last_used_at(store, older, now - 600)
+    _last_used_at(store, newer, now - 300)
+    older_dir = _current_dir(store, older)
+    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, str(2 * generation_bytes(older_dir)))
+
+    _published_id(store, latest, frame)
+
+    assert store.slot_status(_slot(tmp_path, "o"), "s1").state == "missing"
+    assert store.slot_status(_slot(tmp_path, "n"), "s1").state == "current"
+    assert store.slot_status(_slot(tmp_path, "l"), "s1").state == "current"
+    assert not older_dir.exists()
+
+
+def test_the_budget_never_evicts_a_pinned_leased_or_input_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, "1")
+    store = NodeSnapshotStore(tmp_path)
+    frame = pl.DataFrame({"a": [1]})
+    pinned, leased, first, second = (
+        _slot(tmp_path, name).identity("s1") for name in ("pinned", "leased", "first", "second")
+    )
+    _build_input_snapshot(store, _input_identity())
+    with _publish(store, pinned, frame, explicit=True):
         pass
-    _published_id(store, identities[1], pl.DataFrame({"a": [1]}))
-    with store.lease(identities[1]) as leased:
-        _published_id(store, identities[2], pl.DataFrame({"a": [2]}))
-        assert leased.lazy_frame.collect()["a"].to_list() == [1]
-    assert len(store.inventory().owners) == 3
-    for i, identity in enumerate(identities):
-        with store.lease(identity) as leased:
-            assert leased.lazy_frame.collect()["a"].to_list() == [i]
-    store.clear_identity(identities[1].digest)
-    assert store.latest_generation(identities[1]) is None
-    assert store.latest_generation(identities[0]) is not None
-    assert store.latest_generation(identities[2]) is not None
+    _published_id(store, leased, frame)
+
+    with store.lease(leased):
+        # Everything the budget counts is leased: the reader's, and the
+        # publisher's own lease on what it just published.
+        _published_id(store, first, frame)
+        assert store.latest_generation(leased) is not None
+        assert store.latest_generation(first) is not None
+    _published_id(store, second, frame)
+
+    assert store.latest_generation(leased) is None
+    assert store.latest_generation(first) is None
+    assert store.latest_generation(second) is not None
+    assert store.slot_status(_slot(tmp_path, "pinned"), "s1").state == "current"
+    with store.lease(_input_identity()) as generation:
+        assert generation.lazy_frame.collect()["x"].to_list() == [1, 2, 3]
 
 
-def test_publishing_keeps_other_nodes_until_explicit_clear(
+def test_an_explicit_build_triggers_no_eviction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = NodeSnapshotStore(tmp_path)
+    automatic = _slot(tmp_path, "automatic").identity("s1")
+    _published_id(store, automatic, pl.DataFrame({"a": [1]}))
+    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, "1")
+
+    with _publish(
+        store, _slot(tmp_path, "explicit").identity("s1"), pl.DataFrame({"a": [2]}), explicit=True
+    ):
+        pass
+
+    assert store.latest_generation(automatic) is not None
+
+
+def test_a_deferred_eviction_stays_indexed_and_a_later_budget_check_retires_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path)
+    identity = slot.identity("s1")
+    _published_id(store, identity, pl.DataFrame({"a": [1]}))
+    generation_dir = _current_dir(store, identity)
+    size = generation_bytes(generation_dir)
+    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, "1")
+
+    # A Windows handle still open inside the generation blocks the rename.
+    with monkeypatch.context() as blocked:
+        blocked.setattr(store, "_retire_generation_locked", lambda *_args: None)
+        assert store.enforce_automatic_budget() == 0
+    assert store.slot_status(slot, "s1").state == "missing"
+    assert generation_dir.is_dir()
+    assert (store.inputs_root / ".node-slots" / f"{slot.digest}.json").exists()
+
+    assert store.enforce_automatic_budget() == size
+
+    assert not generation_dir.exists()
+    assert not (store.inputs_root / ".node-slots" / f"{slot.digest}.json").exists()
+
+
+def _equal_captures(
+    store: NodeSnapshotStore, tmp_path: Path, names: str
+) -> tuple[list[SourceCacheIdentity], int]:
+    """Publish one equal-sized automatic capture per name, oldest first by last use."""
+    identities = [_slot(tmp_path, name).identity("s1") for name in names]
+    now = time.time()
+    for age, identity in enumerate(identities):
+        _published_id(store, identity, pl.DataFrame({"a": [1]}))
+        _last_used_at(store, identity, now - 600 + age)
+    return identities, generation_bytes(_current_dir(store, identities[0]))
+
+
+def test_two_budget_checks_at_once_evict_only_the_excess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = NodeSnapshotStore(tmp_path)
+    identities, size = _equal_captures(store, tmp_path, "abcd")
+    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, str(3 * size))
+    scan = store._scan_usage
+    first_scanned, second_scanned, release = (threading.Event() for _ in range(3))
+    scans = 0
+
+    def paused_scan() -> tuple[int, list[Any]]:
+        nonlocal scans
+        scans += 1
+        result = scan()
+        if scans == 1:
+            first_scanned.set()
+            assert release.wait(timeout=10)
+        else:
+            second_scanned.set()
+        return result
+
+    monkeypatch.setattr(store, "_scan_usage", paused_scan)
+    evicted: list[int] = []
+    first = threading.Thread(target=lambda: evicted.append(store.enforce_automatic_budget()))
+    second = threading.Thread(target=lambda: evicted.append(store.enforce_automatic_budget()))
+    first.start()
+    assert first_scanned.wait(timeout=10)
+    second.start()
+    # The second pass must not scan while the first holds what it scanned.
+    assert not second_scanned.wait(timeout=0.5)
+    release.set()
+    first.join(timeout=10)
+    second.join(timeout=10)
+
+    assert sorted(evicted) == [0, size]
+    assert [store.latest_generation(identity) is not None for identity in identities] == [
+        False,
+        True,
+        True,
+        True,
+    ]
+
+
+@pytest.mark.parametrize("change", ["clear", "pin"])
+@pytest.mark.parametrize("which", range(4))
+def test_a_capture_that_left_after_the_scan_is_accounted_before_anything_is_evicted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str, which: int
+) -> None:
+    """Whichever capture a Clear or a pin takes out of the total, the excess is already met."""
+    store = NodeSnapshotStore(tmp_path)
+    identities, size = _equal_captures(store, tmp_path, "abcd")
+    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, str(3 * size))
+    scan = store._scan_usage
+
+    def scan_then_change() -> tuple[int, list[Any]]:
+        result = scan()
+        if change == "clear":
+            store.clear(identities[which])
+        else:
+            store.pin(identities[which])
+        return result
+
+    monkeypatch.setattr(store, "_scan_usage", scan_then_change)
+
+    assert store.enforce_automatic_budget() == 0
+    kept = [store.latest_generation(identity) is not None for identity in identities]
+    assert kept == [change == "pin" or index != which for index in range(4)]
+
+
+def test_a_capture_leased_after_the_scan_is_passed_over_for_the_next_oldest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = NodeSnapshotStore(tmp_path)
+    identities, size = _equal_captures(store, tmp_path, "abcd")
+    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, str(3 * size))
+    scan = store._scan_usage
+
+    with contextlib.ExitStack() as held:
+
+        def scan_then_lease() -> tuple[int, list[Any]]:
+            result = scan()
+            held.enter_context(store.lease(identities[0]))
+            return result
+
+        monkeypatch.setattr(store, "_scan_usage", scan_then_lease)
+        assert store.enforce_automatic_budget() == size
+
+    kept = [store.latest_generation(identity) is not None for identity in identities]
+    assert kept == [True, False, True, True]
+
+
+def test_a_generation_the_budget_cannot_classify_is_counted_and_never_evicted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = NodeSnapshotStore(tmp_path)
+    slot = _slot(tmp_path)
+    identity = slot.identity("s1")
+    _published_id(store, identity, pl.DataFrame({"a": [1]}))
+    size = generation_bytes(_current_dir(store, identity))
+    (store.inputs_root / ".node-slots" / f"{slot.digest}.json").write_text("{", encoding="utf-8")
+    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, "1")
+
+    assert store.enforce_automatic_budget() == 0
+    usage = store.usage()
+
+    assert (usage.total_bytes, usage.automatic_bytes) == (size, 0)
+    assert (store.inputs_root / identity.digest / "current.json").exists()
+
+
+def test_usage_totals_the_store_and_counts_only_automatic_captures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, str(10**12))
+    store = NodeSnapshotStore(tmp_path)
+    _build_input_snapshot(store, _input_identity())
+    with _publish(
+        store, _slot(tmp_path, "pinned").identity("s1"), pl.DataFrame({"a": [1]}), explicit=True
+    ):
+        pass
+    automatic = _slot(tmp_path, "automatic").identity("s1")
+    _published_id(store, automatic, pl.DataFrame({"a": [1, 2]}))
+
+    usage = store.usage()
+
+    on_disk = sum(path.stat().st_size for path in store.inputs_root.rglob("part-*.parquet"))
+    assert usage.total_bytes == on_disk
+    assert usage.automatic_bytes == generation_bytes(_current_dir(store, automatic))
+    assert usage.automatic_budget_bytes == 10**12
+
+
+def test_the_default_budget_is_the_smaller_of_20_gib_and_a_tenth_of_free_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gib = 1024**3
+    monkeypatch.delenv(AUTOMATIC_CAPTURE_BUDGET_ENV, raising=False)
+    for free, expected in ((100 * gib, 10 * gib), (1024 * gib, 20 * gib)):
+        monkeypatch.setattr(
+            shutil, "disk_usage", lambda _path, free=free: SimpleNamespace(free=free)
+        )
+        assert automatic_capture_budget(tmp_path) == expected
+    assert AUTOMATIC_CAPTURE_BUDGET_CEILING_BYTES == 20 * gib
+
+    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, "12345")
+    assert automatic_capture_budget(tmp_path) == 12345
+    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, "0")
+    with pytest.raises(RuntimeError, match=AUTOMATIC_CAPTURE_BUDGET_ENV):
+        automatic_capture_budget(tmp_path)
+
+
+def test_a_store_fault_while_enforcing_the_budget_never_fails_the_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = NodeSnapshotStore(tmp_path)
+
+    def fail() -> int:
+        raise OSError("the disk went away")
+
+    monkeypatch.setattr(store, "enforce_automatic_budget", fail)
+    identity = _slot(tmp_path).identity("s1")
+
+    _published_id(store, identity, pl.DataFrame({"a": [1]}))
+
+    assert store.latest_generation(identity) is not None
+
+
+def test_a_misconfigured_budget_fails_the_capture_and_releases_its_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, "lots")
+    store = NodeSnapshotStore(tmp_path)
+    identity = _slot(tmp_path).identity("s1")
+
+    with pytest.raises(RuntimeError, match=AUTOMATIC_CAPTURE_BUDGET_ENV):
+        _publish(store, identity, pl.DataFrame({"a": [1]}))
+
+    assert not store._leases
+
+
+def test_publishing_within_the_budget_keeps_other_nodes(
     tmp_path: Path,
 ) -> None:
     store = NodeSnapshotStore(tmp_path)

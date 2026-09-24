@@ -98,8 +98,12 @@ cannot install the cap reuses a ready-but-stale generation with warning code
 (`cap_unavailable`). A superseded generation is itself retired only after
 `HAUTE_INPUT_CACHE_RETIRE_GRACE_SECONDS` (default 1800) have elapsed since the current
 generation was published; explicit clear bypasses this grace while preserving live
-cross-process leases. Input snapshots and node outputs have no byte/count storage limits
-or automatic eviction. Users inspect and clear stored datasets through the cache inventory.
+cross-process leases. Input snapshots and explicit builds have no byte/count storage limit
+and are never evicted. Automatic node-output captures share a byte budget: by default the
+smaller of 20 GiB and a tenth of free disk, configurable with
+`HAUTE_AUTOMATIC_CAPTURE_MAX_BYTES`. The least recently leased unpinned, unleased capture
+is evicted first ([IO layer](../io-layer/high-level.md)). The preview status bar shows the
+store's size; users inspect and clear stored datasets through the cache inventory.
 
 Studio also prepares structured Quote Inputs (JSON/JSONL/NDJSON/XML) before
 preview. It checks the node's tables against the current in-memory schema through

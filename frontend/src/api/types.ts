@@ -573,6 +573,14 @@ export interface CacheClearResponse {
   freed_bytes: number
 }
 
+/** The snapshot store's size; only automatic captures count toward the budget. */
+export interface CacheUsageResponse {
+  schema_version: 1
+  total_bytes: number
+  automatic_bytes: number
+  automatic_budget_bytes: number
+}
+
 export interface CacheNodesResponse {
   schema_version: 1
   source: string

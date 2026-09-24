@@ -1688,6 +1688,18 @@ describe("no request carries streaming_chunk_size", () => {
     expect(JSON.parse(mockFetch.mock.calls[4][1].body)).toEqual(source)
   })
 
+  it("reads the snapshot store's size with a GET and rejects a malformed reply", async () => {
+    const { fetchCacheUsage } = await import("../client")
+    const usage = { schema_version: 1, total_bytes: 2048, automatic_bytes: 1024, automatic_budget_bytes: 4096 }
+    mockFetch.mockReturnValueOnce(jsonResponse(usage))
+    await expect(fetchCacheUsage()).resolves.toEqual(usage)
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/cache/usage")
+    expect(mockFetch.mock.calls[0][1]?.method ?? "GET").toBe("GET")
+
+    mockFetch.mockReturnValueOnce(jsonResponse({ ...usage, automatic_bytes: -1 }))
+    await expect(fetchCacheUsage()).rejects.toThrow("automatic_bytes")
+  })
+
   it("sends the exact scoped node-save body and parses the authoritative document", async () => {
     const { saveNodeScoped } = await import("../client")
     mockFetch.mockReturnValueOnce(jsonResponse(makePipelineEditorDocument()))

@@ -44,7 +44,7 @@ on the same branch and are specified in
 [cache usage](../server-api/low-level.md#cache-usage) section, and
 [frontend shared](../frontend-shared/low-level.md#the-shared-data-cache).
 The byte and generation budgets that surface first reported have since been
-removed: stored data has no cache-specific limit, and the Pipeline settings
+removed: only automatic captures now have a budget, and the Pipeline settings
 pane lists it as a cached-data inventory with per-entry clearing. The
 review found no data-corruption defect and confirmed the chunked join against
 the native join on a lookup side whose hot key matched ten times the chunk
@@ -70,7 +70,6 @@ or where it will not hold at scale.
 | CACHE-S18 | Planned | P3 | Full joins are written with a bounded number of scans. Measured 24-Sep-2026: about 2 s over native at 10M × 10M rows, so not yet worth building. |
 | CACHE-S24 | Planned | P3 | The assistant's two hand-rolled LRUs move onto the shared cache primitive. |
 | CACHE-S25 | Planned | P3 | Cache identity hashes the whole canonical node config instead of classifying every field. |
-| CACHE-S26 | Decision | P3 | Stored snapshots and node outputs have a retention policy, or the absence of one is a stated product choice. |
 
 ## Planned improvements
 
@@ -82,7 +81,7 @@ whose refusals it would have shown are removed, and a failed build already
 reports its error through the shared job poller. `CACHE-S13` moved down on 20-Sep-2026 because measurement showed
 no preview near its timeout. The packages from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md)
-(`CACHE-S24` to `CACHE-S26`) sit outside that order: `CACHE-S24` goes first; `CACHE-S25` follows the
+(`CACHE-S24` and `CACHE-S25`) sit outside that order: `CACHE-S24` goes first; `CACHE-S25` follows the
 pipeline-config package `PCFG-R08`. Every full-frame write is now bounded, so what
 is left is measured against cost rather than shape. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
@@ -196,7 +195,7 @@ route, job lifecycle, response schema); [caching](../caching/low-level.md#seed-p
 [frontend shared](../frontend-shared/low-level.md#the-shared-data-cache).
 
 **Dependencies:** None. Capture capacity no longer limits it: stored data has
-no cache-specific budget.
+no budget that refuses a capture.
 
 **Evidence:** `src/haute/routes/pipeline.py` (`_preview_canonical_graph`,
 `_preview_timeout`); `src/haute/routes/_background_jobs.py`;
@@ -544,28 +543,3 @@ cache-identity tests are reduced to the remaining consumer contracts.
 `src/haute/_cache.py::_classify_config_fields`;
 `src/haute/_cache.py::validate_cache_config_field_classifications`;
 `tests/test_cache_identity_contract.py`.
-
-### CACHE-S26 — A retention policy for stored datasets
-**Why:** Input snapshots and node outputs have no byte or count limit and no
-automatic eviction; the former budgets were removed. Every admitted preview
-captures its joins and materialising operations at full data, so disk use
-grows with each wide pipeline a user previews, and only a manual clear in the
-cache inventory reclaims it.
-
-**Plan:** Decide whether unbounded retention is the product choice. If it is,
-say so in the IO-layer specification and show the store's size where users
-work, not only in the inventory pane. If it is not, specify a retention rule
-(for example, least-recently-leased automatic generations beyond a
-configurable size, never pinned or leased ones) and implement it.
-
-**Acceptance:** The IO-layer specification states the retention rule or the
-explicit absence of one, and the user can see the store's disk use without
-opening the cache inventory.
-
-**Dependencies:** None.
-
-**Owning specifications:** [IO layer](../io-layer/high-level.md);
-[caching](../caching/high-level.md).
-
-**Evidence:** `src/haute/_source_cache.py`; `src/haute/_node_snapshots.py`;
-`src/haute/routes/cache.py`.
