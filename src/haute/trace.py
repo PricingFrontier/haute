@@ -165,6 +165,12 @@ class TraceStep:
     # trace was seeded there instead of computing the node.
     snapshot_generation_id: str | None = None
 
+    # The same rows as one-row frames in the dtypes the pipeline gave them, for
+    # evaluating the step's formulas; ``None`` when the trace could not recover
+    # them. Not part of the serialised trace.
+    input_row: pl.DataFrame | None = field(default=None, repr=False, compare=False)
+    output_row: pl.DataFrame | None = field(default=None, repr=False, compare=False)
+
 
 @dataclass(frozen=True)
 class TraceOmission:
@@ -811,6 +817,7 @@ def _execute_trace_core(
 
     correlation_diagnostics: list[dict[str, Any]] = []
     unresolved_rows: dict[str, tuple[str, int]] = {}
+    row_positions: dict[str, int] = {}
     correlation_work = CorrelationWork()
     correlation_started = time.perf_counter()
 
@@ -831,6 +838,7 @@ def _execute_trace_core(
                 traced_column=column,
                 work=correlation_work,
                 row_scope=row_scope,
+                row_positions=row_positions,
             )
         else:
             # Target node execution failed — build partial rows from available nodes
@@ -840,6 +848,7 @@ def _execute_trace_core(
                 if isinstance(df, pl.DataFrame):
                     if row_index < len(df):
                         cached_rows[nid] = _jsonify_row(df.row(row_index, named=True))
+                        row_positions[nid] = row_index
                     else:
                         cached_rows[nid] = {}
                 else:
@@ -868,6 +877,12 @@ def _execute_trace_core(
         node_map=node_map,
         parents_of=parents_of,
         cached_rows=cached_rows,
+        typed_rows=_TypedRows(
+            frames=frames,
+            positions=row_positions,
+            source_frames_of=source_frames_of,
+            cached_rows=cached_rows,
+        ),
     )
     if snapshot_plan is not None:
         for step in steps:
@@ -877,7 +892,13 @@ def _execute_trace_core(
 
     # ---------- Enrich steps with expression/detail data ----------
     # A seeded step stays in the list — it is where downstream provenance
-    # ends — but enrichment never reconstructs its own calculation.
+    # ends — but enrichment never reconstructs its own calculation. Formulas
+    # are evaluated with the names the node code ran with: the compiled
+    # preamble (cached per process), then any caller-supplied names.
+    formula_names = {
+        **_compile_preamble(graph.preamble or "", pipeline_dir=_pipeline_dir(graph)),
+        **(preamble_ns or {}),
+    }
     _enrich_steps(
         steps,
         node_map,
@@ -885,7 +906,7 @@ def _execute_trace_core(
         parents_of,
         column,
         source,
-        preamble_ns=preamble_ns,
+        preamble_ns=formula_names,
         source_frames_of=source_frames_of,
         incoming_edges_of=incoming_edges_of,
         lineage_plans=_lineage_plans,
@@ -1210,6 +1231,68 @@ def _lookup_clicked_row(
     return row_scope.lookup(target_node_id, None, values)
 
 
+@dataclass(frozen=True)
+class _TypedRows:
+    """The correlated rows as one-row frames, sliced from the frames they were read in."""
+
+    frames: Mapping[str, Any]
+    positions: Mapping[str, int]
+    source_frames_of: Mapping[tuple[str, str], Sequence[str | None]]
+    cached_rows: Mapping[str, dict[str, Any] | None]
+
+    def row(self, node_id: str, *, consumer: str | None = None) -> pl.DataFrame | None:
+        """*node_id*'s traced row, as *consumer* reads it when that is a child.
+
+        A multi-frame node's row is the one frame its consumer reads. The slice is
+        used only when it is the very row the trace shows, so a frame that has
+        since changed can never supply another row's values.
+        """
+        frame = self.frames.get(node_id)
+        if isinstance(frame, dict):
+            handles = {
+                handle
+                for handle in self.source_frames_of.get((node_id, consumer or ""), ())
+                if handle is not None
+            }
+            frame = frame.get(next(iter(handles))) if len(handles) == 1 else None
+        position = self.positions.get(node_id)
+        shown = self.cached_rows.get(node_id)
+        if not isinstance(frame, pl.DataFrame) or position is None or shown is None:
+            return None
+        if not 0 <= position < frame.height:
+            return None
+        row = frame.slice(position, 1)
+        return row if _jsonify_row(row.row(0, named=True)) == shown else None
+
+
+def _typed_input_row(
+    typed_rows: _TypedRows,
+    node_id: str,
+    parent_ids: Sequence[str],
+    key_counts: Mapping[str, int],
+) -> pl.DataFrame | None:
+    """The parents' typed rows combined as ``input_values`` combines their values."""
+    parts: list[pl.DataFrame] = []
+    for parent_id in parent_ids:
+        if typed_rows.cached_rows.get(parent_id) is None:
+            continue
+        parent_row = typed_rows.row(parent_id, consumer=node_id)
+        if parent_row is None:
+            return None
+        parts.append(
+            parent_row.rename(
+                {
+                    name: f"{parent_id}.{name}"
+                    for name in parent_row.columns
+                    if key_counts.get(name, 0) > 1
+                }
+            )
+        )
+    return (
+        pl.DataFrame([column for part in parts for column in part.get_columns()]) if parts else None
+    )
+
+
 def _assemble_steps(
     *,
     order: list[str],
@@ -1217,11 +1300,13 @@ def _assemble_steps(
     node_map: dict[str, Any],
     parents_of: dict[str, list[str]],
     cached_rows: dict[str, dict[str, Any] | None],
+    typed_rows: _TypedRows | None = None,
 ) -> list[TraceStep]:
     """Build TraceStep entries from the post-hoc-correlated per-node rows.
 
     Skips nodes where row correlation produced ``None`` (better to omit
-    than to show wrong data).
+    than to show wrong data). With *typed_rows*, each step also carries its
+    rows as one-row frames for evaluating its formulas.
     """
     steps: list[TraceStep] = []
 
@@ -1240,6 +1325,7 @@ def _assemble_steps(
             continue
 
         input_row: dict[str, Any] | None
+        typed_input: pl.DataFrame | None = None
         if is_source:
             input_row = None
             provenance_aliases: dict[str, str] = {}
@@ -1271,6 +1357,8 @@ def _assemble_steps(
                         if key != k:
                             provenance_aliases[key] = k
                         input_row[key] = v
+                if typed_rows is not None:
+                    typed_input = _typed_input_row(typed_rows, nid, input_ids, key_counts)
             else:
                 input_row = {}
 
@@ -1289,6 +1377,8 @@ def _assemble_steps(
                 input_values=input_row if input_row is not None else {},
                 output_values=output_row,
                 topological_rank=topological_rank,
+                input_row=typed_input,
+                output_row=typed_rows.row(nid) if typed_rows is not None else None,
             )
         )
 

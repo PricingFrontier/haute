@@ -146,7 +146,19 @@ Out of scope (owned elsewhere, linked where relevant):
   an output of `200.0`). The same pre-assignment-value discipline applies to
   multi-entry expression chains: each chain entry evaluates in order against
   values fed forward from prior entries, seeded from pre-node input values rather
-  than the node's final output values.
+  than the node's final output values. More generally, every expression in one
+  `with_columns` call reads the frame from before that call, so a formula reads
+  any column its own call or a later one assigns at its earlier value — a sibling
+  (`x=cast(x), y=x * 2`) sees the input `x`, never the node's output.
+- **Formulas are computed by Polars on the traced row.** Each step carries its input and
+  output rows as one-row frames sliced from the frames the trace read them in — in the
+  pipeline's own dtypes, and only when the slice is exactly the row the trace shows. Its
+  formulas are evaluated on that row with the names the node code ran with (the compiled
+  preamble). A formula one row cannot determine (a window, aggregation, shift, or an operation
+  not known to be row-local) is never evaluated on one row. Where it assigns the step's column,
+  the step shows that column's value from the trace's own execution, which is the full-context
+  value, marked as coming from that execution. Anywhere else the value is shown as not computed
+  from this row, with the reason, and never replaced by the row's input value.
 - **A pass-through value borrows only a proven formula.** A target that passes the traced
   column through shows the formula of the step that provably supplied its value: the value is
   followed back through the single parent holding it with that same value to the step that

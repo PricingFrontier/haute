@@ -2,18 +2,16 @@
 
 ## Purpose
 
-This component covers two related, purely-static parsing jobs that both turn Python/Polars
-source text into structured, human-consumable data without ever executing user code to
-determine structure:
+This component covers two related parsing jobs that both turn Python/Polars source text into
+structured, human-consumable data without executing user code to determine structure:
 
 1. **Pipeline structural parsing** — strictly turning a valid Haute pipeline `.py` file (written
    against the `@pipeline.<type>` decorator API) into the canonical `PipelineGraph` consumed by
    execution, codegen, deploy, and strict APIs. Separate neutral textual extraction primitives
    support the editor-only recovery service without producing a canonical graph.
 2. **Polars expression parsing** — turning the Polars `with_columns()` expression code inside a
-   single pipeline node into a human-readable formula string, and optionally evaluating that
-   formula against concrete row values to reproduce Polars' computed result for the trace/debug
-   UI.
+   single pipeline node into a human-readable formula string, and optionally having Polars
+   compute that formula's value on one traced row for the trace/debug UI.
 
 Both exist because the GUI, trace viewer, and codegen round-trip all need a faithful, structural
 understanding of user-authored pipeline code without actually running it (structural parsing) or
@@ -30,8 +28,8 @@ In scope:
   hierarchically (collapsed occurrence nodes) or flattened.
 - Polars `with_columns()`/`select()` expression AST → human-readable formula text, referenced
   columns, and literal constants.
-- Substituting concrete row values into a parsed formula and computing a concrete result that
-  mirrors Polars' runtime semantics (null propagation, Kleene logic, overflow, rounding, etc.).
+- Substituting concrete row values into a parsed formula, and having Polars compute its result on
+  the traced row wherever one row determines it.
 - Walking backward through same-node `with_columns()` calls to build a column's dependency chain.
 
 Out of scope (owned by neighbouring components, cross-linked below):
@@ -48,9 +46,9 @@ Out of scope (owned by neighbouring components, cross-linked below):
 - Project-root resolution and config file I/O (`_project.py`, `_config_io.py`) —
   [pipeline-config](../pipeline-config/high-level.md).
 - Sandboxed execution of user code at runtime (`_sandbox.py`) —
-  [sandbox-security](../sandbox-security/high-level.md). Expression evaluation in this component
-  never uses `eval`/`exec`; it is a hand-written AST interpreter over a constrained grammar, not a
-  sandboxed general-purpose executor.
+  [sandbox-security](../sandbox-security/high-level.md). Expression evaluation builds the located
+  expression through that component's code validator and restricted globals, the boundary node
+  code itself runs under, and lets Polars evaluate it.
 
 ## Behaviour
 
@@ -115,26 +113,30 @@ Out of scope (owned by neighbouring components, cross-linked below):
   UDFs, values assigned inside `if`/`for`/`try`/`with`/`match`, or anything that fails to parse —
   becomes an `"opaque"` result carrying the original source text, which is the honest "could not
   understand this" signal rather than a guessed value.
-- `evaluate_expression(code, target_column, row_values, ...)` additionally substitutes concrete
-  column values into the formula text and computes a concrete result by walking the AST with a
-  hand-written interpreter for a constrained Polars subset, tuned to Polars' runtime semantics
-  rather than Python's where implemented: null
-  propagates through arithmetic and comparisons; `&`/`|` use Kleene three-valued logic when either
-  side is boolean or both are null; true division by zero yields `±inf`/`nan` for both int and
-  float operands (Polars promotes to float); integer `//` and `%` by zero yield `null`, float `%`
-  yields `nan`; an integer result outside the signed-64-bit range is
-  reported as uncomputable (`None`) rather than a wrong wraparound value; `.round()` matches
-  Polars' float-scale-then-half-to-even rounding, not Python's decimal-accurate `round()`; a
-  negative base raised to a non-integer float exponent is `NaN`, matching Polars' float domain.
-  Unsupported AST nodes and methods return `None`; only explicitly enumerated single-row
-  identity operations (`alias`, `cast`, `over`, `shift`, `diff`, and listed aggregations)
-  return the receiver value. Several malformed-call guards also return `None` or ignore unknown
-  arguments rather than reproducing Polars' exception. For supported operations, an internal
-  evaluator failure **propagates**
-  rather than being swallowed — see Failure model.
+- `evaluate_expression(code, target_column, row_values, ..., row=None)` additionally
+  substitutes concrete column values into the formula text and has **Polars** compute the result
+  on the traced row. `row` is that row as a one-row frame in the dtypes the pipeline gave it; the
+  trace always supplies it. Without it the row is built from `row_values`, which must then be
+  native Python values. The same-node names the expression uses are resolved, literal preamble
+  constants are inlined, and the expression is built through the sandbox's validator and
+  restricted globals with the preamble's names. Polars' own semantics apply throughout (null
+  propagation, Kleene logic, division by zero, integer wraparound, rounding), because Polars
+  computes the value.
+- **One row determines the value only when the expression is row-local.** An expression is
+  computed on the row only when the row-locality classifier, in its row-semantics mode, proves
+  that every operation in it is registered row-local. A window, aggregation, shift, rank, diff,
+  cumulative or unregistered operation would show a value the pipeline never produced if
+  evaluated on one row. So such a result stays `None`, and `not_computable_reason` names why:
+  `not_row_local: <operator>`, `unresolved_name: <name>`, `column_unavailable: <column>`,
+  `traced_row_unavailable` (the trace could not recover the typed row), or
+  `expression_not_located`. Where one row cannot compute the formula that assigns a step's
+  column, the trace shows that column's value from its own execution — the full-context value —
+  marked `result_source: "trace_execution"`; see [tracing](../tracing/high-level.md).
 - For `pl.when()/.then()/.otherwise()` conditionals, evaluation additionally reports which branch
   was actually taken (and, for nested conditionals, which branch was taken at each inner level),
-  so the trace UI can highlight the live branch and dim the others.
+  so the trace UI can highlight the live branch and dim the others. Each condition is evaluated
+  by Polars on the row in source order; when a condition is not computable from one row, the
+  branch is left unreported rather than guessed.
 - `parse_expression_chain(code, target_column)` walks backward through the same node's
   `with_columns()` calls to build the transitive dependency chain feeding `target_column` — every
   intermediate column referenced along the way, in dependency order (earliest first). A syntax
@@ -152,19 +154,19 @@ Out of scope (owned by neighbouring components, cross-linked below):
   (the whole file is unparseable by definition), and individual fragments are re-parsed with
   `ast` wherever possible. Only the editor recovery service resolves those fragments, under named
   isolation boundaries, into its structurally incompatible recovery DTOs.
-- Expression evaluation deliberately hand-rolls interpretation of a constrained AST subset rather
-  than using `eval`/`exec`. This avoids executing arbitrary user code to answer a display
-  question, and lets the evaluator intentionally diverge from Python semantics wherever Polars'
-  own semantics differ (null propagation, Kleene logic, dtype-driven overflow/div-by-zero
-  behaviour).
-- The evaluator is explanatory, not a complete Polars engine. The parity suite directly compares
-  a curated set of operations and values against the pinned Polars runtime; it does not establish
-  parity for every namespace method, dtype, malformed call, or window operation. Returning `None`
-  is the current "unsupported/uncomputable" result for many of those gaps.
-- An evaluator exception in `evaluate_expression` propagates to the enrichment caller rather than
-  being replaced by `row_values.get(target_column)`, because a laundered result looks self-consistent
-  with the trace and hides evaluator divergence. Propagating the exception is a direct instance of
-  this codebase's "fail loud, never guess" principle (see the project's `CLAUDE.md`).
+- Polars computes every traced value. A hand-written interpreter once re-implemented Polars'
+  semantics to avoid executing user code for a display question. Project code is trusted, and
+  the same expression has already run in the same execution, so reimplementing Polars only
+  added drift. Polars on the traced row's own typed slice gives the value the pipeline would
+  give that row.
+- Row-locality is decided statically, from the operation registry's row semantics, before
+  anything is evaluated. Evaluating a multi-row form on one row succeeds and returns a
+  plausible, wrong number, so it must never be attempted.
+- A Polars failure on a computable expression propagates to the enrichment caller, which
+  records a visible error marker. A result is never replaced by `row_values.get(target_column)`,
+  because a laundered value looks self-consistent with the trace and hides a real failure. This
+  is a direct instance of this codebase's "fail loud, never guess" principle (see the project's
+  `CLAUDE.md`).
 - The module-level `_cached_parse` (an `lru_cache` over `ast.parse`) exists because
   `parse_expression`, `_compute_result`, `_evaluate_conditional_branches`, and
   `parse_expression_chain` each reparse the *same* code string for the same node; caching is safe
@@ -188,9 +190,10 @@ Out of scope (owned by neighbouring components, cross-linked below):
   and the server API layer — changes here are visible everywhere a pipeline is rendered or run.
 - The expression-parsing half is consumed by the trace/execution-engine enrichment layer, which
   attaches `ParsedExpression`/`EvaluatedExpression` to each executed step for the trace UI.
-- Contrast with [sandbox-security](../sandbox-security/high-level.md): that component actually
-  executes user pipeline code in a restricted runtime; this component never executes user code —
-  `evaluate_expression`'s "computation" is a from-scratch AST interpreter, not a sandboxed `exec`.
+- Uses [sandbox-security](../sandbox-security/high-level.md)'s code validator and restricted
+  globals to build the one expression `evaluate_expression` evaluates, and the
+  [execution engine](../execution-engine/low-level.md)'s row-locality classifier to decide
+  whether one row determines it.
 
 ## Failure model
 
@@ -213,9 +216,10 @@ Out of scope (owned by neighbouring components, cross-linked below):
 - `parse_expression` never raises: any internal exception becomes an `"opaque"` result. This is
   the single deliberate catch-all in the expression parser, justified as the honest "could not
   statically understand this" signal.
-- Unsupported or uncomputable evaluation returns `None`; it never substitutes the receiver or
-  `row_values[target_column]` as a plausible result. Other evaluator failures propagate to the
-  trace/enrichment caller, which records a visible error marker. `parse_expression_chain` does
+- A value one row cannot determine is `None` with a `not_computable_reason`; the evaluator
+  never substitutes the receiver or `row_values[target_column]` as a plausible result. A Polars
+  failure on a computable expression propagates to the trace/enrichment caller, which records a
+  visible error marker. `parse_expression_chain` does
   not catch non-syntax internal failures. It does catch `SyntaxError` and
   returns the opaque `parse_expression` result as a singleton when available.
 

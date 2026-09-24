@@ -9,7 +9,7 @@
 | `src/haute/_parser_bindings.py` | Strict parameter binding gate (`assert_polars_parameters_bound`): every parsed Polars node's positional parameters must equal its connected executable input names after `inputMapping`, in parent files and definition files (public input ports bind the sanitised port ID); any other shape is a `ParseError` with `unbound_parameters`, `unconsumed_inputs`, `connected_inputs` and `remediation` (F13). |
 | `src/haute/_parser_regex.py` | Neutral syntax-recovery discovery. `recover_pipeline_fragments` locates pipeline metadata, `@pipeline.<type>` function fragments, `pipeline.connect()` declarations, and `pipeline.submodel()` registrations textually, re-parsing individual fragments with `ast` where possible. It never constructs canonical graph models. |
 | `src/haute/_parser_submodels.py` | `extract_submodel_registrations` / `parse_submodel_source` / `merge_submodels`: resolves explicit `pipeline.submodel("path", ...)` registrations, parses each referenced submodel file into its own `PipelineGraph`, and merges canonical occurrences into the parent (hierarchical or flattened). |
-| `src/haute/_expression_parser.py` | `parse_expression` / `evaluate_expression` / `parse_expression_chain` and their supporting classes: AST-based conversion of a Polars with-columns expression to human-readable text (`_ExprConverter`) and to a concrete, Polars-mirroring value (`_ExprEvaluator` / `_BranchTrackingEvaluator`). |
+| `src/haute/_expression_parser.py` | `parse_expression` / `evaluate_expression` / `parse_expression_chain` and their supporting classes: AST-based conversion of a Polars with-columns expression to human-readable text (`_ExprConverter`), and Polars evaluation of the located expression on the traced row (`_locate_defining_expression`, `_row_value`, `_branch_selection`). |
 
 ## Key types and data structures
 
@@ -19,7 +19,8 @@
   `referenced_columns: list[str]`, `constants: list[Any]`, `sub_expressions: list[ParsedExpression]`
   (nested conditionals inside a `then`/`otherwise` arm), `source_line: int | None`.
 - **`EvaluatedExpression`** (dataclass, extends `ParsedExpression`) — adds `substituted_text`,
-  `result_value`, `input_values: dict[str, Any]`, and conditional-branch metadata
+  `result_value`, `not_computable_reason: str | None`, `input_values: dict[str, Any]`, and
+  conditional-branch metadata
   (`taken_branch`, `taken_branch_index`, `dimmed_branches: list[int]`,
   `nested_branches: list[str]`).
 - **`PipelineGraph`** (`src/haute/_types.py`, owned by
@@ -34,10 +35,19 @@
   `_is_opaque` flag as it walks. Takes an optional `symbol_table` for top-level variable
   resolution and a `_resolving` set that guards against infinite recursion on self-referential
   names.
-- **`_ExprEvaluator`** (`_expression_parser.py`) — mirrors `_ExprConverter`'s dispatch shape but
-  computes a concrete value instead of text, given `row_values` and the same `symbol_table`.
-  `_BranchTrackingEvaluator` subclasses it, overriding `_eval_clauses`/`_take_branch` to additionally
-  record which `when`/`then`/`otherwise` branch fired at each nesting level.
+- **`AssignmentPhases`** (frozen dataclass, `_expression_parser.py`) — `before` and `at_or_after`,
+  the columns a node's `with_columns` calls assign on either side of the call that last assigns a
+  target column (`assignment_phases(code, target_column)`). Every expression in one call reads the
+  frame from before it, so trace enrichment reads the second set at its earlier values. An
+  unaliased expression is named after its leftmost input column through methods, arithmetic and
+  the name-keeping namespaces (`_implicit_output_name`); a call's writes count only explicit
+  names and that strict inference, never the display parser's first-column guess. A write at or
+  after the target's call whose name cannot be determined (several columns, a selector list or
+  regex, a rename, a dynamic alias, a comprehension, another function) sets `unresolved`; one in
+  an earlier call sets `unresolved_before`.
+- **`_RowValue`** (frozen dataclass, `_expression_parser.py`) — one expression's `value` on the
+  traced row, or the `reason` one row cannot give it. `_row_value(node, row, namespace)` produces
+  it, and `_branch_selection` uses it for each `when` condition.
 - **Precedence tables**: `_OP_SYMBOLS`, `_CMP_SYMBOLS`, `_PREC` (binary operators) plus synthetic
   constants `_PREC_COMPARE`, `_PREC_BOOL_OR`, `_PREC_BOOL_AND`, `_PREC_IFEXP`, `_PREC_USUB` for
   node kinds that are not `ast.BinOp` but still need correct parenthesisation when nested as an
@@ -113,10 +123,18 @@ function via the substring `".over("` → `parse_expression` for the text/column
 `_build_window_description` regex-extracts the aggregation function/column/partition names into a
 canned `"{agg} of {col} over {partition}"` string → `_substitute_values` builds the substituted
 formula text (see Edge cases) → resolve any still-unresolved preamble constant names by literal
-text replacement → `_compute_result` reparses and evaluates the winning AST node with a fresh
-`_ExprEvaluator` → for `expression_type == "conditional"`, additionally run
-`_evaluate_conditional_branches` with a `_BranchTrackingEvaluator` to populate the branch-tracking
-fields.
+text replacement (literal constants only) → `_locate_defining_expression` reparses the code,
+finds the last expression assigning `target_column` (falling back to an unaliased expression named
+after the column), and resolves same-node names through the symbol table → `_row_value` inlines
+literal preamble constants, reports an unresolved free name, classifies the expression with
+`chunking.classify_row_local_expression` (not row-local → `not_row_local: <operator>`), validates it
+with `_sandbox.validate_user_code`, evaluates its source under `safe_globals(pl=pl, <preamble names>)`
+(a non-`Expr` result becomes `pl.lit`), reports a root column missing from the row
+(`column_unavailable: <column>`), and selects it on the one-row frame as a native value
+(`to_list()[0]`, so a List cell is a list, not a Series) → for
+`expression_type == "conditional"`, `_branch_selection` evaluates each condition the same way in
+source order and records the taken arm, recursing into a taken arm that is itself a `when` chain for
+`nested_branches`.
 
 **`parse_expression_chain`** (`_expression_parser.py`): strip/wrap the code and parse it; a
 `SyntaxError` is converted to `[parse_expression(...)]` when that opaque result exists (otherwise
@@ -148,36 +166,28 @@ no alias or migration shim; direct test callers use the same current contract.
   `if`/`for`/`while`/`try`/`with`/`match` has an ambiguous value at any point of use; `parse_expression`
   treats the whole target expression as opaque if it references such a name, even when the same
   name also happens to have an (irrelevant) top-level binding elsewhere.
-- **Signed 64-bit integer overflow**: `_ExprEvaluator._binop` reports an integer result outside
-  `[-2**63, 2**63-1]` as `None` rather than a Python-bigint value, because the evaluator is
-  dtype-unaware and cannot know whether the real Polars column is `Int8`/`Int32`/`Int64`/`UInt64`,
-  so it refuses to guess a wraparound width.
-- **Division/modulo by zero**: mirrors Polars, not Python — float `x/0` → `copysign(inf, x)`
-  (`0/0` → `nan`); integer `//`/`%` by zero → `None` (Polars null); float `%0` → `nan`. Never
-  raises `ZeroDivisionError`.
-- **Kleene three-valued `&`/`|`**: only engages when at least one operand is a concrete `bool` or
-  both are `None` (`_is_bool_kleene_operand`); this must run *before* the generic "any operand is
-  null → null" short-circuit, because `False & null` is `False` and `True | null` is `True` in
-  Polars, not null. Plain integer bitwise `&`/`|` falls through unaffected.
-- **`round()` divergence from Python**: matches Polars' `round(v * 10**n) / 10**n` on the f64 value
-  with half-to-even tie-breaking, which is *not* the same as Python's decimal-accurate
-  `round(v, n)` (e.g. `round(2.675, 2)` is `2.68` under this evaluator/Polars but `2.67` under
-  bare Python `round`). Pinned by `tests/test_expression_parser_polars_parity.py`.
-- **Horizontal reductions and NaN**: `max_horizontal` and `min_horizontal` skip nulls and ignore
-  NaN, returning NaN only when every non-null value is NaN, whatever the argument order — Polars'
-  behaviour from 1.44 (earlier releases propagated NaN through `max_horizontal` only).
-  `sum_horizontal` and `mean_horizontal` propagate NaN. Pinned against live Polars by
-  `tests/test_expression_parser_w3_fixes.py`.
-- **`pow()` with a negative base and non-integer float exponent** → `NaN`, matching Polars' float
-  domain (Python would return a `complex`).
+- **Values are Polars' own**: integer overflow wraps as the column's dtype does, division and
+  modulo by zero, Kleene `&`/`|`, rounding and NaN handling are whatever Polars computes on the
+  row, because Polars computes them. A typed null propagates through every operation; a native
+  `None` passed without `row` becomes a `Null`-dtype column, which Polars rejects for numeric,
+  temporal and string methods.
+- **Row-local means registered row-local**: `classify_row_local_expression` admits an operation
+  the Polars operation registry classes as row-local, whether or not chunked execution has a
+  proof for it (`pl.min_horizontal`, `pl.format` and a `when` chained on a conditional are
+  admitted), and keeps the chunk classifier's argument guards (`fill_null(strategy=...)`,
+  format-inferring `str.to_date()`). An operation missing from the registry (`pow`,
+  `replace_strict`, `dt.total_days` today) is not proven and reports `not_row_local`.
+- **A bare string in `then`/`otherwise` is a column**: Polars reads `.then("high")` as
+  `pl.col("high")`, so an arm written that way reports `column_unavailable: high` unless the row
+  has such a column.
 - **Single-pass value substitution**: `_substitute_values` builds one combined word-boundary regex
   over all identifier-like column names, longest-first, and substitutes in one left-to-right pass —
   so a value inserted for one column can never be re-scanned and corrupted by a shorter column
   name's pattern matching inside the inserted text. Non-identifier column names (spaces/special
   characters) fall back to literal (non-regex) replacement.
-- **BOM handling**: `parse_expression`, `parse_expression_chain`, `_compute_result_impl`, and
-  `_evaluate_conditional_branches` all strip a leading `﻿` before parsing (`evaluate_expression`
-  inherits this only transitively, by calling into `parse_expression`/`_compute_result_impl`).
+- **BOM handling**: `parse_expression`, `parse_expression_chain`, and
+  `_locate_defining_expression` all strip a leading `﻿` before parsing (`evaluate_expression`
+  inherits this only transitively, by calling into `parse_expression`/`_locate_defining_expression`).
 - **Neutral-recovery string/comment-aware scanning**: `_skip_string_literal` deliberately avoids
   `tokenize` (the file is syntactically broken by definition) and, when a triple-quoted string
   never closes, skips to EOF — conservative, because everything after an unclosed triple-quote is
@@ -262,16 +272,11 @@ no alias or migration shim; direct test callers use the same current contract.
   the expression parser, converting any internal failure into an `"opaque"` `ParsedExpression`
   carrying the original source text. Documented in the function's docstring as an intentional,
   honest "could not statically understand this" signal, distinct from the value-computation paths.
-- **`evaluate_expression`/`parse_expression_chain`**: evaluator/non-syntax internal exceptions
-  propagate to the trace/enrichment caller by design (see the high-level Failure model).
-  `parse_expression_chain` catches only `SyntaxError` and converts it to an opaque singleton/empty
-  chain. An evaluator exception propagates rather than falling back to
-  `row_values.get(target_column)`, so evaluator divergence is never hidden behind a
-  self-consistent-looking trace.
-- **`ValueError`** raised (not caught) from `_ExprEvaluator._eval_concat_str` for a non-`str`
-  `separator` or non-`bool` `ignore_nulls` keyword, and from `_eval_replace` for an incomplete
-  `replace_strict` mapping with no `default=` — mirroring Polars' own `InvalidOperationError`
-  behaviour rather than silently coercing or leaving the value unmapped.
+- **`evaluate_expression`/`parse_expression_chain`**: Polars and sandbox exceptions on a computable
+  expression (a malformed call such as `pl.col()`, Python `and`/`or`/`not` on an expression, an
+  `UnsafeCodeError`) propagate to the trace/enrichment caller by design (see the high-level
+  Failure model). `parse_expression_chain` catches only `SyntaxError` and converts it to an opaque
+  singleton/empty chain. A failure is never replaced by `row_values.get(target_column)`.
 
 ## Testing
 
@@ -349,36 +354,28 @@ Tests live under `tests/`, split by concern:
   evaluation.
 - **`test_expression_parser_w3_fixes.py`** — regression tests pinning specific historical bug
   fixes from a past remediation pass.
-- **`test_expression_parser_polars_parity.py`** — value-asserting tests that cross-check
-  `_ExprEvaluator`'s output against real Polars computations; the source of truth for the
-  documented `round()`-half-to-even and similar intentional divergences from naive Python
-  semantics.
-- **`test_expression_parity_properties.py`** — the generated differential (ENG-T11): a bounded
+- **`test_expression_parity_properties.py`** — the generated outcome property (ENG-T11): a bounded
   grammar (depth at most three) of documented, well-formed single-row forms — arithmetic,
   `abs`/`round`/`clip`/`fill_null`/`sqrt`/`log`, comparisons, `is_null`/`is_not_null`,
   `is_between` with every `closed` value, `is_in`, regex and literal `str.contains`,
   `to_lowercase`/`to_uppercase`, and `when/then/otherwise` — over int, float, tie-float and
-  null cells, each example evaluated by `_ExprEvaluator` and by real Polars on a typed one-row
-  frame (a null cell keeps its column family's dtype, so null propagation is proven through
-  every operation). It runs under the shared PR budget with retained curated edge examples, a
-  `hypothesis.find` negative control proving a naive-Python evaluator (decimal `round`,
-  substring `contains`, inclusive `is_between`, `False` for a null comparison) is caught on the
-  same grammar, and classification pins for the documented placeholders: window, `shift`,
-  `diff` and aggregation forms return the receiver value on a single row, and `cum_sum`,
-  rolling and unhandled string methods return `None`.
+  null cells, each example evaluated through `evaluate_expression` on a typed one-row frame and
+  compared with Polars computing the same expression on that frame. It runs under the shared PR
+  budget with retained curated edge examples and a `hypothesis.find` negative control proving a
+  naive-Python evaluator (decimal `round`, substring `contains`, inclusive `is_between`, `False`
+  for a null comparison) is caught on the same grammar. Classification pins assert that window,
+  `shift`, `diff` and aggregation forms report `not_row_local` with no value, and the two-row
+  window regression asserts that a `sum().over()` is never shown as its one-row value.
 
 Strategy is unit + scenario-regression plus the generated single-row differential above.
 Known coverage gaps:
 
 - The neutral syntax-recovery scanner is exercised only against curated malformed-input scenarios, not
   randomly-generated broken Python source.
-- The differential covers documented single-row forms only. Unsupported AST/method forms
-  return `None`, defensive malformed-call branches intentionally differ from Polars by ignoring
-  an argument or avoiding an exception, and neither is generated.
-- Window result calculation is described textually using regex extraction and a row-local AST
-  evaluator; the single-row placeholder for window and aggregation forms is pinned as a
-  classification, not as parity, and the suite does not prove partition/window semantics
-  against a multi-row Polars frame.
+- The property covers documented single-row forms only; malformed calls and not-row-local forms
+  are pinned by example, not generated.
+- A multi-row sub-expression inside a formula (a condition comparing with a mean, say) is
+  reported not computable; the trace does not re-evaluate it against its execution's frame.
 
 ## Neutral syntax-recovery fragments
 

@@ -35,13 +35,15 @@ hypothesis-based proof suite. It has exactly one production consumer: the
 streaming frontier auto-range job. If `OPT-P15` shows that one streaming
 group-by keeps auto-range within its memory bound and replaces that job, the
 planner and runner are dead. `classify_chunk_local_polars_code` is also used
-for row-locality checks in lazy execution and trace correlation, and
-`EXPR-R01` may use it too, so it can stay while those checks exist.
+for row-locality checks in lazy execution and trace correlation, and trace
+formula evaluation uses its row-semantics mode (`classify_row_local_expression`),
+so the classifier stays while those checks exist.
 
 **Plan:** After `OPT-P15` removes the consumer, delete `chunk_plan`,
 `iter_chunked_frames`, `run_chunked_reduce`, `collect_chunked`, the
-capability declarations and their tests. Move `classify_chunk_local_polars_code` and its helpers to a
-small module next to its remaining callers. Remove the chunked map-reduce text from the
+capability declarations and their tests. Move `classify_chunk_local_polars_code`,
+`classify_row_local_expression` and their helpers to a small module next to their remaining
+callers. Remove the chunked map-reduce text from the
 execution-engine specification in the same change.
 
 **Acceptance:** No production module imports the planner or runner; the
@@ -51,7 +53,7 @@ row-locality classifier keeps its own tests.
 
 **Dependencies:** `OPT-P15` (optimiser); this package does not proceed if
 `OPT-P15` keeps the chunked auto-range path. The classifier survives: lazy
-execution and trace correlation keep using it.
+execution, trace correlation and trace formula evaluation keep using it.
 
 **Evidence:** `src/haute/chunking.py::chunk_plan`;
 `src/haute/chunking.py::iter_chunked_frames`;

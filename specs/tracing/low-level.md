@@ -17,7 +17,13 @@
   `output_values` (column → value dicts), `topological_rank`,
   `column_relevant: bool` (default `True`), and enrichment fields populated by
   `_enrich_steps`: `expression`, `calculation`, `node_detail`,
-  `row_lineage_type`.
+  `row_lineage_type`. `input_row`/`output_row` hold the same rows as one-row frames in the
+  pipeline's dtypes, for evaluating the step's formulas. They are not serialised. `_TypedRows`
+  slices them from the frames correlation read (`_correlate_rows_posthoc` reports each resolved
+  row's position through `row_positions`); a multi-frame node's row is the one frame its consumer
+  reads. A slice is kept only when its JSON-safe form equals the row the trace shows, and
+  otherwise the field is `None`. The input row joins the parents' rows with the same
+  `f"{pid}.{k}"` namespacing as `input_values`.
 - **Node-detail contracts** — enrichment consumes the same node config shape as
   execution: banding uses `factors`, model score uses `output_column`, and scenario
   expansion uses `column_name`. The emitted detail discriminators are
@@ -484,8 +490,22 @@ its public facade.
    might (its materialised frame, when there is one, has the column), or the
    value reached a seeded step, the origin is unproven and nothing is borrowed:
    another branch's formula would explain a value the target never had.
-   **Self-referential guard** (`_assignment_values`, for both the step's own
-   assignment and a borrowed one): if `column` is both
+   **Call-phase rule** (`_assignment_values`/`_assignment_row`, for the step's
+   own assignment, a borrowed one, an input source's derivation and each chain
+   entry): `assignment_phases(code, column)` splits the columns the node's
+   `with_columns` calls assign into those assigned before the call that last
+   assigns `column` and those assigned by it or a later call. A column in the
+   second set is read at its value from before that call: its `input_values`
+   entry when no earlier call assigned it, and otherwise left out as unknown.
+   When the phases are `unresolved`, a write with no static name may have
+   rewritten any column, even one whose value it left equal while changing its
+   dtype, so every column is treated as part of that second set: only input
+   columns no earlier call assigned remain. When an earlier call holds such a
+   write (`unresolved_before`), no input value is provably the one the call reads,
+   so every column in that second set is left out; columns neither the call nor a
+   later one touches keep their output value, which nothing after changes.
+   **Self-referential guard** (the rule's special case for the target column):
+   if `column` is both
    `columns_modified` (per the step's `SchemaDiff`) and one of the parsed
    expression's own `referenced_columns` (e.g. `premium = premium * factor`),
    evaluating against `{**input_values, **output_values}` unmodified would seed
@@ -493,7 +513,9 @@ its public facade.
    arithmetically false substitution (`200.0 * 2.0` displayed for an output of
    `200.0`). When a pre-assignment `input_values[column]` exists, it overrides
    the output value in the evaluation namespace before calling
-   `evaluate_expression`. When it doesn't (the column was newly created this
+   `evaluate_expression`, and `_assignment_row` makes the same substitution in the typed row
+   passed as `row=` (a frame holding no row when the typed row is unavailable, which the
+   evaluator reports as `traced_row_unavailable`). When it doesn't (the column was newly created this
    step, so there is no pre-assignment value to show), evaluation is skipped
    entirely and `step.calculation` is set directly from the output value
    (`{"target_column", "substituted_text": f"{column} = {value!r}",
@@ -509,9 +531,18 @@ its public facade.
    post-assignment output on the RHS, the same self-referential problem as step
    2. As each chain entry evaluates successfully, its `result_value` is written
    back into `combined_values` under its `target_column` so the *next* entry
-   sees the correct fed-forward intermediate. A failing entry's fallback
+   sees the correct fed-forward intermediate; the typed chain row is fed forward
+   the same way, with a not-computed entry's column dropped so a later entry reading it reports
+   the column unavailable. A failing entry's fallback
    `result_value` prefers the fed-forward `combined_values` entry and falls back
    to `step.output_values` only if that is also absent.
+   **Execution values** (`_with_execution_value`): when a formula that assigns a step's column is
+   `not_row_local`, the calculation shows that column's `output_values` entry with
+   `result_source: "trace_execution"` and keeps `not_computable_reason`. This applies to the
+   step's own assignment, a borrowed one, an input source's derivation, and a chain entry whose
+   target the chain assigns once. `execute_trace` passes enrichment the compiled preamble
+   namespace (cached per process) over any caller-supplied `preamble_ns`, so formulas resolve the
+   names the node code ran with.
 4. Recursively derives `input_sources` for every referenced column
    (`_build_input_sources`, depth-limited to 3, cycle-guarded via a
    `(node_id, column)` visited set) — for each reference, finds the nearest
@@ -799,7 +830,7 @@ integration/regression suites:
 - **`tests/test_trace_calculation_hero.py`** and
   **`tests/test_trace_hero_tdd.py`** — the expression/calculation
   ("Calculation Hero") feature: conditional-branch indication, waterfall data
-  generation, preamble constant resolution, window-function fallback, intra-node
+  generation, preamble constant resolution, full-context values for window formulas, intra-node
   dependency chains, column-rename tracking, null explanation, copy/export
   data-structure shape, and (`TestSelfReferentialCalculation`) the
   pre-assignment-value substitution fix for self-referential assignments
