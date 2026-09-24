@@ -7,89 +7,22 @@ sidecar, repaired when they no longer parse, validated before they are
 written back, and read by the executor when the node runs. Current behaviour
 is specified in [the pipeline-config specification](../pipeline-config/low-level.md).
 
-These packages close one gap that runs through all four of those stages: a
-node config that **cannot execute** can be produced by repair, persisted by
-save, and then reported to the user as an internal server error. Each stage
-knows enough to prevent it and none of them acts.
-
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| PCFG-R03 | Planned | P3 | Save refuses a config the executor cannot build. |
 | PCFG-R04 | Planned | P2 | One project context, resolved once, replaces a dozen project-root and pipeline-directory resolvers. |
 | PCFG-R06 | Decision | P2 | One stated rule for non-canonical input, and code that follows it. |
 | PCFG-R07 | Planned | P2 | Every node type has a typed config model that is the single validation boundary. |
 | PCFG-R08 | Planned | P3 | Editor-only state travels beside the node config, not inside it. |
 | PCFG-R09 | Planned | P3 | A node type is declared in one place. |
 
-A recover now states what it could not fix (every unresolved engine error
-is completeness on the node), and the configs already on disk are legible: a
-builder's config rejection is a `NodeConfigError`, which the public contract
-returns as a 422 naming the setting. `PCFG-R03` closes the remaining write
-path.
-
 `PCFG-R04` to `PCFG-R09` come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md).
-`PCFG-R07` builds on `PCFG-R03`; `PCFG-R08` should precede it
-so the models do not have to carry editor state.
-
-## Worked example
-
-The three packages were found from one failure, which is worth keeping
-because it exercises all of them in sequence. A Scenario Expander sidecar
-written before `e9b37e6e` carried the pre-rename grid-size key `steps: 11`.
-After the rename, `steps` means the step list, so the parser rejected the
-config outright (`scenarioExpander 'steps' must be a list.`) and the
-pipeline would not load.
-
-Repair then ran. It replaced the invalid `steps` with the audited default
-`[]`, reported that field as `defaulted`, and — correctly — raised
-`incomplete_range: "Scenario range and stepCount are required."` The repair
-applied anyway, that issue never reached the user, and the sidecar was
-written without any grid size. The pipeline now loaded and every preview of
-that node failed in `_build_scenario_expander` with a bare `ValueError`,
-which the preview route cannot classify, so the browser received
-`500 Operation failed. Check the server logs for details.` and the server
-log recorded only `interactive_worker_remote_failure … remote_type=ValueError`.
-
-Three defects, one user-visible symptom: an opaque 500 on a node the system
-had already diagnosed precisely. Two are fixed: the repair reports the
-missing grid size as completeness on the node, and the preview answers 422
-with the engine's message. `PCFG-R03` remains.
+`PCFG-R08` should precede `PCFG-R07` so the models do not have to carry
+editor state.
 
 ## Planned improvements
-
-### PCFG-R03 — Save refuses a config the executor cannot build
-**Why:** `_validate_strict_node_configs` runs `validate_node_config` for
-`DATA_INPUT`, `DATA_OUTPUT` and `BANDING` only. Every other node type is
-written to its sidecar unchecked, so a config missing a key its builder
-requires is persisted without complaint and fails at the next preview. The
-file that produced the worked example above was written by a save.
-
-**Plan:** Extend strict save-time validation past the three discriminated
-families to any node type whose builder has a required setting, reusing the
-`require_complete=False` distinction already established: a *declared
-incomplete* node (a Data Input with no locator yet) stays saveable, while a
-config that names a setting invalidly, or omits one with no incomplete form,
-is rejected with a `400` naming the node and the reason. Decide per node type
-which required settings have a legitimate incomplete form — a node the user
-has not finished configuring must remain saveable, because refusing to save
-work in progress is worse than the deferred error.
-
-**Acceptance:** Saving a pipeline whose Scenario Expander has no `stepCount`
-is rejected with a message naming the node and the setting; saving a
-deliberately unfinished node of each type that has an incomplete form still
-succeeds. Tests cover both directions per node type touched.
-
-**Dependencies:** None (a recover already reports what it could not fix,
-so a user with an already-damaged project can recover and then complete the
-node before saving). The save route is owned by server-api; this
-package changes the validation it calls, not the route's contract.
-
-**Evidence:** `src/haute/routes/_save_pipeline.py`
-(`_validate_strict_node_configs`); `src/haute/_config_validation.py`
-(`validate_node_config`).
 
 ### PCFG-R04 — One project context
 **Why:** About a dozen functions resolve the project root or pipeline

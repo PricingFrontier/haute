@@ -198,7 +198,27 @@ node is visibly unfinished, like a declared-incomplete Data Input; Reset remains
 replacement with palette defaults. A candidate that cannot load (for example an unknown
 provider branch) is refused as before. Omitted settings stay absent: recover never fills an
 absent field from `node_defaults.json` and never takes a default from another provider branch
-(an invalid present value may take its own branch's audited default). The resulting raw node
+(an invalid present value may take its own branch's audited default).
+
+**Save refuses a config the executor cannot build.** Save runs
+`src/haute/_config_validation.py::validate_node_config` with `require_complete=False` for every
+node type whose builder has a required setting, on each authored config (an instance carries
+its original's config and is checked there). A required setting with a legitimate incomplete
+form stays saveable, because refusing to save unfinished work is worse than the deferred
+error; one without is refused with a 400 naming the node and the setting, before anything is
+written. The node-scoped save runs the same validator on the proposed config and keeps its own
+refusal: a 409 `repair_action_unsupported` saying the proposed settings are not loadable, with
+nothing written.
+
+| Node type | Required setting | Incomplete form | At save |
+|---|---|---|---|
+| Data Input / Data Output | provider locator (`path`, table, ...) | yes: empty locator, reported as completeness | saved |
+| Banding | factor/rule structure | no | refused when malformed |
+| Scenario Expander | `stepCount` | no: a new node carries an explicit count | refused when missing or invalid |
+| Model Score | `run_id` / `registered_model` for the chosen `sourceType` | yes: a source mode picked before its model | saved; the builder reports it when run |
+| Optimiser Apply | `sourceType` when `artifact_path` is set | no | reported when the node runs; save-time refusal waits for the typed config models (`PCFG-R07`) |
+
+The resulting raw node
 dicts feed `_build_edges` (explicit `connect()` tuples in one four-field
 `(source, target, source_port, target_port)` form,
 plus implicit parameter-name-matching edges; edges are never invented, so a file declaring no

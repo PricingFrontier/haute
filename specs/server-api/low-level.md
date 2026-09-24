@@ -1189,7 +1189,9 @@ the target; application checks its recovered availability and compares the compl
 staged structure against the plan's isolated single-node preview. Python replacements use the shared LibCST
 boundary. Ordinary saves validate Data Input/Output structure strictly but tolerate
 declared-incomplete locators (`require_complete=False`), so a loadable incomplete node
-round-trips through save. `POST /api/pipeline/node/save` provides the node-scoped save
+round-trips through save. They refuse a Scenario Expander without a valid `stepCount` with a
+400 naming the node and the setting: the grid size has no incomplete form. The per-node-type
+rule is in the [pipeline-config specification](../pipeline-config/low-level.md). `POST /api/pipeline/node/save` provides the node-scoped save
 for `scoped_editable` nodes in degraded documents, per the same specification.
 
 ## No persistent recovery state

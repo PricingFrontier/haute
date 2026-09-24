@@ -375,6 +375,104 @@ class TestValidateOptimiserInputSelectors:
         assert not (tmp_path / "pipeline.py").exists()
 
 
+class TestValidateScenarioExpanderGridSize:
+    """The grid size has no incomplete form (a new node carries an explicit
+    count), so save refuses a config the builder would reject."""
+
+    @staticmethod
+    def _grid(config: dict, *extra: GraphNode) -> PipelineGraph:
+        return _make_graph(
+            _make_node(
+                "quotes",
+                "quotes",
+                "constant",
+                {"values": [{"name": "quote_id", "value": "1"}]},
+            ),
+            _make_node("grid", "price_grid", "scenarioExpander", config),
+            *extra,
+            edges=[_make_edge("quotes", "grid")],
+        )
+
+    _VALID = {
+        "quote_id": "quote_id",
+        "column_name": "price",
+        "step_column": "scenario_index",
+        "min_value": 0.1,
+        "max_value": 0.3,
+        "stepCount": 3,
+        "steps": [],
+    }
+
+    @pytest.mark.parametrize(
+        ("step_count", "message"),
+        [
+            (None, "requires stepCount"),
+            (0, "stepCount >= 1"),
+            (2.5, "whole number"),
+        ],
+    )
+    def test_a_refused_save_names_the_setting_and_writes_nothing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        step_count: float | None,
+        message: str,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        service = SavePipelineService(tmp_path)
+        main = tmp_path / "main.py"
+
+        def save(config: dict) -> None:
+            service.save(
+                SavePipelineRequest(
+                    name="main",
+                    description="",
+                    graph=self._grid(config),
+                    preamble="",
+                    source_file="main.py",
+                    base_revision=current_source_revision(main, tmp_path),
+                )
+            )
+
+        save(self._VALID)
+        before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+        assert tmp_path / "config/expander/price_grid.json" in before
+        invalid = {key: value for key, value in self._VALID.items() if key != "stepCount"}
+        if step_count is not None:
+            invalid["stepCount"] = step_count
+
+        with pytest.raises(HTTPException) as exc_info:
+            save(invalid)
+
+        assert exc_info.value.status_code == 400
+        assert "price_grid" in exc_info.value.detail
+        assert "stepCount" in exc_info.value.detail
+        assert message in exc_info.value.detail
+        after = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+        assert after == before
+
+    def test_an_instance_is_checked_through_its_original(self, tmp_path: Path) -> None:
+        """An instance carries only a reference; the original's grid size is what runs."""
+        instance = _make_node(
+            "grid_copy", "price_grid_copy", "scenarioExpander", {"instanceOf": "grid"}
+        )
+
+        SavePipelineService(tmp_path).validate_graph(
+            self._grid(self._VALID, instance), source_file="pipeline.py"
+        )
+
+    def test_a_fresh_palette_node_is_still_saveable(self, tmp_path: Path) -> None:
+        """An unfinished Scenario Expander (only its palette defaults) saves."""
+        import json
+
+        defaults = json.loads(
+            (Path(__file__).resolve().parents[1] / "src/haute/node_defaults.json").read_text()
+        )["scenarioExpander"]
+        graph = _make_graph(_make_node("grid", "price_grid", "scenarioExpander", defaults))
+
+        SavePipelineService(tmp_path).validate_graph(graph, source_file="pipeline.py")
+
+
 class TestValidateDeclaredConfigKeys:
     def test_validate_graph_rejects_an_undeclared_key_before_writing(self, tmp_path: Path) -> None:
         """A key the node type does not declare would be lost on save, so the

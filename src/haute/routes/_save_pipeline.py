@@ -815,10 +815,14 @@ class SavePipelineService:
             NodeType.DATA_INPUT,
             NodeType.DATA_OUTPUT,
             NodeType.BANDING,
+            NodeType.SCENARIO_EXPANDER,
         }
         for scoped_graph in graphs:
             for node in scoped_graph.nodes:
                 if node.data.nodeType not in strict_types:
+                    continue
+                if node.data.config.get("instanceOf"):
+                    # An instance carries its original's config, checked where it is authored.
                     continue
                 try:
                     validate_node_config(

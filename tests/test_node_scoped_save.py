@@ -263,6 +263,79 @@ def test_scoped_save_route_rejects_malformed_discriminant_shapes(client, monkeyp
     assert {p: p.read_bytes() for p in before} == before
 
 
+def test_scoped_save_refuses_a_scenario_expander_without_a_grid_size(client, monkeypatch, tmp_path):
+    """The grid size has no incomplete form, so the scoped save refuses its absence
+    with its own not-loadable refusal and writes nothing."""
+    from haute._config_io import collect_node_configs
+    from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+    from haute.codegen import graph_to_code
+
+    graph = PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="quotes",
+                data=NodeData(
+                    label="quotes",
+                    nodeType=NodeType.CONSTANT,
+                    config={"values": [{"name": "quote_id", "value": "1"}]},
+                ),
+            ),
+            GraphNode(
+                id="grid",
+                data=NodeData(
+                    label="grid",
+                    nodeType=NodeType.SCENARIO_EXPANDER,
+                    config={
+                        "quote_id": "quote_id",
+                        "column_name": "price",
+                        "step_column": "scenario_index",
+                        "min_value": 0.1,
+                        "max_value": 0.3,
+                        "stepCount": 3,
+                        "steps": [],
+                    },
+                ),
+            ),
+        ],
+        edges=[GraphEdge(id="e_quotes_grid", source="quotes", target="grid")],
+    )
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    # A broken sibling makes the document degraded, where the scoped save applies.
+    (tmp_path / "main.py").write_text(
+        graph_to_code(graph, pipeline_name="demo")
+        + '\n@pipeline.data_input(config="a.json")\ndef source_a():\n    return None\n'
+    )
+    (tmp_path / "a.json").write_text(json.dumps(BROKEN_INPUT))
+    for rel_path, content in collect_node_configs(graph).items():
+        config_file = tmp_path / rel_path
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(content)
+    monkeypatch.chdir(tmp_path)
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    target = next(node for node in document.nodes if node.authored_id == "grid")
+    assert target.scoped_editable is True
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    config = {key: value for key, value in (target.config or {}).items() if key != "stepCount"}
+
+    response = client.post(
+        "/api/pipeline/node/save",
+        json={
+            "source_file": document.source_file,
+            "source_revision": document.source_revision,
+            "target_source_file": target.source_file,
+            "target_recovery_id": target.recovery_id,
+            "config": config,
+        },
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "repair_action_unsupported"
+    assert "not loadable" in detail["message"]
+    assert "requires stepCount" in detail["message"]
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+
+
 def _inputs_and_transform(root: Path) -> None:
     _two_inputs(root)
     main = root / "main.py"
