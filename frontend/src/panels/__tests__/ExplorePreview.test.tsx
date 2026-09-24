@@ -38,7 +38,6 @@ vi.mock("../../api/client", () => ({
   clearNodeData: (...args: unknown[]) => mockClearNodeData(...args),
   getNodeDataProfile: (...args: unknown[]) => mockGetNodeDataProfile(...args),
   clearInputCache: vi.fn(),
-  deleteJsonCache: vi.fn(),
 }))
 
 class MockResizeObserver {

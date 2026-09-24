@@ -117,12 +117,7 @@ vi.mock("../LazyNodeEditors", async () => {
   ),
   OutputEditor: () => <div data-testid="OutputEditor" />,
   ExternalFileEditor: () => <div data-testid="ExternalFileEditor" />,
-  ApiInputEditor: (props: Record<string, unknown>) => (
-    <div
-      data-testid="ApiInputEditor"
-      data-config-path={typeof props.configPath === "string" ? props.configPath : undefined}
-    />
-  ),
+  ApiInputEditor: () => <div data-testid="ApiInputEditor" />,
   LiveSwitchEditor: () => <div data-testid="LiveSwitchEditor" />,
   DataInputEditor: (props: Record<string, unknown>) => {
     dataInputEditorProps.push(props)
@@ -854,26 +849,6 @@ describe("NodePanel", () => {
   it("renders ApiInputEditor for apiInput nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "API", description: "", nodeType: "apiInput", config: {} } }) })
     expect(screen.getByTestId("ApiInputEditor")).toBeInTheDocument()
-  })
-
-  it("passes the exact server-owned API-input config reference to cache controls", () => {
-    renderPanel({
-      node: makeNode({
-        id: "unrelated-local-id",
-        data: {
-          label: "class café",
-          description: "",
-          nodeType: "apiInput",
-          config: {},
-          _configReference: "config/quote_input/node_class_caf_xe9_.json",
-        },
-      }),
-    })
-
-    expect(screen.getByTestId("ApiInputEditor")).toHaveAttribute(
-      "data-config-path",
-      "config/quote_input/node_class_caf_xe9_.json",
-    )
   })
 
   it("renders DataInputEditor for dataInput nodes", () => {

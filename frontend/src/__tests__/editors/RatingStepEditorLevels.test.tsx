@@ -49,7 +49,6 @@ vi.mock("../../api/client", () => ({
   cancelNodeData: vi.fn(),
   clearNodeData: vi.fn(),
   clearInputCache: vi.fn(),
-  deleteJsonCache: vi.fn(),
   ensureInputSnapshots: vi.fn(),
 }))
 

@@ -30,11 +30,6 @@ vi.mock("../../panels/editors/_shared", async () => {
 })
 vi.mock("../../api/client", () => ({
   fetchDatabricksSchema: vi.fn(),
-  buildJsonCache: vi.fn(),
-  getJsonCacheProgress: vi.fn().mockResolvedValue({ active: false }),
-  getJsonCacheStatus: vi.fn().mockResolvedValue({ cached: false }),
-  getJsonCacheStatusForSchema: vi.fn().mockResolvedValue({ cached: false }),
-  deleteJsonCache: vi.fn(),
   inferJsonCacheSchema: vi.fn(),
 }))
 vi.mock("../../hooks/useSchemaFetch", () => ({

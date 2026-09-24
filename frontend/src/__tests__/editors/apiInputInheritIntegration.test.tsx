@@ -37,11 +37,11 @@ const mockInferJsonCacheSchema = vi.fn()
 
 vi.mock("../../api/client", () => ({
   fetchDatabricksSchema: vi.fn(),
-  buildJsonCache: vi.fn(),
-  getJsonCacheProgress: vi.fn().mockResolvedValue({ active: false }),
-  getJsonCacheStatus: vi.fn().mockResolvedValue({ cached: false }),
-  getJsonCacheStatusForSchema: vi.fn().mockResolvedValue({ cached: false }),
-  deleteJsonCache: vi.fn(),
+  getInputCacheStatus: vi.fn().mockResolvedValue({ schema_version: 1, identity_digest: "digest", state: "missing", freshness: "unknown", generation: null, tables: [] }),
+  buildInputCache: vi.fn(),
+  getInputCacheJob: vi.fn(),
+  cancelInputCacheJob: vi.fn(),
+  clearInputCache: vi.fn(),
   inferJsonCacheSchema: (...args: unknown[]) => mockInferJsonCacheSchema(...args),
   ApiError: class ApiError extends Error {},
 }))
