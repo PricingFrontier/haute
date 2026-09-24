@@ -66,7 +66,10 @@ In scope:
   (`utils/formatBytes.ts`, `utils/formatTime.ts`, `utils/formatValue.ts`,
   `utils/color.ts`, `utils/dtypeColors.ts`, `utils/portableKey.ts`,
   `utils/chartHelpers.ts`, `utils/formatTrace.ts`,
-  `utils/mlflowOptimiser.ts`).
+  `utils/mlflowOptimiser.ts`). Each repeated concern has one helper: error
+  text (`api/errors.ts`), byte counts (`utils/formatBytes.ts`), durations
+  (`utils/formatValue.ts`) and the object guard (`types/guards.ts`); lint
+  rejects a new local copy.
 - The application bootstrap (`main.tsx`).
 
 Explicitly out of scope (owned elsewhere, even though the files live under

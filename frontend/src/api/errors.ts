@@ -17,9 +17,11 @@ export function apiErrorCode(error: unknown): string | null {
 /**
  * The message to show for a failed request: the server's detail when it sent
  * one, a thrown error's own message otherwise, and `fallback` when neither is
- * meaningful (an HTTP error without a detail only knows its status).
+ * meaningful (an HTTP error without a detail only knows its status). Without a
+ * fallback, that status message, or a non-error value's string form, is used.
+ * This is the one error-text helper; lint rejects local copies.
  */
-export function apiErrorMessage(error: unknown, fallback: string): string {
+export function apiErrorMessage(error: unknown, fallback?: string): string {
   const record = rawDetailRecord(error)
   const message = record?.message
   if (typeof message === "string" && message.trim()) return message
@@ -31,6 +33,8 @@ export function apiErrorMessage(error: unknown, fallback: string): string {
     : undefined
   if (typeof stringDetail === "string" && stringDetail.trim()) return stringDetail
   const isHttpError = typeof error === "object" && error !== null && "status" in error
-  if (!isHttpError && error instanceof Error && error.message) return error.message
-  return fallback
+  if (error instanceof Error && error.message && (!isHttpError || fallback === undefined)) {
+    return error.message
+  }
+  return fallback ?? String(error)
 }

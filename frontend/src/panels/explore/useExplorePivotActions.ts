@@ -18,11 +18,11 @@ import useNodeResultsStore, {
 import useSettingsStore from "../../stores/useSettingsStore"
 import { buildGraph } from "../../utils/buildGraph"
 import {
-  executionErrorDetailMessage,
   executionJobStatusFromReason,
   executionMetricsFromError,
   executionTerminalReasonFromError,
 } from "../../utils/executionDiagnostics"
+import { apiErrorMessage } from "../../api/errors"
 import type { SimpleEdge, SimpleNode } from "../editors"
 import {
   pivotCalculationIdentity,
@@ -58,11 +58,6 @@ function terminalStatus(
     terminal_reason: status,
     execution_metrics: executionMetrics,
   }
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) return error.message
-  return executionErrorDetailMessage(error) ?? String(error)
 }
 
 /**
@@ -299,7 +294,7 @@ export default function useExplorePivotActions({
           pivot,
           key,
           calculationIdentity,
-          errorMessage(error),
+          apiErrorMessage(error),
           executionJobStatusFromReason(terminalReason),
           requestedDataVersion,
           null,
@@ -341,7 +336,7 @@ export default function useExplorePivotActions({
       } catch (error) {
         // A failed cancellation request does not prove the calculation stopped.
         // Keep the active job so background polling can resolve it.
-        setNotice(pivot.id, { message: errorMessage(error) })
+        setNotice(pivot.id, { message: apiErrorMessage(error) })
       }
     },
     [completeJob, failJob, node.id, setNotice],

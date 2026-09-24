@@ -15,11 +15,11 @@ import {
 import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore from "../stores/useGraphStore"
 import {
-  executionErrorDetailMessage,
   executionJobStatusFromReason,
   executionMetricsFromError,
   executionTerminalReasonFromError,
 } from "../utils/executionDiagnostics"
+import { apiErrorMessage } from "../api/errors"
 import { configField, safeParseFloat, safeParseInt } from "../utils/configField"
 import {
   defaultExperimentName,
@@ -79,16 +79,6 @@ type OptimiserConfigProps = {
   upstreamColumns?: { name: string; dtype: string }[]
   accentColor: string
   deferColumnFetch?: boolean
-}
-
-function requestErrorDetail(error: unknown): string {
-  const detailMessage = executionErrorDetailMessage(error)
-  if (detailMessage) return detailMessage
-  if (error && typeof error === "object" && "detail" in error) {
-    const detail = (error as { detail?: unknown }).detail
-    if (typeof detail === "string" && detail.trim()) return detail
-  }
-  return error instanceof Error ? error.message : String(error)
 }
 
 function solveFailureStatus(error: unknown, message: string): SolveProgress | undefined {
@@ -281,7 +271,7 @@ export default function OptimiserConfig({
       }
     } catch (e) {
       if (!isDocumentExecutionFenceCurrent(documentFence)) return
-      const errorMessage = requestErrorDetail(e)
+      const errorMessage = apiErrorMessage(e)
       const terminalStatus = solveFailureStatus(e, errorMessage)
       startSolveJob(nodeId, `startup-failure:${nodeId}`, nodeLabel, constraints, currentConfigHash, solveSource, solveStructuralVersion)
       useNodeResultsStore.getState().failSolveJob(nodeId, errorMessage, terminalStatus)

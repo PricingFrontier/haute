@@ -4,6 +4,7 @@ import {
   writeOutput,
   ApiError,
 } from "../../api/client"
+import { apiErrorMessage } from "../../api/errors"
 import type {
   IoCapabilityGroup,
   IoFormatCapability,
@@ -18,6 +19,7 @@ import { useGraph } from "../useGraph"
 import IoFormatEditor from "./_IoFormatEditor"
 import { useIoCapabilities } from "./_ioFormats"
 import type { OnReplaceConfig, OnUpdateConfig } from "./_shared"
+import { isPlainObject } from "../../types/guards"
 
 const OUTPUT_COMMON_KEYS = [
   "instanceOf",
@@ -76,10 +78,6 @@ function hasNonEmptyString(value: unknown): boolean {
   return typeof value === "string" && value.trim().length > 0
 }
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
 function providerFieldsReady(
   group: IoCapabilityGroup,
   config: Record<string, unknown>,
@@ -114,7 +112,7 @@ function outputConfigReady(
   }
   if (
     config.arguments !== undefined &&
-    !isPlainRecord(config.arguments)
+    !isPlainObject(config.arguments)
   ) {
     return false
   }
@@ -245,12 +243,7 @@ export default function DataOutputEditor({
       },
       (caught: unknown) => {
         if (controller.signal.aborted) return
-        const message =
-          caught instanceof ApiError && caught.detail
-            ? caught.detail
-            : caught instanceof Error
-              ? caught.message
-              : "Could not resolve output destination."
+        const message = apiErrorMessage(caught, "Could not resolve output destination.")
         setDestinationState({ identity, error: message })
       },
     )
@@ -275,12 +268,7 @@ export default function DataOutputEditor({
         result: response,
       })
     } catch (caught) {
-      const message =
-        caught instanceof ApiError && caught.detail
-          ? caught.detail
-          : caught instanceof Error
-            ? caught.message
-            : "Output write failed."
+      const message = apiErrorMessage(caught, "Output write failed.")
       completeWrite(nodeId, requestId, requestIdentity, {
         phase: caught instanceof ApiError && caught.status === 409 ? "confirm_overwrite" : "error",
         message,

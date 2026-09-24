@@ -25,6 +25,7 @@ interface PipelineRepairDialogProps {
   onApplied: (document: PipelineEditorDocument) => void
 }
 
+// eslint-disable-next-line no-restricted-syntax -- "code: message" repair text; folding it into apiErrorMessage is FSH-R02's remaining scope
 function errorDetail(error: unknown): string {
   if (error instanceof ApiError) {
     const detail = error.rawDetail

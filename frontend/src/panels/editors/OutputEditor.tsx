@@ -13,6 +13,7 @@ import { useGraph } from "../useGraph"
 import { buildGraph } from "../../utils/buildGraph"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { outputAssembleDryRun, previewNode, ApiError } from "../../api/client"
+import { apiErrorMessage } from "../../api/errors"
 import { FrameTableActions } from "./FrameTableActions"
 import { JsonPreview } from "./JsonPreview"
 import {
@@ -355,12 +356,7 @@ export default function OutputEditor({
         if (outputReqSeq.current !== reqId) return
         // The route returns structured 422/400/404/503/504/500 — surface the
         // detail message (ApiError carries it) rather than a bare status.
-        const message =
-          err instanceof ApiError
-            ? err.detail || err.message
-            : err instanceof Error
-              ? err.message
-              : "Output preview failed"
+        const message = apiErrorMessage(err, "Output preview failed")
         setOutputDoc(null)
         setOutputError(message)
         setOutputLoading(false)
@@ -961,12 +957,7 @@ function FrameBlock({
       })
       .catch((err: unknown) => {
         if (dataReqSeq.current !== reqId) return
-        const message =
-          err instanceof ApiError
-            ? err.detail || err.message
-            : err instanceof Error
-              ? err.message
-              : "Frame data preview failed"
+        const message = apiErrorMessage(err, "Frame data preview failed")
         setDataRows(null)
         setDataError(message)
         setDataLoading(false)

@@ -6,6 +6,7 @@ import type {
   JobStatus,
 } from "../api/types"
 import { formatBytes } from "./formatBytes"
+import { isPlainObject } from "../types/guards"
 
 export type ExecutionDiagnostic = {
   message: string
@@ -43,10 +44,6 @@ function profileLabel(profile: string): string {
 
 function capitalise(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1)
-}
-
-function formatMemory(bytes: number): string {
-  return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : formatBytes(bytes)
 }
 
 const MEMORY_STAGE_LABELS: Record<string, string> = {
@@ -154,12 +151,8 @@ export function buildExecutionStrategyDiagnostic(
   return { message, details, kind: "strategy" }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value)
-}
-
 function rawErrorDetail(error: unknown): unknown {
-  if (!isRecord(error)) return null
+  if (!isPlainObject(error)) return null
   if ("rawDetail" in error) return error.rawDetail
   return "detail" in error ? error.detail : null
 }
@@ -175,7 +168,7 @@ function stringField(fields: Record<string, unknown>, keys: string[]): string | 
 export function executionErrorDetailMessage(error: unknown): string | null {
   const detail = rawErrorDetail(error)
   if (typeof detail === "string" && detail.trim()) return detail
-  if (isRecord(detail)) {
+  if (isPlainObject(detail)) {
     const authored = stringField(detail, ["message", "detail"])
     if (authored) return authored
     if (detail.error_code === "memory_limit") return memoryLimitDetailMessage(detail)
@@ -196,7 +189,7 @@ function byteField(fields: Record<string, unknown>, key: string): number | null 
 function memoryLimitDetailMessage(detail: Record<string, unknown>): string {
   const memory = (key: string) => {
     const bytes = byteField(detail, key)
-    return bytes === null ? null : formatMemory(bytes)
+    return bytes === null ? null : formatBytes(bytes)
   }
   const ranOutOfMemory = (sentence: string) => `${sentence} ${REDUCE_MEMORY_ACTION}`
   switch (detail.reason) {
@@ -239,13 +232,13 @@ function memoryLimitDetailMessage(detail: Record<string, unknown>): string {
 
 export function executionMetricsFromError(error: unknown): ExecutionMetrics | null {
   const detail = rawErrorDetail(error)
-  if (!isRecord(detail) || !isRecord(detail.execution_metrics)) return null
+  if (!isPlainObject(detail) || !isPlainObject(detail.execution_metrics)) return null
   return detail.execution_metrics as unknown as ExecutionMetrics
 }
 
 export function executionTerminalReasonFromError(error: unknown): string | null {
   const detail = rawErrorDetail(error)
-  if (isRecord(detail)) {
+  if (isPlainObject(detail)) {
     const terminalReason = stringField(detail, ["terminal_reason"])
     if (terminalReason) return terminalReason
     const errorCode = stringField(detail, ["error_code"])
@@ -377,10 +370,10 @@ export function buildMemoryPressureDiagnostic(
   if (!event) return null
 
   const details = [
-    `Memory used: ${formatMemory(event.rss_bytes)}; limit: ${formatMemory(event.rss_limit_bytes)}`,
+    `Memory used: ${formatBytes(event.rss_bytes)}; limit: ${formatBytes(event.rss_limit_bytes)}`,
     event.headroom_bytes < 0
-      ? `Memory over limit: ${formatMemory(-event.headroom_bytes)}`
-      : `Memory remaining: ${formatMemory(event.headroom_bytes)}`,
+      ? `Memory over limit: ${formatBytes(-event.headroom_bytes)}`
+      : `Memory remaining: ${formatBytes(event.headroom_bytes)}`,
   ]
   if (event.stage) {
     const stage = MEMORY_STAGE_LABELS[event.stage] ?? capitalise(event.stage.replace(/_/g, " "))

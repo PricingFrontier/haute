@@ -1584,7 +1584,7 @@ describe("OptimiserConfig", () => {
             config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
           }))
       expect(screen.getByText("Iteration 9 of 20")).toBeInTheDocument()
-      expect(screen.getByText("12s")).toBeInTheDocument()
+      expect(screen.getByText("12 s")).toBeInTheDocument()
     })
 
     it("shows structured memory-pressure diagnostics during solve progress", () => {

@@ -4,8 +4,8 @@ import {
   getRuns,
   getModels,
   getModelVersions,
-  ApiError,
 } from "../api/client"
+import { apiErrorMessage } from "../api/errors"
 import { useMlflowDestinations } from "../stores/useSettingsStore"
 import {
   effectiveMlflowDestination,
@@ -158,8 +158,6 @@ export function useMlflowBrowser(opts: MlflowBrowserOptions): MlflowBrowserState
   const modelVersionsFor = inScope(versionsState) ? versionsState.for : ""
   const browseExpId = browse.scope === scope ? browse.id : ""
 
-  const errorMsg = (e: Error) => e instanceof ApiError ? e.detail || e.message : e.message
-
   const setBrowseExpId = useCallback<React.Dispatch<React.SetStateAction<string>>>((value) => {
     setBrowse((prev) => {
       const current = prev.scope === scope ? prev.id : ""
@@ -197,7 +195,7 @@ export function useMlflowBrowser(opts: MlflowBrowserOptions): MlflowBrowserState
       .catch((e: Error) => {
         if (fetchedExperiments.current === scope) fetchedExperiments.current = null
         setExperimentsState((prev) => prev.request === request
-          ? { ...prev, items: [], loading: false, error: errorMsg(e) || "Failed to load experiments" }
+          ? { ...prev, items: [], loading: false, error: apiErrorMessage(e, "Failed to load experiments") }
           : prev)
       })
   }, [destination, scope])
@@ -227,7 +225,7 @@ export function useMlflowBrowser(opts: MlflowBrowserOptions): MlflowBrowserState
           fetchedRunsFor.current = { scope: null, expId: "" }
         }
         setRunsState((prev) => prev.request === request
-          ? { ...prev, items: [], loading: false, error: errorMsg(e) || "Failed to load runs" }
+          ? { ...prev, items: [], loading: false, error: apiErrorMessage(e, "Failed to load runs") }
           : prev)
       })
   }, [destination, runTag, scope])
@@ -252,7 +250,7 @@ export function useMlflowBrowser(opts: MlflowBrowserOptions): MlflowBrowserState
       .catch((e: Error) => {
         if (fetchedModels.current === scope) fetchedModels.current = null
         setModelsState((prev) => prev.request === request
-          ? { ...prev, items: [], loading: false, error: errorMsg(e) || "Failed to load models" }
+          ? { ...prev, items: [], loading: false, error: apiErrorMessage(e, "Failed to load models") }
           : prev)
       })
   }, [destination, scope])
@@ -283,7 +281,7 @@ export function useMlflowBrowser(opts: MlflowBrowserOptions): MlflowBrowserState
           fetchedVersionsFor.current = { scope: null, model: "" }
         }
         setVersionsState((prev) => prev.request === request
-          ? { ...prev, items: [], loading: false, error: errorMsg(e) || "Failed to load versions" }
+          ? { ...prev, items: [], loading: false, error: apiErrorMessage(e, "Failed to load versions") }
           : prev)
       })
   }, [destination, scope])

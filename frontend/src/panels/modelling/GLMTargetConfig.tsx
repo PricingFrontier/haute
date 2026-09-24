@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import type { OnUpdateConfig } from "../editors"
-import { ApiError } from "../../api/client"
+import { apiErrorMessage } from "../../api/errors"
 import type { DispersionParam } from "../../api/types"
 import { configField } from "../../utils/configField"
 import { effectiveMetrics } from "../../utils/trainingObjective"
@@ -105,8 +105,7 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
     } catch (e) {
       // Prefer the backend's actionable detail ("GLM config has no factors…")
       // over the generic "HTTP 400" message.
-      const detail = e instanceof ApiError ? e.detail : undefined
-      const message = detail || (e instanceof Error ? e.message : String(e))
+      const message = apiErrorMessage(e)
       if (estimate.signal.aborted) {
         // The panel has closed, so only a cancellation that failed is news: the
         // estimate may still be running, and a toast outlives the panel.

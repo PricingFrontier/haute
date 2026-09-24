@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react"
 import { Check, ChevronDown, Loader2 } from "lucide-react"
-import { getWarehouses, getCatalogs, getSchemas, getTables, ApiError } from "../../api/client"
+import { getWarehouses, getCatalogs, getSchemas, getTables } from "../../api/client"
+import { apiErrorMessage } from "../../api/errors"
 import { CommittedTextField } from "../../components/form"
 
 // ─── WarehousePicker ──────────────────────────────────────────────
@@ -41,7 +42,7 @@ export function WarehousePicker({
         setLoading(false)
       })
       .catch((e: Error) => {
-        setError(e instanceof ApiError ? e.detail || e.message : e.message)
+        setError(apiErrorMessage(e))
         setLoading(false)
       })
   }
@@ -162,14 +163,12 @@ export function CatalogTablePicker({
   const [loadingTables, setLoadingTables] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const errorMsg = (e: Error) => e instanceof ApiError ? e.detail || e.message : e.message
-
   const refreshCatalogs = () => {
     setLoadingCatalogs(true)
     setError(null)
     getCatalogs()
       .then((data) => { setCatalogs(data.catalogs || []); setLoadingCatalogs(false) })
-      .catch((e: Error) => { setError(errorMsg(e)); setLoadingCatalogs(false) })
+      .catch((e: Error) => { setError(apiErrorMessage(e)); setLoadingCatalogs(false) })
   }
 
   const refreshSchemas = (cat: string) => {
@@ -177,7 +176,7 @@ export function CatalogTablePicker({
     setError(null)
     getSchemas(cat)
       .then((data) => { setSchemas(data.schemas || []); setLoadingSchemas(false) })
-      .catch((e: Error) => { setError(errorMsg(e)); setLoadingSchemas(false) })
+      .catch((e: Error) => { setError(apiErrorMessage(e)); setLoadingSchemas(false) })
   }
 
   const refreshTables = (cat: string, sch: string) => {
@@ -185,7 +184,7 @@ export function CatalogTablePicker({
     setError(null)
     getTables(cat, sch)
       .then((data) => { setTables(data.tables || []); setLoadingTables(false) })
-      .catch((e: Error) => { setError(errorMsg(e)); setLoadingTables(false) })
+      .catch((e: Error) => { setError(apiErrorMessage(e)); setLoadingTables(false) })
   }
 
   const selectStyle = {

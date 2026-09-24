@@ -1,6 +1,7 @@
 /** Assistant endpoints kept in the lazy panel's split API chunk. */
 
 import { post, postRawStream, request } from "./client"
+import { isPlainObject } from "../types/guards"
 
 export interface AssistantStatus {
   configured: boolean
@@ -28,16 +29,12 @@ export type AssistantStreamEvent =
   | { type: "failed"; message: string }
   | { type: "cancelled" }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
 function invalidAssistantPayload(path: string, expected: string): never {
   throw new Error(`Invalid assistant payload at ${path}: expected ${expected}`)
 }
 
 function requireRecord(value: unknown, path: string): Record<string, unknown> {
-  if (!isRecord(value)) invalidAssistantPayload(path, "an object")
+  if (!isPlainObject(value)) invalidAssistantPayload(path, "an object")
   return value
 }
 

@@ -8,7 +8,7 @@
 | `frontend/src/utils/editorIdentities.ts` | Builds bounded identity requests, applies exact-order server responses, and attaches authoritative node/edge metadata without mutating the candidate graph. |
 | `frontend/src/main.tsx` | Local-session bootstrap: establishes the browser-managed HttpOnly cookie before mounting `App` inside `StrictMode` + a root `ErrorBoundary`; renders an actionable reload state if the local backend is unavailable. |
 | `frontend/src/api/client.ts` | Typed `fetch()` wrapper: same-origin cookie credentials, single-flight `bootstrapHauteSession`, retry/backoff, timeout, abort handling, session-expiry event, and one function per backend endpoint. Exports `request`/`post` so split-chunk endpoint modules can reuse the same fetch machinery, and a raw-stream helper (cookie credentials + `ApiError` mapping, no JSON parse) for split modules with non-JSON transports — the assistant SSE stream (see [frontend-assistant-ui](../frontend-assistant-ui/low-level.md)). Modelling train/status/estimate methods dynamically import `types/trainGuards.ts` only after their response arrives so the large training contract stays out of the initial bundle. |
-| `frontend/src/api/errors.ts` | Reads structured API error details: `apiErrorCode` returns a detail object's `error_code` so callers dispatch on the code rather than the HTTP status, and `apiErrorMessage` returns the user-facing text (a structured detail's `message`, else the string detail via `executionErrorDetailMessage`, else a non-HTTP error's message, else the caller's fallback) so no surface renders `ApiError: HTTP <status>`. |
+| `frontend/src/api/errors.ts` | Reads structured API error details: `apiErrorCode` returns a detail object's `error_code` so callers dispatch on the code rather than the HTTP status, and `apiErrorMessage` returns the user-facing text (a structured detail's `message`, else the string detail via `executionErrorDetailMessage`, else a non-HTTP error's message, else the caller's fallback) so no surface renders `ApiError: HTTP <status>`. It is the one error-text helper: without a fallback, an HTTP error with no detail gives its own message and a non-error value its string form. |
 | `frontend/src/api/dispersion.ts` | GLM dispersion-estimation endpoints (NB `theta` / Tweedie `var_power`): `estimateGlmDispersion`, `getDispersionStatus`, `cancelDispersion`, and `runDispersionEstimate` (starts + polls to completion, resolving with the estimated number). Split out of `client.ts` so its code — reachable only from the lazy-loaded modelling config panel — stays out of the initial JS bundle; built on `client.ts`'s exported `request`/`post` and owns its own runtime parsers (`parseDispersionEstimateResponse`, `parseDispersionStatusResponse`) rather than routing through `types/guards.ts`. |
 | `frontend/src/api/types.ts` | Request/response TypeScript interfaces mirrored from backend contracts, including nullable directory sizes and canonical evaluation/tuning reports and previews; its execution-strategy pilot aliases the generated declarations while normalising nullable reason fields for the stable UI shape. It re-exports canonical node/trace types and owns the runtime `JOB_STATUS_VALUES`, `FAILED_JOB_STATUSES`, and `TERMINAL_JOB_STATUSES` shared by guards and pollers. |
 | `frontend/src/types/node.ts` | Canonical persisted `PIPELINE_NODE_TYPES` vocabulary and `NodeTypeValue`; `HauteNodeData`/`PipelineFlowNode`/`SubmodelNodeData` shapes, `ColumnInfo`, `BackendNodeStatus`/`NodeStatus`, and the `nodeData()`/`effectiveNodeType()` accessors used everywhere a React Flow `Node.data` needs typed access. |
@@ -32,9 +32,10 @@
 | `frontend/src/theme/colors.ts` | CSS-variable-backed colour token constants (`STRUCTURE_COLORS`, `STATUS_COLORS`, `MODEL_COLORS`, `CHART_COLORS`, `SYNTAX_COLORS`) plus the fixed `NODE_GROUP_COLORS`, `PIVOT_CHART_COLORS`, and `PIVOT_CONDITIONAL_FORMAT_COLORS` visualisation palettes. |
 | `frontend/src/components/MlflowDestinationSelector.tsx` | The per-node MLflow destination control mounted by the modelling Export pane, the optimiser config section and both MLflow-sourced read-node editors: a labelled radio group of the three destinations in fixed order, the selected option following the node's effective destination (the remote it names, else Local folder; there is no automatic choice and no "Use auto" control), a connection light and tooltip per remote from the inventory, greyed unconfigured remotes that open the settings modal instead of being selected, the resolved-destination line, and re-check and settings buttons. It only reads and reports the node value through `value`/`onChange`; its store mutations are limited to the inventory fetch and invalidation. |
 | `frontend/src/utils/mlflowDestinations.ts` | Pure MLflow destination helpers shared by every node surface: the ordered destination keys and labels, `effectiveMlflowDestination` (`databricks` or `server` when stored, else `local`), `mlflowDestinationConfigValue` (the stored value for a choice: the remote's key, or `undefined` for Local folder so the key is removed), `mlflowDestinationEntry`, `mlflowLight` (green/amber/grey/pending; local has no light), `mlflowLogAvailability` (loading, package missing, or the node's own key unconfigured make logging unavailable; a failed probe does not), and `defaultExperimentName` (`/Shared/haute/<label>` for Databricks, else the label). No store imports, so panels and editors can derive state from an inventory snapshot. |
-| `frontend/src/utils/formatBytes.ts` | Byte count → `B`/`KB`/`MB` string. |
+| `frontend/src/utils/formatBytes.ts` | The byte formatters: `formatBytes` (byte count → `B`/`KB`/`MB`/`GB` with one decimal) and `formatByteSize` (budget-sized values up to `TB`, whole numbers from ten). |
 | `frontend/src/utils/formatTime.ts` | Unix timestamp → `HH:MM` / coarse relative-time label. |
-| `frontend/src/utils/formatValue.ts` | Renders backend's non-finite-float sentinel (`{__haute_type__: "non_finite_float", ...}`) as `NaN`/`Infinity`/`-Infinity`. |
+| `frontend/src/utils/objectLiteral.ts` | `isObjectLiteral`: true only for a plain object literal (`{}` or a null-prototype object), the object shape a JSON config holds. |
+| `frontend/src/utils/formatValue.ts` | Renders backend's non-finite-float sentinel (`{__haute_type__: "non_finite_float", ...}`) as `NaN`/`Infinity`/`-Infinity`, and owns `formatDuration`, the one seconds formatter (`0.4 s`, `12 s`, `2m 05s`). |
 | `frontend/src/utils/color.ts` | Hex → `rgba(...)` string with alpha, for CSS-var-driven accent colours. |
 | `frontend/src/utils/dtypeColors.ts` | Dtype string → Tailwind text-colour class for column-type badges. |
 | `frontend/src/utils/portableKey.ts` | Browser-owned persistence key; intentionally not Python-compatible or reversible. Executable identity comes only from server metadata. |
@@ -812,11 +813,21 @@ classifier is an uncovered pure helper.  `frontend/src/index.css` is pinned by
 outside `:root`, no dangling `var()` references, Tailwind-provided-token emission and
 shadow guards).
 
-Known gaps: `frontend/src/components/Toolbar.tsx`'s inline timing/memory formatting helpers
-(`formatTiming`/`formatMemory`, distinct from and not delegating to
-`frontend/src/utils/formatTime.ts`/`frontend/src/utils/formatBytes.ts`): `formatTiming` is
-explicitly verified by unit tests in `frontend/src/components/__tests__/Toolbar.test.tsx`,
-while `formatMemory` maintains indirect coverage via the breakdown dropdown.
+Known gaps: `frontend/src/components/Toolbar.tsx`'s inline millisecond timing helper
+(`formatTiming`) is explicitly verified by unit tests in
+`frontend/src/components/__tests__/Toolbar.test.tsx`; its memory breakdown uses `formatBytes`.
+
+**One helper per repeated concern** (`frontend/src/__tests__/lint/helperBans.test.ts` runs ESLint on probes). Error text comes from `apiErrorMessage`, byte counts from
+`formatBytes`/`formatByteSize`, durations in seconds from `formatDuration`, and the
+non-array-object check from `isPlainObject`/`expectPlainObject` in `types/guards.ts`. ESLint's
+`no-restricted-syntax` rejects a local function named `errorMessage`, `errorMsg`, `errorDetail`,
+`requestErrorDetail` or `previewErrorDetail` (declared or assigned; the tracing hook's raw-detail
+text and the repair dialog's `code: message` text are marked exceptions until FSH-R02 folds them in), the
+`e.detail || e.message` idiom, a local `formatBytes`/`formatMemory`/`formatSize`/`formatDuration`/
+`formatElapsed`, and a local `isRecord`/`asRecord`/`isPlainRecord`/`isPlainObject`/`isObjectLiteral`
+outside the owning modules. `utils/objectLiteral.ts`'s `isObjectLiteral` is the stricter check a
+JSON config needs (a plain object literal, not a class instance); the Explore chart and pivot
+configs, `utils/banding.ts` and the rating table utilities use it.
 `frontend/src/__tests__/semanticColorTokenization.test.ts` enforces that live components obtain
 fixed colour literals from `frontend/src/theme/colors.ts` instead of redeclaring them locally.
 

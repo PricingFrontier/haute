@@ -19,11 +19,11 @@ import useGraphStore from "../../stores/useGraphStore"
 import { waitForJob } from "../../hooks/jobPollingController"
 import {
   buildExecutionFailureMessage,
-  executionErrorDetailMessage,
   executionJobStatusFromReason,
   executionMetricsFromError,
   executionTerminalReasonFromError,
 } from "../../utils/executionDiagnostics"
+import { apiErrorMessage } from "../../api/errors"
 import type { OnUpdateConfig } from "../editors"
 
 const POLL_INTERVAL_MS = 1_000
@@ -148,20 +148,6 @@ function statusFailureMessage(status: FrontierAutoRangeStatusResponse): string {
     terminalReason: status.terminal_reason,
     errorCode: status.error_code,
   })
-}
-
-function requestErrorDetail(error: unknown): string {
-  const detailMessage = executionErrorDetailMessage(error)
-  if (detailMessage) return detailMessage
-  if (
-    error
-    && typeof error === "object"
-    && "detail" in error
-    && typeof error.detail === "string"
-  ) {
-    return error.detail
-  }
-  return error instanceof Error ? error.message : String(error)
 }
 
 function validateRanges(
@@ -359,7 +345,7 @@ export function useOptimiserAutoRange({
       dispatch({
         type: "failure",
         generation: active.generation,
-        error: buildExecutionFailureMessage(requestErrorDetail(error), metrics, {
+        error: buildExecutionFailureMessage(apiErrorMessage(error), metrics, {
           prefix: "Auto range failed",
           terminalReason: reason,
         }),

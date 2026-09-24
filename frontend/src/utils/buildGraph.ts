@@ -2,6 +2,7 @@ import type { Node, Edge } from "@xyflow/react"
 import type { SimpleNode, SimpleEdge } from "../panels/editors/_shared"
 import type { PipelineEdge } from "../types/node"
 import { toCanonicalGraphPayload } from "./graphSnapshot"
+import { isPlainObject } from "../types/guards"
 
 /** Build the graph payload expected by backend API calls. */
 export function buildGraph(
@@ -38,12 +39,8 @@ const VOLATILE_NODE_DATA_KEYS = new Set([
   "_diffStatus",
 ])
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-}
-
 function nodeForRequestIdentity(node: unknown): unknown {
-  if (!isRecord(node) || !isRecord(node.data)) return node
+  if (!isPlainObject(node) || !isPlainObject(node.data)) return node
   return {
     ...node,
     data: Object.fromEntries(
@@ -53,10 +50,10 @@ function nodeForRequestIdentity(node: unknown): unknown {
 }
 
 function submodelsForRequestIdentity(submodels: unknown): unknown {
-  if (!isRecord(submodels)) return submodels
+  if (!isPlainObject(submodels)) return submodels
   return Object.fromEntries(
     Object.entries(submodels).map(([name, definition]) => {
-      if (!isRecord(definition) || !isRecord(definition.graph)) {
+      if (!isPlainObject(definition) || !isPlainObject(definition.graph)) {
         return [name, definition]
       }
       return [

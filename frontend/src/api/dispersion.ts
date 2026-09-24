@@ -11,6 +11,7 @@
 
 import { waitForJob } from "../hooks/jobPollingController"
 import { ApiError, post, request } from "./client"
+import { expectPlainObject } from "../types/guards"
 import { JOB_STATUS_VALUES, TERMINAL_JOB_STATUSES } from "./types"
 import type {
   DispersionEstimateStart,
@@ -19,13 +20,6 @@ import type {
   GraphPayload,
   JobStatus,
 } from "./types"
-
-function asRecord(value: unknown, parser: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`${parser}: expected an object`)
-  }
-  return value as Record<string, unknown>
-}
 
 function numberOrNull(obj: Record<string, unknown>, key: string): number | null {
   const value = obj[key]
@@ -38,7 +32,7 @@ function stringOrNull(obj: Record<string, unknown>, key: string): string | null 
 }
 
 function parseDispersionEstimateResponse(value: unknown): DispersionEstimateStart {
-  const obj = asRecord(value, "parseDispersionEstimateResponse")
+  const obj = expectPlainObject("parseDispersionEstimateResponse", value)
   if (obj.status !== "started" || typeof obj.job_id !== "string") {
     throw new Error(
       `parseDispersionEstimateResponse: unexpected payload (status ${String(obj.status)})`,
@@ -48,7 +42,7 @@ function parseDispersionEstimateResponse(value: unknown): DispersionEstimateStar
 }
 
 function parseDispersionStatusResponse(value: unknown): DispersionEstimateStatus {
-  const obj = asRecord(value, "parseDispersionStatusResponse")
+  const obj = expectPlainObject("parseDispersionStatusResponse", value)
   if (
     typeof obj.status !== "string"
     || !JOB_STATUS_VALUES.includes(obj.status as JobStatus)
