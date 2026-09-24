@@ -42,6 +42,7 @@ import {
 } from "../utils/submodelRuntimeTarget"
 import { executionWarningNodeIds } from "../utils/executionDiagnostics"
 import { apiErrorMessage } from "../api/errors"
+import { useDebouncedCallback } from "./useDebouncedCallback"
 export { columnFingerprint } from "../utils/columnFingerprint"
 
 interface PipelineAPIParams {
@@ -415,7 +416,6 @@ export default function usePipelineAPI({
   const [previewBusy, setPreviewBusy] = useState(false)
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, NodeStatus>>({})
   const previewAbort = useRef<AbortController | null>(null)
-  const previewDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
   const previewRequestSeq = useRef(0)
   const saveRequestSeq = useRef(0)
   const appliedSaveSeq = useRef(0)
@@ -805,6 +805,10 @@ export default function usePipelineAPI({
     fetchPreviewImmediateRef.current = fetchPreviewImmediate
   }, [fetchPreviewImmediate])
 
+  // A node preview waits for the selection to settle; Optimiser clicks pass a
+  // longer per-call delay.
+  const previewDebounce = useDebouncedCallback(fetchPreviewImmediate, 200)
+
   const fetchPreview = useCallback((node: Node, options: FetchPreviewOptions = {}) => {
     const requestId = ++previewRequestSeq.current
     // Cancel any previous node preview as soon as the user changes
@@ -812,10 +816,7 @@ export default function usePipelineAPI({
     // work should not keep running during that debounce window.
     previewAbort.current?.abort()
     previewAbort.current = null
-    if (previewDebounce.current) {
-      clearTimeout(previewDebounce.current)
-      previewDebounce.current = null
-    }
+    previewDebounce.cancel()
     if (!canPreviewNode(node)) {
       setPreviewData(null)
       setPreviewBusy(false)
@@ -854,22 +855,16 @@ export default function usePipelineAPI({
     } else {
       setPreviewData(makePreviewData(node.id, nodeLabel(node), { status: "loading" }))
     }
-    previewDebounce.current = setTimeout(() => {
-      previewDebounce.current = null
-      fetchPreviewImmediate(node, requestId)
-    }, options.debounceMs ?? 200)
-  }, [activeSubmodelIdentity, fetchPreviewImmediate])
+    previewDebounce.schedule([node, requestId], options.debounceMs)
+  }, [activeSubmodelIdentity, fetchPreviewImmediate, previewDebounce])
 
   const cancelPreview = useCallback(() => {
     ++previewRequestSeq.current
     previewAbort.current?.abort()
     previewAbort.current = null
     setPreviewBusy(false)
-    if (previewDebounce.current) {
-      clearTimeout(previewDebounce.current)
-      previewDebounce.current = null
-    }
-  }, [])
+    previewDebounce.cancel()
+  }, [previewDebounce])
 
   /** Lazily preview upstream nodes that are missing _columns, then preview the target node. */
   const refreshPreview = useCallback((node: Node) => {
@@ -878,10 +873,7 @@ export default function usePipelineAPI({
     previewAbort.current = null
     const controller = new AbortController()
     previewAbort.current = controller
-    if (previewDebounce.current) {
-      clearTimeout(previewDebounce.current)
-      previewDebounce.current = null
-    }
+    previewDebounce.cancel()
     if (!canPreviewNode(node)) {
       controller.abort()
       previewAbort.current = null
@@ -1051,7 +1043,7 @@ export default function usePipelineAPI({
           previewAbort.current = null
         }
       })
-  }, [fetchPreviewImmediate, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews])
+  }, [fetchPreviewImmediate, previewDebounce, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews])
 
   const previewNodeFrame = useCallback((nodeId: string, portLabel: string) => {
     const node = graphRef.current.nodes.find((n) => n.id === nodeId)
@@ -1059,10 +1051,7 @@ export default function usePipelineAPI({
     const requestId = ++previewRequestSeq.current
     previewAbort.current?.abort()
     previewAbort.current = null
-    if (previewDebounce.current) {
-      clearTimeout(previewDebounce.current)
-      previewDebounce.current = null
-    }
+    previewDebounce.cancel()
     const controller = new AbortController()
     previewAbort.current = controller
     const label = nodeLabel(node)
@@ -1164,7 +1153,7 @@ export default function usePipelineAPI({
         if (previewRequestSeq.current === requestId) setPreviewBusy(false)
         if (previewAbort.current === controller) previewAbort.current = null
       })
-  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, addToast, ensureSnapshotsForPreviews])
+  }, [previewDebounce, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, addToast, ensureSnapshotsForPreviews])
 
   // Returns true when the save succeeded, false on failure — callers that
   // chain follow-on work (for example Commit) await this so they only proceed
@@ -1341,7 +1330,6 @@ export default function usePipelineAPI({
     return () => {
       invalidatePreviewRequests()
       previewAbort.current?.abort()
-      if (previewDebounce.current) clearTimeout(previewDebounce.current)
     }
   }, [invalidatePreviewRequests])
 

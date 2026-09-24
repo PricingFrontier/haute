@@ -104,7 +104,7 @@ export default function InputSnapshotCacheButton({
       <CacheFetchButton<SnapshotButtonStatus>
         resourceKey={resourceKey}
         getStatus={() => getInputCacheStatus(payload).then(toButtonStatus).then(track)}
-        startFetch={async () => {
+        startFetch={async (_key, onProgress) => {
           const buildWait = new AbortController()
           buildWaitRef.current = buildWait
           const refresh =
@@ -120,6 +120,15 @@ export default function InputSnapshotCacheButton({
               isTerminal: (current) => TERMINAL_JOB_STATUSES.has(current.status),
               intervalMs: BUILD_POLL_INTERVAL_MS,
               signal: buildWait.signal,
+              // The wait's own statuses are the button's progress: no second poll.
+              onStatus: (current) => {
+                if (current.status !== "running") return
+                onProgress({
+                  rows: current.progress.rows,
+                  elapsed: Math.round(current.progress.elapsed_seconds),
+                  phase: current.progress.phase,
+                })
+              },
             })
           } finally {
             if (buildWaitRef.current === buildWait) buildWaitRef.current = null
@@ -134,19 +143,6 @@ export default function InputSnapshotCacheButton({
             throw new Error(job.message || "Snapshot build failed.")
           }
           return track(toButtonStatus(job.snapshot))
-        }}
-        getProgress={async () => {
-          const activeJob = activeJobRef.current
-          if (!activeJob || activeJob.resourceKey !== resourceKey) {
-            return { active: false }
-          }
-          const job = await getInputCacheJob(activeJob.jobId)
-          return {
-            active: job.status === "running",
-            rows: job.progress.rows,
-            elapsed: Math.round(job.progress.elapsed_seconds),
-            phase: job.progress.phase,
-          }
         }}
         cancelFetch={() => {
           const activeJob = activeJobRef.current

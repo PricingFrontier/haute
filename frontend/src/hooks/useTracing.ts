@@ -213,8 +213,10 @@ function stableValue(value: unknown): string {
   return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => `${JSON.stringify(key)}:${stableValue(item)}`).join(",")}}`
 }
 
-// eslint-disable-next-line no-restricted-syntax -- raw trace detail, not error text; folding it into apiErrorMessage is FSH-R02's remaining scope
-function errorDetail(err: unknown): string {
+/** The server's raw error detail for the trace panel's "Technical details"
+ *  disclosure: structured details are kept whole (keys sorted), not reduced to
+ *  the message `apiErrorMessage` would show beside them. */
+function technicalDetail(err: unknown): string {
   const detail = (err as { detail?: unknown; rawDetail?: unknown })?.rawDetail ?? (err as { detail?: unknown })?.detail
   if (typeof detail === "string") return detail
   if (detail !== undefined) return stableValue(detail)
@@ -451,11 +453,11 @@ export default function useTracing({
             ? "The cached data this preview read has changed. The preview is being refreshed - select the row again when it is ready."
             : "This row changed before it could be traced. The preview is being refreshed - select the intended row again when it is ready."
           setStoredSemanticContextToken(recoveryContextToken)
-          setStoredTraceState({ status: "error", message, detail: errorDetail(err), retryable: false })
+          setStoredTraceState({ status: "error", message, detail: technicalDetail(err), retryable: false })
           return
         }
         setStoredTraceResult(null)
-        setStoredTraceState({ status: "error", message: "Unable to trace this value. Check the details and try again.", detail: errorDetail(err), retryable: true })
+        setStoredTraceState({ status: "error", message: "Unable to trace this value. Check the details and try again.", detail: technicalDetail(err), retryable: true })
       })
       .finally(() => {
         if (traceRequestSeq.current === requestId) {

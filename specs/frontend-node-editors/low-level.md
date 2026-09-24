@@ -15,7 +15,7 @@
 | `frontend/src/components/ReadOnlyNodeConfig.tsx`, `frontend/src/components/FramesTable.tsx`, `frontend/src/components/KeyPickerModal.tsx` | Inert configuration (`NodeConfigEditor` in read-only mode with no-op callbacks, empty graph context and default panes), API-frame rows and reusable API-input key picker. |
 | `frontend/src/panels/editors/index.ts` | Public editor exports. |
 | `frontend/src/panels/editors/_shared.tsx` | Shared editor types, styles, file browser (nullable directory size, numeric file-size rendering), schema preview and the input-source bar (chips keyed by edge id, showing each edge's input name — the code argument — with the source node named in the tooltip). |
-| `frontend/src/components/ColumnTable.tsx`, `frontend/src/components/CacheFetchButton.tsx` | Reusable column-selection table and API-input cache action/status control. |
+| `frontend/src/components/ColumnTable.tsx`, `frontend/src/components/CacheFetchButton.tsx` | Reusable column-selection table and the snapshot cache action/status control. `CacheFetchButton` never polls: its `startFetch` receives an `onProgress` callback, and it shows the progress its caller reports for the current resource and build only. |
 | `frontend/src/utils/dataInputMode.ts` | Shared `dataInputIsDirect` derivation mirroring the backend's `data_input_is_direct`; drives the Data Input editor's cache surface and [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)'s `ensureInputSnapshots` orchestration. |
 | `frontend/src/panels/editors/CodeEditor.tsx`, `frontend/src/panels/editors/CodeMirrorEditor.tsx`, `frontend/src/panels/editors/shared/PolarsCodePanel.tsx`, `frontend/src/panels/editors/shared/SteppedCodePane.tsx`, `frontend/src/panels/editors/shared/PathPickerField.tsx` | Code-editor wrappers, Polars-specific panel, the shared stepped-code pane (step builder while `config.steps` is a list, otherwise the code box with the discard notice; takes the start mode and the eligible step input names), and the shared selected-path picker. |
 | `frontend/src/panels/editors/ConstantEditor.tsx`, `frontend/src/panels/editors/TransformEditor.tsx`, `frontend/src/panels/editors/EdgeJoinEditor.tsx`, `frontend/src/panels/editors/LiveSwitchEditor.tsx`, `frontend/src/panels/editors/ScenarioExpanderEditor.tsx` | Editors for scalar, transform, join, conditional-switch and scenario nodes. `TransformEditor` is the `SteppedCodePane` in `input` mode with the transform's code hint and starter code. `EdgeJoinEditor` exposes fixed canvas-derived base/join roles, atomic swap, the seven supported join modes, mutually exclusive same-name/asymmetric key forms, and advanced Polars options. |
@@ -52,7 +52,7 @@
 | `frontend/src/utils/trainingObjective.ts` | Click-time training issue aggregation owned and consumed by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md). |
 | `frontend/src/panels/editors/banding/index.ts`, `frontend/src/panels/editors/banding/bandingUtils.ts` | Banding public barrel and rule/level utility functions. |
 | `frontend/src/panels/editors/banding/BreakpointGrid.tsx`, `frontend/src/panels/editors/banding/BandingRulesGrid.tsx`, `frontend/src/panels/editors/banding/CategoricalValuePicker.tsx` | Numeric breakpoints, editable rules and categorical selection. |
-| `frontend/src/panels/editors/banding/BandingHistogram.tsx`, `frontend/src/panels/editors/banding/GenerateBandsDialog.tsx` | Histogram context and generated-band dialog. |
+| `frontend/src/panels/editors/banding/BandingHistogram.tsx`, `frontend/src/panels/editors/banding/GenerateBandsDialog.tsx` | Histogram context and generated-band dialog. The histogram draws in pixels on the shared `ResponsiveChart`/`ChartSvg` (frontend-modelling-optimiser-ui), edge to edge over exactly the binned data (no padding, so band boundaries read against the data's own ends), with compact end labels from `formatChartNumber`; a constant column is one centred bar. |
 | `frontend/src/panels/editors/RatingStepEditor.tsx` | Rating-table and combined-output orchestration, and whose levels its tables offer: the whole dataset when the node's shared data point is cached, the preview sample otherwise. Dataset levels are appended to what is already shown, the three-factor slice is held by level, and a table past `MAX_EDITABLE_TABLE_CELLS` is neither drawn nor rebuilt. |
 | `frontend/src/panels/editors/rating/useRatingLevels.ts` | Asks `/api/rating/levels`, through `useWholeDataAnswer`, about the raw factor columns the tables rate on (each once, in a stable order) and returns their levels by column. |
 | `frontend/src/panels/editors/rating/index.ts`, `frontend/src/panels/editors/rating/ratingTableUtils.ts`, `frontend/src/panels/editors/rating/cellStyles.ts` | Rating barrel, normalisation/levels/statistics/colours and cell styles. |
@@ -268,8 +268,10 @@ control; a stored `read`-mode Parquet input is snapshot-backed and renders
 the cache control like any other snapshot input. Snapshot build classification is execution metadata and is not shown
 as technical diagnostic copy in the editor. A build request carries no profile (the
 server chooses how the snapshot is built) and refreshes a ready snapshot. The adapter waits for jobs to a
-terminal result through the shared `waitForJob`, stops polling (leaving the build
-running) when it unmounts or its configuration changes, allows the active button
+terminal result through the shared `waitForJob`, reports each running status of that
+wait as the button's progress (so a build is polled once, not also by a progress
+timer), stops polling (leaving the build running) when it unmounts or its
+configuration changes, allows the active button
 action to cancel the current job,
 and keeps stale readiness reactive so `Source changed since cache — Refresh to
 update.` remains visible. Required source fields gate all build actions.
@@ -654,6 +656,19 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
   source label otherwise — so display and persisted identity cannot diverge. An unresolvable
   API-input edge renders the block header in the explicit unresolved state (parent label
   retained as identifying text plus a visible warning marker), never a normal-looking fallback.
+- The Output editor mirrors the backend's one-frame-per-array-level rule
+  ([JSON shredding](../json-shredding/high-level.md)): over the active rows (enabled, with a
+  column and a grammatical path) a frame emits at the deepest array prefix of its paths, and
+  when two frames emit at the same level a danger banner names the frames and the level and
+  says to join them upstream (for example with a Join node) or map one of them to a different
+  level. A frame whose array prefixes do not form one chain is left to its own error. Like the
+  per-frame path-conflict warning, the banner never blocks an edit; the backend validator is
+  the authority.
+- The API Input label, table-path and column name/path fields and the Output mapping path
+  field are the shared `ValidatedTextField`
+  ([frontend shared](../frontend-shared/low-level.md)): the API Input fields pass the
+  `OnUpdateConfig` result so a refused commit keeps its draft and shows `commitError`, and the
+  Output path passes its per-frame conflict warning.
 - Edge Join roles are never config values: they come exclusively from the incoming edges'
   `targetHandle="base"` / `targetHandle="join"` values and can only be exchanged by the atomic
   swap action. Creating, connecting, swapping, splitting, or deleting role edges does not write
@@ -735,7 +750,7 @@ collision preflight rejection surfaced inline via the `OnUpdateConfig` result wi
 asserted unchanged), by the editor suites
 that render `InputSourcesBar` (`ModelScoreEditor`, `OptimiserApplyEditor`,
 `ScenarioExpanderEditor`, `BandingEditor`, and the hover suite), by the OutputEditor suite's
-name-equals-`framePortId` and unresolved-block-header cases, and by
+name-equals-`framePortId`, unresolved-block-header and same-array-level banner cases, and by
 `frontend/src/utils/__tests__/apiInputPorts.test.ts` for the shared `edgeInputName`
 derivation. Every suite constructing `InputSource` fixtures (Transform, RatingStep, LiveSwitch,
 ScenarioExpander, ModelScore, OptimiserApply, Banding, ExternalFile, ExploreCode, and the

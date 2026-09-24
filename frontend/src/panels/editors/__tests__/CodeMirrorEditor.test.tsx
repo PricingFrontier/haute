@@ -90,6 +90,30 @@ describe("CodeMirrorEditor", () => {
     expect(onChange).toHaveBeenCalledTimes(1)
   })
 
+  it("commits a pending local document change when the editor unmounts", async () => {
+    const onChange = vi.fn()
+    let editorView: EditorView | null = null
+
+    const { unmount } = render(
+      <CodeMirrorEditor
+        defaultValue=""
+        onChange={onChange}
+        onEditorView={(view) => {
+          editorView = view
+        }}
+      />,
+    )
+
+    await act(async () => {
+      editorView!.dispatch({ changes: { from: 0, insert: "df = x" } })
+    })
+    expect(onChange).not.toHaveBeenCalled()
+
+    unmount()
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledWith("df = x")
+  })
+
   it("does not emit onChange for external value syncs", async () => {
     const onChange = vi.fn()
     let editorView: EditorView | null = null

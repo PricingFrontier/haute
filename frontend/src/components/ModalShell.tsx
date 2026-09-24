@@ -11,6 +11,8 @@ export interface ModalShellProps {
   extraCloseKeys?: string[]
   /** Width class for the inner panel (default: "w-[360px]") */
   width?: string
+  /** Centre the panel (default), or pin it near the top like a command palette. */
+  placement?: "center" | "top"
   /** data-testid applied to the outer backdrop (for E2E tests) */
   testId?: string
   children: ReactNode
@@ -36,7 +38,7 @@ function isAvailableForFocus(element: HTMLElement): boolean {
  * Shared modal shell: full-screen overlay with backdrop click,
  * Escape key handling, focus trapping, and a centred panel.
  *
- * Used by SubmodelDialog, RenameDialog, and KeyboardShortcuts.
+ * Used by the application dialogs and the node-search palette.
  */
 export default function ModalShell({
   active = true,
@@ -44,6 +46,7 @@ export default function ModalShell({
   onClose,
   extraCloseKeys,
   width = "w-[360px]",
+  placement = "center",
   testId,
   children,
 }: ModalShellProps) {
@@ -131,7 +134,11 @@ export default function ModalShell({
     <div
       ref={containerRef}
       data-testid={testId}
-      className={active ? "fixed inset-0 z-50 flex items-center justify-center" : "contents"}
+      className={
+        active
+          ? `fixed inset-0 z-50 flex justify-center ${placement === "top" ? "items-start pt-[3vh]" : "items-center"}`
+          : "contents"
+      }
       role={active ? "dialog" : undefined}
       aria-modal={active ? true : undefined}
       aria-label={active ? ariaLabel : undefined}

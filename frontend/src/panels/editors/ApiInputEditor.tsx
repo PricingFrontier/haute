@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from "react"
+import { useMemo, useState } from "react"
 import { AlertTriangle, Radio, Check, HelpCircle, KeyRound, Plus, X } from "lucide-react"
 import { SchemaPreview } from "./_shared"
 import type { OnUpdateConfig, OnUpdateConfigResult } from "./_shared"
@@ -44,6 +44,7 @@ import {
 import FramesTable, { type FramesTableRow } from "../../components/FramesTable"
 import KeyPickerModal from "../../components/KeyPickerModal"
 import Tooltip from "../../components/Tooltip"
+import { ValidatedTextField } from "../../components/form"
 
 // The re-infer merge is `reconcileInferredTables` (apiInputInherit.ts): the
 // column-level reconciliation that supersedes the old whole-column-array
@@ -1031,7 +1032,7 @@ function TableBlock({
             refused with visible validation instead of ever reaching
             config (where a per-keystroke commit used to destroy the
             edges bound to a connected frame). */}
-        <CommittedTextInput
+        <ValidatedTextField
           dataTestId={`${testIdPrefix}-label`}
           value={table.label}
           onCommit={(label) => onUpdate({ label })}
@@ -1045,7 +1046,7 @@ function TableBlock({
             color: "var(--text-primary)",
           }}
         />
-        <CommittedTextInput
+        <ValidatedTextField
           dataTestId={`${testIdPrefix}-path`}
           value={table.path}
           onCommit={(path) => onUpdate({ path })}
@@ -1197,7 +1198,7 @@ function ColumnRow({
         checked={col.selected}
         onChange={(e) => onUpdate({ selected: e.target.checked })}
       />
-      <CommittedTextInput
+      <ValidatedTextField
         dataTestId={`${testIdPrefix}-name`}
         value={col.name}
         onCommit={(name) => onUpdate({ name })}
@@ -1222,7 +1223,7 @@ function ColumnRow({
           </span>
         </Tooltip>
       )}
-      <CommittedTextInput
+      <ValidatedTextField
         dataTestId={`${testIdPrefix}-path`}
         value={col.path}
         onCommit={(path) => onUpdate({ path })}
@@ -1303,30 +1304,6 @@ function ColumnRow({
   )
 }
 
-// ─── CommittedTextInput ───────────────────────────────────────────
-//
-// CODE_REVIEW W1.5 (paths) + W1.3/W1.4 (labels) — schema-identity text
-// fields buffer locally and commit on blur or Enter instead of writing
-// to config per keystroke. The old per-keystroke scheme had coupled
-// defects: (1) row keys derived from the path remounted the row on
-// each committed keystroke and the input lost focus; (2) every
-// half-typed value reached the config, churning structuralVersion
-// downstream; (3) for LABELS — which double as React Flow handle ids /
-// backend frame names — each keystroke was a live frame-identity change
-// that destroyed the edges bound to a connected frame; (4) a
-// transiently blank path/label silently destroyed config via readV2.
-//
-// `validate` closes (4) for deliberate edits too: an invalid candidate
-// (blank path; blank/duplicate/sanitised-colliding label; blank or
-// per-table-duplicate column name — W1.9) is REFUSED at the commit
-// boundary — the draft and a visible error stay in place so the user
-// can fix or revert, and nothing destructive ever reaches config. When
-// idle, the committed value itself is validated, so invalid states
-// arriving from disk or an infer-merge surface without any interaction
-// — load-bearing now that `readV2` KEEPS blank-path/blank-name entries
-// (default read path) instead of silently dropping them: the kept entry
-// renders here and this validation is what makes it visible/repairable.
-
 // ─── INPUT path grammar validation ────────────────────────────────
 //
 // Previously the table/column path inputs only `requireNonBlank` — the INPUT
@@ -1388,91 +1365,4 @@ function attributesGroups(
     ...shallower,
     { ancestorPath: table.path, ancestorLabel: "this level", candidates: sameLevel },
   ]
-}
-
-function CommittedTextInput({
-  value,
-  onCommit,
-  validate,
-  commitError = null,
-  dataTestId,
-  containerClassName,
-  className,
-  style,
-}: {
-  /** The committed value from config — the source of truth when idle. */
-  value: string
-  /** Called once per commit boundary (blur / Enter) with the final value. */
-  onCommit: (next: string) => OnUpdateConfigResult
-  /** User-facing error for an invalid candidate; null = valid. Invalid
-   * candidates are never committed. */
-  validate: (candidate: string) => string | null
-  dataTestId: string
-  containerClassName: string
-  className: string
-  style: CSSProperties
-  /** Graph-level rejection from the commit owner, distinct from local validation. */
-  commitError?: string | null
-}) {
-  // Raw edit buffer; null = not editing, render the committed value.
-  const [draft, setDraft] = useState<string | null>(null)
-  // External committed-value changes win over a stale draft (React's
-  // adjust-state-on-render pattern). This matters because rows use
-  // positional keys: after removing the row above, this instance is
-  // adopted by the row that slides up, and the dead row's half-typed
-  // draft must never be shown for — or committed into — the survivor.
-  // Same for a confirmed re-infer replacing the tables wholesale.
-  const [lastValue, setLastValue] = useState(value)
-  if (lastValue !== value) {
-    setLastValue(value)
-    setDraft(null)
-  }
-  const shown = draft ?? value
-  const validationError = validate(shown)
-  const error = validationError ?? commitError
-  const commit = () => {
-    if (draft === null) return
-    // Skip no-op commits: a draft equal to the committed value would
-    // only churn config/structuralVersion without changing anything.
-    if (draft === value) {
-      setDraft(null)
-      return
-    }
-    // Refuse invalid commits — keep the draft and the visible error so
-    // the user sees exactly what was rejected and why. Failing loud at
-    // the editor beats a backend 422 at save or a KeyError at run.
-    if (validate(draft) !== null) return
-    const result = onCommit(draft)
-    if (result.ok) setDraft(null)
-  }
-  return (
-    <div className={containerClassName}>
-      <input
-        data-testid={dataTestId}
-        type="text"
-        value={shown}
-        aria-invalid={error !== null ? true : undefined}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") commit()
-        }}
-        className={className}
-        style={
-          error !== null
-            ? { ...style, border: "1px solid var(--danger-border-strong)" }
-            : style
-        }
-      />
-      {error !== null && (
-        <div
-          data-testid={`${dataTestId}-error`}
-          className="mt-0.5 px-1.5 py-0.5 rounded text-[10px] leading-snug"
-          style={{ background: "var(--danger-soft)", color: "var(--danger-text)" }}
-        >
-          {error}
-        </div>
-      )}
-    </div>
-  )
 }
