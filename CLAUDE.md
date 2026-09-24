@@ -8,11 +8,13 @@ Run Claude Code sessions on Opus 5.5 (`/model opus`); it is the best value for b
 
 # Review policy: Codex reviews once per pull request
 
-Reviews use a Codex model, because a review from another model family catches failures that a same-family review shares. There is no TRIP process. The review surface is exactly:
+Reviews use a Codex model, because a review from another model family catches failures that a same-family review shares. There is no TRIP process. AGENTS.md's "Code review with Codex" has the commands, the checklist, the severity scale and the approval gate. The review surface is exactly:
 
-- Code / PR / diff review: `codex-code-review`, run once over the whole branch diff before the PR is opened or updated (AGENTS.md "Before a pull request"). Do not review each commit or package separately.
-- Plan, design, or spec review: `codex-plan-review`
-- Second opinion on a judgment call: `codex-ask` (advisory, never gating)
+- Code / PR / diff review: once over the whole branch diff before the PR is opened or updated (AGENTS.md "Before a pull request"). Do not review each commit or package separately.
+- Plan, design, or spec review: the same command with the plan-review prompt.
+- Second opinion on a judgment call: the same command, advisory and never gating.
+
+Run the Codex commands in the background and keep their state in the session scratchpad.
 
 Do not delegate review to Claude subagents and do not run Claude-vs-Claude review workflows. The main session still inspects every subagent diff itself (that is verification, not review) and owns the completion decision after Codex findings are resolved or rebutted.
 
