@@ -367,9 +367,9 @@ def _sidecar_required_error(node_type: NodeType, func_name: str) -> ConfigError:
 
     Names the concrete config folder resolved from ``NODE_TYPE_TO_FOLDER`` (not a
     ``<type>`` placeholder), states that any inline keyword arguments were
-    ignored, and points at ``haute init`` as a starter-sidecar generator. Shared
-    by the healthy parse path (:func:`_resolve_node_config`) and the syntax-error
-    recovery path (``_parser_regex``) so both surface the same guidance.
+    ignored, and points at ``haute init`` as a starter-sidecar generator. Raised
+    from the parse path (:func:`_resolve_node_config`), which editor recovery
+    shares, so both surface the same guidance.
     """
     folder = NODE_TYPE_TO_FOLDER[node_type]
     return ConfigError(

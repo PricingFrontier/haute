@@ -47,7 +47,7 @@ carrying authored preamble, preserved blocks, comments, and unsupported construc
 | Comments and formatting during a valid-source edit | LibCST in `haute._python_syntax`; all untouched syntax is emitted from the original CST. |
 | Generated source | Per-node string builders create readable source; LibCST performs decorator-keyword injection; the final AST parse gate rejects any invalid emitted module. |
 | Strict pipeline parsing and semantic evaluation | Standard-library AST plus the closed parser/evaluator models. AST source locations own valid-source semantic error spans. |
-| Invalid-source recovery | `_pipeline_recovery` and `_parser_regex`; recovery is read-only evidence for the editor and never becomes execution authority. Recovery captures own invalid-source spans. |
+| Invalid-source recovery | `_pipeline_recovery`, over valid Python only; recovery is read-only evidence for the editor and never becomes execution authority. A syntax-invalid file is a `source_only` document whose span is the Python syntax error's. |
 | Structured rewrite/classifier parse failures | `StructuredSyntaxError` with stable reason, one-based line, and zero-based column; the calling component maps that evidence to its public failure or conservative result. |
 | Project discovery | Project configuration and strict pipeline parsing remain authoritative; this pilot does not promote content substrings into syntax authority. |
 | Runtime/codegen node behaviour | `NODE_REGISTRY` remains the dispatch authority. A shared semantics declaration is used only for node types whose runtime and generated input behaviour are genuinely identical. |

@@ -535,6 +535,16 @@ misroute subsequent saves and loads.
 
 ## Pipeline recovery, preview, and live-sync contract
 
+**Supported hand-editing scope.** The `.py` file is the source of truth and may be edited
+outside Haute. The editor supports hand edits to node bodies and to the preamble. A file that is
+valid Python loads per node: a node whose body, decorator or sidecar no longer resolves becomes an
+unavailable (or blocked) recovery node while the rest of the canvas stays loaded, and the remove,
+reset and recover actions repair it. A file that is not valid Python has no canvas. Its editor
+document is `source_only`, carrying the Python syntax error's location with the remediation to open
+the source there in an editor and correct it; the editor shows that parse error and the current
+source, never a recovered or earlier canvas. There is no textual recovery of syntax-invalid source.
+The same `source_only` document contains an unexpected recovery defect, with an incident id.
+
 Editor loads are conservation-oriented. Every top-level authored node decorator is discovered before
 support is checked; unknown types and duplicate identities remain editor-only recovery elements.
 Connection declarations that do not resolve to one unique pair remain typed unresolved structures,
@@ -551,8 +561,8 @@ preview execution service. Other execution and persistence capabilities remain f
 WebSocket sync publishes versioned `pipeline_document_update` frames for ready, degraded, and
 source-only states. Status, capabilities, diagnostics, source identity, and revision are authoritative
 even when a dirty client retains its local graph. Sidecar changes are dependency events. A source-only
-update may leave a prior canvas visible only as an explicitly stale read-only reference; it is never
-treated as the current graph or accepted by save/execution routes. If the editor document itself cannot
+update replaces the canvas with the parse-error view; no earlier canvas stays visible, and a dirty
+local graph stays in the client, fenced and hidden, until a renderable document arrives. If the editor document itself cannot
 be read or built, the server logs the underlying exception and sends a sanitized
 `parse_error`; that frame carries only document transport failure — authored errors always
 arrive as degraded or source-only documents.

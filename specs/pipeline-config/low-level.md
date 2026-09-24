@@ -14,7 +14,6 @@
 | `src/haute/_contracts.py` | Pipeline-config-owned `Contract`/`ColumnContract` model and registry-backed `get_column_contract()` lookup used by parse-time validation and execution. |
 | `src/haute/_registry.py` | Pipeline-config-owned `NODE_REGISTRY` storage shared with execution and codegen. |
 | `src/haute/_graph_builders.py` | AST node-skeleton discovery separated from resolution; the strict builder resolves every skeleton fail-loud before producing canonical `GraphNode`/`GraphEdge`, while editor recovery resolves skeletons independently. |
-| `src/haute/_parser_regex.py` | [expression-parsing](../expression-parsing/low-level.md)-owned neutral syntax-recovery fragments (metadata, decorated functions, declared connections, and submodel registrations). It does not sit behind either strict parser entry point and does not return a canonical graph. |
 | `src/haute/_pipeline_recovery.py` | [server-api](../server-api/low-level.md)-owned editor-only recovery orchestration and availability diagnostics, forbidden to canonical parser consumers. |
 | `src/haute/_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
 | `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets, starter pipeline/tests/utilities, pre-commit hook. |
@@ -194,10 +193,10 @@ produce
 the final `list[GraphNode]`/`list[GraphEdge]` — the graph the frontend, codegen, and the real
 executor operate on.
 
-`parse_pipeline_source()` converts `SyntaxError` into a contextual `ParseError` and never
-calls regex recovery. `parse_pipeline_file()` inherits that strict behaviour. The separate
-editor recovery service consumes the same AST skeletons when syntax is valid and neutral
-`_parser_regex` fragments otherwise, catches expected authored failures per named node, and
+`parse_pipeline_source()` converts `SyntaxError` into a contextual `ParseError`.
+`parse_pipeline_file()` inherits that strict behaviour. The separate editor recovery service
+consumes the same AST skeletons when syntax is valid (a syntax-invalid file yields a
+`source_only` document), catches expected authored failures per named node, and
 constructs only recovery DTOs. No recovery value can be passed to `_build_rf_nodes`, codegen,
 execution, lint, deploy, or strict post-save verification.
 

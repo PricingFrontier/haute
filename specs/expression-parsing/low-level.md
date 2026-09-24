@@ -7,7 +7,6 @@
 | `src/haute/parser.py` | Strict public entry points `parse_pipeline_file` / `parse_submodel_file` / `parse_pipeline_source`. Orchestrates AST metadata/node/edge extraction, submodel resolution + merge, conservation, and graph-shape validation for valid pipeline source; whole-file syntax errors raise contextual `ParseError`. |
 | `src/haute/_parser_conservation.py` | Strict fail-loud acceptance gate. Verifies that parsed root node IDs, ordered edge/handle identities, submodel references, and cross-boundary endpoints conserve the authored structure; also builds the deterministic missing-submodel diagnostic. |
 | `src/haute/_parser_bindings.py` | Strict parameter binding gate (`assert_polars_parameters_bound`): every parsed Polars node's positional parameters must equal its connected executable input names after `inputMapping`, in parent files and definition files (public input ports bind the sanitised port ID); any other shape is a `ParseError` with `unbound_parameters`, `unconsumed_inputs`, `connected_inputs` and `remediation` (F13). |
-| `src/haute/_parser_regex.py` | Neutral syntax-recovery discovery. `recover_pipeline_fragments` locates pipeline metadata, `@pipeline.<type>` function fragments, `pipeline.connect()` declarations, and `pipeline.submodel()` registrations textually, re-parsing individual fragments with `ast` where possible. It never constructs canonical graph models. |
 | `src/haute/_parser_submodels.py` | `extract_submodel_registrations` / `parse_submodel_source` / `merge_submodels`: resolves explicit `pipeline.submodel("path", ...)` registrations, parses each referenced submodel file into its own `PipelineGraph`, and merges canonical occurrences into the parent (hierarchical or flattened). |
 | `src/haute/_expression_parser.py` | `parse_expression` / `evaluate_expression` / `parse_expression_chain` and their supporting classes: AST-based conversion of a Polars with-columns expression to human-readable text (`_ExprConverter`), and Polars evaluation of the located expression on the traced row (`_locate_defining_expression`, `_row_value`, `_branch_selection`). |
 
@@ -70,16 +69,6 @@ raise with every unresolved authored path), resolve registrations, group repeate
 each definition file once, and call `_parser_submodels.merge_submodels` → run
 the structure-conservation gate → `validate_pipeline_graph_shape_contracts` (owned outside this
 component) → log `pipeline_parsed`.
-
-**`recover_pipeline_fragments`** (`_parser_regex.py`): recover alias-aware pipeline metadata by
-parsing otherwise-valid import lines independently, then locate the matching constructor with a
-balanced-parenthesis scan → find every `@pipeline.<type>` block textually, retaining the decorator,
-function identity/signature/body, parameters, and source lines → re-parse individual decorator,
-connection, and submodel call fragments with `ast` wherever possible → recover preamble and
-`# haute:preserve` blocks with line-oriented scans → return one frozen neutral fragment document.
-No step resolves node configuration, builds canonical nodes/edges, merges submodels, or returns a
-`PipelineGraph`; `src/haute/_pipeline_recovery.py` is the sole orchestrator that may resolve the
-fragments into editor-only recovery DTOs.
 
 **`merge_submodels`** (`_parser_submodels.py`): validate that every parsed
 child file has literal structured input/output ports present and extract its
@@ -290,12 +279,6 @@ Tests live under `tests/`, split by concern:
   path, syntax fail-loud behavior, submodel file parsing, the `flatten` parameter, decorator/config
   edge cases, malformed decorator kwargs, docstring stripping, preamble/preserved-block edge
   cases, roundtrip parsing, circular/non-existent/colliding/empty submodels, UTF-8 BOM handling.
-- **`test_parser_regex.py`** — unit tests for neutral regex-recovery fragments and scanners,
-  including function, decorator-argument, connection, submodel, string, and comment boundaries.
-- **`test_parser_regex_contracts.py`** / **`test_parser_regex_ast_kwargs.py`** — pin the exact
-  decorator-kwarg value-parsing policy (literals + `Contract(...)` only, everything else fails
-  loud) across scalar/compound/multiple/degenerate/invalid-syntax cases; a dedicated TDD gate
-  regression-tests one specific historical codebase-review finding.
 - **`test_parser_submodels.py`** — `extract_submodel_registrations`, `parse_submodel_source`,
   `merge_submodels`, and cross-boundary-edge reconstruction.
 - **`test_submodel_endpoint_properties.py`** — the generated graph/source family (ENG-T11):
@@ -377,16 +360,12 @@ Known coverage gaps:
 - A multi-row sub-expression inside a formula (a condition comparing with a mean, say) is
   reported not computable; the trace does not re-evaluate it against its execution's frame.
 
-## Neutral syntax-recovery fragments
+## Syntax-invalid source
 
-`src/haute/_parser_regex.py` owns textual discovery primitives and
-`recover_pipeline_fragments(source)`. Its public recovery result is a frozen neutral fragment
-model and contains no `GraphNode`, `GraphEdge`, or `PipelineGraph`. No canonical syntax-recovery
-integration exists. `src/haute/parser.py` never imports this module and wraps
-whole-file Python syntax failures as contextual `ParseError` values.
-
-`src/haute/_pipeline_recovery.py` may parse decorator fragments and resolve each known node inside
-an explicitly named isolation boundary. Expected configuration/contract failures become stable
-editor diagnostics; unexpected per-node failures are logged with an incident id. Tests keep the
-textual scanners focused on conservation and fail-loud ambiguity, while editor recovery tests own
-the end-to-end malformed-source graph behaviour.
+`src/haute/parser.py` wraps whole-file Python syntax failures as contextual `ParseError` values.
+There is no textual syntax recovery: the editor's recovery loader (`src/haute/_pipeline_recovery.py`)
+turns a syntax-invalid file into a `source_only` document carrying the Python syntax error's span,
+and recovers nodes only from valid Python, resolving each known node inside an explicitly named
+isolation boundary. Expected configuration/contract failures become stable editor diagnostics;
+unexpected per-node failures are logged with an incident id. Editor recovery tests own the
+end-to-end malformed-source behaviour.

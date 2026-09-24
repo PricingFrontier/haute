@@ -1552,7 +1552,7 @@ describe("usePipelineAPI", () => {
     })
     act(() => {
       params.sourceRevisionRef.current = "revision-two"
-      useDocumentStatusStore.getState().loadLiveDocumentStatus(newerDocument, null, false, "live-fingerprint")
+      useDocumentStatusStore.getState().loadLiveDocumentStatus(newerDocument, false, "live-fingerprint")
       resolveRecoveryPreview({
         node_id: "recovery_node",
         status: "ok",

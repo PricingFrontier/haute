@@ -110,9 +110,11 @@ def _legacy_explore_source(name: str = "legacy") -> str:
     '''
 
 
-def test_strict_parser_rejects_syntax_while_recovery_preserves_healthy_nodes(
+def test_syntax_invalid_source_is_source_only_with_the_located_parse_error(
     tmp_path: Path,
 ) -> None:
+    """A file that is not valid Python has no canvas: the document carries the
+    syntax error's location and the instruction to fix it in an editor."""
     from haute._pipeline_recovery import load_pipeline_editor_document
 
     pipeline_file = _write(
@@ -136,10 +138,17 @@ def test_strict_parser_rejects_syntax_while_recovery_preserves_healthy_nodes(
         parse_pipeline_source(pipeline_file.read_text(encoding="utf-8"), source_file="main.py")
 
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
-    assert document.load_status == "degraded"
-    assert [node.authored_id for node in document.nodes] == ["healthy"]
-    assert document.nodes[0].availability == "ready"
-    assert any(diagnostic.code == "python_syntax_error" for diagnostic in document.diagnostics)
+    assert document.load_status == "source_only"
+    assert document.nodes == []
+    assert document.edges == []
+    [diagnostic] = document.diagnostics
+    assert diagnostic.code == "python_syntax_error"
+    assert diagnostic.source_span is not None
+    assert diagnostic.source_span.start_line == 9
+    assert diagnostic.remediation == (
+        "Open the source at this location in your editor and correct the syntax."
+    )
+    assert document.capabilities.can_preview is False
 
 
 def test_editor_identity_route_is_strict_ordered_and_side_effect_free(
@@ -2005,53 +2014,6 @@ def test_unexpected_strict_parser_defect_is_not_laundered_as_authored_input(
     assert "private strict parser implementation detail" not in diagnostic.message
 
 
-def test_unexpected_syntax_fragment_recovery_defect_has_visible_incident(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from haute._pipeline_recovery import (
-        load_pipeline_editor_document,
-        recover_pipeline_fragments,
-    )
-
-    pipeline_file = _write(
-        tmp_path / "main.py",
-        """
-        import haute
-        pipeline = haute.Pipeline("fragment-incident")
-
-        @pipeline.polars
-        def broken(:
-            return None
-        """,
-    )
-
-    calls = 0
-
-    def fail_fragment_recovery_once(source: str) -> object:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise RuntimeError("private fragment recovery implementation detail")
-        return recover_pipeline_fragments(source)
-
-    monkeypatch.setattr(
-        "haute._pipeline_recovery.recover_pipeline_fragments",
-        fail_fragment_recovery_once,
-    )
-
-    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
-
-    assert document.load_status == "source_only"
-    assert [diagnostic.code for diagnostic in document.diagnostics] == [
-        "python_syntax_error",
-        "pipeline_recovery_internal_error",
-    ]
-    diagnostic = document.diagnostics[1]
-    assert diagnostic.incident_id
-    assert "private fragment recovery implementation detail" not in diagnostic.message
-
-
 def test_unexpected_submodel_parser_defect_is_localised_with_incident(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2225,155 +2187,14 @@ def test_remove_unavailable_node_apply_commits_confirmed_plan_and_returns_docume
     assert parse_pipeline_file(pipeline_file).pipeline_name == "legacy"
 
 
-def test_remove_unavailable_node_repairs_syntax_broken_source_completely(
-    tmp_path: Path,
-    client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Regex-recovered spans are decorator-inclusive, so no decorator dangles.
+def test_repair_refuses_syntax_broken_source() -> None:
+    """Repairs work on valid Python only; a syntax-broken file is fixed in an editor."""
+    from haute._pipeline_repair import PipelineRepairError, _extract_skeletons
 
-    Regression: fragment spans used to start at the ``def`` line, so removing
-    a node from a syntax-broken source left its (multi-line) decorator behind
-    and committed a corrupted file.
-    """
-    from haute._pipeline_recovery import load_pipeline_editor_document
-
-    pipeline_file = _write(
-        tmp_path / "main.py",
-        """\
-        import haute
-
-        pipeline = haute.Pipeline("syntax-broken")
-
-        @pipeline.polars
-        def source():
-            return None
-
-        @pipeline.polars(
-        )
-        def broken(source):
-            return source +
-
-        @pipeline.polars
-        def tail(source):
-            return source
-        """,
-    )
-    monkeypatch.chdir(tmp_path)
-    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
-    assert document.load_status == "degraded"
-    assert [(node.authored_id, node.availability) for node in document.nodes] == [
-        ("source", "ready"),
-        ("broken", "unavailable"),
-        ("tail", "ready"),
-    ]
-    target = next(node for node in document.nodes if node.authored_id == "broken")
-
-    request = {
-        "source_file": document.source_file,
-        "source_revision": document.source_revision,
-        "target_source_file": target.source_file,
-        "target_recovery_id": target.recovery_id,
-        "delete_config": False,
-    }
-    plan_response = client.post("/api/pipeline/repair/remove/dry-run", json=request)
-    assert plan_response.status_code == 200, plan_response.text
-    plan = plan_response.json()
-    assert "@pipeline.polars(" in plan["changes"][0]["diff"]
-    assert plan["predicted_load_status"] == "ready"
-
-    response = client.post(
-        "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": plan["plan_hash"]},
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["document"]["load_status"] == "ready"
-    assert [node["authored_id"] for node in payload["document"]["nodes"]] == [
-        "source",
-        "tail",
-    ]
-    assert pipeline_file.read_text(encoding="utf-8") == textwrap.dedent(
-        """\
-        import haute
-
-        pipeline = haute.Pipeline("syntax-broken")
-
-        @pipeline.polars
-        def source():
-            return None
-
-
-        @pipeline.polars
-        def tail(source):
-            return source
-        """
-    )
-    assert parse_pipeline_file(pipeline_file).pipeline_name == "syntax-broken"
-
-
-def test_remove_unavailable_node_repairs_trailing_syntax_broken_node(
-    tmp_path: Path,
-    client: TestClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A dangling decorator at end-of-file would make every later load raise."""
-    from haute._pipeline_recovery import load_pipeline_editor_document
-
-    pipeline_file = _write(
-        tmp_path / "main.py",
-        """\
-        import haute
-
-        pipeline = haute.Pipeline("syntax-broken-tail")
-
-        @pipeline.polars
-        def source():
-            return None
-
-        @pipeline.polars()
-        def broken(source):
-            return source +
-        """,
-    )
-    monkeypatch.chdir(tmp_path)
-    document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
-    target = next(node for node in document.nodes if node.authored_id == "broken")
-    assert target.availability == "unavailable"
-
-    request = {
-        "source_file": document.source_file,
-        "source_revision": document.source_revision,
-        "target_source_file": target.source_file,
-        "target_recovery_id": target.recovery_id,
-        "delete_config": False,
-    }
-    plan = client.post("/api/pipeline/repair/remove/dry-run", json=request)
-    assert plan.status_code == 200, plan.text
-
-    response = client.post(
-        "/api/pipeline/repair/remove/apply",
-        json={**request, "plan_hash": plan.json()["plan_hash"]},
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["document"]["load_status"] == "ready"
-    assert [node["authored_id"] for node in payload["document"]["nodes"]] == ["source"]
-    assert pipeline_file.read_text(encoding="utf-8") == textwrap.dedent(
-        """\
-        import haute
-
-        pipeline = haute.Pipeline("syntax-broken-tail")
-
-        @pipeline.polars
-        def source():
-            return None
-
-        """
-    )
-    assert parse_pipeline_file(pipeline_file).pipeline_name == "syntax-broken-tail"
+    for receiver in ("pipeline", "submodel"):
+        with pytest.raises(PipelineRepairError) as raised:
+            _extract_skeletons("def broken(:\n    pass\n", receiver=receiver)
+        assert raised.value.code == "repair_syntax_unsupported"
 
 
 def test_remove_unavailable_node_predicts_ready_when_only_target_connections_block(

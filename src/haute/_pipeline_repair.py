@@ -24,7 +24,6 @@ from haute._ast_helpers import (
 )
 from haute._cache import canonical_json
 from haute._graph_builders import PipelineNodeSkeleton, _extract_decorated_node_skeletons
-from haute._parser_regex import RecoveredFunctionFragment, recover_pipeline_fragments
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute.errors import HauteError
 from haute.parser import parse_pipeline_file
@@ -275,17 +274,14 @@ def _extract_skeletons(
     source: str,
     *,
     receiver: str,
-) -> tuple[ast.Module | None, list[PipelineNodeSkeleton | RecoveredFunctionFragment]]:
+) -> tuple[ast.Module, list[PipelineNodeSkeleton]]:
     try:
         tree = ast.parse(source)
     except SyntaxError:
-        if receiver != "pipeline":
-            raise PipelineRepairError(
-                "repair_syntax_unsupported",
-                "Syntax-broken submodel source must be repaired manually.",
-            ) from None
-        fragments = recover_pipeline_fragments(source)
-        return None, list(fragments.functions)
+        raise PipelineRepairError(
+            "repair_syntax_unsupported",
+            "Syntax-broken source must be corrected in an editor before repairing.",
+        ) from None
 
     predicate = (
         _is_pipeline_authored_decorator
@@ -307,7 +303,7 @@ def _extract_skeletons(
 
 
 def _implicit_consumers(
-    skeletons: list[PipelineNodeSkeleton | RecoveredFunctionFragment],
+    skeletons: list[PipelineNodeSkeleton],
     *,
     target_authored_id: str,
 ) -> list[dict[str, str]]:
@@ -345,25 +341,13 @@ def _connection_links(statement: ast.stmt, *, receiver: str) -> list[tuple[str, 
 
 
 def _connection_line_ranges(
-    tree: ast.Module | None,
+    tree: ast.Module,
     source: str,
     body: bytes,
     *,
     receiver: str,
     target_authored_id: str,
 ) -> list[tuple[int, int]]:
-    if tree is None:
-        fragments = recover_pipeline_fragments(source)
-        if any(
-            target_authored_id in (connection[0], connection[1])
-            for connection in fragments.connections
-        ):
-            raise PipelineRepairError(
-                "repair_syntax_connection_unsupported",
-                "Connections in syntax-broken source cannot be removed with a trustworthy span.",
-            )
-        return []
-
     ranges: list[tuple[int, int]] = []
     for statement in tree.body:
         links = _connection_links(statement, receiver=receiver)

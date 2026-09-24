@@ -379,12 +379,6 @@ min_branch_coverage = 95.0
 rationale = "Model scoring is a shared pricing-path primitive."
 
 [[tool.haute.critical_coverage.files]]
-path = "src/haute/_parser_regex.py"
-min_statement_coverage = 95.0
-min_branch_coverage = 85.0
-rationale = "Regex parsing accepts pipeline source code before AST conversion."
-
-[[tool.haute.critical_coverage.files]]
 path = "src/haute/_parser_submodels.py"
 min_statement_coverage = 95.0
 min_branch_coverage = 88.0

@@ -19,11 +19,6 @@ from haute._code_extraction import (
     extract_user_code,
 )
 from haute._graph_builders import _build_edges
-from haute._parser_regex import (
-    _find_connect_calls,
-    _find_function_blocks,
-    _recover_submodel_registrations,
-)
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._submodel_instances import qualified_runtime_node_id
 from haute.codegen import graph_to_code_multi
@@ -338,172 +333,6 @@ class TestImplicitEdgeDedup:
         assert ids.count("e_a_f") == 1
 
 
-# ---------------------------------------------------------------------------
-# F323 / F324 — regex fallback robustness: a wrapped def signature must not
-# abort the whole parse, and a backslash inside a comment must not swallow a
-# following top-level connect.
-# ---------------------------------------------------------------------------
-
-
-class TestFallbackScanConservation:
-    def test_multiline_def_signature_recovered(self) -> None:
-        source = "@pipeline.polars\ndef wrapped(\n    df,\n    other,\n):\n    return df\n"
-        blocks = _find_function_blocks(source)
-        assert len(blocks) == 1
-        assert blocks[0]["func_name"] == "wrapped"
-        assert blocks[0]["param_names"] == ["df", "other"]
-        assert "return df" in blocks[0]["body_text"]
-
-    def test_async_def_in_fallback_rejected(self) -> None:
-        source = "@pipeline.polars\nasync def node(df):\n    return df\n"
-        with pytest.raises(ParseError, match="async def"):
-            _find_function_blocks(source)
-
-    def test_backslash_in_comment_does_not_swallow_connect(self) -> None:
-        source = 'x = 1  # trailing backslash \\\npipeline.connect("a", "b")\n'
-        pairs = _find_connect_calls(source)
-        assert ("a", "b", None, None) in pairs
-
-
-# ---------------------------------------------------------------------------
-# F027 — editor recovery conserves submodels when the main file has a syntax error.
-# ---------------------------------------------------------------------------
-
-
-class TestSyntaxRecoverySubmodels:
-    def test_submodels_survive_syntax_error(self, tmp_path: Path) -> None:
-        _write(
-            tmp_path,
-            "modules/scoring.py",
-            """\
-            import polars as pl
-            import haute
-
-            submodel = haute.Submodel(
-                "scoring",
-                definition_id="scoring",
-                input_ports=[],
-                output_ports=[],
-            )
-
-            @submodel.polars
-            def Transform(df: pl.LazyFrame) -> pl.LazyFrame:
-                return df.select("x")
-            """,
-        )
-        # A trailing syntax error forces editor recovery, but the
-        # top-level submodel() call is still intact and recoverable.
-        _write(
-            tmp_path,
-            "main.py",
-            """\
-            import polars as pl
-            import haute
-
-            pipeline = haute.Pipeline("test")
-
-            @pipeline.polars
-            def transform(df):
-                return df.select("x")
-
-            pipeline.submodel(
-                "modules/scoring.py",
-                "scoring",
-            )
-
-            x = = 5
-            """,
-        )
-        with pytest.raises(ParseError, match="syntax"):
-            parse_pipeline_file(tmp_path / "main.py")
-        document = load_pipeline_editor_document(
-            tmp_path / "main.py",
-            project_root=tmp_path,
-        )
-        assert "scoring" in (document.submodels or {})
-        node_ids = {node.authored_id for node in document.nodes}
-        assert "scoring" in node_ids
-
-    def test_recovered_submodel_child_survives_syntax_error(self, tmp_path: Path) -> None:
-        _write(
-            tmp_path,
-            "modules/scoring.py",
-            """\
-            import polars as pl
-            import haute
-
-            submodel = haute.Submodel(
-                "scoring",
-                definition_id="scoring",
-                input_ports=[],
-                output_ports=[],
-            )
-
-            @submodel.polars
-            def Transform(df: pl.LazyFrame) -> pl.LazyFrame:
-                return df.select("x")
-            """,
-        )
-        _write(
-            tmp_path,
-            "main.py",
-            """\
-            import polars as pl
-            import haute
-
-            pipeline = haute.Pipeline("test")
-
-            @pipeline.polars
-            def transform(df):
-                return df.select("x")
-
-            pipeline.submodel(
-                "modules/scoring.py",
-                "scoring",
-            )
-
-            x = = 5
-            """,
-        )
-        document = load_pipeline_editor_document(
-            tmp_path / "main.py",
-            project_root=tmp_path,
-        )
-        assert document.submodels is not None
-        child = document.submodels["scoring"]
-        assert child.availability == "ready"
-        assert {node.authored_id for node in child.graph.nodes} == {"Transform"}
-
-    def test_unrecoverable_paths_are_reported_together(self) -> None:
-        source = textwrap.dedent(
-            """\
-            pipeline.submodel(SCORING_PATH)
-            pipeline.submodel(path=OTHER_PATH)
-            """
-        )
-
-        with pytest.raises(ParseError, match="submodel reference") as exc_info:
-            _recover_submodel_registrations(source)
-
-        assert exc_info.value.context["unrecoverable_references"] == [
-            {"line": 1, "source": "pipeline.submodel(SCORING_PATH)"},
-            {"line": 2, "source": "pipeline.submodel(path=OTHER_PATH)"},
-        ]
-
-    def test_unclosed_chained_reference_uses_the_grouped_diagnostic(self) -> None:
-        source = 'pipeline.submodel("scoring.py").submodel(\n'
-
-        with pytest.raises(ParseError, match="submodel reference") as exc_info:
-            _recover_submodel_registrations(source)
-
-        assert exc_info.value.context["unrecoverable_references"] == [
-            {
-                "line": 1,
-                "source": 'pipeline.submodel("scoring.py").submodel(',
-            }
-        ]
-
-
 class TestSubmodelResolutionRoot:
     def test_in_memory_submodel_parse_without_base_fails_loudly(self) -> None:
         source = textwrap.dedent(
@@ -815,8 +644,9 @@ class TestRecoveryContractValidation:
             def node(df):
                 return df
 
-            def broken(:
-                pass
+            @pipeline.not_a_node_type
+            def other(df):
+                return df
             """
         )
         pipeline_path = _write(tmp_path, "main.py", source)

@@ -539,9 +539,10 @@ def src() -> pl.DataFrame:
 
 
 class TestSyntaxRecoveryBoundary:
-    """Strict parsing raises while the editor recovery path conserves structure."""
+    """Strict parsing raises; the editor document of a syntax-invalid file is
+    source-only, with no recovered canvas."""
 
-    def test_strict_syntax_error_raises_and_editor_recovers_nodes(self, tmp_path):
+    def test_strict_syntax_error_raises_and_editor_document_is_source_only(self, tmp_path):
         source_config = write_data_input_config(tmp_path, "load_data", "data.parquet")
         code = f'''import polars as pl
 import haute
@@ -561,9 +562,9 @@ def transform(load_data: pl.DataFrame) -> pl.DataFrame:
             parse_pipeline_file(path)
         document = load_pipeline_editor_document(path, project_root=tmp_path)
 
-        assert document.load_status == "degraded"
-        assert document.pipeline_name == "broken"
-        assert {node.authored_id for node in document.nodes} == {"load_data", "transform"}
+        assert document.load_status == "source_only"
+        assert document.nodes == []
+        assert [diagnostic.code for diagnostic in document.diagnostics] == ["python_syntax_error"]
 
     def test_editor_recovery_keeps_preserved_blocks(self, tmp_path):
         code = """import haute
@@ -584,53 +585,6 @@ broken = (
 
         assert document.preserved_blocks == ["KEEP_ME = True"]
         assert document.capabilities.can_save is False
-
-    def test_editor_recovery_conserves_connect_calls(self, tmp_path):
-        source_config = write_data_input_config(tmp_path, "a", "a.parquet")
-        code = f'''import haute
-pipeline = haute.Pipeline("edges_recovery")
-
-@pipeline.data_input(config="{source_config}")
-def a():
-    return pl.DataFrame()
-
-@pipeline.polars
-def b(a):
-    return a
-
-pipeline.connect("a", "b")
-x = {{
-'''
-        path = _write_pipeline(tmp_path, code)
-
-        document = load_pipeline_editor_document(path, project_root=tmp_path)
-
-        assert [(edge.source_authored_id, edge.target_authored_id) for edge in document.edges] == [
-            ("a", "b")
-        ]
-
-    def test_editor_recovery_keeps_connection_ports(self, tmp_path):
-        source_config = write_data_input_config(tmp_path, "a", "a.parquet")
-        code = f'''import haute
-pipeline = haute.Pipeline("edges_recovery_ports")
-
-@pipeline.data_input(config="{source_config}")
-def a():
-    return pl.DataFrame()
-
-@pipeline.polars
-def b(df):
-    return df
-
-pipeline.connect("a", "b", target_port="base")
-x = {{
-'''
-        path = _write_pipeline(tmp_path, code)
-
-        document = load_pipeline_editor_document(path, project_root=tmp_path)
-
-        assert len(document.edges) == 1
-        assert document.edges[0].target_handle == "base"
 
 
 class TestSubmodelFileParsing:

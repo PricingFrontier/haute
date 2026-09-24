@@ -64,9 +64,9 @@ uses a separate recovery entry point and separate models. It first records autho
 connection skeletons with source spans, then resolves known nodes independently. An expected
 node-local configuration or contract failure becomes an unavailable recovery node without
 inventing config or mutating its referenced file; an unexpected exception is isolated only
-at that recovery boundary and receives a logged incident id. Syntax-invalid source may use
-the regex extractor only through recovery. If it cannot produce a trustworthy skeleton the
-result is `source_only`, never a successful empty canonical graph.
+at that recovery boundary and receives a logged incident id. Syntax-invalid source has no
+skeleton: the result is `source_only`, carrying the syntax error, never a recovered canvas or a
+successful empty canonical graph.
 
 The editor's `.haute.json` read distinguishes absent, valid, corrupt, and unreadable states.
 Only a valid sidecar supplies source selection. Corrupt or unreadable content leaves its raw

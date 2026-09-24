@@ -410,8 +410,7 @@ rejects graph replacement. A `parse_error` is a sanitized system failure for the
 document: it marks the graph unsynchronised and activates the load-failure surface until the next
 valid document update. Authored recovery states never arrive through that frame.
 Degraded preview calls use the recovery-preview transport with source, revision, and target identity
-only. A current source-only state and an optional in-memory last-renderable snapshot retain separate
-revisions and are never merged.
+only. A source-only state keeps no earlier renderable snapshot.
 
 Minimal repair responses cross a separate strict parser boundary. Dry-run
 validation requires the action-specific discriminator, source/target identities,

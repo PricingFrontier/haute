@@ -35,7 +35,7 @@ In scope:
 Out of scope (owned by neighbouring components, cross-linked below):
 - Writing pipeline files back to disk / formatting-preserving edits — [codegen](../codegen/high-level.md).
 - AST utility primitives (`_ast_helpers`) and user-code extraction (`_code_extraction`) that this
-  component's `parser.py` and `_parser_regex.py` call into — owned by
+  component's `parser.py` calls into — owned by
   [codegen](../codegen/high-level.md).
 - Config-dict construction (`_config_builder`) and conversion of parsed node/edge data into
   `GraphNode`/`GraphEdge` models (`_graph_builders`) — owned by

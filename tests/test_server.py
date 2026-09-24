@@ -3203,7 +3203,7 @@ class TestListPipelinesParseError:
     """Broken readable pipelines remain discoverable editor documents."""
 
     def test_broken_pipeline_in_list(self, pipeline_dir: Path, monkeypatch: pytest.MonkeyPatch):
-        """A syntax-broken pipeline reports recovery status instead of disappearing."""
+        """A syntax-broken pipeline is listed as source-only instead of disappearing."""
         monkeypatch.chdir(pipeline_dir)
         from haute.routes._helpers import invalidate_pipeline_index
 
@@ -3231,9 +3231,9 @@ def broken(:
         data = resp.json()
         bad = [p for p in data if p["name"] == "bad_pipe"]
         assert len(bad) == 1
-        assert bad[0]["load_status"] == "degraded"
-        assert bad[0]["node_count"] == 1
-        assert bad[0]["diagnostic_count"] >= 1
+        assert bad[0]["load_status"] == "source_only"
+        assert bad[0]["node_count"] == 0
+        assert bad[0]["diagnostic_count"] == 1
 
 
 class TestGetPipelineParseError:

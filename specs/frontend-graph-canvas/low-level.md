@@ -38,7 +38,6 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/components/PipelineRecoveryBanner.tsx` | Accessible degraded-document summary and issues entry point. |
 | `frontend/src/components/SourceRecoveryView.tsx` | Read-only current-source and document-diagnostic surface used when no trustworthy graph skeleton exists. |
 | `frontend/src/components/PipelineLoadFailureView.tsx` | Dedicated initial-load system-failure surface that keeps transport, permission, discovery, and unreadable-file failures distinct from authored recovery diagnostics. |
-| `frontend/src/components/StalePipelineReferenceBanner.tsx` | Labels a retained last-renderable canvas with its prior revision and prevents it from being mistaken for the current source. |
 | `frontend/src/components/PipelineRepairDialog.tsx` | Minimal unavailable-node dry-run/diff/confirmation surface. It submits only document/target identities and a confirmed plan hash, retains config by default, and never authors replacement bytes. |
 | `frontend/src/nodes/UnavailablePipelineNode.tsx` | Dedicated inaccessible node card for unknown decorators and recovery elements that cannot use a canonical node renderer. |
 | `frontend/src/hooks/ensureInputSnapshots.ts` | Pre-preview snapshot orchestration owned behaviourally by [caching](../caching/high-level.md): derives the graph's snapshot-backed Data Inputs (direct Parquet skipped), checks status, starts or joins builds (lazy-sink first, one admitted-eager retry on `snapshot_build_unsupported`), waits for jobs to a terminal state through the shared `waitForJob`, and notifies at most once when a build starts. An aborted signal cancels the job it is polling and waits for that job to reach a terminal state, because a point reports itself as building until then and nothing else is polling it; a refused cancellation, a status it cannot read afterwards, or a build still running 48 seconds after the cancellation all raise `CancellationFailedError` instead of being reported as a completed cancellation, because whether the build stopped is then unknown. `cancelInputSnapshotBuild` performs that cancel-and-wait for a caller holding a job id, and `onJobStarted` reports each build's id so a caller can use it. Its `force` option is for a caller that wants the data recomputed rather than served as it is: it skips the readiness probe, asks the input-snapshot build to `refresh`, and removes a structured Quote Input's working cache first, because the JSON build endpoint answers a still-valid working cache with no work. |
@@ -1143,12 +1142,10 @@ array-only payload or omitted-edge compatibility branch is supported.
   visible to validation — `HTMLInputElement` silently strips newlines
   before JavaScript ever sees them, which would let one slip past the
   unsafe-character check.
-- **Live document application and recovery snapshot retention.** Live document
-  application retains the last renderable snapshot in memory, keyed with its revision.
-  Clean updates replace graph/status atomically from the user's perspective. Dirty
-  updates apply status first and retain graph/history. Source-only rendering either shows
-  current source alone or labels the retained snapshot stale; all mutation and execution
-  handlers consume the shared capability fence. A current-source system `parse_error` sets
+- **Live document application.** Clean updates replace graph/status atomically from
+  the user's perspective. Dirty updates apply status first and retain graph/history.
+  Source-only rendering shows the current source and diagnostics alone, never a retained
+  snapshot; all mutation and execution handlers consume the shared capability fence. A current-source system `parse_error` sets
   the document store's `systemFailure`, marks graph state unsynchronised, and renders
   `PipelineLoadFailureView`; the next valid document transition clears the failure before
   publishing its graph.

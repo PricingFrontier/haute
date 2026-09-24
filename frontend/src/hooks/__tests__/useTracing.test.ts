@@ -186,7 +186,6 @@ describe("useTracing", () => {
         source_revision: "r2",
         load_status: "degraded",
       }),
-      null,
       false,
       "live-fingerprint",
     )
@@ -213,7 +212,6 @@ describe("useTracing", () => {
         source_revision: "r2",
         load_status: "degraded",
       }),
-      null,
       false,
       "live-fingerprint",
     )
