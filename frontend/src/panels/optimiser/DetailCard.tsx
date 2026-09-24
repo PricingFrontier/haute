@@ -12,10 +12,7 @@ import { MODEL_COLORS } from "../../theme/colors"
 import { formatNumber } from "../../utils/formatValue"
 import type { MlflowLogAvailability } from "../../utils/mlflowDestinations"
 import { isConstraintMet } from "./optimiserHelpers"
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
+import { isPlainObject } from "../../types/guards"
 
 function optionalPointNumber(value: unknown, field: string): number | null {
   if (value === undefined || value === null) return null
@@ -38,7 +35,7 @@ function nestedPointNumber(
 ): number | null {
   const nested = point[nestedKey]
   if (nested === undefined || nested === null) return null
-  if (!isRecord(nested)) {
+  if (!isPlainObject(nested)) {
     throw new Error(`Invalid frontier point field ${nestedKey}: expected an object`)
   }
   return optionalPointNumber(nested[name], `${nestedKey}.${name}`)
@@ -66,7 +63,7 @@ function frontierPointNumber(
 
 function frontierLambdaEntries(point: Record<string, unknown>): Array<[string, number]> {
   if (point.lambdas !== undefined && point.lambdas !== null) {
-    if (!isRecord(point.lambdas)) {
+    if (!isPlainObject(point.lambdas)) {
       throw new Error("Invalid frontier point field lambdas: expected an object")
     }
     return Object.entries(point.lambdas).map(([name, value]) => [

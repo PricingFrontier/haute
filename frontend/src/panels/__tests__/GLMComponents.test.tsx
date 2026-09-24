@@ -19,6 +19,7 @@ import ModellingConfig from "../ModellingConfig"
 import { GraphProvider } from "../GraphContext"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useToastStore from "../../stores/useToastStore"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { makeTrainResult as makeCanonicalTrainResult } from "../../test-utils/factories"
 
@@ -102,6 +103,7 @@ function makeTrainResult(overrides: Partial<TrainResult> = {}): TrainResult {
 
 beforeEach(() => {
   useNodeResultsStore.setState({ trainJobs: {}, trainResults: {} })
+  useToastStore.setState({ toasts: [] })
   useSettingsStore.setState({
     mlflow: {
       status: "pending",
@@ -261,8 +263,80 @@ describe("GLMTargetConfig", () => {
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
-    expect(onEstimateDispersion).toHaveBeenCalledWith("theta")
+    expect(onEstimateDispersion).toHaveBeenCalledWith("theta", expect.any(AbortSignal))
     await vi.waitFor(() => expect(onUpdate).toHaveBeenCalledWith("theta", 2.4487))
+  })
+
+  it("unmounting mid-estimate aborts it and never applies a late value", async () => {
+    let finish: ((value: number) => void) | undefined
+    let signal: AbortSignal | undefined
+    const onEstimateDispersion = vi.fn((_param: string, estimateSignal: AbortSignal) => {
+      signal = estimateSignal
+      return new Promise<number>((resolve) => { finish = resolve })
+    })
+    const { unmount } = render(
+      <GLMTargetConfig
+        config={{ ...baseConfig, family: "negbinomial" }}
+        onUpdate={onUpdate}
+        columns={defaultColumns}
+        onEstimateDispersion={onEstimateDispersion}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
+    expect(signal?.aborted).toBe(false)
+
+    unmount()
+    expect(signal?.aborted).toBe(true)
+    finish?.(2.4487)
+    await Promise.resolve()
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it("reports a cancellation that fails after the panel closed", async () => {
+    const onEstimateDispersion = vi.fn((_param: string, signal: AbortSignal) => (
+      new Promise<number>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("cancel refused: HTTP 503")), { once: true })
+      })
+    ))
+    const { unmount } = render(
+      <GLMTargetConfig
+        config={{ ...baseConfig, family: "negbinomial" }}
+        onUpdate={onUpdate}
+        columns={defaultColumns}
+        onEstimateDispersion={onEstimateDispersion}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
+
+    unmount()
+
+    await vi.waitFor(() => expect(useToastStore.getState().toasts.map((toast) => toast.text)).toContain(
+      "Cancelling the dispersion estimate failed: cancel refused: HTTP 503",
+    ))
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it("stays quiet when a closed panel's estimate is simply aborted", async () => {
+    const onEstimateDispersion = vi.fn((_param: string, signal: AbortSignal) => (
+      new Promise<number>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true })
+      })
+    ))
+    const { unmount } = render(
+      <GLMTargetConfig
+        config={{ ...baseConfig, family: "negbinomial" }}
+        onUpdate={onUpdate}
+        columns={defaultColumns}
+        onEstimateDispersion={onEstimateDispersion}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
+
+    unmount()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(useToastStore.getState().toasts).toEqual([])
   })
 
   it("estimate failure surfaces the error instead of filling a value", async () => {
@@ -296,7 +370,7 @@ describe("GLMTargetConfig", () => {
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Estimate from data" }))
-    expect(onEstimateDispersion).toHaveBeenCalledWith("var_power")
+    expect(onEstimateDispersion).toHaveBeenCalledWith("var_power", expect.any(AbortSignal))
     await vi.waitFor(() => expect(onUpdate).toHaveBeenCalledWith("var_power", 1.47))
   })
 

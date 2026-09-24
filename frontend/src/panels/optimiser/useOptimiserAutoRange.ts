@@ -16,13 +16,14 @@ import useDocumentStatusStore, {
   type DocumentExecutionFence,
 } from "../../stores/useDocumentStatusStore"
 import useGraphStore from "../../stores/useGraphStore"
+import { waitForJob } from "../../hooks/jobPollingController"
 import {
   buildExecutionFailureMessage,
-  executionErrorDetailMessage,
   executionJobStatusFromReason,
   executionMetricsFromError,
   executionTerminalReasonFromError,
 } from "../../utils/executionDiagnostics"
+import { apiErrorMessage } from "../../api/errors"
 import type { OnUpdateConfig } from "../editors"
 
 const POLL_INTERVAL_MS = 1_000
@@ -146,39 +147,6 @@ function statusFailureMessage(status: FrontierAutoRangeStatusResponse): string {
     status: status.status,
     terminalReason: status.terminal_reason,
     errorCode: status.error_code,
-  })
-}
-
-function requestErrorDetail(error: unknown): string {
-  const detailMessage = executionErrorDetailMessage(error)
-  if (detailMessage) return detailMessage
-  if (
-    error
-    && typeof error === "object"
-    && "detail" in error
-    && typeof error.detail === "string"
-  ) {
-    return error.detail
-  }
-  return error instanceof Error ? error.message : String(error)
-}
-
-function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new DOMException("Aborted", "AbortError"))
-      return
-    }
-
-    const onAbort = () => {
-      clearTimeout(timeoutId)
-      reject(new DOMException("Aborted", "AbortError"))
-    }
-    const timeoutId = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort)
-      resolve()
-    }, ms)
-    signal.addEventListener("abort", onAbort, { once: true })
   })
 }
 
@@ -317,19 +285,16 @@ export function useOptimiserAutoRange({
       }
 
       const jobId = start.job_id
-      let status = await getOptimiserFrontierAutoRangeStatus(jobId, {
+      const status = await waitForJob({
+        poll: (signal) => getOptimiserFrontierAutoRangeStatus(jobId, { signal }),
+        isTerminal: (current) => current.status !== "running",
+        intervalMs: POLL_INTERVAL_MS,
         signal: active.controller.signal,
+        // Retiring aborts the run's signal, which ends the wait.
+        onStatus: () => {
+          if (!isCurrent(active)) retire(active)
+        },
       })
-      while (status.status === "running") {
-        await abortableDelay(POLL_INTERVAL_MS, active.controller.signal)
-        if (!isCurrent(active)) {
-          retire(active)
-          return
-        }
-        status = await getOptimiserFrontierAutoRangeStatus(jobId, {
-          signal: active.controller.signal,
-        })
-      }
       if (!isCurrent(active)) {
         retire(active)
         return
@@ -380,7 +345,7 @@ export function useOptimiserAutoRange({
       dispatch({
         type: "failure",
         generation: active.generation,
-        error: buildExecutionFailureMessage(requestErrorDetail(error), metrics, {
+        error: buildExecutionFailureMessage(apiErrorMessage(error), metrics, {
           prefix: "Auto range failed",
           terminalReason: reason,
         }),

@@ -1182,6 +1182,37 @@ class InputCacheCancelResponse(_StrictInputCacheModel):
 ExploreColumnKind = Literal["Numeric", "Text", "Temporal", "Boolean", "Nested", "Other"]
 
 
+class ExploreHistogramBin(BaseModel):
+    # Integer columns report exact integer boundaries; a float would round
+    # large identifiers together.
+    start: int | float
+    end: int | float
+    count: int
+
+
+class ExploreHistogram(BaseModel):
+    """Equal-width bins over a numeric column's finite values.
+
+    ``ok``: ``bins`` holds up to ``HISTOGRAM_BIN_COUNT`` equal-width bins
+    spanning the finite minimum to maximum, each ``[start, end)`` except the
+    last, which includes its end. Integer columns have integer boundaries and,
+    when their range is narrower than the bin count, one bin per value.
+    ``constant``: every finite value is equal, so there is one bin with
+    ``start == end``. ``empty``: no finite values. ``skipped``: the column is
+    past the profile's histogram column limit (``column_limit``; nothing was
+    computed) or an integer column with values beyond 2**53 - 1
+    (``integer_precision``), whose boundaries a browser would round together.
+    Null, NaN and infinite values never enter a bin; ``non_finite_count``
+    counts the NaN and infinite ones.
+    """
+
+    status: Literal["ok", "constant", "empty", "skipped"]
+    bins: list[ExploreHistogramBin]
+    finite_count: int | None
+    non_finite_count: int | None
+    skipped_reason: Literal["column_limit", "integer_precision"] | None = None
+
+
 class ExploreColumnStat(BaseModel):
     """Per-column stats captured at Explore cache-materialisation time.
 
@@ -1221,6 +1252,8 @@ class ExploreColumnStat(BaseModel):
     text_mean_length: float | None = None
     text_max_length: int | None = None
     temporal_span: str | None = None
+    # None for non-numeric columns.
+    histogram: ExploreHistogram | None = None
 
 
 class ExploreDistinctValueCount(BaseModel):
@@ -1680,6 +1713,57 @@ class RatingLevelsResponse(BaseModel):
     data_version: str | None = None
     total_rows: int = 0
     columns: list[RatingLevelColumn] = Field(default_factory=list)
+
+
+EXPLORE_RELATIONSHIP_FEATURE_LIMIT = 50
+EXPLORE_KEY_COLUMN_LIMIT = 8
+
+
+class ExploreRelationshipsRequest(NodeDataRequest):
+    """Target relationships and a key check over the data point an Explore node reads."""
+
+    target: str | None = None
+    weight: str | None = None
+    features: list[str] = Field(default_factory=list, max_length=EXPLORE_RELATIONSHIP_FEATURE_LIMIT)
+    key_columns: list[str] = Field(default_factory=list, max_length=EXPLORE_KEY_COLUMN_LIMIT)
+    level_limit: int = Field(default=12, ge=2, le=50)
+
+
+class ExploreRelationshipLevel(BaseModel):
+    label: str
+    kind: Literal["value", "bin", "missing", "other"]
+    rows: int
+    weight: float
+    target_mean: float | None
+
+
+class ExploreRelationship(BaseModel):
+    feature: str
+    kind: Literal["numeric", "categorical"]
+    strength: float
+    levels: list[ExploreRelationshipLevel]
+    levels_truncated: bool
+
+
+class ExploreKeyCheck(BaseModel):
+    columns: list[str]
+    rows: int
+    distinct_keys: int
+    duplicate_rows: int
+    null_key_rows: int
+    unique: bool
+
+
+class ExploreRelationshipsResponse(BaseModel):
+    status: Literal["ok", "cache_required"]
+    point: NodeDataPointResponse
+    data_version: str | None = None
+    total_rows: int = 0
+    target: str | None = None
+    weight: str | None = None
+    used_rows: int = 0
+    relationships: list[ExploreRelationship] = Field(default_factory=list)
+    key_check: ExploreKeyCheck | None = None
 
 
 class ExplorePivotMembersRequest(BaseModel):

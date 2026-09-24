@@ -23,10 +23,10 @@ or maintenance issue; `P3` opportunistic work.
 | [Deploy](deploy.md) | A slim scoring runtime, offered targets | `DEP-R02` |
 | [Engineering quality](engineering-quality.md) | Dead code, tracked artifacts, specification drift, coverage gates, test organisation | `ENGQ-R01` |
 | [Execution engine](execution-engine.md) | Chunked runner, one execution walker | `EXEC-R05` |
-| [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | `EDA-E09` |
+| [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, pivot tables, PivotCharts, analysis, export | — |
 | [Frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md) | Shared result tabs, target configuration and charts; why a training estimate is unavailable | `FMO-R01` |
-| [Frontend node editors](frontend-node-editors.md) | Shared editor pieces and one dispatcher | `FNE-R01` |
-| [Frontend shared](frontend-shared.md) | Job polling, repeated helpers, results store | `FSH-R01` |
+| [Frontend node editors](frontend-node-editors.md) | API Input and Output shared block | `FNE-R01` |
+| [Frontend shared](frontend-shared.md) | Debounce, modal and table bases; results store | `FSH-R02` |
 | [IO layer](io-layer.md) | One atomic write and file lock | `IO-R02` |
 | [JSON shredding](json-shredding.md) | Explicit output nesting | `JSON-R02` |
 | [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients | `MLF-R02` |

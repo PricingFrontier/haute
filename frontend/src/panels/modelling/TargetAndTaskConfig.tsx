@@ -4,8 +4,9 @@ import { configField } from "../../utils/configField"
 import { isNumericDtype } from "../../utils/polarsDtypes"
 import { toggleButtonStyle } from "./styles"
 import { FailoverHelp } from "./FailoverHelp"
-import { OffsetFieldLabel } from "./OffsetFieldLabel"
 import { ColumnSelector } from "./ColumnSelector"
+import { modelColumnChoices } from "./modelColumns"
+import WeightOffsetFields from "./WeightOffsetFields"
 import { NumberField } from "./NumberField"
 import { algorithmCapability, supportedLosses } from "./algorithmCapabilities"
 
@@ -125,21 +126,11 @@ export function TargetAndTaskConfig({
         ? CLASSIFICATION_METRICS
         : [],
   )
-  const targetColumns = columns.filter(
-    (column) => column.name !== weight && column.name !== offset,
-  )
-  const weightColumns = columns.filter(
-    (column) =>
-      isNumericDtype(column.dtype) &&
-      column.name !== target &&
-      column.name !== offset,
-  )
-  const offsetColumns = columns.filter(
-    (column) =>
-      isNumericDtype(column.dtype) &&
-      column.name !== target &&
-      column.name !== weight,
-  )
+  const { targetColumns, weightColumns, offsetColumns } = modelColumnChoices(columns, {
+    target,
+    weight,
+    offset,
+  })
   return (
     <div>
       <p className="mb-1 text-[10px]" aria-label="Selected algorithm">
@@ -304,31 +295,13 @@ export function TargetAndTaskConfig({
         </ConfigSection>
         <ConfigSection title="Weight and offset">
           <div className="space-y-2">
-            <div>
-              <label
-                className="text-[13px]"
-                style={{ color: "var(--text-secondary)" }}
-              >
-                Weight column (optional)
-              </label>
-              <ColumnSelector
-                label="Weight column"
-                value={weight}
-                columns={weightColumns}
-                onChange={(next) => onUpdate("weight", next)}
-                optional
-              />
-            </div>
-            <div>
-              <OffsetFieldLabel />
-              <ColumnSelector
-                label="Offset column"
-                value={offset}
-                columns={offsetColumns}
-                onChange={(next) => onUpdate("offset", next || null)}
-                optional
-              />
-            </div>
+            <WeightOffsetFields
+              weight={weight}
+              offset={offset}
+              weightColumns={weightColumns}
+              offsetColumns={offsetColumns}
+              onUpdate={onUpdate}
+            />
           </div>
         </ConfigSection>
         <ConfigSection title="Metrics">

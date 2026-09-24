@@ -13,40 +13,39 @@ packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FMO-R01 | Planned | P3 | Modelling result tabs, target configuration and result charts share one implementation. |
+| FMO-R01 | Planned | P3 | The banding histogram and the two-chart result layouts use the shared chart pieces. |
 | FMO-R02 | Planned | P2 | A training estimate that cannot size its input says why, and never reports that the data fits in 0 MB. |
 
 ## Planned improvements
 
-### FMO-R01 — Shared result tabs and charts
-**Why:** The lift, residuals, actual-versus-expected, partial-dependence and
-loss tabs share 60- to 90-line copied blocks. The GLM target configuration and
-the target-and-task configuration share a 75-line block. Only the Explore
-combo chart uses ECharts; the modelling, optimiser and banding charts are
-hand-drawn SVG, and the convergence chart re-implements the axis scaling that
-`chartHelpers` provides for the frontier chart.
+### FMO-R01 — The last charts onto the shared pieces
+**Delivered so far:** the chart approach is the shared hand-drawn SVG (the
+`ChartScaffold` primitives and the `utils/chartHelpers.ts` axis and scale
+helpers, which absorbed the modelling `chartGeometry` module); ECharts stays
+in the Explore combo chart. Every modelling validation chart draws its value
+axis through `ChartValueGrid`; AvE and PDP share `FeatureDiagnosticTab`; the
+GLM and tree-family target configurations share `modelColumnChoices` and
+`WeightOffsetFields`; and the frontier, data-preview and convergence charts
+scale through the shared helpers.
 
-**Plan:** Extract a shared result-tab scaffold and one target-configuration
-component. Decide one chart approach (the shared SVG scaffold and helpers, or
-ECharts) and move the hand-drawn charts onto it.
+**Why:** The banding histogram still computes its own extent and positions
+bars in percentages, and the Lift and Residuals tabs each lay their two charts
+out side by side with their own width breakpoints and gap arithmetic.
 
-**Acceptance:** The listed copied blocks are single components; every chart
-uses the chosen approach's shared axis and scale helpers; the modelling and
-optimiser panel tests pass.
+**Plan:** Move the banding histogram onto `ResponsiveChart`/`ChartSvg` and the
+shared scale helpers (its unpadded, edge-to-edge extent is deliberate and must
+survive), and extract one two-chart result layout for Lift and Residuals.
+
+**Acceptance:** Every chart uses the shared axis and scale helpers; the
+banding, modelling and optimiser panel tests pass.
 
 **Dependencies:** `MOD-T08` (modelling) also removes duplicated GLM pane code;
 take them together if both are open.
 
-**Evidence:** `frontend/src/panels/modelling/LiftTab.tsx`;
+**Evidence:** `frontend/src/panels/editors/banding/BandingHistogram.tsx`;
+`frontend/src/panels/modelling/LiftTab.tsx`;
 `frontend/src/panels/modelling/ResidualsTab.tsx`;
-`frontend/src/panels/modelling/AveTab.tsx`;
-`frontend/src/panels/modelling/PdpTab.tsx`;
-`frontend/src/panels/modelling/LossTab.tsx`;
-`frontend/src/panels/modelling/GLMTargetConfig.tsx`;
-`frontend/src/panels/modelling/TargetAndTaskConfig.tsx`;
-`frontend/src/panels/optimiser/ConvergenceChart.tsx`;
-`frontend/src/utils/chartHelpers.ts`;
-`frontend/src/panels/explore/chartRuntime.ts`.
+`frontend/src/utils/chartHelpers.ts`.
 
 ### FMO-R02 — An unavailable training estimate says why
 **Why:** The training estimate has two specified unavailable outcomes, and

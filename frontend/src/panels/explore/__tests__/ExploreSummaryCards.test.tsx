@@ -30,6 +30,19 @@ function makeColumn(overrides: Partial<ExploreColumnStat> = {}): ExploreColumnSt
   }
 }
 
+const okHistogram: NonNullable<ExploreColumnStat["histogram"]> = {
+  status: "ok",
+  bins: [
+    { start: 0, end: 10, count: 1 },
+    { start: 10, end: 20, count: 4 },
+    { start: 20, end: 30, count: 2 },
+    { start: 30, end: 40, count: 0 },
+  ],
+  finite_count: 7,
+  non_finite_count: 0,
+  skipped_reason: null,
+}
+
 function makeReport(overrides: Partial<ExploreDataView> = {}): ExploreDataView {
   return {
     producer_node_id: "prep_1",
@@ -447,7 +460,9 @@ describe("Explore summary cards", () => {
 
   it("copies the numeric display grid as TSV from its native action button", async () => {
     const writeText = installClipboard()
-    render(<NumericSummaryCard report={makeReport({ row_count: 100 })} />)
+    const report = makeReport({ row_count: 100 })
+    report.columns[1] = { ...report.columns[1], histogram: okHistogram }
+    render(<NumericSummaryCard report={report} />)
 
     const copy = await screen.findByRole("button", {
       name: "Copy Numeric Summary table as TSV",
@@ -456,10 +471,73 @@ describe("Explore summary cards", () => {
 
     await waitFor(() => expect(writeText).toHaveBeenCalledOnce())
     expect(writeText).toHaveBeenCalledWith(
-      "Field\tType\tNull %\tDistinct\tMin\tP25\tMedian\tMean\tP75\tMax\tStd\tZeros\tNegatives\tNaN\n" +
-        "id\tInt64\t0.0%\t1,234\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n" +
-        "premium\tFloat64\t0.0%\t980\t10.5\t-\t-\t-\t-\t999.99\t-\t0\t0\t-",
+      "Field\tType\tNull %\tDistinct\tDistribution\tMin\tP25\tMedian\tMean\tP75\tMax\tStd\tZeros\tNegatives\tNaN\n" +
+        "id\tInt64\t0.0%\t1,234\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n" +
+        "premium\tFloat64\t0.0%\t980\t4 bins, 0 to 40\t10.5\t-\t-\t-\t-\t999.99\t-\t0\t0\t-",
     )
+  })
+
+  it("draws each numeric field's server-binned distribution or says why there is none", () => {
+    const report = makeReport({
+      columns: [
+        makeColumn({ name: "premium", histogram: okHistogram }),
+        makeColumn({
+          name: "flat",
+          histogram: {
+            status: "constant",
+            bins: [{ start: 3, end: 3, count: 7 }],
+            finite_count: 7,
+            non_finite_count: 0,
+            skipped_reason: null,
+          },
+        }),
+        makeColumn({
+          name: "blank",
+          histogram: { status: "empty", bins: [], finite_count: 0, non_finite_count: 2, skipped_reason: null },
+        }),
+        makeColumn({
+          name: "late",
+          histogram: {
+            status: "skipped",
+            bins: [],
+            finite_count: null,
+            non_finite_count: null,
+            skipped_reason: "column_limit",
+          },
+        }),
+        makeColumn({ name: "unprofiled" }),
+        makeColumn({
+          name: "ids",
+          histogram: {
+            status: "skipped",
+            bins: [],
+            finite_count: 9,
+            non_finite_count: 0,
+            skipped_reason: "integer_precision",
+          },
+        }),
+      ],
+    })
+    render(<NumericSummaryCard report={report} />)
+
+    const cells = screen.getAllByTestId("explore-numeric-distribution")
+    const chart = within(cells[0]).getByRole("img", { name: "Distribution of premium: 4 bins, 0 to 40" })
+    const bars = within(chart).getAllByTestId("explore-distribution-bar")
+    // Bars are scaled to the tallest bin: counts 1, 4, 2, 0 on a 20px range.
+    expect(bars.map((bar) => bar.getAttribute("height"))).toEqual(["5", "20", "10", "0"])
+    expect(cells[1]).toHaveTextContent("All 3")
+    expect(cells[2]).toHaveTextContent("No finite values")
+    expect(cells[3]).toHaveTextContent("Not binned")
+    expect(cells[4]).toHaveTextContent("-")
+    expect(within(cells[3]).getByText("Not binned")).toHaveAttribute(
+      "title",
+      "Only the first numeric fields of a wide dataset are binned.",
+    )
+    expect(within(cells[5]).getByText("Not binned")).toHaveAttribute(
+      "title",
+      "Its values are too large for the browser to show bin boundaries exactly.",
+    )
+    expect(screen.getAllByTestId("explore-distribution-sparkline")).toHaveLength(1)
   })
 
   it("downloads categorical CSV using shared escaping", async () => {

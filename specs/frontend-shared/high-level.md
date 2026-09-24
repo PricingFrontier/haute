@@ -66,7 +66,10 @@ In scope:
   (`utils/formatBytes.ts`, `utils/formatTime.ts`, `utils/formatValue.ts`,
   `utils/color.ts`, `utils/dtypeColors.ts`, `utils/portableKey.ts`,
   `utils/chartHelpers.ts`, `utils/formatTrace.ts`,
-  `utils/mlflowOptimiser.ts`).
+  `utils/mlflowOptimiser.ts`). Each repeated concern has one helper: error
+  text (`api/errors.ts`), byte counts (`utils/formatBytes.ts`), durations
+  (`utils/formatValue.ts`) and the object guard (`types/guards.ts`); lint
+  rejects a new local copy.
 - The application bootstrap (`main.tsx`).
 
 Explicitly out of scope (owned elsewhere, even though the files live under
@@ -144,8 +147,9 @@ never enters JavaScript, request headers assembled by the client, or a
 WebSocket URL. Bundle-split modules such as `api/dispersion.ts` reuse the
 generic transport and own local response parsers so they remain outside the
 initial chunk. `runDispersionEstimate` fronts a backend job that runs off the
-request thread: it polls a `.../status/{job_id}` endpoint on a fixed interval
-and resolves only once the job reaches a terminal status, so callers can
+request thread: it waits through the shared `waitForJob`, polling a
+`.../status/{job_id}` endpoint on a fixed interval, and resolves only once the
+job reaches a terminal status, so callers can
 still `await` a single promise for what is, on the wire, a start-then-poll
 sequence — distinct from `useJobPolling`/`useBackgroundJobs`, which track
 jobs the user can navigate away from and revisit.
@@ -326,6 +330,16 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   those results reach `useNodeResultsStore` even after the user navigates
   away from the node that started them; this depends on the backend's job
   endpoints described in [background-jobs](../background-jobs/high-level.md).
+- Every job wait goes through `hooks/jobPollingController.ts`. Jobs the store
+  tracks use `JobPollingController`; a job awaited inside one operation (an
+  input-snapshot build or its cancellation, a dispersion estimate, an
+  optimiser auto range) uses `waitForJob`. Each awaited wait takes the abort
+  signal of the component or request that owns it, so an unmounted panel or a
+  cancelled request stops polling, and each is bounded: by the controller's
+  24-hour lifetime, or by a shorter deadline where the caller has one. A
+  server-side job deadline ends the wait through the job's own terminal
+  status. ESLint rejects `for (;;)`, `while (true)` and `setInterval` in
+  browser source, so a new loop cannot poll outside the shared module.
 
 ## Failure model
 
@@ -356,7 +370,7 @@ therefore fail at the caller, consistent with the application's fail-loud policy
 - Cache-limit misconfiguration (`MAX_CACHED_*` set to a non-positive
   integer) throws immediately from `assertValidCacheLimit` rather than
   silently disabling eviction.
-- `runDispersionEstimate`'s embedded poll loop rejects with
+- `runDispersionEstimate`'s job wait rejects with
   an `ApiError` carrying the job's message on any non-`running`/non-`completed` terminal
   status, and with a plain `Error` if a `"completed"` status arrives
   without a result/value payload — a job that finishes without the data

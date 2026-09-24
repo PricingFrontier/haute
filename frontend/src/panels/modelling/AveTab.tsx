@@ -7,10 +7,10 @@ import {
   ChartEmptyState,
   ChartLegend,
   ChartSvg,
+  ChartValueGrid,
   ResponsiveChart,
   MODELLING_CHART_AXIS_FONT_SIZE as FONT,
   MODELLING_CHART_AXIS_TEXT_COLOR as TEXT,
-  MODELLING_CHART_GRID_COLOR as GRID,
 } from "./ChartScaffold"
 import {
   chartAxisLabel,
@@ -18,9 +18,9 @@ import {
   chartLabelIndices,
   chartTicks,
   formatChartNumber,
-} from "./chartGeometry"
-import { FeatureBrowser } from "./FeatureBrowser"
-import { useDiagnosticFeature, type SharedFeatureBrowser } from "./useDiagnosticFeature"
+} from "../../utils/chartHelpers"
+import { FeatureDiagnosticTab } from "./FeatureDiagnosticTab"
+import type { SharedFeatureBrowser } from "./useDiagnosticFeature"
 
 export function AveTab({
   result,
@@ -29,29 +29,14 @@ export function AveTab({
   result: TrainResult
   featureBrowser?: SharedFeatureBrowser
 }) {
-  const importance = new Map(
-    result.feature_importance.map((item) => [item.feature, item.importance]),
-  )
-  const browser = useDiagnosticFeature(
-    result.ave_per_feature.map((item) => ({
-      feature: item.feature,
-      importance: importance.get(item.feature) ?? 0,
-    })),
-    featureBrowser,
-  )
-  const data = result.ave_per_feature.find((item) => item.feature === browser.selected)
-  if (!browser.features.length) return <ChartEmptyState>No AvE data available</ChartEmptyState>
   return (
-    <div className="validation-feature-layout">
-      <FeatureBrowser {...browser} />
-      <div className="min-w-0">
-        {data ? (
-          <AveChart key={data.feature} data={data} />
-        ) : (
-          <ChartEmptyState>No AvE data for {browser.selected}</ChartEmptyState>
-        )}
-      </div>
-    </div>
+    <FeatureDiagnosticTab
+      result={result}
+      rows={result.ave_per_feature}
+      featureBrowser={featureBrowser}
+      noun="AvE"
+      renderChart={(data) => <AveChart key={data.feature} data={data} />}
+    />
   )
 }
 
@@ -103,20 +88,7 @@ function AveChart({ data }: { data: TrainAvePerFeatureRow }) {
                 <text x={left} y={16} fontSize={FONT} fill={TEXT}>
                   Average outcome
                 </text>
-                {chartTicks(low, high).map((value) => (
-                  <g key={value}>
-                    <line x1={left} x2={width - right} y1={y(value)} y2={y(value)} stroke={GRID} />
-                    <text
-                      x={left - 8}
-                      y={y(value) + 4}
-                      textAnchor="end"
-                      fontSize={FONT}
-                      fill={TEXT}
-                    >
-                      {formatChartNumber(value)}
-                    </text>
-                  </g>
-                ))}
+                <ChartValueGrid ticks={chartTicks(low, high)} left={left} right={width - right} y={y} labelGap={8} />
                 {data.type === "numeric" && (
                   <>
                     <path

@@ -43,6 +43,7 @@ import type {
   ExecutionStageMetrics,
   ExploreCategoricalColumnProfile,
   ExploreColumnStat,
+  ExploreHistogram,
   ExploreDataQualityIssue,
   ExploreDataQualitySummary,
   ExploreDistinctValueCount,
@@ -2122,6 +2123,34 @@ export function parseInputCacheCancelResponse(value: unknown): InputCacheCancelR
 // ---------------------------------------------------------------------------
 
 const EXPLORE_COLUMN_KINDS = ["Numeric", "Text", "Temporal", "Boolean", "Nested", "Other"] as const
+const EXPLORE_HISTOGRAM_STATUSES = ["ok", "constant", "empty", "skipped"] as const
+
+function parseExploreHistogram(value: unknown, field: string): ExploreHistogram {
+  const parser = "parseExploreHistogram"
+  const obj = expectPlainObject(parser, value, field)
+  const bins = expectArray(parser, obj.bins, `${field}.bins`).map((bin, index) => {
+    const binField = `${field}.bins[${index}]`
+    const record = expectPlainObject(parser, bin, binField)
+    return {
+      start: expectNumber(parser, record.start, `${binField}.start`),
+      end: expectNumber(parser, record.end, `${binField}.end`),
+      count: expectNumber(parser, record.count, `${binField}.count`),
+    }
+  })
+  const skippedReason = obj.skipped_reason ?? null
+  if (skippedReason !== null && skippedReason !== "column_limit" && skippedReason !== "integer_precision") {
+    throw new Error(
+      `${parser}: expected ${field}.skipped_reason to be "column_limit", "integer_precision" or null`,
+    )
+  }
+  return {
+    status: expectStringLiteral(parser, obj.status, `${field}.status`, EXPLORE_HISTOGRAM_STATUSES),
+    bins,
+    finite_count: expectNullableNumber(parser, obj.finite_count, `${field}.finite_count`),
+    non_finite_count: expectNullableNumber(parser, obj.non_finite_count, `${field}.non_finite_count`),
+    skipped_reason: skippedReason,
+  }
+}
 
 function parseExploreColumnStat(value: unknown, field: string): ExploreColumnStat {
   const parser = "parseExploreColumnStat"
@@ -2149,6 +2178,10 @@ function parseExploreColumnStat(value: unknown, field: string): ExploreColumnSta
     text_mean_length: expectNullableNumber(parser, obj.text_mean_length, `${field}.text_mean_length`),
     text_max_length: expectNullableNumber(parser, obj.text_max_length, `${field}.text_max_length`),
     temporal_span: expectNullableString(parser, obj.temporal_span, `${field}.temporal_span`),
+    histogram:
+      obj.histogram === undefined || obj.histogram === null
+        ? null
+        : parseExploreHistogram(obj.histogram, `${field}.histogram`),
   }
 }
 

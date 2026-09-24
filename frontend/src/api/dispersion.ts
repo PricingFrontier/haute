@@ -9,7 +9,9 @@
  * via its exported `request`/`post`.
  */
 
+import { waitForJob } from "../hooks/jobPollingController"
 import { ApiError, post, request } from "./client"
+import { expectPlainObject } from "../types/guards"
 import { JOB_STATUS_VALUES, TERMINAL_JOB_STATUSES } from "./types"
 import type {
   DispersionEstimateStart,
@@ -18,13 +20,6 @@ import type {
   GraphPayload,
   JobStatus,
 } from "./types"
-
-function asRecord(value: unknown, parser: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error(`${parser}: expected an object`)
-  }
-  return value as Record<string, unknown>
-}
 
 function numberOrNull(obj: Record<string, unknown>, key: string): number | null {
   const value = obj[key]
@@ -37,7 +32,7 @@ function stringOrNull(obj: Record<string, unknown>, key: string): string | null 
 }
 
 function parseDispersionEstimateResponse(value: unknown): DispersionEstimateStart {
-  const obj = asRecord(value, "parseDispersionEstimateResponse")
+  const obj = expectPlainObject("parseDispersionEstimateResponse", value)
   if (obj.status !== "started" || typeof obj.job_id !== "string") {
     throw new Error(
       `parseDispersionEstimateResponse: unexpected payload (status ${String(obj.status)})`,
@@ -47,7 +42,7 @@ function parseDispersionEstimateResponse(value: unknown): DispersionEstimateStar
 }
 
 function parseDispersionStatusResponse(value: unknown): DispersionEstimateStatus {
-  const obj = asRecord(value, "parseDispersionStatusResponse")
+  const obj = expectPlainObject("parseDispersionStatusResponse", value)
   if (
     typeof obj.status !== "string"
     || !JOB_STATUS_VALUES.includes(obj.status as JobStatus)
@@ -119,24 +114,20 @@ export async function runDispersionEstimate(
   options?: { signal?: AbortSignal; pollIntervalMs?: number },
 ): Promise<number> {
   const { job_id } = await estimateGlmDispersion({ ...args, signal: options?.signal })
-  const pollInterval = options?.pollIntervalMs ?? 500
   try {
-    for (;;) {
-      if (options?.signal?.aborted) {
-        throw new DOMException("Dispersion estimation aborted", "AbortError")
-      }
-      const status = await getDispersionStatus(job_id, { signal: options?.signal })
-      if (status.status === "completed") {
-        if (status.value === null) {
-          throw new Error("Dispersion estimation completed without a value")
-        }
-        return status.value
-      }
-      if (TERMINAL_JOB_STATUSES.has(status.status)) {
-        throw new ApiError(status.error || status.message || `Dispersion estimation ${status.status}`, 500)
-      }
-      await new Promise((resolve) => setTimeout(resolve, pollInterval))
+    const status = await waitForJob({
+      poll: (signal) => getDispersionStatus(job_id, { signal }),
+      isTerminal: (current) => TERMINAL_JOB_STATUSES.has(current.status),
+      intervalMs: options?.pollIntervalMs ?? 500,
+      signal: options?.signal,
+    })
+    if (status.status !== "completed") {
+      throw new ApiError(status.error || status.message || `Dispersion estimation ${status.status}`, 500)
     }
+    if (status.value === null) {
+      throw new Error("Dispersion estimation completed without a value")
+    }
+    return status.value
   } catch (error) {
     if (options?.signal?.aborted) {
       await cancelDispersion(job_id)

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react"
-import { ApiError, fetchSchema } from "../api/client"
+import { fetchSchema } from "../api/client"
+import { apiErrorMessage } from "../api/errors"
 import type { SchemaInfo } from "../panels/editors/_shared"
 
 /**
@@ -26,13 +27,7 @@ export function useSchemaFetch(initialPath?: string) {
       .catch((err: unknown) => {
         if (signal?.aborted || (err instanceof DOMException && err.name === "AbortError")) return
         setSchema(null)
-        setError(
-          err instanceof ApiError && err.detail
-            ? err.detail
-            : err instanceof Error
-              ? err.message
-              : String(err),
-        )
+        setError(apiErrorMessage(err))
         setLoading(false)
       })
   }, [])

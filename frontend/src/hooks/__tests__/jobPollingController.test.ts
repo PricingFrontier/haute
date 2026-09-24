@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { JobPollingController, type JobPollingConfig } from "../jobPollingController"
+import {
+  JobPollingController,
+  JobWaitTimeoutError,
+  waitForJob,
+  type JobPollingConfig,
+} from "../jobPollingController"
 
 interface Job { jobId: string; nodeLabel: string }
 interface Status { status: string; progress: number }
@@ -90,6 +95,132 @@ describe("JobPollingController", () => {
 
     expect(signals).toHaveLength(2)
     expect(signals.every((signal) => signal.aborted)).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe("waitForJob", () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  const isTerminal = (status: Status) => status.status !== "running"
+
+  it("polls at once, then at the interval, and resolves with the terminal status", async () => {
+    const onStatus = vi.fn()
+    const poll = vi.fn()
+      .mockResolvedValueOnce({ status: "running", progress: 0.1 })
+      .mockResolvedValueOnce({ status: "running", progress: 0.6 })
+      .mockResolvedValueOnce({ status: "completed", progress: 1 })
+    const wait = waitForJob({ poll, isTerminal, intervalMs: 800, onStatus })
+
+    await advance(0)
+    expect(poll).toHaveBeenCalledTimes(1)
+    await advance(799)
+    expect(poll).toHaveBeenCalledTimes(1)
+    await advance(1)
+    expect(poll).toHaveBeenCalledTimes(2)
+    await advance(800)
+
+    await expect(wait).resolves.toEqual({ status: "completed", progress: 1 })
+    expect(onStatus.mock.calls.map(([status]) => status.progress)).toEqual([0.1, 0.6])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("rejects with an AbortError, aborts the request in flight and polls no more", async () => {
+    const signals: AbortSignal[] = []
+    const poll = vi.fn((signal: AbortSignal) => {
+      signals.push(signal)
+      return new Promise<Status>(() => {})
+    })
+    const owner = new AbortController()
+    const wait = waitForJob({ poll, isTerminal, intervalMs: 800, signal: owner.signal })
+    await advance(0)
+
+    owner.abort()
+
+    await expect(wait).rejects.toMatchObject({ name: "AbortError" })
+    expect(signals[0].aborted).toBe(true)
+    await advance(10_000)
+    expect(poll).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("does not poll for an already aborted signal", async () => {
+    const poll = vi.fn()
+    const owner = new AbortController()
+    owner.abort()
+
+    await expect(
+      waitForJob({ poll, isTerminal, intervalMs: 800, signal: owner.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" })
+    expect(poll).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("rejects with JobWaitTimeoutError at its deadline and stops polling", async () => {
+    const signals: AbortSignal[] = []
+    const poll = vi.fn((signal: AbortSignal) => {
+      signals.push(signal)
+      return Promise.resolve({ status: "running", progress: 0 })
+    })
+    const wait = waitForJob({ poll, isTerminal, intervalMs: 800, timeoutMs: 2_000 })
+    const outcome = wait.catch((error: unknown) => error)
+
+    await advance(2_000)
+
+    const error = await outcome
+    expect(error).toBeInstanceOf(JobWaitTimeoutError)
+    expect((error as JobWaitTimeoutError).timeoutMs).toBe(2_000)
+    const polls = poll.mock.calls.length
+    await advance(10_000)
+    expect(poll).toHaveBeenCalledTimes(polls)
+    expect(signals.every((signal) => signal.aborted)).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("is bounded by the controller's lifetime when the caller gives no deadline", async () => {
+    const poll = vi.fn(() => new Promise<Status>(() => {}))
+    const outcome = waitForJob({ poll, isTerminal, intervalMs: 800 }).catch((error: unknown) => error)
+
+    await advance(24 * 60 * 60 * 1_000)
+
+    expect(await outcome).toBeInstanceOf(JobWaitTimeoutError)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("rejects with the poll's error without retrying", async () => {
+    const failure = new Error("status unavailable")
+    const poll = vi.fn().mockRejectedValue(failure)
+
+    await expect(waitForJob({ poll, isTerminal, intervalMs: 800 })).rejects.toBe(failure)
+    await advance(10_000)
+    expect(poll).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("stops when onStatus aborts the owner's signal", async () => {
+    const owner = new AbortController()
+    const poll = vi.fn().mockResolvedValue({ status: "running", progress: 0 })
+
+    const wait = waitForJob({
+      poll, isTerminal, intervalMs: 800, signal: owner.signal,
+      onStatus: () => owner.abort(),
+    })
+
+    await expect(wait).rejects.toMatchObject({ name: "AbortError" })
+    await advance(10_000)
+    expect(poll).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("rejects with an error that onStatus throws", async () => {
+    const failure = new Error("not current")
+    const poll = vi.fn().mockResolvedValue({ status: "running", progress: 0 })
+
+    await expect(waitForJob({
+      poll, isTerminal, intervalMs: 800,
+      onStatus: () => { throw failure },
+    })).rejects.toBe(failure)
     expect(vi.getTimerCount()).toBe(0)
   })
 })

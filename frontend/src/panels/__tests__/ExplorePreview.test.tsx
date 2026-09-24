@@ -325,6 +325,19 @@ describe("ExplorePreview", () => {
     expect(screen.getByText(/Showing 2 of 3 rows/)).toBeInTheDocument()
   })
 
+  it("opens the Relationships pane without touching the editor pane", () => {
+    useUIStore.setState({ explorePanes: { explore_1: "export" } })
+    renderExplore(makePreview())
+
+    fireEvent.click(screen.getByRole("tab", { name: "Relationships" }))
+
+    expect(screen.getByRole("tab", { name: "Relationships" })).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByTestId("explore-preview-relationships-pane")).toBeInTheDocument()
+    expect(screen.queryByTestId("data-preview-embedded")).not.toBeInTheDocument()
+    expect(useUIStore.getState().explorePreviewPanes.explore_1).toBe("relationships")
+    expect(useUIStore.getState().explorePanes.explore_1).toBe("export")
+  })
+
   it("offers the implemented Explore panes and hides preview rows on Overview", () => {
     // Seed a non-default editor pane so the untouched assertions below prove
     // Preview/Overview clicks leave it alone rather than clearing it.
@@ -336,7 +349,7 @@ describe("ExplorePreview", () => {
 
     expect(preview).toHaveAttribute("aria-selected", "true")
     expect(overview).toHaveAttribute("aria-selected", "false")
-    expect(screen.queryByRole("tab", { name: "Relationships" })).not.toBeInTheDocument()
+    expect(screen.getByRole("tab", { name: "Relationships" })).toHaveAttribute("aria-selected", "false")
     expect(screen.getByRole("tab", { name: "Pivots" })).toHaveAttribute("aria-selected", "false")
     expect(screen.getByRole("tab", { name: "Charts" })).toHaveAttribute("aria-selected", "false")
 

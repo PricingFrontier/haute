@@ -2,6 +2,7 @@ import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import type { FactorLevelOrder } from "../panels/optimiser/ratebookFactorTables"
 import { edgeInputName } from "./apiInputPorts"
 import { NODE_TYPES } from "./nodeTypes"
+import { isObjectLiteral } from "./objectLiteral"
 
 type CollectLevelsOptions = { includeDefault?: boolean }
 
@@ -14,12 +15,6 @@ export type BandingClassification = {
   configuredOutputs: string[]
   zeroLevelOutputs: string[]
   zeroLevelIssues: BandingZeroLevelIssue[]
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object") return false
-  const prototype = Object.getPrototypeOf(value)
-  return prototype === Object.prototype || prototype === null
 }
 
 function nonblankString(value: unknown): string | null {
@@ -40,7 +35,7 @@ export function classifyBandingFactors(
   const configuredOutputs: string[] = []
   const levelSets: Record<string, Set<string>> = {}
   for (const factor of factors) {
-    if (!isPlainObject(factor)) continue
+    if (!isObjectLiteral(factor)) continue
     const banding = factor.banding
     if (banding !== "continuous" && banding !== "categorical" && banding !== "breakpoints") continue
     const outputColumn = nonblankString(factor.outputColumn)
@@ -53,7 +48,7 @@ export function classifyBandingFactors(
     const levels = levelSets[outputColumn]
     if (Array.isArray(factor.rules)) {
       for (const rule of factor.rules) {
-        if (!isPlainObject(rule)) continue
+        if (!isObjectLiteral(rule)) continue
         const level = nonblankString(banding === "breakpoints" ? rule.label : rule.assignment)
         if (level) levels.add(level)
       }
@@ -86,7 +81,7 @@ export function classifyBandingNode(
 ): BandingClassification {
   if (!node || node.data.nodeType !== NODE_TYPES.BANDING) return emptyClassification()
   const config = node.data.config
-  if (!isPlainObject(config)) return emptyClassification()
+  if (!isObjectLiteral(config)) return emptyClassification()
   return classifyBandingFactors(config.factors, options)
 }
 
@@ -134,7 +129,7 @@ export function extractBandingLevels(allNodes: SimpleNode[]): Record<string, str
 
 function configuredBandingSourceName(node: SimpleNode | undefined): string | null {
   const config = node?.data.config
-  if (!isPlainObject(config)) return null
+  if (!isObjectLiteral(config)) return null
   const value = config.banding_source
   return typeof value === "string" && value.length > 0 ? value : null
 }

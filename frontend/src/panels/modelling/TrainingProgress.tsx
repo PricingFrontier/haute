@@ -4,7 +4,7 @@
  */
 import type { TrainProgress } from "../../stores/useNodeResultsStore"
 import { MODEL_COLORS } from "../../theme/colors"
-import { formatElapsed } from "../../utils/formatValue"
+import { formatDuration } from "../../utils/formatValue"
 import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSummary"
 import { LossChart } from "./LossChart"
 
@@ -36,7 +36,7 @@ export function TrainingProgress({ trainProgress, estimatedRemainingSeconds = nu
       <div className="space-y-1">
         <div className="flex justify-between text-[11px]">
           <span style={{ color: MODEL_COLORS.accent }}>{trainProgress.message || "Training..."}</span>
-          <span style={{ color: "var(--text-muted)" }}>{formatElapsed(trainProgress.elapsed_seconds)}</span>
+          <span style={{ color: "var(--text-muted)" }}>{formatDuration(trainProgress.elapsed_seconds)}</span>
         </div>
         <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: MODEL_COLORS.accentSoft }}>
           <div
@@ -70,7 +70,7 @@ export function TrainingProgress({ trainProgress, estimatedRemainingSeconds = nu
       )}
 
       {estimatedRemainingSeconds != null && (
-        <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>Estimated remaining: {formatElapsed(estimatedRemainingSeconds)}</div>
+        <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>Estimated remaining: {formatDuration(estimatedRemainingSeconds)}</div>
       )}
       {trainProgress.train_loss_history && (
         <div>

@@ -6,10 +6,10 @@ import { CHART_COLORS } from "../../theme/colors"
 import {
   ChartEmptyState,
   ChartSvg,
+  ChartValueGrid,
   ResponsiveChart,
   MODELLING_CHART_AXIS_FONT_SIZE as FONT,
   MODELLING_CHART_AXIS_TEXT_COLOR as TEXT,
-  MODELLING_CHART_GRID_COLOR as GRID,
 } from "./ChartScaffold"
 import {
   chartAxisLabel,
@@ -17,9 +17,9 @@ import {
   chartLabelIndices,
   chartTicks,
   formatChartNumber,
-} from "./chartGeometry"
-import { FeatureBrowser } from "./FeatureBrowser"
-import { useDiagnosticFeature, type SharedFeatureBrowser } from "./useDiagnosticFeature"
+} from "../../utils/chartHelpers"
+import { FeatureDiagnosticTab } from "./FeatureDiagnosticTab"
+import type { SharedFeatureBrowser } from "./useDiagnosticFeature"
 
 const levelLabel = (value: string | number | null) => (value === null ? "(missing)" : String(value))
 
@@ -30,29 +30,14 @@ export function PdpTab({
   result: TrainResult
   featureBrowser?: SharedFeatureBrowser
 }) {
-  const importance = new Map(
-    result.feature_importance.map((item) => [item.feature, item.importance]),
-  )
-  const browser = useDiagnosticFeature(
-    result.pdp_data.map((item) => ({
-      feature: item.feature,
-      importance: importance.get(item.feature) ?? 0,
-    })),
-    featureBrowser,
-  )
-  const data = result.pdp_data.find((item) => item.feature === browser.selected)
-  if (!browser.features.length) return <ChartEmptyState>No PDP data available</ChartEmptyState>
   return (
-    <div className="validation-feature-layout">
-      <FeatureBrowser {...browser} />
-      <div className="min-w-0">
-        {data ? (
-          <PdpChart key={data.feature} data={data} />
-        ) : (
-          <ChartEmptyState>No PDP data for {browser.selected}</ChartEmptyState>
-        )}
-      </div>
-    </div>
+    <FeatureDiagnosticTab
+      result={result}
+      rows={result.pdp_data}
+      featureBrowser={featureBrowser}
+      noun="PDP"
+      renderChart={(data) => <PdpChart key={data.feature} data={data} />}
+    />
   )
 }
 
@@ -169,14 +154,7 @@ function PdpChart({ data }: { data: PdpFeatureRow }) {
               <text x={left} y={16} fontSize={FONT} fill={TEXT}>
                 Average prediction
               </text>
-              {chartTicks(low, high).map((value) => (
-                <g key={value}>
-                  <line x1={left} x2={width - right} y1={y(value)} y2={y(value)} stroke={GRID} />
-                  <text x={left - 8} y={y(value) + 4} textAnchor="end" fontSize={FONT} fill={TEXT}>
-                    {formatChartNumber(value)}
-                  </text>
-                </g>
-              ))}
+              <ChartValueGrid ticks={chartTicks(low, high)} left={left} right={width - right} y={y} labelGap={8} />
               <path d={path} fill="none" stroke={CHART_COLORS.predicted} strokeWidth={2} />
               {data.grid.map((point, i) => (
                 <g key={i}>

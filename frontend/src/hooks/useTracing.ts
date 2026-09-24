@@ -213,6 +213,7 @@ function stableValue(value: unknown): string {
   return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => `${JSON.stringify(key)}:${stableValue(item)}`).join(",")}}`
 }
 
+// eslint-disable-next-line no-restricted-syntax -- raw trace detail, not error text; folding it into apiErrorMessage is FSH-R02's remaining scope
 function errorDetail(err: unknown): string {
   const detail = (err as { detail?: unknown; rawDetail?: unknown })?.rawDetail ?? (err as { detail?: unknown })?.detail
   if (typeof detail === "string") return detail

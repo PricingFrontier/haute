@@ -7,6 +7,7 @@ import BranchIndicator from "./BranchIndicator"
 import useSettingsStore from "../stores/useSettingsStore"
 import useUIStore from "../stores/useUIStore"
 import useClickOutside from "../hooks/useClickOutside"
+import { formatBytes } from "../utils/formatBytes"
 import MlflowSettingsModal from "./MlflowSettingsModal"
 
 const PipelineSettingsModal = lazy(() => import("./PipelineSettingsModal"))
@@ -16,13 +17,6 @@ declare const __APP_VERSION__: string
 function formatTiming(ms: number): string {
   const rounded = Math.round(ms)
   return rounded < 1000 ? `${rounded} ms` : `${(ms / 1000).toFixed(2)} s`
-}
-
-function formatMemory(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
 const DOCUMENTATION_URL = "https://pricingfrontier.github.io/haute/"
@@ -451,7 +445,7 @@ export default function Toolbar({
           icon={HardDrive}
           title="Pipeline Memory"
           items={memoryItems}
-          formatValue={formatMemory}
+          formatValue={formatBytes}
           valueWidth="w-14"
         />
       </div>

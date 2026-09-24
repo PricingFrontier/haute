@@ -25,14 +25,12 @@ import type {
   SubmodelBoundaryEditResult,
   SubmodelBoundaryEditState,
 } from "./submodelBoundaryEditing"
+import { isPlainObject } from "../types/guards"
 
 export type CanonicalSubmodelBoundaryEditState = SubmodelBoundaryEditState
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value)
-
 function boundaryInfo(edge: Edge): SubmodelBoundaryEdgeData["submodelBoundary"] | null {
-  if (!isRecord(edge.data) || !isRecord(edge.data.submodelBoundary)) return null
+  if (!isPlainObject(edge.data) || !isPlainObject(edge.data.submodelBoundary)) return null
   const info = edge.data.submodelBoundary
   if (info.direction !== "input" && info.direction !== "output") return null
   return info as SubmodelBoundaryEdgeData["submodelBoundary"]
@@ -71,7 +69,7 @@ function boundaryPortName(info: SubmodelBoundaryEdgeData["submodelBoundary"], di
   return info.name
 }
 
-const isPipelineEdge = (value: unknown): value is PipelineEdge => isRecord(value)
+const isPipelineEdge = (value: unknown): value is PipelineEdge => isPlainObject(value)
   && typeof value.id === "string"
   && value.id.length > 0
   && typeof value.source === "string"
@@ -119,7 +117,7 @@ function parentEdgesForInputProjection(
   const projectedById = new Map<string, PipelineEdge>()
   for (const port of data.ports) {
     if (
-      !isRecord(port)
+      !isPlainObject(port)
       || typeof port.id !== "string"
       || port.id.length === 0
       || !Array.isArray(port.parentEdges)
@@ -341,7 +339,7 @@ function boundaryIdentity(
   if (defaultInputName !== null) {
     throw new Error(`Canonical submodel ${direction} boundary has malformed default identity`)
   }
-  if (!isRecord(mappings)) {
+  if (!isPlainObject(mappings)) {
     throw new Error(`Canonical submodel ${direction} boundary has no authoritative source-handle identities`)
   }
   if (configReference !== undefined && (typeof configReference !== "string" || configReference.length === 0)) {

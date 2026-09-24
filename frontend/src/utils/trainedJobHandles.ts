@@ -16,6 +16,7 @@ import {
   MODELLING_NODE_TYPE,
   trainingIdentityConfig,
 } from "./modellingExportConfig"
+import { isPlainObject } from "../types/guards"
 
 const STORAGE_KEY = "haute.modelling.trainedJobs.v2"
 
@@ -113,9 +114,6 @@ const RUNTIME_CONFIG_KEYS = ["_nodeId", "_columns", "_schemaWarnings", "_availab
 
 const text = (value: unknown): string => (typeof value === "string" ? value : "")
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value)
-
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical)
   if (value !== null && typeof value === "object") {
@@ -183,11 +181,11 @@ function lineageMaterial(graph: TrainingLineageInput): unknown {
 
 /** A submodel's interface and file, plus its own graph by the same rules. */
 function submodelMaterial(definition: unknown): unknown {
-  if (!isRecord(definition)) return canonical(definition)
+  if (!isPlainObject(definition)) return canonical(definition)
   const { graph, ...interfaceFields } = definition
   return {
     definition: canonical(interfaceFields),
-    graph: isRecord(graph) ? lineageMaterial(graph as TrainingLineageInput) : canonical(graph),
+    graph: isPlainObject(graph) ? lineageMaterial(graph as TrainingLineageInput) : canonical(graph),
   }
 }
 

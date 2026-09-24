@@ -1141,7 +1141,7 @@ describe("ModellingConfig", () => {
         const cached = store.trainResults.node_1
         expect(cached).toBeTruthy()
         expect(cached.result.status).toBe("error")
-        expect(cached.result.error).toBe("Error: Network fail")
+        expect(cached.result.error).toBe("Network fail")
       })
     })
 

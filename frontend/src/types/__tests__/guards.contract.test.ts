@@ -2325,6 +2325,67 @@ describe("API response guards", () => {
       return { ...fixture, result: nextResult }
     }
 
+    const numericColumn = {
+      name: "premium",
+      dtype: "Float64",
+      kind: "Numeric",
+      null_count: 0,
+      distinct_count: 3,
+      unique_ratio: 1,
+      is_high_cardinality: false,
+      is_identifier_candidate: false,
+      text_min_length: null,
+      text_mean_length: null,
+      text_max_length: null,
+      temporal_span: null,
+    }
+
+    it("parses a server-binned histogram and reads a missing or null one as null", () => {
+      const histogram = {
+        status: "ok",
+        bins: [
+          { start: 0, end: 5, count: 2 },
+          { start: 5, end: 10, count: 1 },
+        ],
+        finite_count: 3,
+        non_finite_count: 1,
+        skipped_reason: null,
+      }
+      const parsed = parseNodeDataProfileResponse(
+        withColumns([
+          { ...numericColumn, histogram },
+          { ...numericColumn, name: "no_histogram" },
+          { ...numericColumn, name: "null_histogram", histogram: null },
+        ]),
+      )
+      const [binned, missing, empty] = parsed.result!.columns
+      expect(binned.histogram).toEqual(histogram)
+      expect(missing.histogram).toBeNull()
+      expect(empty.histogram).toBeNull()
+    })
+
+    it("accepts an integer column skipped for browser precision", () => {
+      const histogram = {
+        status: "skipped",
+        bins: [],
+        finite_count: 3,
+        non_finite_count: 0,
+        skipped_reason: "integer_precision",
+      }
+      const parsed = parseNodeDataProfileResponse(withColumns([{ ...numericColumn, histogram }]))
+      expect(parsed.result!.columns[0].histogram).toEqual(histogram)
+    })
+
+    it.each([
+      ["an unknown status", { status: "partial", bins: [], finite_count: 0, non_finite_count: 0, skipped_reason: null }, /status/],
+      ["a bin without a count", { status: "ok", bins: [{ start: 0, end: 1 }], finite_count: 1, non_finite_count: 0, skipped_reason: null }, /bins\[0\]\.count/],
+      ["an unknown skip reason", { status: "skipped", bins: [], finite_count: null, non_finite_count: null, skipped_reason: "budget" }, /skipped_reason/],
+    ])("rejects a histogram with %s", (_label, histogram, message) => {
+      expect(() =>
+        parseNodeDataProfileResponse(withColumns([{ ...numericColumn, histogram }])),
+      ).toThrow(message)
+    })
+
     it("parses a fully populated column stat", () => {
       const parsed = parseNodeDataProfileResponse(
         withColumns([

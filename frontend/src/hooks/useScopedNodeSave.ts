@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { Edge, Node } from "@xyflow/react"
-import { ApiError, saveNodeScoped } from "../api/client"
+import { saveNodeScoped } from "../api/client"
+import { apiErrorMessage } from "../api/errors"
 import useDocumentStatusStore from "../stores/useDocumentStatusStore"
 import type { OnUpdateConfigResult } from "../panels/editors"
 import type { HauteNodeData } from "../types/node"
@@ -134,7 +135,7 @@ export function useScopedNodeSave({
       applyDocument(document, target.id)
       return { ok: true }
     } catch (error) {
-      const detail = error instanceof ApiError ? (error.detail ?? error.message) : String(error)
+      const detail = apiErrorMessage(error)
       return { ok: false, error: detail }
     } finally {
       inFlightRef.current = false

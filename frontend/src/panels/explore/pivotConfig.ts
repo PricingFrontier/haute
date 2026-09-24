@@ -1,5 +1,6 @@
 import { isNumericDtype } from "../../utils/polarsDtypes"
 import { portableKey } from "../../utils/portableKey"
+import { isObjectLiteral } from "../../utils/objectLiteral"
 
 export const PIVOT_CONFIG_VERSION = 1 as const
 export const PIVOT_DECIMAL_PLACES_MAX = 10
@@ -161,23 +162,17 @@ const CARD_KEYS = new Set([
 const FORMULA_REFERENCE_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 const RESERVED_FORMULA_REFERENCE_PREFIX = "__haute_"
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false
-  const prototype = Object.getPrototypeOf(value)
-  return prototype === Object.prototype || prototype === null
-}
-
 function isSimpleLiteral(value: unknown): boolean {
   if (value === null || typeof value === "string" || typeof value === "boolean") return true
   if (typeof value === "number") return Number.isFinite(value)
   if (Array.isArray(value)) return value.every(isSimpleLiteral)
-  if (isPlainObject(value)) return Object.values(value).every(isSimpleLiteral)
+  if (isObjectLiteral(value)) return Object.values(value).every(isSimpleLiteral)
   return false
 }
 
 function cloneLiteral<T>(value: T): T {
   if (Array.isArray(value)) return value.map(cloneLiteral) as T
-  if (isPlainObject(value)) {
+  if (isObjectLiteral(value)) {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneLiteral(item)])) as T
   }
   return value
@@ -370,7 +365,7 @@ function validateFutureFields(
 }
 
 function parseMember(raw: unknown, position: number): PivotMember | string {
-  if (!isPlainObject(raw)) return `Pivot ${position} filter members must be objects.`
+  if (!isObjectLiteral(raw)) return `Pivot ${position} filter members must be objects.`
   const futureError = validateFutureFields(raw, new Set(["kind", "value"]), position, "member")
   if (futureError) return futureError
   if (typeof raw.kind !== "string" || !MEMBER_KINDS.has(raw.kind as PivotMemberKind)) {
@@ -394,7 +389,7 @@ function parseAxisZone(
   const fields = new Set<string>()
   const placements: Array<PivotFilterPlacement | PivotAxisPlacement> = []
   for (const entry of raw) {
-    if (!isPlainObject(entry)) return `Pivot ${position} ${zone} entries must be objects.`
+    if (!isObjectLiteral(entry)) return `Pivot ${position} ${zone} entries must be objects.`
     const known = zone === "filters"
       ? new Set(["id", "field", "members"])
       : zone === "rows"
@@ -466,7 +461,7 @@ function parseValues(
   if (!Array.isArray(raw)) return `Pivot ${position} values must be a list.`
   const values: PivotValuePlacement[] = []
   for (const entry of raw) {
-    if (!isPlainObject(entry)) return `Pivot ${position} value entries must be objects.`
+    if (!isObjectLiteral(entry)) return `Pivot ${position} value entries must be objects.`
     const futureError = validateFutureFields(
       entry,
       new Set([
@@ -606,7 +601,7 @@ function parseSharedFormulaLibrary(raw: unknown): SharedFormulaState | string {
     references: new Set(),
   }
   for (const [index, entry] of raw.entries()) {
-    if (!isPlainObject(entry)) return "Explore shared formula entries must be objects."
+    if (!isObjectLiteral(entry)) return "Explore shared formula entries must be objects."
     const formula = parseFormulaDefinition(entry, index + 1)
     if (typeof formula === "string") return formula
     if (state.byId.has(formula.id)) {
@@ -734,7 +729,7 @@ function parseV1Pivot(
       return `Pivot ${position} value color scale split must reference a placed Row or Column placement.`
     }
   }
-  if (!isPlainObject(raw.options)) return `Pivot ${position} options must be an object.`
+  if (!isObjectLiteral(raw.options)) return `Pivot ${position} options must be an object.`
   const optionError = validateFutureFields(
     raw.options,
     new Set(["row_grand_totals", "column_grand_totals", "sort_by"]),
@@ -795,7 +790,7 @@ export function parseExplorePivots(config: Record<string, unknown>): ExplorePivo
   const names = new Set<string>()
   for (const [index, raw] of config.pivots.entries()) {
     const position = index + 1
-    if (!isPlainObject(raw)) return { ok: false, error: `Pivot ${position} must be an object.` }
+    if (!isObjectLiteral(raw)) return { ok: false, error: `Pivot ${position} must be an object.` }
     const pivot = parseV1Pivot(raw, position, sharedFormulas)
     if (typeof pivot === "string") return { ok: false, error: pivot }
     if (ids.has(pivot.id)) {

@@ -1,3 +1,5 @@
+import { isPlainObject } from "../types/guards"
+
 /**
  * Input references inside a stepped transform's `config.steps`
  * (`source.input`, `join.input`, `concat.inputs`). Topology rewrites that
@@ -5,10 +7,6 @@
  * references in place instead of recording an `inputMapping`, which a stepped
  * original transform never carries.
  */
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
 
 /**
  * Where `df` comes from when a step list starts: `input` means the first step
@@ -61,7 +59,7 @@ export function stepInputNames(nodeType: string, edgeNames: readonly string[]): 
 
 /** Whether `config` is authored as steps on a node type that supports them. */
 export function isSteppedConfig(nodeType: string, config: unknown): boolean {
-  return steppedSurfaceFor(nodeType) !== undefined && isRecord(config) && Array.isArray(config.steps)
+  return steppedSurfaceFor(nodeType) !== undefined && isPlainObject(config) && Array.isArray(config.steps)
 }
 
 /** Authored transform settings, excluding the caches materialised from steps. */
@@ -72,7 +70,7 @@ export function authoredPolarsConfig(config: Record<string, unknown>): Record<st
 
 /** Whether `config` belongs to an ordinary (non-instance) stepped transform. */
 export function isSteppedTransformConfig(config: unknown): config is Record<string, unknown> & { steps: unknown[] } {
-  return isRecord(config) && !("instanceOf" in config) && Array.isArray(config.steps)
+  return isPlainObject(config) && !("instanceOf" in config) && Array.isArray(config.steps)
 }
 
 /** Distinct input names the steps reference, in first-seen order. */
@@ -82,7 +80,7 @@ export function referencedStepInputs(steps: unknown[]): string[] {
     if (typeof name === "string" && !seen.includes(name)) seen.push(name)
   }
   for (const raw of steps) {
-    if (!isRecord(raw)) continue
+    if (!isPlainObject(raw)) continue
     if (raw.kind === "source" || raw.kind === "join") add(raw.input)
     else if (raw.kind === "concat" && Array.isArray(raw.inputs)) raw.inputs.forEach(add)
   }
@@ -107,7 +105,7 @@ export function renameStepInputs(steps: unknown[], renames: ReadonlyMap<string, 
   }
   let changed = false
   const next = steps.map((raw) => {
-    if (!isRecord(raw)) return raw
+    if (!isPlainObject(raw)) return raw
     const step: Record<string, unknown> = { ...raw }
     if ((step.kind === "source" || step.kind === "join") && typeof step.input === "string") {
       const renamed = rename(step.input)
