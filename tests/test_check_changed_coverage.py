@@ -316,3 +316,59 @@ def test_job_summary_lists_every_changed_file_with_its_gate(
     summary.unlink()
     checker.main(["--config", str(_config(tmp_path)), "--coverage-json", str(coverage)])
     assert "src/haute/b.py" not in summary.read_text(encoding="utf-8")
+
+
+def test_real_git_discovers_and_reports_gated_and_reported_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    package = tmp_path / "src" / "haute"
+    package.mkdir(parents=True)
+    (tmp_path / "scripts").mkdir()
+    for name in ("a", "b"):
+        (package / f"{name}.py").write_text(f"{name} = 1\n", encoding="utf-8")
+    (tmp_path / "scripts" / "d.py").write_text("d = 1\n", encoding="utf-8")
+    config = _config(tmp_path)
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+    base = git("rev-parse", "HEAD")
+    # A committed change to a reported file, an uncommitted change to the gated
+    # file, an untracked reported file, and a change outside the scope.
+    (package / "b.py").write_text("b = 2\n", encoding="utf-8")
+    git("commit", "-q", "-am", "change b")
+    (package / "a.py").write_text("a = 2\n", encoding="utf-8")
+    (package / "c.py").write_text("c = 1\n", encoding="utf-8")
+    (tmp_path / "scripts" / "d.py").write_text("d = 2\n", encoding="utf-8")
+
+    loaded = checker._load_config(config)
+    assert checker.collect_changed_lines(loaded, tmp_path, base) == (
+        {"src/haute/a.py": {1}, "src/haute/b.py": {1}},
+        {"src/haute/c.py"},
+    )
+
+    evidence = {"executed_branches": [], "missing_branches": []}
+    coverage = _coverage(
+        tmp_path,
+        {
+            "src/haute/a.py": {"executed_lines": [1], "missing_lines": [], **evidence},
+            "src/haute/b.py": {"executed_lines": [], "missing_lines": [1], **evidence},
+            "src/haute/c.py": {"executed_lines": [], "missing_lines": [1], **evidence},
+        },
+    )
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    arguments = ["--config", str(config), "--coverage-json", str(coverage), "--base-ref", base]
+    assert checker.main(arguments) == 0
+    output = capsys.readouterr().out
+    assert "- src/haute/b.py: statements 0.00%" in output
+    assert "- src/haute/c.py: statements 0.00%" in output
+    assert "scripts/d.py" not in output
+    assert "1 statement and 0 branch targets" in output
