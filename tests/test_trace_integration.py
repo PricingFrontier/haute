@@ -1909,15 +1909,15 @@ class TestCacheInvalidatesOnGraphChange:
         assert r2.output_value["y"] == 15
 
 
-class TestCacheReusesPreview:
-    """K.5: Preview cache available -- trace reuses it.
+class TestTraceAfterPreview:
+    """K.5: A trace after a preview shows the previewed rows.
 
-    When execute_graph has already been called, the trace should reuse
-    those DataFrames instead of re-executing.
-    Why: Prevents redundant computation and ensures trace/preview consistency.
+    The trace never reads the preview cache: it executes its own lineage (or
+    reuses its own trace cache), and still shows the row the preview showed.
+    Why: trace/preview consistency must not depend on a shared cache.
     """
 
-    def test_trace_reuses_preview_cache(self, tmp_path):
+    def test_trace_after_a_full_preview_shows_the_previewed_row(self, tmp_path):
         _trace_cache.clear()
         _preview_cache.clear()
 
@@ -1934,7 +1934,6 @@ class TestCacheReusesPreview:
         # Preview first
         execute_graph(graph, target_node_id="t", row_limit=_ROW_LIMIT)
 
-        # Trace should reuse preview cache
         result = execute_trace(graph, row_index=0, target_node_id="t", row_limit=_ROW_LIMIT)
         assert result.output_value["x"] == 1
 

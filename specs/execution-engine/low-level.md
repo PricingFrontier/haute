@@ -49,7 +49,8 @@
   ExecutionLease`, `evidence: ExecutionEvidence`, `provenance: ExecutionProvenance`,
   `telemetry: ExecutionTelemetry` — and keeps only the identity, `projection_plan`,
   `memory_pressure_callback`, and the per-thread stage stack itself. The limits,
-  admission, and sampler read through to the budget, and every recording method
+  admission, and sampler read through to the budget (the sampler can also be reassigned
+  there, as before the split), and every recording method
   delegates to the part that owns the record. `stage(name,
   node_id=...)` is a context manager that times the block, samples RSS at entry/exit,
   records an `ExecutionStageMetric`, and raises `ExecutionMemoryLimitExceededError`

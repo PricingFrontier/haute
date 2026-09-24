@@ -1172,6 +1172,12 @@ def test_context_reads_its_limits_admission_and_sampler_through_its_budget() -> 
     assert context.admission is context.budget.admission is None
     assert context.memory_sampler is context.budget.sampler is sampler
 
+    def replacement() -> int:
+        return 20
+
+    context.memory_sampler = replacement
+    assert context.budget.sampler is replacement
+
 
 def test_evidence_rejects_invalid_widths_and_byte_counts() -> None:
     evidence = ExecutionEvidence()

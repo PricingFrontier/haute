@@ -1453,6 +1453,10 @@ class ExecutionContext:
     def memory_sampler(self) -> Callable[[], int | None]:
         return self.budget.sampler
 
+    @memory_sampler.setter
+    def memory_sampler(self, sampler: Callable[[], int | None]) -> None:
+        self.budget.sampler = sampler
+
     def cancel(self) -> None:
         self.cancellation_token.cancel()
 
