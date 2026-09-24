@@ -205,15 +205,20 @@ specification defines it.
    way by the ancestor values those rows carry.
 5. *Nesting.* Assembly descends the level tree carrying a *scope* of relation
    keys. Under each parent object, the parent level's own fields that the child's
-   subtree carries join the scope with that object's values, and the child level
-   takes the rows whose values equal the scope on every key in it; a row that
-   lacks a scope key matches no parent object. A level whose scope is empty takes
-   every row of its level. Sibling levels are assembled independently, so the
+   subtree carries (the *relation keys* of that parent and child) join the scope
+   with that object's values, and the child level takes the rows whose values
+   equal the scope on every key in it. A level whose scope is empty takes every
+   row of its level. Sibling levels are assembled independently, so the
    document costs the sum of the branch sizes, never their product.
+   Every frame taking part in a nesting carries all of its relation keys: the
+   frame emitting at the parent level, and every frame emitting at or below the
+   child. A frame without one could never be placed (its rows would match no
+   parent object, or its objects would take no child), so the structural
+   validator rejects it before any frame is collected, naming the frame, its
+   level and the missing key. No row is ever dropped for a missing key.
 6. *Nulls.* A present null in a relation key raises `OutputNestingKeyError`
-   naming the frame, path and key; a frame that does not carry the key is not a
-   participant. Null object fields and empty arrays and objects are then pruned
-   from the document.
+   naming the frame, path and key. Null object fields and empty arrays and
+   objects are then pruned from the document.
 7. *Limits.* A row-limited assembly reads the first rows of an emitting root
    level and, for each deeper emitting level, only the rows whose relation keys
    match its nearest collected ancestor level, so every returned top-level object
@@ -315,13 +320,13 @@ strict build and raises a specific, column-named error instead.
   mid-walk.
 - Every OUTPUT assembly entry point calls the structural validator before frame
   collection. Malformed syntax, duplicate/prefix conflicts, divergent per-frame
-  emit prefixes, two frames emitting at one array level, and missing source
-  ports/columns therefore fail loudly rather than becoming ambiguous or empty output.
+  emit prefixes, two frames emitting at one array level, a frame taking part in a
+  nesting without one of its relation keys, and missing source ports/columns
+  therefore fail loudly rather than becoming ambiguous, partial or empty output.
 - Any active parent or child row whose *present* simple/composite relation key has a
   null component raises `OutputNestingKeyError(OutputMappingSchemaError)` with
-  `frame`, `output_path`, and `key`; the HTTP adapter maps it to 422. A frame that
-  does not carry that relation key is not participating and is not treated as a null
-  row. Null scalar payloads outside relation keys remain valid.
+  `frame`, `output_path`, and `key`; the HTTP adapter maps it to 422. Null scalar
+  payloads outside relation keys remain valid.
 - A source JSON key that would collide with the reserved scalar-array sentinel, or
   that contains the object-nesting separator character, is rejected loudly at
   inference time — there is no way to address it unambiguously as a column, so

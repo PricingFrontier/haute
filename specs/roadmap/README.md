@@ -23,7 +23,6 @@ or maintenance issue; `P3` opportunistic work.
 | [Engineering quality](engineering-quality.md) | Test hygiene, dead code, coverage gates, test organisation | `ENGQ-R06` |
 | [Explore and EDA](explore-eda.md) | Pivot and chart config validation, advanced pivot and PivotChart parity | `EDA-E25` |
 | [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
-| [JSON shredding](json-shredding.md) | OUTPUT nesting validation | `JSON-R03` |
 | [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients for the optimiser log | `MLF-R02` |
 | [Optimiser](optimiser.md) | Service extraction, scaling, input isolation | `OPT-P13` |
 | [Pipeline config](pipeline-config.md) | Project context, typed configs, editor state, node specification | `PCFG-R04` |

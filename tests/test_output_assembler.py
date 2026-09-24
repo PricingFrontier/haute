@@ -690,24 +690,96 @@ def test_assemble_ignores_a_nesting_key_the_child_frame_does_not_carry() -> None
     ]
 
 
-def test_null_key_guard_skips_a_subtree_frame_that_does_not_carry_the_key() -> None:
-    # quote_id relates quotes to drivers, so the guard checks it in every frame
-    # of the drivers subtree that carries it. The licences frame does not: its
-    # missing column is absence, never read as a null key (no error). Per the
-    # nesting rule, a row that lacks a scope key matches no parent object, so
-    # the licences are not placed.
+_LICENCES_WITHOUT_QUOTE_ID = [
+    _entry("quotes", "quote_id", "$[:].quote_id"),
+    _entry("drivers", "quote_id", "$[:].quote_id"),
+    _entry("drivers", "driver_id", "$[:].drivers[:].driver_id"),
+    _entry("licences", "driver_id", "$[:].drivers[:].driver_id"),
+    _entry("licences", "country", "$[:].drivers[:].licences[:].country"),
+]
+
+
+def test_validate_rejects_a_subtree_frame_that_lacks_an_ancestor_nesting_key() -> None:
+    # quote_id nests drivers under quotes, and the drivers subtree carries it
+    # (the drivers frame does), so every frame emitting in that subtree must:
+    # licences rows without it could match no quote.
+    with pytest.raises(OutputMappingSchemaError, match="nesting key") as exc_info:
+        validate_v2_output_mapping(_LICENCES_WITHOUT_QUOTE_ID)
+
+    assert exc_info.value.context == {
+        "source_port": "licences",
+        "output_path": "$[:].drivers[:].licences[:]",
+        "key": "$[:].quote_id",
+    }
+
+
+def test_assemble_rejects_a_frame_lacking_a_nesting_key_before_collecting() -> None:
+    collected: list[str] = []
+
+    def frame(port: str, data: dict[str, list[object]]) -> pl.LazyFrame:
+        def mark(batch: pl.DataFrame) -> pl.DataFrame:
+            collected.append(port)
+            return batch
+
+        return pl.LazyFrame(data).map_batches(mark)
+
     frames = {
-        "quotes": pl.LazyFrame({"$[:].quote_id": [1]}),
-        "drivers": pl.LazyFrame({"$[:].quote_id": [1], "$[:].drivers[:].driver_id": [7]}),
-        "licences": pl.LazyFrame(
+        "quotes": frame("quotes", {"$[:].quote_id": [1]}),
+        "drivers": frame("drivers", {"$[:].quote_id": [1], "$[:].drivers[:].driver_id": [7]}),
+        "licences": frame(
+            "licences",
             {
                 "$[:].drivers[:].driver_id": [7],
                 "$[:].drivers[:].licences[:].country": ["GB"],
+            },
+        ),
+    }
+
+    with pytest.raises(OutputMappingSchemaError, match="nesting key") as exc_info:
+        _assemble_document(frames)
+
+    assert exc_info.value.context["source_port"] == "licences"
+    assert collected == []
+
+
+def test_validate_rejects_a_parent_frame_that_lacks_a_nesting_key_of_its_level() -> None:
+    # region is a root-level field only the drivers frame carries, so drivers
+    # nest under quotes by (quote_id, region); a quotes object without region
+    # could match no driver.
+    mapping = [
+        _entry("quotes", "quote_id", "$[:].quote_id"),
+        _entry("drivers", "quote_id", "$[:].quote_id"),
+        _entry("drivers", "region", "$[:].region"),
+        _entry("drivers", "driver_id", "$[:].drivers[:].driver_id"),
+    ]
+
+    with pytest.raises(OutputMappingSchemaError, match="nesting key") as exc_info:
+        validate_v2_output_mapping(mapping)
+
+    assert exc_info.value.context == {
+        "source_port": "quotes",
+        "output_path": "$[:]",
+        "key": "$[:].region",
+    }
+
+
+def test_assemble_nests_a_subtree_frame_that_carries_every_nesting_key() -> None:
+    frames = {
+        "quotes": pl.LazyFrame({"$[:].quote_id": [1, 2]}),
+        "drivers": pl.LazyFrame({"$[:].quote_id": [1, 2], "$[:].drivers[:].driver_id": [7, 7]}),
+        "licences": pl.LazyFrame(
+            {
+                "$[:].quote_id": [1, 2],
+                "$[:].drivers[:].driver_id": [7, 7],
+                "$[:].drivers[:].licences[:].country": ["GB", "FR"],
             }
         ),
     }
 
-    assert _assemble_document(frames) == [{"quote_id": 1, "drivers": [{"driver_id": 7}]}]
+    assert _assemble_document(frames) == [
+        {"quote_id": 1, "drivers": [{"driver_id": 7, "licences": [{"country": "GB"}]}]},
+        {"quote_id": 2, "drivers": [{"driver_id": 7, "licences": [{"country": "FR"}]}]},
+    ]
 
 
 def test_config_assembly_ignores_incomplete_enabled_mapping_port() -> None:
