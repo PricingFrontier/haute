@@ -229,8 +229,8 @@ def test_chunk_runner_matches_full_lazy_for_chunk_safe_chain(
     assert "unused_payload" not in actual.columns
 
 
-def test_chunk_runner_derives_start_input_name_from_api_frame_edge() -> None:
-    """A supplied intermediate frame must not make chunking forget its edge identity."""
+def test_chunk_runner_walks_only_the_chain_below_a_supplied_start_frame() -> None:
+    """A supplied intermediate frame replaces the start node; nothing above the chain is built."""
     graph = make_graph(
         {
             "nodes": [
@@ -281,7 +281,9 @@ def test_chunk_runner_derives_start_input_name_from_api_frame_edge() -> None:
     )
 
     assert sum(batch.output_rows for batch in batches) == 3
-    assert captured_source_names["chunk_start"] == ["quotes"]
+    # The supplied frame is the start node's output: only the chain below it is
+    # built, and it reads the start node by its own name.
+    assert captured_source_names == {"target": ["chunk_start"]}
 
 
 def test_chunk_runner_projects_source_columns_before_first_map_node(tmp_path: Path) -> None:

@@ -9,7 +9,7 @@
 | `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points (and `plan_projection`, the projection half of `plan_execution_strategy`, for a caller that needs another execution's per-node column demand without planning or admitting it), runtime-input fingerprints, `preview_lineage_cache_key`, and `PREVIEW_EXECUTION_SEMANTICS_VERSION`. It is the stable application import boundary, but is not currently a thin re-export module. |
 | `src/haute/_path_resolution.py` | Cross-component dependency owned by [sandbox-security](../sandbox-security/low-level.md); canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
 | `src/haute/_execute_lazy.py` | Node-boundary machinery the graph walker uses: `PreparedExecutionRequest`/`PreparedExecution` (one canonical eager/lazy graph, identity, routing and contract-policy preparation result), `NodeBoundaryRunner` (shared per-node contract resolution, input-frame routing, invocation and boundary assertions), `_build_funcs` (per-node callable construction), and `_PlannedCaptures` (seed-plan closures and captures), with the contract, column-shaping, recipe and runtime-demand helpers each node step uses. |
-| `src/haute/_graph_walker.py` | The graph walker: `walk_graph(graph, build_node_fn, *, policy: CollectPolicy, ...)` walks a graph once and returns a `WalkResult` (each built node's frame, the prepared order, parents, names, and the join and write recipes and pre-shaping frames it built). `WalkRequest` holds the execution-independent inputs, `CollectPolicy` what the walk collects, at which row and column limits, whether it records node failures, and its purpose (`WalkPurpose.SINK` hands lazy frames to a sink; `WalkPurpose.DISPLAY` reports schemas and collects for a person). The Data Output sink, every lazy execution through the execution facade, the preview and the trace walk through it. No function in the module exceeds a cyclomatic complexity of 15, held by ruff's C901 rule scoped to this module alone. |
+| `src/haute/_graph_walker.py` | The graph walker: `walk_graph(graph, build_node_fn, *, policy: CollectPolicy, ...)` walks a graph once and returns a `WalkResult` (each built node's frame, the prepared order, parents, names, and the join and write recipes and pre-shaping frames it built). `WalkRequest` holds the execution-independent inputs, `CollectPolicy` what the walk collects, at which row and column limits, whether it records node failures, and its purpose (`WalkPurpose.SINK` hands lazy frames to a sink; `WalkPurpose.DISPLAY` reports schemas and collects for a person; `WalkPurpose.CHUNK` walks a proven chunk suffix one chunk at a time). The Data Output sink, every lazy execution through the execution facade, the preview, the trace and the chunked runner walk through it. `prepare_walk(...)` prepares a chunk walk once and `PreparedWalk.run(start_frames)` walks it per chunk; `project_output` narrows a node's output to a demand in schema order. No function in the module exceeds a cyclomatic complexity of 15, held by ruff's C901 rule scoped to this module alone. |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
 | `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, profile-independent projection decisions, fan-in edge demands, materialisation/opaque boundaries, derivation of each code node's recompute facts (`recompute_facts_by_node(...)`), demand-only source-scan projection (a node's configured column selection bounds what may be demanded but is never pushed into or validated against a physical read), and bounded strategy diagnostics. |
@@ -902,9 +902,18 @@ nominal width the planner still uses for other targets under a materialising ope
 which would silently under-bound the chunk).
 `iter_chunked_frames()` re-validates the plan still matches the currently-prepared
 graph order, collects the source in `plan.source_chunk_size`-row batches via
-`bounded_collect_batches`, and for each batch runs the SAME `_build_funcs`-built node
-functions serially down the chunk suffix, projecting and checkpointing (optionally, to
-parquet) each `ChunkBatch` before yielding it. `run_chunked_reduce()` requires the
+`bounded_collect_batches`, and walks the chunk suffix once per batch through the graph
+walker: `prepare_walk(..., policy=CollectPolicy.chunk())` builds the functions of the
+nodes below the chunk start once (Model Score nodes the plan marks for batch reuse keep
+their loaded model; nothing above the chain, the start node included, is built), with
+the plan's per-node demand as each builder's and each output's demand, graph routing
+on the plan's source and the chain's builders on `live`. Each `PreparedWalk.run` starts
+from the batch as the start node's frame, invokes each node (stage `chunk_node`),
+applies its column selection and renames, and narrows its output to its demand
+(`project_output`, the column order resolved once per node for the whole run); nothing
+is strategy-planned, contract-checked, runtime-inferred or captured. The runner collects
+each chunk's target (stage `chunk_collect`) and checkpoints (optionally, to parquet) each
+`ChunkBatch` before yielding it. `run_chunked_reduce()` requires the
 caller's reducer to declare `bounded=True`; `collect_chunked()` requires an explicit
 `allow_unbounded=True` opt-in since it retains every chunk. For a non-root
 `chunk_start_node_id`, `ChunkRunnerRequest.start_frame` is mandatory; the runner
@@ -2204,8 +2213,8 @@ present a structural or schema result as execution evidence.
   its return value.
 - `ContractMismatchError` (`haute.errors`, extends `HauteError`) — raised by
   missing input/output columns and checkpoint/eager projection mismatches in
-  `_execute_lazy.py`, and by chunking's `_project_frame`; it is re-raised with
-  `SchemaMismatchError` even when eager preview uses `swallow_errors=True`.
+  `_execute_lazy.py` and the graph walker, and by the walker's `project_output` for a chunk;
+  it is re-raised with `SchemaMismatchError` even while a preview records node failures.
 - `SchemaMismatchError` (`haute.errors`, extends `HauteError`) — raised for a
   simple inferred join whose parent key dtypes differ. It propagates on lazy,
   fail-fast eager, and swallow-mode eager calls through the same explicit branch
@@ -2552,8 +2561,8 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   unmatched child is dropped); equality by construction between the collected
   and schema-only frames; and the typed rejections for a missing port, a
   missing column, and conflicting dtypes on one output path.
-- **`test_chunk_runner.py`** — `iter_chunked_frames`/`run_chunked_reduce` execution,
-  cancellation and checkpoint cleanup on failure.
+- **`test_chunk_runner.py`** — `iter_chunked_frames`/`run_chunked_reduce` execution
+  through chunk walks, cancellation and checkpoint cleanup on failure.
 - **`test_chunk_whitelist_proofs.py`** — the AST whitelist's correctness contract: de-
   whitelist regression pins for known silent-wrongness constructs, plus a
   `hypothesis`-driven property test per whitelisted construct

@@ -36,12 +36,11 @@ from haute._polars_operations import (
 )
 from haute._polars_selectors import literal_selector, preamble_selector_aliases
 from haute._polars_utils import streaming_collect
-from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
+from haute._types import GraphNode, NodeType, PipelineGraph
 from haute.errors import (
     ChunkMemoryRiskError,
     ChunkPlanUnsupportedError,
     ChunkUserCodeUnsupportedError,
-    ContractMismatchError,
 )
 from haute.execution import plan_prepared_execution_strategy
 from haute.projection import (
@@ -1435,9 +1434,11 @@ def chunk_plan(request: ChunkPlanRequest) -> ChunkPlan:
 def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
     """Yield bounded target DataFrames for a proven map-only chunk plan.
 
-    The runner honours the projection plan embedded in ``request.plan`` and
-    applies the same node builder functions used by the lazy/eager executors.
-    It intentionally executes serially with one chunk in flight.
+    The runner reads the chunk start frame in batches and walks the chunk
+    suffix once per batch through the graph walker (``CollectPolicy.chunk()``):
+    the node functions are built once, each node's output is narrowed to the
+    plan's demand, and the runner collects each chunk's target. It
+    intentionally executes serially with one chunk in flight.
     """
 
     plan = request.plan
@@ -1450,9 +1451,9 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
     from haute._execute_lazy import (
         _apply_column_renames,
         _apply_selected_columns,
-        _build_funcs,
         _resolve_graph_paths,
     )
+    from haute._graph_walker import CollectPolicy, prepare_walk, project_output
     from haute._polars_utils import bounded_collect_batches
 
     graph = _resolve_graph_paths(request.graph)
@@ -1508,12 +1509,10 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
         source_lf = _normalise_lazy_frame(_apply_column_renames(source_lf, source_node.data.config))
     else:
         source_lf = _normalise_lazy_frame(request.start_frame)
-    projection_ordering_cache: dict[str, list[str]] = {}
-    source_lf = _project_frame(
+    source_lf = project_output(
         source_lf,
         plan.required_columns_by_node.get(plan.chunk_start_node_id),
         node=source_node,
-        ordering_cache=projection_ordering_cache,
     )
 
     builder_required = {
@@ -1525,25 +1524,20 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
         for node_id, capability in plan.capabilities.items()
         if capability.model_reuse_lifetime == "batch"
     }
-    incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
-    for edge in prepared.relevant_edges:
-        incoming_edges_by_target.setdefault(edge.target, []).append(edge)
-    all_incoming_edges_by_target: dict[str, list[GraphEdge]] = {}
-    for edge in graph.edges:
-        all_incoming_edges_by_target.setdefault(edge.target, []).append(edge)
-    funcs = _build_funcs(
-        list(plan.node_ids),
-        node_map,
-        prepared.id_to_name,
-        graph.parents_of,
+    chain = [node_id for node_id in plan.chunk_node_ids if node_id != plan.chunk_start_node_id]
+    # Graph routing follows the plan's source; the chain's builders score live.
+    walk = prepare_walk(
+        request.graph,
         request.build_node_fn,
-        incoming_edges_by_target=incoming_edges_by_target,
-        all_incoming_edges_by_target=all_incoming_edges_by_target,
-        all_node_map=graph.node_map,
+        policy=CollectPolicy.chunk(),
+        target_node_id=plan.target_node_id,
+        walk_node_ids=chain,
+        output_demand=builder_required,
         preamble_ns=request.preamble_ns,
-        source="live",
-        required_output_columns_by_node=builder_required,
+        source=plan.source,
+        source_by_node=dict.fromkeys(chain, "live"),
         reuse_loaded_model_by_node=reuse_loaded_model_by_node,
+        execution_context=request.execution_context,
     )
 
     context = request.execution_context
@@ -1580,54 +1574,8 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
             if source_batch.height == 0:
                 continue
 
-            outputs: dict[str, pl.LazyFrame] = {
-                plan.chunk_start_node_id: source_batch.lazy(),
-            }
-            for node_id in plan.chunk_node_ids:
-                if node_id == plan.chunk_start_node_id:
-                    continue
-                if context is not None:
-                    context.checkpoint(label="before_node", node_id=node_id)
-                fn, is_source = funcs[node_id]
-                if is_source:
-                    raise ChunkPlanUnsupportedError(
-                        "Chunk runner encountered a non-root source node.",
-                        node_id=node_id,
-                        target_node_id=plan.target_node_id,
-                    )
-                parent_ids = parents_of.get(node_id, [])
-                if len(parent_ids) != 1:
-                    raise ChunkPlanUnsupportedError(
-                        "Chunk runner V1 executes single-parent chains only.",
-                        node_id=node_id,
-                        parent_ids=parent_ids,
-                    )
-                parent_id = parent_ids[0]
-                if parent_id not in outputs:
-                    raise ChunkPlanUnsupportedError(
-                        "Chunk runner parent output is unavailable.",
-                        node_id=node_id,
-                        parent_id=parent_id,
-                    )
-                with (
-                    context.stage("chunk_node", node_id=node_id)
-                    if context is not None
-                    else contextlib.nullcontext()
-                ):
-                    result = fn(outputs[parent_id])
-                    lf = _normalise_lazy_frame(result)
-                    node = node_map[node_id]
-                    lf = _normalise_lazy_frame(_apply_selected_columns(lf, node.data.config))
-                    lf = _normalise_lazy_frame(_apply_column_renames(lf, node.data.config))
-                    lf = _project_frame(
-                        lf,
-                        plan.required_columns_by_node.get(node_id),
-                        node=node,
-                        ordering_cache=projection_ordering_cache,
-                    )
-                outputs[node_id] = lf
-
-            target_lf = outputs.get(plan.target_node_id)
+            walked = walk.run({plan.chunk_start_node_id: source_batch.lazy()})
+            target_lf = walked.frames.get(plan.target_node_id)
             if target_lf is None:
                 raise ChunkPlanUnsupportedError(
                     "Chunk runner target output is unavailable.",
@@ -2241,38 +2189,6 @@ def _normalise_lazy_frame(frame: pl.LazyFrame | pl.DataFrame | Any) -> pl.LazyFr
     if isinstance(frame, pl.DataFrame):
         return frame.lazy()
     raise TypeError(f"Chunk node returned {type(frame).__name__}; expected a Polars frame.")
-
-
-def _project_frame(
-    frame: pl.LazyFrame,
-    columns: frozenset[str] | None,
-    *,
-    node: GraphNode,
-    ordering_cache: dict[str, list[str]] | None = None,
-) -> pl.LazyFrame:
-    if columns is None:
-        return frame
-    # A node's output schema is chunk-invariant (identical transforms per chunk),
-    # so the ordered projection and its missing-column contract check are resolved
-    # once and reused for every later chunk instead of re-running ``collect_schema``
-    # O(nodes x chunks) times.
-    cached = None if ordering_cache is None else ordering_cache.get(node.id)
-    if cached is None:
-        schema_cols = frame.collect_schema().names()
-        missing = set(columns) - set(schema_cols)
-        if missing:
-            raise ContractMismatchError(
-                "Chunk projection references columns missing from the node output schema.",
-                node_id=node.id,
-                node_type=node.data.nodeType.value,
-                missing=sorted(missing),
-                required_columns=sorted(columns),
-                output_columns=sorted(schema_cols),
-            )
-        cached = [column for column in schema_cols if column in columns]
-        if ordering_cache is not None:
-            ordering_cache[node.id] = cached
-    return frame.select(cached)
 
 
 def _write_chunk_checkpoint(

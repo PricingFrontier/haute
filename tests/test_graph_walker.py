@@ -10,11 +10,17 @@ import polars as pl
 import pytest
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute._graph_walker import CollectPolicy, WalkPurpose, WalkResult, walk_graph
+from haute._graph_walker import (
+    CollectPolicy,
+    WalkPurpose,
+    WalkResult,
+    prepare_walk,
+    walk_graph,
+)
 from haute._node_snapshots import NodeSnapshotStore
 from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
-from haute.errors import SnapshotPlanInputsChangedError
+from haute.errors import ContractMismatchError, SnapshotPlanInputsChangedError
 from haute.executor import _build_node_fn, _compile_preamble, _pipeline_dir
 from tests.test_snapshot_seeding import _context, _identity, _staging_dirs
 
@@ -339,3 +345,66 @@ def test_collection_limits_are_positive_integers_keyed_by_node(
         CollectPolicy.display(row_limits_by_node=limits)
     with pytest.raises(ValueError, match=message):
         CollectPolicy.display(column_limits_by_node=limits)
+
+
+# ---------------------------------------------------------------------------
+# Chunk walks: the chunked runner's per-chunk walk
+# ---------------------------------------------------------------------------
+
+
+def _chunk_chain() -> PipelineGraph:
+    return PipelineGraph(
+        nodes=[
+            _node("start", NodeType.DATA_INPUT),
+            _node("plus", NodeType.POLARS),
+            _node("times", NodeType.POLARS),
+        ],
+        edges=[_edge("start", "plus"), _edge("plus", "times")],
+    )
+
+
+def _counting_chain_builder(
+    built: list[str],
+) -> Callable[..., tuple[str, Callable[..., Any], bool]]:
+    def build(node: GraphNode, **_kwargs: Any) -> tuple[str, Callable[..., Any], bool]:
+        built.append(node.id)
+        if node.id == "plus":
+            return node.id, lambda frame: frame.with_columns(y=pl.col("x") + 1), False
+        return node.id, lambda frame: frame.with_columns(z=pl.col("y") * 10), False
+
+    return build
+
+
+def test_a_prepared_chunk_walk_builds_its_chain_once_and_walks_every_chunk() -> None:
+    built: list[str] = []
+    walk = prepare_walk(
+        _chunk_chain(),
+        _counting_chain_builder(built),
+        policy=CollectPolicy.chunk(),
+        target_node_id="times",
+        walk_node_ids=["plus", "times"],
+        output_demand={"plus": frozenset({"x", "y"}), "times": frozenset({"z"})},
+    )
+
+    first = walk.run({"start": pl.LazyFrame({"x": [1, 2], "unused": [0, 0]})})
+    second = walk.run({"start": pl.LazyFrame({"x": [5], "unused": [0]})})
+
+    # The start node's frame is each chunk; only the chain below it is built, once.
+    assert built == ["plus", "times"]
+    assert first.frames["times"].collect().to_dict(as_series=False) == {"z": [20, 30]}
+    assert second.frames["times"].collect().to_dict(as_series=False) == {"z": [60]}
+    assert first.frames["plus"].collect_schema().names() == ["x", "y"]
+
+
+def test_a_chunk_walk_refuses_a_demand_its_node_does_not_produce() -> None:
+    walk = prepare_walk(
+        _chunk_chain(),
+        _counting_chain_builder([]),
+        policy=CollectPolicy.chunk(),
+        target_node_id="times",
+        walk_node_ids=["plus", "times"],
+        output_demand={"plus": frozenset({"x", "absent"})},
+    )
+
+    with pytest.raises(ContractMismatchError, match="Chunk projection references columns"):
+        walk.run({"start": pl.LazyFrame({"x": [1]})})

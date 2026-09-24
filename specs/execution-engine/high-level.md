@@ -519,8 +519,8 @@ keep reporting the failing line so the editor can name the failing step.
 - **One graph walker.** `_graph_walker.walk_graph` walks a graph once under a
   `CollectPolicy` that says what the walk collects and how it treats each node's frame.
   The Data Output sink, every lazy execution (`execution.execute_lazy_graph`: deploy
-  scoring, training, the optimiser, node data, the assistant), the preview and the trace
-  run on it; the chunked runner still runs its own loop until it moves (`EXEC-R05`). Two decisions
+  scoring, training, the optimiser, node data, the assistant), the preview, the trace and
+  the chunked runner (a chunk walk per batch) run on it. Two decisions
   bound it. Its functions stay at a cyclomatic complexity of 15 or below, held by ruff's
   C901 rule scoped to the walker module only; the rest of the package is not held to
   that limit. And the decorator pipeline's `Pipeline.run`/`score` keeps its own loop over

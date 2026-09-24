@@ -97,6 +97,10 @@ class WalkPurpose(StrEnum):
     """Show frames to a person (preview and trace): plan demand only from the
     caller, report every node's full schema, collect nodes under the policy's
     limits, and keep every node's plan for the caller."""
+    CHUNK = "chunk"
+    """Walk a proven chunk suffix one chunk at a time (the chunked runner): the
+    chunk plan fixes each node's output demand, the chunk is its start node's
+    frame, and nothing is planned, contract-checked or captured."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +130,11 @@ class CollectPolicy:
     def sink(cls) -> CollectPolicy:
         """Collect nothing: the caller sinks or collects the lazy frames itself."""
         return cls(purpose=WalkPurpose.SINK)
+
+    @classmethod
+    def chunk(cls) -> CollectPolicy:
+        """Collect nothing: the chunked runner collects each chunk's target itself."""
+        return cls(purpose=WalkPurpose.CHUNK)
 
     @classmethod
     def display(
@@ -176,6 +185,12 @@ class WalkRequest:
     runtime_source_frames_by_node: Mapping[str, pl.DataFrame] | None = None
     prepare_inputs: bool = True
     """A sink walk prepares snapshot-backed inputs; a display walk's caller does."""
+    walk_node_ids: frozenset[str] | None = None
+    """Restrict the walk to these nodes (a chunk walk's suffix below its start node)."""
+    output_demand: Mapping[str, frozenset[str] | None] = field(default_factory=dict)
+    """A chunk walk's per-node output demand, fixed by its chunk plan."""
+    reuse_loaded_model_by_node: Mapping[str, bool] | None = None
+    """Model Score nodes whose scorer keeps its loaded model across builds."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,6 +309,56 @@ def walk_graph(
     return _Walk(request, policy).run()
 
 
+@runtime_project_root_scoped
+def prepare_walk(
+    graph: PipelineGraph,
+    build_node_fn: Callable[..., Any],
+    *,
+    policy: CollectPolicy,
+    target_node_id: str,
+    walk_node_ids: Iterable[str],
+    output_demand: Mapping[str, frozenset[str] | None],
+    preamble_ns: dict[str, Any] | None = None,
+    source: str = "live",
+    source_by_node: Mapping[str, str] | None = None,
+    reuse_loaded_model_by_node: Mapping[str, bool] | None = None,
+    execution_context: ExecutionContext | None = None,
+) -> PreparedWalk:
+    """Prepare a chunk walk once: its graph, demand and node functions.
+
+    ``PreparedWalk.run`` then walks the nodes in *walk_node_ids*, starting
+    from the frames it is given for the nodes above them.
+    """
+    request = WalkRequest(
+        graph=graph,
+        build_node_fn=build_node_fn,
+        target_node_id=target_node_id,
+        preamble_ns=preamble_ns,
+        source=source,
+        enforce_contracts=False,
+        execution_context=execution_context,
+        source_by_node=dict(source_by_node or {}),
+        prepare_inputs=False,
+        walk_node_ids=frozenset(walk_node_ids),
+        output_demand=dict(output_demand),
+        reuse_loaded_model_by_node=reuse_loaded_model_by_node,
+    )
+    walk = _Walk(request, policy)
+    walk.prepare()
+    return PreparedWalk(walk)
+
+
+class PreparedWalk:
+    """A walk whose node functions were built once, walked once per chunk."""
+
+    def __init__(self, walk: _Walk) -> None:
+        self._walk = walk
+
+    def run(self, start_frames: Mapping[str, pl.LazyFrame]) -> WalkResult:
+        """Walk the prepared nodes from *start_frames*, the frames of the nodes above them."""
+        return self._walk.walk(start_frames)
+
+
 class _Walk:
     """One walk's state; each method is one step of the walk."""
 
@@ -301,6 +366,7 @@ class _Walk:
         self.request = request
         self.policy = policy
         self.display = policy.purpose is WalkPurpose.DISPLAY
+        self.chunk = policy.purpose is WalkPurpose.CHUNK
         self.context = request.execution_context
         self.plan = request.snapshot_plan
         self.decision: SeedPlanDecision | None = (
@@ -332,7 +398,9 @@ class _Walk:
             self.decision.consumed_node_ids if self.decision is not None else ()
         )
         self.strategy: projection_planner.ExecutionStrategyResult | None = None
-        self._init_walk_state()
+        self.seed_frames: dict[str, _Frame] = {}
+        # A node's output columns in schema order, resolved once per chunk walk.
+        self.output_order: dict[str, list[str]] = {}
 
     def _default_profile(self) -> ExecutionProfile:
         if self.context is not None:
@@ -342,10 +410,9 @@ class _Walk:
     def _init_walk_state(self) -> None:
         # Each node's frame as its consumers read it (lazy, collected, or a bundle).
         self.frames: dict[str, Any] = {}
-        self.seed_frames: dict[str, _Frame] = {}
         self.prebuilt: dict[str, _NodeFrame | Exception] = {}
         self.column_cache: dict[tuple[str, str | None], frozenset[str]] = {}
-        self.file_backed: set[str] = set()
+        self.file_backed: set[str] = set(self.seed_frames)
         self.remaining = dict(self.prepared.children_count)
         self.join_recipes: dict[str, JoinRecipe] = {}
         self.write_recipes: dict[str, WriteRecipe] = {}
@@ -379,15 +446,18 @@ class _Walk:
     # ------------------------------------------------------------------ run
 
     def run(self) -> WalkResult:
+        self.prepare()
+        return self.walk({})
+
+    def prepare(self) -> None:
+        """Everything a walk does once: check, prepare, seed, plan, and build."""
         self._check_plan()
-        if not self.display:
+        if self.policy.purpose is WalkPurpose.SINK:
             if self.context is not None:
                 self.context.checkpoint(label="lazy_start")
             self._prepare_inputs()
         self._read_seeds()
-        self.projection = (
-            self._plan_display_projection() if self.display else self._plan_sink_projection()
-        )
+        self.projection = self._plan_projection()
         self.boundaries = self._build_boundaries()
         self.captures = _PlannedCaptures(
             self.plan,
@@ -395,6 +465,11 @@ class _Walk:
             execution_context=self.context,
             incoming_edges_by_target=self.prepared.incoming_edges_by_target,
         )
+
+    def walk(self, start_frames: Mapping[str, pl.LazyFrame]) -> WalkResult:
+        """Visit the nodes once, from *start_frames* for the nodes above the walk."""
+        self._init_walk_state()
+        self.frames.update(start_frames)
         self._bind_plan_sources()
         for node_id in self.run_order:
             self._walk_node(node_id)
@@ -430,6 +505,8 @@ class _Walk:
 
     def _run_order(self) -> list[str]:
         """The prepared order, restricted under a plan to its seeds and executed nodes."""
+        if self.request.walk_node_ids is not None:
+            return [node_id for node_id in self.order if node_id in self.request.walk_node_ids]
         if self.decision is None:
             return list(self.order)
         planned = set(self.decision.executed_node_ids) | set(self.decision.seeds)
@@ -472,7 +549,6 @@ class _Walk:
 
         for node_id, seed in decision.seeds.items():
             self.seed_frames[node_id] = self.plan.seed_frame(node_id)
-            self.file_backed.add(node_id)
             if self.context is not None:
                 self.context.record_shared_snapshot_seed(
                     SharedSnapshotSeedRecord(
@@ -514,6 +590,28 @@ class _Walk:
             relevant_edges=self.graph_plan.relevant_edges,
             submodels=self.graph.submodels,
             selector_aliases=self.selector_aliases,
+        )
+
+    def _plan_projection(self) -> _WalkProjection:
+        if self.display:
+            return self._plan_display_projection()
+        if self.chunk:
+            return self._plan_chunk_projection()
+        return self._plan_sink_projection()
+
+    def _plan_chunk_projection(self) -> _WalkProjection:
+        """A chunk walk's demand is its chunk plan's: nothing is planned here."""
+        demand = self.request.output_demand
+        return _WalkProjection(
+            needed_by_node=demand,
+            edge_demands={},
+            projects_edges=False,
+            runtime_plan=None,
+            collect_needed={},
+            builder_needed=demand,
+            api_port_columns={},
+            strategy_required={},
+            boundary_operators={},
         )
 
     def _plan_sink_projection(self) -> _WalkProjection:
@@ -666,7 +764,8 @@ class _Walk:
             if node_id not in self.seed_frames and node_id not in pass_through
         ]
         request = self.request
-        with self._stage(None if self.display else "lazy_build_functions"):
+        sink = self.policy.purpose is WalkPurpose.SINK
+        with self._stage("lazy_build_functions" if sink else None):
             funcs = _build_funcs(
                 build_order,
                 self.node_map,
@@ -682,6 +781,7 @@ class _Walk:
                 source_by_node=request.source_by_node,
                 required_output_columns_by_node=self.projection.builder_needed,
                 required_output_columns_by_port_by_node=self.projection.api_port_columns,
+                reuse_loaded_model_by_node=request.reuse_loaded_model_by_node,
                 execution_profile=self.context.profile if self.context is not None else None,
                 schema_only=request.schema_only,
                 submodels=self.graph.submodels,
@@ -829,13 +929,24 @@ class _Walk:
         return built
 
     def _build_node(self, node_id: str, boundary: NodeBoundary) -> _NodeFrame:
-        """Invoke one node and shape and check its output, inside a sink walk's build stage."""
-        with self._stage(None if self.display else "lazy_build", node_id):
+        """Invoke one node and shape and check its output, inside its build stage.
+
+        A chunk walk then narrows the output to its chunk plan's demand.
+        """
+        with self._stage(_NODE_STAGES.get(self.policy.purpose), node_id):
             if boundary.is_source:
                 frame = self.boundaries.invoke(boundary)
             else:
                 frame = self.boundaries.invoke(boundary, self._node_inputs(boundary))
-            return self._shape_output(boundary, frame)
+            built = self._shape_output(boundary, frame)
+            if self.chunk:
+                built.frame = project_output(
+                    built.frame,
+                    self.request.output_demand.get(node_id),
+                    node=boundary.node,
+                    ordering_cache=self.output_order,
+                )
+            return built
 
     def _check_parents(self, boundary: NodeBoundary) -> None:
         failed = [parent for parent in boundary.parent_ids if parent in self.failed]
@@ -875,7 +986,8 @@ class _Walk:
         inputs = [self._input_frame(edge) for edge in boundary.incoming_edges]
         if not inputs:
             raise ValueError(f"No input data available for node '{node_id}'")
-        runtime_demands = self._runtime_demands(boundary, inputs)
+        # A chunk plan already proved every edge's demand; it infers nothing more.
+        runtime_demands = {} if self.chunk else self._runtime_demands(boundary, inputs)
         projected: list[_Frame] = []
         known: list[frozenset[str] | None] = []
         for edge, frame in zip(boundary.incoming_edges, inputs, strict=True):
@@ -1023,6 +1135,8 @@ class _Walk:
     def _record_recipes(self, boundary: NodeBoundary, inputs: Sequence[_Frame]) -> None:
         """The recipes a full write of this node can be chunked by."""
         node = boundary.node
+        if self.chunk:
+            return
         join = _edge_join_recipe(boundary.fn, node, inputs)
         if join is not None:
             self.join_recipes[boundary.node_id] = join
@@ -1080,11 +1194,12 @@ class _Walk:
 
     def _as_frame(self, node_id: str, result: Any) -> Any:
         """A node's result as a lazy frame, or a multi-frame source's bundle as returned."""
+        sink = self.policy.purpose is WalkPurpose.SINK
         if isinstance(result, pl.DataFrame):
-            if self.context is not None and not self.display:
+            if self.context is not None and sink:
                 self.context.record_column_widths(node_id=node_id, output_width=result.width)
             return result.lazy()
-        if isinstance(result, pl.LazyFrame | dict) or not self.display:
+        if isinstance(result, pl.LazyFrame | dict) or sink:
             return result
         raise TypeError(
             f"Node '{node_id}' returned {type(result).__name__}; expected a Polars frame."
@@ -1540,6 +1655,44 @@ class _Walk:
         )
 
 
+_NODE_STAGES = {WalkPurpose.SINK: "lazy_build", WalkPurpose.CHUNK: "chunk_node"}
+
+
+def project_output(
+    frame: pl.LazyFrame,
+    columns: frozenset[str] | None,
+    *,
+    node: GraphNode,
+    ordering_cache: dict[str, list[str]] | None = None,
+) -> pl.LazyFrame:
+    """Narrow a node's output to *columns*, in its schema's order.
+
+    A node's output schema is chunk-invariant (identical transforms per
+    chunk), so the ordered projection and its missing-column check are
+    resolved once per node and reused for every later chunk instead of
+    re-running ``collect_schema`` once per node per chunk.
+    """
+    if columns is None:
+        return frame
+    cached = None if ordering_cache is None else ordering_cache.get(node.id)
+    if cached is None:
+        schema_columns = frame.collect_schema().names()
+        missing = set(columns) - set(schema_columns)
+        if missing:
+            raise ContractMismatchError(
+                "Chunk projection references columns missing from the node output schema.",
+                node_id=node.id,
+                node_type=node.data.nodeType.value,
+                missing=sorted(missing),
+                required_columns=sorted(columns),
+                output_columns=sorted(schema_columns),
+            )
+        cached = [column for column in schema_columns if column in columns]
+        if ordering_cache is not None:
+            ordering_cache[node.id] = cached
+    return frame.select(cached)
+
+
 def _lazy(frame: pl.LazyFrame | pl.DataFrame) -> pl.LazyFrame:
     return frame.lazy() if isinstance(frame, pl.DataFrame) else frame
 
@@ -1574,8 +1727,11 @@ def _bundle_plans(node_id: str, bundle: Mapping[str, Any]) -> dict[str, pl.LazyF
 
 __all__ = [
     "CollectPolicy",
+    "PreparedWalk",
     "WalkPurpose",
     "WalkRequest",
     "WalkResult",
+    "prepare_walk",
+    "project_output",
     "walk_graph",
 ]
