@@ -71,7 +71,8 @@ tests `chdir` into a temporary project today).
 
 ### PCFG-R07 — Typed config models per node type
 **Why:** `NodeData.config` is `dict[str, Any]`. The shared validator is strict
-only for Data Input, Data Output and Banding; every other type is validated
+only for Data Input, Data Output, Banding and the Scenario Expander's grid
+size; every other type is validated
 piecemeal by the save service, the optimiser and training services, the
 recovery validators and the runtime builders, and the `TypedDict`s only drive
 a key allowlist. Config shape is therefore defined in several places, and the
@@ -80,15 +81,18 @@ browser's copy is written by hand.
 **Plan:** Define one Pydantic model per node type, discriminated by
 `nodeType`, and make it the validation boundary for parse, save, recovery and
 execution. Derive the sidecar allowlist from the models, and generate the
-browser types from them through `API-R03`.
+browser types from them through `API-R03`. Generate the node-reference config
+tables (`docs/building-models/nodes/`) from the models, so
+`tests/test_node_reference_docs.py` checks generated tables instead of
+hand-written ones.
 
 **Acceptance:** Every node type has a model; the scattered per-type
 validators are either deleted or called only from the model's validators; an
 invalid config for any node type fails at save with the model's message; the
-frontend node-config types are generated.
+frontend node-config types and the node-reference config tables are generated.
 
-**Dependencies:** `PCFG-R03`, `PCFG-R08`; `API-R03` (server API)
-for generated browser types.
+**Dependencies:** `PCFG-R08`; `API-R03` (server API) for generated browser
+types.
 
 **Evidence:** `src/haute/_types.py::NodeData`;
 `src/haute/_config_validation.py::validate_node_config`;
