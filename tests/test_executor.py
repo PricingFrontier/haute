@@ -3966,7 +3966,6 @@ class TestPreambleLockConcurrency:
         monkeypatch,
     ):
         """One preview request should hash utility files once via a shared memo."""
-        import haute._cache as cache
         import haute.executor as executor
 
         monkeypatch.chdir(tmp_path)
@@ -3986,7 +3985,9 @@ class TestPreambleLockConcurrency:
         data_path = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2]}).write_parquet(data_path)
 
-        original_content_hash = cache.content_hash
+        from haute._json_shred import _source_proof
+
+        original_content_hash = _source_proof._hash_file
         utility_hash_counts: dict[object, int] = {}
 
         def counted_content_hash(path):
@@ -3995,7 +3996,8 @@ class TestPreambleLockConcurrency:
                 utility_hash_counts[resolved] = utility_hash_counts.get(resolved, 0) + 1
             return original_content_hash(path)
 
-        monkeypatch.setattr(cache, "content_hash", counted_content_hash)
+        # Utility files are hashed through the shared source proof.
+        monkeypatch.setattr(_source_proof, "_hash_file", counted_content_hash)
 
         graph = _g(
             {

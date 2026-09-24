@@ -167,12 +167,12 @@ def test_the_group_digest_is_the_path_and_the_distinct_table_digests(tmp_path: P
 # ---------------------------------------------------------------- freshness
 
 
-def test_the_source_signature_is_the_content_sha256_and_size(tmp_path: Path) -> None:
+def test_the_source_signature_is_the_content_hash_and_size(tmp_path: Path) -> None:
+    from haute._hashing import content_hash
+
     data = _write_source(tmp_path / "quotes.jsonl")
     payload = data.read_bytes()
-    assert api_input_source_signature(data) == (
-        f"sha256:{hashlib.sha256(payload).hexdigest()}:{len(payload)}"
-    )
+    assert api_input_source_signature(data) == (f"xxh64:{content_hash(data)}:{len(payload)}")
     assert api_input_source_signature(tmp_path / "absent.jsonl") == "missing"
     assert api_input_source_signature(tmp_path) == "missing"
 

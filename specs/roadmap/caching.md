@@ -68,7 +68,7 @@ or where it will not hold at scale.
 | CACHE-S22 | Planned | P3 | The shapes that cannot carry a write recipe at all can. |
 | CACHE-S17 | Planned | P3 | Planning cost stays flat as graphs grow, a lease validates each part once per process, and the store's bookkeeping files are swept. |
 | CACHE-S18 | Planned | P3 | Full and cross joins are written with a bounded number of scans and a bounded part product. |
-| CACHE-S24 | Planned | P3 | One source-freshness proof and one bounded in-process cache primitive. |
+| CACHE-S24 | Planned | P3 | The assistant's two hand-rolled LRUs move onto the shared cache primitive. |
 | CACHE-S25 | Planned | P3 | Cache identity hashes the whole canonical node config instead of classifying every field. |
 | CACHE-S26 | Decision | P3 | Stored snapshots and node outputs have a retention policy, or the absence of one is a stated product choice. |
 | CACHE-S27 | Planned | P2 | The server, not the browser, chooses how an input snapshot is built. |
@@ -472,34 +472,28 @@ joins).
 
 **Evidence:** `src/haute/_chunked_writes.py`.
 
-### CACHE-S24 — One freshness proof and one bounded-cache primitive
-**Why:** Three freshness policies coexist for the same question, whether a
-source file changed. JSON sources use operating-system change tokens (the
-Windows USN journal through `ctypes`) plus a full SHA-256; snapshot-backed
-inputs use a signature with an `(mtime, size, digest)` verification memo; and
-`StatGatedCache` accepts a bare `(mtime_ns, size)` gate with a documented
-same-size, same-mtime blind spot. Bounded in-process caching is hand-rolled
-three times with `OrderedDict` beside the shared `LRUCache`.
+### CACHE-S24 — The assistant's bounded caches on the shared primitive
+**Why:** One freshness proof and one bounded-cache primitive landed on
+24-Sep-2026: every source kind asks `_json_shred/_source_proof.py` whether a
+file changed (a native revision, or a settled stat where the platform has
+none), one shared content signature serves Data Input and API Input snapshot
+freshness, runtime identity and utility hashes, and `StatGatedCache`, the
+signature memo and the parked Python-scan failures are built on `LRUCache`. Two
+hand-rolled `OrderedDict` LRUs remain, both in the assistant, which another
+lane owns: the plan records of `PlanStore` and the sessions of `SessionStore`.
 
-**Plan:** API-input tables now live in the shared store, so keep one freshness
-proof for every source kind and specify its guarantee once.
-Rebuild `StatGatedCache`, the runtime snapshot cache and the signature memo on
-`LRUCache`, or make `LRUCache` provide what they need.
+**Plan:** Replace both with `LRUCache`: `get` already moves an entry to most
+recently used, and `max_size` is the bound.
 
-**Acceptance:** One module computes source freshness and every consumer calls
-it; the caching specification states one guarantee; no `OrderedDict`-based
-LRU remains outside the shared primitive.
+**Acceptance:** No `OrderedDict`-based LRU remains outside the shared primitive.
 
 **Dependencies:** None.
 
 **Owning specifications:** [caching](../caching/high-level.md);
-[IO layer](../io-layer/high-level.md);
-[JSON shredding](../json-shredding/high-level.md).
+[assistant](../assistant/high-level.md).
 
-**Evidence:** `src/haute/_json_shred/_source_proof.py::_StrongFileRevision`;
-`src/haute/_json_shred/_source_proof.py::_DataFileSignatureMemo`;
-`src/haute/_stat_gated_cache.py::StatGatedCache`;
-`src/haute/_lru_cache.py::LRUCache`; `src/haute/_source_cache.py`.
+**Evidence:** `src/haute/assistant/_ops.py::PlanStore`;
+`src/haute/assistant/_session.py::SessionStore`; `src/haute/_lru_cache.py::LRUCache`.
 
 ### CACHE-S25 — Hash the whole canonical node config
 **Why:** The cache-identity framework declares a versioned field set for nine

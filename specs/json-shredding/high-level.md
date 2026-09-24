@@ -212,16 +212,16 @@ conservation assertion at the root level — emitted-plus-skipped
 must equal records-read — and raises `RuntimeError` if it doesn't, treating an
 unaccounted discrepancy as a shred bug, not something to serve silently.
 
-**Table freshness is proven by content hashes.** The source file's full SHA-256 is
-memoised by canonical path in a bounded, single-flight process cache, and a hit
-requires the same strong native file identity, length, last-write value and change
-token that surrounded the original complete hash pass. This shares one content
-proof between status checks, preparation, builds and later previews without
-trusting size/mtime alone. Nothing is persisted, so a new server process hashes
-each source once. A changed token, an atomic replacement, or a file that changes
-during hashing cannot reuse the proof; native-token failure disables reuse for
-that observation rather than weakening the freshness contract. A build that
-observes a different signature after its shred publishes nothing.
+**Table freshness is proven by content hashes.** A table records the source's
+shared content signature, the same proof a Data Input's snapshot records, so status
+checks, preparation, builds, runtime identity and later previews share one hash per
+unchanged file. Its reuse follows the one freshness guarantee the
+[caching](../caching/high-level.md) specification states: the file's native revision
+(identity, length, last-write value and change token), or where the platform has none a
+stat trusted only once the file has settled. Nothing is persisted, so a new server process
+hashes each source once. A changed token, an atomic replacement, or a file that keeps
+changing during hashing cannot reuse the proof. A build that observes a different
+signature after its shred publishes nothing.
 
 **Table builds are staged, bounded, and never expose a partial table.** A build
 feeds emitted rows through the same aggregate-bounded row-group writer used by

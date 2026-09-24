@@ -175,7 +175,7 @@ def test_cold_direct_spill_does_not_hash_source_before_parsing(
     config = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     monkeypatch.setattr(
         _source_proof,
-        "_data_file_signature",
+        "file_signature",
         lambda _path: (_ for _ in ()).throw(
             AssertionError("an absent cache must not trigger a full source hash")
         ),

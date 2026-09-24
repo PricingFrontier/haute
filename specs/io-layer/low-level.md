@@ -68,10 +68,13 @@ relationship is recorded in `specs/ownership.toml`.
   bypasses the grace period while preserving live readers. A reconcile removal that leaves
   its directory behind is logged (`source_cache_reconcile_removal_failed`) and reported as
   `unremovable`.
-- `source_signature` memoises by path, size, and mtime, so an unchanged file is hashed once
-  per process; a file modified within the last two seconds is hashed every time, because a
-  filesystem stamps mtimes at its own granularity and a same-size rewrite inside that window
-  would otherwise keep a stale signature (git's racy-index rule).
+- `source_signature` is the shared content signature
+  (`_json_shred._source_proof.file_signature`, `xxh64:<digest>:<size>`), so an unchanged file
+  is hashed once per process whatever asks. Reuse follows the one freshness guarantee in the
+  [caching](../caching/low-level.md) specification: a native revision where the platform has
+  one, otherwise a stat trusted only for a file modified at least two seconds earlier,
+  because a filesystem stamps mtimes at its own granularity and a same-size rewrite inside
+  that window would otherwise keep a stale signature (git's racy-index rule).
 - `DatabaseSnapshotBuilder` validates a read query and yields Arrow record batches with one
   stable schema from an existing SQLite database.
 

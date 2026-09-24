@@ -220,8 +220,8 @@ approving it.
   in the build environment rather than left unpinned or hardcoded, so a build environment
   drift is caught rather than silently propagated to a fresh, possibly incompatible pull.
 - **Schema-cache identity tracks served bytes, not just graph shape.** The output-schema
-  dry-run cache key folds in `artifact_identity_fingerprint()` — a stat-gated fingerprint
-  of every bundled artefact's resolved path, `(mtime_ns, size)` gate, and content hash — so retraining a model in
+  dry-run cache key folds in `artifact_identity_fingerprint()` — the runtime fingerprint
+  of every bundled artefact's resolved path, size, mtime, and shared content signature — so retraining a model in
   place under an unchanged `run_id`/`version="latest"` config still busts the cache
   instead of baking a stale `ModelSignature` into the manifest.
 - **Pipeline-relative source paths become container-relative manifest paths.**

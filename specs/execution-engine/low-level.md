@@ -669,20 +669,19 @@ schema through flat `columns` for a single port and through `frame_columns` for
 every configured multi-port frame; schema visibility never requires loading an
 unused parquet payload.
 
-The runtime-input fingerprint and the table-freshness checks of automatic input
-preparation and data-point resolution all consult the JSON-shredding source-signature
-boundary. Their independently initiated calls share one process-wide SHA-256 proof
-only behind the same native identity/change revision. The JSON `apiInput` runtime-file
-record therefore carries that SHA-256 proof directly and must not additionally call the
-generic xxHash runtime path boundary; beside it, the record signs each emitting table's
+The runtime-input fingerprint (`_stat_gated_runtime_path_fingerprint`, for every node
+kind) and the snapshot-freshness checks of automatic input preparation and data-point
+resolution all read the shared content signature (`_source_proof.file_signature`), so
+their independently initiated calls share one process-wide proof behind an unchanged
+freshness token. A file's runtime record is `{path, exists, is_file, size, mtime_ns,
+hash_algo: "xxh64", content_hash}` from that signature; a missing path or a directory is
+signed by its stat. A structured `apiInput` record also signs each emitting table's
 generation pointer (`snapshot_pointer:<label>`), so publishing a new generation of any
 table changes the identity even when the source is unchanged. This is a versioned
-`RUNTIME_GRAPH_INPUT` byte-layout change. The first observation or any revision
-movement still performs the full content hash, and native-revision failure stays
-visible through the JSON component's structured conservative-fallback warning. The
-strategy planner and the runtime loader read the published table generations, never
-the source. Non-JSON runtime paths continue through the generic stat-gated
-runtime-path fingerprint contract.
+`RUNTIME_GRAPH_INPUT` byte-layout change. The first observation or any token movement
+performs the full content hash, and a path without a native revision stays visible
+through the proof's `source_revision_unavailable` warning. The strategy planner and the
+runtime loader read the published table generations, never the source.
 
 An exact empty edge demand means that the consumer needs row cardinality but no
 user column (for example `select(pl.len())`). Polars cannot preserve non-zero row

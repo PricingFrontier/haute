@@ -9,7 +9,8 @@ Cache identities are explicit, versioned contracts rather than ad-hoc object has
 ## Scope
 
 In scope are canonical JSON and checked cache-input contracts, graph and lineage keys,
-bounded in-process LRU/stat-gated caches, the shared node-output snapshot layer and its seed plans,
+bounded in-process LRU and freshness-gated caches and the one source-freshness proof they
+share, the shared node-output snapshot layer and its seed plans,
 the explicit input-snapshot routes (a Data Input's snapshot, or a structured API
 Input's tables), and data points: the mapping from a consumer node to the data it reads
 and leased reads of that data.
@@ -62,9 +63,22 @@ builds a snapshot or shreds JSON. The read holds its lease for the caller's whol
 final collection, and a spawned child reads exactly the generation its parent leased.
 
 `LRUCache` bounds entries, optionally bounds bytes/TTL, and supports pins. Rejecting an
-oversized value leaves an existing same-key entry intact. `StatGatedCache` is bounded by an
-entry count, uses `(mtime_ns, size)` gates, provides per-key single flight, and evicts least
-recently used entries.
+oversized value leaves an existing same-key entry intact. `StatGatedCache` is built on
+`LRUCache`: it is bounded by an entry count, gates each entry on its file's freshness token,
+provides per-key single flight, and evicts least recently used entries.
+
+**Source freshness is one proof.** Whether a local file changed is answered in one place,
+`src/haute/_json_shred/_source_proof.py`, for every consumer: Data Input and API Input
+snapshot freshness, preview/trace runtime-input identity, preamble utility hashes, JSON
+schema inference, and every `StatGatedCache`. The guarantee: a proof or loaded value is
+reused only while the file's freshness token is unchanged. The token is the file's native
+revision (Windows volume, file id and USN; POSIX device, inode and ctime, with size and
+mtime), which every write moves, including a same-size rewrite that restores the mtime.
+Where the platform has no native revision the token is the file's stat, trusted only for a
+file last modified at least two seconds before it was observed; a younger file is proved again
+on every use. A file's content signature (`xxh64:<digest>:<size>`) is hashed once per
+unchanged token and shared by every consumer in the process, so one edit costs one hash. The
+proof lives in process memory: a fresh process proves each file once.
 
 A structured (JSON, JSONL, NDJSON, XML) API Input's emitting tables are input
 snapshots in the same store as Data Input snapshots, one per table: automatic
@@ -134,8 +148,9 @@ generation never serves a previous generation's results.
 
 Exact input contracts make omissions reviewable and fail loudly on drift. Versioned keys
 allow intentional invalidation. LRU and byte bounds prevent process caches becoming
-unbounded. Stat gates avoid hashing/loading unchanged artifacts while accepting the
-documented limitation that same-size, same-mtime rewrites are below the gate.
+unbounded. One freshness proof, rather than one per source kind, means one guarantee to
+reason about: native revisions see rewrites a size/mtime gate cannot, and the settle rule
+keeps the stat fallback honest on filesystems without them.
 
 ## Interactions
 
@@ -143,10 +158,9 @@ documented limitation that same-size, same-mtime rewrites are below the gate.
   lineage requests.
 - [IO layer](../io-layer/high-level.md) consumes canonical identity helpers and owns
   `_source_cache.py`.
-- Deploy scoring and modelling feature contracts instantiate `StatGatedCache`; `src/haute/_cache.py`
-  instantiates the utility-file hash cache.
-- Execution currently has a separate `StatGatedCache` instance for runtime-path
-  fingerprints; the shared class supplies its bound and single-flight behaviour.
+- Deploy scoring and modelling feature contracts instantiate `StatGatedCache`; utility-file
+  hashes (`src/haute/_cache.py`), runtime-path fingerprints (`src/haute/execution.py`), and
+  snapshot source signatures read the shared content signature.
 - [JSON shredding](../json-shredding/high-level.md) owns cache content generation.
 
 ## Failure model

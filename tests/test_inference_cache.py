@@ -13,7 +13,7 @@ import pytest
 from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred import _inference_cache as module
 from haute._json_shred._inference_cache import InferenceCache
-from haute._json_shred._source_proof import _StrongFileRevision
+from haute._json_shred._source_proof import Freshness, _StrongFileRevision
 
 
 @pytest.fixture
@@ -137,12 +137,16 @@ def test_revision_change_invalidates_cache(
     assert calls == 2
 
 
-def test_fake_revision_none_runs_loader_each_call(
-    current_revision: list[_StrongFileRevision | None],
+def test_unreusable_freshness_runs_loader_each_call(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     payload: dict[str, Any],
 ) -> None:
-    current_revision[0] = None
+    monkeypatch.setattr(
+        module._source_proof,
+        "observe_freshness",
+        lambda _path: Freshness(object(), reusable=False),
+    )
     cache = InferenceCache()
     calls = 0
 
@@ -192,23 +196,26 @@ def test_loader_failure_propagates_and_cleans_up_flights(
     "new_revision",
     [
         "new_token",
-        None,
+        "unavailable",
     ],
 )
 def test_loader_changes_revision_mid_scan_raises(
-    current_revision: list[_StrongFileRevision | None],
     tmp_path: Path,
     payload: dict[str, Any],
-    new_revision: str | None,
+    new_revision: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cache = InferenceCache()
+    base = Freshness(_StrongFileRevision((1, 2), 10, 20, 30), reusable=True)
+    state: list[Freshness] = [base]
+    monkeypatch.setattr(module._source_proof, "observe_freshness", lambda _path: state[0])
 
     def loader(path: Path) -> dict[str, Any]:
         if new_revision == "new_token":
-            assert current_revision[0] is not None
-            current_revision[0] = dataclasses.replace(current_revision[0], change_token=999)
+            new_token = dataclasses.replace(state[0].token, change_token=999)
+            state[0] = Freshness(new_token, reusable=True)
         else:
-            current_revision[0] = None
+            state[0] = Freshness(object(), reusable=False)
         return copy.deepcopy(payload)
 
     path = tmp_path / "data.json"

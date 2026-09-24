@@ -2633,7 +2633,7 @@ class TestJsonApiInputPortMetadata:
             raise AssertionError("an absent snapshot must not require a source hash")
 
         monkeypatch.setattr(
-            "haute._json_shred._source_proof._data_file_signature",
+            "haute._json_shred._source_proof.file_signature",
             unexpected_source_proof,
         )
 

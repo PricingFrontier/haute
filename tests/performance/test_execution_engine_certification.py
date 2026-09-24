@@ -46,7 +46,9 @@ _API_ROWS = 5_000
 _API_UNUSED_COLUMNS = 64
 _DIRECT_JSONL_ROWS = 20_000
 _DIRECT_JSONL_UNUSED_COLUMNS = 63
-_SIGNATURE_SOURCE_BYTES = 32 * 1024 * 1024
+# Large enough that one full hash (xxh64) dwarfs the fixed per-call native-revision
+# query the warm path makes (about 0.8 ms on Windows), so the ratio measures reuse.
+_SIGNATURE_SOURCE_BYTES = 128 * 1024 * 1024
 _SIGNATURE_WARM_SAMPLES = 9
 _MAX_SIGNATURE_WARM_FRACTION = 0.05
 _PREVIEW_HIT_WARM_SAMPLES = 9
@@ -669,7 +671,7 @@ def test_unchanged_source_signature_reuses_one_complete_content_proof(
     assert source_path.stat().st_size == _SIGNATURE_SOURCE_BYTES
     assert _source_proof._strong_file_revision(source_path) is not None
 
-    _source_proof._clear_data_file_signature_memo()
+    _source_proof.clear_file_signatures()
     real_hash_file = _source_proof._hash_file
     source_hashes = 0
 
@@ -681,12 +683,12 @@ def test_unchanged_source_signature_reuses_one_complete_content_proof(
 
     monkeypatch.setattr(_source_proof, "_hash_file", counting_hash_file)
     cold_started = time.perf_counter_ns()
-    expected = _source_proof._data_file_signature(source_path)
+    expected = _source_proof.file_signature(source_path)
     cold_ns = time.perf_counter_ns() - cold_started
     warm_ns: list[int] = []
     for _ in range(_SIGNATURE_WARM_SAMPLES):
         started = time.perf_counter_ns()
-        assert _source_proof._data_file_signature(source_path) == expected
+        assert _source_proof.file_signature(source_path) == expected
         warm_ns.append(time.perf_counter_ns() - started)
 
     warm_median_ns = int(statistics.median(warm_ns))
@@ -698,7 +700,7 @@ def test_unchanged_source_signature_reuses_one_complete_content_proof(
             "haute_perf_evidence",
             {
                 "scenario": "execution_engine_source_signature_proof_reuse",
-                "scale": "ci-32mib-source",
+                "scale": "ci-128mib-source",
                 "execution_profiles": [ExecutionProfile.PREVIEW_EAGER.value],
                 "input": {
                     "source_bytes": _SIGNATURE_SOURCE_BYTES,
@@ -789,13 +791,12 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
         ],
     )
     resolved = source_path.resolve()
-    _source_proof._clear_data_file_signature_memo()
-    execution_mod._runtime_path_fingerprint_cache.clear()
+    _source_proof.clear_file_signatures()
     _preview_cache.clear()
     source_hashes = 0
-    generic_hashes = 0
+    source_opens = 0
     real_source_hash = _source_proof._hash_file
-    real_generic_hash = execution_mod.content_hash
+    real_path_open = Path.open
     import haute.projection as projection_mod
 
     real_execution_prepare = execution_mod.prepare_graph
@@ -809,11 +810,13 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
             source_hashes += 1
         return real_source_hash(path)
 
-    def counting_generic_hash(path: Path) -> str:
-        nonlocal generic_hashes
+    def counting_open(path: Path, *args: Any, **kwargs: Any) -> Any:
+        # Every Python read of the source, whichever boundary makes it: a hash
+        # that bypassed the shared proof would show up here and not above.
+        nonlocal source_opens
         if path.resolve() == resolved:
-            generic_hashes += 1
-        return real_generic_hash(path)
+            source_opens += 1
+        return real_path_open(path, *args, **kwargs)
 
     def timed_prepare(prepare):
         def wrapped(*args: Any, **kwargs: Any):
@@ -828,7 +831,7 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
         return wrapped
 
     monkeypatch.setattr(_source_proof, "_hash_file", counting_source_hash)
-    monkeypatch.setattr(execution_mod, "content_hash", counting_generic_hash)
+    monkeypatch.setattr(Path, "open", counting_open)
     monkeypatch.setattr(execution_mod, "prepare_graph", timed_prepare(real_execution_prepare))
     monkeypatch.setattr(projection_mod, "prepare_graph", timed_prepare(real_projection_prepare))
     headroom_bytes = 64 * 1024 * 1024
@@ -867,7 +870,8 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
     # above) proves the source once for the freshness check, as a Data Input
     # does. Planning, preview identity, and loading then share that proof.
     assert source_hashes == 1
-    assert generic_hashes == 0
+    # Execution reads the published tables, so that hash is the only read.
+    assert source_opens == 1
     # Admission, the seed plan's resolution, the post-capture key, and
     # execution each prepare the graph. The seed plan is the fourth: a
     # preview resolves what it can read from the shared node-output store
@@ -892,9 +896,9 @@ def test_cached_json_target_preview_uses_one_authoritative_source_proof(
                     "source_bytes": source_path.stat().st_size,
                 },
                 "elapsed_ns": elapsed_ns,
-                "source_sha256_hashes": source_hashes,
+                "source_content_hashes": source_hashes,
                 "persisted_cache_build_source_proof_reused": False,
-                "generic_runtime_xxhash_calls": generic_hashes,
+                "source_file_opens": source_opens,
                 "execution_profile": ExecutionProfile.PREVIEW_EAGER.value,
                 "request_local_graph_preparation": {
                     "calls": prepare_calls,
@@ -924,7 +928,6 @@ def test_preview_cache_hit_reuses_strategy_without_planning_or_execution(
 ) -> None:
     """Certify that a complete preview hit is lookup/serialization work only."""
 
-    import haute.execution as execution_mod
     import haute.executor as executor_mod
     from haute._json_shred import _source_proof
 
@@ -954,8 +957,7 @@ def test_preview_cache_hit_reuses_strategy_without_planning_or_execution(
         ],
         edges=[],
     )
-    _source_proof._clear_data_file_signature_memo()
-    execution_mod._runtime_path_fingerprint_cache.clear()
+    _source_proof.clear_file_signatures()
     _preview_cache.clear()
     real_plan = executor_mod.execution_facade.plan_execution_strategy
     plan_calls = 0

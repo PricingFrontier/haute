@@ -1,32 +1,49 @@
-"""Source-file content proofs: strong native revisions and SHA-256 signatures.
+"""Source freshness: one observation and one content signature for every file.
 
-A signature is the raw-file content proof an API-input table snapshot records
-as its source signature. It is memoised in-process behind an exact
-native-revision match, so an unchanged source is hashed once per process."""
+Every consumer that asks whether a local file changed asks here: Data Input
+and API Input snapshot freshness, runtime-input identity, preamble utility
+hashes, JSON schema inference, and the artifact caches built on
+:class:`haute._stat_gated_cache.StatGatedCache`.
+
+The guarantee: a proof or loaded value is reused only while the file's
+freshness token is unchanged. The token is the file's native revision
+(Windows volume, file id and USN; POSIX device, inode and ctime, with size and
+mtime), which every write moves. Where the platform has no native revision the
+token is the file's stat, trusted only for a file last modified at least
+:data:`SETTLE_SECONDS` before it was observed; a younger file is proved again
+on every use, because a same-size rewrite inside the filesystem's timestamp
+granularity keeps its size and mtime.
+"""
 
 from __future__ import annotations
 
 import ctypes
-import hashlib
 import os
 import stat as stat_module
-import threading
-from collections import OrderedDict
+import time
+from collections.abc import Hashable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
+from haute._hashing import HASH_ALGO, content_hash
 from haute._logging import get_logger
+from haute._lru_cache import LRUCache
 
-logger = get_logger(component="json_shred")
+if TYPE_CHECKING:
+    from haute._stat_gated_cache import StatGatedCache
+
+logger = get_logger(component="source_proof")
 
 
-# ---------------------------------------------------------------------------
-# Data-file signature (W2 item 2.4) — validity must see data edits
-# ---------------------------------------------------------------------------
+SETTLE_SECONDS = 2.0
+"""Age below which a file without a native revision is never reused."""
+
+_UNAVAILABLE_WARNINGS_MAX_ENTRIES = 256
 
 
-_DATA_FILE_SIGNATURE_MEMO_MAX_ENTRIES = 256
+class SourceChangedError(OSError, RuntimeError):
+    """A file kept changing while it was being proved or loaded."""
 
 
 _WINDOWS_EPOCH_OFFSET_100NS = 116_444_736_000_000_000
@@ -40,19 +57,6 @@ class _StrongFileRevision:
     size: int
     mtime_ns: int
     change_token: int
-
-
-@dataclass(frozen=True, slots=True)
-class _DataFileSignatureRecord:
-    """Immutable memo payload; callers receive a fresh mapping view."""
-
-    size: int
-    mtime_ns: int
-    sha256: str
-    native_revision: _StrongFileRevision | None  # pragma: no mutate
-
-    def as_dict(self) -> dict[str, Any]:
-        return {"size": self.size, "mtime_ns": self.mtime_ns, "sha256": self.sha256}
 
 
 class _WindowsFileBasicInfo(ctypes.Structure):
@@ -247,193 +251,110 @@ def _strong_file_revision(path: Path) -> _StrongFileRevision | None:  # pragma: 
     return _posix_strong_file_revision(path)
 
 
-def _uncached_data_file_signature(data_path: Path) -> _DataFileSignatureRecord:
-    """Hash without retaining a proof when no strong revision is available."""
-    observed = data_path.stat()
-    before = (
-        observed.st_dev,
-        observed.st_ino,
-        observed.st_size,
-        observed.st_mtime_ns,
-        observed.st_ctime_ns,
-    )
-    digest = _hash_file(data_path)
-    final = data_path.stat()
-    after = (
-        final.st_dev,
-        final.st_ino,
-        final.st_size,
-        final.st_mtime_ns,
-        final.st_ctime_ns,
-    )
-    if before != after:
-        raise OSError(f"data file changed while its signature was computed: {data_path}")
-    return _DataFileSignatureRecord(
-        size=int(final.st_size),
-        mtime_ns=int(final.st_mtime_ns),
-        sha256=digest,
-        native_revision=None,
-    )
+@dataclass(frozen=True, slots=True)
+class Freshness:
+    """One observation of a file's freshness token."""
+
+    token: Hashable
+    reusable: bool
 
 
-def _revision_gated_data_file_signature(
-    data_path: Path,
-    revision: _StrongFileRevision,
-) -> _DataFileSignatureRecord:
-    """Hash one source generation and reject a moving native revision."""
-    digest = _hash_file(data_path)
-    if _strong_file_revision(data_path) != revision:
-        raise OSError(f"data file changed while its signature was computed: {data_path}")
-    return _DataFileSignatureRecord(
-        size=revision.size,
-        mtime_ns=revision.mtime_ns,
-        sha256=digest,
-        native_revision=revision,
-    )
+def observe_freshness(path: Path) -> Freshness:
+    """Observe *path*'s freshness token and whether a proof under it may be reused.
 
-
-class _DataFileSignatureLoadGate:
-    """Per-path single-flight state retained only within the cache bound."""
-
-    def __init__(self) -> None:
-        self.lock = threading.Lock()
-        self.participants = 0
-
-
-class _DataFileSignatureMemo:
-    """Bounded LRU of content hashes admitted by a strong file revision."""
-
-    def __init__(self, *, max_entries: int = _DATA_FILE_SIGNATURE_MEMO_MAX_ENTRIES) -> None:
-        if isinstance(max_entries, bool) or not isinstance(max_entries, int) or max_entries <= 0:
-            raise ValueError("max_entries must be a positive integer")
-        self._max_entries = max_entries
-        self._process_id = os.getpid()
-        self._lock = threading.Lock()
-        self._entries: OrderedDict[
-            str,
-            tuple[_StrongFileRevision, _DataFileSignatureRecord],
-        ] = OrderedDict()
-        self._load_gates: dict[str, _DataFileSignatureLoadGate] = {}
-        self._unavailable_warnings: OrderedDict[str, None] = OrderedDict()
-
-    def _ensure_current_process(self) -> None:
-        process_id = os.getpid()
-        if process_id == self._process_id:
-            return
-        # After fork there is one surviving thread. Replace, rather than
-        # acquire, inherited locks: another parent thread may have held them.
-        self._process_id = process_id
-        self._lock = threading.Lock()
-        self._entries = OrderedDict()
-        self._load_gates = {}
-        self._unavailable_warnings = OrderedDict()
-
-    def _warn_unavailable_once(self, key: str, path: Path) -> None:
-        with self._lock:
-            if key in self._unavailable_warnings:
-                self._unavailable_warnings.move_to_end(key)
-                return
-            self._unavailable_warnings[key] = None
-            while len(self._unavailable_warnings) > self._max_entries:
-                self._unavailable_warnings.popitem(last=False)
-        logger.warning(
-            "json_source_signature_revision_unavailable",
-            data_path=str(path),
-            action="full_source_hash_per_operation",
-        )
-
-    def get(self, data_path: Path) -> dict[str, Any]:
-        """Return a source signature, hashing once per unchanged generation."""
-        self._ensure_current_process()
-        resolved_path = data_path.expanduser().resolve()
-        key = os.path.normcase(str(resolved_path))
-        revision = _strong_file_revision(resolved_path)
-        if revision is None:
-            self._warn_unavailable_once(key, resolved_path)
-            return _uncached_data_file_signature(resolved_path).as_dict()
-
-        with self._lock:
-            entry = self._entries.get(key)
-            if entry is not None and entry[0] == revision:
-                self._entries.move_to_end(key)
-                return entry[1].as_dict()
-            load_gate = self._load_gates.setdefault(key, _DataFileSignatureLoadGate())
-            load_gate.participants += 1
-        try:
-            with load_gate.lock:
-                # A waiter must observe the revision again: the generation may
-                # have moved while another caller owned the flight.
-                current_revision = _strong_file_revision(resolved_path)
-                if current_revision is None:
-                    self._warn_unavailable_once(key, resolved_path)
-                    return _uncached_data_file_signature(resolved_path).as_dict()
-                with self._lock:
-                    entry = self._entries.get(key)
-                    if entry is not None and entry[0] == current_revision:
-                        self._entries.move_to_end(key)
-                        return entry[1].as_dict()
-
-                signature = _revision_gated_data_file_signature(resolved_path, current_revision)
-                with self._lock:
-                    self._entries[key] = (current_revision, signature)
-                    self._entries.move_to_end(key)
-                    while len(self._entries) > self._max_entries:
-                        evicted_key, _ = self._entries.popitem(last=False)
-                        evicted_gate = self._load_gates.get(evicted_key)
-                        if evicted_gate is not None and evicted_gate.participants == 0:
-                            del self._load_gates[evicted_key]
-                return signature.as_dict()
-        finally:
-            with self._lock:
-                load_gate.participants -= 1
-                if (
-                    load_gate.participants == 0
-                    and self._load_gates.get(key) is load_gate
-                    and key not in self._entries
-                ):
-                    del self._load_gates[key]
-
-    def __len__(self) -> int:
-        self._ensure_current_process()
-        with self._lock:
-            return len(self._entries)
-
-    def clear(self) -> None:
-        """Drop retained proofs without invalidating an active single flight."""
-        self._ensure_current_process()
-        with self._lock:
-            self._entries.clear()
-            self._unavailable_warnings.clear()
-            self._load_gates = {
-                key: load_gate
-                for key, load_gate in self._load_gates.items()
-                if load_gate.participants
-            }
-
-
-_DATA_FILE_SIGNATURE_MEMO = _DataFileSignatureMemo()
-
-
-def _clear_data_file_signature_memo() -> None:
-    """Test seam for isolating process-wide source-signature proofs."""
-    _DATA_FILE_SIGNATURE_MEMO.clear()
-
-
-def _data_file_signature(data_path: Path) -> dict[str, Any]:
-    """Return the size/mtime/SHA-256 identity of a structured source file.
-
-    The complete content hash remains authoritative. It is reused from memory
-    only when an OS-native identity/change token proves that the same file
-    generation is unchanged; unsupported filesystems take the conservative
-    full-hash path. Raises ``OSError`` for an unreadable or concurrently
-    changing file.
+    Raises ``OSError`` (``FileNotFoundError`` for a missing file) when the file
+    cannot be observed.
     """
-    return _DATA_FILE_SIGNATURE_MEMO.get(data_path)
+    revision = _strong_file_revision(path)
+    if revision is not None:
+        return Freshness(revision, reusable=True)
+    observed = path.stat()
+    _warn_revision_unavailable_once(path)
+    return Freshness(
+        (
+            "stat",
+            observed.st_dev,
+            observed.st_ino,
+            observed.st_size,
+            observed.st_mtime_ns,
+            observed.st_ctime_ns,
+        ),
+        reusable=time.time() - observed.st_mtime >= SETTLE_SECONDS,
+    )
+
+
+_UNAVAILABLE_WARNINGS: LRUCache[str, bool] = LRUCache(max_size=_UNAVAILABLE_WARNINGS_MAX_ENTRIES)
+
+
+def _warn_revision_unavailable_once(path: Path) -> None:
+    key = os.path.normcase(str(path))
+    if _UNAVAILABLE_WARNINGS.get(key):
+        return
+    _UNAVAILABLE_WARNINGS.put(key, True)
+    logger.warning(
+        "source_revision_unavailable",
+        path=str(path),
+        action="stat_gate_after_settle",
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class FileSignature:
+    """The complete-content proof of one file state."""
+
+    size: int
+    mtime_ns: int
+    digest: str
+
+    @property
+    def source_signature(self) -> str:
+        """The ``<algorithm>:<digest>:<size>`` string a snapshot records."""
+        return f"{HASH_ALGO}:{self.digest}:{self.size}"
+
+
+_SIGNATURES: StatGatedCache[str, FileSignature] | None = None
+
+
+def _signatures() -> StatGatedCache[str, FileSignature]:
+    # Built on first use: the gated cache observes freshness through this module.
+    global _SIGNATURES
+    if _SIGNATURES is None:
+        from haute._stat_gated_cache import StatGatedCache
+
+        _SIGNATURES = StatGatedCache[str, FileSignature](artifact_kind="Source file")
+    return _SIGNATURES
+
+
+def file_signature(path: Path) -> FileSignature:
+    """Return *path*'s content signature, hashed once per unchanged freshness token.
+
+    Raises ``OSError`` for a missing or unreadable file and
+    :class:`SourceChangedError` for one that keeps changing while it is hashed.
+    """
+    from haute._stat_gated_cache import artifact_cache_key
+
+    resolved = path.expanduser().resolve()
+    return _signatures().get_or_load(
+        artifact_cache_key(resolved),
+        str(resolved),
+        lambda: _signature(resolved),
+    )
+
+
+def _signature(path: Path) -> FileSignature:
+    observed = path.stat()
+    return FileSignature(
+        size=int(observed.st_size),
+        mtime_ns=int(observed.st_mtime_ns),
+        digest=_hash_file(path),
+    )
+
+
+def clear_file_signatures() -> None:
+    """Forget every retained proof (a test seam; an active flight is kept)."""
+    _signatures().clear()
+    _UNAVAILABLE_WARNINGS.clear()
 
 
 def _hash_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):  # pragma: no mutate
-            h.update(chunk)
-    return h.hexdigest()
+    return content_hash(path)

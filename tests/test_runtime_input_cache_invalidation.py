@@ -97,28 +97,6 @@ def _parquet_input_node(nid: str, path: Path):
     return _source_node(nid, str(path))
 
 
-def test_json_source_runtime_fingerprint_preserves_non_file_semantics(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Directories stay on the generic path; source proofs apply only to files."""
-    import haute.execution as execution_mod
-
-    expected = {"kind": "directory"}
-    calls: list[Path] = []
-
-    def generic_fingerprint(path: Path) -> dict[str, str]:
-        calls.append(path)
-        return expected
-
-    monkeypatch.setattr(execution_mod, "_runtime_path_fingerprint", generic_fingerprint)
-
-    actual = execution_mod._json_source_runtime_path_fingerprint(tmp_path)
-
-    assert actual is expected
-    assert calls == [tmp_path.resolve()]
-
-
 def test_graph_input_fingerprint_uses_canonical_json(monkeypatch, tmp_path: Path) -> None:
     from haute import _cache, execution
 
@@ -645,17 +623,17 @@ class TestStatGatedFingerprintMemo:
     @pytest.fixture()
     def hash_calls(self, monkeypatch):
         """Count content hashes issued by the runtime-input signature layer."""
-        import haute.execution as execution_mod
+        from haute._json_shred import _source_proof
 
         calls: dict[str, int] = {}
-        real_content_hash = execution_mod.content_hash
+        real_hash_file = _source_proof._hash_file
 
-        def counting_content_hash(path):
+        def counting_hash_file(path):
             key = str(path)
             calls[key] = calls.get(key, 0) + 1
-            return real_content_hash(path)
+            return real_hash_file(path)
 
-        monkeypatch.setattr(execution_mod, "content_hash", counting_content_hash)
+        monkeypatch.setattr(_source_proof, "_hash_file", counting_hash_file)
         return calls
 
     def test_unchanged_file_is_hashed_once_across_previews(self, tmp_path, hash_calls):
@@ -701,11 +679,10 @@ class TestStatGatedFingerprintMemo:
         tmp_path,
         monkeypatch,
     ):
-        """Planning, identity, and loading share one in-process memoised SHA-256
+        """Planning, identity, and loading share one in-process memoised content-hash
         proof of the source file — persisted proofs are gone, so the first
         admitted preparation after a memo reset legitimately hashes once, but
         no *further* stage of the same preview rehashes it."""
-        import haute.execution as execution_mod
         from haute._json_shred import _source_proof
 
         monkeypatch.chdir(tmp_path)
@@ -714,12 +691,9 @@ class TestStatGatedFingerprintMemo:
         graph = _json_api_input_group_by_graph(data)
         resolved = data.resolve()
 
-        _source_proof._clear_data_file_signature_memo()
-        execution_mod._runtime_path_fingerprint_cache.clear()
+        _source_proof.clear_file_signatures()
         source_hashes = 0
-        generic_hashes = 0
         real_source_hash = _source_proof._hash_file
-        real_generic_hash = execution_mod.content_hash
 
         def counting_source_hash(path: Path) -> str:
             nonlocal source_hashes
@@ -727,20 +701,12 @@ class TestStatGatedFingerprintMemo:
                 source_hashes += 1
             return real_source_hash(path)
 
-        def counting_generic_hash(path: Path) -> str:
-            nonlocal generic_hashes
-            if path.resolve() == resolved:
-                generic_hashes += 1
-            return real_generic_hash(path)
-
         monkeypatch.setattr(_source_proof, "_hash_file", counting_source_hash)
-        monkeypatch.setattr(execution_mod, "content_hash", counting_generic_hash)
 
         result = execute_graph(graph, target_node_id="aggregate")
 
         assert result["aggregate"].preview == [{"amount": 10, "rows": 1}]
         assert source_hashes == 1
-        assert generic_hashes == 0
 
     def test_json_same_stat_byte_rewrite_invalidates_preview_identity(
         self,
@@ -748,15 +714,13 @@ class TestStatGatedFingerprintMemo:
         monkeypatch,
     ):
         """The strong JSON revision, not size/mtime, gates cached previews."""
-        import haute.execution as execution_mod
         from haute._json_shred import _source_proof
 
         monkeypatch.chdir(tmp_path)
         data = tmp_path / "data.json"
         _export_and_cache_amount(data, 10)
         graph = _json_api_input_graph(data)
-        _source_proof._clear_data_file_signature_memo()
-        execution_mod._runtime_path_fingerprint_cache.clear()
+        _source_proof.clear_file_signatures()
 
         first = execute_graph(graph, target_node_id="t")
         first_key = _preview_cache.most_recent_key
@@ -805,9 +769,11 @@ class TestStatGatedFingerprintMemo:
         assert fp_after != fp_before, "mtime change must produce a new preview cache key"
 
     def test_stat_identical_noop_rewrite_serves_cached_preview(self, tmp_path, hash_calls):
-        """Pinned semantics: a rewrite that restores both bytes and stat is
-        below the stat gate's resolution and serves the cached entry —
-        correct, because the bytes are identical."""
+        """Pinned semantics: a rewrite that restores both bytes and stat still
+        moves the native revision token (every regular file has one on this
+        machine and CI), so it re-hashes once — but the resulting fingerprint
+        (size, mtime_ns, digest) is identical, so the same preview cache key
+        and rows are served."""
         p = tmp_path / "data.parquet"
         _write_parquet(p, [1, 2])
         graph = _parquet_graph(p)
@@ -822,7 +788,7 @@ class TestStatGatedFingerprintMemo:
 
         results2 = execute_graph(graph)
         assert _preview_cache.most_recent_key == fp_before
-        assert hash_calls.get(key) == 1, "stat-identical rewrite must not re-hash"
+        assert hash_calls.get(key) == 2, "stat-identical rewrite still moves the revision token"
         assert [row["x"] for row in results2["src"].preview] == [
             row["x"] for row in results1["src"].preview
         ]
@@ -832,43 +798,46 @@ class TestStatGatedFingerprintMemo:
         the stat gate, so the first attempt is discarded and the retry signs
         the file's settled state — never a hash paired with a stale stat."""
         import haute.execution as execution_mod
+        from haute._hashing import content_hash
+        from haute._json_shred import _source_proof
 
         p = tmp_path / "data.csv"
         _write_csv(p, [1, 2])
-        real_content_hash = execution_mod.content_hash
+        real_hash_file = _source_proof._hash_file
         calls = {"n": 0}
 
-        def racing_content_hash(path):
+        def racing_hash_file(path):
             calls["n"] += 1
             if calls["n"] == 1:
                 _write_csv(Path(path), [9, 9, 9])  # different size: gate moves
                 _bump_mtime(Path(path))
-            return real_content_hash(path)
+            return real_hash_file(path)
 
-        monkeypatch.setattr(execution_mod, "content_hash", racing_content_hash)
+        monkeypatch.setattr(_source_proof, "_hash_file", racing_hash_file)
 
         payload = execution_mod._stat_gated_runtime_path_fingerprint(p)
         assert calls["n"] == 2
-        assert payload["content_hash"] == real_content_hash(p.resolve())
+        assert payload["content_hash"] == content_hash(p.resolve())
         assert payload["mtime_ns"] == p.stat().st_mtime_ns
 
     def test_file_mutating_on_every_hash_attempt_fails_loudly(self, tmp_path, monkeypatch):
         """If the file keeps changing under the hash, the fingerprint refuses
         to guess — matching ``_utility_file_hash``'s double-stat guard."""
         import haute.execution as execution_mod
+        from haute._json_shred import _source_proof
 
         p = tmp_path / "data.csv"
         rows = [1]
         _write_csv(p, rows)
-        real_content_hash = execution_mod.content_hash
+        real_hash_file = _source_proof._hash_file
 
-        def perpetually_racing_content_hash(path):
+        def perpetually_racing_hash_file(path):
             rows.append(len(rows))  # size grows: gate moves on every attempt
             _write_csv(Path(path), rows)
             _bump_mtime(Path(path))
-            return real_content_hash(path)
+            return real_hash_file(path)
 
-        monkeypatch.setattr(execution_mod, "content_hash", perpetually_racing_content_hash)
+        monkeypatch.setattr(_source_proof, "_hash_file", perpetually_racing_hash_file)
 
         with pytest.raises(RuntimeError, match="changed on disk while loading"):
             execution_mod._stat_gated_runtime_path_fingerprint(p)

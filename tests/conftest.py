@@ -339,17 +339,17 @@ def _clear_git_content_caches():
 
 
 @pytest.fixture(autouse=True)
-def _clear_json_source_signature_memo():
-    """Forget memoised structured-source content proofs between tests.
+def _clear_source_signatures():
+    """Forget memoised source content proofs between tests.
 
-    The memo is process-wide and keyed by a file's native revision, which a
+    The memo is process-wide and keyed by a file's freshness token, which a
     reused temporary path can repeat across tests.
     """
-    from haute._json_shred._source_proof import _clear_data_file_signature_memo
+    from haute._json_shred._source_proof import clear_file_signatures
 
-    _clear_data_file_signature_memo()
+    clear_file_signatures()
     yield
-    _clear_data_file_signature_memo()
+    clear_file_signatures()
 
 
 @pytest.fixture()

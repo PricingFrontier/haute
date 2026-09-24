@@ -345,19 +345,20 @@ class TestDeployArtifactPathFingerprints:
         model-artifact ``StatGatedCache`` key, independent of graph execution —
         deployed scoring itself never builds a dataframe execution cache request.
         """
-        import haute.execution as execution_mod
+        from haute._json_shred import _source_proof
         from haute.deploy._scorer import artifact_identity_fingerprint
 
+        _source_proof.clear_file_signatures()
         artifact_path = tmp_path / "artifact.parquet"
         artifact_path.write_bytes(b"stable artifact bytes")
-        real_content_hash = execution_mod.content_hash
+        real_hash_file = _source_proof._hash_file
         hash_calls: list[Path] = []
 
-        def counting_content_hash(path: Path) -> str:
+        def counting_hash_file(path: Path) -> str:
             hash_calls.append(Path(path))
-            return real_content_hash(path)
+            return real_hash_file(path)
 
-        with patch.object(execution_mod, "content_hash", side_effect=counting_content_hash):
+        with patch.object(_source_proof, "_hash_file", side_effect=counting_hash_file):
             for _ in range(2):
                 artifact_identity_fingerprint({"artifact": str(artifact_path)})
 

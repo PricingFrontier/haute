@@ -534,11 +534,12 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   errored): `scored = min(len(staging_preds), len(prod_preds))`, with the shortfall
   recorded as `failed_rows`, before DataFrames are built — avoiding materialising rows
   that will be discarded.
-- **Model/contract artefact caches are stat-gated and per-key-locked**
+- **Model/contract artefact caches are freshness-gated and per-key-locked**
   (`src/haute/_stat_gated_cache.py::StatGatedCache`, instantiated in `_scorer.py`
   as `_local_model_cache`), so concurrent `/quote` requests on container start
-  perform exactly one disk load per artefact and later requests short-circuit on a cheap
-  `(mtime_ns, size)` stat check; failed loads are never cached.
+  perform exactly one disk load per artefact and later requests short-circuit on the
+  file's freshness token (its native revision; see [caching](../caching/low-level.md));
+  failed loads are never cached.
 - **Empty artefact set produces an empty fingerprint string** (`artifact_identity_fingerprint`
   returns `""` when `artifact_paths` is empty/`None`) specifically so graphs bundling no
   artefacts keep byte-identical cache keys across runs.

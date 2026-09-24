@@ -1,112 +1,35 @@
-"""Mutation witnesses for the structured-source content proof.
+"""Mutation witnesses for the source freshness proof's native revisions.
 
-Direct witnesses for the data-file signature (:func:`_data_file_signature`), its
-memo, the native revisions behind it, and its content hash (:func:`_hash_file`).
-The signature is an API-input table snapshot's source signature, so a mutation
-that makes it wrongly report "unchanged" would serve stale rows silently; each
-branch decision gets a discriminating witness.
+The Windows (volume, file id, USN) and POSIX (device, inode, ctime) readers
+behind :func:`observe_freshness`, and the content signature's refusal to reuse a
+proof across a rewrite that size and mtime cannot see. A mutation that made a
+revision wrongly match would serve stale rows silently, so each branch decision
+gets a discriminating witness.
 """
 
 from __future__ import annotations
 
 import ctypes
-import hashlib
 import os
 import stat
-import threading
-from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from haute._hashing import content_hash
 from haute._json_shred import _source_proof
-from haute._json_shred._source_proof import (
-    _DATA_FILE_SIGNATURE_MEMO,
-    _clear_data_file_signature_memo,
-    _data_file_signature,
-    _DataFileSignatureMemo,
-    _hash_file,
-)
+from haute._json_shred._source_proof import file_signature
 
 
-@pytest.fixture(autouse=True)
-def clear_data_file_signature_memo() -> Iterator[None]:
-    """Keep global source-signature memo state out of unrelated witnesses."""
-    _clear_data_file_signature_memo()
-    yield
-    _clear_data_file_signature_memo()
-
-
-# ─── _hash_file — chunked content hash ─────────────────────────────
-
-
-def test_hash_file_matches_sha256_of_content(tmp_path: Path) -> None:
-    # A real, multi-byte file must hash to exactly sha256(content). Kills the
-    # mutations that zero the read chunk size (``1 << 20`` -> ``1 // 20`` /
-    # ``1 & 20`` / ``1 >> 20`` = 0 -> ``read(0)`` -> the iter sentinel fires
-    # immediately -> empty hash) and the ZeroIterationForLoop (no chunks read).
-    content = b"the quick brown fox jumps over the lazy dog\n" * 64
-    p = tmp_path / "data.json"
-    p.write_bytes(content)
-    assert _hash_file(p) == hashlib.sha256(content).hexdigest()
-
-
-def test_data_file_signature_rejects_a_file_changed_while_hashing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Raw-data signatures use the same before/after stat guard as artifacts."""
-    from haute._json_shred import _source_proof
-
-    p = tmp_path / "data.json"
-    p.write_bytes(b"[1]")
-    real_hash_file = _source_proof._hash_file
-
-    def racing_hash_file(path: Path) -> str:
-        path.write_bytes(b"[1, 2]")
-        return real_hash_file(path)
-
-    monkeypatch.setattr(_source_proof, "_hash_file", racing_hash_file)
-
-    with pytest.raises(OSError, match="changed while its signature was computed"):
-        _data_file_signature(p)
-
-
-# ─── _DataFileSignatureMemo — source-signature memo contract ───────
-
-
-def test_data_file_signature_memoizes_unchanged_content_without_aliasing_results(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from haute._json_shred import _source_proof
-
+def test_hash_file_is_the_complete_content_hash(tmp_path: Path) -> None:
     path = tmp_path / "data.json"
-    path.write_bytes(b"[1]")
-    real_hash_file = _source_proof._hash_file
-    hashes = 0
-
-    def counting_hash_file(candidate: Path) -> str:
-        nonlocal hashes
-        hashes += 1
-        return real_hash_file(candidate)
-
-    monkeypatch.setattr(_source_proof, "_hash_file", counting_hash_file)
-    first = _data_file_signature(path)
-    second = _data_file_signature(path)
-    assert first == second
-    assert first is not second
-    first["sha256"] = "poisoned"
-    third = _data_file_signature(path)
-
-    assert hashes == 1
-    assert third["sha256"] == hashlib.sha256(b"[1]").hexdigest()
-    assert third is not second
-    assert len(_DATA_FILE_SIGNATURE_MEMO) == 1
+    path.write_bytes(b"x" * (3 << 20))
+    assert _source_proof._hash_file(path) == content_hash(path)
 
 
-def test_data_file_signature_rehashes_in_place_rewrite_with_restored_mtime(
+def test_file_signature_rehashes_in_place_rewrite_with_restored_mtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from haute._json_shred import _source_proof
@@ -123,17 +46,17 @@ def test_data_file_signature_rehashes_in_place_rewrite_with_restored_mtime(
         return real_hash_file(candidate)
 
     monkeypatch.setattr(_source_proof, "_hash_file", counting_hash_file)
-    before = _data_file_signature(path)
+    before = file_signature(path)
     path.write_bytes(b"bbbb")
     os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
-    after = _data_file_signature(path)
+    after = file_signature(path)
 
     assert path.stat().st_mtime_ns == original_stat.st_mtime_ns
     assert hashes == 2
-    assert after["sha256"] != before["sha256"]
+    assert after.digest != before.digest
 
 
-def test_data_file_signature_rehashes_atomic_same_stat_replacement(
+def test_file_signature_rehashes_atomic_same_stat_replacement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from haute._json_shred import _source_proof
@@ -153,155 +76,14 @@ def test_data_file_signature_rehashes_atomic_same_stat_replacement(
         return real_hash_file(candidate)
 
     monkeypatch.setattr(_source_proof, "_hash_file", counting_hash_file)
-    before = _data_file_signature(path)
+    before = file_signature(path)
     os.replace(replacement, path)
-    after = _data_file_signature(path)
+    after = file_signature(path)
 
     assert path.stat().st_size == original_stat.st_size
     assert path.stat().st_mtime_ns == original_stat.st_mtime_ns
     assert hashes == 2
-    assert after["sha256"] != before["sha256"]
-
-
-def test_data_file_signature_does_not_memoize_without_strong_revision(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from haute._json_shred import _source_proof
-
-    path = tmp_path / "data.json"
-    path.write_bytes(b"[1]")
-    real_hash_file = _source_proof._hash_file
-    hashes = 0
-
-    def counting_hash_file(candidate: Path) -> str:
-        nonlocal hashes
-        hashes += 1
-        return real_hash_file(candidate)
-
-    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: None)
-    monkeypatch.setattr(_source_proof, "_hash_file", counting_hash_file)
-
-    assert _data_file_signature(path) == _data_file_signature(path)
-    assert hashes == 2
-    assert len(_DATA_FILE_SIGNATURE_MEMO) == 0
-
-
-def test_data_file_signature_coalesces_simultaneous_hashes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from haute._json_shred import _source_proof
-
-    path = tmp_path / "data.json"
-    path.write_bytes(b"[1]")
-    real_hash_file = _source_proof._hash_file
-    hashing_started = threading.Event()
-    allow_hash_to_finish = threading.Event()
-    lock = threading.Lock()
-    hashes = 0
-
-    def blocking_hash_file(candidate: Path) -> str:
-        nonlocal hashes
-        with lock:
-            hashes += 1
-        hashing_started.set()
-        assert allow_hash_to_finish.wait(timeout=5)
-        return real_hash_file(candidate)
-
-    monkeypatch.setattr(_source_proof, "_hash_file", blocking_hash_file)
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = [executor.submit(_data_file_signature, path) for _ in range(8)]
-        assert hashing_started.wait(timeout=5)
-        allow_hash_to_finish.set()
-        signatures = [future.result(timeout=5) for future in futures]
-
-    assert hashes == 1
-    assert all(signature == signatures[0] for signature in signatures)
-
-
-def test_data_file_signature_does_not_cache_hashing_exceptions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from haute._json_shred import _source_proof
-
-    path = tmp_path / "data.json"
-    path.write_bytes(b"[1]")
-    real_hash_file = _source_proof._hash_file
-    hashes = 0
-
-    def flaky_hash_file(candidate: Path) -> str:
-        nonlocal hashes
-        hashes += 1
-        if hashes == 1:
-            raise OSError("temporary read failure")
-        return real_hash_file(candidate)
-
-    monkeypatch.setattr(_source_proof, "_hash_file", flaky_hash_file)
-    with pytest.raises(OSError, match="temporary read failure"):
-        _data_file_signature(path)
-
-    assert _data_file_signature(path)["sha256"] == hashlib.sha256(b"[1]").hexdigest()
-    assert hashes == 2
-
-
-def test_data_file_signature_memo_is_bounded_lru(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from haute._json_shred import _source_proof
-
-    paths: list[Path] = []
-    for index in range(3):
-        path = tmp_path / f"{index}.json"
-        path.write_bytes(f"[{index}]".encode())
-        paths.append(path)
-    real_hash_file = _source_proof._hash_file
-    hashes: list[Path] = []
-
-    def counting_hash_file(candidate: Path) -> str:
-        hashes.append(candidate)
-        return real_hash_file(candidate)
-
-    memo = _DataFileSignatureMemo(max_entries=2)
-    monkeypatch.setattr(_source_proof, "_hash_file", counting_hash_file)
-    memo.get(paths[0])
-    memo.get(paths[1])
-    memo.get(paths[0])  # Refresh first, so second is the LRU entry.
-    memo.get(paths[2])
-    memo.get(paths[1])
-
-    assert len(memo) == 2
-    assert hashes == [paths[0], paths[1], paths[2], paths[1]]
-
-
-def test_data_file_signature_memo_discards_entries_after_pid_change(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from haute._json_shred import _source_proof
-
-    path = tmp_path / "data.json"
-    path.write_bytes(b"[1]")
-    real_hash_file = _source_proof._hash_file
-    hashes = 0
-
-    def counting_hash_file(candidate: Path) -> str:
-        nonlocal hashes
-        hashes += 1
-        return real_hash_file(candidate)
-
-    memo = _DataFileSignatureMemo(max_entries=2)
-    monkeypatch.setattr(_source_proof, "_hash_file", counting_hash_file)
-    memo.get(path)
-    original_pid = os.getpid()
-    monkeypatch.setattr(os, "getpid", lambda: original_pid + 1)
-    memo.get(path)
-
-    assert hashes == 2
-    assert len(memo) == 1
-
-
-@pytest.mark.parametrize("max_entries", [0, -1, True, 1.5, "2"])
-def test_data_file_signature_memo_rejects_invalid_bounds(max_entries: object) -> None:
-    with pytest.raises(ValueError, match="positive integer"):
-        _DataFileSignatureMemo(max_entries=max_entries)  # type: ignore[arg-type]
+    assert after.digest != before.digest
 
 
 def test_posix_strong_file_revision_requires_regular_identified_file(tmp_path: Path) -> None:
@@ -579,168 +361,3 @@ def test_windows_strong_file_revision_rejects_unavailable_or_malformed_usn(
 
     assert _source_proof._windows_strong_file_revision(tmp_path / "data.json") is None
     assert closed == [1]
-
-
-def test_uncached_signature_rejects_hidden_identity_or_ctime_movement(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from haute._json_shred import _source_proof
-
-    before = SimpleNamespace(st_dev=1, st_ino=2, st_size=4, st_mtime_ns=5, st_ctime_ns=6)
-    for changed in (
-        SimpleNamespace(st_dev=1, st_ino=3, st_size=4, st_mtime_ns=5, st_ctime_ns=6),
-        SimpleNamespace(st_dev=1, st_ino=2, st_size=4, st_mtime_ns=5, st_ctime_ns=7),
-    ):
-        observations = iter((before, changed))
-        path = SimpleNamespace(stat=lambda: next(observations))
-        monkeypatch.setattr(_source_proof, "_hash_file", lambda _path: "digest")
-        with pytest.raises(OSError, match="changed while its signature was computed"):
-            _source_proof._uncached_data_file_signature(path)
-
-
-def test_memo_falls_back_when_revision_disappears_inside_flight(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from haute._json_shred import _source_proof
-
-    path = tmp_path / "data.json"
-    path.write_bytes(b"[1]")
-    revision = _source_proof._posix_strong_file_revision(path)
-    assert revision is not None
-    revisions = iter((revision, None))
-    memo = _DataFileSignatureMemo(max_entries=2)
-    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: next(revisions))
-
-    assert memo.get(path)["sha256"] == hashlib.sha256(b"[1]").hexdigest()
-    assert len(memo) == 0
-
-
-def test_unavailable_revision_warnings_are_once_per_bounded_retained_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from haute._json_shred import _source_proof
-
-    paths: list[Path] = []
-    for index in range(3):
-        path = tmp_path / f"{index}.json"
-        path.write_bytes(b"[1]")
-        paths.append(path)
-    warnings: list[tuple[str, dict[str, object]]] = []
-    memo = _DataFileSignatureMemo(max_entries=2)
-    monkeypatch.setattr(_source_proof, "_strong_file_revision", lambda _path: None)
-    monkeypatch.setattr(
-        _source_proof.logger,
-        "warning",
-        lambda event, **fields: warnings.append((event, fields)),
-    )
-
-    memo.get(paths[0])
-    memo.get(paths[0])
-    memo.get(paths[1])
-    memo.get(paths[2])
-    assert len(warnings) == 3
-    assert {event for event, _fields in warnings} == {"json_source_signature_revision_unavailable"}
-    assert {fields["action"] for _event, fields in warnings} == {"full_source_hash_per_operation"}
-    assert len(memo._unavailable_warnings) == 2
-    memo.get(paths[0])
-
-    assert len(warnings) == 4
-    assert len(memo._unavailable_warnings) == 2
-
-
-def test_memo_clear_keeps_active_flight_usable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from haute._json_shred import _source_proof
-
-    path = tmp_path / "data.json"
-    path.write_bytes(b"[1]")
-    memo = _DataFileSignatureMemo(max_entries=2)
-    real_hash_file = _source_proof._hash_file
-    started = threading.Event()
-    release = threading.Event()
-    hashes = 0
-
-    def blocking_hash_file(candidate: Path) -> str:
-        nonlocal hashes
-        hashes += 1
-        started.set()
-        assert release.wait(timeout=5)
-        return real_hash_file(candidate)
-
-    monkeypatch.setattr(_source_proof, "_hash_file", blocking_hash_file)
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(memo.get, path)
-        assert started.wait(timeout=5)
-        memo.clear()
-        assert memo._load_gates
-        release.set()
-        signature = future.result(timeout=5)
-
-    assert memo.get(path) == signature
-    assert hashes == 1
-
-
-def test_eviction_retains_active_stale_generation_gate_until_completion(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from haute._json_shred import _source_proof
-
-    first = tmp_path / "first.json"
-    second = tmp_path / "second.json"
-    third = tmp_path / "third.json"
-    first.write_bytes(b"[1]")
-    second.write_bytes(b"[1]")
-    third.write_bytes(b"[1]")
-    first_revision = _source_proof._posix_strong_file_revision(first)
-    second_revision = _source_proof._posix_strong_file_revision(second)
-    third_revision = _source_proof._posix_strong_file_revision(third)
-    assert first_revision is not None and second_revision is not None and third_revision is not None
-    changed_first = _source_proof._StrongFileRevision(
-        file_identity=first_revision.file_identity,
-        size=first_revision.size,
-        mtime_ns=first_revision.mtime_ns,
-        change_token=first_revision.change_token + 1,
-    )
-    first_calls = 0
-
-    def revisions(candidate: Path) -> object:
-        nonlocal first_calls
-        if candidate == first.resolve():
-            first_calls += 1
-            return first_revision if first_calls <= 3 else changed_first
-        if candidate == second.resolve():
-            return second_revision
-        return third_revision
-
-    real_hash_file = _source_proof._hash_file
-    reload_started = threading.Event()
-    release_reload = threading.Event()
-    hashes = 0
-
-    def hash_with_blocked_reload(candidate: Path) -> str:
-        nonlocal hashes
-        hashes += 1
-        if candidate == first.resolve() and hashes == 2:
-            reload_started.set()
-            assert release_reload.wait(timeout=5)
-        return real_hash_file(candidate)
-
-    memo = _DataFileSignatureMemo(max_entries=1)
-    monkeypatch.setattr(_source_proof, "_strong_file_revision", revisions)
-    monkeypatch.setattr(_source_proof, "_hash_file", hash_with_blocked_reload)
-    memo.get(first)
-    first_key = os.path.normcase(str(first.resolve()))
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        reloading = executor.submit(memo.get, first)
-        assert reload_started.wait(timeout=5)
-        memo.get(second)
-        assert first_key in memo._load_gates
-        release_reload.set()
-        reloading.result(timeout=5)
-    memo.get(third)
-
-    assert first_key not in memo._load_gates
-
-
-# ─── _data_file_matches — stat-fast freshness with hash arbitration ──

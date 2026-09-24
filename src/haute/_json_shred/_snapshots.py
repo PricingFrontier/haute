@@ -132,14 +132,14 @@ def api_input_snapshot_source(
 def api_input_source_signature(data_path: str | Path) -> str:
     """The content proof a table's generation records, or ``"missing"``.
 
-    The SHA-256 of the whole file, memoised in-process against the file's
-    native revision, so an unchanged source is hashed once per process.
+    The shared source proof (:func:`_source_proof.file_signature`), the same
+    signature a Data Input's snapshot records, so an unchanged source is hashed
+    once per process whatever asks.
     """
     path = Path(data_path)
     if not path.is_file():
         return "missing"
-    signature = _source_proof._data_file_signature(path)
-    return f"sha256:{signature['sha256']}:{signature['size']}"
+    return _source_proof.file_signature(path).source_signature
 
 
 def freshness_signature(source_signature: str | None) -> str | None:

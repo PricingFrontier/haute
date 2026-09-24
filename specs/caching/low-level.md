@@ -23,13 +23,17 @@ layer is primary and caching is a consumer.
 - `CACHE_CONFIG_FIELD_CLASSIFICATIONS` classifies every recognised node config field as
   execution input or rationale-bearing presentation exclusion; a stepped surface's
   `steps` list is classified `user_code` beside its `code` (transform, Data Input, External File, Rating Step, Model Score, Scenario Expander, Explore).
-- `GraphFingerprintMemo` pins utility-file hashes consistently within one request while a
-  process-wide `StatGatedCache` serves unchanged files across requests.
+- `GraphFingerprintMemo` pins utility-file hashes consistently within one request while the
+  shared content signature serves unchanged files across requests.
 - `LineageCacheKeyRequest` carries graph, target node/port, upstream lineage, prepared
   runtime switch state, and utility-file evidence for `lineage_cache_key()`.
 - `LRUCache` stores values in an `OrderedDict` with timestamps, optional sizes, and pins.
-- `StatGatedCache` stores `(mtime_ns, size, value)` in an `OrderedDict`, plus participant-
-  counted per-key load gates. The default maximum is 256 entries.
+- `StatGatedCache` stores `(freshness token, value)` in an `LRUCache`, plus participant-
+  counted per-key load gates that are dropped as soon as no caller waits. The default maximum
+  is 256 entries. A forked child replaces its locks and starts empty.
+- `_source_proof.Freshness(token, reusable)` is one observation of a file;
+  `_source_proof.FileSignature(size, mtime_ns, digest)` its complete-content proof, whose
+  `source_signature` is `xxh64:<digest>:<size>`.
 - `SeedPlanRequest` names one bounded execution before it builds anything: the lineage
   target, the nodes the caller reads afterwards (`consumed_node_ids`, default the target),
   source, profile, the caller's column demand, best-effort `capture_columns_by_node`,
@@ -91,22 +95,33 @@ that is neither consumed nor explained, makes contract construction fail.
    fingerprint as `extra["seed_plan"]`, so an entry computed from one seed generation is
    never served for another; without one the key is unchanged.
 
-Utility-file hashes use a request memo in front of a process-wide `StatGatedCache`.
-Execution's runtime-path fingerprint cache is a separate `StatGatedCache` instance owned by
-execution, so it shares the primitive's bounds and single-flight discipline without moving
-the call-site policy into this component.
+Utility-file hashes use a request memo in front of the shared content signature
+(`_source_proof.file_signature`), which execution's runtime-path fingerprints and the Data
+Input and API Input source signatures read too, so one file is hashed once per unchanged
+freshness token whatever asks.
 
-### Stat-gated loading
+### Source freshness
 
-1. Stat the case-preserved resolved path and form `(mtime_ns, size)`.
-2. Return/move-to-MRU when the keyed entry matches.
-3. Otherwise join the per-key load gate and recheck after acquiring it.
-4. Load, restat, and cache only if the gate remained stable.
-5. Retry one moving gate; then raise.
-6. Evict LRU entries above `max_entries` and remove idle load gates.
+`_source_proof.observe_freshness(path)` reads the native revision (Windows: volume serial,
+128-bit file id, USN, size and last-write time through `FSCTL_READ_FILE_USN_DATA`; POSIX:
+device, inode, ctime, size and mtime). Without one it returns the stat tuple
+`("stat", dev, ino, size, mtime_ns, ctime_ns)`, reusable only when the mtime is at least
+`SETTLE_SECONDS` (2.0) old, and logs `source_revision_unavailable` once per path. A missing
+file raises `FileNotFoundError`. `file_signature(path)` is a `StatGatedCache` of
+`FileSignature` values keyed by the canonical path; `clear_file_signatures()` empties it.
 
-The real runtime consumers are utility-file hashing (`src/haute/_cache.py`), runtime-path
-fingerprints (`src/haute/execution.py`), deploy scorer models
+### Freshness-gated loading
+
+1. Observe the case-preserved resolved path's freshness.
+2. When the token is reusable, return the keyed entry if its token matches.
+3. Otherwise join the per-key load gate; after acquiring it, observe again and recheck, so a
+   caller that waited through a change reuses the value the previous holder cached for it.
+4. Load, observe again, and cache (only a reusable token) if the token held.
+5. Retry one moving token; then raise `SourceChangedError` (an `OSError` and a
+   `RuntimeError`).
+6. Evict LRU entries above `max_entries`; drop the load gate when its last caller leaves.
+
+The runtime consumers are the shared content signature, deploy scorer models
 (`src/haute/deploy/_scorer.py`), and modelling feature contracts
 (`src/haute/modelling/_feature_contract.py`).
 
@@ -414,7 +429,9 @@ and tested by the [IO layer](../io-layer/low-level.md).
   continue to verify.
 - Every logical cache input is present exactly once; unknown fields fail.
 - LRU oversized rejection retains a previous same-key entry.
-- Stat-gated caches never exceed `max_entries` after a completed insertion.
+- Freshness-gated caches never exceed `max_entries` after a completed insertion.
+- A proof or loaded value is never reused across a moved freshness token, and a token without
+  a native revision is reused only for a settled file.
 - Loader failure never stores a value or strands an idle load gate.
 - An API Input's status, build and clear validate the same v2 schema as execution, and
   its status is ready only when every emitting table's snapshot is.
@@ -429,7 +446,7 @@ and tested by the [IO layer](../io-layer/low-level.md).
 ## Error handling
 
 Contract/key errors are `ValueError`/`TypeError` at construction. `StatGatedCache` propagates
-stat and loader exceptions and raises `RuntimeError` after two moving gates.
+observation and loader exceptions and raises `SourceChangedError` after two moving tokens.
 
 Seed-plan resolution raises `ValueError` for a profile outside the `bounded` class or a node
 outside the target's lineage, propagates `SourceCacheCorruptError` from any generation it
@@ -447,10 +464,10 @@ response timeout, and log unexpected errors before a generic 500.
    exact field set, nested-record shape, and logical-class completeness before
    canonical JSON or hashing. A caller cannot produce a best-effort key with an
    omitted or extra dimension.
-2. Stat-gated loading stats before lookup, joins the per-key single-flight gate,
-   rechecks after acquiring it, loads, and restats before insertion. A loader
-   failure caches nothing; one moving gate retries and a second raises. Eviction
-   and idle-gate cleanup happen only after a stable insertion.
+2. Freshness-gated loading observes before lookup, joins the per-key single-flight gate,
+   observes again and rechecks after acquiring it, loads, and observes again before
+   insertion. A loader failure caches nothing; one moving token retries and a second
+   raises. Eviction happens only after a stable insertion.
 3. Structured-input cache routes perform path containment, then select/validate schema,
    then check the data file, then start blocking shred work. Consequently
    missing schema is 422 even when the data path is absent; file absence is

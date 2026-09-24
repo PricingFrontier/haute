@@ -22,7 +22,7 @@ the server (see [IO layer](../io-layer/low-level.md#automatic-preparation)).
 | `src/haute/_json_shred/_shred.py` | Table specs, leaf resolution, the single-pass record walk, and root-conservation accounting. |
 | `src/haute/_json_shred/_writer.py` | Aggregate-bounded Parquet row-group emission for table-snapshot builds and leased runtime spill bundles, plus parallel chunk execution. |
 | `src/haute/_json_shred/_publication.py` | Cross-process file locks (thread-reentrant OS lock per canonical path) and the plain-path checks that refuse a cache root or lock file reached through a link or reparse point. |
-| `src/haute/_json_shred/_source_proof.py` | Strong native file revisions (Windows USN/file-id, POSIX stat) and the in-process memo of source SHA-256 signatures behind them. |
+| `src/haute/_json_shred/_source_proof.py` | The one source-freshness proof for every local file, not only structured sources: native file revisions (Windows USN/file-id, POSIX stat), the settled-stat fallback, and the shared in-process content signature behind them. |
 | `src/haute/_json_shred/_runtime_storage.py` | Process-owned runtime storage for generated standalone code: the disk budget and spill-directory leases, with start-up recovery of dead processes' spills. |
 | `src/haute/_json_shred/_inference.py` | v2 schema inference from data: bounded sampling, type widening, and deterministic column naming. |
 | `src/haute/_json_shred/_inference_filter.py` | Bounded learning of strict native structural filters; matching records skip repeated evidence collection while mismatches retain the complete inference walk. |
@@ -244,8 +244,9 @@ keys node-level work (single-flight, route jobs). `shred_version`
 changes, so older generations stop matching.
 
 **Freshness** — `api_input_source_signature(path)` is the table generations'
-`source_signature`: `sha256:<hex>:<size>` from `_data_file_signature` (see the
-source-proof invariants below), or `missing` when the path is not a file. The
+`source_signature`: `xxh64:<digest>:<size>` from the shared
+`_source_proof.file_signature` (see the source-proof invariants below), or `missing` when
+the path is not a file. The
 store's `status` marks a table whose recorded signature differs as `stale`.
 
 **Build an API Input's tables** — `build_api_input_tables(source, labels, *, store,
@@ -572,14 +573,15 @@ unknown field, so it cannot act as a completeness backstop. Bounded inference
 therefore remains an explicit programmatic opt-in whose caller owns the
 incomplete-schema trade-off.
 
-Complete inference results use the existing native source revision proof
-(`_source_proof._strong_file_revision`), never size/mtime alone. The cache key
+Complete inference results reuse only behind the shared freshness token
+(`_source_proof.observe_freshness`). The cache key
 includes the absolute source path (preserving its parser-selecting extension)
 and the configured record-byte limit; only unbounded inference participates.
-Positive explicit samples bypass the cache. An unchanged strong revision may
+Positive explicit samples bypass the cache. An unchanged reusable token may
 reuse a successful full result; a missing/unreadable file still fails normally,
-and an unavailable revision uses the ordinary scan without retaining its result.
-A miss checks the revision before and after inference; a changed or lost proof
+and a token that is not reusable (a young file without a native revision) uses the
+ordinary scan without retaining its result. A miss checks the token before and
+after inference; a changed proof
 raises the existing structured changed-during-inference error and retains no
 result. Waiters revalidate after an in-progress result becomes available.
 
@@ -649,29 +651,26 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   reinterprets as a days-since-epoch offset for the second) — both checked
   explicitly in `_buffer_to_frame` before the Polars build.
 - **Table freshness remains content-authoritative.** The source file's complete
-  SHA-256 is memoised only behind a strong native revision comprising file
-  identity, length, last-write value, and an unforgeable-by-normal-write change
-  token (`ctime_ns` on POSIX; the file USN read with
-  `FSCTL_READ_FILE_USN_DATA` plus `FILE_ID_INFO` on Windows). A Windows volume
-  that cannot supply a supported USN record takes the full-hash path; Haute does
-  not substitute the weaker `FILE_BASIC_INFO.ChangeTime`. Size/mtime alone never
-  authorise reuse, so an in-place same-size rewrite followed by an mtime restore and
-  an atomic same-stat replacement both force a new hash. If the strong token cannot
-  be read, that observation re-hashes instead of falling back to a weaker gate. The
-  published table generations themselves are verified by the store (part digests,
-  footers and schema) before they are read.
-- **Source signatures use bounded in-process proof reuse**: canonical paths
-  key at most 256 immutable signature entries; per-path single-flight prevents a
-  concurrent hashing herd. The strong revision is read before and after hashing
-  and the result is published only if it held. Nothing is persisted: a new process
-  hashes each source once. Revision movement fails the signature operation, loader
-  failure publishes nothing, and least-recently-used entries are evicted at the
-  bound. Callers receive independent signature mappings so mutation of one result
-  cannot poison later freshness checks. When strong revision support is
-  unavailable, each call hashes and retains no cross-operation proof. That
-  conservative path emits a bounded once-per-path structured warning naming
-  `full_source_hash_per_operation`, so a platform capability problem remains
-  operationally visible instead of presenting only as unexplained preview latency.
+  content hash is reused only behind its freshness token: a native revision
+  comprising file identity, length, last-write value, and an
+  unforgeable-by-normal-write change token (`ctime_ns` on POSIX; the file USN read
+  with `FSCTL_READ_FILE_USN_DATA` plus `FILE_ID_INFO` on Windows), so an in-place
+  same-size rewrite followed by an mtime restore and an atomic same-stat replacement
+  both force a new hash. Haute does not substitute the weaker
+  `FILE_BASIC_INFO.ChangeTime`. Where no native revision can be read, the token is
+  the file's stat and is trusted only once the file is two seconds old, the rule
+  every source kind shares (see [caching](../caching/low-level.md)). The published
+  table generations themselves are verified by the store (part digests, footers and
+  schema) before they are read.
+- **Source signatures use bounded in-process proof reuse**: the shared
+  `file_signature` cache keys at most 256 immutable `FileSignature` entries by
+  canonical path; per-path single-flight prevents a concurrent hashing herd. The
+  token is read before and after hashing and the result is published only if it
+  held; one moving token retries, a second raises `SourceChangedError`. Nothing is
+  persisted: a new process hashes each source once. Loader failure publishes
+  nothing, and least-recently-used entries are evicted at the bound. A path with no
+  native revision logs `source_revision_unavailable` once, so a platform capability
+  problem stays operationally visible.
 - **Inference accepts only expressible keys** through
   `_jsonpath.is_identifier_name`; non-ASCII/non-identifier keys, dots, and the
   reserved `$value` sentinel fail before a schema is returned. Config sidecars use

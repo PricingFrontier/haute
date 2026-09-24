@@ -1,10 +1,10 @@
-"""Bounded reuse of complete schemas proven against unchanged source revisions."""
+"""Bounded reuse of complete schemas proven against unchanged source freshness tokens."""
 
 from __future__ import annotations
 
 import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,16 +14,15 @@ import orjson
 
 from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred import _source_proof
-from haute._json_shred._source_proof import _StrongFileRevision
 from haute._lru_cache import LRUCache
 
 _CacheKey = tuple[str, int]
-_FlightKey = tuple[_CacheKey, _StrongFileRevision]
+_FlightKey = tuple[_CacheKey, Hashable]
 
 
 @dataclass(frozen=True, slots=True)
 class _CachedSchema:
-    revision: _StrongFileRevision
+    revision: Hashable
     payload: bytes
 
 
@@ -80,9 +79,10 @@ class InferenceCache:
         # (which selects the parser) and avoiding a different symlink target path.
         path = data_path.absolute()
         key = (os.path.normcase(str(path)), record_limit)
-        revision = _source_proof._strong_file_revision(path)
-        if revision is None:
+        freshness = _source_proof.observe_freshness(path)
+        if not freshness.reusable:
             return loader(path)
+        revision = freshness.token
 
         flight_key = (key, revision)
         with self._lock:
@@ -104,13 +104,13 @@ class InferenceCache:
         assert flight is not None
         if not owner:
             payload = flight.result()
-            if _source_proof._strong_file_revision(path) != revision:
+            if _source_proof.observe_freshness(path).token != revision:
                 raise _changed_source(path)
             return _decode(payload)
 
         try:
             result = loader(path)
-            if _source_proof._strong_file_revision(path) != revision:
+            if _source_proof.observe_freshness(path).token != revision:
                 raise _changed_source(path)
             payload = orjson.dumps(result)
             self._entries.put(key, _CachedSchema(revision, payload))

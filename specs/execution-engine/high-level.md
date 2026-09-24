@@ -523,16 +523,14 @@ keep reporting the failing line so the editor can name the failing step.
   capturing structural points into shared snapshots, wins there instead. Running one
   strategy for both would either make preview too slow (rebuild the whole plan per
   click) or make batch runs memory-unsafe (materialise everything eagerly).
-  A JSON source's SHA-256 content proof is likewise the sole raw-file content proof
-  consumed by preview/trace identity, table-freshness checks, and later
-  requests while the JSON-shredding component's strong native revision remains
-  unchanged. Runtime identity must not perform a second full-file hash with a different
-  algorithm. This removes duplicate and repeat multi-gigabyte source reads without
-  weakening same-size/same-mtime rewrite detection; non-JSON runtime files retain their
-  separately versioned runtime-file identity contract.
-  The proof lives in process memory: a published API Input table records the source's
-  content signature, not its native revision, so a fresh server process proves each
-  JSON source once, as it does a Data Input source. Planning and loading read the
+  A local file's shared content signature is likewise the sole raw-file content proof
+  consumed by preview/trace identity, snapshot-freshness checks, and later requests while
+  the file's freshness token (see [caching](../caching/high-level.md)) is unchanged.
+  Runtime identity never performs a second full-file hash of a file some other consumer
+  has proved. This removes duplicate and repeat multi-gigabyte source reads without
+  weakening same-size/same-mtime rewrite detection.
+  The proof lives in process memory: a published snapshot records the source's content
+  signature, not its native revision, so a fresh server process proves each source once. Planning and loading read the
   published table generations, never the source.
   A full preview-cache hit also reuses the immutable strategy result that produced the
   cached frame, so it retains projection warnings and provenance without repeating

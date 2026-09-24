@@ -6,10 +6,8 @@ import contextvars
 import math
 import shutil
 import tempfile
-import threading
 import time
 import uuid
-from collections import OrderedDict
 from collections.abc import Callable, Collection, Generator, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -26,6 +24,7 @@ from haute._execution_context import (
 from haute._file_ops import ensure_disk_headroom
 from haute._hashing import HashingWriter
 from haute._logging import get_logger
+from haute._lru_cache import LRUCache
 
 logger = get_logger(component="polars_utils")
 
@@ -261,16 +260,12 @@ def bounded_collect_batches(
 # collect helper above hands the original back to its caller.
 _PYTHON_SCAN_FAILURE_MARKER = "haute-python-scan-failure:"
 _PYTHON_SCAN_FAILURE_LIMIT = 64
-_python_scan_failures: OrderedDict[str, BaseException] = OrderedDict()
-_python_scan_failures_lock = threading.Lock()
+_python_scan_failures: LRUCache[str, BaseException] = LRUCache(max_size=_PYTHON_SCAN_FAILURE_LIMIT)
 
 
 def _park_python_scan_failure(exc: BaseException) -> str:
     token = uuid.uuid4().hex
-    with _python_scan_failures_lock:
-        _python_scan_failures[token] = exc
-        while len(_python_scan_failures) > _PYTHON_SCAN_FAILURE_LIMIT:
-            _python_scan_failures.popitem(last=False)
+    _python_scan_failures.put(token, exc)
     return f"{_PYTHON_SCAN_FAILURE_MARKER}{token}"
 
 
@@ -282,8 +277,7 @@ def _reraise_python_scan_failure(exc: pl.exceptions.ComputeError) -> None:
         return
     token_start = start + len(_PYTHON_SCAN_FAILURE_MARKER)
     token = message[token_start : token_start + 32]
-    with _python_scan_failures_lock:
-        original = _python_scan_failures.pop(token, None)
+    original = _python_scan_failures.pop(token)
     if original is not None:
         raise original
 

@@ -312,21 +312,21 @@ class TestUtilityFileContentHashMemo:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Repeated request-local fingerprints should not stream unchanged files."""
-        import haute._cache as cache_mod
+        from haute._json_shred import _source_proof
 
         monkeypatch.chdir(tmp_path)
         _, files = self._make_utility_package(tmp_path, n_modules=30)
         graph = self._make_utility_graph(tmp_path)
 
         calls: list[Path] = []
-        original_content_hash = cache_mod.content_hash
+        original_hash_file = _source_proof._hash_file
         memo = GraphFingerprintMemo()
 
-        def counting_content_hash(path: Path) -> str:
+        def counting_hash_file(path: Path) -> str:
             calls.append(Path(path).resolve())
-            return original_content_hash(path)
+            return original_hash_file(path)
 
-        monkeypatch.setattr(cache_mod, "content_hash", counting_content_hash)
+        monkeypatch.setattr(_source_proof, "_hash_file", counting_hash_file)
 
         for _ in range(12):
             graph_fingerprint(graph, memo=memo)
@@ -341,21 +341,21 @@ class TestUtilityFileContentHashMemo:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Edits/creates/replacements hash affected files; deletes hash nothing."""
-        import haute._cache as cache_mod
+        from haute._json_shred import _source_proof
 
         monkeypatch.chdir(tmp_path)
         _, files = self._make_utility_package(tmp_path, n_modules=6)
         graph = self._make_utility_graph(tmp_path)
 
         calls: list[Path] = []
-        original_content_hash = cache_mod.content_hash
+        original_hash_file = _source_proof._hash_file
         memo = GraphFingerprintMemo()
 
-        def counting_content_hash(path: Path) -> str:
+        def counting_hash_file(path: Path) -> str:
             calls.append(Path(path).resolve())
-            return original_content_hash(path)
+            return original_hash_file(path)
 
-        monkeypatch.setattr(cache_mod, "content_hash", counting_content_hash)
+        monkeypatch.setattr(_source_proof, "_hash_file", counting_hash_file)
 
         fp_initial = graph_fingerprint(graph, memo=memo)
         assert Counter(calls) == Counter({path.resolve(): 1 for path in files})
@@ -404,7 +404,7 @@ class TestUtilityFileContentHashMemo:
         mtime_ns and size is below the gate's resolution: the documented
         trade the deploy path already accepts.
         """
-        import haute._cache as cache_mod
+        from haute._json_shred import _source_proof
 
         monkeypatch.chdir(tmp_path)
         utility_dir = tmp_path / "utility"
@@ -420,13 +420,13 @@ class TestUtilityFileContentHashMemo:
         )
 
         calls: list[Path] = []
-        original_content_hash = cache_mod.content_hash
+        original_hash_file = _source_proof._hash_file
 
-        def counting_content_hash(path: Path) -> str:
+        def counting_hash_file(path: Path) -> str:
             calls.append(Path(path).resolve())
-            return original_content_hash(path)
+            return original_hash_file(path)
 
-        monkeypatch.setattr(cache_mod, "content_hash", counting_content_hash)
+        monkeypatch.setattr(_source_proof, "_hash_file", counting_hash_file)
 
         fp_before = graph_fingerprint(graph)
         first_round = len(calls)
