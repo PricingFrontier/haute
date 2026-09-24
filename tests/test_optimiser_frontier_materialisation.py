@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import polars as pl
+import pytest
 
 from tests.job_store_support import replace_job, seed_job
 from tests.optimiser_fixtures import (
@@ -362,7 +363,7 @@ def test_frontier_point_materialisation_survives_store_copy_of_frontier_payload(
 
 
 def test_frontier_point_artifact_handles_are_capped_oldest_first():
-    from haute.routes.optimiser import (
+    from haute.routes._optimiser_frontier import (
         _MAX_FRONTIER_APPLY_ARTIFACTS,
         _with_bounded_frontier_apply_handle,
     )
@@ -557,3 +558,54 @@ def test_select_frontier_point_normalises_when_config_name_differs_from_column(
     assert "volume" in data["constraints"]
     assert "total_volume" not in data["constraints"]
     assert data["constraints"]["volume"] == point["total_volume"]
+
+
+def test_frontier_work_on_one_solve_never_waits_for_another(clean_job_store) -> None:
+    """Each parent solve has its own frontier lock: slow work on one leaves the rest free."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import TimeoutError as FutureTimeoutError
+
+    from haute.routes._optimiser_frontier import OptimiserFrontierService
+
+    service = OptimiserFrontierService(clean_job_store)
+    for sweep, parent in (("sweep_a", "parent_a"), ("sweep_b", "parent_b")):
+        seed_job(
+            clean_job_store,
+            sweep,
+            {
+                "status": "running",
+                "job_type": "frontier_recompute",
+                "parent_job_id": parent,
+                "start_time": time.monotonic(),
+                "timeout": None,
+                "progress": 0.0,
+                "message": "Computing efficient frontier",
+                "created_at": time.time(),
+            },
+        )
+    held = threading.Event()
+    release = threading.Event()
+
+    def hold_parent_a() -> None:
+        with service.parent_lock("parent_a"):
+            held.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=hold_parent_a, daemon=True)
+    holder.start()
+    assert held.wait(5)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            other = executor.submit(service.sweep_status, "sweep_b")
+            same = executor.submit(service.sweep_status, "sweep_a")
+            try:
+                assert other.result(timeout=5)["status"] == "running"
+                with pytest.raises(FutureTimeoutError):
+                    same.result(timeout=0.2)
+            finally:
+                release.set()
+            assert same.result(timeout=5)["status"] == "running"
+    finally:
+        release.set()
+        holder.join(5)

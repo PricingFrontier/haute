@@ -919,7 +919,8 @@ class TestInternalErrorDetailConstant:
         [
             "haute.server",
             "haute.routes.pipeline",
-            "haute.routes.optimiser",
+            # The frontier service records it as a failed sweep's message.
+            "haute.routes._optimiser_frontier",
             "haute.routes.git",
             "haute.routes.mlflow",
         ],

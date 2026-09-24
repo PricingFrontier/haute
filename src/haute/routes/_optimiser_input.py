@@ -58,6 +58,7 @@ from haute.routes._contract_errors import (
     contract_error_http_exception,
     contract_error_job_fields,
     contract_error_terminal_reason,
+    memory_limit_http_exception,
 )
 from haute.routes._helpers import find_typed_node
 from haute.routes._job_store import TerminalReason
@@ -1019,3 +1020,137 @@ def build_quote_grid(
         scenario_value=mult_col,
         objective=objective,
     )
+
+
+# ---------------------------------------------------------------------------
+# Input estimate
+#
+# The estimate counts the optimiser's projected input: the pipeline up to the
+# data input, then exactly one streaming aggregation scan. The same code runs
+# in the warm interactive worker (process mode) and in-process (thread mode).
+# ---------------------------------------------------------------------------
+
+
+def _estimate_quote_id_column_or_raise(source_lf: Any, config: dict[str, Any]) -> str:
+    """Schema-only pre-flight for the estimate; returns the quote-id column.
+
+    Mirrors the column-presence and quote-id dtype checks (and their exact
+    messages) from ``validate_and_project`` WITHOUT its value-contract scans:
+    solve-grade NaN/inf validation is the solve path's job, while the estimate
+    only counts rows and must stay a single-scan operation.
+    ``collect_schema()`` resolves the lazy schema without reading data.
+    """
+    import polars as pl
+
+    objective = str(config["objective"])
+    constraints = config.get("constraints") or {}
+    qid_col = str(config.get("quote_id", "quote_id"))
+    mult_col = str(config.get("scenario_value", "scenario_value"))
+    step_col = str(config.get("scenario_index", "scenario_index"))
+
+    schema = source_lf.collect_schema()
+    available_cols = set(schema.names())
+    required_cols = {objective, qid_col, mult_col, step_col, *constraints}
+    missing_cols = sorted(required_cols - available_cols)
+    if missing_cols:
+        avail = sorted(available_cols)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing columns in scored data: {missing_cols}. Available: {avail}",
+        )
+
+    qid_dtype = schema[qid_col]
+    if not (
+        qid_dtype == pl.String or qid_dtype == pl.Categorical or isinstance(qid_dtype, pl.Enum)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{qid_col} must be Utf8 (String), Categorical, or Enum, got {qid_dtype}. "
+                "Numeric, binary, and other dtypes are not supported as quote_id columns."
+            ),
+        )
+    return qid_col
+
+
+def estimate_input_metrics(source_lf: Any, config: dict[str, Any]) -> dict[str, int | float | None]:
+    """Quote and scenario counts for the projected optimiser input, in ONE scan.
+
+    Counting only needs the quote-id column; selecting it first lets
+    projection pushdown skip every other solver column. The null-quote_id
+    contract check is folded into the same scan: null keys form their own
+    ``group_by`` group, so their row count comes for free instead of costing a
+    second full pass.
+    """
+    import polars as pl
+
+    quote_id_col = _estimate_quote_id_column_or_raise(source_lf, config)
+    scenario_counts = (
+        source_lf.select(pl.col(quote_id_col))
+        .group_by(quote_id_col)
+        .agg(pl.len().alias("scenario_count"))
+    )
+    non_null_counts = pl.col("scenario_count").filter(pl.col(quote_id_col).is_not_null())
+    row = streaming_collect(
+        scenario_counts.select(
+            pl.col("scenario_count")
+            .filter(pl.col(quote_id_col).is_null())
+            .sum()
+            .alias("null_quote_id_row_count"),
+            pl.col(quote_id_col).is_not_null().sum().alias("quote_count"),
+            non_null_counts.min().alias("scenarios_per_quote_min"),
+            non_null_counts.max().alias("scenarios_per_quote_max"),
+            non_null_counts.mean().alias("scenarios_per_quote_mean"),
+            non_null_counts.sum().alias("expanded_row_count"),
+        ),
+    ).row(0, named=True)
+    null_quote_id_rows = int(row["null_quote_id_row_count"] or 0)
+    if null_quote_id_rows > 0:
+        # Same contract (status + message) as the solve path's standalone
+        # null check in ``validate_and_project``.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{_NULL_QUOTE_ID_DETAIL_PREFIX} ({null_quote_id_rows} rows). "
+                "Every row must have a non-null quote_id; "
+                "check upstream filters and joins."
+            ),
+        )
+    return {
+        "quote_count": row["quote_count"],
+        "scenarios_per_quote_min": row["scenarios_per_quote_min"],
+        "scenarios_per_quote_max": row["scenarios_per_quote_max"],
+        "scenarios_per_quote_mean": row["scenarios_per_quote_mean"],
+        "expanded_row_count": row["expanded_row_count"],
+    }
+
+
+# The estimate failures with a typed answer; anything else is unexpected.
+ESTIMATE_MAPPED_ERRORS: tuple[type[BaseException], ...] = (
+    OptimiserSetupError,
+    ExecutionAdmissionError,
+    ExecutionMemoryLimitExceededError,
+    BoundedMemoryUnsupportedError,
+    *PUBLIC_CONTRACT_ERROR_TYPES,
+)
+
+
+def estimate_failure_http_exception(exc: BaseException, *, node_id: str) -> HTTPException:
+    """The typed answer to one of ``ESTIMATE_MAPPED_ERRORS``."""
+    if isinstance(exc, OptimiserSetupError):
+        return exc.http_exception()
+    if isinstance(exc, ExecutionAdmissionError | ExecutionMemoryLimitExceededError):
+        return memory_limit_http_exception(exc, operation_noun="Optimiser estimate")
+    if isinstance(exc, BoundedMemoryUnsupportedError):
+        logger.warning(
+            "optimiser_estimate_bounded_streaming_unsupported",
+            error=str(exc),
+            node_id=node_id,
+        )
+        return HTTPException(
+            status_code=422,
+            detail=f"Optimiser estimate cannot run in bounded streaming mode: {exc}",
+        )
+    if isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES):
+        return contract_error_http_exception(exc)
+    raise TypeError(f"{type(exc).__name__} has no typed estimate answer") from exc

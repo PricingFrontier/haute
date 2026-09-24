@@ -60,8 +60,8 @@ training and deploy batch workers use the same primitive; the existing
 supervision, timeout, memory-limit and crash-classification tests pass
 against it.
 
-**Dependencies:** None. Taking it after `OPT-P16` (optimiser) avoids moving
-the optimiser's new worker twice.
+**Dependencies:** None. The optimiser's input estimate already runs on the
+warm interactive worker pool.
 
 **Evidence:** `src/haute/_worker_isolation.py::run_isolated_worker`;
 `src/haute/_interactive_workers.py::InteractiveWorkerPool`;

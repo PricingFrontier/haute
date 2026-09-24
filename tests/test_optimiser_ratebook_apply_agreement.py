@@ -300,7 +300,7 @@ def real_ratebook_artifact_payload(real_ratebook_solve: dict[str, Any]) -> dict[
     `_build_artifact_payload`) so a drift in the saved format fails here, not
     in a hand-rolled fixture.
     """
-    from haute.routes._optimiser_service import (
+    from haute.routes._optimiser_solver import (
         _ratebook_factor_dtypes,
         _ratebook_factor_level_counts,
         _serialise_ratebook_factor_tables,
@@ -543,7 +543,7 @@ class TestFloatEmittedLevelsCanonicalisedAtSave:
     """
 
     def test_float64_levels_round_trip_solve_save_apply_with_zero_misses(self) -> None:
-        from haute.routes._optimiser_service import (
+        from haute.routes._optimiser_solver import (
             _ratebook_factor_dtypes,
             _ratebook_factor_level_counts,
             _serialise_ratebook_factor_tables,
@@ -611,7 +611,7 @@ class TestFloatEmittedLevelsCanonicalisedAtSave:
         )
 
     def test_composite_float_component_round_trips_with_zero_misses(self) -> None:
-        from haute.routes._optimiser_service import (
+        from haute.routes._optimiser_solver import (
             _ratebook_factor_dtypes,
             _ratebook_factor_level_counts,
             _serialise_ratebook_factor_tables,

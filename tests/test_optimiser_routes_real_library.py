@@ -754,15 +754,15 @@ class TestEstimateSingleScanContract:
         aggregation collect.  The old shape additionally ran the service's
         standalone null-quote_id scan — a second full pass over the input.
         """
+        import haute.routes._optimiser_input as input_mod
         import haute.routes._optimiser_service as service_mod
-        import haute.routes.optimiser as routes_mod
 
         graph = self._ragged_graph(tmp_path)
-        real_collect = routes_mod.streaming_collect
+        real_collect = input_mod.streaming_collect
 
         with (
             patch.object(
-                routes_mod,
+                input_mod,
                 "streaming_collect",
                 side_effect=real_collect,
             ) as route_collect,
@@ -798,8 +798,8 @@ class TestEstimateSingleScanContract:
     def test_estimate_null_quote_id_rejected_within_single_scan(self, client, tmp_path):
         """Folding the null check into the aggregation scan must not relax
         the loud null-quote_id rejection (same message contract)."""
+        import haute.routes._optimiser_input as input_mod
         import haute.routes._optimiser_service as service_mod
-        import haute.routes.optimiser as routes_mod
 
         df = pl.DataFrame(
             {
@@ -819,11 +819,11 @@ class TestEstimateSingleScanContract:
         path = tmp_path / "estimate_null_qid.parquet"
         df.write_parquet(path)
         graph = _online_graph(str(path))
-        real_collect = routes_mod.streaming_collect
+        real_collect = input_mod.streaming_collect
 
         with (
             patch.object(
-                routes_mod,
+                input_mod,
                 "streaming_collect",
                 side_effect=real_collect,
             ) as route_collect,
