@@ -1055,7 +1055,11 @@ class TestLimitedPreviewTrace:
         row, result = self._trace(graph, "after", 1, row_limit=5, column="premium")
 
         assert row["id"] == 1
-        assert "join" in {omission.node_id for omission in result.omissions}
+        # The two joined id-1 rows are identical in every column: the step shows
+        # their values as one of two identical rows, never as a unique row.
+        join = next(step for step in result.steps if step.node_id == "join")
+        assert join.identical_row_count == 2
+        assert "join" not in {omission.node_id for omission in result.omissions}
 
     def test_a_positional_selector_computation_is_unproven(self, tmp_path):
         graph = self._join_graph(tmp_path, None)

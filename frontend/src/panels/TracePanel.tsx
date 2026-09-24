@@ -95,8 +95,12 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
     () => new Set(trace.omissions.map((omission) => omission.diagnostic_index)),
     [trace.omissions],
   )
+  // Omission diagnostics render as omission cards and identical-row matches as
+  // the step's own label; the rest are warnings.
   const correlationDiagnostics = trace.correlation_diagnostics.filter(
-    (_diagnostic, index) => !omittedDiagnosticIndices.has(index),
+    (diagnostic, index) => (
+      !omittedDiagnosticIndices.has(index) && diagnostic.code !== "identical_row_match"
+    ),
   )
 
   const targetStep = useMemo(() => findTargetStep(trace.steps, trace.column), [trace.steps, trace.column])

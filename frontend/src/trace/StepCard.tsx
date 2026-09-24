@@ -186,6 +186,16 @@ export function StepCard({
             </span>
           ) : null
         })()}
+        {typeof step.identical_row_count === "number" && (
+          <span
+            data-testid={`trace-identical-rows-${step.node_id}`}
+            title="Several rows are identical in every column; any of them gives these values."
+            className="text-[9px] font-medium shrink-0 px-1 py-0.5 rounded"
+            style={{ color: "var(--text-muted)", background: "rgba(255,255,255,.06)" }}
+          >
+            One of {step.identical_row_count} identical rows
+          </span>
+        )}
         {defaultUsed && (
           <span
             className="ml-auto text-[9px] font-semibold shrink-0 px-1.5 py-0.5 rounded"

@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import Any, NamedTuple
 
 import polars as pl
@@ -704,6 +704,82 @@ def _record_ambiguous_row_match(
         diagnostics.append(diagnostic)
 
 
+def _identical_candidate_count(
+    frame: pl.DataFrame | pl.LazyFrame,
+    *,
+    candidate: Mapping[str, Any],
+    child_row: Mapping[str, Any],
+    key_columns: Sequence[str],
+    collect: Callable[[pl.LazyFrame], pl.DataFrame] | None = None,
+) -> int | None:
+    """Count the rows matching *child_row* when all of them equal *candidate*.
+
+    One pass counts the rows matching the child on *key_columns* and the rows
+    equal to *candidate* in every column. A row equal to the candidate matches
+    the child too, so equal counts prove every candidate identical. ``None``
+    when they differ, or when a column's value cannot be compared exactly.
+    """
+    schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
+    key_expressions: list[pl.Expr] = []
+    for column in key_columns:
+        expression, _reason = _typed_value_match_expr(column, child_row[column], schema[column])
+        if expression is None:
+            return None
+        key_expressions.append(expression.fill_null(False))
+    row_expressions: list[pl.Expr] = []
+    for column, dtype in schema.items():
+        expression, _reason = _typed_value_match_expr(column, candidate[column], dtype)
+        if expression is None:
+            return None
+        row_expressions.append(expression.fill_null(False))
+    counts_plan = frame.select(
+        pl.all_horizontal(key_expressions).sum().alias("candidates"),
+        pl.all_horizontal(row_expressions).sum().alias("identical"),
+    )
+    if isinstance(counts_plan, pl.LazyFrame):
+        if collect is None:
+            raise ValueError("counting identical candidates in a plan needs a collect")
+        counts = collect(counts_plan)
+    else:
+        counts = counts_plan
+    candidates, identical = counts.row(0)
+    return int(candidates) if candidates >= 2 and candidates == identical else None
+
+
+def _record_identical_row_match(
+    diagnostics: list[dict[str, Any]] | None,
+    *,
+    node_id: str | None,
+    child_node_id: str | None,
+    match_columns: list[str],
+    candidate_count: int,
+) -> None:
+    """Report a tie among identical rows: the step shows their shared values."""
+    node_label = "parent row" if node_id is None else f"node {node_id!r}"
+    child_label = f" for child node {child_node_id!r}" if child_node_id is not None else ""
+    if diagnostics is not None:
+        diagnostics.append(
+            {
+                "code": "identical_row_match",
+                "severity": "info",
+                "reason": "identical_rows",
+                "message": (
+                    f"Row correlation for {node_label}{child_label} matched "
+                    f"{candidate_count} rows identical in every column; any of them "
+                    "gives these values."
+                ),
+                "node_id": node_id,
+                "child_node_id": child_node_id,
+                "match_strategy": "exact",
+                "match_columns": list(match_columns),
+                "ignored_columns": [],
+                "matched_row_count": candidate_count,
+                "matched_row_indices": [],
+                "candidate_count": candidate_count,
+            }
+        )
+
+
 def _find_matching_row(
     df: pl.DataFrame,
     child_row: dict[str, Any],
@@ -713,6 +789,7 @@ def _find_matching_row(
     child_node_id: str | None = None,
     allow_relaxed: bool = True,
     work: CorrelationWork | None = None,
+    identical_candidates: Callable[[dict[str, Any]], int | None] | None = None,
 ) -> tuple[dict[str, Any] | None, int]:
     """Find the row in *df* that matches *child_row* on shared columns.
 
@@ -729,6 +806,13 @@ def _find_matching_row(
          match wins" behavior without enumerating every subset.
          Competing best rows are ambiguous and no row is selected.
       3. If still no match, return None (fail loudly).
+
+    An exact tie whose candidates are identical in every column is not
+    ambiguous: any of them gives the same values, so those values are
+    returned with position ``-1`` (no physical row is chosen) and an
+    ``identical_row_match`` diagnostic. *identical_candidates* counts the
+    candidates for a frame that holds only some of them (a row-scope lookup);
+    otherwise they are counted in *df*.
     """
     shared = [column for column in child_row if column in df.columns]
     match = _match_rows_vectorized(
@@ -771,6 +855,27 @@ def _find_matching_row(
 
     if match.status is _RowMatchStatus.AMBIGUOUS:
         relaxed = match.relaxation_reason is not None
+        if not relaxed:
+            candidate = _jsonify_row(df.row(match.candidate_indices[0], named=True))
+            identical_count = (
+                identical_candidates(candidate)
+                if identical_candidates is not None
+                else _identical_candidate_count(
+                    df,
+                    candidate=candidate,
+                    child_row=child_row,
+                    key_columns=match.effective_key_columns,
+                )
+            )
+            if identical_count is not None:
+                _record_identical_row_match(
+                    diagnostics,
+                    node_id=node_id,
+                    child_node_id=child_node_id,
+                    match_columns=list(match.effective_key_columns),
+                    candidate_count=identical_count,
+                )
+                return candidate, -1
         _record_ambiguous_row_match(
             diagnostics,
             reason="relaxed_match_ambiguous" if relaxed else "duplicate_exact_match",
@@ -1154,7 +1259,9 @@ def _match_parent_row(
     # row; a reordering transform (sort/join/gather/…) falls through
     # and the step is left unresolved rather than attached to the wrong
     # parent row.
-    if len(parent_df) == child_len and child_row_idx < len(parent_df):
+    # A negative index is a row with no known position (one of several
+    # identical rows): it is matched by value only, never aligned by position.
+    if len(parent_df) == child_len and 0 <= child_row_idx < len(parent_df):
         shared = [column for column in match_row if column in parent_df.columns]
         child_may_reorder = _child_transform_may_reorder(child_node)
         if shared:
@@ -1935,6 +2042,29 @@ class RowScopeResolver:
             return plan.get(source_handle) if source_handle is not None else None
         return plan
 
+    def identical_candidate_count(
+        self,
+        node_id: str,
+        source_handle: str | None,
+        values: Mapping[str, Any],
+        candidate: dict[str, Any],
+    ) -> int | None:
+        """Count the uncapped plan's rows matching *values* when all equal *candidate*."""
+        from haute._polars_utils import streaming_collect
+
+        plan = self.plan_for(node_id, source_handle)
+        if plan is None:
+            return None
+        return _identical_candidate_count(
+            plan,
+            candidate=candidate,
+            child_row=values,
+            key_columns=list(values),
+            collect=lambda counts: streaming_collect(
+                counts, execution_context=self.execution_context
+            ),
+        )
+
     def schema_for(self, node_id: str, source_handle: str | None) -> pl.Schema | None:
         """Return a lineage plan's schema, read at most once per request."""
         key = (node_id, source_handle)
@@ -2285,6 +2415,11 @@ class RowScopeResolver:
                 child_node_id=child_id,
                 allow_relaxed=False,
                 work=work,
+                # The lookup holds at most two rows, so identity is counted
+                # over the node's whole plan.
+                identical_candidates=partial(
+                    self.identical_candidate_count, parent_id, source_handle, carried
+                ),
             )
             if row is not None:
                 matches.append((source_handle, row, index, len(carried), lookup, False))

@@ -149,7 +149,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "sandbox-security",
     "server-api",
     "submodels",
-    "tracing",
 )
 _ROADMAP_SUPPORTING_REPORTS: tuple[str, ...] = (
     "codebase-review-2026-09-23.md",

@@ -114,7 +114,10 @@ Out of scope (owned elsewhere, linked where relevant):
   (multiple equally-good candidate rows) or a transform whose behaviour cannot be
   verified leaves that node's step unresolved — it is omitted from the trace
   rather than shown with a wrong row — and is recorded as a non-fatal entry in
-  `correlation_diagnostics`.
+  `correlation_diagnostics`. The one tie that is not ambiguous is candidates identical in
+  every column: the step shows their values as one of N identical rows
+  (`identical_row_count`) without choosing a physical row, and correlation above it
+  continues by value only.
   The reorder guard reads exact structured Python method-call sites, so words
   inside comments or string literals cannot disable positional correlation and
   an unreadable transform is conservatively treated as potentially reordering.

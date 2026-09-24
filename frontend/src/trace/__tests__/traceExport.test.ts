@@ -129,6 +129,17 @@ describe("trace export projection", () => {
       .toBe("duplicate_exact_match")
   })
 
+  it("exports a step's identical-row count only when it is one of several identical rows", () => {
+    const trace = traceFixture()
+    trace.steps[0] = { ...trace.steps[0], identical_row_count: 3 }
+    const rows = buildTraceExportRows(trace)
+
+    const counts = rows.filter((row) => row.field === "identical_row_count")
+    expect(counts).toEqual([
+      expect.objectContaining({ section: "step", nodeId: trace.steps[0].node_id, value: "3" }),
+    ])
+  })
+
   it("escapes Markdown and CSV without changing the projected values", () => {
     const markdown = traceToMarkdown(traceFixture())
     const csv = traceToCsv(traceFixture())

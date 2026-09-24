@@ -67,7 +67,9 @@
 3. `collapsePassthroughs` groups hidden runs. If a focused target exists the UI removes the
    collapsed markers until the user asks for the full trace; otherwise the marker is a button that
    reveals the full trace.
-4. `frontend/src/trace/StepCard.tsx` renders schema/value context and routes its expanded body to
+4. `frontend/src/trace/StepCard.tsx` renders schema/value context, labels a step whose
+   `identical_row_count` is set "One of N identical rows" (the panel does not repeat its
+   `identical_row_match` diagnostic as a correlation warning), and routes its expanded body to
    a calculation hero, expression/source view, `NodeDetailBlock`, or value table according to the
    data present.
 5. `frontend/src/trace/NodeDetailBlock.tsx` dispatches on `detail_type` (and optimiser status/mode).

@@ -165,6 +165,10 @@ class TraceStep:
     # trace was seeded there instead of computing the node.
     snapshot_generation_id: str | None = None
 
+    # How many candidate rows, identical in every column, this step's row is
+    # one of; ``None`` when correlation identified the row itself.
+    identical_row_count: int | None = None
+
     # The same rows as one-row frames in the dtypes the pipeline gave them, for
     # evaluating the step's formulas; ``None`` when the trace could not recover
     # them. Not part of the serialised trace.
@@ -889,6 +893,13 @@ def _execute_trace_core(
             seed = snapshot_plan.decision.seeds.get(step.node_id)
             if seed is not None:
                 step.snapshot_generation_id = seed.generation_id
+    identical_row_counts = {
+        diagnostic["node_id"]: diagnostic["candidate_count"]
+        for diagnostic in correlation_diagnostics
+        if diagnostic.get("code") == "identical_row_match"
+    }
+    for step in steps:
+        step.identical_row_count = identical_row_counts.get(step.node_id)
 
     # ---------- Enrich steps with expression/detail data ----------
     # A seeded step stays in the list — it is where downstream provenance
@@ -1616,6 +1627,7 @@ def trace_result_to_dict(result: TraceResult) -> dict[str, Any]:
                 "node_detail": s.node_detail,
                 "row_lineage_type": s.row_lineage_type,
                 "snapshot_generation_id": s.snapshot_generation_id,
+                "identical_row_count": s.identical_row_count,
             }
             for s in result.steps
         ],

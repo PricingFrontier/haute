@@ -194,10 +194,13 @@ class TestTraceJsonSafeRowMatching:
         assert row == {"id": str(unsafe + 2), "value": INF_SENTINEL}
 
     def test_parent_row_matching_reports_duplicate_exact_matches_without_selecting_first(self):
+        # The candidates differ in a column the child does not carry, so the
+        # tie is genuine (identical rows are shown, see test_trace_identical_rows).
         df = pl.DataFrame(
             {
                 "policy_id": [10, 10],
                 "premium": [100.0, 100.0],
+                "region": ["north", "south"],
             }
         )
         diagnostics: list[dict[str, object]] = []

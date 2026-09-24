@@ -15,7 +15,9 @@
 - **`TraceStep`** (`trace.py`, dataclass) — one node's contribution: `node_id`,
   `node_name`, `node_type`, `schema_diff: SchemaDiff`, `input_values` /
   `output_values` (column → value dicts), `topological_rank`,
-  `column_relevant: bool` (default `True`), and enrichment fields populated by
+  `column_relevant: bool` (default `True`), `identical_row_count` (the number of
+  identical candidates when the step's row is one of several identical rows,
+  else `None`), and enrichment fields populated by
   `_enrich_steps`: `expression`, `calculation`, `node_detail`,
   `row_lineage_type`. `input_row`/`output_row` hold the same rows as one-row frames in the
   pipeline's dtypes, for evaluating the step's formulas. They are not serialised. `_TypedRows`
@@ -377,7 +379,7 @@ identical matching logic:
    `source_frames_of[(base_id, child_id)]` before deriving the left-column set;
    no bare source `dict` is treated as a DataFrame.
 2. **Fast path**: if the parent and child DataFrames have equal row counts and
-   the child's row index is in range, try the parent row at that same
+   the child's row index is in range and known (non-negative), try the parent row at that same
    positional index. Trust it only if (a) there are no shared columns and
    either the parent has exactly one row or the child's parsed structured call
    sites contain no known reorder operation (`_child_transform_may_reorder`
@@ -392,7 +394,22 @@ identical matching logic:
    relaxed subset — but only if exactly one row achieves that width. Any tie
    (multiple exact or multiple best-relaxed matches) is recorded via
    `_record_ambiguous_row_match` (with reason `"duplicate_exact_match"` or
-   `"relaxed_match_ambiguous"`) into `diagnostics` and returns `(None, -1)`.
+   `"relaxed_match_ambiguous"`) into `diagnostics` and returns `(None, -1)`,
+   with one exception: an exact tie whose candidates are identical in every
+   column of the frame. Then any candidate gives the same values, so
+   `_find_matching_row` returns the first candidate's values with position `-1`
+   (no physical row is chosen) and records an informational
+   `identical_row_match` diagnostic (severity `info`, reason `identical_rows`,
+   `candidate_count`). Identity is proven over every candidate, not the capped
+   index list: one pass counts the rows matching the child and the rows equal
+   to the first candidate in every column, and the two counts must agree. The
+   pass runs over the frame being matched, or, for a row-scope lookup (which
+   reads at most two rows), over the node's uncapped plan. A column whose value
+   cannot be compared by `_typed_value_match_expr` leaves the tie a
+   `duplicate_exact_match` omission, as do relaxed ties and candidates that
+   differ in any column. A position of `-1` never feeds positional alignment
+   (the fast path and head alignment require a known index), so correlation
+   above such a step is by value only.
    `allow_relaxed` is forced to `False` for an edge-join's JOIN-role parent
    (`_allows_relaxed_parent_match`) — a
    relaxed miss there must not manufacture false lineage.

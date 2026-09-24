@@ -372,7 +372,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §4.2 One execution walker | `EXEC-R05` (execution engine, delivered; its roadmap file is retired) |
 | §4.3 Optimiser pipeline in a capped worker | `OPT-P16` ([optimiser](optimiser.md)) |
 | §4.4 Hand-written Polars interpreter | `EXPR-R01`; the [expression-parsing specification](../expression-parsing/high-level.md) records the outcome |
-| §4.5 Trace row identity | `TRACE-R01` (tracing, decided 24 September 2026: value matching is kept, and the [tracing specification](../tracing/high-level.md) records the measurement); identical candidate rows are `TRACE-R03` ([tracing](tracing.md)) |
+| §4.5 Trace row identity | `TRACE-R01` (tracing, decided 24 September 2026: value matching is kept, and the [tracing specification](../tracing/high-level.md) records the measurement); identical candidate rows are shown by `TRACE-R03` (delivered) |
 | §4.6 Recovery and repair scope | `API-R04` (server API, delivered); its remaining migration action was removed by `SUB-R02` (delivered) |
 | §4.7 Four reuse mechanisms | `SUB-R01` ([submodels](submodels.md)) |
 | §4.8 Implicit-join output assembly | `JSON-R02` (JSON shredding, delivered; its roadmap file is retired) |

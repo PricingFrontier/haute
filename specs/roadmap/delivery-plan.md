@@ -37,7 +37,6 @@ merges, remove that round from the table.
 
 | Round | Theme | Packages, in order | Needs | Size | Why here |
 |---:|---|---|---|---|---|
-| 2 | Trace | `TRACE-R03` | — | M | A small user-facing change to how trace shows identical rows. |
 | 3 | Tests and gates | `ENGQ-R06`, `API-R05`, `ENGQ-R04` | — | M | Removes CI noise and narrows the coverage gate before the large refactors, which then work under the lighter rule. |
 | 4 | Optimiser routes | `API-R01`, `MLF-R02`, `OPT-P13` | — | M | All three change `routes/optimiser.py` and `_optimiser_service.py`; `OPT-P13` opens the optimiser chain. |
 | 5 | Optimiser estimate | `OPT-P16` | 4 | M | Moves the last pipeline read out of the server process, onto the warm worker pool. |
@@ -65,8 +64,6 @@ round starts.
 
 - `SUB-R01`: `@pipeline.instance` and `instanceOf` are rejected; **Create
   Instance** makes a one-node submodel with a second occurrence.
-- `TRACE-R03`: a step among identical rows shows their values, labelled one
-  of N identical rows, instead of a trace gap.
 - `ENGQ-R04`: the changed-code coverage gate blocks only the safety-critical
   modules.
 

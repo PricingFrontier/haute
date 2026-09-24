@@ -944,6 +944,9 @@ class TraceStepResponse(BaseModel):
     # Set when this step's row comes from a shared snapshot generation the
     # trace was seeded with, rather than from computing the node.
     snapshot_generation_id: str | None = None
+    # Set when this step's row is one of several candidates identical in every
+    # column: how many there are. No physical row was chosen.
+    identical_row_count: int | None = Field(default=None, ge=2)
 
 
 class TraceOmissionResponse(BaseModel):

@@ -1565,7 +1565,17 @@ function parseTraceStep(value: unknown, field: string): TraceStep {
     node_detail,
     row_lineage_type: optionalNullableString("parseTraceResponse", obj, "row_lineage_type"),
     snapshot_generation_id: optionalNullableString("parseTraceResponse", obj, "snapshot_generation_id"),
+    identical_row_count: parseIdenticalRowCount(obj.identical_row_count, `${field}.identical_row_count`),
   }
+}
+
+function parseIdenticalRowCount(value: unknown, field: string): number | null {
+  if (value === undefined || value === null) return null
+  const parsed = expectNonNegativeTraceInteger(value, field)
+  if (parsed < 2) {
+    throw new Error(`parseTraceResponse: expected ${field} to be at least 2`)
+  }
+  return parsed
 }
 
 function parseWaterfallEntry(value: unknown, field: string): WaterfallEntry {

@@ -99,6 +99,9 @@ export function buildTraceExportRows(trace: TraceResult): TraceExportRow[] {
       fieldRow("step", "node_detail", item.node_detail, item),
       fieldRow("step", "row_lineage_type", item.row_lineage_type, item),
     )
+    if (typeof item.identical_row_count === "number") {
+      rows.push(fieldRow("step", "identical_row_count", item.identical_row_count, item))
+    }
   }
 
   if (Array.isArray(trace.waterfall)) {
