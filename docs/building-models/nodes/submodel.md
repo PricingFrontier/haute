@@ -12,9 +12,10 @@ This node accepts multiple inputs and produces multiple outputs, defined by its 
 
 | Config | Description |
 |---|---|
-| `file` | **Required.** Path to the submodel definition file |
-| `inputPorts` | Port names for inputs |
-| `outputPorts` | Port names for outputs |
+| `definitionId` | **Required.** The stable identity of the shared definition, stored in its `modules/<name>.py` file. Haute sets it when you create the submodel. |
+| `alias` | **Required.** This occurrence's name on the canvas; it is also the node's name downstream. |
+
+The definition's input and output ports are part of the definition file, not the node's config.
 
 ## Creating a submodel
 
@@ -30,7 +31,7 @@ To ungroup a submodel and expand its nodes back into the parent pipeline, right-
 
 ## Reuse across pipelines
 
-To reuse a submodel in another pipeline, point the `file` config to the same definition file. Editing the submodel in any pipeline updates it everywhere.
+Each submodel's definition lives in its own `modules/<name>.py` file. To use the same logic again, create another instance of the submodel on the canvas: every instance shares the one definition, so editing the submodel updates them all. See [Instances](instances.md).
 
 !!! warning "Shared definitions"
     Because reused submodels share a single definition file, changes made in one pipeline will affect every pipeline that references it.

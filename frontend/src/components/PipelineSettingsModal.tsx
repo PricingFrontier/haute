@@ -12,6 +12,7 @@ import { clearCacheIdentities, fetchCacheNodes } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
 import type { CacheNodeEntry, CacheNodesResponse } from "../api/types"
 import { formatByteSize } from "../utils/formatBytes"
+import { formatDuration } from "../utils/formatValue"
 import { buildGraph } from "../utils/buildGraph"
 import usePanelGraphContext, { toSimpleEdge, toSimpleNode } from "../hooks/usePanelGraphContext"
 import useGraphStore from "../stores/useGraphStore"
@@ -37,15 +38,6 @@ function stateColor(state: CacheNodeEntry["state"]): string {
 
 function displayNodeName(name: string): string {
   return name.replace(/^submodel_runtime\//, "")
-}
-
-/** A duration a person reads at a glance: "0.4 s", "9.9 s", "2m 14s". */
-function formatDuration(seconds: number | null): string {
-  if (seconds === null) return "-"
-  if (seconds < 10) return `${seconds.toFixed(1)} s`
-  if (seconds < 60) return `${Math.round(seconds)} s`
-  const minutes = Math.floor(seconds / 60)
-  return `${minutes}m ${String(Math.round(seconds - minutes * 60)).padStart(2, "0")}s`
 }
 
 /** When it was cached, short enough for a column: "19 Sep 23:10". */
@@ -154,7 +146,7 @@ function CacheRow({
         className="text-[10px] font-mono tabular-nums text-right"
         style={{ color: "var(--text-muted)" }}
       >
-        {formatDuration(buildSeconds)}
+        {buildSeconds === null ? "-" : formatDuration(buildSeconds)}
       </span>
       {onClear ? (
         <button

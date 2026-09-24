@@ -145,6 +145,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/ExplorePivotStatusResponse"},
         },
     },
+    "/api/explore/relationships": {
+        "POST": {
+            "request_ref": "#/components/schemas/ExploreRelationshipsRequest",
+            "success_schema": {"$ref": "#/components/schemas/ExploreRelationshipsResponse"},
+        },
+    },
     "/api/files": {
         "GET": {
             "request_ref": None,

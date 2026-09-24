@@ -67,13 +67,11 @@ from haute._registry import (
 )
 from haute._types import (
     COLUMN_CONFIG_KEYS,
-    OPTIMISER_APPLY_CONFIG_KEYS,
-    OPTIMISER_CONFIG_KEYS,
-    SCENARIO_EXPANDER_CONFIG_KEYS,
+    NODE_TYPE_TO_DECORATOR,
     GraphNode,
     NodeType,
 )
-from haute.errors import ConfigError, ParseError
+from haute.errors import ConfigError, HauteError, ParseError
 
 # ---------------------------------------------------------------------------
 # String-safety helpers — double-quoted Python literals with proper escaping.
@@ -224,7 +222,7 @@ def _format_kwarg_source(key: str, value: Any) -> str:
 
 
 _LIVE_SWITCH = '''\
-@pipeline.live_switch(input_scenario_map={input_scenario_map_repr})
+{decorator}
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
     from haute._model_scorer import _scenario_ctx
@@ -236,7 +234,7 @@ def {func_name}({params}) -> pl.LazyFrame:
 '''
 
 _MODEL_SCORE = '''\
-@pipeline.model_score({decorator_kwargs})
+{decorator}
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
     from haute.graph_utils import score_from_config
@@ -246,10 +244,10 @@ def {func_name}({params}) -> pl.LazyFrame:
 '''
 
 
-def _retained_api_input_template(config_path: str) -> str:
+def _retained_api_input_template(decorator: str, config_path: str) -> str:
     """Emit an API input whose loader is entirely driven by its sidecar."""
     return f'''\
-@pipeline.api_input()
+{decorator}
 def {{func_name}}() -> pl.LazyFrame | dict[str, pl.LazyFrame]:
     """{{description}}"""
     from haute.graph_utils import resolve_api_input_from_config
@@ -259,19 +257,8 @@ def {{func_name}}() -> pl.LazyFrame | dict[str, pl.LazyFrame]:
 '''
 
 
-_BANDING_SINGLE = '''\
-@pipeline.banding(banding={banding_repr}, column={column_repr},
-               output_column={output_column_repr}{rules_kw}{default_kw})
-def {func_name}({params}) -> pl.LazyFrame:
-    """{description}"""
-    from haute.graph_utils import apply_banding_from_config
-    base = _HAUTE_CONFIG_BASE
-    df = apply_banding_from_config({first}, {config_path_repr}, base_dir=base)
-    return df
-'''
-
-_BANDING_MULTI = '''\
-@pipeline.banding(factors={factors_repr})
+_BANDING = '''\
+{decorator}
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
     from haute.graph_utils import apply_banding_from_config
@@ -281,7 +268,7 @@ def {func_name}({params}) -> pl.LazyFrame:
 '''
 
 _RATING_STEP = '''\
-@pipeline.rating_step(tables={tables_repr}{extra_kwargs})
+{decorator}
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
     from haute.graph_utils import apply_rating_step_from_config
@@ -291,7 +278,7 @@ def {func_name}({params}) -> pl.LazyFrame:
 '''
 
 _SCENARIO_EXPANDER = '''\
-@pipeline.scenario_expander({dec_kwargs})
+{decorator}
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
     from haute.graph_utils import expand_scenarios_from_config
@@ -303,14 +290,14 @@ def {func_name}({params}) -> pl.LazyFrame:
 # training happen via dedicated API routes), so a first-frame passthrough
 # body is runtime-equivalent — they are NOT registered as behavioural.
 _OPTIMISER = '''\
-@pipeline.optimiser({dec_kwargs})
+{decorator}
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
     return {first}
 '''
 
 _OPTIMISER_APPLY = '''\
-@pipeline.optimiser_apply({dec_kwargs})
+{decorator}
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
     from haute.graph_utils import apply_optimiser_apply_from_config
@@ -329,14 +316,14 @@ def {func_name}({params}) -> pl.LazyFrame:
 '''
 
 _CONSTANT = '''\
-@pipeline.constant(values={values_repr})
+{decorator}
 def {func_name}() -> pl.LazyFrame:
     """{description}"""
     return pl.LazyFrame({data_dict})
 '''
 
 _RETAINED_EXTERNAL = '''\
-@pipeline.external_file()
+{decorator}
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
     from haute.graph_utils import load_external_object_from_config
@@ -413,6 +400,27 @@ def _register_codegen(node_type: NodeType) -> Callable[[CodegenBuilder], Codegen
     return _register_codegen_in_registry(node_type)
 
 
+def _config_decorator(node: GraphNode, func_name: str) -> str:
+    """The decorator line of a config-backed node: a reference to its sidecar.
+
+    The config lives in ``config/<type>/<name>.json`` and is written by the
+    config-io save path, so the decorator carries only that path. Every
+    config-backed builder opens its code with this line.
+    """
+    node_type = node.data.nodeType
+    try:
+        decorator = NODE_TYPE_TO_DECORATOR[node_type]
+    except KeyError as exc:
+        raise HauteError(
+            "config-backed node has no registered decorator; this is a codegen bug",
+            node_id=node.id,
+            node_label=node.data.label,
+            node_type=str(node_type),
+        ) from exc
+    config_path = config_path_for_node(node_type, func_name).as_posix()
+    return f"@pipeline.{decorator}(config={_safe_path(config_path)})"
+
+
 # ---------------------------------------------------------------------------
 # Per-type builders
 # ---------------------------------------------------------------------------
@@ -422,7 +430,7 @@ def _register_codegen(node_type: NodeType) -> Callable[[CodegenBuilder], Codegen
 def _gen_api_input(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
-    template = _retained_api_input_template(cfg_path)
+    template = _retained_api_input_template(_config_decorator(node, func_name), cfg_path)
     return template.format(
         func_name=func_name,
         description=description,
@@ -440,6 +448,7 @@ def _gen_live_switch(node: GraphNode, source_names: list[str]) -> str:
     # instead of hard-wiring the "live" input.
     frames_dict = "{" + ", ".join(f"{s!r}: {s}" for s in source_names) + "}"
     return _LIVE_SWITCH.format(
+        decorator=_config_decorator(node, func_name),
         func_name=func_name,
         description=description,
         params=params,
@@ -454,10 +463,6 @@ def _gen_live_switch(node: GraphNode, source_names: list[str]) -> str:
 def _gen_constant(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     raw_values = config.get("values", []) or []
-    # Build the repr for the decorator kwarg
-    values_repr = repr(
-        [{"name": v.get("name") or "", "value": v.get("value", "")} for v in raw_values]
-    )
     # Build a dict literal for the LazyFrame constructor.  Mirror the executor
     # (_build_constant): a missing/empty name is skipped (not emitted as a
     # default "col" column), and a None value becomes a null literal rather
@@ -485,9 +490,9 @@ def _gen_constant(node: GraphNode, source_names: list[str]) -> str:
                 data_pairs.append(f"{_safe_str(name)}: [{_safe_str(str(val))}]")
     data_dict = "{" + ", ".join(data_pairs) + "}" if data_pairs else '{"constant": [0]}'
     return _CONSTANT.format(
+        decorator=_config_decorator(node, func_name),
         func_name=func_name,
         description=description,
-        values_repr=values_repr,
         data_dict=data_dict,
     )
 
@@ -495,47 +500,18 @@ def _gen_constant(node: GraphNode, source_names: list[str]) -> str:
 @_register_codegen(NodeType.MODEL_SCORE)
 def _gen_model_score(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
-    source_type = config.get("sourceType", "run")
-    task_val = config.get("task", "regression")
-    output_column = config.get("output_column", "prediction")
     user_code, incomplete = _stepped_body_code(config, NodeType.MODEL_SCORE, source_names)
     params = _build_params(source_names)
     first_param = _first_source(source_names)
     cfg_path = config_path_for_node(NodeType.MODEL_SCORE, func_name).as_posix()
-
-    # Build decorator kwargs (post-processed to config= by _node_to_code)
-    if source_type == "registered":
-        reg_model = config.get("registered_model", "")
-        ver = config.get("version", "latest")
-        decorator_kwargs = (
-            f'source_type="registered", '
-            f"registered_model={reg_model!r}, version={ver!r}, "
-            f"task={task_val!r}, output_column={output_column!r}"
-        )
-    else:
-        rid = config.get("run_id", "")
-        apath = config.get("artifact_path", "")
-        rname = config.get("run_name", "")
-        exp_name = config.get("experiment_name", "")
-        exp_id = config.get("experiment_id", "")
-        decorator_kwargs = (
-            f'source_type="run", '
-            f"run_id={rid!r}, artifact_path={apath!r}, "
-            f"task={task_val!r}, output_column={output_column!r}"
-        )
-        if rname:
-            decorator_kwargs += f", run_name={rname!r}"
-        if exp_name:
-            decorator_kwargs += f", experiment_name={exp_name!r}"
-        if exp_id:
-            decorator_kwargs += f", experiment_id={exp_id!r}"
+    decorator = _config_decorator(node, func_name)
 
     if user_code or incomplete:
         user_body = (
             INCOMPLETE_STEPS_BODY.rstrip("\n") if incomplete else _wrap_user_code(user_code, ["df"])
         )
         return (
-            f"@pipeline.model_score({decorator_kwargs})\n"
+            f"{decorator}\n"
             f"def {func_name}({params}) -> pl.LazyFrame:\n"
             f'    """{description}"""\n'
             f"    from haute.graph_utils import score_from_config\n"
@@ -548,106 +524,50 @@ def _gen_model_score(node: GraphNode, source_names: list[str]) -> str:
         )
 
     return _MODEL_SCORE.format(
+        decorator=decorator,
         func_name=func_name,
         description=description,
         params=params,
         first_param=first_param,
-        decorator_kwargs=decorator_kwargs,
         config_path_repr=_safe_path(cfg_path),
     )
 
 
 @_register_codegen(NodeType.BANDING)
 def _gen_banding(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, config = _common_node_fields(node)
-    factors = config.get("factors", []) or []
-    params = _build_params(source_names)
-    first = _first_source(source_names)
+    func_name, description, _config = _common_node_fields(node)
     # The body applies the sidecar config at runtime — the same pattern
     # rating bodies use — so a standalone `pipeline.run()` of the saved
     # file bands instead of silently passing the frame through.
     config_path_repr = _safe_path(config_path_for_node(NodeType.BANDING, func_name).as_posix())
-    if len(factors) == 1:
-        f = factors[0]
-        banding = f.get("banding", "continuous")
-        column = f.get("column", "")
-        output_column = f.get("outputColumn", "")
-        rules = f.get("rules", []) or []
-        default = f.get("default")
-        rules_kw = f", rules={rules!r}" if rules else ""
-        default_kw = f", default={default!r}" if default is not None else ""
-        return _BANDING_SINGLE.format(
-            func_name=func_name,
-            description=description,
-            banding_repr=_safe_str(banding),
-            column_repr=_safe_str(column),
-            output_column_repr=_safe_str(output_column),
-            rules_kw=rules_kw,
-            default_kw=default_kw,
-            params=params,
-            first=first,
-            config_path_repr=config_path_repr,
-        )
-    else:
-        # Multi-factor: emit factors list with output_column key for decorator
-        emit_factors = []
-        for f in factors:
-            ef: dict = {
-                "banding": f.get("banding", "continuous"),
-                "column": f.get("column", ""),
-                "output_column": f.get("outputColumn", ""),
-                "rules": f.get("rules", []),
-            }
-            if f.get("default") is not None:
-                ef["default"] = f["default"]
-            emit_factors.append(ef)
-        return _BANDING_MULTI.format(
-            func_name=func_name,
-            description=description,
-            factors_repr=repr(emit_factors),
-            params=params,
-            first=first,
-            config_path_repr=config_path_repr,
-        )
+    return _BANDING.format(
+        decorator=_config_decorator(node, func_name),
+        func_name=func_name,
+        description=description,
+        params=_build_params(source_names),
+        first=_first_source(source_names),
+        config_path_repr=config_path_repr,
+    )
 
 
 @_register_codegen(NodeType.RATING_STEP)
 def _gen_rating_step(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
-    tables = normalise_rating_tables(config)
+    # Codegen runs at save: a malformed table or combined-output shape fails
+    # here as it would at execution, though neither is rendered into the code.
+    normalise_rating_tables(config)
+    _normalise_combined_outputs(config)
     params = _build_params(source_names)
     first = _first_source(source_names)
     code, incomplete = _stepped_body_code(config, NodeType.RATING_STEP, source_names)
-    emit_tables = []
-    for t in tables:
-        et: dict = {
-            "factors": t.get("factors", []),
-            "output_column": t.get("outputColumn", ""),
-            "entries": t.get("entries", []),
-        }
-        if t.get("defaultValue") is not None:
-            et["default_value"] = t["defaultValue"]
-        emit_tables.append(et)
-    extra_parts: list[str] = []
-    combined_outputs = _normalise_combined_outputs(config)
-    if combined_outputs:
-        decorator_outputs = [
-            {
-                "output_column": output["outputColumn"],
-                "operation": output["operation"],
-                "base_value": output["baseValue"],
-            }
-            for output in combined_outputs
-        ]
-        extra_parts.append(f"combined_outputs={decorator_outputs!r}")
-    extra_kwargs = (", " + ", ".join(extra_parts)) if extra_parts else ""
+    decorator = _config_decorator(node, func_name)
     config_path_repr = _safe_path(config_path_for_node(NodeType.RATING_STEP, func_name).as_posix())
     if code or incomplete:
         user_body = (
             INCOMPLETE_STEPS_BODY.rstrip("\n") if incomplete else _wrap_user_code(code, ["df"])
         )
         return (
-            f"@pipeline.rating_step(tables={emit_tables!r}{extra_kwargs})\n"
+            f"{decorator}\n"
             f"def {func_name}({params}) -> pl.LazyFrame:\n"
             f'    """{description}"""\n'
             f"    from haute.graph_utils import apply_rating_step_from_config\n"
@@ -656,26 +576,13 @@ def _gen_rating_step(node: GraphNode, source_names: list[str]) -> str:
             f"{user_body}\n"
         )
     return _RATING_STEP.format(
+        decorator=decorator,
         func_name=func_name,
         description=description,
-        tables_repr=repr(emit_tables),
         params=params,
         first=first,
-        extra_kwargs=extra_kwargs,
         config_path_repr=config_path_repr,
     )
-
-
-def _passthrough_decorator_kwargs(config: dict, keys: tuple[str, ...]) -> str:
-    """Build the ``", ".join(...)`` decorator kwargs for a flat-config node.
-
-    Shared by the pure-passthrough builders (optimiser, modelling) and the
-    stateful scenario-expander so the decorator-kwarg construction lives in
-    one place.  The decorator kwargs survive only in the raw builder output;
-    ``_node_to_code`` rewrites the decorator to a ``config=`` sidecar path for
-    every node type that has a config folder.
-    """
-    return ", ".join(_build_extra_kwargs(config, keys))
 
 
 @_register_codegen(NodeType.SCENARIO_EXPANDER)
@@ -683,7 +590,7 @@ def _gen_scenario_expander(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     params = _build_params(source_names)
     first = _first_source(source_names)
-    dec_kwargs = _passthrough_decorator_kwargs(config, SCENARIO_EXPANDER_CONFIG_KEYS)
+    decorator = _config_decorator(node, func_name)
     config_path_repr = _safe_path(
         config_path_for_node(NodeType.SCENARIO_EXPANDER, func_name).as_posix()
     )
@@ -694,17 +601,17 @@ def _gen_scenario_expander(node: GraphNode, source_names: list[str]) -> str:
     # scenario grid instead of silently passing the frame through.
     if not code and not incomplete:
         return _SCENARIO_EXPANDER.format(
+            decorator=decorator,
             func_name=func_name,
             description=description,
             params=params,
             first=first,
-            dec_kwargs=dec_kwargs,
             config_path_repr=config_path_repr,
         )
 
     user_body = INCOMPLETE_STEPS_BODY.rstrip("\n") if incomplete else _wrap_user_code(code, ["df"])
     return (
-        f"@pipeline.scenario_expander({dec_kwargs})\n"
+        f"{decorator}\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
         f"    from haute.graph_utils import expand_scenarios_from_config\n"
@@ -728,11 +635,11 @@ def _gen_optimiser(node: GraphNode, source_names: list[str]) -> str:
     )
     selected_input = data_input if data_input is not None else _first_source(source_names)
     return _OPTIMISER.format(
+        decorator=_config_decorator(node, func_name),
         func_name=func_name,
         description=description,
         params=_build_params(source_names),
         first=selected_input,
-        dec_kwargs=_passthrough_decorator_kwargs(config, OPTIMISER_CONFIG_KEYS),
     )
 
 
@@ -749,12 +656,9 @@ def _modelling_first_source(source_names: list[str]) -> str:
 def _gen_modelling(node: GraphNode, source_names: list[str]) -> str:
     # Genuine passthrough in the executor (training happens via the modelling
     # train route) — the first-frame body is runtime-equivalent.
-    func_name, description, config = _common_node_fields(node)
-    dec_kwargs = _passthrough_decorator_kwargs(
-        config, MODELLING_NODE_SEMANTICS.decorator_config_keys
-    )
+    func_name, description, _config = _common_node_fields(node)
     return (
-        f"@pipeline.modelling({dec_kwargs})\n"
+        f"{_config_decorator(node, func_name)}\n"
         f"def {func_name}({_build_params(source_names)}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
         f"    return {_modelling_first_source(source_names)}\n"
@@ -770,17 +674,16 @@ def _gen_optimiser_apply(node: GraphNode, source_names: list[str]) -> str:
         source_names,
         node_label=func_name,
     )
-    dec_kwargs = _passthrough_decorator_kwargs(config, OPTIMISER_APPLY_CONFIG_KEYS)
     param_names = source_names or ["df"]
     # Frames are passed positionally; exact executable source names let the
     # shared helper resolve the configured ratebook_input.
     args = ", ".join(param_names)
     names_repr = repr(list(source_names))
     return _OPTIMISER_APPLY.format(
+        decorator=_config_decorator(node, func_name),
         func_name=func_name,
         description=description,
         params=_build_params(source_names),
-        dec_kwargs=dec_kwargs,
         args=args,
         config_path_repr=_safe_path(
             config_path_for_node(NodeType.OPTIMISER_APPLY, func_name).as_posix()
@@ -883,6 +786,7 @@ def _gen_external_file(node: GraphNode, source_names: list[str]) -> str:
         body = _wrap_external_code(code, input_name=first)
     cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
     return _RETAINED_EXTERNAL.format(
+        decorator=_config_decorator(node, func_name),
         func_name=func_name,
         description=description,
         config_path_repr=_safe_path(cfg_path),
@@ -895,9 +799,9 @@ def _gen_external_file(node: GraphNode, source_names: list[str]) -> str:
 def _gen_data_input(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     # The config (format/mode/source fields/arguments) lives in the JSON
-    # sidecar like every other config-folder node; the decorator is rewritten
-    # to ``config=`` by codegen, and the body executes the same registry
-    # invocation the canvas executor uses, anchored to the pipeline dir.
+    # sidecar like every other config-folder node; the decorator references
+    # it, and the body executes the same registry invocation the canvas
+    # executor uses, anchored to the pipeline dir.
     cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
     code = str(config.get("code") or "").strip()
     steps = config.get("steps")
@@ -917,7 +821,7 @@ def _gen_data_input(node: GraphNode, source_names: list[str]) -> str:
     else:
         body = _wrap_external_code(code)
     return (
-        f"@pipeline.data_input(config={_safe_path(cfg_path)})\n"
+        f"{_config_decorator(node, func_name)}\n"
         f"def {func_name}() -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
         f"    from haute._project import get_project_root\n"
@@ -937,8 +841,7 @@ def _gen_data_output(node: GraphNode, source_names: list[str]) -> str:
     params = _build_params(source_names)
     first = _first_source(source_names)
     return (
-        f"@pipeline.data_output(config="
-        f"{_safe_path(config_path_for_node(node.data.nodeType, func_name).as_posix())})\n"
+        f"{_config_decorator(node, func_name)}\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
         f"    return {first}\n"
@@ -959,7 +862,7 @@ def _gen_output(node: GraphNode, source_names: list[str]) -> str:
     cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
     args = "".join(f"        {p},\n" for p in param_names)
     return (
-        f"@pipeline.output(config={_safe_path(cfg_path)})\n"
+        f"{_config_decorator(node, func_name)}\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
         f"    from haute.graph_utils import assemble_output_from_config\n"

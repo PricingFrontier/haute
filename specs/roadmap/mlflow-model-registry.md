@@ -12,7 +12,7 @@ These packages come from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| MLF-R02 | Planned | P3 | MLflow calls use explicit clients instead of mutating process-global state under locks. |
+| MLF-R02 | Decision | P3 | MLflow calls use explicit clients instead of mutating process-global state under locks. |
 
 ## Planned improvements
 
@@ -30,6 +30,22 @@ registry URIs for logging, as discovery and downloads already do, and pass
 environment inference options explicitly where MLflow allows. Keep a narrow
 lock only for any MLflow call that still requires fluent state, and state
 which calls those are.
+
+**Decision needed:** Checked against MLflow 3.15.1 on 24 September 2026,
+model logging cannot run on an explicit client. `mlflow.<flavor>.log_model`
+calls `Model.log`, which resolves the global tracking URI and the thread's
+active run; `mlflow.set_tracking_uri` itself writes `MLFLOW_TRACKING_URI`
+into `os.environ`; and MLflow's uv-project detection can be switched off
+only through the `MLFLOW_UV_AUTO_DETECT` and `MLFLOW_LOG_UV_FILES`
+environment variables, not a `log_model` argument. While models are logged
+through MLflow's flavour API, two logs to different destinations cannot run
+concurrently and some production path must write `os.environ`. Choose one:
+(a) narrow the lock: run, parameter, metric, tag and artifact logging on
+destination-bound clients, and only `log_model` with its environment
+switches under the fluent lock, restating the acceptance accordingly;
+(b) log each model in a short-lived worker process, so fluent state is
+per-process and logs run concurrently; or (c) keep the current lock and
+retire the package. Recommended: (a).
 
 **Acceptance:** Two logging operations to different destinations can run
 concurrently under test; no production path writes `os.environ`; the

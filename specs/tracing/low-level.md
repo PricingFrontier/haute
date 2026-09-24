@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 | --- | --- |
-| `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `PreviewReader` protocol, `TraceStep`/`TraceOmission`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), row/omission assembly, column-relevance pruning, provenance, and JSON serialisation (`trace_result_to_dict`). Re-exports expression-parser and node-type enricher names as public convenience imports; `_trace_enrichment.py` owns its dependencies directly. |
+| `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `TraceStep`/`TraceOmission`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), row/omission assembly, column-relevance pruning, provenance, and JSON serialisation (`trace_result_to_dict`). Re-exports expression-parser and node-type enricher names as public convenience imports; `_trace_enrichment.py` owns its dependencies directly. |
 | `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. It imports the shared row JSON converter from `src/haute/_json_safe.py` (owned by [json-shredding](../json-shredding/low-level.md)) imported locally as `_jsonify_row` rather than owning a second converter; the module owns `SchemaDiff` computation, dtype-robust Polars match-expression construction (`_typed_value_match_expr`), exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, shared by the single-frame and multi-frame paths), multi-frame per-edge parent resolution (`_resolve_multi_frame_parent`), and the backward-walk driver `_correlate_rows_posthoc`. |
 | `src/haute/_python_syntax.py` | Cross-component dependency owned by [codegen](../codegen/low-level.md): tracing consumes its LibCST-derived exact method-call names and positions; it does not mutate trace source. |
 | `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), canonical instance-aware code selection (`_effective_node_code`), row-lineage-type classification (`detect_row_lineage_type`, from node type and operation alone), and the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, recursive upstream input-source derivation, rename detection, and node-type dispatch for every `TraceStep`. |
@@ -12,15 +12,18 @@
 
 ## Key types and data structures
 
-- **`PreviewReader`** (`trace.py`, `@runtime_checkable` `Protocol`) — anything
-  exposing `get(fingerprint: str) -> dict[str, Any] | None`. `LRUCache`
-  satisfies it by construction.
 - **`TraceStep`** (`trace.py`, dataclass) — one node's contribution: `node_id`,
   `node_name`, `node_type`, `schema_diff: SchemaDiff`, `input_values` /
   `output_values` (column → value dicts), `topological_rank`,
   `column_relevant: bool` (default `True`), and enrichment fields populated by
   `_enrich_steps`: `expression`, `calculation`, `node_detail`,
-  `row_lineage_type`.
+  `row_lineage_type`. `input_row`/`output_row` hold the same rows as one-row frames in the
+  pipeline's dtypes, for evaluating the step's formulas. They are not serialised. `_TypedRows`
+  slices them from the frames correlation read (`_correlate_rows_posthoc` reports each resolved
+  row's position through `row_positions`); a multi-frame node's row is the one frame its consumer
+  reads. A slice is kept only when its JSON-safe form equals the row the trace shows, and
+  otherwise the field is `None`. The input row joins the parents' rows with the same
+  `f"{pid}.{k}"` namespacing as `input_values`.
 - **Node-detail contracts** — enrichment consumes the same node config shape as
   execution: banding uses `factors`, model score uses `output_column`, and scenario
   expansion uses `column_name`. The emitted detail discriminators are
@@ -43,8 +46,9 @@
   `execution_ms`), `waterfall` (list of entry dicts, a structured error dict, or
   `None`), and `correlation_diagnostics: list[dict[str, Any]]` (never `None`,
   defaults to an empty list). Provenance fields are UTC `generated_at`,
-  `pipeline_source`, and `execution_origin` (`fresh_execution`,
-  `preview_cache`, or `trace_cache`).
+  `pipeline_source`, and `execution_origin` (`fresh_execution` or
+  `trace_cache`; the response contract's `preview_cache` value is no longer
+  produced).
 - **`SchemaDiff`** (`_trace_correlation.py`, dataclass) — `columns_added`,
   `columns_removed`, `columns_modified`, `columns_passed`, each a `list[str]`.
 - **`_RowMatchResult`** (`_trace_correlation.py`, frozen dataclass) — one
@@ -226,18 +230,9 @@ bears on a traced column: it is always reported, never pruned for column relevan
 
 ### `_materialize_eager_outputs()` (`trace.py`)
 
-1. Normalise the `preview` argument via `_resolve_preview_snapshot()`: `None` →
-   no reuse; a reader → consult the exact full-lineage preview fingerprint; a
-   raw dict → used verbatim. Trace does not attempt the target-only projected
-   key because that cache shape cannot contain the required ancestor evidence.
-2. A full-materialisation preview collects every node limited to `row_limit`, so its
-   frames are head frames only where every propagated prefix equals `row_limit`. When the
-   preview data has a materialised target output, every head-framed node has a non-`None`
-   output, and every prefix equals `row_limit`, reuse those DataFrames for the head-framed
-   nodes — no re-execution — and return no plans. Anything else (a target-only projected
-   preview, a missing head frame, or a shorter prefix) falls through to a cold execution
-   instead of tracing with holes.
-3. Otherwise, compile the preamble, merge in any caller-supplied `preamble_ns`
+It runs only on a trace-cache miss; trace never reads the preview cache.
+
+1. Compile the preamble, merge in any caller-supplied `preamble_ns`
    (caller-supplied keys win, for test convenience), and call
    `_execute_eager_core()` (execution-engine) with `swallow_errors=False`,
    `materialize_node_ids` set to the head-framed nodes, and `row_limits_by_node` set to
@@ -460,7 +455,7 @@ they are deliberately not added to the trace response contract.
 
 The reproducible performance corpus covers single-frame linear, multi-frame,
 join, and reordered/ambiguous typed-value workloads at 10,000 rows, alongside
-the existing cold/preview-cache/trace-cache paths. On the repository's ordinary
+the existing cold and trace-cache paths. On the repository's ordinary
 CPU performance runner, each representative correlation must remain below
 500 ms and within all of these deterministic work ceilings: at most 8 candidate
 frames, 16 vectorised match scans, 160,000 scanned rows, 128 scanned key-column
@@ -495,8 +490,22 @@ its public facade.
    might (its materialised frame, when there is one, has the column), or the
    value reached a seeded step, the origin is unproven and nothing is borrowed:
    another branch's formula would explain a value the target never had.
-   **Self-referential guard** (`_assignment_values`, for both the step's own
-   assignment and a borrowed one): if `column` is both
+   **Call-phase rule** (`_assignment_values`/`_assignment_row`, for the step's
+   own assignment, a borrowed one, an input source's derivation and each chain
+   entry): `assignment_phases(code, column)` splits the columns the node's
+   `with_columns` calls assign into those assigned before the call that last
+   assigns `column` and those assigned by it or a later call. A column in the
+   second set is read at its value from before that call: its `input_values`
+   entry when no earlier call assigned it, and otherwise left out as unknown.
+   When the phases are `unresolved`, a write with no static name may have
+   rewritten any column, even one whose value it left equal while changing its
+   dtype, so every column is treated as part of that second set: only input
+   columns no earlier call assigned remain. When an earlier call holds such a
+   write (`unresolved_before`), no input value is provably the one the call reads,
+   so every column in that second set is left out; columns neither the call nor a
+   later one touches keep their output value, which nothing after changes.
+   **Self-referential guard** (the rule's special case for the target column):
+   if `column` is both
    `columns_modified` (per the step's `SchemaDiff`) and one of the parsed
    expression's own `referenced_columns` (e.g. `premium = premium * factor`),
    evaluating against `{**input_values, **output_values}` unmodified would seed
@@ -504,7 +513,9 @@ its public facade.
    arithmetically false substitution (`200.0 * 2.0` displayed for an output of
    `200.0`). When a pre-assignment `input_values[column]` exists, it overrides
    the output value in the evaluation namespace before calling
-   `evaluate_expression`. When it doesn't (the column was newly created this
+   `evaluate_expression`, and `_assignment_row` makes the same substitution in the typed row
+   passed as `row=` (a frame holding no row when the typed row is unavailable, which the
+   evaluator reports as `traced_row_unavailable`). When it doesn't (the column was newly created this
    step, so there is no pre-assignment value to show), evaluation is skipped
    entirely and `step.calculation` is set directly from the output value
    (`{"target_column", "substituted_text": f"{column} = {value!r}",
@@ -520,9 +531,18 @@ its public facade.
    post-assignment output on the RHS, the same self-referential problem as step
    2. As each chain entry evaluates successfully, its `result_value` is written
    back into `combined_values` under its `target_column` so the *next* entry
-   sees the correct fed-forward intermediate. A failing entry's fallback
+   sees the correct fed-forward intermediate; the typed chain row is fed forward
+   the same way, with a not-computed entry's column dropped so a later entry reading it reports
+   the column unavailable. A failing entry's fallback
    `result_value` prefers the fed-forward `combined_values` entry and falls back
    to `step.output_values` only if that is also absent.
+   **Execution values** (`_with_execution_value`): when a formula that assigns a step's column is
+   `not_row_local`, the calculation shows that column's `output_values` entry with
+   `result_source: "trace_execution"` and keeps `not_computable_reason`. This applies to the
+   step's own assignment, a borrowed one, an input source's derivation, and a chain entry whose
+   target the chain assigns once. `execute_trace` passes enrichment the compiled preamble
+   namespace (cached per process) over any caller-supplied `preamble_ns`, so formulas resolve the
+   names the node code ran with.
 4. Recursively derives `input_sources` for every referenced column
    (`_build_input_sources`, depth-limited to 3, cycle-guarded via a
    `(node_id, column)` visited set) — for each reference, finds the nearest
@@ -729,7 +749,6 @@ snapshot deterministically.
 | --- | --- | --- |
 | `ValueError` | `execute_trace` — empty graph, unknown `target_node_id`, `row_index` out of range (also raised inside `_correlate_rows_posthoc`), unresolved row-value mismatch after relocation attempt, `target_node_id` resolving to a multi-frame source's `dict` output | The HTTP route rejects an empty graph itself with 400; recognised remaining message shapes map to 404 / 400 / 409, while an unrecognised `ValueError` is sanitised to 500 |
 | `ValueError` (ambiguous duplicate match) | `_find_target_row_index` (`trace.py`) — the clicked `row_values` match more than one row on the shared columns during target-row relocation | Propagates unchanged out of `execute_trace`; HTTP route maps to 409 |
-| `TypeError` | `_resolve_preview_snapshot` — `preview` is not `None`/reader/dict, or a reader's `get` returns a non-`dict` non-`None` value | Caller of `execute_trace` |
 | `RuntimeError` | Module import — malformed/non-positive `HAUTE_PREVIEW_CACHE_MAX_BYTES` or `HAUTE_TRACE_CACHE_MAX_BYTES` | Importing caller; cache construction does not start |
 | `ContractMismatchError` | Propagated unchanged from `_execute_eager_core` (execution-engine) on a cold-execution contract violation | HTTP route, mapped to 422 |
 | `TraceCorrelationUnsupportedError` (`ExecutionError`) | `_find_target_row_index` — selected target keys use an unsupported dtype/value comparison | HTTP 422 / background `contract_error`; stable code and node/key/dtype/reason fields |
@@ -811,7 +830,7 @@ integration/regression suites:
 - **`tests/test_trace_calculation_hero.py`** and
   **`tests/test_trace_hero_tdd.py`** — the expression/calculation
   ("Calculation Hero") feature: conditional-branch indication, waterfall data
-  generation, preamble constant resolution, window-function fallback, intra-node
+  generation, preamble constant resolution, full-context values for window formulas, intra-node
   dependency chains, column-rename tracking, null explanation, copy/export
   data-structure shape, and (`TestSelfReferentialCalculation`) the
   pre-assignment-value substitution fix for self-referential assignments
@@ -880,22 +899,19 @@ integration/regression suites:
   through `haute.schemas.TraceResponse` — guards the wire shape the frontend
   depends on against accidental drift.
 - **`tests/performance/test_preview_trace_perf.py`** — performance/benchmark
-  coverage of the preview-cache-reuse path and the trace execution cache
+  coverage of the cold trace path and the trace execution cache
   (`haute.trace._cache`) under load, plus the 10,000-row linear, join,
   multi-frame, reordered typed-value, and ambiguous correlation corpus. It
   records the production `CorrelationWork` counters and enforces the work
   ceilings above without introducing a test-only cost model.
-  Enforces latency budgets: cached target preview `< 0.5s`, first trace backed
-  by a full preview cache `< 0.8s`, trace-cache hit `< 0.3s`. Excluded from the
+  Enforces latency budgets: cached target preview `< 0.5s`, trace-cache hit
+  `< 0.3s`. Excluded from the
   default test run by the `perf` marker (`addopts = "-m 'not perf'"` in
   `pyproject.toml`); run explicitly via
   `uv run python scripts/run_perf_suite.py --pytest-target tests/performance/test_preview_trace_perf.py`.
 
-Known coverage gap: the ordinary HTTP preview route stores target-only
-materialisation, so its first trace cannot exercise successful full-lineage
-preview-cache reuse without a cross-component cache-scope change. Correlation,
-waterfall, enrichment fail-loud, evidence, fidelity, and lineage-key paths
-otherwise have dedicated regression files indexed above. This spec does not
+Correlation, waterfall, enrichment fail-loud, evidence, fidelity, and
+lineage-key paths have dedicated regression files indexed above. This spec does not
 itself execute the suite; treat file/class presence as an index, not a
 substitute for running
 `pytest tests/test_trace*.py tests/test_optimiser_apply_trace_enrichment.py`

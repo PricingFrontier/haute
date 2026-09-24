@@ -43,6 +43,7 @@ from haute._polars_utils import (
     set_streaming_chunk_size,
     streaming_collect,
 )
+from tests._execution_faults import FaultInjectingExecutionContext
 
 # ---------------------------------------------------------------------------
 # Happy-path tests
@@ -202,7 +203,7 @@ def test_streaming_collect_uses_cancellable_background_query_with_active_context
     assert captured == {"engine": "streaming", "background": True}
 
 
-def test_streaming_collect_fault_point_runs_immediately_before_native_collect() -> None:
+def test_streaming_collect_checkpoint_runs_immediately_before_native_collect() -> None:
     timeline: list[str] = []
 
     class Query:
@@ -216,7 +217,7 @@ def test_streaming_collect_fault_point_runs_immediately_before_native_collect() 
             timeline.append("native")
             return Query()
 
-    context = ExecutionContext(
+    context = FaultInjectingExecutionContext(
         operation="sink",
         profile=ExecutionProfile.LAZY_SINK,
         fault_injector=lambda point: timeline.append(point.name),
@@ -227,11 +228,7 @@ def test_streaming_collect_fault_point_runs_immediately_before_native_collect() 
         execution_context=context,
     )
 
-    assert timeline == [
-        "streaming_collect_before_native",
-        "collect_before_native",
-        "native",
-    ]
+    assert timeline == ["streaming_collect_before_native", "native"]
 
 
 def test_streaming_collect_fault_prevents_native_operation() -> None:
@@ -242,7 +239,7 @@ def test_streaming_collect_fault_prevents_native_operation() -> None:
     def inject(_point) -> None:
         raise RuntimeError("collect fault")
 
-    context = ExecutionContext(
+    context = FaultInjectingExecutionContext(
         operation="sink",
         profile=ExecutionProfile.LAZY_SINK,
         fault_injector=inject,
@@ -322,9 +319,6 @@ def test_cancellable_streaming_collect_cancels_native_query_on_checkpoint_failur
     class CancellingContext:
         recorded_collects = 0
         checkpoint_calls = 0
-
-        def fault_point(self, *args, **kwargs) -> None:
-            pass
 
         def record_collect(self) -> None:
             self.recorded_collects += 1
@@ -783,9 +777,9 @@ def test_bounded_sink_writes_csv(tmp_path: Path):
     assert result["b"].to_list() == [3.5, 4.5]
 
 
-def test_bounded_sink_emits_fault_points_around_native_sink(tmp_path: Path) -> None:
+def test_bounded_sink_checkpoints_its_native_collect_and_counts_bytes(tmp_path: Path) -> None:
     points: list[str] = []
-    context = ExecutionContext(
+    context = FaultInjectingExecutionContext(
         operation="sink",
         profile=ExecutionProfile.LAZY_SINK,
         fault_injector=lambda point: points.append(point.name),
@@ -795,14 +789,10 @@ def test_bounded_sink_emits_fault_points_around_native_sink(tmp_path: Path) -> N
     with context.stage("sink"):
         bounded_sink(pl.LazyFrame({"x": [1]}), out)
 
-    assert points[:3] == [
-        "sink_before_native",
-        "streaming_collect_before_native",
-        "collect_before_native",
-    ]
-    assert set(points[3:-1]) <= {"streaming_collect_poll"}
-    assert points[-1] == "sink_after_native"
+    assert points[0] == "streaming_collect_before_native"
+    assert set(points[1:]) <= {"streaming_collect_poll"}
     assert out.exists()
+    assert context.metrics_payload()["bytes_written"] == out.stat().st_size
 
 
 def test_bounded_sink_materialises_a_lazy_sink_as_a_background_query(

@@ -1,12 +1,9 @@
 import { act, cleanup, renderHook } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import useBandingStats, {
-  BANDING_STATS_DEBOUNCE_MS,
-} from "../../panels/editors/banding/useBandingStats"
-import useRatingLevels, {
-  RATING_LEVELS_DEBOUNCE_MS,
-} from "../../panels/editors/rating/useRatingLevels"
+import useBandingStats from "../../panels/editors/banding/useBandingStats"
+import useRatingLevels from "../../panels/editors/rating/useRatingLevels"
+import { WHOLE_DATA_DEBOUNCE_MS } from "../../panels/editors/shared/useWholeDataAnswer"
 
 const mocks = vi.hoisted(() => ({
   stats: vi.fn(),
@@ -79,7 +76,7 @@ describe("analysis request identity", () => {
     const hook = renderHook(({ value }) => useBandingStats({ ...common, factor: value }), {
       initialProps: { value: factor },
     })
-    await advance(BANDING_STATS_DEBOUNCE_MS + 1)
+    await advance(WHOLE_DATA_DEBOUNCE_MS + 1)
     expect(hook.result.current.stats).toEqual(stats)
 
     hook.rerender({ value: { ...factor, rules: [{ boundary: "90", label: "low" }, factor.rules[1]] } })
@@ -93,9 +90,9 @@ describe("analysis request identity", () => {
     const hook = renderHook(({ value }) => useBandingStats({ ...common, factor: value }), {
       initialProps: { value: factor },
     })
-    await advance(BANDING_STATS_DEBOUNCE_MS + 1)
+    await advance(WHOLE_DATA_DEBOUNCE_MS + 1)
     hook.rerender({ value: { ...factor, outputColumn: "renamed_band" } })
-    await advance(BANDING_STATS_DEBOUNCE_MS + 1)
+    await advance(WHOLE_DATA_DEBOUNCE_MS + 1)
     expect(mocks.stats).toHaveBeenCalledTimes(1)
     expect(hook.result.current.stats).toEqual(stats)
   })
@@ -108,7 +105,7 @@ describe("analysis request identity", () => {
     const hook = renderHook(({ value }) => useBandingStats({ ...common, factor: value }), {
       initialProps: { value: factor },
     })
-    await advance(BANDING_STATS_DEBOUNCE_MS + 1)
+    await advance(WHOLE_DATA_DEBOUNCE_MS + 1)
     const oldSignal = mocks.stats.mock.calls[0][0].signal as AbortSignal
 
     hook.rerender({ value: { ...factor, rules: [{ boundary: "90", label: "low" }, factor.rules[1]] } })
@@ -127,7 +124,7 @@ describe("analysis request identity", () => {
     const hook = renderHook(({ value }) => useBandingStats({ ...common, factor: value }), {
       initialProps: { value: factor },
     })
-    await advance(BANDING_STATS_DEBOUNCE_MS + 1)
+    await advance(WHOLE_DATA_DEBOUNCE_MS + 1)
     expect(hook.result.current.loading).toBe(true)
 
     hook.rerender({ value: changedFactor })
@@ -141,12 +138,12 @@ describe("analysis request identity", () => {
     const hook = renderHook(({ columns }) => useRatingLevels({ ...common, columns }), {
       initialProps: { columns: ["region", "region"] },
     })
-    await advance(RATING_LEVELS_DEBOUNCE_MS + 1)
+    await advance(WHOLE_DATA_DEBOUNCE_MS + 1)
     expect(hook.result.current.levels).toEqual({ region: ["north"] })
     expect(mocks.levels).toHaveBeenCalledTimes(1)
 
     hook.rerender({ columns: ["region"] })
-    await advance(RATING_LEVELS_DEBOUNCE_MS + 1)
+    await advance(WHOLE_DATA_DEBOUNCE_MS + 1)
     expect(mocks.levels).toHaveBeenCalledTimes(1)
 
     hook.rerender({ columns: ["occupation"] })
@@ -159,7 +156,7 @@ describe("analysis request identity", () => {
       ({ requestNode }) => useRatingLevels({ ...common, node: requestNode, columns: ["region"] }),
       { initialProps: { requestNode: node } },
     )
-    await advance(RATING_LEVELS_DEBOUNCE_MS + 1)
+    await advance(WHOLE_DATA_DEBOUNCE_MS + 1)
     expect(hook.result.current.levels).toEqual({ region: ["north"] })
 
     mocks.activeSource = "archive"
@@ -179,9 +176,9 @@ describe("analysis request identity", () => {
     const hook = renderHook(({ columns }) => useRatingLevels({ ...common, columns }), {
       initialProps: { columns: ["region"] },
     })
-    await advance(RATING_LEVELS_DEBOUNCE_MS + 1)
+    await advance(WHOLE_DATA_DEBOUNCE_MS + 1)
     hook.rerender({ columns: ["occupation"] })
-    await advance(RATING_LEVELS_DEBOUNCE_MS + 1)
+    await advance(WHOLE_DATA_DEBOUNCE_MS + 1)
     expect(hook.result.current.loading).toBe(true)
 
     await act(async () => { resolveOld(levels); await Promise.resolve() })

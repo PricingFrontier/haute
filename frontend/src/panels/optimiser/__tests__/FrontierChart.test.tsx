@@ -129,4 +129,56 @@ describe("FrontierChart", () => {
       expect(circle).toHaveAttribute("pointer-events", "none")
     })
   })
+
+  it("plots on padded domains with ticks and labels over the data range", () => {
+    const { container } = render(
+      <FrontierChart
+        points={[
+          { total_objective: 10, total_loss_ratio: 0 },
+          { total_objective: 20, total_loss_ratio: 100 },
+        ]}
+        xKey="total_loss_ratio"
+        yKey="total_objective"
+        xLabel="loss_ratio"
+        selectedIdx={null}
+        currentX={50}
+        currentY={15}
+        onPointClick={vi.fn()}
+      />,
+    )
+
+    // x domain [-8, 108] and y domain [9.2, 20.8] over a 314 x 176 plot at (50, 16).
+    const first = screen.getByRole("button", { name: "Select frontier point 1" })
+    const second = screen.getByRole("button", { name: "Select frontier point 2" })
+    expect(Number(first.getAttribute("cx"))).toBeCloseTo(50 + (8 / 116) * 314, 6)
+    expect(Number(first.getAttribute("cy"))).toBeCloseTo(192 - (0.8 / 11.6) * 176, 6)
+    expect(Number(second.getAttribute("cx"))).toBeCloseTo(50 + (108 / 116) * 314, 6)
+    expect(Number(second.getAttribute("cy"))).toBeCloseTo(192 - (10.8 / 11.6) * 176, 6)
+
+    const labels = Array.from(container.querySelectorAll("text")).map((text) => text.textContent)
+    expect(labels).toEqual(expect.arrayContaining(["10", "12.5", "15", "17.5", "20", "0", "25", "50", "75", "100"]))
+  })
+
+  it("gives a single repeated point a finite scale and one tick per axis", () => {
+    const { container } = render(
+      <FrontierChart
+        points={[{ total_objective: 5, total_loss_ratio: 0.5 }]}
+        xKey="total_loss_ratio"
+        yKey="total_objective"
+        xLabel="loss_ratio"
+        selectedIdx={null}
+        currentX={0.5}
+        currentY={5}
+        onPointClick={vi.fn()}
+      />,
+    )
+
+    const point = screen.getByRole("button", { name: "Select frontier point 1" })
+    expect(Number(point.getAttribute("cx"))).toBeCloseTo(50 + 314 / 2, 6)
+    expect(Number(point.getAttribute("cy"))).toBeCloseTo(16 + 176 / 2, 6)
+    const tickLabels = Array.from(container.querySelectorAll("text"))
+      .map((text) => text.textContent)
+      .filter((text) => text === "5" || text === "0.5")
+    expect(tickLabels).toEqual(["5", "0.5"])
+  })
 })

@@ -8,7 +8,7 @@
 
 import { useMemo } from "react"
 import { CHART_COLORS } from "../../theme/colors"
-import { formatAxisLabel, yTicks } from "../../utils/chartHelpers"
+import { chartDomain, chartTicks, formatChartNumber } from "../../utils/chartHelpers"
 
 // ─── Chart constants ─────────────────────────────────────────────
 
@@ -52,23 +52,15 @@ export default function FrontierChart({
     if (currentX != null && Number.isFinite(currentX)) xs.push(currentX)
     if (Number.isFinite(currentY)) ys.push(currentY)
 
-    let xMin = Math.min(...xs), xMax = Math.max(...xs)
-    let yMin = Math.min(...ys), yMax = Math.max(...ys)
-
-    // Add 5% padding
-    const xPad = (xMax - xMin) * 0.05 || 0.01
-    const yPad = (yMax - yMin) * 0.05 || 0.01
-    xMin -= xPad; xMax += xPad
-    yMin -= yPad; yMax += yPad
-
-    const xRange = xMax - xMin || 1
-    const yRange = yMax - yMin || 1
+    // Padded domains keep edge points off the frame; ticks span the data itself.
+    const [xLow, xHigh] = chartDomain(xs)
+    const [yLow, yHigh] = chartDomain(ys)
 
     return {
-      xScale: (v: number) => CHART_PX + ((v - xMin) / xRange) * INNER_W,
-      yScale: (v: number) => CHART_PY + INNER_H - ((v - yMin) / yRange) * INNER_H,
-      xTicks: yTicks(xMin + xPad, xMax - xPad, 4),
-      yTickVals: yTicks(yMin + yPad, yMax - yPad, 4),
+      xScale: (v: number) => CHART_PX + ((v - xLow) / (xHigh - xLow)) * INNER_W,
+      yScale: (v: number) => CHART_PY + INNER_H - ((v - yLow) / (yHigh - yLow)) * INNER_H,
+      xTicks: chartTicks(Math.min(...xs), Math.max(...xs), 5),
+      yTickVals: chartTicks(Math.min(...ys), Math.max(...ys), 5),
     }
   }, [points, xKey, yKey, currentX, currentY])
 
@@ -118,12 +110,12 @@ export default function FrontierChart({
       {yTickVals.map(t => (
         <g key={`y-${t}`}>
           <line x1={CHART_PX} y1={yScale(t)} x2={CHART_PX + INNER_W} y2={yScale(t)} stroke="var(--border)" strokeWidth={0.5} />
-          <text x={CHART_PX - 4} y={yScale(t) + 3} textAnchor="end" fontSize={9} fill="var(--text-muted)">{formatAxisLabel(t)}</text>
+          <text x={CHART_PX - 4} y={yScale(t) + 3} textAnchor="end" fontSize={9} fill="var(--text-muted)">{formatChartNumber(t)}</text>
         </g>
       ))}
       {/* X axis labels */}
       {xTicks.map(t => (
-        <text key={`x-${t}`} x={xScale(t)} y={CHART_H - CHART_PY_BOTTOM + 14} textAnchor="middle" fontSize={9} fill="var(--text-muted)">{formatAxisLabel(t)}</text>
+        <text key={`x-${t}`} x={xScale(t)} y={CHART_H - CHART_PY_BOTTOM + 14} textAnchor="middle" fontSize={9} fill="var(--text-muted)">{formatChartNumber(t)}</text>
       ))}
       {/* Axis labels */}
       <text x={CHART_PX + INNER_W / 2} y={CHART_H - 3} textAnchor="middle" fontSize={9} fill="var(--text-muted)">{xLabel}</text>

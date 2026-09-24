@@ -19,6 +19,7 @@ import PreviewPanelTabs from "./PreviewPanelTabs"
 const ExploreOverviewPane = lazy(() => import("./explore/ExploreOverviewPane"))
 const ExplorePivotsPane = lazy(() => import("./explore/ExplorePivotsPane"))
 const ExploreChartsPane = lazy(() => import("./explore/ExploreChartsPane"))
+const ExploreRelationshipsPane = lazy(() => import("./explore/ExploreRelationshipsPane"))
 
 type ExplorePreviewProps = {
   node: SimpleNode
@@ -37,6 +38,7 @@ const EXPLORE_PREVIEW_PANES = [
   { key: "overview", label: "Overview" },
   { key: "pivots", label: "Pivots" },
   { key: "charts", label: "Charts" },
+  { key: "relationships", label: "Relationships" },
 ] as const satisfies readonly { key: ExplorePreviewPane; label: string }[]
 
 /**
@@ -102,7 +104,10 @@ export default function ExplorePreview({
   )
 
   const activePane =
-    rememberedPane === "overview" || rememberedPane === "pivots" || rememberedPane === "charts"
+    rememberedPane === "overview" ||
+    rememberedPane === "pivots" ||
+    rememberedPane === "charts" ||
+    rememberedPane === "relationships"
       ? rememberedPane
       : "preview"
   const activePaneMeta =
@@ -230,8 +235,17 @@ export default function ExplorePreview({
                   preamble={preamble}
                   report={view}
                 />
-              ) : (
+              ) : activePane === "charts" ? (
                 <ExploreChartsPane
+                  node={node}
+                  allNodes={allNodes}
+                  edges={edges}
+                  submodels={submodels}
+                  preamble={preamble}
+                  report={view}
+                />
+              ) : (
+                <ExploreRelationshipsPane
                   node={node}
                   allNodes={allNodes}
                   edges={edges}

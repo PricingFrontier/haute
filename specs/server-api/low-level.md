@@ -36,7 +36,8 @@
 | `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision/load-error validation, codegen invocation, config-file + sidecar writes, stale-config cleanup, and rollback. |
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview and trace. |
 | `src/haute/routes/output_assemble.py` | `POST /api/output-assemble/dry-run` — validates an unsaved `outputMapping`, swaps it into the target node's in-memory config, executes up to that node, returns the rendered document. |
-| `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching contract-error fields for background jobs. |
+| `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching contract-error fields for background jobs. Also owns `memory_limit_http_exception`, the one memory-limit → 507 mapping; a job-backed surface passes its operation noun so the detail also carries the curated message. |
+| `src/haute/routes/_error_handlers.py` | The application exception handlers, installed by `install_exception_handlers(app)`: public contract errors → `contract_error_http_exception`, `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → `memory_limit_http_exception`, `GitError` → `git_error_http_exception`. A handler reached from a WebSocket re-raises, because an HTTP response cannot answer it. |
 | `src/haute/routes/_runtime_path_errors.py` | Closed HTTP mapping for runtime-path failures: malformed path → 400, project-root escape → 403, selected by concrete exception type rather than message text. |
 | `src/haute/_node_config_recovery.py` | Current contracts and field reconciliation. |
 | `src/haute/_artifact_paths.py` | Contained project-relative artifact paths (traversal/alias/reparse-point rejection) and bounded artifact reads shared by recovery and the mutation lock. |
@@ -82,6 +83,7 @@ lines without manual formatting:
 ```
 HauteError
 ├── ConfigError
+│   └── NodeConfigError (also a HauteValidationError)
 ├── ParseError
 ├── ExecutionError
 │   ├── PreambleError
@@ -303,10 +305,12 @@ reverse, so runtime outer-to-inner order is `LocalTrustedHostMiddleware →
 LocalSessionMiddleware → _RequestIdMiddleware → route` in both dev and built-UI modes.
 Vite preserves the browser authority while proxying `/api` and `/ws`; no CORS middleware
 exposes a second request path around the exact authority checks.
-Host/auth failures therefore bypass request-ID binding/logging/header injection. The request-
-ID backstop returns `{"detail":"Internal server error"}` with the selected safe request ID on
-an escaped exception; route
-catch-alls use the different `_INTERNAL_ERROR_DETAIL` string. `LocalSessionMiddleware`
+Host/auth failures therefore bypass request-ID binding/logging/header injection. The
+registered exception handlers run inside `_RequestIdMiddleware`; an exception none of them
+claims reaches it, is logged as `unhandled_exception` with its `error_class` and traceback,
+and is answered `{"detail": _INTERNAL_ERROR_DETAIL}` with the selected safe request ID. It is
+the application's single handler for unexpected exceptions; routes do not catch `Exception`
+only to log it and answer 500. `LocalSessionMiddleware`
 checks Origin before its `OPTIONS` exception, so a trusted preflight bypasses the token while
 an untrusted preflight still receives 403. `_select_request_id` retains only a 1–64
 character ASCII token matching `[A-Za-z0-9][A-Za-z0-9._:-]*`; otherwise it generates a new
@@ -883,20 +887,22 @@ later write and cleanup checks still compare against the captured identities.
 
 | Raised as | Route(s) | HTTP status | Notes |
 |---|---|---|---|
-| `ConfigError` | save, preview, output-assemble dry-run | 400 / embedded `NodeResult.error` / 422 | Save: bad `haute.toml`. Preview: swallowed into the node result so the canvas shows it in-situ. |
+| `ConfigError` | save, preview, output-assemble dry-run | 400 / embedded `NodeResult.error` / 422 | Save: bad `haute.toml`. Preview: swallowed into the node result so the canvas shows it in-situ. A public contract error that is also a `ConfigError` or `SchemaMismatchError` (`NodeConfigError`, `RatingFactorMissingError`) is not swallowed: in thread and process mode alike the preview answers its public 422, and the preview worker re-raises it with its payload. |
 | `ContractMismatchError` | trace, preview, output-assemble dry-run | 422 / embedded `NodeResult.error` / 422 | Message already names the node + symmetric column diff. |
 | `SchemaMismatchError` | preview | embedded `NodeResult.error` | Adapted identically to `ContractMismatchError`, so a propagated join-key dtype mismatch never becomes a generic 500. |
 | `ParseError` | preview | embedded `NodeResult.error` | Preview surfaces graph-shape issues per node. An unreadable document on the editor-document routes propagates to the request-ID backstop as a sanitized 500 (authored failures arrive as 200 degraded/source-only documents). |
 | `ApiInputSchemaError` | json-cache; preview/write execution | 422 | JSON cache retains its `type` discriminator envelope; execution routes use the public-contract adapter (`api_input_schema_invalid`). |
 | `OutputMappingSchemaError` | output-assemble dry-run | 422 | Raised both by the schema-only pre-check and if execution surfaces it deeper (an unmapped port). |
-| `ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError` | preview, output write, output-assemble dry-run | 507 | Payload is `exc.to_payload()`, nested under `detail`, for every route. |
+| `ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError` | any synchronous route (application handler) | 507 | Payload is `exc.to_payload()`, nested under `detail`, through `memory_limit_http_exception`; training and the optimiser pass an operation noun that adds the curated `message`. |
+| Public contract errors (closed set below) | any synchronous route (application handler) | 422 / 507 / 409 | Routes that also log or order them against a broader clause keep an explicit clause with the same mapping. |
+| `GitError` family | any route (application handler) | 403 / 400 | `git_error_http_exception`: guardrail → 403 verbatim, domain → 400 verbatim, plain `GitError` → 400 sanitized. |
 | `InteractiveWorkerCrashedError` (memory-classified), remote `builtins.MemoryError`, remote `NativeMemoryLimitUnsupportedError` | preview, trace, output-assemble dry-run | 507 | Parent-authored data-free detail with `error_code="memory_limit"`, the operation, and a closed reason; a non-memory pool-worker crash stays a redacted 500. Mirrors the write-output worker classification. |
 | `BoundedMemoryUnsupportedError` | output write | 422 | Distinguishes "cannot stream safely" from a hard resource limit. |
 | `DataOutputDestinationExistsError` | `POST /api/pipeline/write-output` | 409 | `overwrite=false` refuses an existing file/table before publication and returns the destination in the detail. |
 | `SupersededRequestError` | preview, trace | 409 | Raised by `SupersessionCoordinator`; the worker never runs for a superseded generation. |
 | `IsolatedWorkerTimeoutError`, `BlockingWorkTimeoutError`, `TimeoutError` | preview, trace, JSON cache build, output write, output-assemble, Explore | 504 / timed-out job | Production process mode kills and joins the exact worker before returning or transitioning the job. Explicit thread compatibility mode is opt-in and retains cooperative/deferred cleanup; it is never selected after a process-start failure. |
 | `HTTPException` (raised directly) | path validation, node lookup, syntax checks | 400 / 403 / 404 / 409 | `raise_node_not_found`, `raise_node_type_error`, `raise_pipeline_not_found`, `raise_validation_error` centralise the structured-log + raise pattern. |
-| Any other `Exception` | route catch-alls | 500 | Route handlers generally log and return `_INTERNAL_ERROR_DETAIL`; `_RequestIdMiddleware` is a separate backstop whose fixed detail is `Internal server error`. |
+| Any other `Exception` | `_RequestIdMiddleware` | 500 | Logged as `unhandled_exception` with `error_class` and traceback; detail `_INTERNAL_ERROR_DETAIL`. |
 
 The synchronous public-contract adapter maps this closed set to HTTP 422 (except `InputPreparationError` with `reason_code == "memory_limited"`, which maps to 507, and `SeedPlanExpiredError`, which maps to 409 because the preview a trace explains must be refreshed); background jobs
 use the same stable codes and named fields under terminal `contract_error` (or `memory_limited` for that memory case):
@@ -914,6 +920,7 @@ use the same stable codes and named fields under terminal `contract_error` (or `
 | `RatingFactorMissingError` | `rating_factor_missing` | `table`, `factor` |
 | `RatingFactorDtypeContractError` | `rating_factor_dtype_contract` | `table`, `factor`, `saved_dtype`, `input_dtype` |
 | `LiveSwitchScenarioError` | `live_switch_scenario_missing` | `switch`, `scenario`, `available_mappings` |
+| `NodeConfigError` | `node_config_invalid` | `setting` |
 | `OutputNestingKeyError` | `output_nesting_key_null` | `frame`, `output_path`, `key` |
 | `SnapshotPlanInputsChangedError` | `snapshot_plan_inputs_changed` | `target_node_id` |
 | `SnapshotCorruptError` | `snapshot_corrupt` | `node_id`, `node_label` |

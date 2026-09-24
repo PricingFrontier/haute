@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useState } from "react"
+import { useMemo, useCallback, useState, type ReactNode } from "react"
 import { Copy, Trash } from "lucide-react"
 import { CHART_COLORS } from "../../../theme/colors"
 import useToastStore from "../../../stores/useToastStore"
@@ -190,6 +190,35 @@ const BOXED_INPUT_CLASS = "w-full px-1 py-0.5 rounded text-[11px] font-mono focu
 const BOXED_LABEL_INPUT_CLASS = `${BOXED_INPUT_CLASS} font-semibold`
 const BOXED_SELECT_CLASS = "w-full px-1 py-0.5 rounded text-[11px] font-mono appearance-none"
 const BOXED_CELL_STYLE = { background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-primary)' }
+const HEADER_CELL_CLASS = "text-left px-2 py-1.5 font-semibold"
+
+/** One editable rule column: its field, header, and the kind of cell it edits. */
+type RuleColumn = {
+  field: string
+  header: ReactNode
+  width?: number
+  cell: "operator" | "value" | "label"
+  ariaLabel: (ruleNumber: number) => string
+}
+
+const CONTINUOUS_COLUMNS: readonly RuleColumn[] = [
+  { field: CONTINUOUS_FIELDS[0], header: "From", width: 52, cell: "operator", ariaLabel: (n) => `Rule ${n} lower operator` },
+  { field: CONTINUOUS_FIELDS[1], header: "Value", width: 60, cell: "value", ariaLabel: (n) => `Rule ${n} lower value` },
+  {
+    field: CONTINUOUS_FIELDS[2],
+    header: <>To <span style={{ color: 'var(--text-muted)', opacity: 0.55, fontWeight: 'normal' }}>(opt.)</span></>,
+    width: 52,
+    cell: "operator",
+    ariaLabel: (n) => `Rule ${n} upper operator`,
+  },
+  { field: CONTINUOUS_FIELDS[3], header: "Value", width: 60, cell: "value", ariaLabel: (n) => `Rule ${n} upper value` },
+  { field: CONTINUOUS_FIELDS[4], header: "Label", cell: "label", ariaLabel: (n) => `Rule ${n} label` },
+]
+
+const CATEGORICAL_COLUMNS: readonly RuleColumn[] = [
+  { field: CATEGORICAL_FIELDS[0], header: "Value", cell: "value", ariaLabel: (n) => `Rule ${n} match value` },
+  { field: CATEGORICAL_FIELDS[1], header: "Maps To", cell: "label", ariaLabel: (n) => `Rule ${n} group name` },
+]
 
 export function BandingRulesGrid({
   factor,
@@ -266,145 +295,77 @@ export function BandingRulesGrid({
 
   const showMatchCounts = !!matchCounts
 
-  const continuousCols = showMatchCounts ? 7 : 6
-  const categoricalCols = showMatchCounts ? 4 : 3
+  const columns = bt === "continuous" ? CONTINUOUS_COLUMNS : CATEGORICAL_COLUMNS
 
   return (
     <div className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)', background: 'var(--bg-input)' }}>
       <div className="max-h-[300px] overflow-y-auto" data-testid="banding-scroll-container" onPaste={handlePaste}>
-        {bt === "continuous" ? (
-          <table className="w-full text-[11px]">
-            <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>
-              <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
-                <th className="text-left px-2 py-1.5 font-semibold" style={{ color: 'var(--text-muted)', width: 52 }}>From</th>
-                <th className="text-left px-2 py-1.5 font-semibold" style={{ color: 'var(--text-muted)', width: 60 }}>Value</th>
-                <th className="text-left px-2 py-1.5 font-semibold" style={{ color: 'var(--text-muted)', width: 52 }}>
-                  To <span style={{ color: 'var(--text-muted)', opacity: 0.55, fontWeight: 'normal' }}>(opt.)</span>
+        <table className="w-full text-[11px]">
+          <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>
+            <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
+              {columns.map((column, index) => (
+                <th key={index} className={HEADER_CELL_CLASS} style={{ color: 'var(--text-muted)', width: column.width }}>
+                  {column.header}
                 </th>
-                <th className="text-left px-2 py-1.5 font-semibold" style={{ color: 'var(--text-muted)', width: 60 }}>Value</th>
-                <th className="text-left px-2 py-1.5 font-semibold" style={{ color: 'var(--text-muted)' }}>Label</th>
-                {showMatchCounts && (
-                  <th className="text-right px-2 py-1.5 font-semibold" style={{ color: 'var(--text-muted)', width: 50 }}>Matches</th>
-                )}
-                <th style={{ width: 28 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rules.length === 0 ? (
-                <tr><td colSpan={continuousCols} className="px-2 py-3 text-center" style={{ color: 'var(--text-muted)' }}>No rules yet</td></tr>
-              ) : (rules as ContinuousRule[]).map((rule, i) => (
-                <tr key={ruleKey(rule, i)}>
-                  <td className={CELL_CLASS}>
-                    <select value={rule.op1 || ""} onChange={(e) => updateRule(i, "op1", e.target.value)}
-                      onPaste={(e) => handleCellPaste(e, i, 0)}
-                      aria-label={`Rule ${i + 1} lower operator`}
-                      className={BOXED_SELECT_CLASS}
-                      style={BOXED_CELL_STYLE}>
-                      <option value="">-</option>
-                      {OPS.map((o) => <option key={o} value={o}>{o}</option>)}
-                    </select>
-                  </td>
-                  <td className={CELL_CLASS}>
-                    <input type="text" value={rule.val1 ?? ""} onChange={(e) => updateRule(i, "val1", e.target.value)}
-                      onPaste={(e) => handleCellPaste(e, i, 1)}
-                      aria-label={`Rule ${i + 1} lower value`}
-                      className={BOXED_INPUT_CLASS}
-                      style={BOXED_CELL_STYLE} placeholder="" />
-                  </td>
-                  <td className={CELL_CLASS}>
-                    <select value={rule.op2 || ""} onChange={(e) => updateRule(i, "op2", e.target.value)}
-                      onPaste={(e) => handleCellPaste(e, i, 2)}
-                      aria-label={`Rule ${i + 1} upper operator`}
-                      className={BOXED_SELECT_CLASS}
-                      style={BOXED_CELL_STYLE}>
-                      <option value="">-</option>
-                      {OPS.map((o) => <option key={o} value={o}>{o}</option>)}
-                    </select>
-                  </td>
-                  <td className={CELL_CLASS}>
-                    <input type="text" value={rule.val2 ?? ""} onChange={(e) => updateRule(i, "val2", e.target.value)}
-                      onPaste={(e) => handleCellPaste(e, i, 3)}
-                      aria-label={`Rule ${i + 1} upper value`}
-                      className={BOXED_INPUT_CLASS}
-                      style={BOXED_CELL_STYLE} placeholder="" />
-                  </td>
-                  <td className={CELL_CLASS}>
-                    <input type="text" value={rule.assignment ?? ""} onChange={(e) => updateRule(i, "assignment", e.target.value)}
-                      onPaste={(e) => handleCellPaste(e, i, 4)}
-                      aria-label={`Rule ${i + 1} label`}
-                      onKeyDown={(e) => handleKeyDown(e, i)}
-                      className={BOXED_LABEL_INPUT_CLASS}
-                      style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: accentColor }} placeholder="" />
-                  </td>
-                  {showMatchCounts && (
-                    <td className={MATCH_CELL_CLASS}>
-                      <span style={{ color: matchCounts[i] === 0 ? 'var(--danger)' : 'var(--text-muted)', opacity: matchCounts[i] === 0 ? 0.7 : 1 }}>
-                        {matchCounts[i] ?? ""}
-                      </span>
-                    </td>
-                  )}
-                  <td className={DELETE_CELL_CLASS}>
-                    <button onClick={() => removeRule(i)}
-                      aria-label={`Delete rule ${i + 1}`}
-                      className={DELETE_BUTTON_CLASS}>
-                      <Trash size={11} />
-                    </button>
-                  </td>
-                </tr>
               ))}
-            </tbody>
-          </table>
-        ) : (
-          <table className="w-full text-[11px]">
-            <thead style={{ position: 'sticky', top: 0, zIndex: 1 }}>
-              <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-elevated)' }}>
-                <th className="text-left px-2 py-1.5 font-semibold" style={{ color: 'var(--text-muted)' }}>Value</th>
-                <th className="text-left px-2 py-1.5 font-semibold" style={{ color: 'var(--text-muted)' }}>Maps To</th>
-                {showMatchCounts && (
-                  <th className="text-right px-2 py-1.5 font-semibold" style={{ color: 'var(--text-muted)', width: 50 }}>Matches</th>
-                )}
-                <th style={{ width: 28 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rules.length === 0 ? (
-                <tr><td colSpan={categoricalCols} className="px-2 py-3 text-center" style={{ color: 'var(--text-muted)' }}>No rules yet</td></tr>
-              ) : (rules as CategoricalRule[]).map((rule, i) => (
-                <tr key={ruleKey(rule, i)}>
-                  <td className={CELL_CLASS}>
-                    <input type="text" value={rule.value ?? ""} onChange={(e) => updateRule(i, "value", e.target.value)}
-                      onPaste={(e) => handleCellPaste(e, i, 0)}
-                      aria-label={`Rule ${i + 1} match value`}
-                      className={BOXED_INPUT_CLASS}
-                      style={BOXED_CELL_STYLE} placeholder="" />
-                  </td>
-                  <td className={CELL_CLASS}>
-                    <input type="text" value={rule.assignment ?? ""} onChange={(e) => updateRule(i, "assignment", e.target.value)}
-                      onPaste={(e) => handleCellPaste(e, i, 1)}
-                      aria-label={`Rule ${i + 1} group name`}
-                      onKeyDown={(e) => handleKeyDown(e, i)}
-                      className={BOXED_LABEL_INPUT_CLASS}
-                      style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: accentColor }} placeholder="" />
-                  </td>
-                  {showMatchCounts && (
-                    <td className={MATCH_CELL_CLASS}>
-                      <span style={{ color: matchCounts[i] === 0 ? 'var(--danger)' : 'var(--text-muted)', opacity: matchCounts[i] === 0 ? 0.7 : 1 }}>
-                        {matchCounts[i] ?? ""}
-                      </span>
+              {showMatchCounts && (
+                <th className="text-right px-2 py-1.5 font-semibold" style={{ color: 'var(--text-muted)', width: 50 }}>Matches</th>
+              )}
+              <th style={{ width: 28 }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rules.length === 0 ? (
+              <tr><td colSpan={columns.length + (showMatchCounts ? 2 : 1)} className="px-2 py-3 text-center" style={{ color: 'var(--text-muted)' }}>No rules yet</td></tr>
+            ) : rules.map((rule, i) => (
+              <tr key={ruleKey(rule, i)}>
+                {columns.map((column, fieldIndex) => {
+                  const value = String((rule as Record<string, unknown>)[column.field] ?? "")
+                  const common = {
+                    value,
+                    onPaste: (e: React.ClipboardEvent<HTMLInputElement | HTMLSelectElement>) => handleCellPaste(e, i, fieldIndex),
+                    "aria-label": column.ariaLabel(i + 1),
+                  }
+                  return (
+                    <td key={column.field} className={CELL_CLASS}>
+                      {column.cell === "operator" ? (
+                        <select {...common} onChange={(e) => updateRule(i, column.field, e.target.value)}
+                          className={BOXED_SELECT_CLASS}
+                          style={BOXED_CELL_STYLE}>
+                          <option value="">-</option>
+                          {OPS.map((o) => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                      ) : column.cell === "value" ? (
+                        <input type="text" {...common} onChange={(e) => updateRule(i, column.field, e.target.value)}
+                          className={BOXED_INPUT_CLASS}
+                          style={BOXED_CELL_STYLE} placeholder="" />
+                      ) : (
+                        <input type="text" {...common} onChange={(e) => updateRule(i, column.field, e.target.value)}
+                          onKeyDown={(e) => handleKeyDown(e, i)}
+                          className={BOXED_LABEL_INPUT_CLASS}
+                          style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: accentColor }} placeholder="" />
+                      )}
                     </td>
-                  )}
-                  <td className={DELETE_CELL_CLASS}>
-                    <button onClick={() => removeRule(i)}
-                      aria-label={`Delete rule ${i + 1}`}
-                      className={DELETE_BUTTON_CLASS}>
-                      <Trash size={11} />
-                    </button>
+                  )
+                })}
+                {showMatchCounts && (
+                  <td className={MATCH_CELL_CLASS}>
+                    <span style={{ color: matchCounts[i] === 0 ? 'var(--danger)' : 'var(--text-muted)', opacity: matchCounts[i] === 0 ? 0.7 : 1 }}>
+                      {matchCounts[i] ?? ""}
+                    </span>
                   </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+                )}
+                <td className={DELETE_CELL_CLASS}>
+                  <button onClick={() => removeRule(i)}
+                    aria-label={`Delete rule ${i + 1}`}
+                    className={DELETE_BUTTON_CLASS}>
+                    <Trash size={11} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
       <div className="flex items-center justify-end px-2 py-1.5" style={{ background: 'var(--bg-elevated)', borderTop: '1px solid var(--border)' }}>
         <button

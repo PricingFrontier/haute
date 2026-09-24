@@ -3,7 +3,7 @@
 Fills the gaps left by tests/test_deploy_internals.py and
 tests/test_deploy_contract_integrity.py:
 
-* ``_canonical_dtype`` — every dtype branch (Boolean / String / Int /
+* ``contract_dtype_name`` — every dtype branch (Boolean / String / Int /
   Float / fallback). A wrong mapping here would silently pass or fail
   contract-drift detection in ``_assert_runtime_contract_matches``.
 * ``_assert_runtime_contract_matches`` — the matching path for each
@@ -30,7 +30,7 @@ from tests.conftest import make_graph as _g
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
 # ===========================================================================
-# _canonical_dtype — every branch
+# contract_dtype_name — every branch
 # ===========================================================================
 
 
@@ -38,33 +38,33 @@ class TestCanonicalDtype:
     """Map polars dtypes to the canonical contract dtype string."""
 
     def test_boolean(self):
-        from haute.deploy._scorer import _canonical_dtype
+        from haute._polars_dtypes import contract_dtype_name
 
-        assert _canonical_dtype(pl.Boolean) == "Boolean"
+        assert contract_dtype_name(pl.Boolean) == "Boolean"
 
     @pytest.mark.parametrize("dtype", [pl.Utf8, pl.String, pl.Categorical])
     def test_string_family(self, dtype):
-        from haute.deploy._scorer import _canonical_dtype
+        from haute._polars_dtypes import contract_dtype_name
 
-        assert _canonical_dtype(dtype) == "String"
+        assert contract_dtype_name(dtype) == "String"
 
     @pytest.mark.parametrize("dtype", [pl.Int8, pl.Int32, pl.Int64, pl.UInt16, pl.UInt64])
     def test_integer_family(self, dtype):
-        from haute.deploy._scorer import _canonical_dtype
+        from haute._polars_dtypes import contract_dtype_name
 
-        assert _canonical_dtype(dtype) == "Int64"
+        assert contract_dtype_name(dtype) == "Int64"
 
     @pytest.mark.parametrize("dtype", [pl.Float32, pl.Float64])
     def test_float_family(self, dtype):
-        from haute.deploy._scorer import _canonical_dtype
+        from haute._polars_dtypes import contract_dtype_name
 
-        assert _canonical_dtype(dtype) == "Float64"
+        assert contract_dtype_name(dtype) == "Float64"
 
     def test_fallback_returns_str_repr(self):
         """Unrecognised dtypes fall through to ``str(dtype)``."""
-        from haute.deploy._scorer import _canonical_dtype
+        from haute._polars_dtypes import contract_dtype_name
 
-        result = _canonical_dtype(pl.Datetime)
+        result = contract_dtype_name(pl.Datetime)
         assert result == str(pl.Datetime)
         assert result not in ("Boolean", "String", "Int64", "Float64")
 

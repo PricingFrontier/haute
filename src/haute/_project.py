@@ -135,8 +135,16 @@ def _toml_configured_pipeline(root: Path) -> Path | None:
             path=str(toml_path),
         )
     pipeline = project.get("pipeline")
-    if not isinstance(pipeline, str) or not pipeline:
+    if pipeline is None or pipeline == "":
         return None
+    if not isinstance(pipeline, str):
+        # A configured value that is not a path is a broken tier one, not an
+        # absent one: falling through would bind a different pipeline.
+        raise ConfigError(
+            "haute.toml [project].pipeline must be a path string",
+            path=str(toml_path),
+            value_type=type(pipeline).__name__,
+        )
     return root / pipeline
 
 

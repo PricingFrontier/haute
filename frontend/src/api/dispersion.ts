@@ -13,6 +13,7 @@ import {
   validateDispersionEstimateResponse,
   validateDispersionEstimateStatusResponse,
 } from "../generated/api-contracts.modelling.validators.mjs"
+import { waitForJob } from "../hooks/jobPollingController"
 import { expectGeneratedContract } from "../types/generatedContractValidation"
 import { ApiError, post, request } from "./client"
 import { TERMINAL_JOB_STATUSES } from "./types"
@@ -83,24 +84,20 @@ export async function runDispersionEstimate(
   options?: { signal?: AbortSignal; pollIntervalMs?: number },
 ): Promise<number> {
   const { job_id } = await estimateGlmDispersion({ ...args, signal: options?.signal })
-  const pollInterval = options?.pollIntervalMs ?? 500
   try {
-    for (;;) {
-      if (options?.signal?.aborted) {
-        throw new DOMException("Dispersion estimation aborted", "AbortError")
-      }
-      const status = await getDispersionStatus(job_id, { signal: options?.signal })
-      if (status.status === "completed") {
-        if (status.value === null) {
-          throw new Error("Dispersion estimation completed without a value")
-        }
-        return status.value
-      }
-      if (TERMINAL_JOB_STATUSES.has(status.status)) {
-        throw new ApiError(status.error || status.message || `Dispersion estimation ${status.status}`, 500)
-      }
-      await new Promise((resolve) => setTimeout(resolve, pollInterval))
+    const status = await waitForJob({
+      poll: (signal) => getDispersionStatus(job_id, { signal }),
+      isTerminal: (current) => TERMINAL_JOB_STATUSES.has(current.status),
+      intervalMs: options?.pollIntervalMs ?? 500,
+      signal: options?.signal,
+    })
+    if (status.status !== "completed") {
+      throw new ApiError(status.error || status.message || `Dispersion estimation ${status.status}`, 500)
     }
+    if (status.value === null) {
+      throw new Error("Dispersion estimation completed without a value")
+    }
+    return status.value
   } catch (error) {
     if (options?.signal?.aborted) {
       await cancelDispersion(job_id)

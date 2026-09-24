@@ -42,7 +42,7 @@ Modelling and optimiser result presentation belongs to
   aborted, and a late response is discarded; a trace whose snapshots have expired refreshes
   the preview.
 - Explore reads the shared data point its node resolves to, exposes Preview, Overview, Pivots,
-  and Charts tabs in that order, and renders statistics only from the shared profile of the data
+  Charts and Relationships tabs in that order, and renders statistics only from the shared profile of the data
   version that point currently holds. An active job remains visible and cancellable if the graph
   or active source changes while it runs.
 - Explore shows the same cache state, the same progress, and the same one build as every other
@@ -58,6 +58,8 @@ Modelling and optimiser result presentation belongs to
   already current is left alone, because the same button is pressed to re-read a node's generated
   fields. Refresh is also the recovery path from an unreadable snapshot. A point read straight
   from its Parquet file states that instead, having nothing to cache.
+- The Explore preview's Relationships pane relates chosen features to a target and checks chosen
+  key columns over the whole cached data; its choices are pane state, not config.
 - Overview cards have a fixed order and are individually enabled from config. They display
   dataset, quality, numeric, categorical and schema information with accessible empty states.
   Schema, numeric-summary, and categorical-summary tables expose native-button actions to copy

@@ -19,7 +19,7 @@
 | `src/haute/_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
 | `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets, starter pipeline/tests/utilities, pre-commit hook. |
 | `src/haute/_project.py` | Project-root discovery (`get_project_root`, `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file`, 4-tier fallback). |
-| `haute.toml` (repo root) | Concrete instance of the schema emitted by `src/haute/_scaffold.py::haute_toml`; `[project].pipeline` is read back by `src/haute/_project.py::_toml_configured_pipeline`. |
+| `haute.toml` (repo root) | Concrete instance of the schema emitted by `src/haute/_scaffold.py::haute_toml`; `[project].pipeline` is read back by `src/haute/_project.py::_toml_configured_pipeline`, the one reader behind pipeline binding, `src/haute/_builders.py::_configured_pipeline_dir` and `src/haute/routes/_helpers.py::pipeline_dir`. |
 
 ## Key types and data structures
 
@@ -367,8 +367,10 @@ forwards projection/profile fields; external-file resolution validates
   are matched on the stem before the first dot, casefolded, with trailing dots/spaces
   stripped — and rejected on every OS, not gated behind a platform check, so a project saved
   on Linux/macOS stays loadable on a Windows checkout.
-- `_toml_configured_pipeline` raises `ConfigError` for malformed/unreadable TOML, so
-  `resolve_pipeline_file` cannot silently discard the configured tier and bind another file.
+- `_toml_configured_pipeline` raises `ConfigError` for malformed/unreadable TOML, a
+  `[project]` that is not a table, or a `pipeline` value that is not a string (an empty
+  string counts as absent), so `resolve_pipeline_file` cannot silently discard the
+  configured tier and bind another file.
 - Ambiguous auto-discovery (2+ root `.py` files matching, no `main.py`, no configured TOML
   pipeline) raises rather than picking one alphabetically — deliberate, per the module
   docstring's "never silently picks a random file" contract.
@@ -423,6 +425,15 @@ forwards projection/profile fields; external-file resolution validates
   both listed in the message — a one-port source accepts only the exact one-key dict); and a
   dict seed of any content against a zero-port source (source-only pipelines take a bare
   frame).
+- **`NodeConfigError`** (`haute.errors`; a `ConfigError` and a `HauteValidationError`, so
+  also a `ValueError`) — a node setting the builder cannot run with, raised by
+  `scenario_step_count` for a missing, non-whole or non-positive `stepCount`. It carries the
+  stable public code `node_config_invalid` and the safe field `setting`, so the shared
+  contract adapter returns it as HTTP 422 / background `contract_error` with the message.
+  Bare `ValueError`s that signal an internal invariant (registry misuse, optimiser input
+  wiring, ratebook artifact arity) stay bare and remain a sanitized 500. The retained-input
+  `path` and external-file `fileType` checks run when the node executes, where preview already
+  reports the failure on the node, so they stay `ValueError`.
 - **`ValueError`** — empty live pipeline; an unwired non-source node or missing upstream result
   during `Pipeline.run()`/`score()`; unknown source or target node in `connect()`; empty-string
   port name; submodel identity errors (non-canonical submodel name, name conflicting with a registered

@@ -43,7 +43,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/codegen.py` | Public orchestration API (`graph_to_code`, `graph_to_code_multi`); single-node dispatch (`_node_to_code`, `_generate_node_code`); instance-node handling; contract kwarg formatting/injection (`_format_contract_kwarg`, `_format_contract_source`, `_inject_contract_kwarg`); pipeline/submodel file assembly (`_generate_pipeline_lines`); the final parse gate (`_assert_emitted_files_parse`). |
-| `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`. String-safety helpers (`_safe_str`, `_safe_path`), shared field extraction (`_common_node_fields`, `_build_params` — parameters are the per-edge input names supplied by the orchestrator, and duplicates are rejected by `src/haute/codegen.py::_validate_duplicate_node_inputs`), docstring sanitization (`_sanitize_description`), and per-type templates such as `_MODEL_SCORE`, `_BANDING_SINGLE`, and `_RETAINED_EXTERNAL`. |
+| `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`. String-safety helpers (`_safe_str`, `_safe_path`), shared field extraction (`_common_node_fields`, `_build_params` — parameters are the per-edge input names supplied by the orchestrator, and duplicates are rejected by `src/haute/codegen.py::_validate_duplicate_node_inputs`), docstring sanitization (`_sanitize_description`), the config-backed decorator line (`_config_decorator`), and per-type templates such as `_MODEL_SCORE`, `_BANDING`, and `_RETAINED_EXTERNAL`. |
 | `src/haute/_python_syntax.py` | Formatting-preserving valid-Python boundary: LibCST decorator-keyword injection, exact method-call discovery, exact expression/function replacement and generated function setup insertion, with stable structured syntax failures. It never repairs invalid Python syntax or evaluates source. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): codegen registers and reads per-node code builders through the canonical registry. |
 | `src/haute/_code_extraction.py` | Reverse direction of the codegen builders' body wrapping: strips generated boilerplate back out of a persisted function body so the user-facing code editor shows only what the user actually typed. Consolidated engine (`extract_user_code`) dispatches through `BOILERPLATE_MATCHERS`/`_FINALISERS` registries keyed by node "kind." |
@@ -134,12 +134,16 @@ fresh markers.
 3. `_generate_node_code` — looks up `NODE_REGISTRY[node.data.nodeType].codegen`
    and calls it; raises `KeyError` if either the entry or its codegen builder
    is missing.
-4. If `has_config_folder(node_type)` (from `haute._config_io`), locate the
-   first `\ndef ` in the generated code and replace everything before it
-   with `@pipeline.<decorator>(config=<path>)`. The decorator lookup uses the
-   complete `NODE_TYPE_TO_DECORATOR` mapping; a missing mapping or missing
-   generated `def` raises `HauteError` with node context rather than silently
-   defaulting or skipping the rewrite.
+4. A config-backed builder (`has_config_folder(node_type)`, from
+   `haute._config_io`) opens its code with `_config_decorator(node, func_name)`,
+   which renders `@pipeline.<decorator>(config=<path>)` from the complete
+   `NODE_TYPE_TO_DECORATOR` mapping and `config_path_for_node`; a missing
+   mapping raises `HauteError` with node context rather than defaulting. The
+   builder therefore renders no config values into its decorator, and
+   `_node_to_code` does not post-process its output. The rating-step builder
+   still validates the table and combined-output shapes it no longer renders,
+   because codegen runs at save and a malformed config must fail there as it
+   would at execution.
 5. `_format_contract_kwarg` computes the `contract=...` kwarg text (or
    `None` for instance nodes whose contract comes from the referenced
    original node). It derives the builder contract from the current config

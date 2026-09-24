@@ -698,10 +698,10 @@ class TestTargetTypeRespected:
 )
 def test_real_polars_temporal_dtypes_map_to_mlflow_datetime(dtype: object) -> None:
     """Date and every canonical Polars Datetime form are preserved deliberately."""
+    from haute._polars_dtypes import contract_dtype_name
     from haute.modelling._signature import _map_dtype
-    from haute.modelling._training_job import _polars_dtype_name
 
-    dtype_name = _polars_dtype_name(dtype)
+    dtype_name = contract_dtype_name(dtype)
     assert _map_dtype(dtype_name) == DataType.datetime
 
 
@@ -726,10 +726,10 @@ def test_datetime_lookalikes_are_rejected(dtype_name: str) -> None:
     [pl.Decimal, pl.Decimal(precision=12, scale=3)],
 )
 def test_decimal_dtypes_are_rejected_with_explicit_cast_guidance(dtype: object) -> None:
+    from haute._polars_dtypes import contract_dtype_name
     from haute.modelling._signature import _map_dtype
-    from haute.modelling._training_job import _polars_dtype_name
 
-    dtype_name = _polars_dtype_name(dtype)
+    dtype_name = contract_dtype_name(dtype)
     with pytest.raises(ValueError) as excinfo:
         _map_dtype(dtype_name)
 
@@ -766,8 +766,8 @@ def test_real_mlflow_pyfunc_roundtrip_enforces_temporal_signature(
     """A signature built from production dtype descriptors survives log/load/predict."""
     from haute._mlflow_io import _prepare_predict_frame
     from haute._mlflow_utils import mlflow_fluent_operation
+    from haute._polars_dtypes import contract_dtype_name
     from haute.modelling._signature import build_signature
-    from haute.modelling._training_job import _polars_dtype_name
 
     polars_frame = pl.DataFrame(
         {
@@ -784,7 +784,7 @@ def test_real_mlflow_pyfunc_roundtrip_enforces_temporal_signature(
     signature = build_signature(
         features=list(polars_frame.columns),
         feature_types={
-            name: _polars_dtype_name(dtype) for name, dtype in polars_frame.schema.items()
+            name: contract_dtype_name(dtype) for name, dtype in polars_frame.schema.items()
         },
         categorical_features=[],
         target_name="loss",

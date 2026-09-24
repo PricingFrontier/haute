@@ -89,6 +89,25 @@ class ConfigError(HauteError):
     """Configuration loading or validation failure."""
 
 
+class NodeConfigError(ConfigError, HauteValidationError):
+    """A node setting the builder cannot run with: missing, malformed or out of range.
+
+    The user can fix it on the node, so it opts into the public contract: the
+    message names the setting and what is wrong with it, and reaches the client
+    as HTTP 422 (background ``contract_error``) instead of an internal error.
+    It is also a :class:`HauteValidationError`, and so a ``ValueError``: the
+    chunk planner and the RAM estimator, which only ask whether they can plan
+    the node, keep treating it as "cannot plan" without knowing this type.
+    """
+
+    error_code = "node_config_invalid"
+    public_fields = ("setting",)
+
+    def __init__(self, message: str, *, setting: str) -> None:
+        self.setting = setting
+        super().__init__(message, setting=setting)
+
+
 class MlflowConfigError(ConfigError):
     """Invalid or incomplete MLflow tracking-destination configuration.
 

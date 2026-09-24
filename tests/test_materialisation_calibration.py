@@ -15,7 +15,12 @@ from haute._estimate_calibration import (
     materialisation_calibration_snapshot,
     observe_materialisation_estimate,
 )
-from haute._execution_context import ExecutionAdmission, ExecutionContext, ExecutionProfile
+from haute._execution_context import (
+    ExecutionAdmission,
+    ExecutionContext,
+    ExecutionProfile,
+    _terminal_telemetry_attributes,
+)
 from haute._ram_estimate import MaterialisationEstimate
 from haute.errors import GroupByExecutionUnsupportedError
 from haute.execution import ProjectionRequest, plan_execution_strategy
@@ -230,7 +235,7 @@ def test_terminal_metrics_record_observed_growth_once_and_expose_calibration_evi
     assert first["estimated_bytes"] == 100
     assert first["estimate_calibration_factor_basis_points"] == 10_000
     assert first["observed_peak_rss_growth_bytes"] == 150
-    telemetry = context._telemetry_attributes(first)
+    telemetry = _terminal_telemetry_attributes(first)
     assert telemetry["raw_estimated_bytes"] == 100
     assert telemetry["estimate_calibration_factor_basis_points"] == 10_000
     assert telemetry["estimate_admission_basis"] == "provided"

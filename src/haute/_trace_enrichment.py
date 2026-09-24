@@ -29,7 +29,7 @@ import copy
 import dataclasses
 import math
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -37,6 +37,8 @@ import polars as pl
 from haute._banding_config import normalise_banding_factors
 from haute._cache import canonical_json
 from haute._expression_parser import (
+    AssignmentPhases,
+    assignment_phases,
     evaluate_expression,
     parse_expression,
     parse_expression_chain,
@@ -1064,32 +1066,31 @@ def _build_input_sources(
                     if parsed and parsed.expression_text:
                         source_info["expression_text"] = parsed.expression_text
                         parsed_refs = list(parsed.referenced_columns)
-                    eval_values = {**other_step.input_values, **other_step.output_values}
-                    self_referential_modification = (
-                        ref_col in other_step.schema_diff.columns_modified
-                        and parsed
-                        and ref_col in parsed.referenced_columns
-                    )
-                    skip_evaluation = False
-                    if self_referential_modification:
-                        if ref_col in other_step.input_values:
-                            eval_values[ref_col] = other_step.input_values[ref_col]
-                        else:
-                            source_info["result_value"] = other_step.output_values.get(ref_col)
-                            source_info["substituted_text"] = (
-                                f"{ref_col} = {_quote_trace_value(source_info['result_value'])}"
-                            )
-                            skip_evaluation = True
-                    if not skip_evaluation:
+                    eval_values = _assignment_values(other_step, ref_col, parsed, other_code)
+                    if eval_values is None:
+                        source_info["result_value"] = other_step.output_values.get(ref_col)
+                        source_info["substituted_text"] = (
+                            f"{ref_col} = {_quote_trace_value(source_info['result_value'])}"
+                        )
+                    else:
                         ev = evaluate_expression(
                             other_code,
                             ref_col,
                             eval_values,
                             preamble_ns=preamble_ns,
+                            row=_assignment_row(other_step, ref_col, parsed, other_code),
                         )
                         if ev is not None:
+                            shown = _with_execution_value(
+                                {
+                                    "result_value": ev.result_value,
+                                    "not_computable_reason": ev.not_computable_reason,
+                                },
+                                other_step,
+                                ref_col,
+                            )
                             source_info["substituted_text"] = ev.substituted_text
-                            source_info["result_value"] = ev.result_value
+                            source_info.update(shown)
             except Exception as exc:
                 # Surface the derivation failure on the source entry so
                 # the caller can see why an input column's value/
@@ -1394,27 +1395,159 @@ def _same_value(left: Any, right: Any) -> bool:
     return bool(left == right)
 
 
-def _assignment_values(step: TraceStep, column: str, parsed: Any) -> dict[str, Any] | None:
-    """The values *step*'s assignment of *column* is evaluated on.
-
-    A self-referential assignment (``premium = premium * ...``) reads the
-    value from before it: the post-assignment output must not clobber the
-    right-hand side, or the substitution shows the output there and a result
-    contradicting the displayed value.  Same guard as the input-sources path
-    (``self_referential_modification``).  ``None`` when that earlier value
-    is unknown.
-    """
-    values = {**step.input_values, **step.output_values}
-    self_referential = (
+def _is_self_referential(step: TraceStep, column: str, parsed: Any) -> bool:
+    return bool(
         column in step.schema_diff.columns_modified
         and parsed is not None
         and column in parsed.referenced_columns
     )
-    if self_referential:
-        if column not in step.input_values:
+
+
+def _read_before_call(step: TraceStep, phases: AssignmentPhases) -> frozenset[str]:
+    """The columns the call reads at their value from before it.
+
+    When a write in that call or a later one has no static name it may have
+    rewritten any column, even one whose value it left equal but whose dtype it
+    changed. Every column is then read from before the call, so only input
+    columns no earlier call assigned remain.
+    """
+    if not phases.unresolved:
+        return phases.at_or_after
+    return phases.at_or_after | frozenset(step.input_values) | frozenset(step.output_values)
+
+
+def _values_before_call(
+    values: dict[str, Any], step: TraceStep, phases: AssignmentPhases
+) -> dict[str, Any]:
+    """*values* as the ``with_columns`` call that assigns the target reads them.
+
+    A column the same or a later call assigns is read at its value from before
+    that call: the input value when no earlier call can have assigned it, and
+    otherwise a value the trace does not hold, so it is left out.
+    """
+    before = dict(values)
+    for name in _read_before_call(step, phases):
+        if _earlier_value_unknown(name, step.input_values, phases):
+            before.pop(name, None)
+        else:
+            before[name] = step.input_values[name]
+    return before
+
+
+def _earlier_value_unknown(name: str, inputs: Collection[str], phases: AssignmentPhases) -> bool:
+    """Whether an earlier call can have rewritten *name*, or it has no input value."""
+    return name in phases.before or phases.unresolved_before or name not in inputs
+
+
+def _row_before_call(row: pl.DataFrame, step: TraceStep, phases: AssignmentPhases) -> pl.DataFrame:
+    """The typed counterpart of :func:`_values_before_call`."""
+    input_row = step.input_row
+    for name in _read_before_call(step, phases):
+        if input_row is None or _earlier_value_unknown(name, input_row.columns, phases):
+            row = row.drop(name, strict=False)
+        else:
+            row = row.with_columns(input_row.get_column(name))
+    # Dropping every column would leave no row at all; the row is still there,
+    # it just holds nothing the formula can read.
+    return row if row.width else pl.DataFrame([{}])
+
+
+def _assignment_values(
+    step: TraceStep, column: str, parsed: Any, code: str
+) -> dict[str, Any] | None:
+    """The values *step*'s assignment of *column* in *code* is evaluated on.
+
+    Its ``with_columns`` call reads every column the same or a later call
+    assigns at its value from before the call, so a self-referential
+    assignment (``premium = premium * ...``) and a sibling reading a column its
+    call also assigns both see the earlier value, never the node's output.
+    ``None`` when a self-referential assignment's earlier value is unknown.
+    """
+    values = {**step.input_values, **step.output_values}
+    if _is_self_referential(step, column, parsed) and column not in step.input_values:
+        return None
+    phases = assignment_phases(code, column)
+    return values if phases is None else _values_before_call(values, step, phases)
+
+
+# A frame holding no row: the evaluator reports a formula it is handed as not
+# computable, instead of inferring dtypes from the trace's JSON-safe values.
+_NO_TRACED_ROW = pl.DataFrame()
+
+
+def _chain_start(row: pl.DataFrame, step: TraceStep, target: str) -> pl.DataFrame | None:
+    """A chain target starts from its pre-node value, or absent if the node creates it."""
+    if target in step.input_values:
+        if step.input_row is None or target not in step.input_row.columns:
             return None
-        values[column] = step.input_values[column]
-    return values
+        return row.with_columns(step.input_row.get_column(target))
+    return row.drop(target, strict=False)
+
+
+def _chain_feed(
+    row: pl.DataFrame, step: TraceStep, target: str, shown: Mapping[str, Any]
+) -> pl.DataFrame:
+    """*row* with one chain entry's result, for the entries after it to read.
+
+    An entry without a value leaves its column out, so a later entry that
+    reads it reports the column unavailable rather than reading a stale value.
+    """
+    if (
+        shown.get("not_computable_reason") is not None
+        and shown.get("result_source") != "trace_execution"
+    ):
+        return row.drop(target, strict=False)
+    dtype = step.output_row.schema.get(target) if step.output_row is not None else None
+    return row.with_columns(pl.Series(target, [shown["result_value"]], dtype=dtype))
+
+
+def _typed_values(step: TraceStep) -> pl.DataFrame | None:
+    """The typed row behind ``{**step.input_values, **step.output_values}``."""
+    output_row = step.output_row
+    if output_row is None:
+        return None
+    input_row = step.input_row
+    if input_row is None:
+        return None if step.input_values else output_row
+    carried = [name for name in input_row.columns if name not in output_row.columns]
+    if not carried:
+        return output_row
+    return pl.DataFrame([*input_row.select(carried).get_columns(), *output_row.get_columns()])
+
+
+def _assignment_row(step: TraceStep, column: str, parsed: Any, code: str) -> pl.DataFrame:
+    """The typed row :func:`_assignment_values` describes, or a frame with no row."""
+    row = _typed_values(step)
+    if row is None:
+        return _NO_TRACED_ROW
+    if _is_self_referential(step, column, parsed) and (
+        step.input_row is None or column not in step.input_row.columns
+    ):
+        return _NO_TRACED_ROW
+    phases = assignment_phases(code, column)
+    return row if phases is None else _row_before_call(row, step, phases)
+
+
+def _with_execution_value(
+    calculation: dict[str, Any], step: TraceStep, column: str
+) -> dict[str, Any]:
+    """Show a formula's full-context value where one row cannot compute it.
+
+    A formula that needs other rows (a window, aggregation, shift, or an
+    operation not known to be row-local) is not evaluated on the traced row.
+    Its value there is the one the trace's own execution computed: the step's
+    output for *column*. ``result_source`` marks it as coming from that
+    execution, and ``not_computable_reason`` still says why one row could not.
+    """
+    reason = calculation.get("not_computable_reason")
+    if (
+        isinstance(reason, str)
+        and reason.startswith("not_row_local")
+        and column in step.output_values
+    ):
+        calculation["result_value"] = step.output_values[column]
+        calculation["result_source"] = "trace_execution"
+    return calculation
 
 
 def _pass_through_origin(
@@ -1550,19 +1683,22 @@ def enrich_steps(
                             parsed = parse_expression(u_code, column)
                             if parsed and parsed.expression_text:
                                 step.expression = dataclasses.asdict(parsed)
-                            u_combined = _assignment_values(upstream, column, parsed)
+                            u_combined = _assignment_values(upstream, column, parsed, u_code)
                             ev = (
                                 evaluate_expression(
                                     u_code,
                                     column,
                                     u_combined,
                                     preamble_ns=preamble_ns,
+                                    row=_assignment_row(upstream, column, parsed, u_code),
                                 )
                                 if u_combined is not None
                                 else None
                             )
                             if ev is not None:
-                                step.calculation = dataclasses.asdict(ev)
+                                step.calculation = _with_execution_value(
+                                    dataclasses.asdict(ev), upstream, column
+                                )
                         except Exception as exc:
                             logger.warning(
                                 "upstream_expression_failed",
@@ -1615,7 +1751,7 @@ def enrich_steps(
                         "error_type": type(exc).__name__,
                         "target_column": column,
                     }
-                eval_values = _assignment_values(step, column, parsed)
+                eval_values = _assignment_values(step, column, parsed, code)
                 if eval_values is None:
                     # No pre-assignment value available: showing a
                     # substitution would require the input we don't
@@ -1634,21 +1770,12 @@ def enrich_steps(
                             column,
                             eval_values,
                             preamble_ns=preamble_ns,
+                            row=_assignment_row(step, column, parsed, code),
                         )
                         if evaluated is not None:
-                            calc_dict = dataclasses.asdict(evaluated)
-                            # Add taken_branch info to calculation dict
-                            if evaluated.taken_branch is not None:
-                                calc_dict["taken_branch"] = evaluated.taken_branch
-                            if evaluated.taken_branch_index is not None:
-                                calc_dict["taken_branch_index"] = evaluated.taken_branch_index
-                            # For window functions, use the actual output value
-                            if (
-                                evaluated.expression_type == "window"
-                                and column in step.output_values
-                            ):
-                                calc_dict["result_value"] = step.output_values[column]
-                            step.calculation = calc_dict
+                            step.calculation = _with_execution_value(
+                                dataclasses.asdict(evaluated), step, column
+                            )
                     except Exception as exc:
                         logger.warning(
                             "expression_eval_failed",
@@ -1683,27 +1810,59 @@ def enrich_steps(
                         # PRE-node input values (absent if newly created)
                         # and are filled in as each entry evaluates.
                         combined_values = {**step.input_values, **step.output_values}
+                        chain_row = _typed_values(step)
                         chain_targets = {p.target_column for p in chain}
                         for target in chain_targets:
                             if target in step.input_values:
                                 combined_values[target] = step.input_values[target]
                             else:
                                 combined_values.pop(target, None)
+                            if chain_row is not None:
+                                chain_row = _chain_start(chain_row, step, target)
                         enriched_chain: list[dict[str, Any]] = []
                         for p in chain:
                             entry = dataclasses.asdict(p)
-                            # Enrich with substituted values and result
+                            # Enrich with substituted values and result. Each
+                            # entry reads the row as its own with_columns call
+                            # does: fed-forward values of earlier calls, and
+                            # earlier values of what its call assigns.
+                            phases = assignment_phases(raw_code, p.target_column)
+                            entry_values = (
+                                combined_values
+                                if phases is None
+                                else _values_before_call(combined_values, step, phases)
+                            )
+                            entry_row = (
+                                _NO_TRACED_ROW
+                                if chain_row is None
+                                else chain_row
+                                if phases is None
+                                else _row_before_call(chain_row, step, phases)
+                            )
                             try:
                                 ev = evaluate_expression(
                                     raw_code,
                                     p.target_column,
-                                    combined_values,
+                                    entry_values,
                                     preamble_ns=preamble_ns,
+                                    row=entry_row,
                                 )
                                 if ev is not None:
+                                    shown = _with_execution_value(
+                                        {
+                                            "result_value": ev.result_value,
+                                            "not_computable_reason": ev.not_computable_reason,
+                                        },
+                                        step,
+                                        p.target_column,
+                                    )
                                     entry["substituted_text"] = ev.substituted_text
-                                    entry["result_value"] = ev.result_value
-                                    combined_values[p.target_column] = ev.result_value
+                                    entry.update(shown)
+                                    combined_values[p.target_column] = shown["result_value"]
+                                    if chain_row is not None:
+                                        chain_row = _chain_feed(
+                                            chain_row, step, p.target_column, shown
+                                        )
                             except Exception as inner_exc:
                                 logger.warning(
                                     "chain_entry_eval_failed",

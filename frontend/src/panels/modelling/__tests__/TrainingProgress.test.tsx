@@ -1,12 +1,8 @@
-import { describe, it, expect, vi, afterEach } from "vitest"
+import { describe, it, expect, afterEach } from "vitest"
 import { render, screen, cleanup } from "@testing-library/react"
 import { TrainingProgress } from "../TrainingProgress"
 import type { TrainProgress } from "../../../stores/useNodeResultsStore"
 import { makeExecutionMetricsFixture } from "../../../testSupport/executionMetricsFixture"
-
-vi.mock("../../../utils/formatValue", () => ({
-  formatElapsed: vi.fn((s: number) => `${s}s`),
-}))
 
 function makeProgress(overrides: Partial<TrainProgress> = {}): TrainProgress {
   return {
@@ -88,6 +84,14 @@ describe("TrainingProgress", () => {
     expect(screen.queryByText("Loss Curve")).toBeNull()
   })
 
+  it("shows elapsed time in the shared duration format", () => {
+    const rendered = render(<TrainingProgress trainProgress={makeProgress({ elapsed_seconds: 4.26 })} />)
+    expect(screen.getByText("4.3 s")).toBeInTheDocument()
+
+    rendered.rerender(<TrainingProgress trainProgress={makeProgress({ elapsed_seconds: 30 })} />)
+    expect(screen.getByText("30 s")).toBeInTheDocument()
+  })
+
   it("shows an estimate only when the store supplies one", () => {
     const rendered = render(
       <TrainingProgress
@@ -95,7 +99,15 @@ describe("TrainingProgress", () => {
         estimatedRemainingSeconds={45}
       />,
     )
-    expect(screen.getByText("Estimated remaining: 45s")).toBeInTheDocument()
+    expect(screen.getByText("Estimated remaining: 45 s")).toBeInTheDocument()
+
+    rendered.rerender(
+      <TrainingProgress
+        trainProgress={makeProgress()}
+        estimatedRemainingSeconds={125}
+      />,
+    )
+    expect(screen.getByText("Estimated remaining: 2m 05s")).toBeInTheDocument()
 
     rendered.rerender(<TrainingProgress trainProgress={makeProgress()} />)
     expect(screen.queryByText(/Estimated remaining/)).toBeNull()

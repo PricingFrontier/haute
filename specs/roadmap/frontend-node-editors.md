@@ -11,33 +11,29 @@ This package comes from the
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| FNE-R01 | Planned | P3 | Editors share components instead of copied blocks, and one dispatcher serves live and read-only views. |
+| FNE-R01 | Planned | P3 | The API Input and Output editors share their copied block. |
 
 ## Planned improvements
 
-### FNE-R01 — Shared editor pieces and one dispatcher
-**Why:** The API Input and Output editors share a 175-line copied block; the
-Data Input and Data Output editors share two copied blocks; the banding
-statistics and rating levels hooks are near copies; and the banding rules
-grid repeats its own rows. `ReadOnlyNodeConfig` duplicates the whole per-type
-dispatch switch of `NodeConfigEditor` and passes no-op handlers inside an
-`inert` wrapper.
+### FNE-R01 — The API Input and Output editors share their copied block
+**Delivered so far:** the Data Input and Data Output editors share their
+provider block and branch-config helpers (`_ioProvider.ts`,
+`_IoProviderPicker.tsx`); the banding statistics and rating levels hooks
+share `useWholeDataAnswer`; the banding rules grid renders both rule modes
+from one column description; and `NodeConfigEditor` has a read-only mode that
+the comparison view uses instead of its own switch.
 
-**Plan:** Extract the shared blocks into components and one data-fetching
-hook, and give `NodeConfigEditor` a read-only mode that the comparison view
-uses instead of its own switch.
+**Why:** The API Input and Output editors still share a 175-line copied block.
 
-**Acceptance:** One per-type dispatch switch remains; the copied blocks are
-single components; editor and comparison-view tests pass.
+**Plan:** Extract the shared block into one component once the API Input
+editor's cache control and the OUTPUT nesting rule have settled.
 
-**Dependencies:** None.
+**Acceptance:** The copied block is a single component; editor tests pass.
+
+**Dependencies:** `CACHE-S08` ([caching](caching.md)) replaces the API Input
+editor's cache control, and `JSON-R02` ([JSON shredding](json-shredding.md),
+a Decision) settles how OUTPUT nesting is declared, which the Output side of
+the block edits.
 
 **Evidence:** `frontend/src/panels/editors/ApiInputEditor.tsx`;
-`frontend/src/panels/editors/OutputEditor.tsx`;
-`frontend/src/panels/editors/DataInputEditor.tsx`;
-`frontend/src/panels/editors/DataOutputEditor.tsx`;
-`frontend/src/panels/editors/banding/useBandingStats.ts`;
-`frontend/src/panels/editors/rating/useRatingLevels.ts`;
-`frontend/src/panels/editors/banding/BandingRulesGrid.tsx`;
-`frontend/src/components/ReadOnlyNodeConfig.tsx`;
-`frontend/src/panels/NodeConfigEditor.tsx`.
+`frontend/src/panels/editors/OutputEditor.tsx`.

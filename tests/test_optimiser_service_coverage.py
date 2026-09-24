@@ -19,7 +19,7 @@ import pytest
 from fastapi import HTTPException
 
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
-from haute.routes._optimiser_service import (
+from haute.routes._optimiser_artifacts import (
     _APPLY_ARTIFACT_DIR_PREFIX,
     _APPLY_RESULT_FILENAME,
     _APPLY_RESULT_HANDLE_KIND,
@@ -32,7 +32,6 @@ from haute.routes._optimiser_service import (
     _cleanup_ratebook_factors_artifact,
     _load_apply_result_artifact,
     _load_ratebook_factors_artifact,
-    _optimiser_side_input_ids,
     _persist_apply_result_artifact,
     _persist_ratebook_factors_artifact,
     _persist_ratebook_factors_lazy_artifact,
@@ -41,6 +40,7 @@ from haute.routes._optimiser_service import (
     _validate_apply_result_artifact_handle,
     _validate_ratebook_factors_artifact_handle,
 )
+from haute.routes._optimiser_input import _optimiser_side_input_ids
 
 
 def _handle(**overrides: object) -> dict[str, object]:
@@ -216,7 +216,7 @@ def test_load_reports_missing_artifact() -> None:
 def test_orphan_cleanup_swallows_and_logs_failure() -> None:
     """An invalid handle makes the inner cleanup raise; the helper logs, no raise."""
     bad_handle = _handle(directory="relative", path="relative/result.parquet")
-    with patch("haute.routes._optimiser_service.logger.warning") as warn:
+    with patch("haute.routes._optimiser_artifacts.logger.warning") as warn:
         _cleanup_orphan_apply_result_artifact(
             bad_handle,
             job_id="job-123",
@@ -235,7 +235,7 @@ def test_orphan_cleanup_silent_on_success() -> None:
     handle = _persist_apply_result_artifact(SimpleNamespace(dataframe=df))
     assert handle is not None
     artifact_dir = Path(str(handle["directory"]))
-    with patch("haute.routes._optimiser_service.logger.warning") as warn:
+    with patch("haute.routes._optimiser_artifacts.logger.warning") as warn:
         _cleanup_orphan_apply_result_artifact(
             handle,
             job_id="job-xyz",
@@ -357,7 +357,7 @@ def test_persist_ratebook_factors_lazy_cleans_up_dir_when_sink_fails() -> None:
         created_dirs.append(Path(path).parent)
         raise OSError("sink exploded")
 
-    with patch("haute.routes._optimiser_service.bounded_sink", _capture_then_fail):
+    with patch("haute.routes._optimiser_artifacts.bounded_sink", _capture_then_fail):
         with pytest.raises(OSError, match="sink exploded"):
             _persist_ratebook_factors_lazy_artifact(lf)
 
@@ -495,7 +495,7 @@ def test_orphan_cleanup_dispatches_to_ratebook_factors_cleaner() -> None:
     assert handle is not None
     factors_dir = Path(str(handle["directory"]))
     assert factors_dir.exists()
-    with patch("haute.routes._optimiser_service.logger.warning") as warn:
+    with patch("haute.routes._optimiser_artifacts.logger.warning") as warn:
         _cleanup_orphan_apply_result_artifact(
             handle,
             job_id="job-rb",

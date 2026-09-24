@@ -1697,6 +1697,23 @@ class TestEstimateEndpoint:
         assert detail.startswith("Evaluation preview failed: ")
         assert "missing" in detail
 
+    def test_estimate_reports_a_rejected_upstream_node_config_as_its_contract_payload(
+        self, client, training_data
+    ):
+        """A Scenario Expander without its grid size upstream of the model is a
+        public config rejection: its payload, not a stringified ValueError."""
+        graph = _make_modelling_graph(training_data)
+        graph["nodes"].append(_expander_without_step_count())
+        graph["edges"] = [
+            make_edge("source", "expander").model_dump(),
+            make_edge("expander", "train").model_dump(),
+        ]
+
+        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["detail"] == _MISSING_STEP_COUNT_PAYLOAD
+
     def test_estimate_evaluation_preview_accepts_upstream_group_by(
         self,
         client,
@@ -3177,6 +3194,25 @@ def glm_collision_data(tmp_path) -> str:
     return str(path)
 
 
+_MISSING_STEP_COUNT_PAYLOAD = {
+    "error_code": "node_config_invalid",
+    "message": "Scenario expander requires stepCount (the number of grid values).",
+    "setting": "stepCount",
+}
+
+
+def _expander_without_step_count() -> dict:
+    """A Scenario Expander node whose config omits its required grid size."""
+    return {
+        "id": "expander",
+        "data": {
+            "label": "expander",
+            "nodeType": "scenarioExpander",
+            "config": {"column_name": "price", "min_value": 0.1, "max_value": 0.3},
+        },
+    }
+
+
 def _glm_schema_gate_graph(data_path: str | None, config: dict):
     """Data Input → Modelling graph; ``data_path=None`` leaves the model unfed."""
     nodes: list[dict] = []
@@ -3298,6 +3334,38 @@ class TestGlmInputSchemaGate:
 
         assert raised.value.status_code == 422
         assert "names a column" in str(raised.value.detail)
+        assert not store.list_jobs()
+
+    def test_training_route_reports_a_rejected_upstream_node_config_as_its_contract_payload(
+        self, glm_collision_data
+    ):
+        """The GLM gate resolves the input schema by running the upstream graph; a
+        node config the builder rejects keeps its public payload."""
+        from haute.schemas import TrainRequest
+
+        graph = _glm_schema_gate_graph(
+            glm_collision_data,
+            {
+                "algorithm": "glm",
+                "target": "y",
+                "family": "gaussian",
+                "terms": {"x": {"type": "linear"}},
+                "evaluation": _random_evaluation_config(),
+            },
+        ).model_dump()
+        graph["nodes"].append(_expander_without_step_count())
+        graph["edges"] = [
+            make_edge("source", "expander").model_dump(),
+            make_edge("expander", "train").model_dump(),
+        ]
+        body = TrainRequest(graph=make_graph(graph), node_id="train")
+        store, service = self._service()
+
+        with pytest.raises(HTTPException) as raised:
+            service.start(body)
+
+        assert raised.value.status_code == 422
+        assert raised.value.detail == _MISSING_STEP_COUNT_PAYLOAD
         assert not store.list_jobs()
 
     def test_training_route_returns_422_when_input_schema_cannot_be_resolved(self):

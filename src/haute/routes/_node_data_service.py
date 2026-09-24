@@ -381,7 +381,7 @@ def _cached_by_another_build(store: NodeSnapshotStore, identity: SourceCacheIden
 
 
 PROFILE_ANALYSIS_KIND = "profile"
-PROFILE_ANALYSIS_VERSION = 1
+PROFILE_ANALYSIS_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)

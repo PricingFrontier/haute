@@ -6,6 +6,7 @@ import {
   buildChainEntries,
   buildInputSourceEntries,
   buildWaterfallSteps,
+  notComputableNote,
   resolveWaterfallProp,
   type ExpressionChainEntry,
   type InputSourceEntry,
@@ -33,6 +34,8 @@ export interface CalculationHeroProps {
   calculation: {
     substituted_text: string
     result_value: unknown
+    not_computable_reason?: string | null
+    result_source?: string | null
     input_values: Record<string, unknown>
     taken_branch?: string | null
     taken_branch_index?: number | null
@@ -137,6 +140,19 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
   const resultIsNull = calculation
     ? resultValue === null || resultValue === undefined
     : false
+  const resultNote = calculation ? notComputableNote(calculation) : null
+  const resultNotComputed = Boolean(calculation?.not_computable_reason)
+    && calculation?.result_source !== "trace_execution"
+
+  // The note follows whichever mode renders the calculation.
+  const renderResultNote = () => resultNote && (
+    <div
+      data-testid="trace-result-note"
+      style={{ fontSize: 11, color: "var(--text-secondary)", fontStyle: "italic", marginTop: 2 }}
+    >
+      {resultNote}
+    </div>
+  )
 
   // ---------------------------------------------------------------------------
   // Unified calculation box — all entries top-down in one well
@@ -169,6 +185,7 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
       substitutedText: string | null
       value: unknown
       source: string | null
+      note?: string | null
       subSources: Record<string, InputSourceEntry> | null
     }> = [
       ...chainEntries.map((e) => ({ ...e, subSources: null })),
@@ -254,6 +271,7 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
             substitutedText={entry.substitutedText}
             value={entry.value}
             source={entry.source}
+            note={entry.note}
           >
             {entry.subSources && Object.keys(entry.subSources).length > 0 && (
               <InputSourceTree subSources={entry.subSources} />
@@ -339,6 +357,7 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
             substitutedText={entry.substitutedText}
             value={entry.value}
             source={entry.source}
+            note={entry.note}
           >
             {entry.subSources && Object.keys(entry.subSources).length > 0 && (
               <InputSourceTree subSources={entry.subSources} />
@@ -432,6 +451,8 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
           </div>
         )
       }
+      // A result the trace could not compute is explained by the note instead.
+      if (resultNotComputed) return null
       return (
         <div
           style={{
@@ -518,7 +539,7 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
     return (
       <div style={{ marginTop: 4 }}>
         {/* Opaque fallback */}
-        {expression && !hasExpressionText && (
+        {expression && !hasExpressionText && !resultNotComputed && (
           <div style={{ fontStyle: "italic", fontSize: 11, color: "var(--text-secondary)" }}>
             computed
           </div>
@@ -534,6 +555,7 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
     return (
       <div data-testid="trace-calculation-body">
         {renderBody()}
+        {renderResultNote()}
       </div>
     )
   }
@@ -548,6 +570,7 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
       accentColor={nodeType ? nodeTypeColors[nodeType] : undefined}
     >
       {renderBody()}
+      {renderResultNote()}
     </TraceCalculationFrame>
   )
 }

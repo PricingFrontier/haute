@@ -31,7 +31,6 @@ from haute.routes._export_receipts import (
     record_receipt,
     single_flight_mlflow_log,
 )
-from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
 from haute.routes._mlflow_log_errors import mlflow_log_http_exception, require_mlflow_installed
@@ -607,9 +606,6 @@ def save_model(body: SaveModelRequest) -> SaveModelResponse:
                     status_code=500,
                     detail="Filesystem error saving the model. Check the server logs for details.",
                 ) from None
-            except Exception as exc:
-                logger.error("model_save_failed", error=str(exc), job_id=body.job_id, exc_info=True)
-                raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL) from None
     logger.info("model_saved", path=str(destination.path), job_id=body.job_id)
     record_receipt(
         _store,

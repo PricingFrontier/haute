@@ -83,9 +83,7 @@ type RatesDetailState =
 
 const EMPTY_FRONTIER_POINTS: Record<string, unknown>[] = []
 
-function errorDetail(error: unknown): string {
-  return apiErrorMessage(error, "The request failed.")
-}
+const REQUEST_FAILED = "The request failed."
 
 function HeaderPointStepper({
   pointCount,
@@ -261,7 +259,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, onRefr
         if (requestedRates.get(key) !== requestId) return
         requestedRates.delete(key)
         if (controller.signal.aborted) return
-        setRatesDetail({ status: "error", key, error: errorDetail(e) })
+        setRatesDetail({ status: "error", key, error: apiErrorMessage(e, REQUEST_FAILED) })
       })
 
     return () => {
@@ -310,7 +308,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, onRefr
       })
       setActionMsg(res.message ?? `Saved to ${res.path ?? outputPath}`)
     } catch (e) {
-      setActionMsg(`Save failed: ${errorDetail(e)}`)
+      setActionMsg(`Save failed: ${apiErrorMessage(e, REQUEST_FAILED)}`)
     } finally {
       setSaving(false)
     }
@@ -331,7 +329,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, onRefr
       const target = res.experiment_name ? ` to ${res.experiment_name}` : ""
       setActionMsg(res.run_url ? `Logged${target}: ${res.run_url}` : `Logged${target} (run ${res.run_id ?? "ok"})`)
     } catch (e) {
-      setActionMsg(`MLflow log failed: ${errorDetail(e)}`)
+      setActionMsg(`MLflow log failed: ${apiErrorMessage(e, REQUEST_FAILED)}`)
     } finally {
       setLogging(false)
     }
@@ -354,7 +352,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, onRefr
       setResultDetail({ status: "loaded", data: res })
     } catch (e) {
       if (controller.signal.aborted) return
-      setResultDetail({ status: "error", error: errorDetail(e) })
+      setResultDetail({ status: "error", error: apiErrorMessage(e, REQUEST_FAILED) })
     } finally {
       if (resultDetailAbortRef.current === controller) {
         resultDetailAbortRef.current = null

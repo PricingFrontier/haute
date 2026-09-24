@@ -41,4 +41,15 @@ describe("apiErrorMessage", () => {
     expect(apiErrorMessage(new Error("Network error"), "x")).toBe("Network error")
     expect(apiErrorMessage("weird", "Something failed.")).toBe("Something failed.")
   })
+
+  it("without a fallback, uses the status message or the value's string form", () => {
+    expect(apiErrorMessage(new ApiError("HTTP 500", 500))).toBe("HTTP 500")
+    expect(apiErrorMessage(new ApiError("HTTP 400", 400, "Pick a folder."))).toBe("Pick a folder.")
+    expect(apiErrorMessage("weird")).toBe("weird")
+  })
+
+  it("reads an execution detail before the stringified detail", () => {
+    const error = new ApiError("HTTP 507", 507, "{\"reason\":\"memory\"}", undefined, { reason: "Not enough memory." })
+    expect(apiErrorMessage(error)).toBe("Not enough memory.")
+  })
 })

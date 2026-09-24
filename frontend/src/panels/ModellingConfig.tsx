@@ -21,11 +21,11 @@ import useToastStore from "../stores/useToastStore"
 import useUIStore, { type ModellingPane } from "../stores/useUIStore"
 import { configField } from "../utils/configField"
 import {
-  executionErrorDetailMessage,
   executionJobStatusFromReason,
   executionMetricsFromError,
   executionTerminalReasonFromError,
 } from "../utils/executionDiagnostics"
+import { apiErrorMessage } from "../api/errors"
 import { buildGraph } from "../utils/buildGraph"
 import {
   effectiveMetrics,
@@ -153,10 +153,6 @@ const DEFAULT_EVALUATION: Record<string, unknown> = {
   strategy: "random",
   seed: 42,
   validation: { method: "single", size: 0.2 },
-}
-
-function errorMessage(error: unknown) {
-  return executionErrorDetailMessage(error) ?? String(error)
 }
 
 function failureStatus(error: unknown, message: string): TrainProgress | undefined {
@@ -474,12 +470,12 @@ export default function ModellingConfig({
     [config.refit_on_development, onUpdate],
   )
   const onEstimateDispersion = useCallback(
-    (param: DispersionParam) => runDispersionEstimate({
+    (param: DispersionParam, signal: AbortSignal) => runDispersionEstimate({
       graph: graph(),
       node_id: nodeId,
       param,
       source: useSettingsStore.getState().activeSource,
-    }),
+    }, { signal }),
     [graph, nodeId],
   )
   const onTrain = useCallback(async () => {
@@ -513,7 +509,7 @@ export default function ModellingConfig({
       }
     } catch (error) {
       if (!isDocumentExecutionFenceCurrent(documentFence)) return
-      const message = errorMessage(error)
+      const message = apiErrorMessage(error)
       completeTrainJob(
         nodeId,
         {
@@ -571,7 +567,7 @@ export default function ModellingConfig({
       else if (FAILED_JOB_STATUSES.has(status.status)) failTrainJob(nodeId, status.message || "Training stopped", status)
       else updateTrainProgress(nodeId, status)
     } catch (error) {
-      addToast("error", `Could not cancel training: ${errorMessage(error)}`)
+      addToast("error", `Could not cancel training: ${apiErrorMessage(error)}`)
     } finally {
       setCancelling(false)
     }

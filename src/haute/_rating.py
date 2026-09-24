@@ -16,7 +16,7 @@ from decimal import Decimal, InvalidOperation
 from os import PathLike
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import polars as pl
 
@@ -25,6 +25,7 @@ from haute._banding_config import (
     normalise_banding_rules,
 )
 from haute._logging import get_logger
+from haute._polars_dtypes import dtype_to_spec, parse_dtype
 from haute._rating_step_config import (
     normalise_rating_tables,
     validate_unique_rating_table_outputs,
@@ -543,27 +544,6 @@ _DURATION_UNITS_PER_SECOND = MappingProxyType(
         "ns": Decimal(1_000_000_000),
     }
 )
-_PRIMITIVE_RATING_DTYPE_NAMES: Mapping[object, str] = MappingProxyType(
-    {
-        pl.Int8: "Int8",
-        pl.Int16: "Int16",
-        pl.Int32: "Int32",
-        pl.Int64: "Int64",
-        pl.Int128: "Int128",
-        pl.UInt8: "UInt8",
-        pl.UInt16: "UInt16",
-        pl.UInt32: "UInt32",
-        pl.UInt64: "UInt64",
-        pl.Float32: "Float32",
-        pl.Float64: "Float64",
-        pl.Boolean: "Boolean",
-        pl.String: "String",
-        pl.Categorical: "Categorical",
-        pl.Date: "Date",
-        pl.Time: "Time",
-        pl.Null: "Null",
-    }
-)
 _RATING_PRIMITIVE_DESCRIPTOR_KINDS = frozenset(
     {
         "Int8",
@@ -585,8 +565,17 @@ _RATING_PRIMITIVE_DESCRIPTOR_KINDS = frozenset(
         "Null",
     }
 )
-_RATING_PRIMITIVE_DTYPES: Mapping[str, pl.DataType] = MappingProxyType(
-    {name: cast(pl.DataType, dtype) for dtype, name in _PRIMITIVE_RATING_DTYPE_NAMES.items()}
+# A rating descriptor is the shared dtype codec's spec
+# (``haute._polars_dtypes.dtype_to_spec``) under rating's persisted key names,
+# restricted to the dtypes a rating factor supports.
+_RATING_PARAMETRIC_DESCRIPTOR_KINDS = frozenset(
+    {"Categorical", "Datetime", "Duration", "Decimal", "Enum"}
+)
+_RATING_DESCRIPTOR_KEY_BY_SPEC_KEY: Mapping[str, str] = MappingProxyType(
+    {"type": "kind", "time_unit": "timeUnit", "time_zone": "timeZone"}
+)
+_RATING_SPEC_KEY_BY_DESCRIPTOR_KEY: Mapping[str, str] = MappingProxyType(
+    {descriptor: spec for spec, descriptor in _RATING_DESCRIPTOR_KEY_BY_SPEC_KEY.items()}
 )
 
 
@@ -602,29 +591,13 @@ class RatingTableMissError(HauteValidationError):
 
 def rating_dtype_descriptor(dtype: pl.DataType) -> dict[str, Any]:
     """Return the stable JSON descriptor for a supported rating-factor dtype."""
-    if dtype == pl.Categorical:
-        return {"kind": "Categorical"}
-    primitive = _PRIMITIVE_RATING_DTYPE_NAMES.get(dtype)
-    if primitive is not None:
-        return {"kind": primitive}
-    if isinstance(dtype, pl.Datetime):
+    spec = dtype_to_spec(dtype)
+    if isinstance(spec, str):
+        if spec in _RATING_PRIMITIVE_DESCRIPTOR_KINDS:
+            return {"kind": spec}
+    elif spec["type"] in _RATING_PARAMETRIC_DESCRIPTOR_KINDS:
         return {
-            "kind": "Datetime",
-            "timeUnit": dtype.time_unit,
-            "timeZone": dtype.time_zone,
-        }
-    if isinstance(dtype, pl.Duration):
-        return {"kind": "Duration", "timeUnit": dtype.time_unit}
-    if isinstance(dtype, pl.Decimal):
-        return {
-            "kind": "Decimal",
-            "precision": dtype.precision,
-            "scale": dtype.scale,
-        }
-    if isinstance(dtype, pl.Enum):
-        return {
-            "kind": "Enum",
-            "categories": dtype.categories.to_list(),
+            _RATING_DESCRIPTOR_KEY_BY_SPEC_KEY.get(key, key): value for key, value in spec.items()
         }
     raise ValueError(f"unsupported rating factor dtype {dtype}")
 
@@ -672,33 +645,18 @@ def rating_dtype_from_descriptor(descriptor: object) -> pl.DataType:
     if not is_rating_dtype_descriptor(descriptor):
         raise ValueError(f"invalid rating factor dtype descriptor {descriptor!r}")
 
-    # The predicate above narrows the descriptor's shape at runtime.  Keep
-    # the individual reads here so this remains the exact inverse of
-    # ``rating_dtype_descriptor`` rather than accepting loosely shaped JSON.
+    # The predicate above checks the exact descriptor shape, so the shared
+    # codec only has to parse a spec it already accepts.
     assert isinstance(descriptor, dict)
     kind = descriptor["kind"]
-    assert isinstance(kind, str)
-    if kind in _RATING_PRIMITIVE_DESCRIPTOR_KINDS:
-        return _RATING_PRIMITIVE_DTYPES[kind]
-    if kind == "Datetime":
-        time_unit = cast(Literal["ms", "us", "ns"], descriptor["timeUnit"])
-        time_zone = descriptor["timeZone"]
-        assert time_zone is None or isinstance(time_zone, str)
-        return pl.Datetime(time_unit, time_zone)
-    if kind == "Duration":
-        time_unit = cast(Literal["ms", "us", "ns"], descriptor["timeUnit"])
-        return pl.Duration(time_unit)
-    if kind == "Decimal":
-        precision = descriptor["precision"]
-        scale = descriptor["scale"]
-        assert precision is None or isinstance(precision, int)
-        assert isinstance(scale, int)
-        return pl.Decimal(precision, scale)
-
-    assert kind == "Enum"
-    categories = descriptor["categories"]
-    assert isinstance(categories, list)
-    return pl.Enum(categories)
+    if kind in _RATING_PARAMETRIC_DESCRIPTOR_KINDS:
+        spec: Any = {
+            _RATING_SPEC_KEY_BY_DESCRIPTOR_KEY.get(key, key): value
+            for key, value in descriptor.items()
+        }
+    else:
+        spec = kind
+    return cast(pl.DataType, parse_dtype(spec))
 
 
 def _duration_key_to_physical(value: str, time_unit: str) -> int:

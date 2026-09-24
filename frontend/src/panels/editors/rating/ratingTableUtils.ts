@@ -1,3 +1,5 @@
+import { isObjectLiteral } from "../../../utils/objectLiteral"
+
 // ─── Rating Table Types & Pure Utilities ──────────────────────────
 
 type PrimitiveRatingFactorKind =
@@ -46,12 +48,6 @@ const primitiveRatingKinds = new Set<PrimitiveRatingFactorKind>([
   "Date", "Time", "Null",
 ])
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false
-  const prototype = Object.getPrototypeOf(value)
-  return prototype === Object.prototype || prototype === null
-}
-
 function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
   const actual = Object.keys(value)
   return actual.length === keys.length && keys.every(key => Object.hasOwn(value, key))
@@ -62,7 +58,7 @@ function isRatingTimeUnit(value: unknown): value is "ms" | "us" | "ns" {
 }
 
 function normaliseRatingFactorDtype(value: unknown): RatingFactorDtype | undefined {
-  if (!isPlainRecord(value) || typeof value.kind !== "string") return undefined
+  if (!isObjectLiteral(value) || typeof value.kind !== "string") return undefined
 
   const kind = value.kind
   if (primitiveRatingKinds.has(kind as PrimitiveRatingFactorKind)) {
