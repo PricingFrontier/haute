@@ -33,7 +33,7 @@ or maintenance issue; `P3` opportunistic work.
 | [IO layer](io-layer.md) | One dtype vocabulary, one atomic write and file lock | `IO-R01` |
 | [JSON shredding](json-shredding.md) | One non-finite float encoding, explicit output nesting | `JSON-R01` |
 | [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients | `MLF-R02` |
-| [Modelling](modelling.md) | RustyStats 0.9.0 upgrade, GLM terms and interactions; invariant checks | `MOD-T00` |
+| [Modelling](modelling.md) | Evaluation and tuning invariants checked once | `MOD-T10` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers, auto-range, input isolation | `OPT-P11` |
 | [Pipeline config](pipeline-config.md) | Repair, save validation, the error a rejected config reports, project context, typed configs, node specification | `PCFG-R01` |
 | [Sandbox security](sandbox-security.md) | One path-containment check, the node-code guard | `SBX-R01` |
@@ -82,7 +82,8 @@ instructions supplied for that independent review.
 
 The [engine probe record](mod-f00-engine-probes.md) holds the dependency,
 packaging and native-behaviour evidence that settled the pre-implementation
-gates of the model-family expansion in the [modelling roadmap](modelling.md).
+gates of the model-family expansion, which is delivered and retired from the
+[modelling roadmap](modelling.md).
 It is a dated evidence artifact; component specifications remain the behavior
 authority.
 

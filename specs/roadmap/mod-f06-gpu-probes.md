@@ -1,7 +1,7 @@
 # MOD-F06 GPU probes — 23 September 2026
 
-Evidence for the GPU capability of the model-family expansion in the
-[modelling roadmap](modelling.md). This is a dated record; the
+Evidence for the GPU capability of the model-family expansion, since delivered
+and retired from the [modelling roadmap](modelling.md). This is a dated record; the
 [modelling specification](../modelling/high-level.md#model-families) is the
 behaviour authority.
 

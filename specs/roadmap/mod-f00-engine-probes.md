@@ -1,7 +1,8 @@
 # MOD-F00 engine probes — 23 September 2026
 
-Evidence for the pre-implementation gates of the
-[model-family expansion plan](modelling.md#model-family-expansion-proposed-22-september-2026-revised-23-september-2026).
+Evidence for the pre-implementation gates of the model-family expansion plan,
+since delivered and retired from the [modelling roadmap](modelling.md); the
+[modelling specification](../modelling/high-level.md#model-families) holds its design.
 This is a dated evidence record, not a specification; the behaviour it supports
 is binding only through the approved change contracts in the owning component
 specifications.

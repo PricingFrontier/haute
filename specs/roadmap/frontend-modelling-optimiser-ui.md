@@ -5,8 +5,7 @@
 The modelling and optimiser configuration and result panels. Current
 behaviour is specified in
 [the frontend modelling and optimiser UI specification](../frontend-modelling-optimiser-ui/high-level.md).
-GLM pane work is planned in the [modelling roadmap](modelling.md). These
-packages come from the
+These packages come from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md).
 
 ## Priorities
