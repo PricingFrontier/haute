@@ -5,9 +5,10 @@ import BranchIndicator from "../BranchIndicator"
 import useGitStore from "../../stores/useGitStore"
 import useUIStore from "../../stores/useUIStore"
 import type { GitWorkingBranchResponse } from "../../api/types"
+import { makeGitWorkingBranch } from "../../test-utils/factories"
 
 function status(overrides: Partial<GitWorkingBranchResponse>): GitWorkingBranchResponse {
-  return {
+  return makeGitWorkingBranch({
     working_branch: "dev",
     state: "ready",
     errors: [],
@@ -21,7 +22,7 @@ function status(overrides: Partial<GitWorkingBranchResponse>): GitWorkingBranchR
     storage_remote: null,
     sync: null,
     ...overrides,
-  }
+  })
 }
 
 const realLoadStatus = useGitStore.getState().loadStatus

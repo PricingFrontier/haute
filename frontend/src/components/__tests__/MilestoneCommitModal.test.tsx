@@ -19,10 +19,11 @@ import MilestoneCommitModal from "../MilestoneCommitModal"
 import useGitStore from "../../stores/useGitStore"
 import useToastStore from "../../stores/useToastStore"
 import { ApiError } from "../../api/client"
+import { makeGitWorkingBranch } from "../../test-utils/factories"
 
-const WORKING_BRANCH = {
+const WORKING_BRANCH = makeGitWorkingBranch({
   working_branch: "dev",
-  state: "ready" as const,
+  state: "ready",
   errors: [],
   current_branch: "dev-save",
   last_save_sha: "abc1234",
@@ -30,7 +31,7 @@ const WORKING_BRANCH = {
   identity_set: true,
   user_name: "U",
   user_email: "u@x.y",
-}
+})
 
 describe("MilestoneCommitModal", () => {
   beforeEach(() => {

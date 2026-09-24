@@ -25,9 +25,10 @@ import useGitStore from "../../stores/useGitStore"
 import useUIStore from "../../stores/useUIStore"
 import { setWorkingBranch } from "../../api/client"
 import type { GitWorkingBranchResponse } from "../../api/types"
+import { makeGitWorkingBranch } from "../../test-utils/factories"
 
 function divergent(overrides: Partial<GitWorkingBranchResponse> = {}): GitWorkingBranchResponse {
-  return {
+  return makeGitWorkingBranch({
     working_branch: "dev",
     state: "divergent",
     errors: [],
@@ -38,7 +39,7 @@ function divergent(overrides: Partial<GitWorkingBranchResponse> = {}): GitWorkin
     user_name: "U",
     user_email: "u@x.y",
     ...overrides,
-  }
+  })
 }
 
 describe("DivergenceModal", () => {

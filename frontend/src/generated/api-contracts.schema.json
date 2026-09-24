@@ -1254,6 +1254,1446 @@
       "title": "ExploreChartsConfig",
       "type": "array"
     },
+    "GitArchiveResponse": {
+      "properties": {
+        "archived_as": {
+          "title": "Archived As",
+          "type": "string"
+        }
+      },
+      "required": [
+        "archived_as"
+      ],
+      "title": "GitArchiveResponse",
+      "type": "object"
+    },
+    "GitBindStorageResponse": {
+      "properties": {
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "outcome": {
+          "const": "pending",
+          "default": "pending",
+          "title": "Outcome",
+          "type": "string"
+        },
+        "remote_url": {
+          "title": "Remote Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome",
+        "remote_url",
+        "message"
+      ],
+      "title": "GitBindStorageResponse",
+      "type": "object"
+    },
+    "GitBranchAwayResponse": {
+      "properties": {
+        "set_aside_as": {
+          "title": "Set Aside As",
+          "type": "string"
+        },
+        "working_branch": {
+          "title": "Working Branch",
+          "type": "string"
+        }
+      },
+      "required": [
+        "working_branch",
+        "set_aside_as"
+      ],
+      "title": "GitBranchAwayResponse",
+      "type": "object"
+    },
+    "GitCommitContext": {
+      "properties": {
+        "delta_from_base": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delta From Base"
+        },
+        "distance": {
+          "default": 0,
+          "title": "Distance",
+          "type": "integer"
+        },
+        "is_milestone": {
+          "default": false,
+          "title": "Is Milestone",
+          "type": "boolean"
+        },
+        "is_root": {
+          "default": false,
+          "title": "Is Root",
+          "type": "boolean"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "nearest_milestone": {
+          "$ref": "#/$defs/GitCommitRef"
+        },
+        "sha": {
+          "title": "Sha",
+          "type": "string"
+        },
+        "short_sha": {
+          "title": "Short Sha",
+          "type": "string"
+        },
+        "timestamp": {
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "version_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version Label"
+        }
+      },
+      "required": [
+        "sha",
+        "short_sha",
+        "message",
+        "timestamp",
+        "is_root",
+        "is_milestone",
+        "version_label",
+        "nearest_milestone",
+        "distance",
+        "delta_from_base"
+      ],
+      "title": "GitCommitContext",
+      "type": "object"
+    },
+    "GitCommitRef": {
+      "properties": {
+        "is_root": {
+          "default": false,
+          "title": "Is Root",
+          "type": "boolean"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "sha": {
+          "title": "Sha",
+          "type": "string"
+        },
+        "short_sha": {
+          "title": "Short Sha",
+          "type": "string"
+        },
+        "version_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version Label"
+        }
+      },
+      "required": [
+        "sha",
+        "short_sha",
+        "message",
+        "version_label",
+        "is_root"
+      ],
+      "title": "GitCommitRef",
+      "type": "object"
+    },
+    "GitCommitResponse": {
+      "properties": {
+        "sha": {
+          "title": "Sha",
+          "type": "string"
+        },
+        "short_sha": {
+          "title": "Short Sha",
+          "type": "string"
+        },
+        "version_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version Label"
+        },
+        "working_branch": {
+          "title": "Working Branch",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha",
+        "short_sha",
+        "working_branch",
+        "version_label"
+      ],
+      "title": "GitCommitResponse",
+      "type": "object"
+    },
+    "GitCreateWorkingBranchResponse": {
+      "properties": {
+        "last_save_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Save Sha"
+        },
+        "moved": {
+          "title": "Moved",
+          "type": "boolean"
+        },
+        "switched": {
+          "title": "Switched",
+          "type": "boolean"
+        },
+        "working_branch": {
+          "title": "Working Branch",
+          "type": "string"
+        }
+      },
+      "required": [
+        "working_branch",
+        "moved",
+        "switched",
+        "last_save_sha"
+      ],
+      "title": "GitCreateWorkingBranchResponse",
+      "type": "object"
+    },
+    "GitDeleteBranchResponse": {
+      "properties": {
+        "branch": {
+          "title": "Branch",
+          "type": "string"
+        },
+        "status": {
+          "default": "ok",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "branch"
+      ],
+      "title": "GitDeleteBranchResponse",
+      "type": "object"
+    },
+    "GitFastForwardResponse": {
+      "properties": {
+        "fast_forwarded": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Fast Forwarded",
+          "type": "array"
+        },
+        "remote": {
+          "title": "Remote",
+          "type": "string"
+        },
+        "working_branch": {
+          "title": "Working Branch",
+          "type": "string"
+        }
+      },
+      "required": [
+        "remote",
+        "working_branch",
+        "fast_forwarded"
+      ],
+      "title": "GitFastForwardResponse",
+      "type": "object"
+    },
+    "GitFileChange": {
+      "properties": {
+        "old_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Old Path"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "path",
+        "old_path"
+      ],
+      "title": "GitFileChange",
+      "type": "object"
+    },
+    "GitForkStorageResponse": {
+      "properties": {
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "outcome": {
+          "const": "forked",
+          "default": "forked",
+          "title": "Outcome",
+          "type": "string"
+        },
+        "parent_generation": {
+          "title": "Parent Generation",
+          "type": "integer"
+        },
+        "parent_url": {
+          "title": "Parent Url",
+          "type": "string"
+        },
+        "target_url": {
+          "title": "Target Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome",
+        "target_url",
+        "parent_url",
+        "parent_generation",
+        "message"
+      ],
+      "title": "GitForkStorageResponse",
+      "type": "object"
+    },
+    "GitGraphBranch": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/GitGraphEntry"
+          },
+          "title": "Entries",
+          "type": "array"
+        },
+        "fork_credit_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fork Credit Sha"
+        },
+        "fork_of": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fork Of"
+        },
+        "fork_point_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fork Point Sha"
+        },
+        "fork_source_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fork Source Sha"
+        },
+        "is_archived": {
+          "title": "Is Archived",
+          "type": "boolean"
+        },
+        "is_current": {
+          "title": "Is Current",
+          "type": "boolean"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "tip_sha": {
+          "title": "Tip Sha",
+          "type": "string"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "is_archived",
+        "is_current",
+        "tip_sha",
+        "fork_point_sha",
+        "fork_of",
+        "fork_source_sha",
+        "fork_credit_sha",
+        "truncated",
+        "entries"
+      ],
+      "title": "GitGraphBranch",
+      "type": "object"
+    },
+    "GitGraphEntry": {
+      "properties": {
+        "is_root": {
+          "default": false,
+          "title": "Is Root",
+          "type": "boolean"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "parents": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Parents",
+          "type": "array"
+        },
+        "sha": {
+          "title": "Sha",
+          "type": "string"
+        },
+        "short_sha": {
+          "title": "Short Sha",
+          "type": "string"
+        },
+        "timestamp": {
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "version_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version Label"
+        }
+      },
+      "required": [
+        "sha",
+        "short_sha",
+        "message",
+        "timestamp",
+        "version_label",
+        "is_root",
+        "parents"
+      ],
+      "title": "GitGraphEntry",
+      "type": "object"
+    },
+    "GitGraphResponse": {
+      "properties": {
+        "branches": {
+          "items": {
+            "$ref": "#/$defs/GitGraphBranch"
+          },
+          "title": "Branches",
+          "type": "array"
+        },
+        "order": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Order",
+          "type": "array"
+        },
+        "working_branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Working Branch"
+        }
+      },
+      "required": [
+        "working_branch",
+        "order",
+        "branches"
+      ],
+      "title": "GitGraphResponse",
+      "type": "object"
+    },
+    "GitLedgerSave": {
+      "properties": {
+        "files": {
+          "items": {
+            "$ref": "#/$defs/GitFileChange"
+          },
+          "title": "Files",
+          "type": "array"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "sha": {
+          "title": "Sha",
+          "type": "string"
+        },
+        "short_sha": {
+          "title": "Short Sha",
+          "type": "string"
+        },
+        "timestamp": {
+          "title": "Timestamp",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha",
+        "short_sha",
+        "message",
+        "timestamp",
+        "files"
+      ],
+      "title": "GitLedgerSave",
+      "type": "object"
+    },
+    "GitLedgerSavesResponse": {
+      "properties": {
+        "saves": {
+          "items": {
+            "$ref": "#/$defs/GitLedgerSave"
+          },
+          "title": "Saves",
+          "type": "array"
+        }
+      },
+      "required": [
+        "saves"
+      ],
+      "title": "GitLedgerSavesResponse",
+      "type": "object"
+    },
+    "GitManagedBranch": {
+      "properties": {
+        "has_uncommitted_changes": {
+          "default": false,
+          "title": "Has Uncommitted Changes",
+          "type": "boolean"
+        },
+        "has_unmerged_saves": {
+          "title": "Has Unmerged Saves",
+          "type": "boolean"
+        },
+        "is_archived": {
+          "title": "Is Archived",
+          "type": "boolean"
+        },
+        "is_current": {
+          "title": "Is Current",
+          "type": "boolean"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "is_current",
+        "is_archived",
+        "has_unmerged_saves",
+        "has_uncommitted_changes"
+      ],
+      "title": "GitManagedBranch",
+      "type": "object"
+    },
+    "GitMilestoneEntry": {
+      "properties": {
+        "is_root": {
+          "default": false,
+          "title": "Is Root",
+          "type": "boolean"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "sha": {
+          "title": "Sha",
+          "type": "string"
+        },
+        "short_sha": {
+          "title": "Short Sha",
+          "type": "string"
+        },
+        "timestamp": {
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "version_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version Label"
+        }
+      },
+      "required": [
+        "sha",
+        "short_sha",
+        "message",
+        "timestamp",
+        "version_label",
+        "is_root"
+      ],
+      "title": "GitMilestoneEntry",
+      "type": "object"
+    },
+    "GitMilestonesResponse": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/GitMilestoneEntry"
+          },
+          "title": "Entries",
+          "type": "array"
+        },
+        "working_branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Working Branch"
+        }
+      },
+      "required": [
+        "working_branch",
+        "entries"
+      ],
+      "title": "GitMilestonesResponse",
+      "type": "object"
+    },
+    "GitMoveResponse": {
+      "properties": {
+        "is_detached": {
+          "default": true,
+          "title": "Is Detached",
+          "type": "boolean"
+        },
+        "prior_branch": {
+          "title": "Prior Branch",
+          "type": "string"
+        },
+        "sha": {
+          "title": "Sha",
+          "type": "string"
+        },
+        "short_sha": {
+          "title": "Short Sha",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha",
+        "short_sha",
+        "prior_branch",
+        "is_detached"
+      ],
+      "title": "GitMoveResponse",
+      "type": "object"
+    },
+    "GitPrefs": {
+      "properties": {
+        "skip_switch_confirm": {
+          "default": false,
+          "title": "Skip Switch Confirm",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "skip_switch_confirm"
+      ],
+      "title": "GitPrefs",
+      "type": "object"
+    },
+    "GitPushResponse": {
+      "properties": {
+        "bootstrapped_default": {
+          "default": false,
+          "title": "Bootstrapped Default",
+          "type": "boolean"
+        },
+        "default_branch": {
+          "title": "Default Branch",
+          "type": "string"
+        },
+        "ledger_branch": {
+          "title": "Ledger Branch",
+          "type": "string"
+        },
+        "pushed_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Pushed Refs",
+          "type": "array"
+        },
+        "remote": {
+          "title": "Remote",
+          "type": "string"
+        },
+        "working_branch": {
+          "title": "Working Branch",
+          "type": "string"
+        }
+      },
+      "required": [
+        "remote",
+        "working_branch",
+        "ledger_branch",
+        "default_branch",
+        "bootstrapped_default",
+        "pushed_refs"
+      ],
+      "title": "GitPushResponse",
+      "type": "object"
+    },
+    "GitRemote": {
+      "properties": {
+        "ledger": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GitRemoteLeg"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "working": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GitRemoteLeg"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "name",
+        "url",
+        "working",
+        "ledger"
+      ],
+      "title": "GitRemote",
+      "type": "object"
+    },
+    "GitRemoteLeg": {
+      "properties": {
+        "ahead": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ahead"
+        },
+        "behind": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Behind"
+        },
+        "status": {
+          "enum": [
+            "untracked",
+            "unknown",
+            "synced",
+            "ahead",
+            "behind",
+            "diverged"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "ahead",
+        "behind"
+      ],
+      "title": "GitRemoteLeg",
+      "type": "object"
+    },
+    "GitRemotesResponse": {
+      "properties": {
+        "remotes": {
+          "items": {
+            "$ref": "#/$defs/GitRemote"
+          },
+          "title": "Remotes",
+          "type": "array"
+        },
+        "working_branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Working Branch"
+        }
+      },
+      "required": [
+        "remotes",
+        "working_branch"
+      ],
+      "title": "GitRemotesResponse",
+      "type": "object"
+    },
+    "GitRestoreResponse": {
+      "properties": {
+        "restored_as": {
+          "title": "Restored As",
+          "type": "string"
+        }
+      },
+      "required": [
+        "restored_as"
+      ],
+      "title": "GitRestoreResponse",
+      "type": "object"
+    },
+    "GitSetIdentityResponse": {
+      "properties": {
+        "scope": {
+          "enum": [
+            "local",
+            "global"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "user_email": {
+          "title": "User Email",
+          "type": "string"
+        },
+        "user_name": {
+          "title": "User Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "user_name",
+        "user_email",
+        "scope"
+      ],
+      "title": "GitSetIdentityResponse",
+      "type": "object"
+    },
+    "GitSetWorkingBranchResponse": {
+      "properties": {
+        "last_save_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Save Sha"
+        },
+        "state": {
+          "enum": [
+            "git-unavailable",
+            "no-repository",
+            "unset",
+            "detached",
+            "invalid",
+            "divergent",
+            "ready"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "working_branch": {
+          "title": "Working Branch",
+          "type": "string"
+        }
+      },
+      "required": [
+        "working_branch",
+        "state",
+        "last_save_sha"
+      ],
+      "title": "GitSetWorkingBranchResponse",
+      "type": "object"
+    },
+    "GitStorageBind": {
+      "description": "Progress of a bind running in the background.\n\nA bind publishes the whole project, so the dialog closes as soon as\nthe instant checks pass and the outcome arrives here instead.",
+      "properties": {
+        "claim": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GitStorageClaim"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "enum": [
+                "adopted",
+                "restart-required"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outcome"
+        },
+        "remote_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Remote Url"
+        },
+        "state": {
+          "default": "idle",
+          "enum": [
+            "idle",
+            "running",
+            "succeeded",
+            "failed"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "outcome",
+        "message",
+        "claim",
+        "remote_url"
+      ],
+      "title": "GitStorageBind",
+      "type": "object"
+    },
+    "GitStorageClaim": {
+      "description": "Who holds a uc:// location's lease.\n\nSteering, not stonewalling: the UI names the holder and offers the\ntwo ways forward (bind elsewhere, or fork the location).",
+      "properties": {
+        "app_name": {
+          "title": "App Name",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "refreshed_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Refreshed At"
+        },
+        "user": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User"
+        }
+      },
+      "required": [
+        "app_name",
+        "user",
+        "refreshed_at",
+        "message"
+      ],
+      "title": "GitStorageClaim",
+      "type": "object"
+    },
+    "GitStorageSync": {
+      "description": "Publication state of a hosted project's durable storage.\n\nCarries counts and a failure CLASS plus a hand-authored message — never\nraw git stderr, which embeds remote URLs and credential material.",
+      "properties": {
+        "failure": {
+          "anyOf": [
+            {
+              "enum": [
+                "transport",
+                "rejected",
+                "config"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Failure"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "pending": {
+          "default": 0,
+          "title": "Pending",
+          "type": "integer"
+        },
+        "state": {
+          "default": "synced",
+          "enum": [
+            "synced",
+            "pending",
+            "failed"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "pending",
+        "failure",
+        "message"
+      ],
+      "title": "GitStorageSync",
+      "type": "object"
+    },
+    "GitUndeleteResponse": {
+      "properties": {
+        "branch": {
+          "title": "Branch",
+          "type": "string"
+        },
+        "status": {
+          "default": "ok",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "branch"
+      ],
+      "title": "GitUndeleteResponse",
+      "type": "object"
+    },
+    "GitUpstreamStatusResponse": {
+      "properties": {
+        "can_fast_forward": {
+          "title": "Can Fast Forward",
+          "type": "boolean"
+        },
+        "checked_at": {
+          "title": "Checked At",
+          "type": "string"
+        },
+        "ledger": {
+          "$ref": "#/$defs/GitRemoteLeg"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "parent_generation": {
+          "title": "Parent Generation",
+          "type": "integer"
+        },
+        "parent_url": {
+          "title": "Parent Url",
+          "type": "string"
+        },
+        "working": {
+          "$ref": "#/$defs/GitRemoteLeg"
+        }
+      },
+      "required": [
+        "parent_url",
+        "parent_generation",
+        "working",
+        "ledger",
+        "can_fast_forward",
+        "checked_at",
+        "message"
+      ],
+      "title": "GitUpstreamStatusResponse",
+      "type": "object"
+    },
+    "GitWorkingBranchResponse": {
+      "properties": {
+        "current_branch": {
+          "default": "",
+          "title": "Current Branch",
+          "type": "string"
+        },
+        "eligible_branches": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Eligible Branches",
+          "type": "array"
+        },
+        "errors": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Errors",
+          "type": "array"
+        },
+        "head_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Head Sha"
+        },
+        "identity_set": {
+          "default": true,
+          "title": "Identity Set",
+          "type": "boolean"
+        },
+        "last_save_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Save Sha"
+        },
+        "state": {
+          "default": "unset",
+          "enum": [
+            "git-unavailable",
+            "no-repository",
+            "unset",
+            "detached",
+            "invalid",
+            "divergent",
+            "ready"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "storage": {
+          "default": "unsupported",
+          "enum": [
+            "unsupported",
+            "unbound",
+            "bound"
+          ],
+          "title": "Storage",
+          "type": "string"
+        },
+        "storage_bind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GitStorageBind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "storage_forked_from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Storage Forked From"
+        },
+        "storage_remote": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Storage Remote"
+        },
+        "sync": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GitStorageSync"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "user_email": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User Email"
+        },
+        "user_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User Name"
+        },
+        "working_branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Working Branch"
+        }
+      },
+      "required": [
+        "working_branch",
+        "storage",
+        "storage_remote",
+        "storage_forked_from",
+        "sync",
+        "storage_bind",
+        "state",
+        "errors",
+        "current_branch",
+        "head_sha",
+        "last_save_sha",
+        "eligible_branches",
+        "identity_set",
+        "user_name",
+        "user_email"
+      ],
+      "title": "GitWorkingBranchResponse",
+      "type": "object"
+    },
+    "GitWorkingBranchesResponse": {
+      "properties": {
+        "branches": {
+          "items": {
+            "$ref": "#/$defs/GitManagedBranch"
+          },
+          "title": "Branches",
+          "type": "array"
+        },
+        "current": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Current"
+        }
+      },
+      "required": [
+        "current",
+        "branches"
+      ],
+      "title": "GitWorkingBranchesResponse",
+      "type": "object"
+    },
     "GpuFamilyStatus": {
       "additionalProperties": false,
       "description": "Whether one family can train on a GPU in this server process.",
@@ -2319,6 +3759,75 @@
     "DispersionEstimateStatusResponse": {
       "$ref": "#/$defs/DispersionEstimateStatusResponse"
     },
+    "GitArchiveResponse": {
+      "$ref": "#/$defs/GitArchiveResponse"
+    },
+    "GitBindStorageResponse": {
+      "$ref": "#/$defs/GitBindStorageResponse"
+    },
+    "GitBranchAwayResponse": {
+      "$ref": "#/$defs/GitBranchAwayResponse"
+    },
+    "GitCommitContext": {
+      "$ref": "#/$defs/GitCommitContext"
+    },
+    "GitCommitResponse": {
+      "$ref": "#/$defs/GitCommitResponse"
+    },
+    "GitCreateWorkingBranchResponse": {
+      "$ref": "#/$defs/GitCreateWorkingBranchResponse"
+    },
+    "GitDeleteBranchResponse": {
+      "$ref": "#/$defs/GitDeleteBranchResponse"
+    },
+    "GitFastForwardResponse": {
+      "$ref": "#/$defs/GitFastForwardResponse"
+    },
+    "GitForkStorageResponse": {
+      "$ref": "#/$defs/GitForkStorageResponse"
+    },
+    "GitGraphResponse": {
+      "$ref": "#/$defs/GitGraphResponse"
+    },
+    "GitLedgerSavesResponse": {
+      "$ref": "#/$defs/GitLedgerSavesResponse"
+    },
+    "GitMilestonesResponse": {
+      "$ref": "#/$defs/GitMilestonesResponse"
+    },
+    "GitMoveResponse": {
+      "$ref": "#/$defs/GitMoveResponse"
+    },
+    "GitPrefs": {
+      "$ref": "#/$defs/GitPrefs"
+    },
+    "GitPushResponse": {
+      "$ref": "#/$defs/GitPushResponse"
+    },
+    "GitRemotesResponse": {
+      "$ref": "#/$defs/GitRemotesResponse"
+    },
+    "GitRestoreResponse": {
+      "$ref": "#/$defs/GitRestoreResponse"
+    },
+    "GitSetIdentityResponse": {
+      "$ref": "#/$defs/GitSetIdentityResponse"
+    },
+    "GitSetWorkingBranchResponse": {
+      "$ref": "#/$defs/GitSetWorkingBranchResponse"
+    },
+    "GitUndeleteResponse": {
+      "$ref": "#/$defs/GitUndeleteResponse"
+    },
+    "GitUpstreamStatusResponse": {
+      "$ref": "#/$defs/GitUpstreamStatusResponse"
+    },
+    "GitWorkingBranchResponse": {
+      "$ref": "#/$defs/GitWorkingBranchResponse"
+    },
+    "GitWorkingBranchesResponse": {
+      "$ref": "#/$defs/GitWorkingBranchesResponse"
+    },
     "LogExperimentResponse": {
       "$ref": "#/$defs/LogExperimentResponse"
     },
@@ -2407,7 +3916,30 @@
     "DispersionEstimateStatusResponse",
     "LogExperimentResponse",
     "ModelSaveDestinationResponse",
-    "SaveModelResponse"
+    "SaveModelResponse",
+    "GitWorkingBranchResponse",
+    "GitSetWorkingBranchResponse",
+    "GitWorkingBranchesResponse",
+    "GitCreateWorkingBranchResponse",
+    "GitSetIdentityResponse",
+    "GitPrefs",
+    "GitMoveResponse",
+    "GitCommitResponse",
+    "GitCommitContext",
+    "GitMilestonesResponse",
+    "GitGraphResponse",
+    "GitLedgerSavesResponse",
+    "GitRestoreResponse",
+    "GitArchiveResponse",
+    "GitDeleteBranchResponse",
+    "GitUndeleteResponse",
+    "GitRemotesResponse",
+    "GitPushResponse",
+    "GitFastForwardResponse",
+    "GitBranchAwayResponse",
+    "GitBindStorageResponse",
+    "GitForkStorageResponse",
+    "GitUpstreamStatusResponse"
   ],
   "title": "HauteApiContractBundle",
   "type": "object",
@@ -2417,6 +3949,31 @@
       "CatalogListResponse",
       "SchemaListResponse",
       "TableListResponse"
+    ],
+    "git": [
+      "GitWorkingBranchResponse",
+      "GitSetWorkingBranchResponse",
+      "GitWorkingBranchesResponse",
+      "GitCreateWorkingBranchResponse",
+      "GitSetIdentityResponse",
+      "GitPrefs",
+      "GitMoveResponse",
+      "GitCommitResponse",
+      "GitCommitContext",
+      "GitMilestonesResponse",
+      "GitGraphResponse",
+      "GitLedgerSavesResponse",
+      "GitRestoreResponse",
+      "GitArchiveResponse",
+      "GitDeleteBranchResponse",
+      "GitUndeleteResponse",
+      "GitRemotesResponse",
+      "GitPushResponse",
+      "GitFastForwardResponse",
+      "GitBranchAwayResponse",
+      "GitBindStorageResponse",
+      "GitForkStorageResponse",
+      "GitUpstreamStatusResponse"
     ],
     "mlflow": [
       "MlflowDestinationsResponse",

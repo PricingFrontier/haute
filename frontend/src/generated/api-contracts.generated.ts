@@ -254,6 +254,241 @@ export interface TableItem {
   name: string;
   table_type: string;
 }
+export interface GitWorkingBranchResponse {
+  current_branch: string;
+  eligible_branches: string[];
+  errors: string[];
+  head_sha: string | null;
+  identity_set: boolean;
+  last_save_sha: string | null;
+  state: 'git-unavailable' | 'no-repository' | 'unset' | 'detached' | 'invalid' | 'divergent' | 'ready';
+  storage: 'unsupported' | 'unbound' | 'bound';
+  storage_bind: GitStorageBind | null;
+  storage_forked_from: string | null;
+  storage_remote: string | null;
+  sync: GitStorageSync | null;
+  user_email: string | null;
+  user_name: string | null;
+  working_branch: string | null;
+}
+/**
+ * Progress of a bind running in the background.
+ *
+ * A bind publishes the whole project, so the dialog closes as soon as
+ * the instant checks pass and the outcome arrives here instead.
+ */
+export interface GitStorageBind {
+  claim: GitStorageClaim | null;
+  message: string | null;
+  outcome: 'adopted' | 'restart-required' | null;
+  remote_url: string | null;
+  state: 'idle' | 'running' | 'succeeded' | 'failed';
+}
+/**
+ * Who holds a uc:// location's lease.
+ *
+ * Steering, not stonewalling: the UI names the holder and offers the
+ * two ways forward (bind elsewhere, or fork the location).
+ */
+export interface GitStorageClaim {
+  app_name: string;
+  message: string;
+  refreshed_at: string | null;
+  user: string | null;
+}
+/**
+ * Publication state of a hosted project's durable storage.
+ *
+ * Carries counts and a failure CLASS plus a hand-authored message — never
+ * raw git stderr, which embeds remote URLs and credential material.
+ */
+export interface GitStorageSync {
+  failure: 'transport' | 'rejected' | 'config' | null;
+  message: string | null;
+  pending: number;
+  state: 'synced' | 'pending' | 'failed';
+}
+export interface GitSetWorkingBranchResponse {
+  last_save_sha: string | null;
+  state: 'git-unavailable' | 'no-repository' | 'unset' | 'detached' | 'invalid' | 'divergent' | 'ready';
+  working_branch: string;
+}
+export interface GitWorkingBranchesResponse {
+  branches: GitManagedBranch[];
+  current: string | null;
+}
+export interface GitManagedBranch {
+  has_uncommitted_changes: boolean;
+  has_unmerged_saves: boolean;
+  is_archived: boolean;
+  is_current: boolean;
+  name: string;
+}
+export interface GitCreateWorkingBranchResponse {
+  last_save_sha: string | null;
+  moved: boolean;
+  switched: boolean;
+  working_branch: string;
+}
+export interface GitSetIdentityResponse {
+  scope: 'local' | 'global';
+  user_email: string;
+  user_name: string;
+}
+export interface GitPrefs {
+  skip_switch_confirm: boolean;
+}
+export interface GitMoveResponse {
+  is_detached: boolean;
+  prior_branch: string;
+  sha: string;
+  short_sha: string;
+}
+export interface GitCommitResponse {
+  sha: string;
+  short_sha: string;
+  version_label: string | null;
+  working_branch: string;
+}
+export interface GitCommitContext {
+  delta_from_base: number | null;
+  distance: number;
+  is_milestone: boolean;
+  is_root: boolean;
+  message: string;
+  nearest_milestone: GitCommitRef;
+  sha: string;
+  short_sha: string;
+  timestamp: string;
+  version_label: string | null;
+}
+export interface GitCommitRef {
+  is_root: boolean;
+  message: string;
+  sha: string;
+  short_sha: string;
+  version_label: string | null;
+}
+export interface GitMilestonesResponse {
+  entries: GitMilestoneEntry[];
+  working_branch: string | null;
+}
+export interface GitMilestoneEntry {
+  is_root: boolean;
+  message: string;
+  sha: string;
+  short_sha: string;
+  timestamp: string;
+  version_label: string | null;
+}
+export interface GitGraphResponse {
+  branches: GitGraphBranch[];
+  order: string[];
+  working_branch: string | null;
+}
+export interface GitGraphBranch {
+  entries: GitGraphEntry[];
+  fork_credit_sha: string | null;
+  fork_of: string | null;
+  fork_point_sha: string | null;
+  fork_source_sha: string | null;
+  is_archived: boolean;
+  is_current: boolean;
+  name: string;
+  tip_sha: string;
+  truncated: boolean;
+}
+export interface GitGraphEntry {
+  is_root: boolean;
+  message: string;
+  parents: string[];
+  sha: string;
+  short_sha: string;
+  timestamp: string;
+  version_label: string | null;
+}
+export interface GitLedgerSavesResponse {
+  saves: GitLedgerSave[];
+}
+export interface GitLedgerSave {
+  files: GitFileChange[];
+  message: string;
+  sha: string;
+  short_sha: string;
+  timestamp: string;
+}
+export interface GitFileChange {
+  old_path: string | null;
+  path: string;
+  status: string;
+}
+export interface GitRestoreResponse {
+  restored_as: string;
+}
+export interface GitArchiveResponse {
+  archived_as: string;
+}
+export interface GitDeleteBranchResponse {
+  branch: string;
+  status: string;
+}
+export interface GitUndeleteResponse {
+  branch: string;
+  status: string;
+}
+export interface GitRemotesResponse {
+  remotes: GitRemote[];
+  working_branch: string | null;
+}
+export interface GitRemote {
+  ledger: GitRemoteLeg | null;
+  name: string;
+  url: string | null;
+  working: GitRemoteLeg | null;
+}
+export interface GitRemoteLeg {
+  ahead: number | null;
+  behind: number | null;
+  status: 'untracked' | 'unknown' | 'synced' | 'ahead' | 'behind' | 'diverged';
+}
+export interface GitPushResponse {
+  bootstrapped_default: boolean;
+  default_branch: string;
+  ledger_branch: string;
+  pushed_refs: string[];
+  remote: string;
+  working_branch: string;
+}
+export interface GitFastForwardResponse {
+  fast_forwarded: string[];
+  remote: string;
+  working_branch: string;
+}
+export interface GitBranchAwayResponse {
+  set_aside_as: string;
+  working_branch: string;
+}
+export interface GitBindStorageResponse {
+  message: string;
+  outcome: 'pending';
+  remote_url: string;
+}
+export interface GitForkStorageResponse {
+  message: string;
+  outcome: 'forked';
+  parent_generation: number;
+  parent_url: string;
+  target_url: string;
+}
+export interface GitUpstreamStatusResponse {
+  can_fast_forward: boolean;
+  checked_at: string;
+  ledger: GitRemoteLeg;
+  message: string;
+  parent_generation: number;
+  parent_url: string;
+  working: GitRemoteLeg;
+}
 export interface MlflowDestinationsResponse {
   destinations: MlflowDestinationEntry[];
   detail: string;

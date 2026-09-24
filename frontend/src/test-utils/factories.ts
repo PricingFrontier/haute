@@ -281,7 +281,7 @@ export function makeTrainResult(
 // makeTrainEstimate — RAM estimate fixture
 // ---------------------------------------------------------------------------
 
-import type { TrainEstimate } from "../api/types"
+import type { GitWorkingBranchResponse, TrainEstimate } from "../api/types"
 
 /**
  * Create a `TrainEstimate` with sensible defaults.
@@ -305,6 +305,30 @@ export function makeTrainEstimate(
     gpu_warning: null,
     unavailable: null,
     evaluation_preview: null,
+    ...overrides,
+  }
+}
+
+/** A complete git readiness payload with the backend model's defaults. */
+export function makeGitWorkingBranch(
+  overrides: Partial<GitWorkingBranchResponse> = {},
+): GitWorkingBranchResponse {
+  return {
+    working_branch: null,
+    storage: "unsupported",
+    storage_remote: null,
+    storage_forked_from: null,
+    sync: null,
+    storage_bind: null,
+    state: "unset",
+    errors: [],
+    current_branch: "",
+    head_sha: null,
+    last_save_sha: null,
+    eligible_branches: [],
+    identity_set: true,
+    user_name: null,
+    user_email: null,
     ...overrides,
   }
 }

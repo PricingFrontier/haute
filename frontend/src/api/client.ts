@@ -133,29 +133,6 @@ import {
   parseFrontierAutoRangeStatusResponse,
   parseFrontierStatusResponse,
   parseFrontierSelectResponse,
-  parseGitArchiveResponse,
-  parseGitDeleteBranchResponse,
-  parseGitCommitResponse,
-  parseGitMilestonesResponse,
-  parseGitLedgerSavesResponse,
-  parseGitWorkingBranchesResponse,
-  parseGitRestoreResponse,
-  parseGitUndeleteResponse,
-  parseGitCreateWorkingBranchResponse,
-  parseGitPrefs,
-  parseGitRemotesResponse,
-  parseGitBindStorageResponse,
-  parseGitForkStorageResponse,
-  parseGitUpstreamStatusResponse,
-  parseGitPushResponse,
-  parseGitFastForwardResponse,
-  parseGitGraphResponse,
-  parseGitBranchAwayResponse,
-  parseGitCommitContext,
-  parseGitMoveResponse,
-  parseGitSetIdentityResponse,
-  parseGitSetWorkingBranchResponse,
-  parseGitWorkingBranchResponse,
   parseIoCapabilitiesResponse,
   parseInputCacheBuildResponse,
   parseInputCacheCancelResponse,
@@ -192,6 +169,7 @@ import { expectGeneratedContract } from "../types/generatedContractValidation"
 // Generated response validators load with their first response, so none of
 // them reaches the initial bundle.
 const databricksValidators = () => import("../generated/api-contracts.databricks.validators.mjs")
+const gitValidators = () => import("../generated/api-contracts.git.validators.mjs")
 const mlflowValidators = () => import("../generated/api-contracts.mlflow.validators.mjs")
 const modellingValidators = () => import("../generated/api-contracts.modelling.validators.mjs")
 const utilityValidators = () => import("../generated/api-contracts.utility.validators.mjs")
@@ -1931,7 +1909,7 @@ export function readJson<T = unknown>(
 export function getWorkingBranch(
   options?: { signal?: AbortSignal },
 ): Promise<GitWorkingBranchResponse> {
-  return request<unknown>("/api/git/working-branch", options).then(parseGitWorkingBranchResponse)
+  return request<unknown>("/api/git/working-branch", options).then(async (data) => expectGeneratedContract("GitWorkingBranchResponse", (await gitValidators()).validateGitWorkingBranchResponse, data))
 }
 
 export function setWorkingBranch(
@@ -1939,9 +1917,7 @@ export function setWorkingBranch(
   create: boolean,
   options?: { signal?: AbortSignal },
 ): Promise<GitSetWorkingBranchResponse> {
-  return post<unknown>("/api/git/working-branch", { branch, create }, options).then(
-    parseGitSetWorkingBranchResponse,
-  )
+  return post<unknown>("/api/git/working-branch", { branch, create }, options).then(async (data) => expectGeneratedContract("GitSetWorkingBranchResponse", (await gitValidators()).validateGitSetWorkingBranchResponse, data))
 }
 
 /** Bind this clone's state volume to a remote for durable storage (hosted mode only). */
@@ -1949,9 +1925,7 @@ export function bindGitStorage(
   remoteUrl: string,
   options?: { signal?: AbortSignal },
 ): Promise<GitBindStorageResponse> {
-  return post<unknown>("/api/git/storage/bind", { remote_url: remoteUrl }, options).then(
-    parseGitBindStorageResponse,
-  )
+  return post<unknown>("/api/git/storage/bind", { remote_url: remoteUrl }, options).then(async (data) => expectGeneratedContract("GitBindStorageResponse", (await gitValidators()).validateGitBindStorageResponse, data))
 }
 
 /** Fork a held uc:// location's published state into an empty one. */
@@ -1964,7 +1938,7 @@ export function forkGitStorage(
     "/api/git/storage/fork",
     { source_url: sourceUrl, target_url: targetUrl },
     options,
-  ).then(parseGitForkStorageResponse)
+  ).then(async (data) => expectGeneratedContract("GitForkStorageResponse", (await gitValidators()).validateGitForkStorageResponse, data))
 }
 
 /** Measure this fork against the parent it was forked from. On demand only:
@@ -1972,32 +1946,28 @@ export function forkGitStorage(
 export function checkGitUpstream(
   options?: { signal?: AbortSignal },
 ): Promise<GitUpstreamStatus> {
-  return post<unknown>("/api/git/storage/upstream/check", {}, options).then(
-    parseGitUpstreamStatusResponse,
-  )
+  return post<unknown>("/api/git/storage/upstream/check", {}, options).then(async (data) => expectGeneratedContract("GitUpstreamStatusResponse", (await gitValidators()).validateGitUpstreamStatusResponse, data))
 }
 
 /** Catch this fork up to its parent's tips, fast-forward only. */
 export function pullGitUpstream(
   options?: { signal?: AbortSignal },
 ): Promise<GitFastForwardResponse> {
-  return post<unknown>("/api/git/storage/upstream/pull", {}, options).then(
-    parseGitFastForwardResponse,
-  )
+  return post<unknown>("/api/git/storage/upstream/pull", {}, options).then(async (data) => expectGeneratedContract("GitFastForwardResponse", (await gitValidators()).validateGitFastForwardResponse, data))
 }
 
 /** Clear a finished bind result once the dialog has shown it. */
 export function acknowledgeGitBind(
   options?: { signal?: AbortSignal },
 ): Promise<GitWorkingBranchResponse> {
-  return post<unknown>("/api/git/storage/bind/ack", {}, options).then(parseGitWorkingBranchResponse)
+  return post<unknown>("/api/git/storage/bind/ack", {}, options).then(async (data) => expectGeneratedContract("GitWorkingBranchResponse", (await gitValidators()).validateGitWorkingBranchResponse, data))
 }
 
 /** Retry a failed sync to the bound remote and return refreshed readiness. */
 export function retryGitStorageSync(
   options?: { signal?: AbortSignal },
 ): Promise<GitWorkingBranchResponse> {
-  return post<unknown>("/api/git/storage/retry", {}, options).then(parseGitWorkingBranchResponse)
+  return post<unknown>("/api/git/storage/retry", {}, options).then(async (data) => expectGeneratedContract("GitWorkingBranchResponse", (await gitValidators()).validateGitWorkingBranchResponse, data))
 }
 
 export function setGitIdentity(
@@ -2010,7 +1980,7 @@ export function setGitIdentity(
     "/api/git/identity",
     { user_name: userName, user_email: userEmail, set_global: setGlobal },
     options,
-  ).then(parseGitSetIdentityResponse)
+  ).then(async (data) => expectGeneratedContract("GitSetIdentityResponse", (await gitValidators()).validateGitSetIdentityResponse, data))
 }
 
 export function commitMilestone(
@@ -2022,7 +1992,7 @@ export function commitMilestone(
     "/api/git/commit",
     { message, version_label: versionLabel, allow_fork: options?.allowFork ?? false },
     { signal: options?.signal },
-  ).then(parseGitCommitResponse)
+  ).then(async (data) => expectGeneratedContract("GitCommitResponse", (await gitValidators()).validateGitCommitResponse, data))
 }
 
 export function getMilestones(
@@ -2037,9 +2007,7 @@ export function getMilestones(
   if (limit !== undefined) p.set("limit", String(limit))
   if (branch) p.set("branch", branch)
   const qs = p.toString()
-  return request<unknown>(`/api/git/milestones${qs ? `?${qs}` : ""}`, options).then(
-    parseGitMilestonesResponse,
-  )
+  return request<unknown>(`/api/git/milestones${qs ? `?${qs}` : ""}`, options).then(async (data) => expectGeneratedContract("GitMilestonesResponse", (await gitValidators()).validateGitMilestonesResponse, data))
 }
 
 export function getMilestoneSaves(
@@ -2049,7 +2017,7 @@ export function getMilestoneSaves(
   return request<unknown>(
     `/api/git/milestones/${encodeURIComponent(sha)}/saves`,
     options,
-  ).then(parseGitLedgerSavesResponse)
+  ).then(async (data) => expectGeneratedContract("GitLedgerSavesResponse", (await gitValidators()).validateGitLedgerSavesResponse, data))
 }
 
 export function getPendingSaves(
@@ -2057,9 +2025,7 @@ export function getPendingSaves(
   options?: { signal?: AbortSignal },
 ): Promise<GitLedgerSavesResponse> {
   const qs = branch ? `?branch=${encodeURIComponent(branch)}` : ""
-  return request<unknown>(`/api/git/pending-saves${qs}`, options).then(
-    parseGitLedgerSavesResponse,
-  )
+  return request<unknown>(`/api/git/pending-saves${qs}`, options).then(async (data) => expectGeneratedContract("GitLedgerSavesResponse", (await gitValidators()).validateGitLedgerSavesResponse, data))
 }
 
 /** Whole-forest topology for the graph rail: every working pair's spine plus
@@ -2070,14 +2036,14 @@ export function getGitGraph(
   options?: { signal?: AbortSignal },
 ): Promise<GitGraphResponse> {
   const qs = limit !== undefined ? `?limit=${limit}` : ""
-  return request<unknown>(`/api/git/graph${qs}`, options).then(parseGitGraphResponse)
+  return request<unknown>(`/api/git/graph${qs}`, options).then(async (data) => expectGeneratedContract("GitGraphResponse", (await gitValidators()).validateGitGraphResponse, data))
 }
 
 export function gitArchiveBranch(
   branch: string,
   options?: { signal?: AbortSignal },
 ): Promise<GitArchiveResponse> {
-  return post<unknown>("/api/git/archive", { branch }, options).then(parseGitArchiveResponse)
+  return post<unknown>("/api/git/archive", { branch }, options).then(async (data) => expectGeneratedContract("GitArchiveResponse", (await gitValidators()).validateGitArchiveResponse, data))
 }
 
 export function gitDeleteBranch(
@@ -2090,22 +2056,20 @@ export function gitDeleteBranch(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ branch, confirm }),
     ...options,
-  }).then(parseGitDeleteBranchResponse)
+  }).then(async (data) => expectGeneratedContract("GitDeleteBranchResponse", (await gitValidators()).validateGitDeleteBranchResponse, data))
 }
 
 export function getWorkingBranches(
   options?: { signal?: AbortSignal },
 ): Promise<GitWorkingBranchesResponse> {
-  return request<unknown>("/api/git/working-branches", options).then(
-    parseGitWorkingBranchesResponse,
-  )
+  return request<unknown>("/api/git/working-branches", options).then(async (data) => expectGeneratedContract("GitWorkingBranchesResponse", (await gitValidators()).validateGitWorkingBranchesResponse, data))
 }
 
 export function restoreBranch(
   branch: string,
   options?: { signal?: AbortSignal },
 ): Promise<GitRestoreResponse> {
-  return post<unknown>("/api/git/restore", { branch }, options).then(parseGitRestoreResponse)
+  return post<unknown>("/api/git/restore", { branch }, options).then(async (data) => expectGeneratedContract("GitRestoreResponse", (await gitValidators()).validateGitRestoreResponse, data))
 }
 
 /** Restore a deleted pair from the trash tombstone (the inverse of delete —
@@ -2114,7 +2078,7 @@ export function undeleteBranch(
   branch: string,
   options?: { signal?: AbortSignal },
 ): Promise<GitUndeleteResponse> {
-  return post<unknown>("/api/git/undelete", { branch }, options).then(parseGitUndeleteResponse)
+  return post<unknown>("/api/git/undelete", { branch }, options).then(async (data) => expectGeneratedContract("GitUndeleteResponse", (await gitValidators()).validateGitUndeleteResponse, data))
 }
 
 export function createWorkingBranch(
@@ -2126,27 +2090,27 @@ export function createWorkingBranch(
     "/api/git/working-branches",
     { name, at: opts.at ?? null, move: opts.move ?? false },
     options,
-  ).then(parseGitCreateWorkingBranchResponse)
+  ).then(async (data) => expectGeneratedContract("GitCreateWorkingBranchResponse", (await gitValidators()).validateGitCreateWorkingBranchResponse, data))
 }
 
 export function getGitPrefs(
   options?: { signal?: AbortSignal },
 ): Promise<GitPrefs> {
-  return request<unknown>("/api/git/prefs", options).then(parseGitPrefs)
+  return request<unknown>("/api/git/prefs", options).then(async (data) => expectGeneratedContract("GitPrefs", (await gitValidators()).validateGitPrefs, data))
 }
 
 export function setGitPrefs(
   prefs: GitPrefs,
   options?: { signal?: AbortSignal },
 ): Promise<GitPrefs> {
-  return post<unknown>("/api/git/prefs", prefs, options).then(parseGitPrefs)
+  return post<unknown>("/api/git/prefs", prefs, options).then(async (data) => expectGeneratedContract("GitPrefs", (await gitValidators()).validateGitPrefs, data))
 }
 
 /** Configured remotes + the working branch's ahead/behind vs each (S16). */
 export function getGitRemotes(
   options?: { signal?: AbortSignal },
 ): Promise<GitRemotesResponse> {
-  return request<unknown>("/api/git/remotes", options).then(parseGitRemotesResponse)
+  return request<unknown>("/api/git/remotes", options).then(async (data) => expectGeneratedContract("GitRemotesResponse", (await gitValidators()).validateGitRemotesResponse, data))
 }
 
 /** Deliberately publish branch history to a remote, bootstrapping its default branch when needed (S16/S33). */
@@ -2154,7 +2118,7 @@ export function gitPush(
   remote: string,
   options?: { signal?: AbortSignal },
 ): Promise<GitPushResponse> {
-  return post<unknown>("/api/git/push", { remote }, options).then(parseGitPushResponse)
+  return post<unknown>("/api/git/push", { remote }, options).then(async (data) => expectGeneratedContract("GitPushResponse", (await gitValidators()).validateGitPushResponse, data))
 }
 
 /** Catch the working pair up to a remote by fast-forward only (P7 D1/D2) — a
@@ -2163,9 +2127,7 @@ export function gitFastForward(
   remote: string,
   options?: { signal?: AbortSignal },
 ): Promise<GitFastForwardResponse> {
-  return post<unknown>("/api/git/fast-forward", { remote }, options).then(
-    parseGitFastForwardResponse,
-  )
+  return post<unknown>("/api/git/fast-forward", { remote }, options).then(async (data) => expectGeneratedContract("GitFastForwardResponse", (await gitValidators()).validateGitFastForwardResponse, data))
 }
 
 /** Set the local fork aside under a dated name and adopt the remote (P7 M3) —
@@ -2174,9 +2136,7 @@ export function gitBranchAway(
   remote: string,
   options?: { signal?: AbortSignal },
 ): Promise<GitBranchAwayResponse> {
-  return post<unknown>("/api/git/branch-away", { remote }, options).then(
-    parseGitBranchAwayResponse,
-  )
+  return post<unknown>("/api/git/branch-away", { remote }, options).then(async (data) => expectGeneratedContract("GitBranchAwayResponse", (await gitValidators()).validateGitBranchAwayResponse, data))
 }
 
 /**
@@ -2203,7 +2163,7 @@ export function getCommitContext(
   return request<unknown>(
     `/api/git/commit-context/${encodeURIComponent(sha)}${query}`,
     options,
-  ).then(parseGitCommitContext)
+  ).then(async (data) => expectGeneratedContract("GitCommitContext", (await gitValidators()).validateGitCommitContext, data))
 }
 
 /**
@@ -2216,5 +2176,5 @@ export function moveToVersion(
   sha: string,
   options?: { signal?: AbortSignal },
 ): Promise<GitMoveResponse> {
-  return post<unknown>("/api/git/move", { sha }, options).then(parseGitMoveResponse)
+  return post<unknown>("/api/git/move", { sha }, options).then(async (data) => expectGeneratedContract("GitMoveResponse", (await gitValidators()).validateGitMoveResponse, data))
 }

@@ -51,10 +51,10 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // about 10 KiB of aggregate headroom with the startup and vendor caps unchanged.
 // Generated API response validators (API-R03) replace hand-written guards with
 // lazy standalone Ajv modules, one per converted module group, loaded with the
-// group's first response; the startup bundle shrinks. With the utility,
-// Databricks and MLflow groups the complete production bundle is 1,423.4 KiB;
-// 1,434 KiB restores about 10 KiB of aggregate headroom.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1434
+// group's first response; the startup bundle shrinks (289.8 KiB). With the
+// utility, Databricks, MLflow, modelling and git groups the complete production
+// bundle is 1,431.7 KiB; 1,442 KiB restores about 10 KiB of aggregate headroom.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1442
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All

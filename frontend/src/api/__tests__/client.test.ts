@@ -330,6 +330,11 @@ function makeWorkingBranchResponse(overrides: Record<string, unknown> = {}) {
     user_name: "Test User",
     user_email: "test@example.com",
     head_sha: "abc1234def5678",
+    storage: "unsupported",
+    storage_remote: null,
+    storage_forked_from: null,
+    sync: null,
+    storage_bind: null,
     ...overrides,
   }
 }
@@ -1006,7 +1011,7 @@ describe("git endpoints", () => {
           ledger: { status: "behind", ahead: 0, behind: 1 },
         },
         // A remote with no leg detail has null legs.
-        { name: "backup", url: null },
+        { name: "backup", url: null, working: null, ledger: null },
       ],
       working_branch: "dev",
     }
@@ -1168,17 +1173,7 @@ describe("git remote catch-up + history endpoints", () => {
   })
 
   it("getWorkingBranch GETs /api/git/working-branch and parses the readiness signal", async () => {
-    const data = {
-      working_branch: "dev",
-      state: "ready",
-      errors: [],
-      current_branch: "dev-save",
-      last_save_sha: "abc1234",
-      eligible_branches: ["dev"],
-      identity_set: true,
-      user_name: "U",
-      user_email: "u@x.y",
-    }
+    const data = makeWorkingBranchResponse({ last_save_sha: "abc1234", user_name: "U", user_email: "u@x.y" })
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await getWorkingBranch()
     expect(mockFetch.mock.calls[0][0]).toBe("/api/git/working-branch")
@@ -1268,12 +1263,15 @@ describe("git remote catch-up + history endpoints", () => {
       short_sha: "aaaaaaaa",
       message: "Milestone 1",
       timestamp: "2026-06-21T00:00:00Z",
+      is_root: false,
       is_milestone: true,
       version_label: "1.0",
       nearest_milestone: {
         sha: "a".repeat(40),
         short_sha: "aaaaaaaa",
         message: "Milestone 1",
+        version_label: "1.0",
+        is_root: false,
       },
       distance: 0,
       delta_from_base: null,
@@ -1291,10 +1289,15 @@ describe("git remote catch-up + history endpoints", () => {
       short_sha: "bbbbbbbb",
       message: "save",
       timestamp: "2026-06-21T00:00:00Z",
+      is_root: false,
+      is_milestone: false,
+      version_label: null,
       nearest_milestone: {
         sha: "a".repeat(40),
         short_sha: "aaaaaaaa",
         message: "Milestone 1",
+        version_label: null,
+        is_root: false,
       },
       distance: 3,
       delta_from_base: 2,
