@@ -27,12 +27,11 @@ from typing import Any
 import polars as pl
 import pytest
 
-from haute._json_flatten import _json_cache_dir
-from haute._json_shred._cache import build_per_port_cache
 from haute._output_assembler import _prune, render_output_document
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
+from tests.conftest import build_test_api_input_snapshots
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "output_assembler" / "data_model_example.json"
 
@@ -176,7 +175,7 @@ def _roundtrip_graph(config: dict[str, Any]) -> PipelineGraph:
 def test_nested_output_roundtrips_to_original(project_with_data) -> None:
     tmp_path, data_path = project_with_data
     config = _api_input_config(data_path)
-    build_per_port_cache(data_path, config, _json_cache_dir(data_path, "working"))
+    build_test_api_input_snapshots(data_path, config)
 
     graph = _roundtrip_graph(config)
     results = execute_graph(graph, target_node_id="out")

@@ -2,8 +2,8 @@
 
 Source plan: ``notes-haute/data-model/MULTI_FRAME_PLAN.md`` §"Commit 9 — End-to-end
 integration test". This drives the full multi-port HTTP chain a user exercises in
-the canvas — save the graph, build the per-port JSON cache, preview the OUTPUT
-node — and asserts the reassembled nested document structurally equals a
+the canvas — save the graph, build the apiInput's input snapshots, preview the
+OUTPUT node — and asserts the reassembled nested document structurally equals a
 checked-in fixture (``tests/fixtures/multi_frame_expected_output.json``).
 
 The canonical multi-port witness is the data-model example
@@ -21,7 +21,7 @@ text).
 HARNESS CHOICE — in-process ``TestClient``, NOT a uvicorn subprocess.
 The plan (step 1) explicitly authorises following whichever boot pattern is
 already canonical in this repo's tests. Every HTTP-route test here
-(``test_json_cache_integrity``, ``test_output_assemble_routes``, ...) uses
+(``test_input_cache_route``, ``test_output_assemble_routes``, ...) uses
 ``fastapi.testclient.TestClient(app)`` in-process; ``tests/test_e2e.py`` is
 entirely in-process (no HTTP at all). A real uvicorn subprocess is the heavyweight
 Playwright harness (``scripts/run_frontend_e2e_server.py``) and is wrong for a
@@ -31,10 +31,10 @@ satisfied by TestClient:
 - Ephemeral port / no port-8000 collision: TestClient has no real socket, so the
   reviewers' flagged port race cannot occur.
 - Readiness probe: TestClient(app) is synchronously ready; no poll needed.
-- Temp cache directory / no leakage: the build route and executor both resolve
-  the cache dir via ``_json_cache_dir`` which is rooted at ``Path.cwd()``
-  (``haute._json_flatten``). We ``monkeypatch.chdir(tmp_path)`` + ``set_project_root``
-  so ``.haute_cache`` lands under the per-test tmp dir — the established
+- Temp cache directory / no leakage: the input snapshot store is rooted at the
+  selected project root (``haute._source_cache.SourceCacheStore``). We
+  ``monkeypatch.chdir(tmp_path)`` + ``set_project_root`` so ``.haute_cache``
+  lands under the per-test tmp dir — the established
   ``test_output_assemble_routes`` pattern.
 - File-watcher disabled: the watcher only starts in the server lifespan, which
   runs only when TestClient is entered as a context manager. We instantiate it
@@ -54,12 +54,8 @@ token, ``$D`` the data path under the project root):
       -d '{"name":"multi_frame_e2e","description":"","graph":<GRAPH>,
            "source_file":"multi_frame_e2e.py"}'
 
-    # 2. BUILD the per-port JSON cache (volatile_schema is the apiInput config)
-    curl -sX POST localhost:8000/api/json-cache/build -H "X-Haute-Session: $T" \
-      -H 'content-type: application/json' \
-      -d '{"path":"data/data_model_example.json","volatile_schema":<API_CONFIG>}'
-
-    # 3. PREVIEW the OUTPUT node -> the assembled nested document
+    # 2. PREVIEW the OUTPUT node -> an admitted preview auto-prepares every
+    #    emitting table's input snapshot before assembling the document.
     curl -sX POST localhost:8000/api/pipeline/preview -H "X-Haute-Session: $T" \
       -H 'content-type: application/json' \
       -d '{"graph":<GRAPH>,"node_id":"out"}'
@@ -75,7 +71,6 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from haute._json_flatten import _json_cache_dir
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import NodeType
 from haute.executor import _preview_cache
@@ -83,6 +78,7 @@ from haute.executor import _preview_cache
 # Reuse the canonical multi-port helpers (same imports test_output_assemble_routes
 # uses) — single source of truth for the apiInput shred config, the OUTPUT
 # reassembly mapping, and the expected round-trip document.
+from tests.conftest import build_test_api_input_snapshots
 from tests.test_output_nested_roundtrip import (
     _FIXTURE,
     _api_input_config,
@@ -170,7 +166,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[T
 
 
 def test_multi_frame_save_build_preview_round_trips(project) -> None:
-    """The full multi-port HTTP chain: save → build → on-disk parquets → preview →
+    """The full multi-port HTTP chain: save → build input snapshots → preview →
     structural equality. Sequential per-stage asserts (plan §4f) — each message
     names the upstream commit/seam it guards so a regression localises.
     """
@@ -192,37 +188,14 @@ def test_multi_frame_save_build_preview_round_trips(project) -> None:
     )
     assert save.status_code == 200, f"STAGE 1 SAVE failed (commit 6 graph/codegen): {save.text}"
 
-    # STAGE 2 — BUILD the per-port JSON cache (guards the shred/build route,
-    # commit 3). NOTE: the build response ``row_count`` is the SUM across all
-    # ports (haute.routes.json_cache sums per-table counts), NOT per-port — so we
-    # assert the aggregate is > 0 here and verify each port's parquet on disk in
-    # STAGE 3.
-    build = client.post(
-        "/api/json-cache/build",
-        json={"path": "data/data_model_example.json", "volatile_schema": api_config},
-    )
-    assert build.status_code == 200, f"STAGE 2 BUILD failed (commit 3 shred/build): {build.text}"
-    body = build.json()
-    assert body["row_count"] > 0, (
-        f"STAGE 2: aggregate per-port row_count was {body['row_count']} (commit 3 shred)"
-    )
-    assert body["skipped_records"] == 0, (
-        f"STAGE 2: clean fixture dropped records (commit 3 shred): {body['skipped_records']}"
-    )
+    # STAGE 2 — BUILD every emitting table's input snapshot (guards the
+    # shred/build seam, commit 3). The preview route below would also
+    # auto-prepare any missing/stale table, but building explicitly here
+    # keeps this stage's own pass/fail meaningful.
+    generations = build_test_api_input_snapshots(data_path, api_config)
+    assert generations, "STAGE 2: no tables were built (commit 3 shred)"
 
-    # STAGE 3 — ON-DISK PER-PORT PARQUETS (guards the per-port writer; the plan's
-    # "build returned 200 but parquets are missing" diagnostic). Filenames are the
-    # table LABEL + ".parquet" — confirmed in test_json_cache_integrity.py
-    # (root.parquet / drivers.parquet asserted by label).
-    cache_dir = _json_cache_dir(data_path, "working")
-    assert cache_dir.exists(), f"STAGE 3: cache dir missing after 200 build (commit 3): {cache_dir}"
-    for port in _PORTS:
-        parquet = cache_dir / f"{port}.parquet"
-        assert parquet.exists(), (
-            f"STAGE 3: missing {port}.parquet — per-port shred writer regressed (commit 3)"
-        )
-
-    # STAGE 4 — PREVIEW the OUTPUT node (guards the OUTPUT assembler wiring,
+    # STAGE 3 — PREVIEW the OUTPUT node (guards the OUTPUT assembler wiring,
     # commit 7). The OUTPUT node's ``preview`` field IS the rendered nested
     # document (proven by test_output_nested_roundtrip.py).
     preview = client.post(
@@ -230,17 +203,17 @@ def test_multi_frame_save_build_preview_round_trips(project) -> None:
         json={"graph": graph, "node_id": "out"},
     )
     assert preview.status_code == 200, (
-        f"STAGE 4 PREVIEW failed (commit 7 OUTPUT wiring): {preview.text}"
+        f"STAGE 3 PREVIEW failed (commit 7 OUTPUT wiring): {preview.text}"
     )
     payload = preview.json()
     assert payload["status"] == "ok", (
-        f"STAGE 4: OUTPUT node errored (commit 7 assembler): {payload.get('error')}"
+        f"STAGE 3: OUTPUT node errored (commit 7 assembler): {payload.get('error')}"
     )
     assert payload["row_count"] == 2, (
-        f"STAGE 4: expected 2 root policies, got {payload['row_count']} (commit 7 assembler)"
+        f"STAGE 3: expected 2 root policies, got {payload['row_count']} (commit 7 assembler)"
     )
 
-    # STAGE 5 — STRUCTURAL EQUALITY vs the checked-in fixture (guards the
+    # STAGE 4 — STRUCTURAL EQUALITY vs the checked-in fixture (guards the
     # assembler/render round-trip, commit 7/4b). Order-insensitive for
     # list-of-objects, key-insensitive for dicts, value-exact for primitives;
     # no byte comparison (plan §Commit 9 step 5d).
@@ -248,9 +221,9 @@ def test_multi_frame_save_build_preview_round_trips(project) -> None:
     # Sanity: the checked-in fixture matches the helper's expected document, so a
     # drift in either is caught.
     assert _canonical(expected) == _canonical(_expected_document()), (
-        "STAGE 5: multi_frame_expected_output.json drifted from data_model_example.json"
+        "STAGE 4: multi_frame_expected_output.json drifted from data_model_example.json"
     )
     actual = payload["preview"]
     assert _canonical(actual) == _canonical(expected), (
-        "STAGE 5: assembled document differs from expected (assembler/render regressed, commit 7)"
+        "STAGE 4: assembled document differs from expected (assembler/render regressed, commit 7)"
     )

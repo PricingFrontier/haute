@@ -6,7 +6,7 @@ import os
 import shutil
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -339,22 +339,17 @@ def _clear_git_content_caches():
 
 
 @pytest.fixture(autouse=True)
-def _clear_dual_cache_session():
-    """Reset the dual-cache consulted-hashes set between tests.
+def _clear_source_signatures():
+    """Forget memoised source content proofs between tests.
 
-    The set is module-level in ``haute._json_flatten`` — once a test builds
-    a per-port JSON cache for a data file, the hash persists across subsequent
-    tests in the same process. That would let
-    one test's working-layer state spill into another's emitter precedence
-    check, masking regressions or producing flaky failures. Clearing
-    before AND after each test gives the same per-process isolation the
-    other module-level singletons in this conftest get.
+    The memo is process-wide and keyed by a file's freshness token, which a
+    reused temporary path can repeat across tests.
     """
-    from haute._json_flatten import _clear_session
+    from haute._json_shred._source_proof import clear_file_signatures
 
-    _clear_session()
+    clear_file_signatures()
     yield
-    _clear_session()
+    clear_file_signatures()
 
 
 @pytest.fixture()
@@ -479,6 +474,27 @@ def build_test_input_snapshot(
         store=SourceCacheStore(_get_project_root()),
         base_dir=base_dir if base_dir is not None else _configured_pipeline_dir(),
         profile=profile,
+    )
+
+
+def build_test_api_input_snapshots(
+    data_path: str | Path,
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build every emitting table of a structured API Input into the project store.
+
+    *data_path* is the source file exactly as execution anchors it. Returns
+    the published generations keyed by table identity digest.
+    """
+    from haute._json_shred._snapshots import api_input_snapshot_source, build_api_input_tables
+    from haute._source_cache import SourceCacheStore
+
+    source = api_input_snapshot_source(config, data_path)
+    return build_api_input_tables(
+        source,
+        [table.label for table in source.tables],
+        store=SourceCacheStore(_get_project_root()),
+        profile=ExecutionProfile.LAZY_SINK,
     )
 
 

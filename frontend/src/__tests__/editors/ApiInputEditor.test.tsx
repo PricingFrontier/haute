@@ -2,7 +2,7 @@
  * Render tests for ApiInputEditor.
  *
  * Tests: API banner, preview data label, FileBrowser with extensions filter,
- * cache button visibility, JsonCacheButton states
+ * cache button visibility, input-cache snapshot states
  * (initial, after build, error on failure).
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
@@ -45,22 +45,31 @@ vi.mock("../../panels/editors/_shared", async () => {
   }
 })
 
-const mockBuildJsonCache = vi.fn()
-const mockGetJsonCacheStatus = vi.fn()
-const mockGetJsonCacheStatusForSchema = vi.fn()
-const mockGetJsonCacheProgress = vi.fn()
-const mockDeleteJsonCache = vi.fn()
+const mockBuildInputCache = vi.fn()
+const mockGetInputCacheStatus = vi.fn()
+const mockGetInputCacheJob = vi.fn()
+const mockCancelInputCacheJob = vi.fn()
+const mockClearInputCache = vi.fn()
 const mockInferJsonCacheSchema = vi.fn()
 const mockFetchSchemaForPath = vi.fn()
 const schemaFetchState = vi.hoisted(() => ({ error: null as string | null }))
 
+const MISSING_SNAPSHOT = {
+  schema_version: 1 as const,
+  identity_digest: "digest",
+  state: "missing" as const,
+  freshness: "unknown" as const,
+  generation: null,
+  tables: null,
+}
+
 vi.mock("../../api/client", () => ({
   fetchDatabricksSchema: vi.fn(),
-  buildJsonCache: (...args: unknown[]) => mockBuildJsonCache(...args),
-  getJsonCacheProgress: (...args: unknown[]) => mockGetJsonCacheProgress(...args),
-  getJsonCacheStatus: (...args: unknown[]) => mockGetJsonCacheStatus(...args),
-  getJsonCacheStatusForSchema: (...args: unknown[]) => mockGetJsonCacheStatusForSchema(...args),
-  deleteJsonCache: (...args: unknown[]) => mockDeleteJsonCache(...args),
+  buildInputCache: (...args: unknown[]) => mockBuildInputCache(...args),
+  getInputCacheJob: (...args: unknown[]) => mockGetInputCacheJob(...args),
+  cancelInputCacheJob: (...args: unknown[]) => mockCancelInputCacheJob(...args),
+  getInputCacheStatus: (...args: unknown[]) => mockGetInputCacheStatus(...args),
+  clearInputCache: (...args: unknown[]) => mockClearInputCache(...args),
   inferJsonCacheSchema: (...args: unknown[]) => mockInferJsonCacheSchema(...args),
   ApiError: class ApiError extends Error {
     status: number
@@ -82,11 +91,11 @@ vi.mock("../../hooks/useSchemaFetch", () => ({
 }))
 
 beforeEach(() => {
-  mockBuildJsonCache.mockReset()
-  mockGetJsonCacheStatus.mockReset().mockResolvedValue({ cached: false })
-  mockGetJsonCacheStatusForSchema.mockReset().mockResolvedValue({ cached: false })
-  mockGetJsonCacheProgress.mockReset().mockResolvedValue({ active: false })
-  mockDeleteJsonCache.mockReset()
+  mockBuildInputCache.mockReset()
+  mockGetInputCacheStatus.mockReset().mockResolvedValue(MISSING_SNAPSHOT)
+  mockGetInputCacheJob.mockReset()
+  mockCancelInputCacheJob.mockReset()
+  mockClearInputCache.mockReset()
   mockInferJsonCacheSchema.mockReset()
   mockFetchSchemaForPath.mockReset()
   schemaFetchState.error = null
@@ -220,11 +229,11 @@ describe("ApiInputEditor", () => {
       "Select at least one column in an emitted table before caching.",
     )
     fireEvent.click(button)
-    expect(mockBuildJsonCache).not.toHaveBeenCalled()
+    expect(mockBuildInputCache).not.toHaveBeenCalled()
   })
 
-  it("JsonCacheButton: shows 'Cache as Parquet' initially when not cached", async () => {
-    mockGetJsonCacheStatus.mockResolvedValue({ cached: false })
+  it("cache button: shows 'Cache as Parquet' initially when not cached", async () => {
+    mockGetInputCacheStatus.mockResolvedValue(MISSING_SNAPSHOT)
 
     render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.json" }} />)
 
@@ -233,15 +242,50 @@ describe("ApiInputEditor", () => {
     })
   })
 
-  it("JsonCacheButton: shows cache info after successful build", async () => {
-    mockGetJsonCacheStatus.mockResolvedValue({ cached: false })
-    mockBuildJsonCache.mockResolvedValue({
-      cached: true,
-      data_path: "data/input.json",
-      row_count: 100,
-      column_count: 5,
-      size_bytes: 2048,
-      cached_at: 0,
+  it("cache button: shows cache info after successful build", async () => {
+    mockGetInputCacheStatus.mockResolvedValue(MISSING_SNAPSHOT)
+    mockBuildInputCache.mockResolvedValue({
+      schema_version: 1,
+      job_id: "job-1",
+      identity_digest: "digest",
+      status: "running",
+      joined: false,
+    })
+    mockGetInputCacheJob.mockResolvedValue({
+      schema_version: 1,
+      job_id: "job-1",
+      identity_digest: "digest",
+      status: "completed",
+      terminal_reason: null,
+      message: "Snapshot ready.",
+      refresh: false,
+      build_class: "bounded",
+      progress: { phase: "completed", rows: 100, batches: 1, bytes: 2048, elapsed_seconds: 0 },
+      snapshot: {
+        schema_version: 1,
+        identity_digest: "digest",
+        state: "ready",
+        freshness: "fresh",
+        generation: null,
+        tables: [
+          {
+            label: "policies",
+            identity_digest: "digest-policies",
+            state: "ready",
+            freshness: "fresh",
+            generation: {
+              generation_id: "gen-1",
+              row_count: 100,
+              column_count: 5,
+              columns: {},
+              size_bytes: 2048,
+              created_at: 0,
+              build_class: "bounded",
+            },
+          },
+        ],
+      },
+      error_code: null,
     })
 
     // Need at least one runtime-emitting table (emit + selected column).
@@ -272,19 +316,50 @@ describe("ApiInputEditor", () => {
     })
   })
 
-  it("JsonCacheButton: sends config_path in status and build requests when provided", async () => {
-    // v2 dispatch on the backend reads the on-disk config file; the editor
-    // passes config_path so the cache button can name it. The previous
-    // flatten_schema-inline path is gone — the backend reads the v2 schema
-    // from the file at config_path.
-    mockGetJsonCacheStatusForSchema.mockResolvedValue({ cached: false })
-    mockBuildJsonCache.mockResolvedValue({
-      cached: true,
-      data_path: "data/input.json",
-      row_count: 1,
-      column_count: 1,
-      size_bytes: 1024,
-      cached_at: 0,
+  it("cache button: sends node_type apiInput in status and build requests", async () => {
+    mockGetInputCacheStatus.mockResolvedValue(MISSING_SNAPSHOT)
+    mockBuildInputCache.mockResolvedValue({
+      schema_version: 1,
+      job_id: "job-1",
+      identity_digest: "digest",
+      status: "running",
+      joined: false,
+    })
+    mockGetInputCacheJob.mockResolvedValue({
+      schema_version: 1,
+      job_id: "job-1",
+      identity_digest: "digest",
+      status: "completed",
+      terminal_reason: null,
+      message: "Snapshot ready.",
+      refresh: false,
+      build_class: "bounded",
+      progress: { phase: "completed", rows: 1, batches: 1, bytes: 1024, elapsed_seconds: 0 },
+      snapshot: {
+        schema_version: 1,
+        identity_digest: "digest",
+        state: "ready",
+        freshness: "fresh",
+        generation: null,
+        tables: [
+          {
+            label: "policies",
+            identity_digest: "digest-policies",
+            state: "ready",
+            freshness: "fresh",
+            generation: {
+              generation_id: "gen-1",
+              row_count: 1,
+              column_count: 1,
+              columns: {},
+              size_bytes: 1024,
+              created_at: 0,
+              build_class: "bounded",
+            },
+          },
+        ],
+      },
+      error_code: null,
     })
 
     render(
@@ -294,171 +369,37 @@ describe("ApiInputEditor", () => {
           path: "data/input.json",
           tables: [CACHEABLE_TABLE],
         }}
-        configPath="rating/config/quote_input/api_input.json"
       />,
     )
 
     await waitFor(() => {
-      expect(mockGetJsonCacheStatusForSchema).toHaveBeenCalledWith(
+      expect(mockGetInputCacheStatus).toHaveBeenCalledWith(
         expect.objectContaining({
-          path: "data/input.json",
-          config_path: "rating/config/quote_input/api_input.json",
+          schema_version: 1,
+          node_type: "apiInput",
+          config: expect.objectContaining({ path: "data/input.json" }),
         }),
       )
     })
-    expect(mockGetJsonCacheStatus).not.toHaveBeenCalled()
 
     await act(async () => {
       fireEvent.click(screen.getByText("Cache as Parquet").closest("button")!)
     })
 
     await waitFor(() => {
-      // After v1 removal: cache POST now also carries `volatile_schema`
-      // — the editor's in-memory v2. Use objectContaining so the test
-      // doesn't pin the full shape of writeV2's output.
-      expect(mockBuildJsonCache).toHaveBeenCalledWith(
+      expect(mockBuildInputCache).toHaveBeenCalledWith(
         expect.objectContaining({
-          path: "data/input.json",
-          config_path: "rating/config/quote_input/api_input.json",
+          schema_version: 1,
+          node_type: "apiInput",
+          config: expect.objectContaining({ path: "data/input.json" }),
         }),
       )
-      const payload = mockBuildJsonCache.mock.calls[0][0] as Record<string, unknown>
-      expect(payload).toHaveProperty("volatile_schema")
     })
   })
 
-  it("JsonCacheButton: refetches cache status when the live schema changes", async () => {
-    mockGetJsonCacheStatusForSchema
-      .mockResolvedValueOnce({
-        cached: true,
-        data_path: "data/input.json",
-        row_count: 10,
-        column_count: 2,
-        size_bytes: 2048,
-        cached_at: 1,
-      })
-      .mockResolvedValue({ cached: false })
-    mockBuildJsonCache.mockResolvedValue({
-      cached: true,
-      data_path: "data/input.json",
-      row_count: 10,
-      column_count: 2,
-      size_bytes: 2048,
-      cached_at: 2,
-    })
-
-    const baseTable = {
-      path: "$[:]",
-      label: "policies",
-      emit: true,
-      columns: [
-        {
-          name: "policy_id",
-          path: "$[:].policy_id",
-          type: "int",
-          status: "Confirmed",
-          selected: true,
-        },
-        {
-          name: "premium",
-          path: "$[:].premium",
-          type: "float",
-          status: "Confirmed",
-          selected: true,
-        },
-      ],
-    }
-    const view = render(
-      <ApiInputEditor
-        {...DEFAULT_PROPS}
-        config={{ path: "data/input.json", tables: [baseTable] }}
-        configPath="rating/config/quote_input/api_input.json"
-      />,
-    )
-
-    await waitFor(() => {
-      expect(screen.getByText("Refresh Cache")).toBeTruthy()
-    })
-    expect(mockGetJsonCacheStatusForSchema).toHaveBeenCalledTimes(1)
-
-    // A fresh object with the same schema value is not a new cache resource.
-    view.rerender(
-      <ApiInputEditor
-        {...DEFAULT_PROPS}
-        config={{
-          path: "data/input.json",
-          tables: [
-            {
-              ...baseTable,
-              columns: baseTable.columns.map((column) => ({ ...column })),
-            },
-          ],
-        }}
-        configPath="rating/config/quote_input/api_input.json"
-      />,
-    )
-    await act(async () => {
-      await Promise.resolve()
-    })
-    expect(mockGetJsonCacheStatusForSchema).toHaveBeenCalledTimes(1)
-    expect(screen.getByText("Refresh Cache")).toBeTruthy()
-
-    view.rerender(
-      <ApiInputEditor
-        {...DEFAULT_PROPS}
-        config={{
-          path: "data/input.json",
-          tables: [
-            {
-              ...baseTable,
-              columns: baseTable.columns.map((column, index) => ({
-                ...column,
-                selected: index === 0 ? false : column.selected,
-              })),
-            },
-          ],
-        }}
-        configPath="rating/config/quote_input/api_input.json"
-      />,
-    )
-
-    await waitFor(() => {
-      expect(mockGetJsonCacheStatusForSchema).toHaveBeenCalledTimes(2)
-      expect(screen.getByText("Cache as Parquet")).toBeTruthy()
-      expect(screen.getByText(/Preview automatically caches this input/)).toBeTruthy()
-      expect(screen.queryByText("10 rows")).toBeNull()
-    })
-    expect(mockGetJsonCacheStatusForSchema).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        volatile_schema: expect.objectContaining({
-          tables: [
-            expect.objectContaining({
-              columns: [
-                expect.objectContaining({ name: "policy_id", selected: false }),
-                expect.objectContaining({ name: "premium", selected: true }),
-              ],
-            }),
-          ],
-        }),
-      }),
-    )
-
-    await act(async () => {
-      fireEvent.click(screen.getByText("Cache as Parquet").closest("button")!)
-    })
-    const buildPayload = mockBuildJsonCache.mock.calls[0][0] as Record<string, unknown>
-    expect(buildPayload).toEqual(expect.objectContaining({
-      path: "data/input.json",
-      config_path: "rating/config/quote_input/api_input.json",
-      volatile_schema: expect.any(Object),
-    }))
-    expect(buildPayload).not.toHaveProperty("resourceKey")
-    expect(buildPayload.path).not.toContain("volatile_schema")
-  })
-
-  it("JsonCacheButton: shows error on failure", async () => {
-    mockGetJsonCacheStatus.mockResolvedValue({ cached: false })
-    mockBuildJsonCache.mockRejectedValue(new Error("Failed to build cache"))
+  it("cache button: shows error on failure", async () => {
+    mockGetInputCacheStatus.mockResolvedValue(MISSING_SNAPSHOT)
+    mockBuildInputCache.mockRejectedValue(new Error("Failed to build cache"))
 
     // Give the cache action a runtime-emitting table so the error path fires.
     render(
@@ -480,13 +421,21 @@ describe("ApiInputEditor", () => {
     })
   })
 
-  it("JsonCacheButton: explains that caching is an optional speed-up", async () => {
-    mockGetJsonCacheStatus.mockResolvedValue({ cached: false })
+  it("cache button: explains that no cache exists yet", async () => {
+    mockGetInputCacheStatus.mockResolvedValue(MISSING_SNAPSHOT)
 
-    render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.json" }} />)
+    render(
+      <ApiInputEditor
+        {...DEFAULT_PROPS}
+        config={{
+          path: "data/input.json",
+          tables: [CACHEABLE_TABLE],
+        }}
+      />,
+    )
 
     await waitFor(() => {
-      expect(screen.getByText(/Preview automatically caches this input/)).toBeTruthy()
+      expect(screen.getByText(/No cache yet/)).toBeTruthy()
     })
   })
 

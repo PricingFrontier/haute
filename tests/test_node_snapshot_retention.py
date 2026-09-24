@@ -765,7 +765,10 @@ def test_publication_reads_no_part_in_full_after_writing_it(
 def test_marker_input_providers_match_data_input_types_and_exclude_node_output(
     tmp_path: Path,
 ) -> None:
-    expected_data_inputs = _DISCRIMINANTS[NodeType.DATA_INPUT][1]
+    from haute._json_shred._snapshots import API_INPUT_PROVIDER
+
+    # Every Data Input type, plus the tables of a structured API Input.
+    expected_data_inputs = _DISCRIMINANTS[NodeType.DATA_INPUT][1] | {API_INPUT_PROVIDER}
     assert source_cache_module.NODE_OUTPUT_PROVIDER not in expected_data_inputs
     assert source_cache_module.KNOWN_INPUT_PROVIDERS == expected_data_inputs
 

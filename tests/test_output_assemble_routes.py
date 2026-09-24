@@ -27,13 +27,12 @@ from haute._interactive_workers import (
     InteractiveWorkerRemoteError,
     InteractiveWorkerTimeoutError,
 )
-from haute._json_flatten import _json_cache_dir
-from haute._json_shred._cache import build_per_port_cache
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import NodeType
 from haute.executor import _preview_cache
 from haute.routes._timeouts import BlockingWorkTimeoutError
 from haute.schemas import NodeResult
+from tests.conftest import build_test_api_input_snapshots
 from tests.test_output_nested_roundtrip import (
     _FIXTURE,
     _api_input_config,
@@ -88,7 +87,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[T
 def test_dry_run_assembles_nested_document(project) -> None:
     client, data_path = project
     config = _api_input_config(data_path)
-    build_per_port_cache(data_path, config, _json_cache_dir(data_path, "working"))
+    build_test_api_input_snapshots(data_path, config)
 
     resp = client.post(
         "/api/output-assemble/dry-run",

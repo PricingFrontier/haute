@@ -80,7 +80,7 @@
 | `mutation/cosmic-ray.executor.toml` | Cosmic Ray configuration for executor mutation coverage. |
 | `mutation/cosmic-ray.job-store.toml` | Cosmic Ray configuration for job-store mutation coverage. |
 | `mutation/cosmic-ray.parser-conservation.toml` | Cosmic Ray configuration for the parser structural-acceptance-gate mutation coverage (ENG-T12). |
-| `mutation/cosmic-ray.json-cache.toml` | Cosmic Ray configuration for JSON-cache mutation coverage. |
+| `mutation/cosmic-ray.json-cache.toml` | Cosmic Ray configuration for the JSON schema-inference route's mutation coverage. |
 | `mutation/cosmic-ray.jsonpath.toml` | Cosmic Ray configuration for JSONPath mutation coverage. |
 | `mutation/cosmic-ray.json-shred.toml` | Cosmic Ray configuration for JSON-shredding mutation coverage. |
 | `mutation/cosmic-ray.output-assembler.toml` | Cosmic Ray configuration for output-assembler mutation coverage. |
@@ -179,8 +179,8 @@
 - **E2E project reset** (`frontend/e2e/projectIsolation.ts`) verifies the git toplevel,
   restores `main`, deletes other branches and version tags, scrubs untracked files with
   `git clean -fdx`, and reseeds the working branch. A test can finish while the backend
-  still completes work that test started — a JSON cache build holds its `.build.lock` open
-  for its duration — and Windows cannot delete an open file, so the scrub is retried every
+  still completes work that test started — an input-snapshot build holds its store lock
+  files open for its duration — and Windows cannot delete an open file, so the scrub is retried every
   250 ms until it succeeds, for at most 30 seconds; after that the reset fails with git's
   error as the cause rather than starting the next test on a dirty project.
 - **Edge Join E2E fixture** is a project-isolated, generated pipeline with
@@ -385,8 +385,8 @@
 - The executor mutation command includes the snapshot-preview lifecycle suite,
   so leased-generation validation, post-capture input identity and cache-hit
   refresh races are checked by mutation testing as well as ordinary coverage.
-  The JSON-cache command also includes the active-build directory identity and
-  completed-build cleanup witness.
+  The JSON-cache command covers the schema-inference route's path confinement
+  and every error arm.
 - A pytest session owns an isolated source-cache coordination table and closes
   its process-owner handles at session teardown before restoring any previous
   table. This lets an embedded mutation run remove its temporary project on

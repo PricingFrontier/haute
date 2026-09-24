@@ -450,8 +450,8 @@ class _Resolver:
     def is_node_output(self, node_id: str) -> bool:
         """Whether *node_id*'s output is a node-output snapshot point.
 
-        An API input is never one, even read without a port: its tables live in
-        the JSON cache, and a multi-port bundle is not one frame.
+        An API input is never one, even read without a port: its tables are
+        input snapshots, and a multi-port bundle is not one frame.
         """
         kind = self._kinds.get(node_id)
         if kind is None:
@@ -1276,12 +1276,16 @@ def _readable_node_ids(resolver: _Resolver) -> set[str]:
 
 
 def _snapshot_backed_input_ids(resolver: _Resolver, readable: set[str]) -> list[str]:
-    """The snapshot-backed Data Inputs among *readable*, in execution order."""
-    from haute._input_preparation import _snapshot_backed_data_inputs
+    """The snapshot-backed inputs among *readable*, in execution order.
+
+    Snapshot-backed Data Inputs and structured API Inputs, whose tables are
+    input snapshots too.
+    """
+    from haute._input_preparation import snapshot_backed_inputs
 
     return [
         node_id
-        for node_id, _config in _snapshot_backed_data_inputs(
+        for node_id, _kind, _config in snapshot_backed_inputs(
             [node_id for node_id in resolver.order if node_id in readable],
             resolver.effective_node_map,
         )
@@ -1351,8 +1355,8 @@ def preview_lineage_admitted(graph: PipelineGraph, target_node_id: str, *, sourc
 
     Decided per source of the target's lineage, before anything is prepared.
     A Data Input executes from a Parquet scan or from its prepared snapshot, and
-    a structured (JSON, NDJSON, XML) API Input from its Parquet cache or a
-    direct shred of its file, exactly as a bounded run reads them; an API Input
+    a structured (JSON, NDJSON, XML) API Input from its tables' prepared
+    snapshots, exactly as a bounded run reads them; an API Input
     reading a flat file is admitted when a schema-only bounded read of that file
     succeeds (for a CSV, its header, which must declare its dtypes).
     """
@@ -1429,8 +1433,6 @@ def preview_input_node_ids(
     lineage, every one the target can read. The answer is advisory: if seeds
     move before the preview runs, the preview prepares what it then reads.
     """
-    from haute._api_input_schema import is_json_api_input_path
-
     request = SeedPlanRequest(
         graph=graph,
         target_node_id=target_node_id,
@@ -1440,21 +1442,7 @@ def preview_input_node_ids(
     )
     resolver = _Resolver(request, store if store is not None else _project_store())
     readable = _readable_node_ids(resolver)
-    snapshot_backed = set(_snapshot_backed_input_ids(resolver, readable))
-    node_map = resolver.effective_node_map
-    candidates: list[str] = []
-    for node_id in resolver.order:
-        if node_id not in readable:
-            continue
-        config = node_map[node_id].data.config
-        path = config.get("path")
-        structured = (
-            node_map[node_id].data.nodeType == NodeType.API_INPUT
-            and isinstance(path, str)
-            and is_json_api_input_path(path)
-        )
-        if node_id in snapshot_backed or structured:
-            candidates.append(node_id)
+    candidates = _snapshot_backed_input_ids(resolver, readable)
     if not preview_lineage_admitted(graph, target_node_id, source=source):
         return tuple(candidates)
     executed = resolver.resolve().executed_node_ids

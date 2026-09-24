@@ -53,30 +53,29 @@ or where it will not hold at scale.
 
 | Aim | Delivered | Gap |
 |---|---|---|
-| One store, every consumer | Node outputs, input snapshots, and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | API-input tables still live in a separate JSON cache that only the Cache as Parquet button builds (`CACHE-S08`). |
+| One store, every consumer | Node outputs, input snapshots (including each emitting table of a structured API Input, prepared automatically), and analyses share `.haute_cache`; previews, bounded runs, explicit builds, and traces run under one seed plan. | — |
 | No duplicated runs | A bounded run seeds from any fresh covering generation and captures a join, fan-out, join feeder, batch Model Score, or consumed producer only where recomputing it costs more than the cache round trip, and records why it skipped the others; a preview seeds the same way and captures only the joins and costly full-input work it must compute in full. A chain of plain transforms is recomputed by every preview and bounded run by design, because recomputing it costs less than the cache round trip. Each capture publishes as soon as it is written, so a run that fails or is cancelled later keeps what it had already published. A preview served from the response cache reports its generations as seeded, and the canvas raises the node-data epoch only for a capture generation it has not seen, so a repeat preview costs no refetch. | Two consumers that resolve the same cold capture point at the same time, or an explicit build and an automatic capture of one node, both compute it; the publication lock decides only who publishes (`CACHE-S19`). |
 | Performant | Seeds stop the walk; captures are written once and read by everything below. Each part's digest is computed while it is written, so publication reads no part in full. An explicit build runs its execution and its target write at one chunk size, and a capture records the rows-per-part bound its write applied. A preview says when a node was not cached and how to fix it. | A capturing preview must finish inside the 120-second interactive timeout (`CACHE-S13`). Every preview prepares the graph several times and signs every lineage node per resolution (`CACHE-S17`). |
-| Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A node with one input whose code is provably row-local is written a slice of its input at a time where a capture or an explicit build writes it, so its memory does not grow with the input. A pass-through node carries its parent's recipe forward, and training preparation writes its prepared parquet through the same bounded writer, slicing the frame or the recipe's input and recording which. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Full joins rescan the base per lookup chunk and cross joins collect the lookup side (`CACHE-S18`). |
+| Memory safe | A frame Polars can slice at its single file or in-memory leaf is written a slice at a time; an edge join is written a driving chunk at a time against only the lookup rows those keys match; batches are one query each. A node with one input whose code is provably row-local is written a slice of its input at a time where a capture or an explicit build writes it, so its memory does not grow with the input. A pass-through node carries its parent's recipe forward, and training preparation writes its prepared parquet through the same bounded writer, slicing the frame or the recipe's input and recording which. A heavy row's windows are index ranges, so they are disjoint and complete whatever order the engine returns rows in, and the writer refuses a row whose written count is not the count it expected. | Full joins rescan the base once per lookup chunk (`CACHE-S18`; measured 24-Sep-2026 and not yet worth building). |
 | Failures are recoverable | A corrupt generation is reported, never silently repaired, and names the node whose cache to clear or rebuild; a plan whose inputs moved stops, before collection and again if they move before a capture publishes. | — |
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| CACHE-S08 | Planned | P2 | API-input tables are prepared automatically in the shared store, one generation per table; the Cache as Parquet button and the JSON cache go. |
-| CACHE-S13 | Planned | P3 | A capturing preview finishes as a job instead of dying at the interactive timeout. Unproven: no measured preview approaches the timeout. |
+| CACHE-S13 | Planned | P3 | A capturing preview finishes as a job instead of dying at the interactive timeout. Unproven: no measured preview approaches the timeout (re-measured 24-Sep-2026). |
 | CACHE-S19 | Deferred | P3 | Two consumers that need the same cold capture compute it once. |
 | CACHE-S22 | Planned | P3 | The shapes that cannot carry a write recipe at all can. |
 | CACHE-S17 | Planned | P3 | Planning cost stays flat as graphs grow, a lease validates each part once per process, and the store's bookkeeping files are swept. |
-| CACHE-S18 | Planned | P3 | Full and cross joins are written with a bounded number of scans and a bounded part product. |
-| CACHE-S24 | Planned | P3 | One source-freshness proof and one bounded in-process cache primitive. |
+| CACHE-S18 | Planned | P3 | Full joins are written with a bounded number of scans. Measured 24-Sep-2026: about 2 s over native at 10M × 10M rows, so not yet worth building. |
+| CACHE-S24 | Planned | P3 | The assistant's two hand-rolled LRUs move onto the shared cache primitive. |
 | CACHE-S25 | Planned | P3 | Cache identity hashes the whole canonical node config instead of classifying every field. |
 | CACHE-S26 | Decision | P3 | Stored snapshots and node outputs have a retention policy, or the absence of one is a stated product choice. |
 | CACHE-S27 | Planned | P2 | The server, not the browser, chooses how an input snapshot is built. |
 
 ## Planned improvements
 
-`CACHE-S08` goes first, activated on 22-Sep-2026 at the user's request. After it, delivery order is `CACHE-S17` → `CACHE-S22` → `CACHE-S18`, each gated on a
+Delivery order is `CACHE-S17` → `CACHE-S22` → `CACHE-S18`, each gated on a
 measurement named in its own entry rather than started on the strength of its
 shape; `CACHE-S19` is deferred with the others. `CACHE-S12` (a refused
 capture shown at the node) was retired on 23-Sep-2026: the cache budgets
@@ -84,7 +83,7 @@ whose refusals it would have shown are removed, and a failed build already
 reports its error through the shared job poller. `CACHE-S13` moved down on 20-Sep-2026 because measurement showed
 no preview near its timeout. The packages from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md)
-(`CACHE-S24` to `CACHE-S27`) sit outside that order: `CACHE-S24` follows `CACHE-S08`; `CACHE-S25` follows the
+(`CACHE-S24` to `CACHE-S27`) sit outside that order: `CACHE-S24` goes first; `CACHE-S25` follows the
 pipeline-config package `PCFG-R08`. Every full-frame write is now bounded, so what
 is left is measured against cost rather than shape. A package must not bypass
 the resolver, lease, signature, seed-plan, or capture contracts already
@@ -129,6 +128,17 @@ dominates: a batch Model Score or a group-by over the full data with no
 upstream row limit. This package is therefore unproven rather than urgent,
 and it is ordered after the packages whose problems are demonstrated.
 
+Measured again on 24-Sep-2026 on `haute-demo`, the largest structured source to
+hand (a 4.05 GB `quotes_1m.jsonl` whose API Input emits seven tables). Building
+the seven tables took 50.2 seconds (peak RSS 1.52 GB, 131 MB of Parquet); the
+browser runs that build as a job before it previews, so it is outside the
+preview's timeout. The first capturing preview of `Inputs/live_join` (1M rows: a
+group-by of one table left-joined onto another) then took 3.18 seconds (peak RSS
+4.33 GB, a 104 MB capture), and the second 0.84 seconds. A preview whose
+preparation has to build the tables itself (a client that skips the pre-build)
+would spend about 50 of its 120 seconds on the build. No preview approaches the
+timeout, so the package stays shelved.
+
 **Plan:** Measure before building. A performance artifact records preview
 time against capture size on the largest real pipeline, so the threshold
 below is chosen from data rather than guessed, and the package stays shelved
@@ -147,8 +157,8 @@ When the measurements justify it, dispatch by a typed **capture-work
 estimate**:
 for each capture point, the row count of each effective input as the nearest
 materialised point below it records it (a seed generation's or an input
-snapshot's metadata, a direct Parquet footer, a JSON table cache's
-metadata), summed over the capture's inputs; the plan's estimate is the sum
+snapshot's metadata, including an API Input table's, or a direct Parquet
+footer), summed over the capture's inputs; the plan's estimate is the sum
 over its capture points; an input with no recorded row count makes the
 estimate `unavailable`. The route resolves the plan once with waiting
 disabled (`CACHE-S19`) and dispatches on what that resolution reports,
@@ -413,25 +423,45 @@ none of this changes what is read or written.
 `_metadata_from_path`, `_cleanup_stale_staging`); `tests/test_seed_plans.py` (prepared-signature
 regression).
 
-### CACHE-S18 — Bounded scans in full and cross joins
+### CACHE-S18 — Bounded scans in full joins
 
 **Why:** A full join's unmatched pass (`src/haute/_chunked_writes.py`,
 `_write_chunked_join`) runs a semi-join of the whole base against every
-lookup chunk, so the base is scanned once per chunk of the lookup side. A
-cross join collects the whole lookup side into memory before slicing the
-driving side against it. Both are correct and bounded in output, but the first
-costs the product of the two sides divided by the chunk size and the second is
-unbounded in memory on the lookup side. The uniqueness check filters its input
-once per hash partition, so it is a rescanning algorithm too and not a model
-for this package.
+lookup chunk, so the base is scanned once per chunk of the lookup side. It is
+correct and bounded in output, but costs the product of the two sides divided
+by the chunk size. The uniqueness check filters its input once per hash
+partition, so it is a rescanning algorithm too and not a model for this
+package. The cross-join half of this package is already delivered: a lookup
+side larger than one chunk is read in `chunk_rows` slices rather than
+collected, and every part holds at most `chunk_rows` rows, written
+driving-then-lookup.
 
-**Checked for usage 20-Sep-2026, not yet for cost.** Full and cross joins do
-occur — across this repository's graphs, 7 full and 10 cross against 105 left
-and 35 inner — so this does not retire on nobody using it. What is still
-unmeasured is whether any real graph pays the cost at a size where it matters:
-the rescanning is real in the code, but a full join over two small sides costs
-nothing worth days of partitioning work. Measure a full join and a cross join
-at the sizes a real store actually holds before building this.
+**Measured 24-Sep-2026; not yet worth building.** Full and cross joins do
+occur (across this repository's graphs, 7 full and 10 cross against 105 left
+and 35 inner). The rule this measurement decides: build the partitioning only
+if a real graph pays the rescan cost at a size where it matters. Synthetic
+Parquet sides with half the lookup keys unmatched, the default 500,000-row
+chunk, each case in a fresh process (peak is the process's peak working set):
+
+| Join | Base rows | Lookup rows | Native | Chunked writer | Parts |
+|---|---:|---:|---:|---:|---:|
+| full | 1M | 1M | 0.09 s, 0.35 GB | 0.17 s, 0.45 GB | 4 |
+| full | 5M | 5M | 0.35 s, 0.84 GB | 1.09 s, 1.08 GB | 20 |
+| full | 10M | 10M | 0.74 s, 1.39 GB | 2.66 s, 1.44 GB | 40 |
+| cross | 1M | 12 | 0.20 s, 0.38 GB | 0.46 s, 0.38 GB | 25 |
+| cross | 1M | 1,000 | 19.3 s, 0.80 GB | 28.3 s, 0.67 GB | 2,000 |
+| cross | 2,000 | 600k | 8.4 s, 0.95 GB | 67.3 s, 0.67 GB | 4,000 |
+
+The largest tables in a real store today are about 1M rows (`haute-demo`), and
+the largest recorded capture is a 10M-row join (`CACHE-S13`). At that size the
+chunked writer, rescans included, takes about 2 seconds longer than the native
+join at a similar peak working set, so the partitioning below is not built.
+Revisit when a real graph's full join has more than 10M rows on each side, or
+when a capture record shows a full join's chunked write taking more than 10
+seconds longer than the native join. The cross join with a
+lookup larger than one chunk is bounded in memory but slow (it re-reads each
+lookup slice for every driving slice of one row); real cross joins (scenario
+expanders) use small lookups, where the writer is within 2.5 times native.
 
 **Plan:** Partition physically, not by rescanning. In one pass over each
 side, write the lookup side's whole rows, keys and payload, and the base
@@ -450,10 +480,7 @@ distinct keys hashed together) is partitioned once more with a second seed,
 after which a bucket that still exceeds a chunk makes the join fall back to
 the native write with a recorded reason. Each side is read at most twice,
 once to partition and once through its buckets, plus one pass over any
-re-partitioned bucket. Stage a cross join's lookup side through `_staged`
-and read it in slices: a part is the product of one driving slice and one
-lookup slice, sized so `driving_rows × lookup_rows ≤ chunk_rows`, and an
-ordered cross join writes its parts in driving-then-lookup order.
+re-partitioned bucket.
 
 **Acceptance:** `tests/test_chunked_writes.py` proves full-join equality with
 the native join across partitions, including null keys on either side,
@@ -461,10 +488,8 @@ the native join across partitions, including null keys on either side,
 rows exceed `chunk_rows`, and asserts through a scan-counting source that
 each side is read at most twice plus one re-partition pass; it proves the
 second-seed re-partition and the native fallback each take effect on a
-constructed skew; it proves cross-join equality with a lookup side larger
-than one chunk, with an empty side, and with `maintain_order`, and asserts
-every part holds at most `chunk_rows` rows; the capture record reports the
-partition count, the re-partition count, and any fallback reason.
+constructed skew; the capture record reports the partition count, the
+re-partition count, and any fallback reason.
 
 **Owning specifications:** [IO layer](../io-layer/low-level.md) (chunked
 joins).
@@ -473,161 +498,28 @@ joins).
 
 **Evidence:** `src/haute/_chunked_writes.py`.
 
-### CACHE-S08 — One store for API-input tables
+### CACHE-S24 — The assistant's bounded caches on the shared primitive
+**Why:** One freshness proof and one bounded-cache primitive landed on
+24-Sep-2026: every source kind asks `_json_shred/_source_proof.py` whether a
+file changed (a native revision, or a settled stat where the platform has
+none), one shared content signature serves Data Input and API Input snapshot
+freshness, runtime identity and utility hashes, and `StatGatedCache`, the
+signature memo and the parked Python-scan failures are built on `LRUCache`. Two
+hand-rolled `OrderedDict` LRUs remain, both in the assistant, which another
+lane owns: the plan records of `PlanStore` and the sessions of `SessionStore`.
 
-**Decision (22-Sep-2026):** API-input tables are prepared automatically in the
-shared snapshot store, the same way Data Input snapshots are. The "Cache as
-Parquet" button, the JSON cache's `working/` and `committed/` layers, and the
-uncached direct shred are removed, not kept alongside. There is no interim
-step that publishes the direct-shred spill into the JSON cache, because that
-would mean building cleanup and inventory support for a store this package
-removes.
+**Plan:** Replace both with `LRUCache`: `get` already moves an entry to most
+recently used, and `max_size` is the bound.
 
-**Why:** A Data Input's snapshot is built by the first run that needs it and
-rebuilt when its source or configuration changes. An `apiInput` has neither:
-its tables are only cached when the user presses "Cache as Parquet". Without
-that build:
+**Acceptance:** No `OrderedDict`-based LRU remains outside the shared primitive.
 
-- Every run re-shreds the whole source. The direct path writes the demanded
-  ports to a spill and discards it
-  (`src/haute/_json_shred/_cache.py`, "do not write, refresh, or promote cache
-  state").
-- The data-point resolver loads the node in cache-only mode and raises
-  `CacheRequiredError`.
-- Per-table ancestor sizing reports "estimate unavailable".
-
-The JSON cache is also a second durable store. The toolbar's cached-data
-inventory does not list it or clear it. A save promotes it through
-`mirror_cache_to_committed`, and preview fingerprints need their own
-`json_cache_signature` component to track it. It is built and validated for
-all of a node's emitting tables together, so editing one table's schema makes
-the node's other tables unusable until the next build. Nothing needs the
-committed layer: deploy does not bundle it, and `.haute_cache/` is gitignored.
-
-**Plan:**
-
-1. **Identity per emitting table.** Add an `api_input` input provider to
-   `KNOWN_INPUT_PROVIDERS`. One identity is one emitting table. Its descriptor
-   includes the resolved source path, the shred options that apply to every
-   table, that table's own spec (segments, selected columns, dtypes) and a
-   shred-semantics version. It does not include sibling tables or the port
-   label. Editing one table changes only that table's identity. The saved
-   schema and an unsaved edit are different identities that exist side by
-   side, which is what the committed layer provided.
-2. **Freshness from the existing source proof.** The JSON source proof (a
-   SHA-256 of the file, memoised against its native revision) becomes the
-   identity's `source_signature`. `SourceCacheStore.status` then marks a
-   changed file as `stale`. A missing file with a published generation
-   reuses it with `source_unavailable`, exactly as a Data Input does.
-3. **Automatic preparation.** `prepare_input_snapshots()` also prepares the
-   emitting tables that feed the pruned target lineage. It uses the same
-   status → reuse/build/refresh ladder, cap gate, in-process or worker build,
-   per-identity single-flight, deadline, cancellation, and preparation
-   records. The build writes the full width of each table, not the run's
-   column demand, so every later consumer can reuse it. A build shreds the
-   source once and writes every missing or stale table of the node in that
-   pass. Tables that are already fresh are skipped. The source is still read
-   in full, so per-table validity saves writes and keeps other tables
-   readable; it does not save the parse. The build class is `bounded`, using
-   the existing aggregate-bounded row-group writer.
-4. **One read path.** `resolve_api_input_from_config` leases the current
-   generation of each demanded table and scans it with the column demand
-   applied, as the Data Input resolver does. A missing generation outside an
-   admitted execution is the `input_snapshot_missing` rejection, not a direct
-   shred. Deploy profiles never write the store (`snapshot_write_class`
-   returns `None`). Generated standalone code keeps an in-process bounded
-   shred of the source, because it runs without a project store.
-5. **Consumers.**
-   - The data-point resolver's `api_input_table` kind resolves and leases
-     store generations instead of using `api_input_cache_only`.
-   - The RAM estimator sizes each table from its generation metadata.
-   - Preview and runtime fingerprints key on the table identity and
-     generation, and `json_cache_signature` is removed.
-   - The cache inventory lists each table under the node that owns it, and
-     clearing a table goes through the same clear action as every other
-     dataset.
-6. **Removals.** Remove the following:
-   - `working/` and `committed/` directories and `mirror_cache_to_committed`
-     with its save-pipeline step.
-   - `cache_state_signature_for_graph`.
-   - `api_input_cache_only` and `ApiInputCacheRequiredError`.
-   - The direct-spill fallback.
-   - The `json-cache` build, progress, status and delete routes, and the
-     node-data service's `_JSON_CACHE_BUILD_ENDPOINT`.
-   - The "Cache as Parquet" `CacheFetchButton` in the API Input editor, which
-     is replaced by the shared input-snapshot status and clear control that
-     the Data Input editor uses.
-
-   Schema inference (`/infer`) stays. Existing JSON cache directories are not
-   migrated; they read as absent and the store's housekeeping sweeps them.
-
-**Acceptance:**
-
-- A fresh project with no JSON cache previews a node downstream of an
-  `apiInput` and publishes one generation per emitting table. A second preview
-  reuses them and records `reused` without reading the source.
-- Editing one table's columns leaves its sibling tables' generations current
-  and rebuilds only that table on the next run. Touching the source file
-  refreshes every table of the node.
-- The data-point resolver serves an `api_input_table` point after a single
-  automatic build.
-- The RAM estimator sizes a group-by beneath an `apiInput` without an explicit
-  build.
-- The cache inventory reports the tables, and clearing one removes it.
-- Nothing is left under `.haute_cache/working` or `.haute_cache/committed`.
-- Save no longer touches cache state.
-- The JSON-shredding, data-point, input-preparation, execution-profile
-  semantics (`tests/test_execution_profile_semantics.py`), codegen and API
-  Input editor suites pass against the one store.
-
-**Owning specifications:** [caching](../caching/low-level.md);
-[JSON shredding](../json-shredding/low-level.md);
-[IO layer](../io-layer/low-level.md#automatic-preparation);
-[execution engine](../execution-engine/low-level.md);
-[server API](../server-api/low-level.md);
-[frontend node editors](../frontend-node-editors/low-level.md).
-
-**Dependencies:** None. The data-point resolver, automatic input preparation
-and the cache inventory are delivered.
-
-**Evidence:** `src/haute/_json_shred/_cache.py`; `src/haute/_json_shred/_writer.py`;
-`src/haute/_json_shred/_source_proof.py`; `src/haute/_json_flatten.py`;
-`src/haute/_source_cache.py`; `src/haute/_input_preparation.py`;
-`src/haute/_data_points.py`; `src/haute/_ram_estimate.py`;
-`src/haute/execution.py`; `src/haute/routes/json_cache.py`;
-`src/haute/routes/_save_pipeline.py`; `src/haute/routes/_node_data_service.py`;
-`frontend/src/panels/editors/ApiInputEditor.tsx`;
-`frontend/src/components/CacheFetchButton.tsx`.
-
-### CACHE-S24 — One freshness proof and one bounded-cache primitive
-**Why:** Three freshness policies coexist for the same question, whether a
-source file changed. JSON sources use operating-system change tokens (the
-Windows USN journal through `ctypes`) plus a full SHA-256; snapshot-backed
-inputs use a signature with an `(mtime, size, digest)` verification memo; and
-`StatGatedCache` accepts a bare `(mtime_ns, size)` gate with a documented
-same-size, same-mtime blind spot. Bounded in-process caching is hand-rolled
-three times with `OrderedDict` beside the shared `LRUCache`.
-
-**Plan:** When `CACHE-S08` moves API-input tables into the shared store, keep
-one freshness proof for every source kind and specify its guarantee once.
-Rebuild `StatGatedCache`, the runtime snapshot cache and the signature memo on
-`LRUCache`, or make `LRUCache` provide what they need.
-
-**Acceptance:** One module computes source freshness and every consumer calls
-it; the caching specification states one guarantee; no `OrderedDict`-based
-LRU remains outside the shared primitive.
-
-**Dependencies:** `CACHE-S08`.
+**Dependencies:** None.
 
 **Owning specifications:** [caching](../caching/high-level.md);
-[IO layer](../io-layer/high-level.md);
-[JSON shredding](../json-shredding/high-level.md).
+[assistant](../assistant/high-level.md).
 
-**Evidence:** `src/haute/_json_shred/_source_proof.py::_StrongFileRevision`;
-`src/haute/_json_shred/_source_proof.py::_DataFileSignatureMemo`;
-`src/haute/_json_shred/_runtime_storage.py::_VerifiedRuntimeSnapshotCache`;
-`src/haute/_stat_gated_cache.py::StatGatedCache`;
-`src/haute/_lru_cache.py::LRUCache`; `src/haute/_source_cache.py`.
+**Evidence:** `src/haute/assistant/_ops.py::PlanStore`;
+`src/haute/assistant/_session.py::SessionStore`; `src/haute/_lru_cache.py::LRUCache`.
 
 ### CACHE-S25 — Hash the whole canonical node config
 **Why:** The cache-identity framework declares a versioned field set for nine

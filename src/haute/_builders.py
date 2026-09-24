@@ -530,6 +530,7 @@ def _build_api_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             profile=_profile,
             columns=projected.columns,
             port_columns=_port_columns,
+            read_snapshots=True,
         )
 
     return ctx.func_name, api_source_fn, True

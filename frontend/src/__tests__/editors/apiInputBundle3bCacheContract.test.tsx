@@ -42,20 +42,20 @@ vi.mock("../../panels/editors/_shared", async () => {
   }
 })
 
-const mockBuildJsonCache = vi.fn()
-const mockGetJsonCacheStatus = vi.fn()
-const mockGetJsonCacheStatusForSchema = vi.fn()
-const mockGetJsonCacheProgress = vi.fn()
-const mockDeleteJsonCache = vi.fn()
+const mockBuildInputCache = vi.fn()
+const mockGetInputCacheStatus = vi.fn()
+const mockGetInputCacheJob = vi.fn()
+const mockCancelInputCacheJob = vi.fn()
+const mockClearInputCache = vi.fn()
 const mockInferJsonCacheSchema = vi.fn()
 
 vi.mock("../../api/client", () => ({
   fetchDatabricksSchema: vi.fn(),
-  buildJsonCache: (...args: unknown[]) => mockBuildJsonCache(...args),
-  getJsonCacheProgress: (...args: unknown[]) => mockGetJsonCacheProgress(...args),
-  getJsonCacheStatus: (...args: unknown[]) => mockGetJsonCacheStatus(...args),
-  getJsonCacheStatusForSchema: (...args: unknown[]) => mockGetJsonCacheStatusForSchema(...args),
-  deleteJsonCache: (...args: unknown[]) => mockDeleteJsonCache(...args),
+  buildInputCache: (...args: unknown[]) => mockBuildInputCache(...args),
+  getInputCacheJob: (...args: unknown[]) => mockGetInputCacheJob(...args),
+  cancelInputCacheJob: (...args: unknown[]) => mockCancelInputCacheJob(...args),
+  getInputCacheStatus: (...args: unknown[]) => mockGetInputCacheStatus(...args),
+  clearInputCache: (...args: unknown[]) => mockClearInputCache(...args),
   inferJsonCacheSchema: (...args: unknown[]) => mockInferJsonCacheSchema(...args),
   ApiError: class ApiError extends Error {
     status: number
@@ -76,11 +76,18 @@ vi.mock("../../hooks/useSchemaFetch", () => ({
 }))
 
 beforeEach(() => {
-  mockBuildJsonCache.mockReset()
-  mockGetJsonCacheStatus.mockReset().mockResolvedValue({ cached: false })
-  mockGetJsonCacheStatusForSchema.mockReset().mockResolvedValue({ cached: false })
-  mockGetJsonCacheProgress.mockReset().mockResolvedValue({ active: false })
-  mockDeleteJsonCache.mockReset()
+  mockBuildInputCache.mockReset()
+  mockGetInputCacheStatus.mockReset().mockResolvedValue({
+    schema_version: 1,
+    identity_digest: "digest",
+    state: "missing",
+    freshness: "unknown",
+    generation: null,
+    tables: null,
+  })
+  mockGetInputCacheJob.mockReset()
+  mockCancelInputCacheJob.mockReset()
+  mockClearInputCache.mockReset()
   mockInferJsonCacheSchema.mockReset()
 })
 
@@ -108,7 +115,6 @@ describe("Bundle 3b - cache button positioned above the Tables editor", () => {
         onUpdate={vi.fn()}
         accentColor="#10b981"
         reservedFrameLabels={RESERVED_FRAME_LABELS}
-        configPath="rating/config/quote_input/sample.json"
       />,
     )
 

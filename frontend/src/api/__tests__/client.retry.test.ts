@@ -30,7 +30,7 @@ import {
   listUtilityFiles,
   savePipeline,
   commitMilestone,
-  deleteJsonCache,
+  cancelInputCacheJob,
 } from "../client"
 
 // ---------------------------------------------------------------------------
@@ -713,15 +713,20 @@ describe("retry: preserves request headers and body", () => {
     try {
       mockFetch
         .mockRejectedValueOnce(new TypeError("boom"))
-        .mockReturnValueOnce(jsonResponse({ cached: false, data_path: "file.json" }))
+        .mockReturnValueOnce(jsonResponse({
+          schema_version: 1,
+          job_id: "job-1",
+          cancellation_requested: true,
+          status: "running",
+        }))
 
-      await deleteJsonCache("file.json")
+      await cancelInputCacheJob("job-1")
 
       expect(mockFetch).toHaveBeenCalledTimes(2)
       const [url1, opts1] = mockFetch.mock.calls[0]
       const [url2, opts2] = mockFetch.mock.calls[1]
       expect(url1).toBe(url2)
-      expect(url1).toBe("/api/json-cache?path=file.json")
+      expect(url1).toBe("/api/input-cache/jobs/job-1")
       expect(opts1.method).toBe("DELETE")
       expect(opts2.method).toBe("DELETE")
     } finally {

@@ -16,7 +16,6 @@ import pyarrow.parquet as pq
 import pytest
 
 from haute._api_input_schema import ApiInputSchemaError
-from haute._json_flatten import _json_cache_dir
 from haute._json_shred import _cache, _records, _runtime_storage, _shred, _source_proof, _writer
 
 
@@ -126,8 +125,6 @@ def test_bounded_writer_rejects_unknown_labels_flushes_before_arrow_and_requires
             writer.write_arrow_table("other", pl.DataFrame({"id": [1]}).to_arrow())
 
         writer.emit("root", {"id": 1})
-        with pytest.raises(RuntimeError, match="must be closed before summarising"):
-            writer.table_summaries()
         with pytest.raises(RuntimeError, match="contains 3 rows; configured maximum is 2"):
             writer.write_arrow_table("root", pl.DataFrame({"id": [2, 3, 4]}).to_arrow())
 
@@ -178,7 +175,7 @@ def test_cold_direct_spill_does_not_hash_source_before_parsing(
     config = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     monkeypatch.setattr(
         _source_proof,
-        "_data_file_signature",
+        "file_signature",
         lambda _path: (_ for _ in ()).throw(
             AssertionError("an absent cache must not trigger a full source hash")
         ),
@@ -330,8 +327,6 @@ def test_direct_spill_flushes_aggregate_bound_and_preserves_nested_order(
     assert out["items"].collect().to_dict(as_series=False) == {
         "value": [0, 1, 10, 11, 20, 21, 30, 31, 40, 41]
     }
-    assert not _json_cache_dir(str(data), "working").exists()
-    assert not _json_cache_dir(str(data), "committed").exists()
 
 
 def test_persistent_cache_uses_shared_aggregate_bounded_writer(
@@ -345,10 +340,12 @@ def test_persistent_cache_uses_shared_aggregate_bounded_writer(
         encoding="utf-8",
     )
     config = {
+        "path": str(data),
+        "contract": "opaque",
         "tables": [
             _table("$[:]", "root", [_col("id", "$[:].id")]),
             _table("$[:].items[:]", "items", [_col("value", "$[:].items[:].value")]),
-        ]
+        ],
     }
     monkeypatch.setenv("HAUTE_JSON_DIRECT_SPILL_MAX_ROWS", "3")
     flushes: list[tuple[int, int]] = []
@@ -360,9 +357,16 @@ def test_persistent_cache_uses_shared_aggregate_bounded_writer(
         original_flush(writer)
 
     monkeypatch.setattr(writer_type, "flush", _observe_flush)
-    cache_dir = tmp_path / "cache"
-    _cache.build_per_port_cache(data, config, cache_dir)
-    out = _cache.load_per_port_cache(cache_dir, config)
+    from haute._sandbox import _get_project_root, set_project_root
+    from tests.conftest import build_test_api_input_snapshots
+
+    original_root = _get_project_root()
+    set_project_root(tmp_path)
+    try:
+        build_test_api_input_snapshots(data, config)
+        out = _cache.load_v2_api_source(str(data), config, read_snapshots=True)
+    finally:
+        set_project_root(original_root)
 
     assert len([rows for rows, _bytes in flushes if rows]) > 2
     assert all(rows <= 3 for rows, _bytes in flushes if rows)
@@ -964,42 +968,6 @@ def test_root_array_value_scanner_covers_string_nested_and_scalar_terminators() 
                 current_pos=lambda: 4,
                 max_bytes=1,
             )
-
-
-def test_runtime_snapshot_release_ignores_nonempty_owner_cleanup_errors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    snapshot = tmp_path / "owner" / "snapshot.parquet"
-    snapshot.parent.mkdir()
-    snapshot.write_bytes(b"snapshot")
-    _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES[snapshot] = 1
-    monkeypatch.setattr(
-        _runtime_storage,
-        "_remove_empty_runtime_owner_dir",
-        lambda _path: (_ for _ in ()).throw(OSError("still occupied")),
-    )
-
-    _runtime_storage._release_runtime_snapshot(snapshot)
-
-    assert not snapshot.exists()
-    assert snapshot not in _runtime_storage._RUNTIME_SNAPSHOT_REFERENCES
-
-
-def test_unpinned_runtime_snapshot_ignores_owner_cleanup_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    snapshot = tmp_path / "owner" / "snapshot.parquet"
-    snapshot.parent.mkdir()
-    snapshot.write_bytes(b"snapshot")
-    monkeypatch.setattr(
-        _runtime_storage,
-        "_remove_empty_runtime_owner_dir",
-        lambda _path: (_ for _ in ()).throw(OSError("occupied")),
-    )
-
-    _runtime_storage._remove_unpinned_runtime_snapshot(snapshot)
-
-    assert not snapshot.exists()
 
 
 def test_xml_record_size_validation_fails_closed() -> None:

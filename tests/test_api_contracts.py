@@ -371,38 +371,10 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/GitPrefs"},
         },
     },
-    "/api/json-cache": {
-        "DELETE": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/JsonCacheStatusResponse"},
-        },
-    },
-    "/api/json-cache/build": {
-        "POST": {
-            "request_ref": "#/components/schemas/JsonCacheBuildRequest",
-            "success_schema": {"$ref": "#/components/schemas/JsonCacheBuildResponse"},
-        },
-    },
     "/api/json-cache/infer": {
         "POST": {
             "request_ref": "#/components/schemas/JsonCacheInferRequest",
             "success_schema": {"$ref": "#/components/schemas/JsonCacheInferResponse"},
-        },
-    },
-    "/api/json-cache/progress": {
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/JsonCacheProgressResponse"},
-        },
-    },
-    "/api/json-cache/status": {
-        "GET": {
-            "request_ref": None,
-            "success_schema": {"$ref": "#/components/schemas/JsonCacheStatusResponse"},
-        },
-        "POST": {
-            "request_ref": "#/components/schemas/JsonCacheBuildRequest",
-            "success_schema": {"$ref": "#/components/schemas/JsonCacheStatusResponse"},
         },
     },
     "/api/mlflow/experiments": {

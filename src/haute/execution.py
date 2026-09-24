@@ -38,8 +38,8 @@ from haute._cache import (
 from haute._estimate_calibration import calibrate_materialisation_bytes
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._graph_utils import _sanitize_func_name, upstream_node_ids
-from haute._hashing import HASH_ALGO, content_hash, content_hash_bytes
-from haute._json_flatten import cache_state_signature_for_graph
+from haute._hashing import HASH_ALGO, content_hash_bytes
+from haute._json_shred._source_proof import file_signature
 from haute._native_memory_limit import current_native_memory_backend
 from haute._path_resolution import _infer_project_root, resolve_runtime_file_path
 from haute._polars_selectors import preamble_selector_aliases
@@ -49,7 +49,6 @@ from haute._ram_estimate import (
     MaterialisationEstimateState,
     estimate_materialisation_boundaries,
 )
-from haute._stat_gated_cache import StatGatedCache, artifact_cache_key
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -744,15 +743,26 @@ def _finalise_execution_strategy(
     )
 
 
-def _runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
+def _stat_gated_runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
+    """Return the runtime identity of one local path.
+
+    A file is signed by the shared source proof
+    (:func:`haute._json_shred._source_proof.file_signature`): its content hash
+    is computed once per unchanged freshness token and shared with every other
+    consumer of the same file (a Data Input or API Input snapshot's freshness,
+    a utility hash), so preview/trace keys cost a hash per edit, not per
+    request. A missing path or a directory is signed by its stat alone. OS
+    errors propagate: an unreadable input fails the request loudly rather than
+    fingerprinting as something it is not.
+    """
     resolved = path.resolve()
     if not resolved.exists():
         return {
             "path": str(resolved),
             "exists": False,
         }
-    stat = resolved.stat()
     if not resolved.is_file():
+        stat = resolved.stat()
         return {
             "path": str(resolved),
             "exists": True,
@@ -760,89 +770,16 @@ def _runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
             "size": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
         }
+    signature = file_signature(resolved)
     return {
         "path": str(resolved),
         "exists": True,
         "is_file": True,
-        "size": stat.st_size,
-        "mtime_ns": stat.st_mtime_ns,
+        "size": signature.size,
+        "mtime_ns": signature.mtime_ns,
         "hash_algo": HASH_ALGO,
-        "content_hash": content_hash(resolved),
+        "content_hash": signature.digest,
     }
-
-
-_runtime_path_fingerprint_cache: StatGatedCache[str, Mapping[str, object]] = StatGatedCache(
-    artifact_kind="Runtime input file"
-)
-
-
-def _stat_gated_runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
-    """Process-wide stat-gated memo over :func:`_runtime_path_fingerprint`.
-
-    Preview/trace cache keys are recomputed on every request, so content-
-    hashing every file-backed input per preview would scale request cost
-    with data size instead of edit rate.  When ``(mtime_ns, size)`` is
-    unchanged the memoised payload is reused; any metadata change re-hashes
-    content through the shared, single-flight double-stat race guard.
-
-    File metadata is not a complete correctness boundary: a rewrite that
-    preserves both size and mtime while changing bytes is below the gate's
-    resolution (the documented :class:`~haute._cache.GraphFingerprintMemo`
-    trade).  Missing paths and directories are never memoised — their
-    fingerprints are pure stat material already.  OS errors from stat or
-    read propagate unchanged: an unreadable input must fail the request
-    loudly rather than silently fingerprint as something it is not.
-    """
-    resolved = path.resolve()
-    if not resolved.is_file():
-        return _runtime_path_fingerprint(resolved)
-    return _runtime_path_fingerprint_cache.get_or_load(
-        artifact_cache_key(resolved),
-        str(resolved),
-        lambda: _runtime_path_fingerprint(resolved),
-    )
-
-
-def _json_source_runtime_path_fingerprint(path: Path) -> Mapping[str, object]:
-    """Return runtime identity from the JSON cache's authoritative source proof.
-
-    The JSON strategy estimator and loader already require the exact SHA-256
-    signature maintained by ``_json_shred``. Reusing that record here prevents
-    preview/trace identity from streaming the same source a second time through
-    the generic xxHash boundary. Missing paths and non-files preserve the generic
-    payload and error semantics.
-    """
-    resolved = path.resolve()
-    if not resolved.is_file():
-        return _runtime_path_fingerprint(resolved)
-
-    from haute._json_shred._source_proof import _data_file_signature
-
-    signature = _data_file_signature(resolved)
-    return {
-        "path": str(resolved),
-        "exists": True,
-        "is_file": True,
-        "size": signature["size"],
-        "mtime_ns": signature["mtime_ns"],
-        "hash_algo": "sha256",
-        "content_hash": signature["sha256"],
-    }
-
-
-def _runtime_file_fingerprint(
-    node: GraphNode,
-    path_field: str,
-    path: Path,
-) -> Mapping[str, object]:
-    """Return the versioned content identity for one node runtime file."""
-    if (
-        node.data.nodeType == NodeType.API_INPUT
-        and path_field == "path"
-        and is_json_api_input_path(str(path))
-    ):
-        return _json_source_runtime_path_fingerprint(path)
-    return _stat_gated_runtime_path_fingerprint(path)
 
 
 def dataframe_paths_input_fingerprint(paths: Mapping[str, str]) -> Mapping[str, object]:
@@ -1032,7 +969,7 @@ def _runtime_input_fingerprint_entry(
     """
     config = node.data.config
     files: dict[str, object] = {
-        path_field: _runtime_file_fingerprint(node, path_field, path)
+        path_field: _stat_gated_runtime_path_fingerprint(path)
         for path_field, path in _runtime_file_signature_paths(graph, node).items()
     }
     if "snapshot_pointer" in files:
@@ -1153,7 +1090,6 @@ def dataframe_graph_input_identity(
         {
             "source": source,
             "sources": source_entries,
-            "json_cache_signature": cache_state_signature_for_graph(scoped_graph),
             "preamble_fingerprint": preamble_execution_fingerprint(
                 scoped_graph.preamble,
                 pipeline_dir=_cache_pipeline_dir(scoped_graph),
@@ -1170,9 +1106,11 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
     gets read, nothing else:
 
     * **apiInput** - signs the configured raw path for both flat files
-      and JSON/JSONL. JSON-shape inputs prefer a valid per-frame parquet
-      cache and otherwise shred that raw file directly; signing it prevents
-      a stale preview from hiding either fresh direct data or a raw-file error.
+      and structured (JSON, JSONL, NDJSON, XML) sources. A structured source
+      executes from its tables' input snapshots, so it also signs each
+      emitting table's generation pointer: a rebuild, refresh, or clear of a
+      table invalidates execution caches, and a rewritten source misses them
+      and reaches automatic preparation.
     * **dataInput** — direct Parquet signs the configured source; snapshot-backed
       inputs sign the active generation pointer, so only an explicit refresh
       invalidates execution caches.
@@ -1187,7 +1125,8 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
     if node_type == NodeType.API_INPUT:
         raw_path = config.get("path")
         if isinstance(raw_path, str) and raw_path:
-            return {"path": _runtime_path_from_graph_config(graph, raw_path)}
+            path = _runtime_path_from_graph_config(graph, raw_path)
+            return {"path": path, **_api_input_table_pointer_paths(config, path)}
         return {}
     if node_type == NodeType.DATA_INPUT:
         from haute._polars_io_registry import data_input_is_direct
@@ -1217,6 +1156,30 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
         if isinstance(raw, str) and raw:
             paths[path_field] = _runtime_path_from_graph_config(graph, raw)
     return paths
+
+
+def _api_input_table_pointer_paths(config: Mapping[str, Any], path: Path) -> dict[str, Path]:
+    """The generation pointer of each emitting table of a structured API input.
+
+    Keyed ``snapshot_pointer:<label>``. A flat-file source, or a schema the
+    node builder will reject, has none.
+    """
+    if not is_json_api_input_path(str(path)) or not isinstance(config.get("tables"), list):
+        return {}
+    from haute._api_input_schema import ApiInputSchemaError
+    from haute._json_shred._snapshots import api_input_snapshot_source
+    from haute._sandbox import _get_project_root
+    from haute._source_cache import SourceCacheStore
+
+    try:
+        source = api_input_snapshot_source(config, path)
+    except (ApiInputSchemaError, TypeError, ValueError):
+        return {}
+    store = SourceCacheStore(_get_project_root())
+    return {
+        f"snapshot_pointer:{table.label}": store.identity_path(table.identity) / "current.json"
+        for table in source.tables
+    }
 
 
 def _lineage_runtime_graph(graph: PipelineGraph, prepared: PreparedGraph) -> PipelineGraph:

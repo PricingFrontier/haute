@@ -4,8 +4,8 @@
 
 OUTPUT document assembly. Current behaviour is specified in
 [the JSON-shredding specification](../json-shredding/high-level.md). API-input
-table caching is planned in the [caching roadmap](caching.md) (`CACHE-S08`).
-This package comes from the
+tables are input snapshots in the shared store; their remaining work is in the
+[caching roadmap](caching.md). This package comes from the
 [23 September 2026 codebase review](codebase-review-2026-09-23.md).
 
 ## Priorities

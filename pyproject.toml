@@ -288,15 +288,15 @@ paths = [
     "src/haute/_execution_admission.py",
     "src/haute/_execution_context.py",
     "src/haute/_explore_cache.py",
+    "src/haute/_file_lock.py",
     "src/haute/_interactive_workers.py",
     "src/haute/_io.py",
-    "src/haute/_json_flatten.py",
     "src/haute/_json_shred/_cache.py",
     "src/haute/_json_shred/_inference.py",
-    "src/haute/_json_shred/_publication.py",
     "src/haute/_json_shred/_records.py",
     "src/haute/_json_shred/_runtime_storage.py",
     "src/haute/_json_shred/_shred.py",
+    "src/haute/_json_shred/_snapshots.py",
     "src/haute/_json_shred/_source_proof.py",
     "src/haute/_json_shred/_writer.py",
     "src/haute/_node_apply.py",
@@ -326,12 +326,6 @@ paths = [
 coverage_json = ".cache/coverage/backend.json"
 
 [[tool.haute.critical_coverage.files]]
-path = "src/haute/_json_flatten.py"
-min_statement_coverage = 90.0
-min_branch_coverage = 85.0
-rationale = "JSON flattening normalises user-uploaded datasets and schema inference."
-
-[[tool.haute.critical_coverage.files]]
 path = "src/haute/_json_shred/_records.py"
 min_statement_coverage = 90.0
 min_branch_coverage = 85.0
@@ -345,22 +339,22 @@ rationale = "The single-pass v2 shred walk emits every cached pricing row. (Spli
 path = "src/haute/_json_shred/_writer.py"
 min_statement_coverage = 90.0
 min_branch_coverage = 85.0
-rationale = "Bounded Parquet emission is the memory boundary for cache artifacts and spills. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+rationale = "Bounded Parquet emission is the memory boundary for table-snapshot builds and spills. (Split from the former single-module gate; same thresholds pending a remeasure.)"
 [[tool.haute.critical_coverage.files]]
-path = "src/haute/_json_shred/_publication.py"
+path = "src/haute/_file_lock.py"
 min_statement_coverage = 90.0
 min_branch_coverage = 85.0
-rationale = "Cross-process cache publication must never expose a partial generation. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+rationale = "The one cross-process file-lock helper and its plain-path checks guard the project mutation lock, the input-snapshot store's lease and publication locks, and the runtime storage budget."
 [[tool.haute.critical_coverage.files]]
 path = "src/haute/_json_shred/_source_proof.py"
 min_statement_coverage = 90.0
 min_branch_coverage = 85.0
-rationale = "Source content proofs decide cache identity and reuse. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+rationale = "Source content proofs decide API-input table freshness. (Split from the former single-module gate; same thresholds pending a remeasure.)"
 [[tool.haute.critical_coverage.files]]
 path = "src/haute/_json_shred/_runtime_storage.py"
 min_statement_coverage = 90.0
 min_branch_coverage = 85.0
-rationale = "Runtime snapshots and the disk budget own process-local storage safety. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+rationale = "Standalone spills and the disk budget own process-local storage safety. (Split from the former single-module gate; same thresholds pending a remeasure.)"
 [[tool.haute.critical_coverage.files]]
 path = "src/haute/_json_shred/_inference.py"
 min_statement_coverage = 90.0
@@ -370,7 +364,13 @@ rationale = "Schema inference from data seeds the v2 apiInput configuration. (Sp
 path = "src/haute/_json_shred/_cache.py"
 min_statement_coverage = 90.0
 min_branch_coverage = 85.0
-rationale = "The per-port cache lifecycle and apiInput loader serve every structured source. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+rationale = "The apiInput loader serves every structured source, from table snapshots or a standalone shred. (Split from the former single-module gate; same thresholds pending a remeasure.)"
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/_json_shred/_snapshots.py"
+min_statement_coverage = 90.0
+min_branch_coverage = 85.0
+rationale = "Each API-input table's identity, freshness, one-shred build and supervised settlement decide what every structured source serves."
 
 [[tool.haute.critical_coverage.files]]
 path = "src/haute/_model_scorer.py"
@@ -509,11 +509,7 @@ rationale = "Pivot execution enforces typed member semantics and hard cardinalit
 path = "src/haute/routes/json_cache.py"
 min_statement_coverage = 97.0
 min_branch_coverage = 90.0
-rationale = "JSON cache routes handle uploaded dataset previews and cache identity."
-# Branch threshold restored to 90% (was temporarily lowered to 87% in the
-# v2-deletion PR): the response-aggregator defensive skips (parquet absent /
-# non-string in an otherwise-valid cache) and the corrupt-vs-absent config
-# split are now exercised directly — see tests/test_json_cache_corrupt_and_errors.py.
+rationale = "The JSON schema-inference route reads uploaded structured data files under project-root confinement."
 
 [[tool.haute.critical_coverage.files]]
 path = "src/haute/routes/modelling.py"

@@ -6,10 +6,8 @@ import contextvars
 import math
 import shutil
 import tempfile
-import threading
 import time
 import uuid
-from collections import OrderedDict
 from collections.abc import Callable, Collection, Generator, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -23,9 +21,10 @@ from haute._execution_context import (
     ExecutionProfile,
     current_execution_context,
 )
-from haute._file_ops import ensure_disk_headroom
+from haute._file_ops import atomic_path, ensure_disk_headroom
 from haute._hashing import HashingWriter
 from haute._logging import get_logger
+from haute._lru_cache import LRUCache
 
 logger = get_logger(component="polars_utils")
 
@@ -258,16 +257,12 @@ def bounded_collect_batches(
 # collect helper above hands the original back to its caller.
 _PYTHON_SCAN_FAILURE_MARKER = "haute-python-scan-failure:"
 _PYTHON_SCAN_FAILURE_LIMIT = 64
-_python_scan_failures: OrderedDict[str, BaseException] = OrderedDict()
-_python_scan_failures_lock = threading.Lock()
+_python_scan_failures: LRUCache[str, BaseException] = LRUCache(max_size=_PYTHON_SCAN_FAILURE_LIMIT)
 
 
 def _park_python_scan_failure(exc: BaseException) -> str:
     token = uuid.uuid4().hex
-    with _python_scan_failures_lock:
-        _python_scan_failures[token] = exc
-        while len(_python_scan_failures) > _PYTHON_SCAN_FAILURE_LIMIT:
-            _python_scan_failures.popitem(last=False)
+    _python_scan_failures.put(token, exc)
     return f"{_PYTHON_SCAN_FAILURE_MARKER}{token}"
 
 
@@ -279,8 +274,7 @@ def _reraise_python_scan_failure(exc: pl.exceptions.ComputeError) -> None:
         return
     token_start = start + len(_PYTHON_SCAN_FAILURE_MARKER)
     token = message[token_start : token_start + 32]
-    with _python_scan_failures_lock:
-        original = _python_scan_failures.pop(token, None)
+    original = _python_scan_failures.pop(token)
     if original is not None:
         raise original
 
@@ -808,9 +802,10 @@ def bounded_hashed_sink(
 def atomic_write(dest: Path, *, ensure_parent: bool = True) -> Generator[Path, None, None]:
     """Context manager for atomic file writes via temp-then-rename.
 
-    Yields a temporary path (``dest`` with ``.parquet.tmp`` suffix).
-    On successful exit, atomically renames the temp file to *dest*.
-    On exception, cleans up the temp file and re-raises.
+    Yields a unique sibling staging path (see :func:`haute._file_ops.atomic_path`),
+    so concurrent writers to one destination never share a stage and the
+    destination ends as one complete file. On successful exit the staging file
+    is renamed onto *dest*; on exception it is removed and the error re-raised.
     Callers that create a shared parent once before a write loop may pass
     ``ensure_parent=False`` to avoid repeating the directory operation.
 
@@ -822,13 +817,8 @@ def atomic_write(dest: Path, *, ensure_parent: bool = True) -> Generator[Path, N
     """
     if ensure_parent:
         dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(".parquet.tmp")
-    try:
+    with atomic_path(dest) as tmp:
         yield tmp
-        tmp.replace(dest)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,6 @@ import pytest
 
 from haute.schemas import (
     ExecutionMetricsPayload,
-    JsonCacheStatusResponse,
     OptimiserStatusResponse,
     PreviewNodeResponse,
     SavePipelineResponse,
@@ -205,20 +204,6 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
                     "type": "array",
                     "items": "ref:ExecutionMemoryPressureEventPayload",
                 },
-            },
-        ),
-        (
-            JsonCacheStatusResponse,
-            ["cached"],
-            {
-                "cached": {"type": "boolean"},
-                "path": {"anyOf": ["string", "null"], "default": None},
-                "data_path": {"type": "string", "default": ""},
-                "row_count": {"type": "integer", "default": 0},
-                "column_count": {"type": "integer", "default": 0},
-                "columns": {"type": "object", "additionalProperties": "string"},
-                "size_bytes": {"type": "integer", "default": 0},
-                "cached_at": {"type": "number", "default": 0},
             },
         ),
     ],

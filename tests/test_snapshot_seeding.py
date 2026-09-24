@@ -1026,8 +1026,7 @@ def test_a_source_capture_whose_input_changes_before_publishing_stops_the_run(
 def test_pass_through_returns_the_selected_api_port(
     project: Path, store: NodeSnapshotStore
 ) -> None:
-    from haute._json_flatten import _json_cache_dir
-    from haute._json_shred._cache import build_per_port_cache
+    from tests.conftest import build_test_api_input_snapshots
 
     data_path = project / "records.json"
     data_path.write_text(
@@ -1066,7 +1065,7 @@ def test_pass_through_returns_the_selected_api_port(
             },
         ],
     }
-    build_per_port_cache(data_path, config, _json_cache_dir(data_path, "working"))
+    build_test_api_input_snapshots(data_path, config)
     graph = _graph(
         project,
         [

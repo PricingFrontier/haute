@@ -37,8 +37,6 @@ from haute._builders import _build_node_fn
 from haute._config_io import collect_node_configs, config_path_for_node
 from haute._execute_lazy import _execute_lazy
 from haute._execution_admission import create_admitted_execution_context
-from haute._json_flatten import _json_cache_dir
-from haute._json_shred._cache import build_per_port_cache
 from haute._model_scorer import _scenario_ctx
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
@@ -165,7 +163,9 @@ def _cached_api_graph(
         "tables": tables,
     }
     if build_cache:
-        build_per_port_cache(data_path, config, _json_cache_dir(data_path, "working"))
+        from tests.conftest import build_test_api_input_snapshots
+
+        build_test_api_input_snapshots(data_path, config)
 
     api = _node("api", "Quote Input", NodeType.API_INPUT, config)
     transform = _node("transform", "Price Transform", NodeType.POLARS, {"code": code})
@@ -207,9 +207,14 @@ def test_one_frame_api_input_run_matches_executor_by_frame_label(
     assert_frame_equal(standalone, reference)
 
 
-def test_uncached_api_input_generated_run_matches_executor_and_cached_fast_path(
+def test_uncached_api_input_generated_run_matches_executor_after_snapshot_build(
     isolated_project: Path,
 ) -> None:
+    """The standalone generated module always shreds directly (no snapshot store).
+
+    The canvas executor, however, requires a built input snapshot. Build it
+    after the standalone run to confirm both paths still agree on the data.
+    """
     graph = _cached_api_graph(
         isolated_project,
         records=[{"quote_id": 7}, {"quote_id": 11}],
@@ -228,12 +233,12 @@ def test_uncached_api_input_generated_run_matches_executor_and_cached_fast_path(
     module = _write_and_import(graph, isolated_project)
 
     standalone_direct = _collect(module.pipeline.run())
-    executor_direct = _executor_frame(graph, "transform", source="batch")
-    assert_frame_equal(standalone_direct, executor_direct)
 
     api_config = graph.nodes[0].data.config
     data_path = Path(api_config["path"])
-    build_per_port_cache(data_path, api_config, _json_cache_dir(data_path, "working"))
+    from tests.conftest import build_test_api_input_snapshots
+
+    build_test_api_input_snapshots(data_path, api_config)
 
     standalone_cached = _collect(module.pipeline.run())
     executor_cached = _executor_frame(graph, "transform", source="batch")

@@ -285,25 +285,16 @@ def _mlflow_tracking_patch(attr: str, error_msg: str):
 
 
 @contextlib.contextmanager
-def _json_cache_build_patch(error_msg: str):
-    """Patch path resolution, file-existence, schema selection, and
-    the isolated transaction so the json-cache/build route reaches its
-    parent-side failure boundary and raises the expected RuntimeError."""
-    fake_v2_config = {"tables": [{"label": "t", "emit": True, "columns": []}]}
-    mock_path_cls = MagicMock()
-    mock_path_cls.return_value.exists.return_value = True
+def _json_cache_infer_patch(error_msg: str):
+    """Patch path resolution and inference so the json-cache/infer route
+    reaches its failure boundary and raises the expected RuntimeError."""
     with (
         patch(
             "haute.routes.json_cache._resolve_data_path",
             return_value="/tmp/fake/data.jsonl",
         ),
-        patch("haute.routes.json_cache.Path", mock_path_cls),
         patch(
-            "haute.routes.json_cache._select_v2_config",
-            return_value=fake_v2_config,
-        ),
-        patch(
-            "haute.routes.json_cache._json_cache_build_transaction",
+            "haute._json_shred._inference.infer_v2_schema_from_data",
             side_effect=RuntimeError(error_msg),
         ),
     ):
@@ -357,13 +348,13 @@ _SIMPLE_SAFE_DETAIL_CASES: list[tuple] = [
     # JSON cache
     pytest.param(
         "post",
-        "/api/json-cache/build",
+        "/api/json-cache/infer",
         {"json": {"path": "data.jsonl"}},
-        _json_cache_build_patch,
+        _json_cache_infer_patch,
         "OSError: [Errno 28] No space left on device: '/tmp/x'",
         500,
         ["/tmp/x"],
-        id="json-cache-build",
+        id="json-cache-infer",
     ),
     # MLflow discovery routes (502)
     pytest.param(
@@ -721,13 +712,13 @@ _LOG_ON_ERROR_CASES: list[tuple] = [
     ),
     pytest.param(
         "post",
-        "/api/json-cache/build",
+        "/api/json-cache/infer",
         {"json": {"path": "data.jsonl"}},
-        _json_cache_build_patch,
+        _json_cache_infer_patch,
         "haute.routes.json_cache",
         "internal-json-error",
         500,
-        id="json-cache-build-log",
+        id="json-cache-infer-log",
     ),
 ]
 

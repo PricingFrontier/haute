@@ -396,6 +396,47 @@ class TestDunderMethods:
         assert cache.get("a") is None
         assert cache.get("b") is None
 
+    def test_iter_is_a_key_snapshot_least_recent_first(self) -> None:
+        cache: LRUCache[str, int] = LRUCache(max_size=4)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.get("a")
+        keys = iter(cache)
+        cache.put("c", 3)
+        assert list(keys) == ["b", "a"]
+        assert list(cache) == ["b", "a", "c"]
+
+    def test_pop_removes_and_returns_the_value(self) -> None:
+        cache: LRUCache[str, int] = LRUCache(max_size=4, max_bytes=100, size_of=lambda v: v)
+        cache.put("a", 7)
+        cache.pin("a")
+        assert cache.pop("a") == 7
+        assert "a" not in cache
+        assert cache.pop("a") is None
+        assert cache.stats()["bytes"] == 0
+        assert cache.stats()["pinned_entries"] == 0
+        cache.put("b", 1)
+        cache.put("c", 1)
+        cache.put("d", 1)
+        cache.put("e", 1)
+        cache.put("f", 1)
+        assert "b" not in cache  # the popped pin no longer protects a slot
+
+    def test_pop_of_an_expired_entry_removes_it_and_returns_none(self, monkeypatch) -> None:
+        import haute._lru_cache as _mod
+
+        now = 1000.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        cache: LRUCache[str, int] = LRUCache(max_size=4, ttl=5.0)
+        cache.put("k", 1)
+        cache.put("fresh", 2)
+        now = 1006.0
+        monkeypatch.setattr(_mod._time, "monotonic", lambda: now)
+        cache.put("fresh", 2)
+        assert cache.pop("k") is None
+        assert "k" not in cache
+        assert cache.pop("fresh") == 2
+
 
 # ---------------------------------------------------------------------------
 # Thread safety

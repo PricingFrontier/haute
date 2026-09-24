@@ -43,8 +43,8 @@
 | `src/haute/_artifact_paths.py` | Contained project-relative artifact paths (traversal/alias/reparse-point rejection) and bounded artifact reads shared by recovery and the mutation lock. |
 | `src/haute/_recovery_sources.py` | Raw authored settings/code evidence and scaffold matching for the recover action. For a stepped node type it reconciles the recovered `steps` against the extracted body through the parser's own `_reconcile_steps`, so a hand-edited body is never regenerated from stale steps when the candidate materialises; a discarded list is reported as a `/steps` `removed` change. A step list the parser rejects outright (a malformed container, or a list beside an `inputMapping` an edges surface refuses) is dropped with the same change record rather than propagated, because recovery never raises on a bad field and the route would otherwise answer HTTP 500; the key is removed rather than defaulted to `[]`, which would materialise as empty code and discard the authored body. |
 | `src/haute/_recovery_schemas.py` | Engine field-outcome and issue types. |
-| `src/haute/_project_mutation_lock.py` | Cross-process project writer lock. |
-| `src/haute/_file_lock.py` | Shared OS file-lock primitives. |
+| `src/haute/_project_mutation_lock.py` | Cross-process project writer lock: an `asyncio.Lock` plus a `FileLock` of its own, polled without blocking so cancellation never strands it. |
+| `src/haute/_file_lock.py` | The one cross-process lock helper (`FileLock`) and the OS file-lock primitives beneath it. |
 | `src/haute/node_defaults.json` | Shared palette/reset defaults. |
 
 ## Key types and data structures
@@ -420,22 +420,19 @@ concurrent plain saves, but does not coordinate another worker process):
 6. Emit non-blocking warnings for structured `apiInput` nodes with no `tables[]` yet.
 7. Write per-node config JSON sidecars (collision-checked against protected load-error paths
    and against each other, casefolded).
-8. Best-effort mirror each JSON/JSONL/NDJSON/XML `apiInput`'s volatile cache to its committed layer.
-   Mirror errors are logged and swallowed; mirrors are idempotent and are not recorded in
-   `_TouchedFile`, so partial cache state is outside rollback and repaired by a later save.
-9. Write the parent `.haute.json` position sidecar. For each child whose
+8. Write the parent `.haute.json` position sidecar. For each child whose
    ownership passed step 3, write positions plus `managed_parent`. All sidecar
    writes are transactional.
-10. Stage deletion of any derived submodel source and
+9. Stage deletion of any derived submodel source and
     its sibling `.haute.json` sidecar (skipping any that casefold-collide with a path this
     same save just wrote).
-11. Reparse the fully staged document, require its editor recovery state to be
+10. Reparse the fully staged document, require its editor recovery state to be
     `ready`, and return that document's raw-artifact `source_revision`. On any propagated exception in steps 5–11, roll back every staged write (restore
    snapshotted bytes, delete newly-created files) and re-raise unchanged. Rollback restores
    an artifact only while it still holds this transaction's bytes (or is still absent, for a
    staged delete); an external edit that landed mid-transaction is left in place and logged
    as `rollback_skipped_external_change`.
-12. Only after every write commits: delete stale config files (the diff from step 4, minus
+11. Only after every write commits: delete stale config files (the diff from step 4, minus
     what this save just wrote or protects), invalidate the pipeline index, and — if the
     project has a recorded git working branch — capture the save in the git ledger
     (`_git.commit_save`); `GitDomainError`/`GitError` become response warnings because the
@@ -501,17 +498,15 @@ memory errors retain their existing 422/507 mappings; arbitrary remote failures 
 Explicit thread compatibility mode uses the existing deferred-release helper and is never an
 automatic fallback.
 
-**JSON cache build** (`routes/json_cache.py`, the `_json_shred/` package): the parent resolves and
-validates paths/config, acquires the cross-process cache build lock off the event loop, chooses
-one unique sibling staging directory, and holds the admitted reservation. A one-shot process
-streams the source into that exact directory and returns a pickle-safe signed manifest. Before
-atomic directory replacement the parent rechecks source identity, staging containment, manifest
-shape, every Parquet signature/footer, and current ownership. The final no-op return or directory
-swap runs under the same short gate that records route cancellation, making cancellation and
-publication linearizable. Timeout, crash, or cancellation removes
-only the known staging directory after the child is joined. The synchronous library entry point
-uses the same prepare/validate/commit primitives in-process, so route isolation cannot drift from
-CLI behavior.
+**API Input table build** (`routes/input_cache.py`, the `_json_shred/` package): an
+`apiInput` build job validates the config and path, holds the admitted reservation, and
+chooses every table's generation id and staging token and the build's scratch token. A
+one-shot hard-capped process (`build_api_input_tables_worker`) shreds the source once and
+publishes each planned table through the input-snapshot store, deferring retirement. After a
+timeout, crash, or cancellation the parent reconciles each planned table — a generation the
+child published stays current, anything unpublished is removed — and removes the scratch
+directory; the job completes only when every table is published. On success the parent
+retires superseded generations.
 
 **Output write** (`routes/pipeline.py`, `executor.py`): preflight destination checks occur in the
 parent. For file sinks, a one-shot process executes the graph and writes a parent-selected sibling
@@ -545,13 +540,13 @@ flattened, source-file checked, and runtime-path validated like other graph rout
 `NodeDataService` resolves the consumer point with a `DataPointResolver` over
 `NodeSnapshotStore(project root)`. The resolver's building probe reports a node-output build
 from the service's own identity-digest → running-job map, an input-snapshot build through
-`input_cache.input_snapshot_build_running(identity_digest)`, and a JSON cache build through
-`json_cache.json_cache_build_running(working_cache_dir)`. `point` returns
+`input_cache.input_snapshot_build_running(identity_digest)`, and an API-input table build
+through `input_cache.api_input_table_build_running(table_digest)`. `point` returns
 `NodeDataPointResponse` (`slot_key` is `producer|port|source`); node-output details come from
 the slot's latest generation and the running job; snapshot-backed inputs report their
-generation's rows and bytes and name `/api/input-cache/build` and `/api/input-cache/clear`;
-API-input tables name `/api/json-cache/build` and `/api/json-cache`; a direct-Parquet input sets
-`reads_directly`. A service-wide slot lock makes each `run` decision and each `clear` atomic, so
+generation's rows and bytes and name `/api/input-cache/build` and `/api/input-cache/clear`
+(an API-input table's point does too, its build and clear acting on the node's tables
+together); a direct-Parquet input sets `reads_directly`. A service-wide slot lock makes each `run` decision and each `clear` atomic, so
 simultaneous identical requests start one job and join it. `run` pins and completes a node
 output current for `all` unless `refresh`, joins the running job for the same identity, and
 otherwise creates a `node_data` job with a parent-chosen staging token, registers
@@ -900,7 +895,7 @@ later write and cleanup checks still compare against the captured identities.
 | `BoundedMemoryUnsupportedError` | output write | 422 | Distinguishes "cannot stream safely" from a hard resource limit. |
 | `DataOutputDestinationExistsError` | `POST /api/pipeline/write-output` | 409 | `overwrite=false` refuses an existing file/table before publication and returns the destination in the detail. |
 | `SupersededRequestError` | preview, trace | 409 | Raised by `SupersessionCoordinator`; the worker never runs for a superseded generation. |
-| `IsolatedWorkerTimeoutError`, `BlockingWorkTimeoutError`, `TimeoutError` | preview, trace, JSON cache build, output write, output-assemble, Explore | 504 / timed-out job | Production process mode kills and joins the exact worker before returning or transitioning the job. Explicit thread compatibility mode is opt-in and retains cooperative/deferred cleanup; it is never selected after a process-start failure. |
+| `IsolatedWorkerTimeoutError`, `BlockingWorkTimeoutError`, `TimeoutError` | preview, trace, input-snapshot and API Input table builds, output write, output-assemble, Explore | 504 / timed-out job | Production process mode kills and joins the exact worker before returning or transitioning the job. Explicit thread compatibility mode is opt-in and retains cooperative/deferred cleanup; it is never selected after a process-start failure. |
 | `HTTPException` (raised directly) | path validation, node lookup, syntax checks | 400 / 403 / 404 / 409 | `raise_node_not_found`, `raise_node_type_error`, `raise_pipeline_not_found`, `raise_validation_error` centralise the structured-log + raise pattern. |
 | Any other `Exception` | `_RequestIdMiddleware` | 500 | Logged as `unhandled_exception` with `error_class` and traceback; detail `_INTERNAL_ERROR_DETAIL`. |
 

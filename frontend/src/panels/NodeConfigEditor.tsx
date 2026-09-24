@@ -133,7 +133,6 @@ export function NodeConfigEditor({
           config={config}
           onUpdate={onUpdateConfig}
           accentColor={accentColor}
-          configPath={typeof node.data._configReference === "string" ? node.data._configReference : undefined}
           reservedFrameLabels={reservedApiInputFrameLabels}
         />
       )

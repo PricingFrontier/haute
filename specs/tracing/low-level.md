@@ -708,7 +708,7 @@ snapshot deterministically.
   expression, not a blank one.
 - **The trace cache fingerprint includes the canonical dataframe graph input fingerprint** so
   an out-of-band re-export of a file-backed `dataInput`/`externalFile`, a
-  model-artifact signature change, or an `apiInput` JSON-cache rebuild
+  model-artifact signature change, or a rebuilt `apiInput` table snapshot
   invalidates cached trace frames even though the graph structure itself did not
   change.
 - **A single trace-cache entry larger than the whole byte budget is rejected at

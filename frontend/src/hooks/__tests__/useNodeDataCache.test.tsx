@@ -16,7 +16,6 @@ vi.mock("../../api/client", () => ({
   cancelNodeData: vi.fn(),
   clearNodeData: vi.fn(),
   clearInputCache: vi.fn(),
-  deleteJsonCache: vi.fn(),
 }))
 
 vi.mock("../../utils/buildGraph", () => ({
@@ -34,7 +33,6 @@ import {
   cancelNodeData,
   clearInputCache,
   clearNodeData,
-  deleteJsonCache,
   getNodeDataPoint,
   runNodeData,
 } from "../../api/client"
@@ -44,7 +42,6 @@ const mockRun = vi.mocked(runNodeData)
 const mockCancel = vi.mocked(cancelNodeData)
 const mockClear = vi.mocked(clearNodeData)
 const mockClearInputCache = vi.mocked(clearInputCache)
-const mockDeleteJsonCache = vi.mocked(deleteJsonCache)
 
 const nodes = [
   { id: "source", data: { label: "source", nodeType: "dataInput", config: { path: "quotes.parquet" } } },
@@ -116,7 +113,6 @@ describe("useNodeDataCache", () => {
     mockCancel.mockReset()
     mockClear.mockReset()
     mockClearInputCache.mockReset()
-    mockDeleteJsonCache.mockReset()
     ensureInputSnapshots.mockReset()
     ensureInputSnapshots.mockResolvedValue(undefined)
   })
@@ -620,7 +616,43 @@ describe("useNodeDataCache", () => {
       schema_version: 1,
       config: { path: "quotes.parquet" },
     })
-    expect(mockDeleteJsonCache).not.toHaveBeenCalled()
+  })
+
+  it("clears an api_input_table point through the input-cache route with node_type apiInput", async () => {
+    const quoteNodes = [
+      ...nodes,
+      {
+        id: "quote-source",
+        data: {
+          label: "quote-source",
+          nodeType: "apiInput",
+          config: { path: "quotes.json", tables: [{ name: "orders" }] },
+        },
+      },
+    ] as never as Parameters<typeof useNodeDataCache>[0]["allNodes"]
+    const delegated = point({
+      point: { producer_node_id: "quote-source", port_label: "orders" },
+      slot_key: "quote-source|orders|live",
+      kind: "api_input_table",
+      clear_endpoint: "/api/input-cache/clear",
+    })
+    mockGetPoint.mockResolvedValue(delegated)
+    mockClear.mockResolvedValue({ status: "delegated", point: delegated })
+    mockClearInputCache.mockResolvedValue({} as never)
+    const { result } = renderHook(() =>
+      useNodeDataCache({ node: nodeById("banding"), allNodes: quoteNodes, edges, preamble: "" }),
+    )
+    await waitFor(() => expect(result.current.point).not.toBeNull())
+
+    await act(async () => {
+      await result.current.clear()
+    })
+
+    expect(mockClearInputCache).toHaveBeenCalledWith({
+      schema_version: 1,
+      node_type: "apiInput",
+      config: { path: "quotes.json", tables: [{ name: "orders" }] },
+    })
   })
 
   it("cancels the running build and re-asks for the point", async () => {

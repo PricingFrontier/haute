@@ -8,10 +8,10 @@ import os
 import tempfile
 from pathlib import Path
 from types import TracebackType
-from typing import BinaryIO, Literal
+from typing import Literal
 
 from haute._artifact_paths import safe_path
-from haute._file_lock import _acquire_file_lock, _release_file_lock
+from haute._file_lock import FileLock
 
 
 class ProjectMutationLock(asyncio.Lock):
@@ -19,11 +19,10 @@ class ProjectMutationLock(asyncio.Lock):
 
     def __init__(self) -> None:
         super().__init__()
-        self._handle: BinaryIO | None = None
+        self._file_lock: FileLock | None = None
 
     async def acquire(self) -> Literal[True]:
         await super().acquire()
-        handle: BinaryIO | None = None
         try:
             # Even a rejected mutation or read-only preview takes this lock.
             # Keep its stable rendezvous file outside authored project storage.
@@ -31,29 +30,28 @@ class ProjectMutationLock(asyncio.Lock):
                 os.path.normcase(str(Path.cwd().resolve())).encode()
             ).hexdigest()
             path = safe_path(Path(tempfile.gettempdir()), f"haute-project-locks/{identity}.lock")
-            path.parent.mkdir(parents=True, exist_ok=True)
-            handle = path.open("a+b")
+            # A lock of its own, not the process's shared one for this path:
+            # two project locks on the event loop's one thread must exclude
+            # each other rather than re-enter.
+            file_lock = FileLock(path)
             # Nonblocking polls remain on the event loop, so cancellation cannot
             # strand an acquired lock in a background executor thread.
-            while not _acquire_file_lock(handle, blocking=False):
+            while not file_lock.acquire(blocking=False):
                 await asyncio.sleep(0.025)
-            self._handle = handle
+            self._file_lock = file_lock
             return True
         except BaseException:
-            if handle is not None:
-                handle.close()
             super().release()
             raise
 
     def release(self) -> None:
-        handle = self._handle
-        if handle is None:
+        file_lock = self._file_lock
+        if file_lock is None:
             raise RuntimeError("Project mutation lock is not acquired.")
-        self._handle = None
+        self._file_lock = None
         try:
-            _release_file_lock(handle)
+            file_lock.release()
         finally:
-            handle.close()
             super().release()
 
     async def __aenter__(self) -> None:

@@ -746,3 +746,92 @@ def test_clearing_an_orphaned_row_reclaims_it(client: TestClient, project: Path)
 
     after = client.post("/api/cache/nodes", json=_body(_graph(project))).json()
     assert [entry for entry in after["other"] if entry["node_id"] == "deleted_node"] == []
+
+
+def test_an_api_inputs_tables_are_reported_and_cleared_on_its_own_row(
+    client: TestClient, project: Path
+) -> None:
+    """Each emitting table is its own snapshot, carried by the API Input's row."""
+    from tests.conftest import build_test_api_input_snapshots
+
+    data = project / "quotes.jsonl"
+    data.write_text(
+        '{"id": 1, "drivers": [{"age": 30}]}\n{"id": 2, "drivers": [{"age": 40}, {"age": 50}]}\n',
+        encoding="utf-8",
+    )
+    config = {
+        "path": str(data),
+        "tables": [
+            {
+                "label": "quotes",
+                "path": "$[:]",
+                "emit": True,
+                "columns": [{"name": "id", "path": "$[:].id", "type": "int", "selected": True}],
+            },
+            {
+                "label": "drivers",
+                "path": "$[:].drivers[:]",
+                "emit": True,
+                "columns": [
+                    {"name": "age", "path": "$[:].drivers[:].age", "type": "int", "selected": True}
+                ],
+            },
+        ],
+    }
+    graph = _graph_of(
+        project,
+        [{"id": "quote", "data": {"label": "quote", "nodeType": "apiInput", "config": config}}],
+    )
+    before = _entry(client.post("/api/cache/nodes", json=_body(graph)).json(), "quote")
+    assert (before["kind"], before["state"], before["size_bytes"]) == (
+        "api_input_table",
+        "missing",
+        0,
+    )
+
+    generations = build_test_api_input_snapshots(data, config)
+    payload = client.post("/api/cache/nodes", json=_body(graph)).json()
+
+    row = _entry(payload, "quote")
+    assert row["kind"] == "api_input_table"
+    assert row["state"] == "current"
+    assert row["row_count"] == 5
+    assert sorted(row["identity_digests"]) == sorted(generations)
+    assert row["size_bytes"] == _stored_bytes(project)
+    assert [entry for entry in payload["other"] if entry["bucket"] == "input"] == []
+    assert _accounted(payload, "input") == _stored_bytes(project)
+
+    data.write_text('{"id": 3, "drivers": []}\n', encoding="utf-8")
+    stale = _entry(client.post("/api/cache/nodes", json=_body(graph)).json(), "quote")
+    assert stale["state"] == "stale"
+
+    cleared = client.post("/api/cache/clear", json={"digests": row["identity_digests"]}).json()
+    assert sorted(cleared["cleared"]) == sorted(generations)
+    after = _entry(client.post("/api/cache/nodes", json=_body(graph)).json(), "quote")
+    assert (after["state"], after["size_bytes"]) == ("missing", 0)
+
+
+def test_a_table_left_over_from_an_edited_schema_is_listed_by_file_and_table(
+    client: TestClient, project: Path
+) -> None:
+    from tests.conftest import build_test_api_input_snapshots
+
+    data = project / "quotes.jsonl"
+    data.write_text('{"id": 1}\n', encoding="utf-8")
+    config = {
+        "path": str(data),
+        "tables": [
+            {
+                "label": "quotes",
+                "path": "$[:]",
+                "emit": True,
+                "columns": [{"name": "id", "path": "$[:].id", "type": "int", "selected": True}],
+            }
+        ],
+    }
+    build_test_api_input_snapshots(data, config)
+
+    payload = client.post("/api/cache/nodes", json=_body(_graph_of(project, []))).json()
+
+    [owner] = [entry for entry in payload["other"] if entry["bucket"] == "input"]
+    assert owner["label"] == f"{data.resolve()} $[:]"

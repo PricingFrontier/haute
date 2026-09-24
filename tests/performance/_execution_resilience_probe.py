@@ -8,19 +8,19 @@ import errno
 import json
 import operator
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 import orjson
+import polars as pl
 
+from haute._execution_context import ExecutionProfile
 from haute._interactive_workers import InteractiveWorkerCrashedError, InteractiveWorkerPool
-from haute._json_shred._cache import build_per_port_cache, is_per_port_cache_valid
-from haute._json_shred._publication import _build_lock_for
-from haute._json_shred._writer import _BoundedParquetRowGroupWriter
+from haute._json_shred._snapshots import api_input_snapshot_source, build_api_input_tables
 from haute._process_memory import process_rss_bytes
+from haute._source_cache import SourceCacheIdentity, SourceCacheStore
 
 _SCALES = {"ci": (120, 8, 4), "1m": (2_000, 100, 12), "10m": (10_000, 1_000, 32)}
 
@@ -65,8 +65,9 @@ def _descriptor_open(fcntl_module: Any, descriptor: int) -> bool:
     return True
 
 
-def _config(column: str) -> dict[str, Any]:
+def _config(source: Path, column: str) -> dict[str, Any]:
     return {
+        "path": str(source),
         "tables": [
             {
                 "path": "$[:]",
@@ -84,58 +85,79 @@ def _config(column: str) -> dict[str, Any]:
                     }
                 ],
             }
-        ]
+        ],
     }
 
 
-def _siblings(cache: Path) -> list[Path]:
-    return sorted(
-        (
-            *cache.parent.glob(f"{cache.name}.build-tmp-*"),
-            *cache.parent.glob(f"{cache.name}.build-old-*"),
-        )
+def _identity(source: Path, column: str) -> SourceCacheIdentity:
+    return api_input_snapshot_source(_config(source, column), source).table("rows").identity
+
+
+def _build(root: Path, source: Path, column: str) -> str:
+    """Build the one table of *column*'s API Input; return its new generation id."""
+    snapshot_source = api_input_snapshot_source(_config(source, column), source)
+    generations = build_api_input_tables(
+        snapshot_source,
+        ["rows"],
+        store=SourceCacheStore(root),
+        profile=ExecutionProfile.LAZY_SINK,
     )
+    return generations[_identity(source, column).digest].generation_id
 
 
-def _run_phase_child(phase: str, source: Path, cache: Path, config: dict[str, Any]) -> int:
-    from haute._json_shred import _cache, _publication, _writer
+def _staging(root: Path) -> list[Path]:
+    """Every store staging and shred scratch directory under *root*'s input store."""
+    return sorted((root / ".haute_cache" / "inputs").glob("*/.staging-*"))
+
+
+def _reclaim_abandoned_staging(root: Path) -> None:
+    """Open the store once with no staging age, as a restart would after the grace period.
+
+    Only this open reclaims at once: a concurrent build's live staging is
+    protected by the ordinary age limit everywhere else.
+    """
+    name = "HAUTE_INPUT_CACHE_STAGING_MAX_AGE_SECONDS"
+    os.environ[name] = "0.001"
+    try:
+        SourceCacheStore(root)
+    finally:
+        del os.environ[name]
+
+
+def _current(root: Path, source: Path, column: str) -> str:
+    """The current generation id of *column*'s table, proven readable and complete."""
+    generation = SourceCacheStore(root).open_generation(_identity(source, column))
+    values = pl.read_parquet(list(generation.data_paths))[column].to_list()
+    if values != list(range(8)):
+        raise RuntimeError(f"generation {generation.generation_id} is incomplete: {values}")
+    return generation.generation_id
+
+
+def _run_phase_child(phase: str, source: Path, root: Path) -> int:
+    """Rebuild the ``a`` table and exit hard at *phase* of its build."""
+    from haute import _source_cache
+    from haute._json_shred import _writer
 
     if phase == "row_group_emission":
-        original = _writer._BoundedParquetRowGroupWriter.flush
+        original_flush = _writer._BoundedParquetRowGroupWriter.flush
 
         def crash_after_flush(writer: Any) -> None:
-            original(writer)
+            original_flush(writer)
             os._exit(91)
 
-        _writer._BoundedParquetRowGroupWriter.flush = crash_after_flush
-    elif phase == "after_private_staging":
-        original = _cache.commit_prepared_per_port_cache
-
-        def crash_after_staging(*args: Any, **kwargs: Any) -> Any:
-            os._exit(91)
-
-        _cache.commit_prepared_per_port_cache = crash_after_staging
+        _writer._BoundedParquetRowGroupWriter.flush = crash_after_flush  # type: ignore[method-assign]
     else:
-        original = _publication._rename_dir_with_retry
+        original_write = _source_cache.atomic_write_text
 
-        def crash_after_rename(source_dir: Path, target: Path) -> None:
-            original(source_dir, target)
-            if phase == "after_live_backup_rename" and source_dir == cache:
-                os._exit(91)
-            if phase == "after_staged_live_rename" and target == cache:
-                os._exit(91)
+        def crash_at_pointer(path: Path, *args: Any, **kwargs: Any) -> Any:
+            if Path(path).name != "current.json":
+                return original_write(path, *args, **kwargs)
+            if phase == "after_pointer_published":
+                original_write(path, *args, **kwargs)
+            os._exit(91)
 
-        _publication._rename_dir_with_retry = crash_after_rename
-        if phase == "obsolete_backup_cleanup":
-            original_rmtree = shutil.rmtree
-
-            def crash_on_backup_cleanup(path: Any, *args: Any, **kwargs: Any) -> Any:
-                if Path(path).name.startswith(f"{cache.name}.build-old-"):
-                    os._exit(91)
-                return original_rmtree(path, *args, **kwargs)
-
-            shutil.rmtree = crash_on_backup_cleanup
-    build_per_port_cache(source, config, cache)
+        _source_cache.atomic_write_text = crash_at_pointer  # type: ignore[assignment]
+    _build(root, source, "a")
     return 0
 
 
@@ -144,21 +166,26 @@ def _write_jsonl_source(source: Path) -> None:
     source.write_bytes(b"".join(orjson.dumps({"a": row, "b": row}) + b"\n" for row in range(8)))
 
 
+# Each phase names the generation that must be current after the crash.
+_CRASH_PHASES = {
+    "row_group_emission": "old",
+    "before_pointer_published": "old",
+    "after_pointer_published": "new",
+}
+
+
 def _cache_resilience(root: Path, contenders: int) -> dict[str, Any]:
-    source, cache = root / "rows.jsonl", root / "cache"
+    """Crash, ENOSPC, and contention certification of an API Input table build.
+
+    A build that dies at any phase leaves exactly one readable current
+    generation (the old one until the pointer moves, the new one after), and
+    the next store to open reclaims everything the dead build staged.
+    """
+    source = root / "rows.jsonl"
     _write_jsonl_source(source)
-    old, new = _config("a"), _config("b")
-    build_per_port_cache(source, old, cache)
-    phases = [
-        "row_group_emission",
-        "after_private_staging",
-        "after_live_backup_rename",
-        "after_staged_live_rename",
-        "obsolete_backup_cleanup",
-    ]
     phase_evidence: dict[str, Any] = {}
-    for phase in phases:
-        build_per_port_cache(source, old, cache)
+    for phase, expected in _CRASH_PHASES.items():
+        old = _build(root, source, "a")
         completed = subprocess.run(
             [
                 sys.executable,
@@ -167,60 +194,48 @@ def _cache_resilience(root: Path, contenders: int) -> dict[str, Any]:
                 phase,
                 "--source",
                 str(source),
-                "--cache",
-                str(cache),
+                "--root",
+                str(root),
             ],
             check=False,
         )
         if completed.returncode != 91:
             raise RuntimeError(f"phase {phase} exit={completed.returncode}, expected 91")
-        with _build_lock_for(cache):
-            pass
-        valid_old, valid_new = (
-            is_per_port_cache_valid(cache, old, data_path=source),
-            is_per_port_cache_valid(cache, new, data_path=source),
-        )
-        if valid_old == valid_new or _siblings(cache):
+        _reclaim_abandoned_staging(root)
+        current = _current(root, source, "a")
+        leaked = _staging(root)
+        if (current == old) != (expected == "old") or leaked:
             raise RuntimeError(
-                f"recovery failed for {phase}: old={valid_old}, new={valid_new}, "
-                f"siblings={_siblings(cache)}"
+                f"recovery failed for {phase}: current={current} old={old} "
+                f"expected={expected} staging={leaked}"
             )
-        phase_evidence[phase] = {"valid_old": valid_old, "valid_new": valid_new}
-    build_per_port_cache(source, old, cache)
-    old_bytes = {
-        path.relative_to(cache).as_posix(): path.read_bytes()
-        for path in cache.rglob("*")
-        if path.is_file()
-    }
-    original_flush = _BoundedParquetRowGroupWriter.flush
+        phase_evidence[phase] = {"current": expected, "staging_left": len(leaked)}
+
+    from haute._json_shred import _writer
+
+    old = _build(root, source, "a")
+    original_flush = _writer._BoundedParquetRowGroupWriter.flush
 
     def full_disk(writer: Any) -> None:
         original_flush(writer)
         raise OSError(errno.ENOSPC, "simulated full disk")
 
-    from haute._json_shred import _writer
-
-    _writer._BoundedParquetRowGroupWriter.flush = full_disk
+    _writer._BoundedParquetRowGroupWriter.flush = full_disk  # type: ignore[method-assign]
     try:
         try:
-            build_per_port_cache(source, new, cache)
+            _build(root, source, "a")
         except OSError as exc:
             if exc.errno != errno.ENOSPC:
                 raise
         else:
             raise RuntimeError("ENOSPC injection did not fail")
     finally:
-        _writer._BoundedParquetRowGroupWriter.flush = original_flush
-    current = {
-        path.relative_to(cache).as_posix(): path.read_bytes()
-        for path in cache.rglob("*")
-        if path.is_file()
-    }
-    if current != old_bytes or _siblings(cache):
-        raise RuntimeError("ENOSPC changed live cache or leaked staging")
-    build_per_port_cache(source, new, cache)
-    if not is_per_port_cache_valid(cache, new, data_path=source):
-        raise RuntimeError("rebuild after ENOSPC did not produce valid cache")
+        _writer._BoundedParquetRowGroupWriter.flush = original_flush  # type: ignore[method-assign]
+    if _current(root, source, "a") != old or _staging(root):
+        raise RuntimeError("ENOSPC changed the current generation or leaked staging")
+    if _build(root, source, "a") == old or _current(root, source, "a") == old:
+        raise RuntimeError("rebuild after ENOSPC did not publish a new generation")
+
     processes = [
         subprocess.Popen(
             [
@@ -228,28 +243,23 @@ def _cache_resilience(root: Path, contenders: int) -> dict[str, Any]:
                 __file__,
                 "--build",
                 str(source),
-                str(cache),
+                str(root),
                 "a" if index % 2 == 0 else "b",
             ]
         )
         for index in range(contenders)
     ]
-    exits = [process.wait(timeout=30) for process in processes]
-    if any(exits) or _siblings(cache):
-        raise RuntimeError(f"contention failed exits={exits}, siblings={_siblings(cache)}")
-    winners = [
-        name
-        for name, config in (("old", old), ("new", new))
-        if is_per_port_cache_valid(cache, config, data_path=source)
-    ]
-    if len(winners) != 1:
-        raise RuntimeError(f"contention did not leave one valid winner: {winners}")
+    exits = [process.wait(timeout=60) for process in processes]
+    leaked = _staging(root)
+    if any(exits) or leaked:
+        raise RuntimeError(f"contention failed exits={exits}, staging={leaked}")
+    winners = {column: _current(root, source, column) for column in ("a", "b")}
     return {
         "phases": phase_evidence,
         "enospc_preserved_old": True,
         "contenders": contenders,
         "contention_exits": exits,
-        "winner": winners[0],
+        "winners": winners,
     }
 
 
@@ -344,16 +354,13 @@ def main() -> None:
     parser.add_argument("--output")
     parser.add_argument("--phase")
     parser.add_argument("--source")
-    parser.add_argument("--cache")
     parser.add_argument("--build", nargs=3)
     args = parser.parse_args()
     if args.phase:
-        raise SystemExit(
-            _run_phase_child(args.phase, Path(args.source), Path(args.cache), _config("b"))
-        )
+        raise SystemExit(_run_phase_child(args.phase, Path(args.source), Path(args.root)))
     if args.build:
-        source, cache, column = args.build
-        build_per_port_cache(source, _config(column), cache)
+        source, root, column = args.build
+        _build(Path(root), Path(source), column)
         return
     if args.mode not in _SCALES or not args.root or not args.output:
         raise ValueError("mode must be ci, 1m, or 10m and root/output are required")

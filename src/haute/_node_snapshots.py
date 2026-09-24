@@ -50,6 +50,7 @@ from haute._cache import (
 )
 from haute._chunked_writes import part_name, part_paths, scan_parts
 from haute._execution_context import ExecutionProfile
+from haute._file_lock import FileLock
 from haute._file_ops import atomic_write_text, ensure_disk_headroom, remove_tree
 from haute._logging import get_logger
 from haute._source_cache import (
@@ -65,7 +66,6 @@ from haute._source_cache import (
     SourceCacheMetadata,
     SourceCacheStore,
     _ensure_identity_marker,
-    _StoreFileLock,
     _validate_generation_id,
     _validate_staging_token,
     _verification_key,
@@ -160,6 +160,16 @@ _INPUT_LABEL_KEYS = ("path", "table", "name")
 
 
 def _input_label(provider: str, descriptor: Mapping[str, object]) -> str:
+    table = descriptor.get("table")
+    path = descriptor.get("path")
+    if (
+        provider == "api_input"
+        and isinstance(path, str)
+        and isinstance(table, Mapping)
+        and isinstance(table.get("path"), str)
+    ):
+        # One API-input identity is one table of a file: name both.
+        return f"{path} {table['path']}"
     for key in _INPUT_LABEL_KEYS:
         value = descriptor.get(key)
         if isinstance(value, str) and value:
@@ -845,12 +855,12 @@ class NodeSnapshotStore(SourceCacheStore):
 
     # ------------------------------------------------------------------ paths
 
-    def _publication_lock(self, identity: SourceCacheIdentity) -> _StoreFileLock:
+    def _publication_lock(self, identity: SourceCacheIdentity) -> FileLock:
         coordination = self._coordination
         with coordination.guard:
             lock = coordination.publication_locks.get(identity.digest)
             if lock is None:
-                lock = _StoreFileLock(self._locks_dir / f"publication-{identity.digest}.lock")
+                lock = FileLock(self._locks_dir / f"publication-{identity.digest}.lock")
                 coordination.publication_locks[identity.digest] = lock
             return lock
 

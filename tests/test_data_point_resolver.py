@@ -23,9 +23,7 @@ from haute._data_points import (
     resolve_point,
 )
 from haute._execution_context import ExecutionProfile
-from haute._json_flatten import _json_cache_dir
 from haute._json_shred import _writer
-from haute._json_shred._cache import build_per_port_cache
 from haute._node_snapshots import (
     NodeSnapshotColumns,
     NodeSnapshotPublication,
@@ -33,6 +31,7 @@ from haute._node_snapshots import (
 )
 from haute._source_cache import SourceCacheIdentity
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from tests.conftest import build_test_api_input_snapshots
 
 _TIMEOUT = 60.0
 ALL = NodeSnapshotColumns.all()
@@ -506,7 +505,7 @@ def test_two_api_input_ports_resolve_distinct_points_and_scan_only_their_tables(
     data_path = project / "records.json"
     _write_records(data_path)
     config = _api_config(data_path)
-    build_per_port_cache(data_path, config, _json_cache_dir(data_path, "working"))
+    build_test_api_input_snapshots(data_path, config)
     graph = _api_graph(project, config)
 
     policies = consumer_point(graph, "band_policies")
@@ -524,6 +523,21 @@ def test_two_api_input_ports_resolve_distinct_points_and_scan_only_their_tables(
             assert frame["driver_id"].to_list() == [10, 11, 12]
         else:
             assert frame.to_dict(as_series=False) == expected
+
+
+def test_an_api_input_table_stays_current_when_its_source_is_removed(project: Path) -> None:
+    """A missing source proves nothing: the published table stays current and readable."""
+    data_path = project / "records.json"
+    _write_records(data_path)
+    config = _api_config(data_path)
+    build_test_api_input_snapshots(data_path, config)
+    graph = _api_graph(project, config)
+    data_path.unlink()
+    point = DataPoint("api", "policies")
+
+    assert resolve_point(graph, point, source="live", columns=ALL).state == "current"
+    with lease_point_frame(graph, point, "live", ALL) as leased:
+        assert leased.scan.collect()["policy_id"].to_list() == [1, 2]
 
 
 def test_an_uncached_api_input_table_is_cache_required_without_shredding(
@@ -547,11 +561,12 @@ def test_an_uncached_api_input_table_is_cache_required_without_shredding(
             pass
     assert raised.value.state == "missing"
 
-    # A source-only read under the cache-only mode raises too, even if resolution raced.
-    resolver = DataPointResolver(graph, source="live")
-    from haute._json_shred._cache import ApiInputCacheRequiredError
+    # A source-only read under cache-only mode raises too, even if resolution
+    # raced: the node builder leases the table's generation and never shreds.
+    from haute._polars_io_registry import PolarsIoConfigError
 
-    with pytest.raises(ApiInputCacheRequiredError):
+    resolver = DataPointResolver(graph, source="live")
+    with pytest.raises(PolarsIoConfigError, match="input_snapshot_missing"):
         resolver._source_node_frame(point, execution_context=None)
 
 
@@ -638,117 +653,74 @@ def test_a_child_keeps_reading_a_parent_leased_generation_through_refresh_and_cl
     assert not generation_dir.exists()
 
 
-def test_a_rebuild_between_resolution_and_load_is_versioned_as_the_data_read(
+def test_a_rebuild_between_resolution_and_load_still_reads_the_resolved_generation(
     project: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """An api-input table leases exactly the generation its resolution named —
+    unlike a Data Input's post-load-code path, it never re-executes anything
+    at load time, so a rebuild racing after ``resolve()`` cannot change what
+    an already-resolved lease reads."""
     data_path = project / "records.json"
     _write_records(data_path)
     config = _api_config(data_path)
-    working = _json_cache_dir(data_path, "working")
-    build_per_port_cache(data_path, config, working)
+    build_test_api_input_snapshots(data_path, config)
     graph = _api_graph(project, config)
     point = DataPoint("api", "policies")
     resolver = DataPointResolver(graph, source="live")
     resolved_before = resolver.resolve(point, ALL)
-    original_frame = DataPointResolver._source_node_frame
 
-    def rebuild_then_load(self, *args, **kwargs):
-        data_path.write_text(json.dumps([{"policy_id": 7, "drivers": []}]), encoding="utf-8")
-        build_per_port_cache(data_path, config, working)
-        return original_frame(self, *args, **kwargs)
+    # Rebuild AFTER resolution, racing the still-open lease below.
+    data_path.write_text(json.dumps([{"policy_id": 7, "drivers": []}]), encoding="utf-8")
+    build_test_api_input_snapshots(data_path, config)
 
-    with monkeypatch.context() as patched:
-        patched.setattr(DataPointResolver, "_source_node_frame", rebuild_then_load)
-        with resolver.lease_frame(point, ALL) as leased:
-            rows = leased.scan.collect()["policy_id"].to_list()
-            leased_version = leased.data_version
+    with resolver.lease_resolved(resolved_before) as leased:
+        rows = leased.scan.collect()["policy_id"].to_list()
+        leased_version = leased.data_version
 
     fresh = DataPointResolver(graph, source="live").resolve(point, ALL)
-    assert rows == [7]
-    assert leased_version != resolved_before.data_version
-    assert leased_version == fresh.data_version
+    assert rows == [1, 2]
+    assert leased_version == resolved_before.data_version
+    assert leased_version != fresh.data_version
 
 
-def test_api_input_status_never_waits_behind_a_running_cache_build(project: Path) -> None:
-    import threading
-
-    from haute._json_shred._publication import _build_lock_for
-
+def test_api_input_table_labels_and_digests_cover_emitting_tables_only(project: Path) -> None:
+    """``api_input_table_labels``/``api_input_table_digests`` name a structured
+    API Input's emitting tables (in schema order), and are empty for anything
+    else — a Data Input, or an API Input whose schema the node builder would
+    itself reject."""
     data_path = project / "records.json"
     _write_records(data_path)
     config = _api_config(data_path)
-    working = _json_cache_dir(data_path, "working")
-    committed = _json_cache_dir(data_path, "committed")
-    build_per_port_cache(data_path, config, working)
     graph = _api_graph(project, config)
-    held = threading.Event()
-    release = threading.Event()
+    resolver = DataPointResolver(graph, source="live")
 
-    def hold_build_locks() -> None:
-        with _build_lock_for(working), _build_lock_for(committed):
-            held.set()
-            release.wait(_TIMEOUT)
+    assert resolver.api_input_table_labels("api") == ("policies", "drivers")
+    digests = resolver.api_input_table_digests("api")
+    assert len(digests) == 2
+    assert len(set(digests)) == 2  # distinct tables, distinct identities
 
-    holder = threading.Thread(target=hold_build_locks)
-    holder.start()
-    try:
-        assert held.wait(_TIMEOUT)
-        started = time.monotonic()
-        resolution = resolve_point(graph, DataPoint("api", "policies"), source="live", columns=ALL)
-        elapsed = time.monotonic() - started
-    finally:
-        release.set()
-        holder.join(_TIMEOUT)
-
-    assert resolution.state == "building"
-    assert elapsed < 5.0
-    assert (
-        resolve_point(graph, DataPoint("api", "policies"), source="live", columns=ALL).state
-        == "current"
+    # A Data Input node has no tables to hold.
+    data_graph = PipelineGraph(
+        nodes=[_node("source", NodeType.DATA_INPUT, {"path": "quotes.parquet"})],
+        edges=[],
+        source_file=str(project / "main.py"),
     )
+    data_resolver = DataPointResolver(data_graph, source="live")
+    assert data_resolver.api_input_table_labels("source") == ()
+    assert data_resolver.api_input_table_digests("source") == ()
 
-
-def test_api_input_status_is_prompt_when_one_locked_layer_needs_a_fresh_source_proof(
-    project: Path,
-) -> None:
-    import threading
-
-    from haute._json_shred import _source_proof
-    from haute._json_shred._publication import _build_lock_for
-
-    data_path = project / "records.json"
-    _write_records(data_path)
-    config = _api_config(data_path)
-    working = _json_cache_dir(data_path, "working")
-    build_per_port_cache(data_path, config, _json_cache_dir(data_path, "committed"))
-    # Same content, new revision: validity must prove the source afresh.
-    time.sleep(0.01)
-    data_path.write_bytes(data_path.read_bytes())
-    _source_proof._clear_data_file_signature_memo()
-    held = threading.Event()
-    release = threading.Event()
-
-    def hold_working() -> None:
-        with _build_lock_for(working):
-            held.set()
-            release.wait(_TIMEOUT)
-
-    holder = threading.Thread(target=hold_working)
-    holder.start()
-    try:
-        assert held.wait(_TIMEOUT)
-        started = time.monotonic()
-        resolution = resolve_point(
-            graph=_api_graph(project, config),
-            point=DataPoint("api", "policies"),
-            source="live",
-            columns=ALL,
-        )
-        elapsed = time.monotonic() - started
-    finally:
-        release.set()
-        holder.join(_TIMEOUT)
-
-    assert elapsed < 5.0
-    assert resolution.state == "current"
+    # An API Input with an invalid schema (no "tables" list) has none either.
+    invalid_graph = PipelineGraph(
+        nodes=[
+            _node(
+                "bad_api",
+                NodeType.API_INPUT,
+                {"path": str(data_path), "contract": "opaque"},
+            )
+        ],
+        edges=[],
+        source_file=str(project / "main.py"),
+    )
+    invalid_resolver = DataPointResolver(invalid_graph, source="live")
+    assert invalid_resolver.api_input_table_labels("bad_api") == ()
+    assert invalid_resolver.api_input_table_digests("bad_api") == ()

@@ -26,7 +26,7 @@ import logging
 import threading
 import time as _time
 from collections import OrderedDict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from typing import Generic, TypeVar
 
 K = TypeVar("K")
@@ -127,6 +127,18 @@ class LRUCache(Generic[K, V]):
                     return None
             self._data.move_to_end(key)
             return value  # type: ignore[return-value]
+
+    def pop(self, key: K) -> V | None:
+        """Remove *key* and return its value, or ``None`` when absent or expired."""
+        with self._lock:
+            if key not in self._data:
+                return None
+            expired = (
+                self._ttl is not None
+                and (_time.monotonic() - self._timestamps.get(key, 0.0)) > self._ttl
+            )
+            value = self._remove_key(key)
+            return None if expired else value
 
     def put(self, key: K, value: V) -> bool:
         """Insert or update *key* and report whether the value was retained.
@@ -237,6 +249,11 @@ class LRUCache(Generic[K, V]):
         """Return the most-recently-used key, or ``None`` when empty."""
         with self._lock:
             return next(reversed(self._data)) if self._data else None
+
+    def __iter__(self) -> Iterator[K]:
+        """Iterate over a snapshot of the keys, least recently used first."""
+        with self._lock:
+            return iter(list(self._data))
 
     def __contains__(self, key: K) -> bool:
         """Check presence *without* promoting the entry or checking TTL.

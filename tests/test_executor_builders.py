@@ -747,6 +747,7 @@ class TestBuildApiInput:
             profile=None,
             columns=None,
             port_columns=None,
+            read_snapshots=False,
         ):
             captured["profile"] = profile
             captured["columns"] = columns
@@ -799,6 +800,7 @@ class TestBuildApiInput:
             profile=None,
             columns=None,
             port_columns=None,
+            read_snapshots=False,
         ):
             captured["columns"] = columns
             captured["port_columns"] = port_columns

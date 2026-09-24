@@ -23,6 +23,7 @@ from haute._json_shred import (
     _inference_cache,
     _records,
     _runtime_storage,
+    _snapshots,
     _source_proof,
     _writer,
 )
@@ -42,17 +43,18 @@ def test_json_shred_resource_defaults_are_explicit_contracts() -> None:
     assert _writer._DIRECT_SPILL_MAX_BYTES_DEFAULT == 16 * 1024 * 1024
     assert _records._STRUCTURED_INPUT_MAX_RECORD_BYTES_DEFAULT == 64 * 1024 * 1024
     assert _records._STRUCTURED_INPUT_PARSE_CHUNK_BYTES == 64 * 1024
-    assert _source_proof._DATA_FILE_SIGNATURE_MEMO_MAX_ENTRIES == 256
-    assert _source_proof._NATIVE_REVISION_SCHEMA_VERSION == 1
+    assert _source_proof._UNAVAILABLE_WARNINGS_MAX_ENTRIES == 256
+    assert _source_proof.SETTLE_SECONDS == 2.0
     assert _source_proof._WINDOWS_EPOCH_OFFSET_100NS == 116_444_736_000_000_000
     assert _source_proof._FSCTL_READ_FILE_USN_DATA == 0x000900EB
     assert _source_proof._WINDOWS_USN_OUTPUT_BUFFER_SIZE == 4_096
-    assert _runtime_storage._RUNTIME_SNAPSHOT_DIGEST_PREFIX_HEX == 32
     assert _runtime_storage._RUNTIME_OWNER_FORMAT_VERSION == 1
     assert _runtime_storage._RUNTIME_STORAGE_BUDGET_DEFAULT_BYTES == 4 * 1024 * 1024 * 1024
     assert _runtime_storage._RUNTIME_STORAGE_ORPHAN_GRACE_DEFAULT_SECONDS == 60 * 60
-    assert _runtime_storage.RUNTIME_SNAPSHOT_CACHE_MAX_ENTRIES == 64
-    assert _runtime_storage.RUNTIME_SNAPSHOT_CACHE_MAX_BYTES == 2 * 1024 * 1024 * 1024
+    assert _snapshots.API_INPUT_PROVIDER == "api_input"
+    assert _snapshots.SHRED_SEMANTICS_VERSION == 1
+    assert _snapshots._SCRATCH_DIRNAME == ".shred"
+    assert _cache._STANDALONE_SPILL_ROOT == ".haute_cache"
     inference_cache = _inference_cache.InferenceCache()
     assert inference_cache._max_entries == 32
     assert inference_cache._max_bytes == 16 * 1024 * 1024
@@ -65,34 +67,55 @@ def test_json_shred_internal_value_objects_preserve_mutability_contracts() -> No
     assert progress.work_since_checkpoint == 1
 
     revision = _source_proof._StrongFileRevision((1, 2), 3, 4, 5)
-    signature_record = _source_proof._DataFileSignatureRecord(1, 2, "digest", None)
-    prepared = _cache.PreparedPerPortCacheBuild(
-        data_path="data.json",
-        cache_dir="cache",
-        staging_dir=None,
-        schema_fingerprint="schema",
-        data_file_signature={},
-        summary={},
-    )
-    snapshot = _runtime_storage._VerifiedRuntimeSnapshot(revision, Path("snapshot.parquet"), 7)
+    signature = _source_proof.FileSignature(3, 4, "digest")
     xml_shape = _records._XmlRecordShape(repeated_object_children=True)
-    probe_failure = _cache._CacheProbeFailure(reason="invalid")
+    plan = _snapshots.TableBuildPlan(generation_id="generation", staging_token="token")
+    outcome = _snapshots.ApiInputBuildOutcome(generation_ids={})
+    source = _snapshots.ApiInputSnapshotSource(data_path=Path("data.json"), config={}, tables=())
+    table = _snapshots.ApiInputTable(label="rows", spec=None, identity=None)  # type: ignore[arg-type]
+    request = _snapshots.ApiInputBuildRequest(
+        config={},
+        data_path="data.json",
+        labels=(),
+        cache_root="root",
+        project_root="root",
+        profile=None,  # type: ignore[arg-type]
+        plans={},
+        scratch_token="token",
+    )
+    freshness = _source_proof.Freshness(token=1, reusable=True)
+    cached_schema = _inference_cache._CachedSchema(revision=1, payload=b"{}")
+    builder = _snapshots._ParquetFileBuilder(Path("table.parquet"))
 
     for value, field, replacement in (
         (revision, "size", 99),
-        (signature_record, "sha256", "changed"),
-        (prepared, "no_op", True),
-        (snapshot, "size", 99),
+        (signature, "digest", "changed"),
         (xml_shape, "repeated_object_children", False),
-        (probe_failure, "reason", "changed"),
+        (plan, "generation_id", "changed"),
+        (outcome, "generation_ids", {"a": "b"}),
+        (source, "tables", ()),
+        (table, "label", "other"),
+        (request, "scratch_token", "other"),
+        (freshness, "reusable", False),
+        (cached_schema, "payload", b"[]"),
     ):
         with pytest.raises(FrozenInstanceError):
             setattr(value, field, replacement)
 
-    for value in (revision, signature_record, prepared, snapshot, xml_shape):
+    for value in (
+        revision,
+        signature,
+        xml_shape,
+        plan,
+        outcome,
+        source,
+        table,
+        request,
+        freshness,
+        cached_schema,
+        builder,
+    ):
         assert not hasattr(value, "__dict__")
-
-    assert prepared.no_op is False
 
 
 # ─── _scalar_to_str — JSON-style booleans ──────────────────────────
@@ -278,13 +301,6 @@ def test_skip_stats_total_sums_records_plus_all_rows() -> None:
     s.count_row_skip("a")
     s.count_row_skip("b")
     assert s.total == 5  # 2 records + 3 rows
-
-
-def test_skip_stats_as_meta_shape() -> None:
-    s = ShredSkipStats()
-    s.count_record_skip()
-    s.count_row_skip("t")
-    assert s.as_meta() == {"records": 1, "rows_by_table": {"t": 1}}
 
 
 # ─── table_is_emitting — emit AND at least one selected column ───────

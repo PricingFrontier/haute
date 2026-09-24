@@ -1,4 +1,9 @@
-"""Provider-neutral background jobs for explicit Data Input snapshots."""
+"""Provider-neutral background jobs for explicit input snapshots.
+
+A Data Input has one snapshot. A structured API Input (JSON, JSONL, NDJSON,
+XML) has one per emitting table; its requests act on the node's tables
+together, and its build shreds the source once in a hard-capped worker.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +15,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -73,7 +78,11 @@ from haute.schemas import (
     InputCacheProgress,
     InputCacheSnapshotStatusResponse,
     InputCacheSourceRequest,
+    InputCacheTableStatus,
 )
+
+if TYPE_CHECKING:
+    from haute._json_shred._snapshots import ApiInputSnapshotSource
 
 router = APIRouter(prefix="/api/input-cache", tags=["input-cache"])
 logger = get_logger(component="input_cache")
@@ -100,6 +109,9 @@ _jobs = CancellableJobRegistry()
 _singleflight = SingleFlightCoordinator()
 _start_lock = threading.RLock()
 _active_builds = 0
+# The API-input table identities each running API Input build writes, keyed
+# by table digest, so a data point can tell that its own table is building.
+_building_tables: dict[str, str] = {}
 
 
 def _build_timeout() -> float:
@@ -206,6 +218,118 @@ def _safe_config(
             detail="invalid_input_config: The Data Input configuration is invalid.",
         ) from None
     return config, identity
+
+
+def _invalid_api_input() -> HTTPException:
+    return HTTPException(
+        status_code=400,
+        detail="invalid_input_config: The API Input configuration is invalid.",
+    )
+
+
+def _safe_api_input(body: InputCacheSourceRequest) -> ApiInputSnapshotSource:
+    """Validate a structured API Input config and name its tables' identities."""
+    from haute._api_input_schema import ApiInputSchemaError, is_json_api_input_path
+    from haute._json_shred._snapshots import api_input_snapshot_source
+
+    config = body.config
+    path = config.get("path")
+    if (
+        not isinstance(path, str)
+        or not path
+        or not is_json_api_input_path(path)
+        or not isinstance(config.get("tables"), list)
+    ):
+        raise _invalid_api_input()
+    try:
+        data_path = resolve_runtime_file_path(
+            path,
+            pipeline_dir=_pipeline_base_dir(),
+            project_root=_project_root(),
+            prefer="project",
+            enforce_project_root=True,
+        )
+    except RuntimePathError as exc:
+        raise runtime_path_http_exception(exc) from None
+    try:
+        source = api_input_snapshot_source(config, data_path)
+    except (ApiInputSchemaError, TypeError, ValueError, KeyError):
+        raise _invalid_api_input() from None
+    if not source.tables:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "invalid_input_config: The API Input emits no table; tick 'emit' and at "
+                "least one column on a table."
+            ),
+        )
+    return source
+
+
+def api_input_table_build_running(identity_digest: str) -> bool:
+    """Whether a running API Input build writes the table *identity_digest*."""
+    with _start_lock:
+        job_id = _building_tables.get(identity_digest)
+    if job_id is None:
+        return False
+    job = _store.get_job(job_id)
+    return job is not None and job.get("status") == "running"
+
+
+def _api_input_status(
+    source: ApiInputSnapshotSource, *, include_running_build: bool = True
+) -> InputCacheSnapshotStatusResponse:
+    """The node's tables, each with its own state, and their summary.
+
+    A running build of the node reports every table not yet ready as
+    building; the build's own completion reads the tables as they are.
+    """
+    from haute._json_shred._snapshots import (
+        api_input_source_signature,
+        api_input_table_statuses,
+    )
+
+    building = include_running_build and input_snapshot_build_running(source.group_digest)
+    statuses = api_input_table_statuses(
+        source,
+        _cache_store(),
+        source_signature=api_input_source_signature(source.data_path),
+    )
+    tables = [
+        InputCacheTableStatus(
+            label=table.label,
+            identity_digest=table.identity.digest,
+            state="building" if building and status.state != "ready" else status.state,
+            freshness=status.freshness,
+            generation=_generation_payload(status.generation),
+        )
+        for table, status in statuses
+    ]
+    states = {status.state for _table, status in statuses}
+    state: str
+    if building:
+        state = "building"
+    elif "corrupt" in states:
+        state = "corrupt"
+    elif states == {"ready"}:
+        state = "ready"
+    else:
+        state = "missing"
+    ready_freshness = {status.freshness for _table, status in statuses if status.state == "ready"}
+    freshness: Literal["fresh", "stale", "unknown"]
+    if "stale" in ready_freshness:
+        freshness = "stale"
+    elif state == "ready" and ready_freshness == {"fresh"}:
+        freshness = "fresh"
+    else:
+        freshness = "unknown"
+    return InputCacheSnapshotStatusResponse(
+        identity_digest=source.group_digest,
+        state=state,  # type: ignore[arg-type]
+        freshness=freshness,
+        generation=None,
+        tables=tables,
+    )
 
 
 def _generation_payload(
@@ -436,11 +560,73 @@ def _supervise_admitted_eager_build(
     return generation
 
 
+def _supervise_api_input_build(
+    *,
+    source: ApiInputSnapshotSource,
+    refresh: bool,
+    execution_context: ExecutionContext,
+    token: Any,
+) -> None:
+    """Build the node's missing or stale tables (all of them on refresh) in a capped worker."""
+    from haute._json_shred._snapshots import (
+        api_input_source_signature,
+        api_input_table_statuses,
+        run_supervised_api_input_build,
+    )
+
+    store = _cache_store()
+    statuses = api_input_table_statuses(
+        source, store, source_signature=api_input_source_signature(source.data_path)
+    )
+    labels = [
+        table.label
+        for table, status in statuses
+        if refresh
+        or not (
+            status.state == "ready"
+            and status.freshness in ("fresh", "unknown")
+            and status.generation is not None
+        )
+    ]
+    if not labels:
+        return
+    budget = isolated_execution_budget(execution_context)
+
+    def stop_reason() -> WorkerTerminalReason | None:
+        if not token.cancelled:
+            return None
+        reason = token.terminal_reason
+        return reason if reason in {"cancelled", "superseded", "timed_out"} else "cancelled"
+
+    worker_config = dataclasses.replace(
+        worker_config_for_memory_policy(
+            memory_limit_bytes=budget.memory_limit_bytes,
+            timeout_seconds=_build_timeout(),
+            stop_reason=stop_reason,
+            process_name="haute-input-cache-build",
+        ),
+        require_memory_limit=True,
+    )
+    try:
+        run_supervised_api_input_build(
+            source,
+            labels,
+            store=store,
+            profile=ExecutionProfile.LAZY_SINK,
+            budget=budget,
+            worker_config=worker_config,
+            spawn=run_isolated_worker,
+        )
+    except Exception as exc:
+        raise _admitted_eager_failure(exc, budget=budget, token=token) from exc
+
+
 def _run_build(
     *,
     job_id: str,
     config: dict[str, Any],
-    identity: SourceCacheIdentity,
+    identity: SourceCacheIdentity | None,
+    key: str,
     refresh: bool,
     profile: ExecutionProfile,
     build_class: BuildClass,
@@ -449,6 +635,7 @@ def _run_build(
     jobs: CancellableJobRegistry,
     singleflight: SingleFlightCoordinator,
     token: Any,
+    api_input: ApiInputSnapshotSource | None = None,
 ) -> None:
     global _active_builds
 
@@ -488,6 +675,23 @@ def _run_build(
             started_at=time.time(),
             progress={"phase": "building", "rows": 0, "batches": 0, "bytes": 0},
         )
+        if api_input is not None:
+            execution_context = create_admitted_execution_context(
+                operation="input_snapshot_build",
+                profile=profile,
+                job_id=job_id,
+                cancellation_token=token.execution_token,
+            )
+            _supervise_api_input_build(
+                source=api_input,
+                refresh=refresh,
+                execution_context=execution_context,
+                token=token,
+            )
+            timeout_timer.cancel()
+            _complete_api_input_job(job_id, api_input, lifecycle, store, started_at)
+            return
+        assert identity is not None
         if build_class == "admitted_eager":
             execution_context = create_admitted_execution_context(
                 operation="input_snapshot_build",
@@ -660,9 +864,116 @@ def _run_build(
         if execution_context is not None:
             execution_context.release_admission()
         jobs.release(job_id)
-        singleflight.release(identity.digest, job_id=job_id)
+        singleflight.release(key, job_id=job_id)
         with _start_lock:
             _active_builds -= 1
+            for table_digest in [
+                digest for digest, owner in _building_tables.items() if owner == job_id
+            ]:
+                del _building_tables[table_digest]
+
+
+def _complete_api_input_job(
+    job_id: str,
+    source: ApiInputSnapshotSource,
+    lifecycle: JobLifecycle,
+    store: Any,
+    started_at: float,
+) -> None:
+    snapshot = _api_input_status(source, include_running_build=False)
+    tables = snapshot.tables or []
+    if snapshot.state != "ready":
+        # A table the worker did not publish is a failed build, not a ready one.
+        raise SourceCacheBuildError("the API Input build left a table unpublished")
+    lifecycle.transition(
+        job_id,
+        to="completed",
+        message="Input snapshot is ready.",
+        fields={
+            "snapshot": snapshot.model_dump(),
+            "progress": {
+                "phase": "completed",
+                "rows": sum(table.generation.row_count for table in tables if table.generation),
+                "batches": max(1, len(tables)),
+                "bytes": sum(table.generation.size_bytes for table in tables if table.generation),
+            },
+        },
+        elapsed_seconds=time.monotonic() - started_at,
+    )
+
+
+def _start_build(
+    *,
+    key: str,
+    identity_payload: dict[str, object],
+    refresh: bool,
+    build_class: BuildClass,
+    target_kwargs: dict[str, Any],
+    table_digests: tuple[str, ...] = (),
+) -> InputCacheBuildResponse:
+    """Join the running build of *key*, or admit and start a new one."""
+    global _active_builds
+
+    with _start_lock:
+        active = _singleflight.active(key)
+        if active is not None:
+            job = _store.get_job(active.job_id)
+            if job is not None and job.get("status") == "running":
+                return InputCacheBuildResponse(
+                    job_id=active.job_id,
+                    identity_digest=key,
+                    status="running",
+                    joined=True,
+                )
+            _singleflight.release(key, job_id=active.job_id)
+            _jobs.release(active.job_id)
+
+        if _active_builds >= _max_concurrent_builds():
+            raise HTTPException(
+                status_code=429,
+                detail=("input_cache_busy: The input snapshot build limit is currently reached."),
+            )
+
+        initial_job: _InputCacheRunningJob = {
+            "status": "running",
+            "identity_digest": key,
+            "identity": identity_payload,
+            "refresh": refresh,
+            "build_class": build_class,
+            "progress": {"phase": "queued", "rows": 0, "batches": 0, "bytes": 0},
+            "message": "Input snapshot build queued.",
+        }
+        job_id = _store.create_job(initial_job)
+        _singleflight.acquire(key, job_id=job_id, kind="input_cache_build")
+        token, _ = _jobs.register_latest(key, job_id)
+        _active_builds += 1
+        for table_digest in table_digests:
+            _building_tables[table_digest] = job_id
+        thread = threading.Thread(
+            target=_run_build,
+            kwargs={
+                **target_kwargs,
+                "job_id": job_id,
+                "key": key,
+                "refresh": refresh,
+                "build_class": build_class,
+                "store": _store,
+                "lifecycle": _lifecycle,
+                "jobs": _jobs,
+                "singleflight": _singleflight,
+                "token": token,
+            },
+            daemon=True,
+            name=f"haute-input-cache-{job_id}",
+        )
+        thread.start()
+
+    return InputCacheBuildResponse(
+        job_id=job_id,
+        identity_digest=key,
+        status="running",
+        joined=False,
+    )
 
 
 @router.post(
@@ -672,7 +983,25 @@ def _run_build(
 )
 def build_input_cache(body: InputCacheBuildRequest) -> InputCacheBuildResponse:
     """Start or join an explicit snapshot build for one safe source identity."""
-    global _active_builds
+    if body.node_type == "apiInput":
+        source = _safe_api_input(body)
+        return _start_build(
+            key=source.group_digest,
+            identity_payload={
+                "node_type": "apiInput",
+                "path": str(source.data_path),
+                "tables": [table.label for table in source.tables],
+            },
+            refresh=body.refresh,
+            build_class="bounded",
+            target_kwargs={
+                "config": dict(body.config),
+                "identity": None,
+                "profile": ExecutionProfile.LAZY_SINK,
+                "api_input": source,
+            },
+            table_digests=tuple(table.identity.digest for table in source.tables),
+        )
 
     config, identity = _safe_config(body)
     try:
@@ -691,64 +1020,16 @@ def build_input_cache(body: InputCacheBuildRequest) -> InputCacheBuildResponse:
             ),
         ) from None
 
-    with _start_lock:
-        active = _singleflight.active(identity.digest)
-        if active is not None:
-            job = _store.get_job(active.job_id)
-            if job is not None and job.get("status") == "running":
-                return InputCacheBuildResponse(
-                    job_id=active.job_id,
-                    identity_digest=identity.digest,
-                    status="running",
-                    joined=True,
-                )
-            _singleflight.release(identity.digest, job_id=active.job_id)
-            _jobs.release(active.job_id)
-
-        if _active_builds >= _max_concurrent_builds():
-            raise HTTPException(
-                status_code=429,
-                detail=("input_cache_busy: The input snapshot build limit is currently reached."),
-            )
-
-        initial_job: _InputCacheRunningJob = {
-            "status": "running",
-            "identity_digest": identity.digest,
-            "identity": identity.payload,
-            "refresh": body.refresh,
-            "build_class": build_class,
-            "progress": {"phase": "queued", "rows": 0, "batches": 0, "bytes": 0},
-            "message": "Input snapshot build queued.",
-        }
-        job_id = _store.create_job(initial_job)
-        _singleflight.acquire(identity.digest, job_id=job_id, kind="input_cache_build")
-        token, _ = _jobs.register_latest(identity.digest, job_id)
-        _active_builds += 1
-        thread = threading.Thread(
-            target=_run_build,
-            kwargs={
-                "job_id": job_id,
-                "config": config,
-                "identity": identity,
-                "refresh": body.refresh,
-                "profile": profile,
-                "build_class": build_class,
-                "store": _store,
-                "lifecycle": _lifecycle,
-                "jobs": _jobs,
-                "singleflight": _singleflight,
-                "token": token,
-            },
-            daemon=True,
-            name=f"haute-input-cache-{job_id}",
-        )
-        thread.start()
-
-    return InputCacheBuildResponse(
-        job_id=job_id,
-        identity_digest=identity.digest,
-        status="running",
-        joined=False,
+    return _start_build(
+        key=identity.digest,
+        identity_payload=identity.payload,
+        refresh=body.refresh,
+        build_class=build_class,
+        target_kwargs={
+            "config": config,
+            "identity": identity,
+            "profile": profile,
+        },
     )
 
 
@@ -778,6 +1059,8 @@ def cancel_input_cache_job(job_id: str) -> InputCacheCancelResponse:
 def get_input_cache_status(
     body: InputCacheSourceRequest,
 ) -> InputCacheSnapshotStatusResponse:
+    if body.node_type == "apiInput":
+        return _api_input_status(_safe_api_input(body))
     config, identity = _safe_config(body)
     return _status_for_config(config, identity)
 
@@ -786,13 +1069,21 @@ def get_input_cache_status(
 def clear_input_cache(
     body: InputCacheSourceRequest,
 ) -> InputCacheSnapshotStatusResponse:
-    config, identity = _safe_config(body)
+    """Clear a Data Input's snapshot, or every table of an API Input."""
+    if body.node_type == "apiInput":
+        source = _safe_api_input(body)
+        key = source.group_digest
+        identities = [table.identity for table in source.tables]
+    else:
+        config, identity = _safe_config(body)
+        key = identity.digest
+        identities = [identity]
     # Linearize the active-build check, clear, and response with build
     # admission. Whichever request acquires this lock first has an unambiguous
     # outcome: an admitted build makes clear return 409, while a completed
     # clear precedes any newly admitted build.
     with _start_lock:
-        active = _singleflight.active(identity.digest)
+        active = _singleflight.active(key)
         if active is not None:
             job = _store.get_job(active.job_id)
             if job is not None and job.get("status") == "running":
@@ -803,7 +1094,10 @@ def clear_input_cache(
                         "build before clearing it."
                     ),
                 )
-        _cache_store().clear(identity)
+        for cleared in identities:
+            _cache_store().clear(cleared)
+        if body.node_type == "apiInput":
+            return _api_input_status(source)
         return _status_for_config(config, identity)
 
 
@@ -816,4 +1110,5 @@ def _reset_for_tests() -> None:
         _jobs = CancellableJobRegistry()
         _singleflight = SingleFlightCoordinator()
         _active_builds = 0
+        _building_tables.clear()
         _source_store.cache_clear()

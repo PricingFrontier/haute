@@ -37,29 +37,34 @@ EXPECTED_FIXTURE_PREMIUM = 2.75
 
 @pytest.fixture(autouse=True)
 def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
-    """Redirect the JSON parquet cache to a temp dir and prewarm it.
+    """Prewarm the structured API Input's input snapshots for the fixture data.
 
-    Without this, a stale .haute_cache/ in the working directory (from a
-    previous real-data run) can poison the fixture pipeline's api-input
-    node with columns from a completely different schema.
+    Without this, a stale project store from a previous real-data run can
+    poison the fixture pipeline's api-input node with columns from a
+    completely different schema.
 
-    Under v2 (post-commit-5.5) the per-port cache replaces the v1 single
-    parquet. We pre-populate the cache via ``build_per_port_cache`` so
-    the executor's apiInput consumer (which reads from the per-port
-    cache via ``load_per_port_cache``) exercises the performance fast path.
-    This mirrors the optional "Cache as Parquet" prewarm action; uncached
-    execution is covered separately and reads the JSON source directly.
+    We pre-populate each emitting table's snapshot via
+    ``build_test_api_input_snapshots`` so the executor's apiInput consumer
+    (which leases the table's current generation) exercises the performance
+    fast path. This mirrors the optional "Cache as Parquet" prewarm action;
+    uncached execution is covered separately and reads the JSON source
+    directly.
+
+    Building a table's snapshot only needs the absolute *data_path* passed
+    here, not the selected project root — except for *where the store
+    itself lands*. ``TestEndToEnd`` (see ``_anchor_fixture_pipeline_root``)
+    narrows the selected root to this test's ``tmp_path`` for execution, so
+    the tmp_path-copy generation is built under that same root here,
+    regardless of whatever root ``_widen_sandbox_root`` has selected for the
+    rest of this test.
     """
     import json
 
-    import haute._json_flatten as jf
-    from haute._json_shred._cache import build_per_port_cache
+    from haute._sandbox import _get_project_root, set_project_root
+    from tests.conftest import build_test_api_input_snapshots
 
     # Keep the root supplied by _widen_sandbox_root: this fixture executes
     # both repository fixtures and absolute tmp_path-backed lifecycle graphs.
-
-    cache_dir = str(tmp_path / "json_cache")
-    monkeypatch.setattr(jf, "_CACHE_DIR", cache_dir)
 
     runtime_data_dir = tmp_path / "data"
     shutil.copytree(FIXTURE_DIR / "data", runtime_data_dir, dirs_exist_ok=True)
@@ -70,25 +75,50 @@ def _isolate_json_cache(tmp_path, monkeypatch, _widen_sandbox_root):
         (FIXTURE_DIR / "config/quote_input/quotes.json").read_text(),
     )
 
-    for data_path in (
-        (FIXTURE_DIR / "data/api_input.json").resolve(),
-        (runtime_data_dir / "api_input.json").resolve(),
-    ):
-        port_cache_dir = jf._json_cache_dir(str(data_path), "working")
-        port_cache_dir.mkdir(parents=True, exist_ok=True)
-        build_per_port_cache(
-            data_path=str(data_path),
-            v2_config=v2_config,
-            cache_dir=port_cache_dir,
+    build_test_api_input_snapshots(str((FIXTURE_DIR / "data/api_input.json").resolve()), v2_config)
+
+    # The tmp_path-copy generation must be built under tmp_path as the
+    # selected root — that's the root TestEndToEnd's tests execute under, and
+    # therefore the store they'll look for this table's generation in.
+    original_root = _get_project_root()
+    set_project_root(tmp_path)
+    try:
+        build_test_api_input_snapshots(
+            str((runtime_data_dir / "api_input.json").resolve()), v2_config
         )
-        # Mark the working layer as consulted so the dual-cache emitter
-        # picks it up; otherwise it falls through to committed/ which is
-        # not populated by this fixture.
-        jf._mark_working_consulted(str(data_path))
+    finally:
+        set_project_root(original_root)
 
 
 class TestEndToEnd:
     """Full round-trip: parse → execute → trace → codegen → re-parse."""
+
+    @pytest.fixture(autouse=True)
+    def _anchor_fixture_pipeline_root(self, tmp_path: Path):
+        """Narrow the project root to this test's tmp_path for execution.
+
+        ``_isolate_json_cache`` (via ``_widen_sandbox_root``) selects the
+        filesystem root as the project so tmp_path-backed lifecycle graphs
+        elsewhere in this module can read/write anywhere. But the fixture
+        pipeline here carries no ``haute.toml`` and its own ``pipeline.py``
+        is read from the repository (a relative ``PIPELINE_FILE``, so
+        ``graph.source_file`` is relative too), so its apiInput's relative
+        ``path`` anchors directly against the *selected* project root at
+        execution time — a root that broad makes every path on the drive
+        look "already inside the project" and defeats that anchoring, while
+        narrowing to the repository's fixture directory would write a real
+        ``.haute_cache`` there (gitignored, but racy under parallel CI
+        workers sharing that path). Narrow it to this test's own tmp_path
+        instead: ``_isolate_json_cache`` already copied the fixture data
+        into ``tmp_path/data`` and built that copy's generation under this
+        same root, so the relative apiInput path resolves to it.
+        """
+        from haute._sandbox import _get_project_root, set_project_root
+
+        original_root = _get_project_root()
+        set_project_root(tmp_path)
+        yield
+        set_project_root(original_root)
 
     def test_parse_fixture_pipeline(self):
         """Fixture pipeline parses into a valid graph."""

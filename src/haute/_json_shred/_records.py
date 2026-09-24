@@ -87,8 +87,7 @@ class ShredSkipStats:
       object-table array, an object in a scalar-table array). Each one is
       a row that table silently lost before W2.
 
-    The build records these in its summary, in ``meta.json``, and the
-    route surfaces them in the build/status responses.
+    A table build and the standalone shred log them when any are non-zero.
     """
 
     skipped_records: int = 0
@@ -103,13 +102,6 @@ class ShredSkipStats:
     @property
     def total(self) -> int:
         return self.skipped_records + sum(self.skipped_rows_by_table.values())
-
-    def as_meta(self) -> dict[str, Any]:
-        """The ``skipped`` payload shape written to meta.json / build summary."""
-        return {
-            "records": self.skipped_records,
-            "rows_by_table": dict(self.skipped_rows_by_table),
-        }
 
 
 # ---------------------------------------------------------------------------

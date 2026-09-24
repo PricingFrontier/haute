@@ -215,6 +215,69 @@ describe("InputSnapshotCacheButton", () => {
     })
   })
 
+  it("with nodeType=apiInput, requests node_type and shows summed table totals", async () => {
+    const apiConfig = { path: "quotes.json", tables: [{ label: "drivers" }] }
+    vi.mocked(getInputCacheStatus).mockResolvedValue({
+      schema_version: 1,
+      identity_digest: "snapshot",
+      state: "ready",
+      freshness: "fresh",
+      generation: null,
+      tables: [
+        {
+          label: "drivers",
+          identity_digest: "digest-drivers",
+          state: "ready",
+          freshness: "fresh",
+          generation: {
+            generation_id: "gen-1",
+            row_count: 10,
+            column_count: 3,
+            columns: {},
+            size_bytes: 100,
+            created_at: 1,
+            build_class: "bounded",
+          },
+        },
+        {
+          label: "vehicles",
+          identity_digest: "digest-vehicles",
+          state: "ready",
+          freshness: "fresh",
+          generation: {
+            generation_id: "gen-2",
+            row_count: 5,
+            column_count: 2,
+            columns: {},
+            size_bytes: 50,
+            created_at: 2,
+            build_class: "bounded",
+          },
+        },
+      ],
+    })
+
+    render(
+      <InputSnapshotCacheButton
+        config={apiConfig}
+        admittedEager={false}
+        requiredReady
+        nodeType="apiInput"
+      />,
+    )
+
+    await waitFor(() =>
+      expect(getInputCacheStatus).toHaveBeenCalledWith({
+        schema_version: 1,
+        node_type: "apiInput",
+        config: apiConfig,
+      }),
+    )
+
+    expect(await screen.findByText("15 rows")).toBeInTheDocument()
+    expect(screen.getByText("5 cols")).toBeInTheDocument()
+  })
+
   it("stops polling its build once it unmounts, leaving the build to run", async () => {
     vi.useFakeTimers()
     try {

@@ -149,7 +149,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "frontend-modelling-optimiser-ui",
     "frontend-node-editors",
     "frontend-shared",
-    "io-layer",
     "json-shredding",
     "mlflow-model-registry",
     "modelling",

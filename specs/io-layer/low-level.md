@@ -16,7 +16,7 @@
 | `src/haute/_polars_io_arguments.json` | Generated Polars callable signature data checked against the pinned Polars version. |
 | `src/haute/_polars_dtypes.py` | The one dtype vocabulary. `parse_dtype`/`dtype_to_spec` are the struct-capable JSON codec used by registry schema arguments, declared API-input source dtypes and, with renamed keys, rating descriptors; a name it does not define is rejected, never looked up as an arbitrary Polars attribute. Named coarser views serve the consumers that need one: `contract_dtype_name` (a model's feature contract, shared by training and deploy scoring), `contract_mlflow_type_name` (that contract's MLflow projection) and `rendered_dtype_mlflow_type_name` (the MLflow type of a rendered Polars dtype, as a deploy manifest records it). |
 | `src/haute/_polars_utils.py` | Shared context-aware automatic/streaming collection, bounded/atomic sink, Parquet metadata, chunk-size scope, and allocator trim helpers. |
-| `src/haute/_file_ops.py` | Atomic byte/text writers used for pointer and metadata publication. |
+| `src/haute/_file_ops.py` | The one atomic-write primitive (`atomic_path`) and the byte/text writers built on it, used for pointer and metadata publication and, through `_polars_utils.atomic_write`, for every Parquet/CSV write-then-rename. |
 | `src/haute/_path_resolution.py` | Shared runtime path containment/resolution owned by [sandbox-security](../sandbox-security/low-level.md) and consumed by I/O. |
 | `src/haute/_path_case_audit.py` | Cross-platform case-ambiguity warnings for user-facing paths. |
 | `src/haute/discovery.py` | Pipeline-file discovery used by file-facing workflows. |
@@ -68,18 +68,28 @@ relationship is recorded in `specs/ownership.toml`.
   bypasses the grace period while preserving live readers. A reconcile removal that leaves
   its directory behind is logged (`source_cache_reconcile_removal_failed`) and reported as
   `unremovable`.
-- `source_signature` memoises by path, size, and mtime, so an unchanged file is hashed once
-  per process; a file modified within the last two seconds is hashed every time, because a
-  filesystem stamps mtimes at its own granularity and a same-size rewrite inside that window
-  would otherwise keep a stale signature (git's racy-index rule).
+- `source_signature` is the shared content signature
+  (`_json_shred._source_proof.file_signature`, `xxh64:<digest>:<size>`), so an unchanged file
+  is hashed once per process whatever asks. Reuse follows the one freshness guarantee in the
+  [caching](../caching/low-level.md) specification: a native revision where the platform has
+  one, otherwise a stat trusted only for a file modified at least two seconds earlier,
+  because a filesystem stamps mtimes at its own granularity and a same-size rewrite inside
+  that window would otherwise keep a stale signature (git's racy-index rule).
 - `DatabaseSnapshotBuilder` validates a read query and yields Arrow record batches with one
   stable schema from an existing SQLite database.
 
 ### Atomic pointer and metadata publication
 
-`atomic_write_bytes` / `atomic_write_text` stage a uniquely named sibling file and atomically
-replace the target, so readers observe either the complete old payload or the complete new
-payload. The parent directory must already exist. A failed write or exhausted publication
+Every atomic write goes through `_file_ops.atomic_path(target)`: it yields a uniquely named
+sibling staging path (`<target stem>.<8 random hex>.tmp`, short so a stage beside a deep
+store path stays within Windows' traditional path limit), the caller writes the complete
+payload there by any means, and a clean exit renames it onto the target. `atomic_write_bytes`
+/ `atomic_write_text` and `_polars_utils.atomic_write` (every Parquet or CSV write-then-rename)
+are built on it, so concurrent writers to one target never share a stage and the target ends
+as one complete payload (the last rename wins); readers observe either the complete old payload
+or the complete new payload. The parent directory must already exist (`atomic_write` creates
+it unless its caller passes `ensure_parent=False`). Staged files are not flushed with `fsync`
+before the rename. A failed write or exhausted publication
 attempt removes the private staging file and preserves the old target. If that exact-file
 cleanup also fails, the publication error remains primary, the cleanup failure is attached as
 an exception note, and the uniquely named stage remains visible for diagnosis. Windows antivirus,
@@ -124,8 +134,11 @@ an in-place or non-atomic fallback.
    `scan_parquet` lazy scan without creating or consulting a source snapshot.
 5. Snapshot creation calls `build_input_snapshot()`, selects a provider builder, creates a
    `SourceCacheBuildContext`, and calls `SourceCacheStore.build()`.
-6. Snapshot execution calls `resolve_data_input()`, opens a lease, creates a Parquet scan,
-   and attaches lease release to execution cleanup or an explicit callable scan-plan token.
+6. Snapshot execution calls `resolve_data_input()`, which leases the current generation
+   through `lease_input_generation(store, identity, missing_message=...)`: it opens a lease,
+   creates a Parquet scan, and attaches lease release to execution cleanup or an explicit
+   callable scan-plan token. A structured API Input's tables are read through the same
+   helper (see [JSON shredding](../json-shredding/low-level.md)).
 7. `resolve_data_input_from_config()` is the generated-code sidecar entry point.
 
 ### Automatic preparation
@@ -195,6 +208,20 @@ an in-place or non-atomic fallback.
    generation published meanwhile by another process is recorded as `reused` and the
    execution proceeds; only a still-missing or still-stale generation raises the
    classified `InputPreparationError`.
+9. A structured (JSON, JSONL, NDJSON, XML) API Input in the lineage is prepared as a unit,
+   one record per emitting table (provider `api_input`, one identity per table — see
+   [JSON shredding](../json-shredding/low-level.md)). Every emitting table's status is read
+   against the source signature. A `corrupt` table raises `SourceCacheCorruptError`. A
+   missing source reuses every table when all are published (`source_unavailable`) and is
+   refused as `build_failed` otherwise. When every table is `ready` and `fresh`/`unknown`
+   they are all `reused`; otherwise one build shreds the source once and writes every
+   missing or stale table (tables already fresh are recorded `reused`, the others `built`
+   or `refreshed`). Single flight, the cap gate, the in-process/worker choice, the
+   deadline, cancellation, cap-unavailable stale reuse, failure classification and the
+   successor re-read follow steps 4–8, keyed by the node's group digest; a spawned build
+   uses `run_supervised_api_input_build`, which chooses and reconciles every table's
+   generation and staging and removes the build's scratch directory. Remediation text
+   names the API Input panel.
 
 ### Snapshot publication
 
@@ -261,7 +288,10 @@ retired directories.
 metadata names, returning a `CacheInventory` of `CacheOwnerUsage` values. A generation's
 `meta.json` records the whole identity payload, so a node output names its node and source
 and an input snapshot names its provider and descriptor: no graph is needed to say whose
-data this is, which is what lets a report name a node that no longer exists. A node output groups by node and source; an input
+data this is, which is what lets a report name a node that no longer exists. An input
+owner is labelled by its descriptor's `path` (or `table`, or `name`); an API-input table
+(provider `api_input`) is labelled by its source file and table path together, since one
+file holds several tables. A node output groups by node and source; an input
 snapshot groups by **identity**, never by its descriptor's label, because the same file read
 with different arguments is a different identity with the same path and merging them would
 report one owner's bytes for both. Each owner carries the identity digests it covers, so a
@@ -332,7 +362,8 @@ generations to their owners when readable. Inventory takes no lock and mutates n
   `.haute_cache/inputs/.node-slots/<slot digest>.json` (identities and the pinned
   identity), rewritten atomically under the lease lock. Locks live in
   `.haute_cache/inputs/.locks/` (`publication-<identity digest>.lock`,
-  `leases.lock`) and process tokens in `.haute_cache/inputs/.processes/<token>.lock`.
+  `leases.lock`, each a `_file_lock.FileLock`) and process tokens in
+  `.haute_cache/inputs/.processes/<token>.lock`.
   Lease markers are `.lease-<12-hex token>` files directly in the generation
   directory, and last use is the `meta.json` modification time; both keep the
   deepest path inside the traditional Windows limit beneath long temporary roots.

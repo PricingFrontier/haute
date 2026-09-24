@@ -9,14 +9,16 @@ Cache identities are explicit, versioned contracts rather than ad-hoc object has
 ## Scope
 
 In scope are canonical JSON and checked cache-input contracts, graph and lineage keys,
-bounded in-process LRU/stat-gated caches, the shared node-output snapshot layer and its seed plans,
-JSON-to-Parquet cache routes, and data points: the mapping from a consumer node to the
-data it reads and leased reads of that data.
+bounded in-process LRU and freshness-gated caches and the one source-freshness proof they
+share, the shared node-output snapshot layer and its seed plans,
+the explicit input-snapshot routes (a Data Input's snapshot, or a structured API
+Input's tables), and data points: the mapping from a consumer node to the data it reads
+and leased reads of that data.
 
 The [IO layer](../io-layer/high-level.md) primarily owns shared source-cache storage;
 caching consumes its identity/generation contract. Execution owns runtime-path
 fingerprint call sites. JSON shredding
-owns the per-port transformation and metadata format.
+owns the per-port transformation and each API-input table's identity and build.
 
 ## Behaviour
 
@@ -47,36 +49,49 @@ blank post-load code is `data_input`, an `apiInput` port is `api_input_table`, a
 other producer — including a Data Input with post-load code, whose code may sample or
 depend on time — is `node_output`. A direct-Parquet Data Input is always `current`; a
 snapshot-backed one follows its input snapshot (fresh or unknown freshness is
-`current`); an `apiInput` port is `current` when its working or committed JSON table
-cache serves the node's full schema; a node output follows its node-output slot, and a
+`current`); an `apiInput` port follows its own table's input snapshot the same way; a
+node output follows its node-output slot, and a
 fresh generation that lacks demanded columns is `partial`. A point with a running build
 that is not current is `building`. Each current point has a data version: the source
-file or snapshot generation, the serving cache metadata and port, or the node-output
-generation, together with the producer's lineage fingerprint for source kinds.
+file or snapshot generation (and port, for a table), or the node-output generation,
+together with the producer's lineage fingerprint for source kinds.
 A consumer reads a point only when it is `current` for its demand; otherwise it gets
-`cache_required` with the state. Source kinds are read by lazily executing that single
-source node with input preparation disabled and the API-input loader in cache-only mode,
-so selections and renames apply exactly as in a run and a read never builds a snapshot
-or shreds JSON. The read holds its lease for the caller's whole operation, including
+`cache_required` with the state. An API-input table is read straight from its leased
+generation; a Data Input is read by lazily executing that single source node with input
+preparation disabled, so selections and renames apply exactly as in a run. A read never
+builds a snapshot or shreds JSON. The read holds its lease for the caller's whole operation, including
 final collection, and a spawned child reads exactly the generation its parent leased.
 
 `LRUCache` bounds entries, optionally bounds bytes/TTL, and supports pins. Rejecting an
-oversized value leaves an existing same-key entry intact. `StatGatedCache` is bounded by an
-entry count, uses `(mtime_ns, size)` gates, provides per-key single flight, and evicts least
-recently used entries.
+oversized value leaves an existing same-key entry intact. `StatGatedCache` is built on
+`LRUCache`: it is bounded by an entry count, gates each entry on its file's freshness token,
+provides per-key single flight, and evicts least recently used entries.
 
-Structured API-input cache build (implemented by the `json_cache` route module) accepts
-JSON, JSONL, NDJSON, and XML sources. It selects and validates schema before checking data-file existence, so an
-absent schema returns structured 422 before a missing-file 404. Builds expose progress,
-status, infer, build, and delete (removing the `working/` layer only while leaving
-`committed/` intact); no cancel endpoint is exposed; the build is cancelled
-cooperatively by request cancellation through the isolated-worker cancellation gate,
-which stops the worker and discards staging.
+**Source freshness is one proof.** Whether a local file changed is answered in one place,
+`src/haute/_json_shred/_source_proof.py`, for every consumer: Data Input and API Input
+snapshot freshness, preview/trace runtime-input identity, preamble utility hashes, JSON
+schema inference, and every `StatGatedCache`. The guarantee: a proof or loaded value is
+reused only while the file's freshness token is unchanged. The token is the file's native
+revision (Windows volume, file id and USN; POSIX device, inode and ctime, with size and
+mtime), which every write moves, including a same-size rewrite that restores the mtime.
+Where the platform has no native revision the token is the file's stat, trusted only for a
+file last modified at least two seconds before it was observed; a younger file is proved again
+on every use. A file's content signature (`xxh64:<digest>:<size>`) is hashed once per
+unchanged token and shared by every consumer in the process, so one edit costs one hash. The
+proof lives in process memory: a fresh process proves each file once.
+
+A structured (JSON, JSONL, NDJSON, XML) API Input's emitting tables are input
+snapshots in the same store as Data Input snapshots, one per table: automatic
+preparation builds missing or stale tables before an admitted execution, and the
+input-cache routes report, build and clear a node's tables together (a build is a
+cancellable job in a hard-capped worker). Schema inference is its own route
+(`json_cache`), which validates the path before reading and answers a structured 422
+for an unexpressible source.
 
 Source snapshot identities use the same canonical checked-input discipline. Their storage,
 lease, and publication behaviour is specified by the IO layer. A published
 current generation is durable until the user refreshes or clears that Data
-Input, or until an execution's automatic preparation refreshes a stale one
+Input (or API Input), or until an execution's automatic preparation refreshes a stale one
 (warned and recorded, never silently); an absent source never retires it, and a host that
 cannot install the cap reuses a ready-but-stale generation with warning code
 `cap_unavailable_stale_reused` — only a missing generation is refused typed
@@ -87,14 +102,12 @@ cross-process leases. Input snapshots and node outputs have no byte/count storag
 or automatic eviction. Users inspect and clear stored datasets through the cache inventory.
 
 Studio also prepares structured Quote Inputs (JSON/JSONL/NDJSON/XML) before
-preview. It checks the existing working/committed cache against the current
-in-memory schema, builds a missing or invalid full cache through the existing
-JSON-cache build endpoint, and awaits publication before execution. The preview
-panel shows cache preparation and elapsed build time. Build or status failures
-stop preview with an actionable error; cancellation prevents stale progress or
-late execution. A valid cache is reused without rebuilding. Progress reporting
-is presentational only: a failed progress poll stops further progress updates
-without failing the preparation — the build outcome alone decides it.
+preview. It checks the node's tables against the current in-memory schema through
+the input-cache status route, builds missing or stale tables through the
+input-cache build job, and awaits it before execution. The preview panel shows the
+preparation. Build or status failures stop preview with an actionable error;
+cancellation cancels the job and prevents late execution. Ready, fresh tables are
+reused without rebuilding.
 
 Before Studio sends a preview, it asks the backend which inputs the preview
 reads — none above a shared snapshot it seeds from, none outside its lineage — and
@@ -135,8 +148,9 @@ generation never serves a previous generation's results.
 
 Exact input contracts make omissions reviewable and fail loudly on drift. Versioned keys
 allow intentional invalidation. LRU and byte bounds prevent process caches becoming
-unbounded. Stat gates avoid hashing/loading unchanged artifacts while accepting the
-documented limitation that same-size, same-mtime rewrites are below the gate.
+unbounded. One freshness proof, rather than one per source kind, means one guarantee to
+reason about: native revisions see rewrites a size/mtime gate cannot, and the settle rule
+keeps the stat fallback honest on filesystems without them.
 
 ## Interactions
 
@@ -144,10 +158,9 @@ documented limitation that same-size, same-mtime rewrites are below the gate.
   lineage requests.
 - [IO layer](../io-layer/high-level.md) consumes canonical identity helpers and owns
   `_source_cache.py`.
-- Deploy scoring and modelling feature contracts instantiate `StatGatedCache`; `src/haute/_cache.py`
-  instantiates the utility-file hash cache.
-- Execution currently has a separate `StatGatedCache` instance for runtime-path
-  fingerprints; the shared class supplies its bound and single-flight behaviour.
+- Deploy scoring and modelling feature contracts instantiate `StatGatedCache`; utility-file
+  hashes (`src/haute/_cache.py`), runtime-path fingerprints (`src/haute/execution.py`), and
+  snapshot source signatures read the shared content signature.
 - [JSON shredding](../json-shredding/high-level.md) owns cache content generation.
 
 ## Failure model

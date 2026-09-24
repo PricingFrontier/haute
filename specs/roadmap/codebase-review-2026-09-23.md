@@ -343,8 +343,8 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §1.7 Swallowed exceptions | `MLF-R01` ([MLflow model registry](mlflow-model-registry.md)), `MOD-T09` ([modelling](modelling.md)), `OPT-P17` ([optimiser](optimiser.md)) |
 | §1.8 Unbounded poll loop | `FSH-R01` ([frontend shared](frontend-shared.md)) |
 | §1.8 Three non-finite float encodings | `JSON-R01` ([JSON shredding](json-shredding.md)) |
-| §1.8 Permissive dtype names; dtype mapping ×7 | `IO-R01` ([IO layer](io-layer.md)) |
-| §1.8 Fixed-name atomic write; lock wrappers | `IO-R02` ([IO layer](io-layer.md)) |
+| §1.8 Permissive dtype names; dtype mapping ×7 | `IO-R01` (IO layer, delivered; its roadmap file is retired) |
+| §1.8 Fixed-name atomic write; lock wrappers | `IO-R02` (IO layer, delivered; its roadmap file is retired) |
 | §1.8 Path containment ×5 | `SBX-R01` ([sandbox security](sandbox-security.md)) |
 | §1.8 Client picks the build profile from error text | `CACHE-S27` ([caching](caching.md)) |
 | §2.1 Dead dataframe execution cache | `CACHE-S23` ([caching](caching.md)) |

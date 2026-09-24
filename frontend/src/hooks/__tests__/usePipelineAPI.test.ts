@@ -36,9 +36,6 @@ vi.mock("../../api/client", () => ({
   buildInputCache: vi.fn(),
   getInputCacheJob: vi.fn(),
   getInputCacheStatus: vi.fn(),
-  buildJsonCache: vi.fn(),
-  getJsonCacheStatusForSchema: vi.fn(),
-  getJsonCacheProgress: vi.fn(),
   ApiError: class ApiError extends Error {
     status: number
     detail?: string
@@ -91,8 +88,6 @@ import {
   buildInputCache,
   getInputCacheJob,
   getInputCacheStatus,
-  buildJsonCache,
-  getJsonCacheStatusForSchema,
   loadPipeline,
   previewInputs,
   previewNode,
@@ -311,8 +306,6 @@ describe("usePipelineAPI", () => {
     mockBuildInputCache.mockReset()
     mockGetInputCacheJob.mockReset()
     mockGetInputCacheStatus.mockReset()
-    vi.mocked(buildJsonCache).mockReset()
-    vi.mocked(getJsonCacheStatusForSchema).mockReset()
     vi.mocked(previewInputs).mockReset().mockResolvedValue({ input_node_ids: [] })
     mockResolveGraphFromRefs.mockReset()
     mockResolveGraphFromRefs.mockImplementation((graphRef, parentGraphRef, submodelsRef, preambleRef) => {
@@ -1623,16 +1616,16 @@ describe("usePipelineAPI", () => {
   it.each(["completed", "failed", "cancelled"])(
     "waits for the Quote Input cache before preview: %s", async (outcome) => {
       mockLoad.mockResolvedValue(makeLoadedPipeline({ nodes: [], edges: [] }))
-      vi.mocked(getJsonCacheStatusForSchema).mockResolvedValue({
-        cached: false, data_path: "quotes.jsonl", row_count: 0, column_count: 0,
-        size_bytes: 0, cached_at: 0, skipped_records: 0, skipped_rows: {},
+      mockGetInputCacheStatus.mockResolvedValue(inputCacheSnapshot("missing"))
+      mockBuildInputCache.mockResolvedValue({
+        schema_version: 1,
+        job_id: "snapshot-job",
+        identity_digest: "snapshot-identity",
+        status: "running",
+        joined: false,
       })
-      let complete!: (value: Awaited<ReturnType<typeof buildJsonCache>>) => void
-      let fail!: (reason: Error) => void
-      vi.mocked(buildJsonCache).mockImplementation(() => new Promise((resolve, reject) => {
-        complete = resolve
-        fail = reject
-      }))
+      let completeJob!: (value: InputCacheJobStatusResponse) => void
+      mockGetInputCacheJob.mockImplementation(() => new Promise((resolve) => { completeJob = resolve }))
       const input = makeNode("quote", NODE_TYPES.API_INPUT, {
         data: { nodeType: NODE_TYPES.API_INPUT, label: "quote", config: { path: "quotes.jsonl", tables: [] } },
       })
@@ -1647,19 +1640,15 @@ describe("usePipelineAPI", () => {
       await waitFor(() => expect(result.current.loading).toBe(false), { timeout: CACHE_WAIT_TIMEOUT_MS })
       act(() => { result.current.fetchPreview(target, { debounceMs: 0 }) })
       await waitFor(
-        () => expect(buildJsonCache).toHaveBeenCalledOnce(),
+        () => expect(mockBuildInputCache).toHaveBeenCalledOnce(),
         { timeout: CACHE_WAIT_TIMEOUT_MS },
       )
       expect(mockPreview).not.toHaveBeenCalled()
       expect(result.current.previewData?.loading_message).toContain("Caching Quote Input")
       if (outcome === "cancelled") act(() => result.current.cancelPreview())
       act(() => {
-        if (outcome === "failed") fail(new Error("Cache disk quota exceeded"))
-        else complete({
-          path: "cache", data_path: "quotes.jsonl", row_count: 10, column_count: 1,
-          columns: {}, size_bytes: 100, cached_at: 1, cache_seconds: 2,
-          skipped_records: 0, skipped_rows: {},
-        })
+        if (outcome === "failed") completeJob(inputCacheJob("error", "Cache disk quota exceeded"))
+        else completeJob(inputCacheJob("completed"))
       })
       await waitFor(
         () => expect(result.current.previewBusy).toBe(false),
@@ -1694,8 +1683,8 @@ describe("usePipelineAPI", () => {
 
     await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
     expect(mockPreview).toHaveBeenCalledOnce()
-    expect(getJsonCacheStatusForSchema).not.toHaveBeenCalled()
-    expect(buildJsonCache).not.toHaveBeenCalled()
+    expect(mockGetInputCacheStatus).not.toHaveBeenCalled()
+    expect(mockBuildInputCache).not.toHaveBeenCalled()
   })
 
   it("builds a missing input snapshot before sending the preview", async () => {

@@ -146,9 +146,9 @@ def test_performance_workflow_certifies_scales_and_execution_platforms() -> None
         "tests/test_interactive_worker_pool.py",
         "tests/test_interactive_route_isolation.py",
         "tests/test_json_direct_spill.py",
-        "tests/test_json_cache_cross_process.py",
+        "tests/test_api_input_table_snapshots.py",
         "tests/test_json_runtime_storage.py",
-        "test_fresh_process_restart_reuses_cache_proof_and_safe_telemetry",
+        "test_fresh_process_restart_reads_published_tables_and_safe_telemetry",
     ):
         assert test_path in workflow
 

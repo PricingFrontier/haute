@@ -4,7 +4,6 @@ import {
   cancelNodeData,
   clearNodeData,
   clearInputCache,
-  deleteJsonCache,
   getNodeDataPoint,
   runNodeData,
 } from "../api/client"
@@ -266,8 +265,10 @@ export default function useNodeDataCache({
       const producer = producerNode(allNodes, target)
       const config = (producer?.data.config ?? null) as Record<string, unknown> | null
       if (!config) return
-      if (target.kind === "api_input_table" && typeof config.path === "string") {
-        await deleteJsonCache(config.path)
+      if (target.kind === "api_input_table") {
+        // A table is built with its siblings from one shred of the source, and
+        // cleared with them.
+        await clearInputCache({ schema_version: 1, node_type: "apiInput", config })
         return
       }
       await clearInputCache({ schema_version: 1, config })

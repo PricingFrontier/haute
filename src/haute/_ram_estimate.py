@@ -50,7 +50,6 @@ from haute._graph_utils import (
 )
 from haute._host_memory import available_ram_bytes, require_positive_available_ram
 from haute._logging import get_logger
-from haute._lru_cache import LRUCache
 from haute._polars_operations import materialisation_factor_basis_points
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import read_parquet_metadata
@@ -534,33 +533,6 @@ def _detailed_parquet_metadata(path: str | Sequence[Path]) -> _DetailedSourceMet
     )
 
 
-# Parquet metadata of verified JSON-cache artifacts, keyed by content signature.
-_VERIFIED_PORT_METADATA: LRUCache[tuple[int, str], _DetailedSourceMetadata] = LRUCache(max_size=64)
-
-
-def _verified_port_metadata(
-    artifact: Path,
-    signature: tuple[int, str],
-) -> _DetailedSourceMetadata:
-    """Return footer metadata for a parquet artifact whose bytes match *signature*.
-
-    The caller has verified the artifact against its recorded size and SHA-256,
-    so the metadata is a pure function of that signature.
-    """
-    metadata = _VERIFIED_PORT_METADATA.get(signature)
-    if metadata is None:
-        read = _detailed_parquet_metadata(str(artifact))
-        metadata = read._replace(
-            columns=MappingProxyType(dict(read.columns)),
-            column_width_keys=MappingProxyType(dict(read.column_width_keys)),
-            column_uncompressed_size_bytes=MappingProxyType(
-                dict(read.column_uncompressed_size_bytes)
-            ),
-        )
-        _VERIFIED_PORT_METADATA.put(signature, metadata)
-    return metadata
-
-
 def _detailed_dataframe_metadata(
     frame: pl.DataFrame,
     node_id: str,
@@ -666,101 +638,39 @@ def _data_input_parquet_artifact(
 
 
 def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSourceMetadata | None:
-    """Return cached parquet metadata for one emitted table of a JSON API input.
+    """Return the published snapshot metadata of one emitted table of a JSON API input.
 
-    A v2 JSON API-input cache is one parquet per emit-true table, so the node
-    as a whole has no single (row_count, column_count) summary — but each table
-    does, and an edge names the exact table it carries. Resolving per port is
-    what lets a downstream boundary be estimated at all; without it every
-    group-by under an API input was refused for want of an estimate.
+    Each emitting table of a structured API input is its own input snapshot,
+    so the node as a whole has no single (row_count, column_count) summary —
+    but each table does, and an edge names the exact table it carries.
+    Resolving per port is what lets a downstream boundary be estimated at all.
 
-    Layer preference and cache validity are delegated to the same reader the
-    engine uses, so a stale cache is rejected here exactly as it is at
-    execution rather than silently sizing a boundary from the wrong data.
+    Automatic preparation publishes the tables before strategy planning, so
+    this reads the generation the execution will read; a table with no
+    generation leaves the estimate unavailable.
     """
+    from haute._builders import _config_with_resolved_data_path
+    from haute._json_shred._snapshots import api_input_snapshot_source
+    from haute._sandbox import _get_project_root
+    from haute._source_cache import SourceCacheStore
 
-    from haute._api_input_schema import sanitise_label_for_filesystem as _sanitise_label
-    from haute._json_flatten import _json_cache_dir
-    from haute._json_shred._cache import (
-        _cache_manifest_structure_failure,
-        _read_matching_cache_meta_unlocked,
-        _read_per_port_cache_meta_unlocked,
-    )
-    from haute._json_shred._publication import _build_lock_for
-    from haute._json_shred._runtime_storage import (
-        _release_runtime_snapshot,
-        _snapshot_cache_artifact_locked,
-    )
-    from haute._json_shred._shred import (
-        _declared_frame_schema,
-        _emitting_table_specs,
-        _v2_fingerprint,
-    )
-    from haute._json_shred._source_proof import _content_signature_parts, _data_file_signature
-
-    config = dict(node.data.config)
+    config = _config_with_resolved_data_path(node.data.config)
     raw_path = config.get("path", "")
     if not isinstance(raw_path, str) or not raw_path:
         return None
-    data_path = Path(raw_path)
     try:
-        if not data_path.exists():
+        source = api_input_snapshot_source(config, raw_path)
+        try:
+            identity = source.table(port).identity
+        except KeyError:
             return None
-        complete_specs = _emitting_table_specs(config)
-        specs_by_label = {spec.label: spec for spec in complete_specs}
-        port_spec = specs_by_label.get(port)
-        if port_spec is None:
-            return None
-        expected_labels = tuple(spec.label for spec in complete_specs)
-        expected_fingerprint = _v2_fingerprint(config)
-        signature: Mapping[str, Any] | None = None
-        for layer in ("working", "committed"):
-            cache_dir = _json_cache_dir(data_path, layer)
-            with _build_lock_for(cache_dir):
-                candidate_meta = _read_per_port_cache_meta_unlocked(cache_dir)
-                if (
-                    candidate_meta is None
-                    or candidate_meta.get("schema_mode") != "v2"
-                    or candidate_meta.get("schema_fingerprint") != expected_fingerprint
-                ):
-                    continue
-                if signature is None:
-                    signature = _data_file_signature(data_path)
-                meta = _read_matching_cache_meta_unlocked(
-                    cache_dir,
-                    config,
-                    data_path=data_path,
-                    data_file_signature=signature,
-                )
-                if meta is None or _cache_manifest_structure_failure(
-                    meta,
-                    expected_labels=expected_labels,
-                ):
-                    continue
-                entries = {entry["label"]: entry for entry in meta["tables"]}
-                parquet_path = cache_dir / f"{_sanitise_label(port)}.parquet"
-                snapshot_path = _snapshot_cache_artifact_locked(
-                    cache_dir,
-                    parquet_path,
-                    entries[port]["content_signature"],
-                )
-                if snapshot_path is None:
-                    continue
-                try:
-                    actual_schema = pl.scan_parquet(snapshot_path).collect_schema()
-                    expected_schema = _declared_frame_schema(port_spec)
-                    if dict(actual_schema.items()) != dict(expected_schema.items()):
-                        continue
-                    verified_signature = _content_signature_parts(
-                        entries[port]["content_signature"]
-                    )
-                    assert verified_signature is not None
-                    return _source_scoped_metadata(
-                        _verified_port_metadata(snapshot_path, verified_signature),
-                        node.id,
-                    )
-                finally:
-                    _release_runtime_snapshot(snapshot_path)
+        generation = SourceCacheStore(_get_project_root()).open_generation(identity)
+        return _source_scoped_metadata(
+            _detailed_parquet_metadata(generation.data_paths),
+            node.id,
+        )
+    except FileNotFoundError:
+        return None
     except (
         ApiInputSchemaError,
         OSError,
