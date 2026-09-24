@@ -346,7 +346,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §1.8 Permissive dtype names; dtype mapping ×7 | `IO-R01` (IO layer, delivered; its roadmap file is retired) |
 | §1.8 Fixed-name atomic write; lock wrappers | `IO-R02` (IO layer, delivered; its roadmap file is retired) |
 | §1.8 Path containment ×5 | `SBX-R01` ([sandbox security](sandbox-security.md)) |
-| §1.8 Client picks the build profile from error text | `CACHE-S27` ([caching](caching.md)) |
+| §1.8 Client picks the build profile from error text | `CACHE-S27` (caching, delivered) |
 | §2.1 Dead dataframe execution cache | `CACHE-S23` ([caching](caching.md)) |
 | §2.2 Chunked runner and streaming auto-range | `OPT-P15` (optimiser, delivered) kept the chunked auto-range path, so the runner's retirement (`EXEC-R03`) was dropped and the runner became a walker policy in `EXEC-R05` (execution engine, delivered) |
 | §2.3 Unreferenced and test-only code | `ENGQ-R01` ([engineering quality](engineering-quality.md)); the preview-reader protocol is `TRACE-R02` ([tracing](tracing.md)) |
@@ -363,8 +363,8 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §3.1 Git outside the chokepoint | `DEP-R04` ([deploy](deploy.md)) |
 | §3.2 Polling | `FSH-R01` ([frontend shared](frontend-shared.md)) |
 | §3.2 Error, format, debounce, modal and table helpers | `FSH-R02` ([frontend shared](frontend-shared.md)) |
-| §3.2 Editor clones and the read-only dispatcher | `FNE-R01` ([frontend node editors](frontend-node-editors.md)) |
-| §3.2 Modelling tab and chart clones | `FMO-R01` ([frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md)) |
+| §3.2 Editor clones and the read-only dispatcher | `FNE-R01` (frontend node editors, delivered; its roadmap file is retired) |
+| §3.2 Modelling tab and chart clones | `FMO-R01` (frontend modelling and optimiser UI, delivered; its roadmap file is retired) |
 | §3.2 Results store | `FSH-R03` ([frontend shared](frontend-shared.md)) |
 | §3.3 Invariants validated three times | `MOD-T10` ([modelling](modelling.md)) |
 | §3.3 Editor state inside node config | `PCFG-R08` ([pipeline config](pipeline-config.md)) |
@@ -382,7 +382,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §4.10 `ExecutionContext` size | `EXEC-R07` (execution engine, delivered; its roadmap file is retired) |
 | §4.10 Cache identity framework | `CACHE-S25` ([caching](caching.md)) |
 | §4.10 Scaffolding for unimplemented targets | `DEP-R03` ([deploy](deploy.md)) |
-| §4.10 No automatic retention | `CACHE-S26` ([caching](caching.md)) |
+| §4.10 No automatic retention | `CACHE-S26` (caching, delivered) |
 | §4.10 Process-global library state | `EXEC-R01` (execution engine, delivered; its roadmap file is retired), `MLF-R02` ([MLflow model registry](mlflow-model-registry.md)) |
 | §5.1 Generated browser contract | `API-R03` ([server API](server-api.md)) |
 | §5.2 Exception handlers | `API-R01` ([server API](server-api.md)) |

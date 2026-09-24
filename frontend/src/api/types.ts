@@ -573,6 +573,14 @@ export interface CacheClearResponse {
   freed_bytes: number
 }
 
+/** The snapshot store's size; only automatic captures count toward the budget. */
+export interface CacheUsageResponse {
+  schema_version: 1
+  total_bytes: number
+  automatic_bytes: number
+  automatic_budget_bytes: number
+}
+
 export interface CacheNodesResponse {
   schema_version: 1
   source: string
@@ -595,9 +603,9 @@ export interface InputCacheSourceRequest {
   config: Record<string, unknown>
 }
 
+/** Start or join a snapshot build; the server chooses how it is built. */
 export interface InputCacheBuildRequest extends InputCacheSourceRequest {
   refresh: boolean
-  profile: "preview_eager" | "lazy_sink"
 }
 
 export interface InputCacheBuildResponse {
@@ -606,6 +614,8 @@ export interface InputCacheBuildResponse {
   identity_digest: string
   status: "running"
   joined: boolean
+  /** How the server builds it: a bounded lazy sink, or an eager read in a capped worker. */
+  build_class: "bounded" | "admitted_eager"
 }
 
 export interface InputCacheProgress {

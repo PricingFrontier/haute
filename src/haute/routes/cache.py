@@ -1,4 +1,4 @@
-"""Inventory and explicit clearing for the shared snapshot store.
+"""Inventory, size and explicit clearing for the shared snapshot store.
 
 Listing walks every identity, generation and staging entry, so it is requested
 explicitly rather than polled. The report takes no lock and changes no data;
@@ -27,6 +27,7 @@ from haute.schemas import (
     CacheNodesRequest,
     CacheNodesResponse,
     CacheOwnerEntry,
+    CacheUsageResponse,
     NodeDataPointResponse,
 )
 
@@ -223,6 +224,21 @@ def cache_nodes(body: CacheNodesRequest) -> CacheNodesResponse:
         unattributed_generations=inventory.unattributed_generations,
         unattributed_bytes=inventory.unattributed_bytes,
         unmarked_identities=inventory.unmarked_identities,
+    )
+
+
+@router.get("/usage", response_model=CacheUsageResponse)
+def cache_usage() -> CacheUsageResponse:
+    """The store's size, for the preview status bar.
+
+    One pass over the store with one small metadata read per generation and no
+    point resolution, so the status bar can ask each time a preview settles.
+    """
+    usage = NodeSnapshotStore(node_data_project_root()).usage()
+    return CacheUsageResponse(
+        total_bytes=usage.total_bytes,
+        automatic_bytes=usage.automatic_bytes,
+        automatic_budget_bytes=usage.automatic_budget_bytes,
     )
 
 

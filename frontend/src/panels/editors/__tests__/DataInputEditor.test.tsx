@@ -323,7 +323,7 @@ beforeEach(() => {
     job_id: "job-1",
     identity_digest: "identity",
     status: "running",
-    joined: false,
+    joined: false, build_class: "bounded",
   })
   vi.mocked(getInputCacheJob).mockResolvedValue({
     schema_version: 1,
@@ -655,7 +655,7 @@ describe("DataInputEditor", () => {
     expect(screen.getByRole("button", { name: "Cache as Parquet" })).toBeInTheDocument()
   })
 
-  it("uses the admitted-eager profile for eager-only snapshot builds", async () => {
+  it("leaves an eager-only format's build profile to the server", async () => {
     renderEditor({
       inputType: "file",
       format: "json",
@@ -677,7 +677,6 @@ describe("DataInputEditor", () => {
           format: "json",
         }),
         refresh: false,
-        profile: "preview_eager",
       }),
     )
   })

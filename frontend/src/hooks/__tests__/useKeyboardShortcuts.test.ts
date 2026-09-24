@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
+import { createElement } from "react"
+import { renderHook, render, screen, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import useKeyboardShortcuts from "../useKeyboardShortcuts"
+import ModalShell from "../../components/ModalShell"
 import useUIStore from "../../stores/useUIStore"
 import useToastStore from "../../stores/useToastStore"
 import { makeNode } from "../../test-utils/factories"
@@ -647,6 +649,43 @@ describe("useKeyboardShortcuts", () => {
 
     expect(useUIStore.getState().nodeSearchOpen).toBe(false)
     input.remove()
+  })
+
+  it.each([
+    ["Ctrl+K", { ctrlKey: true }],
+    ["Cmd+K", { metaKey: true }],
+  ])("closes the open node-search palette with %s from inside its modal dialog", (_name, modifier) => {
+    useUIStore.setState({ nodeSearchOpen: true })
+    render(
+      createElement(ModalShell, {
+        ariaLabel: "Search pipeline nodes",
+        onClose: () => {},
+        placement: "top",
+        children: createElement("input", { "aria-label": "Search nodes" }),
+      }),
+    )
+    const event = new KeyboardEvent("keydown", { key: "k", bubbles: true, cancelable: true, ...modifier })
+
+    screen.getByRole("textbox", { name: "Search nodes" }).dispatchEvent(event)
+
+    expect(useUIStore.getState().nodeSearchOpen).toBe(false)
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  it("leaves Ctrl+K to another open modal dialog", () => {
+    render(
+      createElement(ModalShell, {
+        ariaLabel: "Rename node",
+        onClose: () => {},
+        children: createElement("button", { type: "button" }, "Rename"),
+      }),
+    )
+    const event = new KeyboardEvent("keydown", { key: "k", bubbles: true, cancelable: true, ctrlKey: true })
+
+    screen.getByRole("button", { name: "Rename" }).dispatchEvent(event)
+
+    expect(useUIStore.getState().nodeSearchOpen).toBe(false)
+    expect(event.defaultPrevented).toBe(false)
   })
 
   it("ignores Ctrl+C when target is INPUT", () => {

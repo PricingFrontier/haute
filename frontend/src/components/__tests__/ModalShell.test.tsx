@@ -40,6 +40,17 @@ describe("ModalShell", () => {
     expect(panel).toBeTruthy()
   })
 
+  it("centres the panel by default and pins it near the top with placement top", () => {
+    const { unmount } = renderShell()
+    expect(screen.getByRole("dialog")).toHaveClass("items-center")
+    expect(screen.getByRole("dialog")).not.toHaveClass("items-start")
+    unmount()
+
+    renderShell({ placement: "top" })
+    expect(screen.getByRole("dialog")).toHaveClass("items-start", "pt-[3vh]")
+    expect(screen.getByRole("dialog")).not.toHaveClass("items-center")
+  })
+
   it("calls onClose when clicking the backdrop", () => {
     const { props } = renderShell()
     const backdrop = screen.getByRole("dialog")

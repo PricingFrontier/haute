@@ -9,7 +9,7 @@ import {
   MODELLING_CHART_AXIS_FONT_SIZE as axisFontSize,
   MODELLING_CHART_AXIS_TEXT_COLOR as axisTextColor,
   MODELLING_CHART_GRID_COLOR as gridColor,
-  ResponsiveChart,
+  TwoChartLayout,
 } from "./ChartScaffold"
 import { chartDomain, chartTicks, formatChartNumber } from "../../utils/chartHelpers"
 
@@ -31,34 +31,33 @@ export function ResidualsTab({ result, width, height = 280 }: ResidualsTabProps)
   if (!hasHistogram && !hasScatter)
     return <ChartEmptyState>No residuals data available</ChartEmptyState>
   return (
-    <ResponsiveChart width={width}>
-      {(containerWidth) => {
-        const twoColumns = containerWidth >= 760 && hasHistogram && hasScatter
-        const chartWidth = twoColumns ? Math.max(280, (containerWidth - 24) / 2) : containerWidth
-        return (
-          <section
-            className={twoColumns ? "grid grid-cols-2 gap-6" : "space-y-6"}
-            aria-label="Residual validation charts"
-          >
-            {hasHistogram && (
-              <ResidualsHistogram
-                data={result.residuals_histogram!}
-                stats={result.residuals_stats}
-                width={chartWidth}
-                height={height}
-              />
-            )}
-            {hasScatter && (
-              <ActualVsPredictedScatter
-                data={result.actual_vs_predicted!}
-                width={chartWidth}
-                height={height}
-              />
-            )}
-          </section>
-        )
-      }}
-    </ResponsiveChart>
+    <TwoChartLayout
+      width={width}
+      ariaLabel="Residual validation charts"
+      bothCharts={hasHistogram && hasScatter}
+      sideBySideFrom={760}
+      minChartWidth={280}
+    >
+      {({ chartWidth }) => (
+        <>
+          {hasHistogram && (
+            <ResidualsHistogram
+              data={result.residuals_histogram!}
+              stats={result.residuals_stats}
+              width={chartWidth}
+              height={height}
+            />
+          )}
+          {hasScatter && (
+            <ActualVsPredictedScatter
+              data={result.actual_vs_predicted!}
+              width={chartWidth}
+              height={height}
+            />
+          )}
+        </>
+      )}
+    </TwoChartLayout>
   )
 }
 

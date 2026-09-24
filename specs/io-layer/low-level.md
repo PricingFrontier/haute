@@ -276,13 +276,50 @@ inventory and consume physical disk space.
 
 `src/haute/_node_snapshots.py` extends the store as `NodeSnapshotStore`, a subclass
 that delegates every non-`node_output` identity to `SourceCacheStore` unchanged.
-Input snapshots and node outputs have no cache-specific byte or count budgets,
-constructor limit arguments, or limit environment variables. The budget usage report
-and its endpoint are removed. Published datasets remain until explicit clear or
-replacement; physical disk-headroom checks and execution-memory limits still apply.
-The [cache inventory endpoint](../server-api/low-level.md#cache-usage) lists the data
-for user-managed cleanup. Constructing the store can create the inputs root and sweep
-retired directories.
+Input snapshots and explicit builds have no byte or count budget and no constructor
+limit arguments; they remain until explicit clear or replacement. Automatic node-output
+captures have one budget, applied after each automatic publication:
+
+- `automatic_capture_budget(inputs_root)` reads `HAUTE_AUTOMATIC_CAPTURE_MAX_BYTES`, a
+  positive integer (anything else raises `RuntimeError`). When the variable is unset
+  it takes `min(AUTOMATIC_CAPTURE_BUDGET_CEILING_BYTES, free // 10)`, where the
+  ceiling is 20 GiB and `free` is the free disk under the inputs root at that moment.
+- `_scan_usage` walks the store once without a lock. It returns the store's total
+  bytes (every generation's part files plus in-flight staging) and the generations no
+  pin protects: every `node_output` generation except the current generation of a slot
+  whose index names a pinned identity, which is exactly what `_describe` reports as
+  `pinned`. A generation it cannot classify counts toward the total and is never
+  treated as automatic. That covers unreadable `meta.json`, metadata that does not
+  reproduce its digest, and a corrupt pointer or slot index.
+- `enforce_automatic_budget()` holds `.locks/automatic-budget.lock` from its scan to
+  its last eviction, so one pass runs at a time across processes and a second pass
+  scans after the first pass's evictions. The scan takes no other lock; the decision
+  does. Under the lease lock, which every Clear, pin and pointer commit also takes,
+  `_still_automatic_locked` drops the scanned captures that have since gone or become
+  a pinned slot's current generation. The excess is computed from what remains, and
+  the pass evicts in that same hold. It sorts the captures by last use (`meta.json`'s
+  modification time, touched on lease) and evicts the oldest first until the rest
+  fit, passing over any a process leases. A capture that left the total after the
+  scan is therefore accounted for before anything is evicted. A capture published
+  after the scan is not counted, so a race can only leave the captures over budget
+  until the next pass. Retired directories are deleted after the lease lock is
+  released. The budget lock is taken with no other store lock held. Evicting a current generation removes its pointer, then
+  retires the generation. The identity leaves its slot index only once no generation
+  remains, so a retirement an open Windows handle defers stays indexed and unpointed,
+  where the next publish, Clear or budget check finds it.
+- `publish_node_output` runs the enforcement for an automatic capture after the
+  pointer commits, while the publisher's lease still protects what it published. An
+  `OSError` or `SourceCacheError` from the enforcement is logged
+  (`node_snapshot_automatic_budget_failed`) and the capture succeeds. A misconfigured
+  budget raises and fails the capture after releasing its lease. An explicit
+  publication runs no enforcement.
+
+`usage()` reports the total, the automatic bytes and the budget for
+[`GET /api/cache/usage`](../server-api/low-level.md#cache-usage), which the preview
+status bar reads. The [cache inventory endpoint](../server-api/low-level.md#cache-usage)
+lists the data for user-managed cleanup. Physical disk-headroom checks and
+execution-memory limits still apply. Constructing the store can create the inputs root
+and sweep retired directories.
 
 `NodeSnapshotStore.inventory()` attributes every generation on disk to the owner its
 metadata names, returning a `CacheInventory` of `CacheOwnerUsage` values. A generation's
@@ -440,8 +477,10 @@ cleanup.
 
 Both publication paths atomically write a `provider` marker before staging data.
 The marker assists inventory diagnostics; it does not select a quota or eviction policy.
-There is no byte/count admission step. Current datasets for other identities remain
-untouched, including automatic node captures, and users clear them through the inventory.
+There is no byte/count admission step: no publication is refused for size. Input
+snapshots for other identities remain untouched; automatic node captures are subject
+only to the automatic-capture budget above, and users clear anything through the
+inventory.
 
 Snapshot-mode execution contacts the configured provider only through automatic
 preparation, which is the explicit build path scheduled before planning under a hard cap.
@@ -799,14 +838,19 @@ failure sections above are the maintained answers.
   replacement, never narrowing a stale generation, refresh only by explicit builds, a writer
   bound to a replaced dependency, cleared dependencies, a corrupt latest generation surfaced
   by an automatic capture and replaced by an explicit build),
-  datasets retained until explicit clear despite removed limit settings,
+  the automatic-capture budget (the least recently leased evicted first; pinned, leased
+  and input generations never; an explicit build evicting nothing; the re-checks under
+  the lease lock; a deferred eviction staying indexed until a later check retires it;
+  unclassifiable generations counted and kept; the default and configured budget; a
+  store fault never failing the capture, and a misconfigured budget failing it with its
+  lease released) and `usage()`,
   staged-artifact handover on supersession, pin inheritance and explicit pinning, no rehash
   on a second lease, named-generation leases through refresh and clear, validation only
   after the lease marker exists, malformed generation ids, the publisher's lease released
   when its handoff fails, lease markers, and recorded metadata.
-  `test_node_cache_keeps_datasets_until_explicit_clear` and the source-store counterpart
-  `test_input_cache_keeps_datasets_without_byte_or_entry_budgets` prove that obsolete
-  limit settings do not reject new datasets or evict existing ones and that clear is scoped.
+  `test_the_budget_never_evicts_a_pinned_leased_or_input_generation` and the source-store
+  `test_input_cache_keeps_datasets_without_byte_or_entry_budgets` prove that input
+  snapshots and explicit builds are never evicted or refused for size.
 - `tests/test_node_snapshot_cross_process.py` covers two worker processes publishing one
   identity once, a paused reader in another process keeping its generation through
   clear, a killed reader's dead marker allowing its generation to be cleared, a
@@ -844,8 +888,9 @@ pin remains until Clear or another publication. Process death at this boundary
 can likewise retain extra data, but cannot weaken the previous slot pin.
 
 Replacement preserves the previous dataset until commit, then retires superseded
-generations when no live reader holds them. Other slots remain untouched and there
-is no byte/count admission step.
+generations when no live reader holds them. Replacement leaves other slots untouched,
+and there is no byte/count admission step. Only the automatic-capture budget, applied
+after an automatic publication, may evict other slots' unpinned, unleased captures.
 ### Input leases shared between processes (PR #227 correction)
 
 Input snapshots use the same store-wide lease lock, process-owner token and

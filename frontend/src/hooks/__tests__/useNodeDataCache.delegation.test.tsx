@@ -428,7 +428,7 @@ describe("delegated data-point builds", () => {
       job_id: "job-1",
       identity_digest: "digest",
       status: "running",
-      joined: false,
+      joined: false, build_class: "bounded",
     })
     let releaseJob: (() => void) | null = null
     mockInputCacheJob.mockImplementation(

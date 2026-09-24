@@ -35,14 +35,22 @@ to [server API](../server-api/high-level.md).
 
 ## Behaviour
 
-**User-managed cache storage.** Input snapshots and node outputs have no
-cache-specific byte or entry-count limit. The former 20/40 GiB defaults and
-the environment settings for cache bytes and generation counts are removed.
-Publishing a dataset never evicts another current dataset to meet a budget.
-Users inspect the project cache inventory and clear entries explicitly.
-Refresh still replaces previous data, and replacement or clearing preserves
-active readers until their leases end. Actual filesystem errors, disk-headroom
-checks and execution-memory limits remain enforced.
+**Cache storage and the automatic-capture budget.** Input snapshots and explicit
+builds have no byte or entry-count limit: they stay until the user refreshes or clears
+them. Automatic node-output captures, which are the node outputs a preview captures
+and no explicit build pins, share one byte budget. It defaults to the smaller of
+20 GiB and a tenth of the store's free disk, read when the budget is applied, and
+`HAUTE_AUTOMATIC_CAPTURE_MAX_BYTES` configures it. Each automatic capture that
+publishes brings the captures back within the budget, evicting the least recently
+leased first. Eviction never takes a pinned generation (an explicit build, or a
+capture that has since replaced one in its slot), a generation any process leases, or
+an input snapshot. Evicting a current generation is clearing it, so the next reader
+computes that node again. An explicit build adds nothing the budget counts and
+triggers no eviction, and no publication is ever refused for size. The preview status
+bar shows the store's size, and the project cache inventory lists and clears entries.
+Refresh still replaces previous data, and replacement, clearing and eviction preserve
+active readers until their leases end. Actual filesystem errors, disk-headroom checks
+and execution-memory limits remain enforced.
 
 `dataInput` configurations select exactly one provider. There is no stored cache-mode
 field: `data_input_is_direct` derives the execution mode, so a file-backed Parquet scan
@@ -153,8 +161,9 @@ descendant recorded against the previous one stale.
 A node-output generation is `pinned` when its slot's pin names its identity and `automatic`
 otherwise; an explicit build pins, and a pin passes to the slot's newest publication. Its
 last-used time is its metadata file's modification time, refreshed on lease at most once a
-minute. Both explicit and automatic datasets remain until clear or replacement;
-publication does not evict another slot's dataset. Node-output publication, clear, and leases are coordinated across
+minute. Explicit datasets remain until clear or replacement; automatic captures
+also leave under the automatic-capture budget, which a publication applies to other
+slots' unpinned, unleased captures after it commits. Node-output publication, clear, and leases are coordinated across
 processes: a per-identity publication lock is held from a writer's re-check to its first
 lease, and a store-wide lease lock, always taken after it, makes lease acquisition,
 publication through the publisher's first lease, and retirement atomic. Every lease is also
