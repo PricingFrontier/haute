@@ -9,7 +9,6 @@ import shutil
 import tempfile
 import threading
 import time
-import tomllib
 import weakref
 from collections import deque
 from collections.abc import Iterator
@@ -100,50 +99,35 @@ def pipeline_dir() -> Path:
     The result is cached for the lifetime of the process (the pipeline location
     won't change during a session).
 
-    A missing ``[project].pipeline`` key is a soft configuration omission:
-    we warn and fall back to cwd so a fresh project still works.  A
-    malformed ``haute.toml`` (decode error) or an I/O error, however, is
-    propagated as a ``ConfigError`` — silently returning cwd would
-    route every subsequent save / load at the wrong directory and
-    surface as confusing "file not found" errors far from the real
-    cause.  Programming bugs inside the ``dict.get(...)`` chain
-    (``AttributeError``, ``KeyError``) are deliberately NOT caught so
-    they surface as normal tracebacks during development.
+    ``[project].pipeline`` is parsed by
+    :func:`haute._project._toml_configured_pipeline`, the reader pipeline
+    binding and the builders use (the builders apply it to the
+    execution-scoped project root, this helper to cwd). A missing ``[project].pipeline`` key is a
+    soft configuration omission: we warn and fall back to cwd so a fresh
+    project still works. A malformed or unreadable ``haute.toml``, or a
+    ``[project]`` that is not a table, raises ``ConfigError`` — silently
+    returning cwd would route every subsequent save / load at the wrong
+    directory and surface as confusing "file not found" errors far from the
+    real cause.
     """
-    toml_path = Path.cwd() / "haute.toml"
+    from haute._project import _toml_configured_pipeline
+
+    project_root = Path.cwd().resolve()
+    toml_path = project_root / "haute.toml"
     if not toml_path.exists():
         logger.error(
             "haute_toml_missing", cwd=str(Path.cwd()), hint="Run 'haute init' to create a project"
         )
-        return Path.cwd().resolve()
+        return project_root
 
-    try:
-        with open(toml_path, "rb") as f:
-            data = tomllib.load(f)
-    except tomllib.TOMLDecodeError as exc:
-        logger.error("haute_toml_decode_failed", path=str(toml_path), error=str(exc))
-        raise ConfigError(
-            "haute.toml is malformed and could not be parsed",
-            path=str(toml_path),
-            error=str(exc),
-        ) from exc
-    except OSError as exc:
-        logger.error("haute_toml_read_failed", path=str(toml_path), error=str(exc))
-        raise ConfigError(
-            "haute.toml could not be read",
-            path=str(toml_path),
-            error=str(exc),
-        ) from exc
-
-    configured: str | None = data.get("project", {}).get("pipeline")
-    if configured:
-        project_root = Path.cwd().resolve()
-        pipeline_path = (project_root / configured).resolve()
+    configured = _toml_configured_pipeline(project_root)
+    if configured is not None:
+        pipeline_path = configured.resolve()
         if not pipeline_path.is_relative_to(project_root):
             raise ConfigError(
                 "haute.toml [project].pipeline resolves outside the project root",
                 path=str(toml_path),
-                pipeline=configured,
+                pipeline=str(configured),
             )
         return pipeline_path.parent
     logger.warning(

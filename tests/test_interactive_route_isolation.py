@@ -71,6 +71,48 @@ def test_preview_and_trace_execute_through_spawn_worker(
     assert trace.json()["trace"]["target_node_id"] == "source"
 
 
+def test_rejected_node_config_is_a_422_through_the_spawn_worker(
+    monkeypatch,
+) -> None:
+    """Process mode, the production default: the worker must not flatten a
+    public config rejection into a per-node result."""
+    from haute._interactive_workers import shutdown_interactive_worker_pool
+    from haute.server import app
+
+    monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
+    monkeypatch.setenv("HAUTE_INTERACTIVE_WORKER_COUNT", "1")
+    monkeypatch.setenv("HAUTE_WORKER_MEMORY_ENFORCEMENT", "best_effort")
+    shutdown_interactive_worker_pool()
+    graph = _file_input_graph()
+    graph["nodes"].append(  # type: ignore[attr-defined]
+        {
+            "id": "expander",
+            "data": {
+                "label": "Expander",
+                "nodeType": "scenarioExpander",
+                "config": {"column_name": "price", "min_value": 0.1, "max_value": 0.3},
+            },
+        }
+    )
+    graph["edges"] = [{"id": "e_source_expander", "source": "source", "target": "expander"}]
+
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            preview = client.post(
+                "/api/pipeline/preview",
+                json={"graph": graph, "node_id": "expander", "row_limit": 2},
+            )
+    finally:
+        shutdown_interactive_worker_pool()
+
+    assert preview.status_code == 422, preview.text
+    assert preview.json()["detail"] == {
+        "error_code": "node_config_invalid",
+        "message": "Scenario expander requires stepCount (the number of grid values).",
+        "setting": "stepCount",
+    }
+
+
 def _remote_error(
     *,
     remote_module: str,
@@ -157,6 +199,35 @@ def test_remote_builtin_memory_error_maps_to_a_data_free_507_detail() -> None:
         "reason": "worker_memory_exhausted",
     }
     assert "private child detail" not in str(exc_info.value.detail)
+
+
+def test_remote_node_config_error_keeps_its_payload_and_bare_value_error_stays_500() -> None:
+    from fastapi import HTTPException
+
+    from haute.errors import NodeConfigError
+    from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+    from haute.routes.pipeline import _raise_interactive_remote_http_error
+
+    payload = NodeConfigError("stepCount is required", setting="stepCount").to_payload()
+    config_error = _remote_error(
+        remote_module=NodeConfigError.__module__,
+        remote_type=NodeConfigError.__name__,
+        public_payload=payload,
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        _raise_interactive_remote_http_error(config_error, operation="pipeline_preview")
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == payload
+
+    bare = _remote_error(
+        remote_module="builtins",
+        remote_type="ValueError",
+        public_payload=None,
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        _raise_interactive_remote_http_error(bare, operation="pipeline_preview")
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == _INTERNAL_ERROR_DETAIL
 
 
 def test_known_remote_memory_error_keeps_its_public_payload() -> None:
@@ -346,6 +417,48 @@ def test_preview_worker_returns_public_graph_contract_error_and_releases_context
 
     assert response.status == "error"
     assert response.error == "invalid config"
+    assert released == [True]
+
+
+def test_preview_worker_reraises_a_public_config_rejection_and_releases_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A public contract error that is also a ConfigError leaves the worker with
+    its payload instead of flattening into a node result."""
+    import haute.routes.pipeline as pipeline_mod
+    from haute._flatten import flatten_graph
+    from haute.errors import NodeConfigError
+    from haute.schemas import PreviewNodeRequest
+
+    released: list[bool] = []
+
+    class Context:
+        def release_admission(self, *, preserve_primary_error: bool = False) -> None:
+            released.append(preserve_primary_error)
+
+    body = PreviewNodeRequest.model_validate(
+        {"graph": _file_input_graph(), "node_id": "source", "row_limit": 2}
+    )
+    rejection = NodeConfigError("stepCount is required", setting="stepCount")
+    monkeypatch.setattr(
+        pipeline_mod,
+        "create_isolated_execution_context",
+        lambda _budget: Context(),
+    )
+    monkeypatch.setattr(
+        pipeline_mod,
+        "execute_graph",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(rejection),
+    )
+
+    with pytest.raises(NodeConfigError) as raised:
+        pipeline_mod._execute_preview_worker(
+            flatten_graph(body.graph),
+            body,
+            _isolated_budget(),
+        )
+
+    assert raised.value is rejection
     assert released == [True]
 
 

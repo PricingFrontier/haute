@@ -13,7 +13,6 @@ from the [23 September 2026 codebase review](codebase-review-2026-09-23.md).
 |---|---|---:|---|
 | DEP-R02 | Planned | P2 | The scoring image installs only what scoring needs. |
 | DEP-R03 | Decision | P3 | Scaffolding and CI templates offer only deploy targets that work end to end. |
-| DEP-R04 | Planned | P3 | Deploy reads git through the git component's one subprocess chokepoint. |
 
 ## Planned improvements
 
@@ -60,18 +59,3 @@ tests cover only offered targets.
 **Evidence:** `src/haute/deploy/__init__.py::_validate_target`;
 `src/haute/deploy/_container.py::_update_service`; `src/haute/_scaffold.py`;
 `src/haute/cli/_init_cmd.py`.
-
-### DEP-R04 — Git through the chokepoint
-**Why:** `_git_sha_short` runs `git rev-parse` through `subprocess` directly,
-although the git component's command core is meant to own every git
-subprocess.
-
-**Plan:** Call the git command core instead.
-
-**Acceptance:** No module outside the git command core starts a git
-subprocess; a repository-hygiene test enforces it.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/deploy/_container.py::_git_sha_short`;
-`src/haute/_git_core.py::_run_git`.

@@ -6,33 +6,24 @@ polars dtypes and missing metadata instead of silently coercing to string.
 
 from __future__ import annotations
 
-import re
 from typing import Literal
 
 from mlflow.models import ModelSignature
 from mlflow.types import ColSpec, DataType, Schema, TensorSpec
 
-from haute.errors import HauteValidationError
-
-_POLARS_TO_MLFLOW: dict[str, DataType] = {
-    "Int64": DataType.long,
-    "Float64": DataType.double,
-    "String": DataType.string,
-    "Boolean": DataType.boolean,
-}
-
-_CANONICAL_DATETIME = re.compile(
-    r"Datetime(?:\(time_unit='(?:ns|us|ms)', time_zone=(?:None|'[^']*')\))?\Z"
+from haute._polars_dtypes import (
+    CONTRACT_SCALAR_NAMES,
+    contract_mlflow_type_name,
+    is_contract_decimal_name,
 )
-_CANONICAL_DECIMAL = re.compile(r"Decimal(?:\(precision=(?:\d+|None), scale=(?:\d+|None)\))?\Z")
+from haute.errors import HauteValidationError
 
 
 def _map_dtype(dtype: str) -> DataType:
-    if dtype in _POLARS_TO_MLFLOW:
-        return _POLARS_TO_MLFLOW[dtype]
-    if dtype == "Date" or _CANONICAL_DATETIME.fullmatch(dtype):
-        return DataType.datetime
-    if _CANONICAL_DECIMAL.fullmatch(dtype):
+    mlflow_type = contract_mlflow_type_name(dtype)
+    if mlflow_type is not None:
+        return DataType[mlflow_type]
+    if is_contract_decimal_name(dtype):
         raise HauteValidationError(
             f"Polars dtype {dtype!r} cannot be represented exactly in an MLflow "
             "3.x signature: MLflow has no exact Decimal scalar. Cast upstream "
@@ -40,7 +31,7 @@ def _map_dtype(dtype: str) -> DataType:
             "accept precision loss."
         )
     raise HauteValidationError(
-        f"Unknown polars dtype {dtype!r}. Supported dtypes: {sorted(_POLARS_TO_MLFLOW)}"
+        f"Unknown polars dtype {dtype!r}. Supported dtypes: {list(CONTRACT_SCALAR_NAMES)}"
     )
 
 

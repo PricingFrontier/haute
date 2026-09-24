@@ -22,7 +22,6 @@ BOUNDED_WRITE_CALLERS: dict[Path, tuple[str, ...]] = {
     # where it can and falls back to bounded_sink itself (covered by the entry
     # for _chunked_writes.py above).
     Path("src/haute/routes/_training_preparation.py"): ("write_file(",),
-    Path("src/haute/_codegen_builders.py"): ("@pipeline.data_output(config=",),
 }
 
 
@@ -40,3 +39,31 @@ def test_bounded_memory_writers_use_the_canonical_bounded_abstraction(
     assert any(writer in source for writer in writers), (
         f"{relative_path.as_posix()} does not contain any accepted writer spelling: {writers}"
     )
+
+
+def test_generated_data_output_writes_only_through_its_config() -> None:
+    """A saved pipeline's Data Output is config-driven, never an inline writer.
+
+    The generated function references its sidecar and passes the frame
+    through; writing happens only through the registry's bounded writer when
+    the user asks for it. An inline ``sink_*``/``write_*`` in generated code
+    would bypass that bounded path.
+    """
+    from haute.codegen import _node_to_code
+    from tests.conftest import make_node
+
+    node = make_node(
+        {
+            "id": "out",
+            "data": {"label": "Scored Output", "nodeType": "dataOutput", "config": {}},
+        }
+    )
+
+    code = _node_to_code(node, source_names=["scored"], derive_contract=False)
+
+    assert code.startswith(
+        '@pipeline.data_output(config="config/data_output/Scored_Output.json")\n'
+    )
+    assert "    return scored\n" in code
+    assert ".sink_" not in code
+    assert ".write_" not in code

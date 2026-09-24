@@ -328,7 +328,12 @@ Expander's grid size is its required `stepCount` (a whole number of at least 1, 
 by the executor builder, the generated module's helper, the chunk planner, the RAM
 estimator and the trace enrichment through one `scenario_step_count` function with no
 absent-key default; a new node is created with an explicit 21), so `steps` on that
-type is free for its step list. The node-data invariant, the sidecar filter and the reconcile rule
+type is free for its step list. A missing or malformed `stepCount` is a config defect the
+user can fix, so `scenario_step_count` raises `NodeConfigError` (stable code
+`node_config_invalid`, safe field `setting`): a preview, trace, output write or job reports
+it as the public contract failure (HTTP 422, background `contract_error`) with the message
+naming the setting, never as an internal error. The planner and estimator, which only ask
+whether they can plan the node, still see it as a `ValueError`. The node-data invariant, the sidecar filter and the reconcile rule
 apply to every stepped type: a Data Input's `steps` persist in its required
 `config/data_input/<name>.json` sidecar beside its source settings, `code` is always
 their rendering (or empty plus `_steps_error`), and on load the parser compares the

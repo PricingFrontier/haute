@@ -285,6 +285,10 @@ PLANNED_WORK.md
 !.claude/skills/
 .claude/skills/*/state/
 
+# Installed packages and their tool caches, wherever a tool creates them
+# (Vitest run from the repository root writes node_modules/.vite/).
+node_modules/
+
 # Local agent/tooling artifacts
 .omc/
 graphify-out/

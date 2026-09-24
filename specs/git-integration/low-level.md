@@ -15,7 +15,7 @@
 | `src/haute/_git_lock.py` | Reentrant per-repository mutation-lock registry shared by the engine and clone-state helpers. Uses a bounded marker-aware identity cache, a stable project-path key across `git init`, a common-Git-directory key for linked worktrees, and weak lock values so idle repositories are evicted. It never invokes Git. |
 | `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`). Fail-soft parsing plus lock-scoped atomic replace; no git subprocess calls. |
 | `src/haute/_gitignore_guard.py` | Shared `.gitignore` deny-list owned by [sandbox-security](../sandbox-security/low-level.md) and append-only `ensure_gitignore_guards()` used both by project initialization and unborn-repository seeding; preserves tracked `*.haute.json` sidecars while excluding per-clone/cache/data/venv state. |
-| `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per Git endpoint, each a thin `try/except` around a single Git-domain call; converts the domain layer's typed exceptions to HTTP responses via `_handle_git_error`. The `/api/git/storage/*` endpoints hosted in this router are owned by [hosted-project-storage](../hosted-project-storage/low-level.md). |
+| `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per Git endpoint, each a thin call into the Git domain; a `GitError` the route does not map itself reaches the application handler, which converts it with `git_error_http_exception`. The `/api/git/storage/*` endpoints hosted in this router are owned by [hosted-project-storage](../hosted-project-storage/low-level.md). |
 
 ## Key types and data structures
 
@@ -63,7 +63,10 @@ only to re-export their stable surface. This keeps the graph acyclic and prevent
 subprocess or clone-state owner from appearing during future work.
 
 **Process boundary.** `_git_core.py` is the sole module that imports or invokes
-`subprocess`. Ordinary local commands use `_run_git`, `_run_git_ok`, or `_run_git_rc`.
+`subprocess` for Git, in the Git modules and everywhere else: a consumer outside the Git
+component, such as the container deploy target's image tag, calls the core too, and a
+repository-hygiene test rejects a Git argument list in any other subprocess-importing
+module. Ordinary local commands use `_run_git`, `_run_git_ok`, or `_run_git_rc`.
 Commands that need an explicit timeout, non-interactive remote environment, replacement
 decoding, or binary output use the overloaded `_run_git_process` adapter. The adapter
 returns an immutable typed result (`str` output by default, `bytes` when `binary=True`) and
@@ -508,17 +511,17 @@ not be converted into an empty-remote bootstrap. A later authoritative default f
 update the selected remote-tracking ref and object database before validation refuses, but
 never mutates those user-owned local surfaces.
 
-`routes/git.py`'s `_handle_git_error(e: GitError) -> NoReturn` is the sole error-to-HTTP
-mapping point, dispatched by `isinstance` in most-specific-first order:
+`routes/git.py`'s `git_error_http_exception(e: GitError) -> HTTPException` is the sole
+error-to-HTTP mapping point, applied by the application's `GitError` handler
+(`routes/_error_handlers.py`) and dispatched by `isinstance` in most-specific-first order:
 `GitGuardrailError` → 403, `GitDomainError` → 400 (verbatim message), plain `GitError` → 400
 with the sanitized `_INTERNAL_ERROR_DETAIL` constant (full detail logged server-side only).
 `GitPushRejectedError` and `GitMilestoneForkError` are caught BEFORE the generic `GitError`
 handler in the two routes that can raise them (`git_push`, `git_commit`) and mapped to 409
 with their structured payload's `model_dump()` as `HTTPException.detail`; the wire envelope
-is `{"detail": <GitPushRejection|GitMilestoneFork object>}`. Every route additionally has a catch-all
-`except Exception` that logs with `exc_info=True` and returns a plain 500 with the sanitized
-detail — this is the backstop for anything that isn't a `GitError` at all (e.g. a bug in
-this layer itself).
+is `{"detail": <GitPushRejection|GitMilestoneFork object>}`. Anything that isn't a
+`GitError` at all (e.g. a bug in this layer itself) reaches the server's unexpected-exception
+handler, which logs its traceback and returns a plain 500 with the sanitized detail.
 
 ## Testing
 
@@ -587,7 +590,7 @@ process failures, and precise ref-movement races deterministic.
   append-only missing-entry repair, and non-UTF-8 input handling.
 - **`tests/test_git_routes.py`** — the HTTP layer: every route's happy path, that all
   handlers are genuinely sync `def` (not `async def`, to avoid event-loop blocking),
-  general-exception-to-500 handling, `_handle_git_error`'s logging and status-code mapping
+  general-exception-to-500 handling, `git_error_http_exception`'s logging and status-code mapping
   for all three error families, and that ref-moving routes correctly wrap their `_git` call
   in `pause_watcher()`. The push route pins `default_branch`,
   `bootstrapped_default`, and `pushed_refs` on bootstrap and established-remote responses,

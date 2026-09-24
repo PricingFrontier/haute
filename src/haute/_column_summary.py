@@ -3,8 +3,9 @@
 Explore's frame statistics and the assistant's value profiles ask the same
 questions of a Polars column — can it be counted, can its values be encoded —
 and both learned the same answers the hard way. Keeping those answers in one
-dependency-light module (polars only, no routes or execution imports) is what
-stops a second summariser rediscovering them as production failures.
+dependency-light module (polars and the stdlib-only JSON-safe encoder, no
+routes or execution imports) is what stops a second summariser rediscovering
+them as production failures.
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ from __future__ import annotations
 import math
 
 import polars as pl
+
+from haute._json_safe import non_finite_float_sentinel
 
 # Dtypes whose values are not hashable in Polars and therefore cannot have
 # ``n_unique`` computed: it raises ``InvalidOperationError``. Pre-detected by
@@ -46,15 +49,17 @@ def json_safe_scalar(value: object) -> object:
     the column that produced it. Numbers and strings keep their JSON type so a
     numeric bound stays a number; everything else becomes its ``str()`` form,
     which is the ISO-8601 spelling for temporals and the exact digits for a
-    decimal. A non-finite float is rendered the same way, because ``NaN`` and
-    ``Infinity`` are not JSON and the alternative — dropping the bound — hides
-    that the column is entirely missing.
+    decimal. ``NaN`` and ``Infinity`` are not JSON either, and dropping the bound
+    would hide that the column holds them, so a non-finite float becomes the
+    tagged sentinel every Haute payload uses for one
+    (:func:`haute._json_safe.non_finite_float_sentinel`) — never the bare text
+    ``"inf"``, which a string column could hold too.
     """
 
     if value is None or isinstance(value, (bool, int, str)):
         return value
     if isinstance(value, float):
-        return value if math.isfinite(value) else str(value)
+        return value if math.isfinite(value) else non_finite_float_sentinel(value)
     return str(value)
 
 

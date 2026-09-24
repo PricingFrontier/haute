@@ -51,7 +51,7 @@ def test_live_switch_body_passes_declared_order_and_switch_name() -> None:
     _compile_node_code(code)
 
 
-def test_model_score_registered_source_emits_registered_model_kwargs() -> None:
+def test_model_score_registered_source_is_read_from_the_sidecar() -> None:
     node = _n(
         {
             "id": "score",
@@ -71,9 +71,7 @@ def test_model_score_registered_source_emits_registered_model_kwargs() -> None:
 
     code = _gen_model_score(node, ["features"])
 
-    assert 'source_type="registered"' in code
-    assert "registered_model='catalog.schema.pricing_model'" in code
-    assert "version='7'" in code
-    assert "run_id=" not in code
-    assert "artifact_path=" not in code
+    assert code.startswith('@pipeline.model_score(config="config/model_scoring/Score.json")\n')
+    assert "catalog.schema.pricing_model" not in code
+    assert 'score_from_config(features, config="config/model_scoring/Score.json"' in code
     _compile_node_code(code)

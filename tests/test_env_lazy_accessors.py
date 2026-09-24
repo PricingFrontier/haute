@@ -671,7 +671,7 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "os.environ.get",
     ),
     (
-        "src/haute/routes/_optimiser_service.py",
+        "src/haute/routes/_optimiser_artifacts.py",
         "<module>._artifact_stale_seconds",
         "HAUTE_ARTIFACT_STALE_SECONDS",
         "os.environ.get",

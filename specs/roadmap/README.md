@@ -19,9 +19,7 @@ or maintenance issue; `P3` opportunistic work.
 |---|---|---|
 | [Assistant](assistant.md) | One capability catalogue and example format; harnesses out of the runtime package | `ASSIST-R01` |
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup, one worker primitive | `ROAD-WORKER-05` |
-| [Build and distribution](build-and-distribution.md) | A node reference that documents the node types that exist | `BUILD-R01` |
 | [Caching](caching.md) | Automatic API-input table snapshots, planning and housekeeping cost, the shapes that cannot carry a write recipe, chunked-write bounds, cache usage, freshness and retention | `CACHE-S08` |
-| [Codegen](codegen.md) | Config-backed decorators emitted directly | `CODEGEN-R01` |
 | [Deploy](deploy.md) | A slim scoring runtime, offered targets | `DEP-R02` |
 | [Engineering quality](engineering-quality.md) | Dead code, tracked artifacts, specification drift, coverage gates, test organisation | `ENGQ-R01` |
 | [Execution engine](execution-engine.md) | Chunked runner, one execution walker, execution context | `EXEC-R05` |
@@ -30,11 +28,11 @@ or maintenance issue; `P3` opportunistic work.
 | [Frontend modelling and optimiser UI](frontend-modelling-optimiser-ui.md) | Shared result tabs, target configuration and charts; why a training estimate is unavailable | `FMO-R01` |
 | [Frontend node editors](frontend-node-editors.md) | API Input and Output shared block | `FNE-R01` |
 | [Frontend shared](frontend-shared.md) | Debounce, modal and table bases; results store | `FSH-R02` |
-| [IO layer](io-layer.md) | One dtype vocabulary, one atomic write and file lock | `IO-R01` |
-| [JSON shredding](json-shredding.md) | One non-finite float encoding, explicit output nesting | `JSON-R01` |
+| [IO layer](io-layer.md) | One atomic write and file lock | `IO-R02` |
+| [JSON shredding](json-shredding.md) | Explicit output nesting | `JSON-R02` |
 | [MLflow model registry](mlflow-model-registry.md) | Explicit MLflow clients | `MLF-R02` |
 | [Modelling](modelling.md) | RustyStats 0.9.0 upgrade, GLM terms and interactions; invariant checks | `MOD-T00` |
-| [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers, auto-range, input isolation | `OPT-P11` |
+| [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers, auto-range, input isolation | `OPT-P13` |
 | [Pipeline config](pipeline-config.md) | Repair, save validation, the error a rejected config reports, project context, typed configs, node specification | `PCFG-R01` |
 | [Sandbox security](sandbox-security.md) | One path-containment check, the node-code guard | `SBX-R01` |
 | [Server API](server-api.md) | Error translation, generated browser contract, recovery scope | `API-R01` |

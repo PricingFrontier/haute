@@ -11,6 +11,7 @@ from haute.errors import (
     GroupByExecutionUnsupportedError,
     InputPreparationError,
     LiveSwitchScenarioError,
+    NodeConfigError,
     PreambleError,
     RatingExtremaUndefinedError,
     RatingFactorDtypeContractError,
@@ -171,6 +172,14 @@ def _public_error_cases() -> list[tuple[BaseException, dict[str, object]]]:
                 "switch": "source",
                 "scenario": "stress",
                 "available_mappings": ("live", "test"),
+            },
+        ),
+        (
+            NodeConfigError("stepCount is required", setting="stepCount"),
+            {
+                "error_code": "node_config_invalid",
+                "message": "stepCount is required",
+                "setting": "stepCount",
             },
         ),
         (

@@ -14,7 +14,7 @@
 | `src/haute/deploy/_project_modules.py` | Project-module resolution for the bundle (`resolve_project_modules`): the project-local `utility` package the preamble resolves, which deploy ships, and every other project-local static import, which validation refuses. |
 | `src/haute/deploy/_validators.py` | Pre-deploy validation (`validate_deploy`): structural checks + exactly one test-quote scoring pass, returning successful per-file results to its caller; golden test-quote parsing and expected-output tolerance comparison; `score_test_quotes`. |
 | `src/haute/deploy/_utils.py` | Shared helpers: `get_user`, `get_haute_version`, `build_manifest` (the canonical deploy-manifest schema). |
-| `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature/conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check, and the MLflow destination check (`_resolve_mlflow_databricks`) that binds its logging and registry calls. |
+| `src/haute/deploy/_mlflow.py` | Databricks target: `deploy_to_mlflow`, `get_deploy_status`, MLflow signature building (each rendered dtype is mapped by `_polars_dtypes.rendered_dtype_mlflow_type_name`), conda-env building, Databricks Model Serving endpoint create/update, connectivity pre-check, and the MLflow destination check (`_resolve_mlflow_databricks`) that binds its logging and registry calls. |
 | `src/haute/deploy/_model_code.py` | MLflow models-from-code entry point: `HauteModel` (`mlflow.pyfunc.PythonModel` subclass) wrapping `score_graph`. |
 | `src/haute/deploy/_container.py` | Container build/push orchestration, build-directory preparation (`prepare_build_directory`), generated FastAPI `/health` and `/quote` runtime, stable JSON/NDJSON response handling, pinned Dockerfile generation, Docker subprocess calls, and the platform service-update stub. |
 | `scripts/container_smoke.py` | Standalone CLI script to verify the container deployment pipeline for an example (copy bundle, resolve deploy config, prepare build directory, and optionally execute a live uvicorn process smoke check). |
@@ -263,9 +263,10 @@ image-build time could load it under a different version than wrote it; a runtim
 artefacts need that is not installed raises `DeployError` naming the artefact and the
 package — with `HAUTE_EXECUTION_MEMORY_POLICY=strict_server`), record the full pinned
 `pip install` list in the manifest as `container_dependencies`, pick
-an image tag (`<registry>/<model_name>:<git_sha>` or `<model_name>:<git_sha>`, falling
-back to `"local"` if not in a git repo), `docker build`, then `docker push` only if a
-registry is configured.
+an image tag (`<registry>/<model_name>:<git_sha>` or `<model_name>:<git_sha>`; the short
+SHA is read through the git command core's `_run_git_ok`, falling back to `"local"` when
+git is not installed or the directory is not a git repository), `docker build`, then
+`docker push` only if a registry is configured.
 
 The manifest paths are resolved by the generated runtime against the image's
 `WORKDIR /app`. `_container.py`'s `artifacts/<name>` remapping and the Dockerfile's
@@ -574,11 +575,11 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 - **Deploy scoring never performs persistence writes.** `dataOutput` is a
   pass-through in the served graph, its configured writer is never invoked, and
   persistence-only branches outside the output ancestry are removed by pruning.
-- **Snapshot leases are process-local.** `ResolvedDeploy` holds the selected generation's
-  `SourceCacheStore.lease()` through shipment, which prevents same-process refresh,
-  clear, and eviction from deleting it. The source-cache layer does not yet coordinate
-  leases or retirement across OS processes, so a refresh from another process remains a
-  known limitation rather than a guarantee made by deploy.
+- **Snapshot leases hold across processes.** `ResolvedDeploy` holds the selected
+  generation's `SourceCacheStore.lease()` through shipment. The lease writes a marker
+  naming the holding process's lock-file token into the generation directory, so refresh,
+  clear and retirement in this or any other process skip that generation while its holder
+  is alive.
 
 ## Error handling
 

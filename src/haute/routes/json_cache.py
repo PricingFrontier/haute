@@ -658,9 +658,9 @@ async def build_json_cache(body: JsonCacheBuildRequest) -> Any:
             raise HTTPException(status_code=507, detail=exc.payload or exc.detail) from None
         raise AssertionError(f"unhandled JSON cache worker failure kind: {exc.kind}")
     except ExecutionAdmissionError as exc:
-        from haute.routes.pipeline import _memory_limit_http_exception
+        from haute.routes._contract_errors import memory_limit_http_exception
 
-        raise _memory_limit_http_exception(exc) from None
+        raise memory_limit_http_exception(exc) from None
     except (
         IsolatedWorkerMemoryLimitExceededError,
         IsolatedWorkerMemoryLimitUnsupportedError,
