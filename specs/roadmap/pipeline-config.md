@@ -137,6 +137,9 @@ component's rule that not being inside a project raises; the input-cache
 routes use the current directory; node data uses the sandbox root; and
 builders, hosted storage, MLflow settings and the assistant each have their
 own. `executor._pipeline_dir` and `_cache._pipeline_dir` are identical copies.
+One step is taken: `pipeline_dir` reads `[project].pipeline` through
+`_project._toml_configured_pipeline`, the reader the builders already use,
+instead of parsing `haute.toml` itself.
 
 **Plan:** Resolve one immutable project context (root, pipeline file,
 parsed `haute.toml`) once at CLI or server start through the specified
@@ -148,7 +151,13 @@ fails with the specified error; tests that change directory mid-process no
 longer change which project the server serves; the identical helper copies
 are gone.
 
-**Dependencies:** None.
+**Dependencies:** None in the roadmap, but most resolvers sit in files owned
+by the execution, caching, optimiser and assistant work (`executor`, `_cache`,
+`routes/input_cache`, `_input_preparation`, `_data_points`, `assistant`), and
+the worker entry points set the sandbox root per request. Two questions come
+first: how the in-process context reaches isolated workers, and how tests
+select a project once the current directory no longer does (hundreds of
+tests `chdir` into a temporary project today).
 
 **Evidence:** `src/haute/_project.py::get_project_root`;
 `src/haute/_sandbox.py::_get_project_root`;

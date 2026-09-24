@@ -19,7 +19,7 @@
 | `src/haute/_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
 | `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets, starter pipeline/tests/utilities, pre-commit hook. |
 | `src/haute/_project.py` | Project-root discovery (`get_project_root`, `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file`, 4-tier fallback). |
-| `haute.toml` (repo root) | Concrete instance of the schema emitted by `src/haute/_scaffold.py::haute_toml`; `[project].pipeline` is read back by `src/haute/_project.py::_toml_configured_pipeline`. |
+| `haute.toml` (repo root) | Concrete instance of the schema emitted by `src/haute/_scaffold.py::haute_toml`; `[project].pipeline` is read back by `src/haute/_project.py::_toml_configured_pipeline`, the one reader behind pipeline binding, `src/haute/_builders.py::_configured_pipeline_dir` and `src/haute/routes/_helpers.py::pipeline_dir`. |
 
 ## Key types and data structures
 
@@ -367,8 +367,10 @@ forwards projection/profile fields; external-file resolution validates
   are matched on the stem before the first dot, casefolded, with trailing dots/spaces
   stripped — and rejected on every OS, not gated behind a platform check, so a project saved
   on Linux/macOS stays loadable on a Windows checkout.
-- `_toml_configured_pipeline` raises `ConfigError` for malformed/unreadable TOML, so
-  `resolve_pipeline_file` cannot silently discard the configured tier and bind another file.
+- `_toml_configured_pipeline` raises `ConfigError` for malformed/unreadable TOML, a
+  `[project]` that is not a table, or a `pipeline` value that is not a string (an empty
+  string counts as absent), so `resolve_pipeline_file` cannot silently discard the
+  configured tier and bind another file.
 - Ambiguous auto-discovery (2+ root `.py` files matching, no `main.py`, no configured TOML
   pipeline) raises rather than picking one alphabetically — deliberate, per the module
   docstring's "never silently picks a random file" contract.

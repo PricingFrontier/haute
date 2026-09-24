@@ -1037,6 +1037,51 @@ class TestPipelineDir:
 
         pipeline_dir.cache_clear()
 
+    def test_agrees_with_the_builders_configured_pipeline_dir(self, tmp_path, monkeypatch):
+        """The routes and the engine read ``[project].pipeline`` through one reader."""
+        from haute._builders import _configured_pipeline_dir
+        from haute.routes._helpers import pipeline_dir
+
+        pipeline_dir.cache_clear()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("haute._sandbox._PROJECT_ROOT", tmp_path.resolve())
+        (tmp_path / "pipelines").mkdir()
+        (tmp_path / "pipelines" / "main.py").write_text("")
+        (tmp_path / "haute.toml").write_text('[project]\npipeline = "pipelines/main.py"\n')
+
+        configured = _configured_pipeline_dir()
+        assert configured is not None
+        assert pipeline_dir() == configured.resolve() == (tmp_path / "pipelines").resolve()
+        pipeline_dir.cache_clear()
+
+    def test_raises_config_error_when_project_is_not_a_table(self, tmp_path, monkeypatch):
+        """``project = "main.py"`` is a malformed configuration, not a crash."""
+        import pytest
+
+        from haute.errors import ConfigError
+        from haute.routes._helpers import pipeline_dir
+
+        pipeline_dir.cache_clear()
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "haute.toml").write_text('project = "main.py"\n')
+        with pytest.raises(ConfigError, match=r"\[project\] must be a table"):
+            pipeline_dir()
+        pipeline_dir.cache_clear()
+
+    def test_raises_config_error_when_pipeline_is_not_a_path(self, tmp_path, monkeypatch):
+        """``pipeline = [...]`` must not silently resolve (and cache) cwd."""
+        import pytest
+
+        from haute.errors import ConfigError
+        from haute.routes._helpers import pipeline_dir
+
+        pipeline_dir.cache_clear()
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "haute.toml").write_text('[project]\npipeline = ["rating/main.py"]\n')
+        with pytest.raises(ConfigError, match="must be a path string"):
+            pipeline_dir()
+        pipeline_dir.cache_clear()
+
     def test_raises_config_error_when_toml_is_corrupt(self, tmp_path, monkeypatch):
         """Malformed haute.toml raises ConfigError (changed in Phase 2 audit).
 

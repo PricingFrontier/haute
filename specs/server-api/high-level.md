@@ -520,11 +520,16 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   than stalling the fan-out to every other connected canvas.
 
 **Missing-key configuration policy.** `routes/_helpers.py::pipeline_dir()`
-treats a missing `[project].pipeline` key in `haute.toml` as a soft omission
-(warns and falls back to `Path.cwd()`), while malformed or unreadable
-configuration raises `ConfigError`. The asymmetry is deliberate: a missing key
-can be a fresh-project state, whereas swallowing a decode failure could
-silently misroute subsequent saves and loads.
+parses `[project].pipeline` with `_project._toml_configured_pipeline`, the
+reader pipeline binding and the executor's configured pipeline directory
+use; it applies it to the current directory, while the executor applies it
+to the execution-scoped project root (one project context is still to come).
+It treats a missing `[project].pipeline` key in `haute.toml` as a
+soft omission (warns and falls back to `Path.cwd()`), while malformed or
+unreadable configuration, a `[project]` that is not a table, or a
+`pipeline` value that is not a path string raises `ConfigError`. The asymmetry is deliberate: a missing key can be a
+fresh-project state, whereas swallowing a decode failure could silently
+misroute subsequent saves and loads.
 
 ## Pipeline recovery, preview, and live-sync contract
 
