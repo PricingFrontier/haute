@@ -151,6 +151,31 @@ def test_subprocess_imported_only_in_chokepoint_modules() -> None:
     )
 
 
+def test_only_the_git_command_core_starts_git() -> None:
+    """Every git subprocess goes through ``_git_core.py`` (DEP-R04).
+
+    Only allowlisted modules may import ``subprocess``, so a git process can be
+    launched elsewhere only by one of them building a git argument list. None
+    of the other chokepoints (docker, npm, nvidia-smi, the installer) has a
+    reason to; a consumer that needs git calls the core's helpers instead.
+    """
+    offenders: list[str] = []
+    for rel in sorted(_SUBPROCESS_IMPORT_ALLOWLIST - {"src/haute/_git_core.py"}):
+        tree = ast.parse((_REPO_ROOT / rel).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, (ast.List, ast.Tuple))
+                and node.elts
+                and isinstance(node.elts[0], ast.Constant)
+                and node.elts[0].value == "git"
+            ):
+                offenders.append(f"{rel}:{node.lineno}")
+    assert offenders == [], (
+        "A git command is built outside the git command core; call the core's "
+        f"_run_git / _run_git_ok / _run_git_rc instead. Offenders: {offenders}"
+    )
+
+
 def test_no_subprocess_backdoors_in_package() -> None:
     """``os.system`` / ``os.popen`` / ``pty`` are banned outright in src/haute/.
 

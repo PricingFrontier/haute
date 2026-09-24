@@ -263,9 +263,10 @@ image-build time could load it under a different version than wrote it; a runtim
 artefacts need that is not installed raises `DeployError` naming the artefact and the
 package — with `HAUTE_EXECUTION_MEMORY_POLICY=strict_server`), record the full pinned
 `pip install` list in the manifest as `container_dependencies`, pick
-an image tag (`<registry>/<model_name>:<git_sha>` or `<model_name>:<git_sha>`, falling
-back to `"local"` if not in a git repo), `docker build`, then `docker push` only if a
-registry is configured.
+an image tag (`<registry>/<model_name>:<git_sha>` or `<model_name>:<git_sha>`; the short
+SHA is read through the git command core's `_run_git_ok`, falling back to `"local"` when
+git is not installed or the directory is not a git repository), `docker build`, then
+`docker push` only if a registry is configured.
 
 The manifest paths are resolved by the generated runtime against the image's
 `WORKDIR /app`. `_container.py`'s `artifacts/<name>` remapping and the Dockerfile's
