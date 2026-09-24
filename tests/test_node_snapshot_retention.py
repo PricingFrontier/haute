@@ -584,7 +584,9 @@ def test_a_generation_the_budget_cannot_classify_is_counted_and_never_evicted(
     identity = slot.identity("s1")
     _published_id(store, identity, pl.DataFrame({"a": [1]}))
     size = generation_bytes(_current_dir(store, identity))
-    (store.inputs_root / ".node-slots" / f"{slot.digest}.json").write_text("{", encoding="utf-8")
+    slot_index = tmp_path / ".haute_cache" / "inputs" / ".node-slots" / f"{slot.digest}.json"
+    assert slot_index.exists()
+    slot_index.write_text("{", encoding="utf-8")
     monkeypatch.setenv(AUTOMATIC_CAPTURE_BUDGET_ENV, "1")
 
     assert store.enforce_automatic_budget() == 0
