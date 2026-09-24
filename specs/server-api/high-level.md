@@ -435,8 +435,7 @@ describes. Stale, changed or already-applied plans fail before
   [caching](../caching/high-level.md) owns the included `routes/json_cache.py` router, which
   consumes [json-shredding](../json-shredding/high-level.md)'s schema/shred modules.
 - **[caching](../caching/high-level.md)** — `routes/pipeline.py` reads `_preview_cache` and
-  `graph_fingerprint` to key supersession and to inject the preview reader `execute_trace`
-  needs.
+  `graph_fingerprint` to key supersession.
 - **[assistant](../assistant/high-level.md)** — owns `routes/assistant.py`, included into the same
   app; its `Assistant*` request/response/SSE-event models live in `schemas.py`; its mutation
   tools run `SavePipelineService` under the shared `save_lock`, mark self-writes, and publish

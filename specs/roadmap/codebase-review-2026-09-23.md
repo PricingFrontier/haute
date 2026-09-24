@@ -371,7 +371,7 @@ optimiser service) and `PCFG-R03` (save-time config validation).
 | §4.1 Static memory analysis versus hard caps | `EXEC-R04` ([execution engine](execution-engine.md)) |
 | §4.2 One execution walker | `EXEC-R05` ([execution engine](execution-engine.md)) |
 | §4.3 Optimiser pipeline in a capped worker | `OPT-P16` ([optimiser](optimiser.md)) |
-| §4.4 Hand-written Polars interpreter | `EXPR-R01` ([expression parsing](expression-parsing.md)) |
+| §4.4 Hand-written Polars interpreter | `EXPR-R01`; the [expression-parsing specification](../expression-parsing/high-level.md) records the outcome |
 | §4.5 Trace row identity | `TRACE-R01` ([tracing](tracing.md)) |
 | §4.6 Recovery and repair scope | `API-R04` ([server API](server-api.md)) |
 | §4.7 Four reuse mechanisms | `SUB-R01` ([submodels](submodels.md)) |

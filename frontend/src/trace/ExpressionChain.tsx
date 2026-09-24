@@ -2,6 +2,15 @@ import React from "react"
 import { formatSmartValue, formatResultValueFull, tabularNums } from "./traceFormatting"
 import type { ChainBoxEntry } from "./traceHelpers"
 
+function EntryNote({ note }: { note: string | null | undefined }) {
+  if (!note) return null
+  return (
+    <div data-testid="trace-entry-note" style={{ fontSize: 11, color: "var(--text-secondary)", fontStyle: "italic" }}>
+      {note}
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // ExpressionChain — the "intra-node" chain of derivations that lead up to the
 // target column inside a single step. The data comes from
@@ -22,6 +31,7 @@ export function ExpressionChainRowContentView({
   substitutedText,
   value,
   source,
+  note,
 }: ChainBoxEntry) {
   const fVal = formatSmartValue(value)
   if (formulaText) {
@@ -42,6 +52,7 @@ export function ExpressionChainRowContentView({
           </span>
           {substitutedText ? <span> = {substitutedText}</span> : null}
         </div>
+        <EntryNote note={note} />
       </>
     )
   }
@@ -59,6 +70,7 @@ export function ExpressionChainRowContentView({
       {source && (
         <span style={{ fontSize: 11, color: "var(--text-secondary)" }}> ({source})</span>
       )}
+      <EntryNote note={note} />
     </div>
   )
 }

@@ -41,6 +41,7 @@ from haute._output_assembler import (
     validate_v2_output_mapping,
 )
 from haute.errors import HauteError
+from tests._execution_faults import FaultInjectingExecutionContext
 
 
 def _fs(spec: dict[str, str]) -> dict[str, frozenset[str]]:
@@ -919,7 +920,7 @@ def test_same_level_join_output_follows_the_first_source_then_unmatched_later_ro
 def test_output_materialisation_uses_active_execution_context() -> None:
     """Terminal assembly remains observable and cancellable after Polars collection."""
     fault_points: list[str] = []
-    context = ExecutionContext(
+    context = FaultInjectingExecutionContext(
         operation="test_output_assembly",
         profile=ExecutionProfile.PREVIEW_EAGER,
         memory_sampler=lambda: 1,
@@ -941,7 +942,7 @@ def test_output_materialisation_uses_active_execution_context() -> None:
 
 def test_output_rendering_checkpoints_python_materialisation() -> None:
     fault_points: list[str] = []
-    context = ExecutionContext(
+    context = FaultInjectingExecutionContext(
         operation="test_output_render",
         profile=ExecutionProfile.DEPLOY_BATCH,
         memory_sampler=lambda: 1,

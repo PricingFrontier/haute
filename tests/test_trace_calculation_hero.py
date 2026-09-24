@@ -929,10 +929,188 @@ class TestMethodChains:
 
         assert step.expression is not None
         assert step.calculation is not None
-        # The calculator cannot evaluate .dt.year() on a substituted string,
-        # so result_value may be None; verify output_values instead.
-        assert step.calculation["result_value"] is None or step.calculation["result_value"] == 2025
+        # The typed Date row reaches Polars, so the year is computed, not skipped.
+        assert step.calculation["result_value"] == 2025
+        assert step.calculation["not_computable_reason"] is None
         assert step.output_values["yr"] == 2025
+
+    def test_typed_rows_feed_a_chain_forward(self, tmp_path):
+        """A Date input evaluates through a two-call chain on its real dtype."""
+        from datetime import date
+
+        p = tmp_path / "data.parquet"
+        pl.DataFrame({"d": [date(2025, 6, 15)]}).write_parquet(p)
+
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node(
+                        "t",
+                        "df = src.with_columns(yr=pl.col('d').dt.year())"
+                        ".with_columns(next_yr=pl.col('yr') + 1)",
+                    ),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
+
+        result = execute_trace(graph, row_index=0, target_node_id="t", column="next_yr")
+        calculation = _step_by_id(result, "t").calculation
+
+        assert calculation is not None
+        assert calculation["result_value"] == 2026
+        chain = {entry["target_column"]: entry for entry in calculation["expression_chain"]}
+        assert chain["yr"]["result_value"] == 2025
+        assert chain["yr"]["not_computable_reason"] is None
+
+    @pytest.mark.parametrize(
+        ("code", "expected"),
+        [
+            pytest.param(
+                "df = src.with_columns(x=pl.col('x').cast(pl.Int8), y=pl.col('x') * 2)",
+                200,
+                id="sibling-cast",
+            ),
+            pytest.param(
+                "df = src.with_columns(x=pl.col('x') + 1, y=pl.col('x') * 2)",
+                200,
+                id="sibling-value",
+            ),
+            pytest.param(
+                "df = src.with_columns(pl.col('x').cast(pl.Int8), y=pl.col('x') * 2)",
+                200,
+                id="unaliased-sibling-cast",
+            ),
+            pytest.param(
+                "df = src.with_columns(pl.col(['x']).cast(pl.Int8), y=pl.col('x') * 2)",
+                200,
+                id="selector-list-cast",
+            ),
+            pytest.param(
+                "df = src.with_columns(pl.col('a', 'x') + 1, y=pl.col('x') * 2)",
+                200,
+                id="multi-column-write",
+            ),
+            pytest.param(
+                "df = src.with_columns(x=pl.col('x') + 1).with_columns(y=pl.col('x') * 2)",
+                202,
+                id="earlier-call",
+            ),
+            pytest.param(
+                "df = src.with_columns(pl.col(['x']).cast(pl.Int8))"
+                ".with_columns(y=pl.col('x') * 2)",
+                -56,
+                id="earlier-unnamed-cast",
+            ),
+        ],
+    )
+    def test_a_formula_reads_what_its_with_columns_call_reads(self, tmp_path, code, expected):
+        """A call's expressions all read the frame from before that call."""
+        p = tmp_path / "data.parquet"
+        pl.DataFrame({"id": [1], "a": [10], "x": pl.Series([100], dtype=pl.Int64)}).write_parquet(p)
+
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t", code)],
+                "edges": [_edge("src", "t")],
+            }
+        )
+
+        result = execute_trace(graph, row_index=0, target_node_id="t", column="y")
+        step = _step_by_id(result, "t")
+
+        assert step.output_values["y"] == expected
+        assert step.calculation is not None
+        assert step.calculation["result_value"] == expected
+
+    def test_an_unnamed_earlier_write_leaves_the_calls_reads_unproven(self, tmp_path):
+        """No input value is provably what the call reads after an unnamed earlier write."""
+        p = tmp_path / "data.parquet"
+        pl.DataFrame(
+            {"id": [1], "a": pl.Series([10], dtype=pl.Int64), "x": pl.Series([100], dtype=pl.Int64)}
+        ).write_parquet(p)
+        code = (
+            "df = src.with_columns(pl.col(['x']).cast(pl.Int8))"
+            ".with_columns(pl.col(['a']).cast(pl.Int8), y=pl.col('x') * 2)"
+        )
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(p)), _transform_node("t", code)],
+                "edges": [_edge("src", "t")],
+            }
+        )
+
+        result = execute_trace(graph, row_index=0, target_node_id="t", column="y")
+        step = _step_by_id(result, "t")
+
+        assert step.output_values["y"] == -56
+        assert step.calculation is not None
+        assert step.calculation["result_value"] is None
+        assert step.calculation["not_computable_reason"] == "column_unavailable: x"
+
+    def test_an_unnamed_write_reads_only_untouched_inputs_before_its_call(self):
+        """A write with no static name could have rewritten any column.
+
+        The diff comes from the production function, which sees ``x`` as passed
+        through: its value is unchanged even though the write cast it to Int8.
+        """
+        from haute._expression_parser import AssignmentPhases
+        from haute._trace_correlation import _compute_schema_diff
+        from haute._trace_enrichment import _row_before_call, _values_before_call
+
+        input_values = {"id": 1, "x": 100}
+        output_values = {"id": 1, "x": 100, "y": 200, "z": 5}
+        step = TraceStep(
+            node_id="t",
+            node_name="t",
+            node_type="polars",
+            schema_diff=_compute_schema_diff(input_values, output_values),
+            input_values=input_values,
+            output_values=output_values,
+            input_row=pl.DataFrame({"id": [1], "x": pl.Series([100], dtype=pl.Int64)}),
+            output_row=pl.DataFrame(
+                {"id": [1], "x": pl.Series([100], dtype=pl.Int8), "y": [200], "z": [5]}
+            ),
+        )
+        assert "x" in step.schema_diff.columns_passed
+        phases = AssignmentPhases(
+            before=frozenset({"z"}), at_or_after=frozenset({"y"}), unresolved=True
+        )
+        assert step.output_row is not None
+
+        row = _row_before_call(step.output_row, step, phases)
+        values = _values_before_call(dict(step.output_values), step, phases)
+
+        # ``z`` an earlier call wrote could be rewritten too, so it is not trusted.
+        assert row.schema == pl.Schema({"id": pl.Int64, "x": pl.Int64})
+        assert values == {"id": 1, "x": 100}
+        only_target = AssignmentPhases(before=frozenset(), at_or_after=frozenset({"y"}))
+        emptied = _row_before_call(step.output_row.select("y"), step, only_target)
+        assert (emptied.height, emptied.width) == (1, 0)
+
+    def test_a_list_result_is_serialised_as_a_list(self, tmp_path):
+        """A List cell reaches the payload as its values, not a Series' text."""
+        from haute.trace import trace_result_to_dict
+
+        p = tmp_path / "data.parquet"
+        pl.DataFrame({"s": ["a,b"]}).write_parquet(p)
+
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(p)),
+                    _transform_node("t", "df = src.with_columns(parts=pl.col('s').str.split(','))"),
+                ],
+                "edges": [_edge("src", "t")],
+            }
+        )
+
+        result = execute_trace(graph, row_index=0, target_node_id="t", column="parts")
+        payload = trace_result_to_dict(result)
+        step = next(entry for entry in payload["steps"] if entry["node_id"] == "t")
+
+        assert step["calculation"]["result_value"] == ["a", "b"]
 
     def test_chained_fill_null_then_cast(self, tmp_path):
         """.fill_null(0).cast(pl.Int32) -- verify both methods in text."""

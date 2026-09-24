@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 
+import polars as pl
+
 from haute._expression_parser import (
     evaluate_expression,
     parse_expression,
@@ -374,10 +376,11 @@ class TestEvaluateNaNComparisons:
         assert result.result_value is False or result.result_value is None
 
     def test_nan_equality(self):
+        """Polars, unlike Python/IEEE 754, treats NaN == NaN as True."""
         code = 'df = df.with_columns((pl.col("x") == pl.col("y")).alias("result"))'
         result = evaluate_expression(code, "result", {"x": float("nan"), "y": float("nan")})
         assert result is not None
-        assert result.result_value is False or result.result_value is None
+        assert result.result_value is True
 
     def test_nan_greater_than(self):
         code = 'df = df.with_columns((pl.col("x") > 0).alias("result"))'
@@ -447,10 +450,12 @@ class TestEvaluateNoneInOperators:
         assert result.result_value is None
 
     def test_none_in_power(self):
+        """A typed null base raised to a power propagates the null."""
         code = 'df = df.with_columns((pl.col("a") ** pl.col("b")).alias("result"))'
-        result = evaluate_expression(code, "result", {"a": None, "b": 2})
-        assert result is not None
+        row = pl.DataFrame({"a": [None], "b": [2]}, schema={"a": pl.Float64, "b": pl.Int64})
+        result = evaluate_expression(code, "result", {"a": None, "b": 2}, row=row)
         assert result.result_value is None
+        assert result.not_computable_reason is None
 
     def test_none_in_modulo(self):
         code = 'df = df.with_columns((pl.col("a") % pl.col("b")).alias("result"))'

@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 from datetime import date
 
+import polars as pl
 import pytest
 
 from haute._expression_parser import (
@@ -1185,9 +1186,10 @@ class TestExprEvaluatorUnaryOp:
         assert result.result_value == 5
 
     def test_not(self):
+        """Python `not` on a Polars expression raises: truth value is ambiguous."""
         code = 'df = df.with_columns((not pl.col("flag")).alias("inv"))'
-        result = evaluate_expression(code, "inv", {"flag": True})
-        assert result is not None
+        with pytest.raises(TypeError, match="the truth value of an Expr is ambiguous"):
+            evaluate_expression(code, "inv", {"flag": True})
 
     def test_invert(self):
         code = 'df = df.with_columns((~pl.col("mask")).alias("flipped"))'
@@ -1195,9 +1197,12 @@ class TestExprEvaluatorUnaryOp:
         assert result.result_value == ~0b1010
 
     def test_unary_none(self):
+        """Negating a typed null propagates the null."""
         code = 'df = df.with_columns((-pl.col("x")).alias("neg"))'
-        result = evaluate_expression(code, "neg", {"x": None})
+        row = pl.DataFrame({"x": [None]}, schema={"x": pl.Float64})
+        result = evaluate_expression(code, "neg", {"x": None}, row=row)
         assert result.result_value is None
+        assert result.not_computable_reason is None
 
 
 class TestExprEvaluatorCompare:
@@ -1334,9 +1339,10 @@ class TestExprEvaluatorCall:
         assert result.result_value == 42
 
     def test_pl_col_no_args(self):
+        """Malformed pl.col() call raises a Polars TypeError, not a silent None."""
         code = 'df = df.with_columns(pl.col().alias("r"))'
-        result = evaluate_expression(code, "r", {})
-        assert result is not None
+        with pytest.raises(TypeError, match="missing 1 required positional argument"):
+            evaluate_expression(code, "r", {})
 
     def test_pl_lit(self):
         code = 'df = df.with_columns(pl.lit(99).alias("r"))'
@@ -1344,9 +1350,10 @@ class TestExprEvaluatorCall:
         assert result.result_value == 99
 
     def test_pl_lit_no_args(self):
+        """Malformed pl.lit() call raises a Polars TypeError, not a silent None."""
         code = 'df = df.with_columns(pl.lit().alias("r"))'
-        result = evaluate_expression(code, "r", {})
-        assert result is not None
+        with pytest.raises(TypeError, match="missing 1 required positional argument"):
+            evaluate_expression(code, "r", {})
 
     def test_pl_when_chain(self):
         code = (
@@ -1406,9 +1413,10 @@ class TestExprEvaluatorCall:
         assert result.result_value == "hello - world"
 
     def test_pl_format_no_args(self):
+        """Malformed pl.format() call raises a Polars TypeError, not a silent None."""
         code = 'df = df.with_columns(pl.format().alias("r"))'
-        result = evaluate_expression(code, "r", {})
-        assert result is not None
+        with pytest.raises(TypeError, match="missing 1 required positional argument"):
+            evaluate_expression(code, "r", {})
 
     def test_alias_method_eval(self):
         code = 'df = df.with_columns((pl.col("x") + 1).alias("r"))'
@@ -1450,9 +1458,12 @@ class TestExprEvaluatorCall:
         assert result.result_value == pytest.approx(3.14)
 
     def test_round_eval_no_val(self):
+        """round of a typed null propagates the null."""
         code = 'df = df.with_columns(pl.col("x").round(2).alias("r"))'
-        result = evaluate_expression(code, "r", {"x": None})
+        row = pl.DataFrame({"x": [None]}, schema={"x": pl.Float64})
+        result = evaluate_expression(code, "r", {"x": None}, row=row)
         assert result.result_value is None
+        assert result.not_computable_reason is None
 
     def test_abs_eval(self):
         """abs() (lines 1775–1779)."""
@@ -1461,9 +1472,12 @@ class TestExprEvaluatorCall:
         assert result.result_value == 5
 
     def test_abs_eval_none(self):
+        """abs of a typed null propagates the null."""
         code = 'df = df.with_columns(pl.col("x").abs().alias("r"))'
-        result = evaluate_expression(code, "r", {"x": None})
+        row = pl.DataFrame({"x": [None]}, schema={"x": pl.Float64})
+        result = evaluate_expression(code, "r", {"x": None}, row=row)
         assert result.result_value is None
+        assert result.not_computable_reason is None
 
     def test_clip_eval_both_bounds(self):
         """clip with lower and upper (lines 1782–1802)."""
@@ -1482,9 +1496,12 @@ class TestExprEvaluatorCall:
         assert result.result_value == 50
 
     def test_clip_eval_none(self):
+        """clip of a typed null propagates the null."""
         code = 'df = df.with_columns(pl.col("x").clip(0, 100).alias("r"))'
-        result = evaluate_expression(code, "r", {"x": None})
+        row = pl.DataFrame({"x": [None]}, schema={"x": pl.Int64})
+        result = evaluate_expression(code, "r", {"x": None}, row=row)
         assert result.result_value is None
+        assert result.not_computable_reason is None
 
     def test_clip_keyword_bounds(self):
         """clip with keyword args (lines 1794–1797)."""
@@ -1509,9 +1526,12 @@ class TestExprEvaluatorCall:
         assert result.result_value == 15
 
     def test_dt_none_val(self):
+        """dt.year of a typed null date propagates the null."""
         code = 'df = df.with_columns(pl.col("date").dt.year().alias("yr"))'
-        result = evaluate_expression(code, "yr", {"date": None})
+        row = pl.DataFrame({"date": [None]}, schema={"date": pl.Date})
+        result = evaluate_expression(code, "yr", {"date": None}, row=row)
         assert result.result_value is None
+        assert result.not_computable_reason is None
 
     def test_str_to_lowercase_eval(self):
         """str.to_lowercase() (lines 1819–1831)."""
@@ -1535,14 +1555,18 @@ class TestExprEvaluatorCall:
         assert result.result_value is False
 
     def test_str_none_val(self):
+        """str.to_lowercase of a typed null string propagates the null."""
         code = 'df = df.with_columns(pl.col("name").str.to_lowercase().alias("lower"))'
-        result = evaluate_expression(code, "lower", {"name": None})
+        row = pl.DataFrame({"name": [None]}, schema={"name": pl.String})
+        result = evaluate_expression(code, "lower", {"name": None}, row=row)
         assert result.result_value is None
+        assert result.not_computable_reason is None
 
     def test_str_non_string_val(self):
+        """str.to_lowercase on an integer column raises a Polars SchemaError."""
         code = 'df = df.with_columns(pl.col("name").str.to_lowercase().alias("lower"))'
-        result = evaluate_expression(code, "lower", {"name": 42})
-        assert result.result_value is None
+        with pytest.raises(pl.exceptions.SchemaError, match="String"):
+            evaluate_expression(code, "lower", {"name": 42})
 
     def test_is_null_eval(self):
         """is_null() (lines 1834–1836)."""
@@ -1587,32 +1611,37 @@ class TestExprEvaluatorCall:
         assert result is not None
 
     def test_agg_sum_eval(self):
-        """Aggregation methods return value as-is (lines 1862–1877)."""
+        """Aggregations read more than the one traced row: not row-local."""
         code = 'df = df.with_columns(pl.col("x").sum().alias("r"))'
         result = evaluate_expression(code, "r", {"x": 10})
-        assert result.result_value == 10
+        assert result.result_value is None
+        assert result.not_computable_reason == "not_row_local: sum"
 
     def test_agg_mean_eval(self):
         code = 'df = df.with_columns(pl.col("x").mean().alias("r"))'
         result = evaluate_expression(code, "r", {"x": 10})
-        assert result.result_value == 10
+        assert result.result_value is None
+        assert result.not_computable_reason == "not_row_local: mean"
 
     def test_over_eval(self):
-        """over() returns base value (line 1880–1881)."""
+        """A window function is not row-local."""
         code = 'df = df.with_columns(pl.col("x").sum().over("group").alias("r"))'
         result = evaluate_expression(code, "r", {"x": 10, "group": "A"})
-        assert result.result_value == 10
+        assert result.result_value is None
+        assert result.not_computable_reason == "not_row_local: sum"
 
     def test_shift_eval(self):
-        """shift/diff return base value (lines 1884–1885)."""
+        """shift/diff read neighbouring rows: not row-local."""
         code = 'df = df.with_columns(pl.col("x").shift(1).alias("r"))'
         result = evaluate_expression(code, "r", {"x": 10})
-        assert result.result_value == 10
+        assert result.result_value is None
+        assert result.not_computable_reason == "not_row_local: shift"
 
     def test_diff_eval(self):
         code = 'df = df.with_columns(pl.col("x").diff().alias("r"))'
         result = evaluate_expression(code, "r", {"x": 10})
-        assert result.result_value == 10
+        assert result.result_value is None
+        assert result.not_computable_reason == "not_row_local: diff"
 
     def test_log_eval(self):
         """log() (lines 1888–1892)."""
@@ -1639,30 +1668,33 @@ class TestExprEvaluatorCall:
         assert isinstance(result.result_value, float) and math.isnan(result.result_value)
 
     def test_replace_strict_eval(self):
-        """replace_strict with dict (lines 2031–2061)."""
+        """replace_strict is not registered as row-local."""
         code = 'df = df.with_columns(pl.col("x").replace_strict({"a": 1, "b": 2}).alias("r"))'
         result = evaluate_expression(code, "r", {"x": "a"})
-        assert result.result_value == 1
+        assert result.result_value is None
+        assert result.not_computable_reason == "not_row_local: replace_strict"
 
     def test_replace_strict_default(self):
-        """replace_strict with default kwarg (line 2046–2047)."""
         code = 'df = df.with_columns(pl.col("x").replace_strict({"a": 1}, default=0).alias("r"))'
         result = evaluate_expression(code, "r", {"x": "b"})
-        assert result.result_value == 0
+        assert result.result_value is None
+        assert result.not_computable_reason == "not_row_local: replace_strict"
 
     def test_replace_strict_variable_dict(self):
-        """replace_strict with variable mapping (lines 2049–2061)."""
         code = (
             'mapping = {"a": 1, "b": 2}\n'
             'df = df.with_columns(pl.col("x").replace_strict(mapping).alias("r"))'
         )
         result = evaluate_expression(code, "r", {"x": "a"})
-        assert result.result_value == 1
+        assert result.result_value is None
+        assert result.not_computable_reason == "not_row_local: replace_strict"
 
     def test_replace_method_eval(self):
+        """Non-strict .replace() keeps the column's original dtype, so the
+        mapped value comes back as the string "1", not the int 1."""
         code = 'df = df.with_columns(pl.col("x").replace({"a": 1, "b": 2}).alias("r"))'
         result = evaluate_expression(code, "r", {"x": "a"})
-        assert result.result_value == 1
+        assert result.result_value == "1"
 
     def test_bare_function_eval_returns_none(self):
         """Bare function call returns None (lines 1917–1919)."""
@@ -1704,7 +1736,9 @@ class TestBranchTrackingEvaluator:
         assert result.taken_branch == "otherwise"
 
     def test_chained_when_second_branch(self):
-        """Second branch taken in chained when (lines 2082–2106)."""
+        """Second branch taken in chained when. A bare string in .then()/.otherwise()
+        is Polars column selection, not a literal, so "neg" is read as a missing
+        column even though the *taken* branch is "zero"."""
         code = (
             "df = df.with_columns(\n"
             '    pl.when(pl.col("x") < 0).then("neg")\n'
@@ -1714,7 +1748,8 @@ class TestBranchTrackingEvaluator:
             ")"
         )
         result = evaluate_expression(code, "sign", {"x": 0})
-        assert result.result_value == "zero"
+        assert result.result_value is None
+        assert result.not_computable_reason == "column_unavailable: neg"
         assert result.taken_branch is not None
 
     def test_nested_when_in_then_branch(self):
@@ -2062,24 +2097,24 @@ class TestEvaluatorBoolOpDirect:
     """Cover _ExprEvaluator._boolop (lines 1672–1686) — direct Python and/or."""
 
     def test_eval_and_all_true(self):
-        """And where all values are truthy (lines 1673–1680)."""
+        """Python `and` on Polars expressions raises: truth value is ambiguous."""
         code = (
             "df = df.with_columns(\n"
             '    pl.when(pl.col("a") > 0 and pl.col("b") > 0).then(1).otherwise(0).alias("r")\n'
             ")"
         )
-        result = evaluate_expression(code, "r", {"a": 5, "b": 5})
-        assert result is not None
+        with pytest.raises(TypeError, match="the truth value of an Expr is ambiguous"):
+            evaluate_expression(code, "r", {"a": 5, "b": 5})
 
     def test_eval_or_first_false(self):
-        """Or where first value is falsy (lines 1681–1686)."""
+        """Python `or` on Polars expressions raises: truth value is ambiguous."""
         code = (
             "df = df.with_columns(\n"
             '    pl.when(pl.col("a") > 0 or pl.col("b") > 0).then(1).otherwise(0).alias("r")\n'
             ")"
         )
-        result = evaluate_expression(code, "r", {"a": -1, "b": 5})
-        assert result is not None
+        with pytest.raises(TypeError, match="the truth value of an Expr is ambiguous"):
+            evaluate_expression(code, "r", {"a": -1, "b": 5})
 
 
 class TestEvaluatorNameLiterals:
@@ -2115,10 +2150,10 @@ class TestEvaluatorPlCol:
     """Cover pl.col edge cases in evaluator (lines 1716–1726)."""
 
     def test_pl_col_non_string_constant(self):
-        """pl.col(non_string) returns None (line 1716)."""
+        """pl.col(non_string) is a malformed call: Polars raises a TypeError."""
         code = 'df = df.with_columns(pl.col(42).alias("r"))'
-        result = evaluate_expression(code, "r", {})
-        assert result is not None
+        with pytest.raises(TypeError, match="invalid input for `col`"):
+            evaluate_expression(code, "r", {})
 
     def test_pl_col_name_variable(self):
         """pl.col(variable) resolved from symbol table (lines 1717–1725)."""
@@ -2156,46 +2191,46 @@ class TestEvaluatorFormatEdges:
     """Cover format edge cases (lines 2023–2029)."""
 
     def test_format_non_string_fmt(self):
-        """Non-string format arg (line 2023–2024)."""
+        """Non-string format arg is a malformed call: Polars raises a TypeError."""
         code = 'df = df.with_columns(pl.format(42, pl.col("a")).alias("r"))'
-        result = evaluate_expression(code, "r", {"a": "x"})
-        assert result is not None
+        with pytest.raises(TypeError, match="not an instance of 'str'"):
+            evaluate_expression(code, "r", {"a": "x"})
 
     def test_format_exception(self):
-        """Format raises exception (lines 2028–2029)."""
+        """Too few placeholders for arguments raises a Polars ShapeError."""
         code = 'df = df.with_columns(pl.format("{} {} {}", pl.col("a")).alias("r"))'
-        result = evaluate_expression(code, "r", {"a": "x"})
-        assert result is not None
+        with pytest.raises(pl.exceptions.ShapeError, match="too few arguments"):
+            evaluate_expression(code, "r", {"a": "x"})
 
 
 class TestEvaluatorReplaceEdges:
     """Cover replace edge cases (lines 2033–2061)."""
 
     def test_replace_no_args(self):
-        """replace_strict with no args (line 2033–2034)."""
+        """replace_strict is not registered as row-local, even with no args."""
         code = 'df = df.with_columns(pl.col("x").replace_strict().alias("r"))'
         result = evaluate_expression(code, "r", {"x": "a"})
-        assert result is not None
+        assert result.result_value is None
+        assert result.not_computable_reason == "not_row_local: replace_strict"
 
     def test_replace_variable_not_found(self):
-        """replace_strict with an incomplete variable mapping and no default:
-        Polars raises InvalidOperationError, so the evaluator must fail loud
-        rather than silently returning the unmapped value."""
+        """replace_strict is not registered as row-local regardless of the mapping."""
         code = (
             'mapping = {"a": 1}\n'
             'df = df.with_columns(pl.col("x").replace_strict(mapping).alias("r"))'
         )
-        with pytest.raises(ValueError, match="incomplete mapping"):
-            evaluate_expression(code, "r", {"x": "z"})
+        result = evaluate_expression(code, "r", {"x": "z"})
+        assert result.result_value is None
+        assert result.not_computable_reason == "not_row_local: replace_strict"
 
     def test_replace_variable_with_default(self):
-        """Replace with variable mapping and default kwarg (lines 2058–2060)."""
         code = (
             'mapping = {"a": 1}\n'
             'df = df.with_columns(pl.col("x").replace_strict(mapping, default=0).alias("r"))'
         )
         result = evaluate_expression(code, "r", {"x": "z"})
-        assert result.result_value == 0
+        assert result.result_value is None
+        assert result.not_computable_reason == "not_row_local: replace_strict"
 
 
 class TestBranchTrackingNestedCheck:
@@ -2310,7 +2345,9 @@ class TestEvalClauseCollectionAlias:
     """Cover alias path in _collect_eval_clauses (lines 1971–1973)."""
 
     def test_eval_when_then_otherwise_alias(self):
-        """When chain wrapped with alias (line 1971–1973)."""
+        """When chain wrapped with alias. A bare string in .then() is Polars
+        column selection, not a literal, so the first-branch string "high" is
+        read as a missing column even though the "mid" branch is taken."""
         code = (
             "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 5).then("high")\n'
@@ -2320,7 +2357,8 @@ class TestEvalClauseCollectionAlias:
             ")"
         )
         result = evaluate_expression(code, "tier", {"x": 3})
-        assert result.result_value == "mid"
+        assert result.result_value is None
+        assert result.not_computable_reason == "column_unavailable: high"
 
     def test_eval_when_chain_break_path(self):
         """When chain with unexpected method (line 1975)."""
@@ -2544,11 +2582,13 @@ class TestEvaluatorDtTotalDays:
     """Cover dt.total_days() (lines 1814-1816)."""
 
     def test_dt_total_days(self):
+        """dt.total_days is not registered as row-local."""
         from datetime import timedelta
 
         code = 'df = df.with_columns(pl.col("dur").dt.total_days().alias("days"))'
         result = evaluate_expression(code, "days", {"dur": timedelta(days=30)})
-        assert result.result_value == 30
+        assert result.result_value is None
+        assert result.not_computable_reason == "not_row_local: dt.total_days"
 
 
 class TestEvaluatorStrContainsNoArgs:
@@ -2604,12 +2644,14 @@ class TestEvaluatorUnknownHorizontal:
 
 
 class TestEvaluatorReplaceNoMapping:
-    """Cover replace with no args (line 2034)."""
+    """Cover replace with no args."""
 
     def test_replace_no_args(self):
+        """A malformed .replace() call (no mapping) is not classified as row-local."""
         code = 'df = df.with_columns(pl.col("x").replace().alias("r"))'
         result = evaluate_expression(code, "r", {"x": "a"})
-        assert result.result_value == "a"
+        assert result.result_value is None
+        assert result.not_computable_reason == "not_row_local: replace"
 
 
 class TestControlFlowKeywordInWithColumns:
@@ -2775,48 +2817,45 @@ class TestEvaluatorBoolOpPaths:
     """Cover BoolOp evaluator And/Or paths (lines 1672-1686)."""
 
     def test_bool_and_short_circuit_false(self):
-        """And short-circuits on first falsy (line 1677-1678)."""
+        """Python `and` on Polars expressions raises: truth value is ambiguous."""
         code = (
             "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0 and pl.col("y") > 0)\n'
             '    .then(1).otherwise(0).alias("r")\n'
             ")"
         )
-        result = evaluate_expression(code, "r", {"x": -1, "y": 5})
-        assert result is not None
+        with pytest.raises(TypeError, match="the truth value of an Expr is ambiguous"):
+            evaluate_expression(code, "r", {"x": -1, "y": 5})
 
     def test_bool_and_all_true_returns_last(self):
-        """And returns last truthy value (line 1679-1680)."""
         code = (
             "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0 and pl.col("y") > 0)\n'
             '    .then(1).otherwise(0).alias("r")\n'
             ")"
         )
-        result = evaluate_expression(code, "r", {"x": 5, "y": 5})
-        assert result is not None
+        with pytest.raises(TypeError, match="the truth value of an Expr is ambiguous"):
+            evaluate_expression(code, "r", {"x": 5, "y": 5})
 
     def test_bool_or_first_truthy(self):
-        """Or returns first truthy (line 1684-1685)."""
         code = (
             "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0 or pl.col("y") > 0)\n'
             '    .then(1).otherwise(0).alias("r")\n'
             ")"
         )
-        result = evaluate_expression(code, "r", {"x": 5, "y": -1})
-        assert result is not None
+        with pytest.raises(TypeError, match="the truth value of an Expr is ambiguous"):
+            evaluate_expression(code, "r", {"x": 5, "y": -1})
 
     def test_bool_or_all_falsy(self):
-        """Or returns False when all falsy (line 1686)."""
         code = (
             "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0 or pl.col("y") > 0)\n'
             '    .then(1).otherwise(0).alias("r")\n'
             ")"
         )
-        result = evaluate_expression(code, "r", {"x": -1, "y": -1})
-        assert result is not None
+        with pytest.raises(TypeError, match="the truth value of an Expr is ambiguous"):
+            evaluate_expression(code, "r", {"x": -1, "y": -1})
 
 
 class TestEvaluatorNameLiteralsInWhen:
@@ -2859,19 +2898,19 @@ class TestEvaluatorPlColVariable:
         assert result is not None
 
     def test_pl_col_variable_non_string_resolved(self):
-        """pl.col(variable) resolved to non-string (line 1722-1725)."""
+        """pl.col(variable) resolved to a non-string is a malformed call."""
         code = 'col_idx = 42\ndf = df.with_columns(pl.col(col_idx).alias("r"))'
-        result = evaluate_expression(code, "r", {"r": 99})
-        assert result is not None
+        with pytest.raises(TypeError, match="invalid input for `col`"):
+            evaluate_expression(code, "r", {"r": 99})
 
 
 class TestEvaluatorPlLitNoArgs:
-    """Cover pl.lit() no args (line 1730)."""
+    """Cover pl.lit() no args."""
 
     def test_pl_lit_no_args_eval(self):
         code = 'df = df.with_columns(pl.lit().alias("r"))'
-        result = evaluate_expression(code, "r", {})
-        assert result is not None
+        with pytest.raises(TypeError, match="missing 1 required positional argument"):
+            evaluate_expression(code, "r", {})
 
 
 class TestComputeResultImplSyntaxError:
@@ -2960,7 +2999,9 @@ class TestEvaluatorPlWhenDirect:
     """Cover pl.when direct evaluation (line 1732) - reached when .when() is the method."""
 
     def test_when_chain_eval(self):
-        """When/then/otherwise where evaluator walks the full chain."""
+        """When/then/otherwise where evaluator walks the full chain. A bare string
+        in .then() is Polars column selection, so the first branch's "neg" is a
+        missing column even though "zero" is the taken branch."""
         code = (
             "df = df.with_columns(\n"
             '    pl.when(pl.col("x") < 0).then("neg")\n'
@@ -2970,7 +3011,8 @@ class TestEvaluatorPlWhenDirect:
             ")"
         )
         result = evaluate_expression(code, "r", {"x": 0})
-        assert result.result_value == "zero"
+        assert result.result_value is None
+        assert result.not_computable_reason == "column_unavailable: neg"
 
 
 class TestEvaluatorCompareChainFalse:
@@ -3033,11 +3075,12 @@ class TestEvaluatorReplaceMapping:
     """Cover replace mapping default fallback (line 2048)."""
 
     def test_replace_strict_no_match_no_default(self):
-        # Incomplete replace_strict mapping with no default must fail loud
-        # (Polars raises InvalidOperationError), not return the unmapped value.
+        """replace_strict is not registered as row-local, so it never reaches
+        Polars for a single row and never raises for an incomplete mapping."""
         code = 'df = df.with_columns(pl.col("x").replace_strict({"a": 1, "b": 2}).alias("r"))'
-        with pytest.raises(ValueError, match="incomplete mapping"):
-            evaluate_expression(code, "r", {"x": "c"})
+        result = evaluate_expression(code, "r", {"x": "c"})
+        assert result.result_value is None
+        assert result.not_computable_reason == "not_row_local: replace_strict"
 
 
 class TestComputeResultNoMatch:
@@ -3069,7 +3112,8 @@ class TestBranchTrackingNested:
         assert result.result_value == 20
 
     def test_nested_when_detected_via_pl_when(self):
-        """_check_nested_when finds pl.when (line 2123-2124)."""
+        """Nested pl.when detection. A bare string in .then() is Polars column
+        selection, so "yes" is read as a missing column."""
         code = (
             "df = df.with_columns(\n"
             '    pl.when(pl.col("a") > 0)\n'
@@ -3081,7 +3125,8 @@ class TestBranchTrackingNested:
             ")"
         )
         result = evaluate_expression(code, "r", {"a": 1, "b": 1})
-        assert result.result_value == "yes"
+        assert result.result_value is None
+        assert result.not_computable_reason == "column_unavailable: yes"
 
 
 class TestEvaluatorPlWhenAttr:
@@ -3145,14 +3190,16 @@ class TestEvalWhenChainMethod:
     """Cover _eval_when_chain (line 1926) and _eval_chained_when (line 1936)."""
 
     def test_eval_when_chain_standalone(self):
-        """pl.when() evaluated standalone returns None (line 1926)."""
+        """A bare string in .then() is Polars column selection, so "pos" is
+        read as a missing column even though it is the taken branch."""
         code = (
             "df = df.with_columns(\n"
             '    pl.when(pl.col("x") > 0).then("pos").otherwise("neg").alias("r")\n'
             ")"
         )
         result = evaluate_expression(code, "r", {"x": 5})
-        assert result.result_value == "pos"
+        assert result.result_value is None
+        assert result.not_computable_reason == "column_unavailable: pos"
 
 
 class TestEvalUnknownHorizontalFunc:

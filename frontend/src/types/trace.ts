@@ -12,6 +12,8 @@ export interface TraceInputSource {
   expression_text?: string
   substituted_text?: string
   result_value?: unknown
+  not_computable_reason?: string | null
+  result_source?: string | null
   input_sources?: Record<string, TraceInputSource> | null
 }
 
@@ -32,6 +34,8 @@ export interface TraceStep {
   calculation?: {
     substituted_text: string
     result_value: unknown
+    not_computable_reason?: string | null
+    result_source?: string | null
     input_values: Record<string, unknown>
     taken_branch?: string | null
     taken_branch_index?: number | null
@@ -40,6 +44,8 @@ export interface TraceStep {
       target_column: string
       substituted_text?: string
       result_value?: unknown
+      not_computable_reason?: string | null
+      result_source?: string | null
     }> | null
     input_sources?: Record<string, TraceInputSource> | null
   } | null

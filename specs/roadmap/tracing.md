@@ -12,7 +12,6 @@ from the [23 September 2026 codebase review](codebase-review-2026-09-23.md).
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
 | TRACE-R01 | Decision | P3 | Trace rows are correlated by a row identity wherever it can be carried without user code seeing it. |
-| TRACE-R02 | Planned | P3 | The speculative preview-reader abstraction is removed. |
 
 ## Planned improvements
 
@@ -54,22 +53,3 @@ policy straightforward.
 **Evidence:** `src/haute/_trace_correlation.py::RowScopeResolver`;
 `src/haute/trace.py::execute_trace`; `src/haute/_user_exec.py::_exec_user_code`;
 `specs/tracing/high-level.md`; `tests/test_trace_integration.py`.
-
-### TRACE-R02 — Remove the preview-reader abstraction
-**Why:** `execute_trace` accepts a `PreviewReader` protocol, a snapshot
-dictionary or `None`, duck-typed in `_resolve_preview_snapshot`, to allow for
-a "future Redis-backed reader". The specification says HTTP preview entries
-never share a key with a trace, so the first trace after a preview executes
-cold.
-
-**Plan:** Drop the reader protocol and the three-shape resolution, or, if
-preview reuse is wanted, make preview publish the full-ancestor entry trace
-needs and reuse it directly.
-
-**Acceptance:** `execute_trace` takes one well-defined source of prior
-results, or none; the trace tests pass.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/trace.py::PreviewReader`;
-`src/haute/trace.py::_resolve_preview_snapshot`.

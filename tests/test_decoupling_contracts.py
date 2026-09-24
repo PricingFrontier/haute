@@ -2,14 +2,12 @@
 
 This file covers three related items:
 
-* **#104 Trace decoupling** — ``haute.trace`` currently reaches into
-  ``haute.executor._preview_cache``, a private module global.  The dev
-  will replace that reach-through with explicit dependency injection
-  (either a ``preview`` / ``preview_cache_reader`` parameter or a
-  ``Trace.from_preview(...)`` classmethod).  Tests here enforce the new
-  contract via a mix of static AST analysis and end-to-end functional
-  assertions that construct a trace against a fake preview reader with
-  *no* real executor involved.
+* **#104 Trace decoupling** — ``haute.trace`` never reads
+  ``haute.executor._preview_cache``, a private module global, and takes no
+  preview input at all: a target-only preview entry can never satisfy a
+  trace, so its only prior results are its own trace cache. Tests here
+  enforce that via static AST analysis and an end-to-end trace run against
+  an executor cache that raises on any access.
 
 * **#127 File-watcher event bus** — ``broadcast(...)`` in
   ``routes/_helpers.py`` is the single chokepoint for WebSocket dispatch
@@ -29,11 +27,8 @@ This file covers three related items:
 Every test in this file is expected to FAIL before the dev lands the
 corresponding production change.  They are deliberately light on
 assumptions about *where* the dev places the ``EventBus`` implementation
-(it just needs to live at a ``haute`` dotted path) and *how* the trace
-receives its preview snapshot (parameter name ``preview`` or
-``preview_cache_reader`` or ``preview_reader`` are all accepted by the
-functional tests).  Mechanical naming is left to the dev; the tests
-pin behaviour.
+(it just needs to live at a ``haute`` dotted path).  Mechanical naming is
+left to the dev; the tests pin behaviour.
 """
 
 from __future__ import annotations
@@ -102,14 +97,12 @@ def _is_docstring_node(node: ast.stmt | ast.expr) -> bool:
 
 
 class TestTraceDecoupling:
-    """Trace must not reach into ``executor._preview_cache`` directly.
+    """Trace must not reach into ``executor._preview_cache``, nor accept preview data.
 
-    The public contract we want: trace receives its preview data through
-    an explicit parameter — either a snapshot dict / Pydantic model, a
-    reader Protocol, or a classmethod like ``Trace.from_preview(...)``.
-    All three shapes are allowed; what is forbidden is the current
-    ``from haute.executor import _preview_cache`` + ``_preview_cache.get(...)``
-    reach-through.
+    A target-only preview entry can never hold the full-ancestor frames a
+    trace needs, so trace takes no preview input; what is forbidden is both
+    the ``from haute.executor import _preview_cache`` reach-through and a
+    reader parameter that could only ever miss.
     """
 
     # -- AST-level static guards ------------------------------------------
@@ -134,8 +127,8 @@ class TestTraceDecoupling:
                     offenders.append((alias.name, node.lineno))
 
         assert not offenders, (
-            "trace.py must not import haute.executor._preview_cache — the preview "
-            "snapshot should be passed in via a parameter / Protocol / classmethod. "
+            "trace.py must not import haute.executor._preview_cache — trace "
+            "reuses only its own trace cache. "
             f"Offenders at lines: {[ln for _, ln in offenders]}"
         )
 
@@ -153,8 +146,8 @@ class TestTraceDecoupling:
                 offenders.append(node.lineno)
         assert not offenders, (
             "trace.py references a ``_preview_cache`` attribute — probably "
-            "``executor._preview_cache``.  Pass the preview snapshot as a "
-            f"parameter instead.  Offenders at lines: {offenders}"
+            "``executor._preview_cache``.  Trace reuses only its own trace "
+            f"cache.  Offenders at lines: {offenders}"
         )
 
     def test_trace_module_has_no_preview_cache_global(self) -> None:
@@ -188,35 +181,21 @@ class TestTraceDecoupling:
 
     # -- Functional end-to-end injection ---------------------------------
 
-    def test_execute_trace_accepts_preview_snapshot_parameter(self) -> None:
-        """``execute_trace`` must accept an explicit preview parameter.
+    def test_execute_trace_takes_no_preview_input(self) -> None:
+        """``execute_trace`` has no parameter through which preview data could arrive."""
+        preview_names = {"preview", "preview_snapshot", "preview_cache_reader", "preview_reader"}
+        parameters = set(inspect.signature(trace_module.execute_trace).parameters)
+        assert not preview_names & parameters
+        assert not hasattr(trace_module, "PreviewReader")
 
-        The dev may call it ``preview``, ``preview_snapshot``,
-        ``preview_cache_reader``, or ``preview_reader`` — we just check
-        at least one of those names is in the signature.
-        """
-        sig = inspect.signature(trace_module.execute_trace)
-        accepted = {"preview", "preview_snapshot", "preview_cache_reader", "preview_reader"}
-        matched = accepted & set(sig.parameters)
-        assert matched, (
-            "execute_trace() must accept one of "
-            f"{sorted(accepted)} so callers can inject a preview snapshot. "
-            f"Current parameters: {sorted(sig.parameters)}"
-        )
-
-    def test_trace_renders_without_executor_singleton(
+    def test_trace_runs_without_touching_the_executor_preview_cache(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """End-to-end: a Trace built against a fake preview reader must render
-        without touching the real ``haute.executor._preview_cache``.
+        """End-to-end: a trace executes its lineage itself.
 
-        We swap ``haute.executor._preview_cache`` for an object that raises
-        on every attribute access, then run the trace with a caller-provided
-        preview snapshot.  If the trace still succeeds, the decoupling is
-        real; if it touches the singleton, we get a loud AttributeError.
+        ``haute.executor._preview_cache`` is swapped for an object that raises
+        on every attribute access, so any read of it fails the trace loudly.
         """
-        import polars as pl
-
         import haute.executor as executor_module
         from haute.graph_utils import GraphNode, NodeData
 
@@ -230,54 +209,6 @@ class TestTraceDecoupling:
                 )
 
         monkeypatch.setattr(executor_module, "_preview_cache", _Exploding(), raising=True)
-
-        # Build a minimal single-node graph with a fake "preview snapshot"
-        # that contains the output DataFrame trace will read.
-        node = GraphNode(
-            id="n1",
-            data=NodeData(label="n1", nodeType="dataInput", config={"path": "data.parquet"}),
-        )
-        graph = PipelineGraph(nodes=[node], edges=[])
-        df = pl.DataFrame({"col": [1, 2, 3]})
-
-        # Every allowed preview-parameter name — we try each.
-        tried: list[str] = []
-        for kw in ("preview", "preview_snapshot", "preview_cache_reader", "preview_reader"):
-            if kw not in inspect.signature(trace_module.execute_trace).parameters:
-                continue
-            tried.append(kw)
-            try:
-                result = trace_module.execute_trace(
-                    graph=graph,
-                    target_node_id="n1",
-                    row_index=0,
-                    **{kw: {"eager_outputs": {"n1": df}}},
-                )
-            except AttributeError as exc:  # pragma: no cover - decoupling failure
-                pytest.fail(f"execute_trace still touched executor._preview_cache via {kw}=: {exc}")
-            else:
-                assert result is not None
-                assert result.target_node_id == "n1"
-                return
-
-        pytest.fail(
-            "execute_trace does not accept any of the expected preview parameters "
-            f"(tried {tried}).  See test_execute_trace_accepts_preview_snapshot_parameter."
-        )
-
-    def test_trace_respects_injected_empty_preview_reader(self) -> None:
-        """If the injected preview reader returns no cached outputs, the
-        trace must still be able to execute the graph from scratch — it
-        cannot silently fall back to the real singleton.
-        """
-        from haute.graph_utils import GraphNode, NodeData
-
-        class _EmptyReader:
-            """Minimal reader protocol — always a miss."""
-
-            def get(self, fingerprint: str) -> dict[str, Any] | None:
-                return None
-
         node = GraphNode(
             id="only",
             data=NodeData(
@@ -286,37 +217,12 @@ class TestTraceDecoupling:
                 config={"code": "df = pl.DataFrame({'x': [1]}).lazy()"},
             ),
         )
-        graph = PipelineGraph(nodes=[node], edges=[])
 
-        # Does execute_trace accept a reader protocol?  Accept any of the
-        # documented parameter names.
-        sig = inspect.signature(trace_module.execute_trace)
-        kw = next(
-            (
-                p
-                for p in ("preview_cache_reader", "preview_reader", "preview", "preview_snapshot")
-                if p in sig.parameters
-            ),
-            None,
-        )
-        assert kw is not None, "execute_trace does not accept a preview-injection parameter"
+        result = trace_module.execute_trace(PipelineGraph(nodes=[node], edges=[]))
 
-        # Construct an ``execute_trace`` call.  Tolerate different
-        # signatures: pass the reader as the matched kw and just the
-        # graph positionally.
-        result = trace_module.execute_trace(graph=graph, **{kw: _EmptyReader()})
-        assert result is not None
-        assert isinstance(result.steps, list)
-        # Basic sanity: the reader returning None should not raise and
-        # should not silently use the real executor cache.
         assert result.target_node_id == "only"
-
-        # Prove the trace's own (per-call) execution path ran — the
-        # single-row output should contain our generated column.
-        assert any("x" in step.output_values for step in result.steps), (
-            "The trace ran but produced no row data — the injected empty reader "
-            "was probably not actually the source of data."
-        )
+        assert result.execution_origin == "fresh_execution"
+        assert any(step.output_values.get("x") == 1 for step in result.steps)
 
 
 # ===========================================================================
