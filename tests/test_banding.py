@@ -11,7 +11,13 @@ import polars as pl
 import polars.testing as plt
 import pytest
 
-from haute._rating import _apply_banding, _breakpoints_to_rules
+from haute._rating import (
+    _apply_banding,
+    _breakpoints_to_rules,
+    banding_temporal_ordinal_expr,
+    parse_breakpoint_boundary,
+    validate_banding_config,
+)
 from haute.executor import _build_node_fn
 from haute.graph_utils import GraphNode, NodeData, NodeType, PipelineGraph
 from tests.conftest import write_node_config
@@ -266,6 +272,27 @@ class TestDateBreakpoints:
         ]
         out = _apply_banding(self.LONDON.lazy(), "t", "b", "breakpoints", rules).collect()
         assert out["b"].to_list() == ["before", "after"]
+
+    @pytest.mark.parametrize("boundary", ["2023-02-30", "2024-01-01 25:00"])
+    def test_a_boundary_shaped_like_a_date_but_not_one_is_unreadable(self, boundary):
+        with pytest.raises(ValueError, match=f"unreadable boundary '{boundary}'"):
+            parse_breakpoint_boundary(boundary)
+
+    def test_the_statistics_measure_dates_in_wall_clock_days_since_1970(self):
+        naive = pl.DataFrame({"t": [datetime(1970, 1, 2, 12, 0), datetime(2024, 7, 1, 0, 30)]})
+        # 00:30 on 1 July in London is still 30 June in UTC; the wall clock counts.
+        zoned = naive.with_columns(pl.col("t").dt.replace_time_zone("Europe/London"))
+        dates = pl.DataFrame({"d": [date(1970, 1, 1), date(1969, 12, 31), date(2024, 1, 1)]})
+
+        def measured(frame: pl.DataFrame, column: str) -> list[float]:
+            expr = banding_temporal_ordinal_expr(pl.col(column), frame.schema[column])
+            return frame.select(expr)[column].to_list()
+
+        # 2024-01-01 is day 19723, and 1 July 182 days later.
+        july_first_half_past_midnight = 19723 + 182 + 0.5 / 24
+        assert measured(naive, "t") == pytest.approx([1.5, july_first_half_past_midnight])
+        assert measured(zoned, "t") == pytest.approx([1.5, july_first_half_past_midnight])
+        assert measured(dates, "d") == [0.0, -1.0, 19723.0]
 
     def test_an_all_null_column_takes_the_default(self):
         frame = pl.DataFrame({"d": [None, None]})
@@ -1428,4 +1455,17 @@ def test_validate_banding_config_rejects_unusable_authored_factor(factor) -> Non
     from haute._rating import validate_banding_config
 
     with pytest.raises(ValueError):
+        validate_banding_config({"factors": [factor]})
+
+
+@pytest.mark.parametrize(
+    "rules",
+    [
+        [{"boundary": "10", "label": ""}],
+        [{"boundary": "2024-03-31", "label": ""}, {"boundary": "", "label": ""}],
+    ],
+)
+def test_validate_banding_config_rejects_breakpoints_that_band_nothing(rules) -> None:
+    factor = {"banding": "breakpoints", "column": "x", "outputColumn": "x_band", "rules": rules}
+    with pytest.raises(ValueError, match="Banding output 'x_band' has no usable breakpoints rule"):
         validate_banding_config({"factors": [factor]})
