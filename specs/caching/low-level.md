@@ -334,7 +334,7 @@ resulting plan.
   several distinct effective inputs takes the conjunction over every input's segment.
   Pass-through nodes contribute nothing and the walk follows their selected edge.
   The bounded capture rule evaluates executed nodes in execution order under six-step precedence:
-  1. batch Model Score (scenario not `live`) is captured as `model_score` (its scored file is
+  1. batch Model Score (scenario not `live`) is captured as `model_score` (its scored parts are
      the artifact);
   2. a node whose recompute facts are costly and whose type is not a `costly` builder
      (its cost comes from its code) is captured as `materialising`;
@@ -356,8 +356,14 @@ resulting plan.
   recompute and not opaque, so a row limit cannot bound it), or a node with more than one
   distinct effective input; frame and expression `sort`, `unique`, `rank`, `group_by`, `join`,
   `over`, and `pivot` are captured, while `explode`, `shift`, `map_elements`, `pipe`, and a node
-  whose only costly call is unresolved are not captured. A preview records no skips. A preview may
-  seed its own target. A node whose own or instance-resolved config
+  whose only costly call is unresolved are not captured. A batch Model Score (scenario not
+  `live`) is captured as `model_score` when a capture below it (a descendant among the executed
+  nodes, through other such Model Scores) drains its whole output: its row-local scan would be
+  pulled whole through Polars, which applies no backpressure to a Python source, so every scored
+  batch would sit in memory until the capture below wrote it. Captured, it scores every row a
+  batch at a time into its own parts whatever the row limit, and the capture below reads parquet
+  parts. A Model Score nothing below captures, including a previewed target, still scores
+  row-locally. A preview records no skips. A preview may seed its own target. A node whose own or instance-resolved config
   selects or renames its output columns (`selected_columns`, `column_renames`) is seeded only
   from a generation that recorded its unshaped columns: a preview reports every node's columns
   before that shaping — the columns its Columns editor offers and its stale-selection warnings

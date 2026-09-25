@@ -2211,3 +2211,73 @@ def test_an_extended_cache_hit_reports_the_current_plans_generations(
     assert builds["banding"] == 1
     assert _plan_of(second) == [("join", "seeded")]
     assert second["seed_plan"][0]["generation_id"] == gen_id
+
+
+@pytest.mark.parametrize(
+    ("post_code", "strategy"), [("", "prewritten"), ("df = df.with_columns(x=pl.lit(1))", "sliced")]
+)
+def test_a_preview_scores_a_capture_drained_model_score_in_batches(
+    project: Path,
+    store: NodeSnapshotStore,
+    monkeypatch: pytest.MonkeyPatch,
+    post_code: str,
+    strategy: str,
+) -> None:
+    """A Model Score a capture below drains writes its scored parts a batch at a time.
+
+    Left a row-local scan, the join's capture pulled it whole through Polars,
+    which applies no backpressure to a Python source: every scored batch sat
+    in memory before the capture wrote it (a 10M-row preview hit its cap).
+    """
+    from unittest.mock import MagicMock, patch
+
+    import haute._model_scorer as model_scorer
+    from haute._mlflow_io import ScoringModel
+
+    monkeypatch.setattr(model_scorer, "_SCORE_BATCH_SIZE", 30)
+    raw = MagicMock()
+    raw.feature_names_ = ["a"]
+    raw.predict.side_effect = lambda x: np.full(len(x), 0.5)
+    raw.get_cat_feature_indices.return_value = []
+    del raw.predict_proba
+    scoring = ScoringModel(
+        model=raw, feature_names=["a"], cat_feature_names=frozenset(), flavor="catboost"
+    )
+    score_config = {
+        "sourceType": "run",
+        "run_id": "abc123",
+        "artifact_path": "model.cbm",
+        "task": "regression",
+        "output_column": "pred",
+        "code": post_code,
+    }
+    graph = _graph(
+        project,
+        [
+            ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            ("claims", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("score", NodeType.MODEL_SCORE, score_config),
+            ("join", NodeType.POLARS, _code("df = score.join(claims, on='id', how='left')")),
+            ("shown", NodeType.POLARS, _code("df = join.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("policies", "score"), ("score", "join"), ("claims", "join"), ("join", "shown")],
+    )
+
+    with patch("haute._mlflow_io.load_mlflow_model", return_value=scoring):
+        preview = _preview(graph, store, "shown", source="batch")
+
+    assert preview.captures["score"]["write_strategy"] == strategy
+    if strategy == "prewritten":
+        # The scorer's own parts are the capture: one per 30-row batch.
+        from haute._chunked_writes import part_paths
+
+        capture = preview.captures["score"]
+        generation = (
+            store.inputs_root
+            / capture["identity_digest"]
+            / "generations"
+            / capture["generation_id"]
+        )
+        assert len(part_paths(generation)) == 4
+    shown = preview.rows("shown")
+    assert shown["pred"].to_list() == [0.5] * shown.height

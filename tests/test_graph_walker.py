@@ -333,6 +333,49 @@ def test_a_display_walk_records_node_failures_when_the_policy_says_so(
         walk_graph(graph, _build_node_fn, policy=CollectPolicy.display())
 
 
+@pytest.mark.parametrize("budgeted", [True, False])
+def test_a_native_allocation_failure_ends_the_walk_as_a_memory_error(
+    haute_scratch: Path, budgeted: bool
+) -> None:
+    """A bare MemoryError is the run exceeding its memory cap, never the node's own failure.
+
+    Native code (CatBoost's ``bad allocation``) fails an allocation the
+    process's cap refuses with a bare MemoryError; recorded at the node it
+    read as a fault of whichever node happened to allocate.
+    """
+    from haute._execution_context import ExecutionMemoryLimitExceededError, current_rss_bytes
+
+    graph = _chain_graph(haute_scratch)
+    graph.nodes[1] = _node("double", NodeType.POLARS, code="raise MemoryError('bad allocation')")
+    limit = 4 * 1024**3
+    context = (
+        ExecutionContext(
+            "pipeline_preview",
+            ExecutionProfile.PREVIEW_EAGER,
+            memory_limit_bytes=limit,
+            memory_baseline_bytes=current_rss_bytes(),
+        )
+        if budgeted
+        else None
+    )
+
+    with pytest.raises(MemoryError) as raised:
+        walk_graph(
+            graph,
+            _build_node_fn,
+            policy=CollectPolicy.display(record_failures=True),
+            execution_context=context,
+        )
+
+    if budgeted:
+        assert isinstance(raised.value, ExecutionMemoryLimitExceededError)
+        assert raised.value.limit_bytes == limit
+        assert "memory growth budget" in str(raised.value)
+    else:
+        # No budget to name: the allocation failure itself ends the walk.
+        assert type(raised.value) is MemoryError
+
+
 @pytest.mark.parametrize(
     ("limits", "message"),
     [

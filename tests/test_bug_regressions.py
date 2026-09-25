@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -80,7 +81,7 @@ class TestBugB12ZeroRowBatchScoring:
         # Should produce a valid parquet file, not crash
         result = pl.read_parquet(out_path)
         assert len(result) == 0
-        os.unlink(out_path)
+        shutil.rmtree(out_path)
 
 
 # ---------------------------------------------------------------------------

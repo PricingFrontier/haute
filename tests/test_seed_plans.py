@@ -1218,6 +1218,31 @@ def test_preview_never_captures_a_plain_fan_out_feeder_target_or_model_score(
     assert _kinds(resolve_seed_plan(_preview(scored, "Y", source="batch"), store=store)) == {}
 
 
+@pytest.mark.parametrize(("source", "captured"), [("batch", True), ("live", False)])
+def test_preview_captures_a_batch_model_score_a_capture_below_drains(
+    project: Path, store: NodeSnapshotStore, source: str, captured: bool
+) -> None:
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("M", NodeType.MODEL_SCORE, {}),
+            ("J", NodeType.POLARS, _code("df = M.join(other, on='id', how='left')")),
+            ("Y", NodeType.POLARS, _code("df = J.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("src", "M"), ("M", "J"), ("other", "J"), ("J", "Y")],
+    )
+    # ``J`` writes every row of ``M``: a row-local scan drained whole would
+    # hold the scored frame in memory, so ``M`` writes its own scored parts.
+    expected = {"J": CaptureKind.MATERIALISING}
+    if captured:
+        expected["M"] = CaptureKind.MODEL_SCORE
+    assert _kinds(resolve_seed_plan(_preview(graph, "Y", source=source), store=store)) == expected
+    # Previewing the scorer itself drains nothing: it still scores row-locally.
+    assert _kinds(resolve_seed_plan(_preview(graph, "M", source=source), store=store)) == {}
+
+
 def test_preview_may_seed_its_target(project: Path, store: NodeSnapshotStore) -> None:
     graph = _joined(project)
     j1 = _publish(store, graph, "J")

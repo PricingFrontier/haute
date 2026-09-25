@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -898,7 +899,6 @@ class TestEagerBatchProbaAgreement:
     """
 
     def _batch_score(self, sm, score_df, tmp_path, output_col="pred"):
-        import os
 
         from haute._model_scorer import _batch_score_to_parquet
 
@@ -914,7 +914,7 @@ class TestEagerBatchProbaAgreement:
         try:
             return pl.read_parquet(out_path)
         finally:
-            os.unlink(out_path)
+            shutil.rmtree(out_path)
 
     def test_binary_catboost_eager_and_batch_probas_identical(self, tmp_path):
         """Real binary CatBoost: eager and batch proba columns are bit-equal."""
@@ -1015,6 +1015,8 @@ def _patch_rustystats(mock_model):
     install the mocked ``rustystats`` module.
     """
     mock_rs = MagicMock()
+    # A real exception class: the loader catches RustyStats' schema refusal.
+    mock_rs.exceptions.ValidationError = type("ValidationError", (Exception,), {})
     mock_model.terms_dict = {}
     mock_rs.GLMModel.from_bytes.return_value = mock_model
     return mock_rs, patch.dict(sys.modules, {"rustystats": mock_rs})
@@ -1028,6 +1030,16 @@ def _write_rsglm(tmp_path, contents=b"fake_bytes"):
 
 
 class TestLoadRustystatsModel:
+    def test_model_from_an_older_schema_is_a_config_error(self, tmp_path):
+        """A GLM pickled before the RustyStats 0.9 schema asks to be retrained."""
+        import pickle
+
+        from haute.errors import ConfigError
+
+        path = _write_rsglm(tmp_path, pickle.dumps({"result_state": {}}))
+        with pytest.raises(ConfigError, match=r"schema_version None.*Retrain it"):
+            _load_rustystats_model(path)
+
     def test_encoding_aliases_resolve_to_unique_raw_columns(self, tmp_path):
         mock_model = MagicMock()
         mock_model.required_columns = ["region_fe", "region", "age", "offset", "complement"]
@@ -1151,6 +1163,7 @@ class TestLoadRustystatsModel:
         a swallowed error would silently produce a malformed ScoringModel.
         """
         mock_rs = MagicMock()
+        mock_rs.exceptions.ValidationError = type("ValidationError", (Exception,), {})
         mock_rs.GLMModel.from_bytes.side_effect = ValueError("corrupt artifact")
 
         with patch.dict(sys.modules, {"rustystats": mock_rs}):

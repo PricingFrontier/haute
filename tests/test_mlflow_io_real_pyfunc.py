@@ -23,6 +23,7 @@ detectably wrong values rather than coincidentally right ones.
 
 from __future__ import annotations
 
+import shutil
 from typing import Any
 
 import numpy as np
@@ -152,7 +153,6 @@ class TestNamedColumnContract:
 
     def test_batch_scoring_real_pyfunc_end_to_end(self, named_signature_pyfunc, tmp_path):
         """The batch production surface scores a real named-signature model."""
-        import os
 
         from haute._model_scorer import _batch_score_to_parquet
 
@@ -165,7 +165,7 @@ class TestNamedColumnContract:
         try:
             result = pl.read_parquet(out_path)
         finally:
-            os.unlink(out_path)
+            shutil.rmtree(out_path)
         assert result["pred"].to_list() == [2.0, 0.0]
 
     def test_signatureless_pyfunc_still_scores_named_frame(self, signatureless_pyfunc):

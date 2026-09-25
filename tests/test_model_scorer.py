@@ -14,8 +14,10 @@ All MLflow and CatBoost dependencies are mocked.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -679,7 +681,7 @@ class TestBatchScoreToParquet:
             assert "pred" in result.columns
             assert len(result) == 3
         finally:
-            os.unlink(out_path)
+            shutil.rmtree(out_path)
 
     def test_classification_with_proba(self, tmp_path):
         """Classification with predict_proba produces both pred and pred_proba columns."""
@@ -707,7 +709,7 @@ class TestBatchScoreToParquet:
             assert "pred_proba" in result.columns
             assert len(result) == 2
         finally:
-            os.unlink(out_path)
+            shutil.rmtree(out_path)
 
     def test_classification_without_proba(self, tmp_path):
         """Classification model without predict_proba only produces pred column."""
@@ -734,7 +736,7 @@ class TestBatchScoreToParquet:
             assert "pred" in result.columns
             assert "pred_proba" not in result.columns
         finally:
-            os.unlink(out_path)
+            shutil.rmtree(out_path)
 
     def test_predict_failure_removes_partial_output_parquet(self, tmp_path, monkeypatch):
         """Batch parquet output must not survive when prediction fails mid-write."""
@@ -746,15 +748,15 @@ class TestBatchScoreToParquet:
         sm = _make_scoring_model(feature_names=["a"])
         sm._model.predict.side_effect = RuntimeError("boom")
         created_paths: list[str] = []
-        real_mkstemp = tempfile.mkstemp
+        real_mkdtemp = tempfile.mkdtemp
 
-        def tracked_mkstemp(*args, **kwargs):
+        def tracked_mkdtemp(*args, **kwargs):
             kwargs["dir"] = tmp_path
-            fd, path = real_mkstemp(*args, **kwargs)
+            path = real_mkdtemp(*args, **kwargs)
             created_paths.append(path)
-            return fd, path
+            return path
 
-        monkeypatch.setattr(tempfile, "mkstemp", tracked_mkstemp)
+        monkeypatch.setattr(tempfile, "mkdtemp", tracked_mkdtemp)
 
         with pytest.raises(RuntimeError, match="boom"):
             _batch_score_to_parquet(
@@ -780,15 +782,15 @@ class TestBatchScoreToParquet:
         sm = _make_scoring_model(feature_names=["a"])
         sm._model.predict.side_effect = [np.array([0.5]), RuntimeError("second batch")]
         created_paths: list[str] = []
-        real_mkstemp = tempfile.mkstemp
+        real_mkdtemp = tempfile.mkdtemp
 
-        def tracked_mkstemp(*args, **kwargs):
+        def tracked_mkdtemp(*args, **kwargs):
             kwargs["dir"] = tmp_path
-            fd, path = real_mkstemp(*args, **kwargs)
+            path = real_mkdtemp(*args, **kwargs)
             created_paths.append(path)
-            return fd, path
+            return path
 
-        monkeypatch.setattr(tempfile, "mkstemp", tracked_mkstemp)
+        monkeypatch.setattr(tempfile, "mkdtemp", tracked_mkdtemp)
         monkeypatch.setattr(model_scorer, "_SCORE_BATCH_SIZE", 1)
 
         with pytest.raises(RuntimeError, match="second batch"):
@@ -807,15 +809,15 @@ class TestBatchScoreToParquet:
         input_path.write_bytes(b"not parquet")
         sm = _make_scoring_model(feature_names=["a"])
         created_paths: list[str] = []
-        real_mkstemp = tempfile.mkstemp
+        real_mkdtemp = tempfile.mkdtemp
 
-        def tracked_mkstemp(*args, **kwargs):
+        def tracked_mkdtemp(*args, **kwargs):
             kwargs["dir"] = tmp_path
-            fd, path = real_mkstemp(*args, **kwargs)
+            path = real_mkdtemp(*args, **kwargs)
             created_paths.append(path)
-            return fd, path
+            return path
 
-        monkeypatch.setattr(tempfile, "mkstemp", tracked_mkstemp)
+        monkeypatch.setattr(tempfile, "mkdtemp", tracked_mkdtemp)
 
         with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: testing cleanup behavior, not exception type
             _batch_score_to_parquet(
@@ -1388,7 +1390,7 @@ class TestRegisterTempCleanup:
 
     def test_active_temp_file_scope_tracks_batch_output(self, tmp_path, monkeypatch):
         """Batch scorers built outside deploy hooks can still expose request temps."""
-        scored_path = tmp_path / "haute_score_out_scoped.parquet"
+        scored_path = tmp_path / "haute_score_out_scoped"
         input_path = tmp_path / "haute_score_in_scoped.parquet"
         pl.DataFrame({"a": [1.0]}).write_parquet(input_path)
         sm = _make_scoring_model(feature_names=["a"])
@@ -1397,7 +1399,10 @@ class TestRegisterTempCleanup:
             return str(input_path)
 
         def fake_batch_score(*_args, **_kwargs):
-            pl.DataFrame({"a": [1.0], "prediction": [0.5]}).write_parquet(scored_path)
+            scored_path.mkdir()
+            pl.DataFrame({"a": [1.0], "prediction": [0.5]}).write_parquet(
+                scored_path / "part-00000.parquet"
+            )
             return str(scored_path)
 
         monkeypatch.setattr("haute._model_scorer._sink_to_temp", fake_sink_to_temp)
@@ -1499,7 +1504,7 @@ class TestBatchScoreToParquetMultiBatch:
             assert "pred" in result.columns
             # predict should have been called 3 times (2+2+1)
             assert sm._model.predict.call_count == 3
-            os.unlink(out_path)
+            shutil.rmtree(out_path)
         finally:
             mod._SCORE_BATCH_SIZE = original_batch_size
 
@@ -1542,7 +1547,7 @@ class TestBatchScoreToParquetSeriesConversion:
             assert "pred" in result.columns
             assert len(result) == 3
         finally:
-            os.unlink(out_path)
+            shutil.rmtree(out_path)
 
 
 class TestBatchScoreToParquetEmpty:
@@ -1573,7 +1578,7 @@ class TestBatchScoreToParquetEmpty:
             assert "pred" in result.columns
             assert "a" in result.columns
         finally:
-            os.unlink(out_path)
+            shutil.rmtree(out_path)
 
     def test_empty_input_classification_includes_proba_col(self, tmp_path):
         """Empty classification input produces empty parquet with proba column."""
@@ -1603,7 +1608,7 @@ class TestBatchScoreToParquetEmpty:
             assert "pred" in result.columns
             assert "pred_proba" in result.columns
         finally:
-            os.unlink(out_path)
+            shutil.rmtree(out_path)
 
 
 class TestBatchScoreToParquetEmptyDtype:
@@ -1626,7 +1631,7 @@ class TestBatchScoreToParquetEmptyDtype:
         try:
             ne_dtype = pl.read_parquet_schema(out_ne)["pred"]
         finally:
-            os.unlink(out_ne)
+            shutil.rmtree(out_ne)
 
         # Empty input, same model shape.
         e_path = str(tmp_path / "e.parquet")
@@ -1638,7 +1643,7 @@ class TestBatchScoreToParquetEmptyDtype:
         try:
             e_dtype = pl.read_parquet_schema(out_e)["pred"]
         finally:
-            os.unlink(out_e)
+            shutil.rmtree(out_e)
 
         assert ne_dtype == pl.Int64
         assert e_dtype == ne_dtype
@@ -1691,7 +1696,7 @@ class TestBatchScoreToParquetEmptyDtype:
         try:
             schema = pl.read_parquet_schema(out_path)
         finally:
-            os.unlink(out_path)
+            shutil.rmtree(out_path)
 
         assert {column: schema[column] for column in expected_columns} == expected_columns
 
@@ -1718,7 +1723,7 @@ class TestBatchScoreToParquetEmptyDtype:
         try:
             ne_schema = pl.read_parquet_schema(out_ne)
         finally:
-            os.unlink(out_ne)
+            shutil.rmtree(out_ne)
 
         # Empty input, same model shape.
         e_path = str(tmp_path / "e.parquet")
@@ -1734,7 +1739,7 @@ class TestBatchScoreToParquetEmptyDtype:
         try:
             e_schema = pl.read_parquet_schema(out_e)
         finally:
-            os.unlink(out_e)
+            shutil.rmtree(out_e)
 
         assert ne_schema["pred_proba"] == pl.Float64
         assert e_schema["pred_proba"] == ne_schema["pred_proba"]
@@ -1789,8 +1794,8 @@ class TestBatchScoreToParquetEmptyDtype:
             nonempty_dtype = pl.read_parquet_schema(nonempty_output)["pred"]
             empty_dtype = pl.read_parquet_schema(empty_output)["pred"]
         finally:
-            os.unlink(nonempty_output)
-            os.unlink(empty_output)
+            shutil.rmtree(nonempty_output)
+            shutil.rmtree(empty_output)
 
         assert nonempty_dtype == expected_dtype
         assert empty_dtype == nonempty_dtype
@@ -2013,24 +2018,33 @@ def test_supported_flavors_derived_from_modelflavor_literal():
 
 
 @pytest.mark.parametrize(
-    "input_df",
+    ("input_df", "batch_rows", "expected_parts"),
     [
-        pl.DataFrame({"a": [1.0, 2.0, 3.0], "b": [4.0, 5.0, 6.0]}),
-        pl.DataFrame({"a": [], "b": []}, schema={"a": pl.Float64, "b": pl.Float64}),
+        (pl.DataFrame({"a": [1.0, 2.0, 3.0], "b": [4.0, 5.0, 6.0]}), 500_000, 1),
+        (pl.DataFrame({"a": [1.0, 2.0, 3.0], "b": [4.0, 5.0, 6.0]}), 2, 2),
+        (pl.DataFrame({"a": [], "b": []}, schema={"a": pl.Float64, "b": pl.Float64}), 2, 1),
     ],
-    ids=["non-empty", "empty"],
+    ids=["one-batch", "two-batches", "empty"],
 )
-def test_prewritten_scored_generation_carries_its_digest(
+def test_prewritten_scored_generation_carries_a_digest_per_part(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     input_df: pl.DataFrame,
+    batch_rows: int,
+    expected_parts: int,
 ) -> None:
-    dest_path = tmp_path / "part-00000.parquet"
+    """Each scored batch is its own part, written as soon as it is scored."""
+    import haute._model_scorer as model_scorer
+    from haute._chunked_writes import part_paths
+
+    monkeypatch.setattr(model_scorer, "_SCORE_BATCH_SIZE", batch_rows)
+    dest_dir = tmp_path / "generation"
     model = MagicMock()
     model.feature_names_ = ["a", "b"]
     model.predict.side_effect = lambda x: np.full(len(x), 0.5, dtype=np.float64)
     del model.predict_proba
 
-    with model_score_output_destination(dest_path) as destination:
+    with model_score_output_destination(dest_dir) as destination:
         res_lf = score_frame(
             model=model,
             lf=input_df.lazy(),
@@ -2043,13 +2057,15 @@ def test_prewritten_scored_generation_carries_its_digest(
         )
         collected = res_lf.collect()
 
+        parts = part_paths(dest_dir)
         assert destination.used is True
-        assert destination.digest is not None
-        assert destination.digest == content_hash(dest_path)
-        from_disk = pl.read_parquet(dest_path)
+        assert len(parts) == expected_parts
+        assert destination.digests == {part.name: content_hash(part) for part in parts}
+        from_disk = pl.read_parquet(parts)
         assert_frame_equal(collected, from_disk)
+        assert collected.height == input_df.height
 
-        digest_before = destination.digest
+        digests_before = dict(destination.digests)
         second_lf = score_frame(
             model=model,
             lf=input_df.lazy(),
@@ -2061,5 +2077,39 @@ def test_prewritten_scored_generation_carries_its_digest(
             batch=True,
         )
         second_collected = second_lf.collect()
-        assert destination.digest == digest_before
+        assert destination.digests == digests_before
         assert_frame_equal(second_collected, from_disk)
+
+
+@pytest.mark.parametrize(("whole_output", "python_scan"), [(False, True), (True, False)])
+def test_a_captured_scorer_writes_every_row_in_batches_under_a_row_limit(
+    monkeypatch: pytest.MonkeyPatch, whole_output: bool, python_scan: bool
+) -> None:
+    """Under a preview limit a scorer scans row-locally, unless a capture takes its output.
+
+    Polars pulls a Python scan with no backpressure, so a capture draining one
+    whole held every scored batch in memory; captured, the scorer writes its
+    scored parts a batch at a time and hands back a parquet scan.
+    """
+    import haute._model_scorer as model_scorer
+    from haute._model_scorer import model_score_whole_output
+
+    monkeypatch.setattr(model_scorer, "_SCORE_BATCH_SIZE", 2)
+    sm = _make_scoring_model(feature_names=["a", "b"])
+    sm.raw_model.predict.side_effect = lambda x: np.full(len(x), 0.5)
+    lf = pl.DataFrame({"a": [1.0, 2.0, 3.0, 4.0, 5.0], "b": [5.0, 4.0, 3.0, 2.0, 1.0]}).lazy()
+
+    scope = model_score_whole_output() if whole_output else contextlib.nullcontext()
+    temp_paths: list[str] = []
+    with scope, model_score_temp_file_scope(temp_paths):
+        result_lf = _run_score_pipeline(
+            sm, lf, task="regression", output_col="pred", source="batch", row_limit=2
+        )
+    try:
+        assert ("PYTHON SCAN" in result_lf.explain()) is python_scan
+        # Captured, every row is scored while the scorer builds, 2 rows a
+        # batch; a row-local scan scores nothing until it is read.
+        assert sm.raw_model.predict.call_count == (3 if whole_output else 0)
+        assert result_lf.collect()["pred"].to_list() == [0.5] * 5
+    finally:
+        _cleanup_registered_temp_files(temp_paths)
