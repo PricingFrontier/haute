@@ -64,6 +64,14 @@ round starts.
 - `SUB-R01`: `@pipeline.instance` and `instanceOf` are rejected; **Create
   Instance** makes a one-node submodel with a second occurrence.
 
+## Separate track: optimiser validation
+
+The [optimiser validation](optimiser-validation.md) packages (`OPT-V01` to
+`OPT-V13`, with `OPT-PC01` to `OPT-PC03` in price_contour) are delivered
+together as one PR on their own branch, outside the rounds above, in the
+wave order their roadmap gives. They touch the optimiser routes and
+workspace; if a round above changes the same files first, rebase onto it.
+
 ## Not scheduled
 
 Deferred packages start only when their trigger is met: `ROAD-WORKER-04`
