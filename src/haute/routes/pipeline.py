@@ -1440,6 +1440,9 @@ async def _preview_canonical_graph(
             cancel=preview_token.cancel,
             # Until it starts, a request queued for a work slot holds nothing.
             started=lambda: preview_started,
+            # A thread still running past its response timeout keeps its
+            # admission until it finishes; the handler below defers the release.
+            propagate=(BlockingWorkTimeoutError,),
             detail="The client closed the preview request before it finished.",
         )
         return response

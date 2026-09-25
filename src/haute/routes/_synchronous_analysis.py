@@ -121,6 +121,7 @@ async def await_until_disconnected(
     *,
     cancel: Callable[[], None],
     started: Callable[[], bool] | None = None,
+    propagate: tuple[type[BaseException], ...] = (),
     poll_seconds: float = CLIENT_DISCONNECT_POLL_SECONDS,
     detail: str = "The client closed the request before it finished.",
 ) -> ResultT:
@@ -131,6 +132,11 @@ async def await_until_disconnected(
     releases its admission before this returns. Work that has not *started*
     (still queued for a slot) holds nothing yet, so its task is cancelled
     outright instead of waiting for a slot it no longer needs.
+
+    Abandoned work's outcome is discarded, except an error of a *propagate*
+    type: that is raised in place of the 499 or the cancellation, because the
+    caller must still act on it (a response timeout whose thread still runs
+    defers the caller's release of admission until that thread finishes).
     """
     task = asyncio.ensure_future(work)
     try:
@@ -141,11 +147,23 @@ async def await_until_disconnected(
             if await request.is_disconnected():
                 _abandon(task, cancel, started)
                 await _stopped(task)
+                _raise_propagated(task, propagate)
                 raise HTTPException(status_code=CLIENT_CLOSED_REQUEST_STATUS, detail=detail)
     except asyncio.CancelledError:
         _abandon(task, cancel, started)
         await _stopped(task)
+        _raise_propagated(task, propagate)
         raise
+
+
+def _raise_propagated(
+    task: asyncio.Future[ResultT], propagate: tuple[type[BaseException], ...]
+) -> None:
+    if not propagate or task.cancelled():
+        return
+    error = task.exception()
+    if isinstance(error, propagate):
+        raise error
 
 
 def _abandon(

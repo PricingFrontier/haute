@@ -773,6 +773,10 @@ that analysis reports, before answering 499 or propagating the cancellation.
 routes): it cancels running work through the given `cancel` callback and cancels the task outright
 only while `started()` says the work has not begun. It keeps waiting through repeated
 cancellations of the request task, so admission is never released under work still running.
+Abandoned work's outcome is discarded except an error of a `propagate` type, which is raised
+in place of the 499 or the cancellation: the preview routes propagate
+`BlockingWorkTimeoutError`, so a thread still running past its response timeout keeps its
+admission until it finishes, as it does for a connected client.
 
 ### Rating factor levels
 

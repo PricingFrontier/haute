@@ -14,6 +14,7 @@ import type { SimpleEdge, SimpleNode } from "../editors"
 import ExplorePreview from "../ExplorePreview"
 import type { ExploreDataView } from "../explore/exploreDataView"
 import { PREVIEW_PANEL_DIMENSIONS } from "../previewPanelLayout"
+import { PreviewRunContext } from "../previewRunContext"
 
 const mockGetNodeDataPoint = vi.fn()
 const mockRunNodeData = vi.fn()
@@ -271,6 +272,23 @@ function renderExplore(
       previewData={previewData}
       onRefresh={onRefresh}
     />,
+  )
+}
+
+/** Explore while other work of its node runs, so its frame shows Stop. */
+function renderExploreRunning() {
+  return render(
+    <PreviewRunContext.Provider value={{ running: true, onStop: vi.fn() }}>
+      <ExplorePreview
+        node={exploreNode}
+        allNodes={[sourceNode, exploreNode]}
+        edges={edges}
+        submodels={{}}
+        preamble="import polars as pl"
+        previewData={null}
+        onRefresh={vi.fn()}
+      />
+    </PreviewRunContext.Provider>,
   )
 }
 
@@ -806,6 +824,55 @@ describe("ExplorePreview", () => {
     })
 
     expect(mockCancelNodeData).toHaveBeenCalledWith("profile-1")
+  })
+
+  it("cancels a profile whose job id arrives after Stop was pressed", async () => {
+    const currentPoint = point("current", DATA_VERSION)
+    mockGetNodeDataPoint.mockResolvedValue(currentPoint)
+    let answer!: (value: unknown) => void
+    mockGetNodeDataProfile.mockImplementation(() => new Promise((resolve) => { answer = resolve }))
+    mockCancelNodeData.mockResolvedValue({ status: "cancelled", progress: 0, message: "Cancelled" })
+    // The node's other work is running, so its frame offers Stop.
+    renderExploreRunning()
+    await waitFor(() => expect(mockGetNodeDataProfile).toHaveBeenCalled())
+
+    // No job id yet: Stop still records that this node's profiling is stopped.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("preview-stop"))
+    })
+    await act(async () => {
+      answer({ status: "started", job_id: "late-profile", message: "Profiling data", point: currentPoint })
+    })
+
+    await waitFor(() => expect(mockCancelNodeData).toHaveBeenCalledWith("late-profile"))
+  })
+
+  it("leaves a profile joined from elsewhere running when this node stops", async () => {
+    const currentPoint = point("current", DATA_VERSION)
+    mockGetNodeDataPoint.mockResolvedValue(currentPoint)
+    mockGetNodeDataProfile.mockResolvedValue({
+      status: "joined",
+      job_id: "their-profile",
+      message: "Profiling data",
+      point: currentPoint,
+    })
+    renderExplore(null, exploreNode, vi.fn())
+    await waitFor(() =>
+      expect(useNodeDataStore.getState().profileJobs[SLOT_KEY]?.jobId).toBe("their-profile"),
+    )
+
+    // Not this node's work: its frame offers Refresh, not Stop.
+    expect(screen.queryByTestId("preview-stop")).toBeNull()
+    cleanup()
+    renderExploreRunning()
+    // Pressed once this consumer reads the point, so its Stop sees the job.
+    await waitFor(() =>
+      expect(screen.getByTestId("explore-preview-body")).toHaveAttribute("data-availability", "current"),
+    )
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("preview-stop"))
+    })
+    expect(mockCancelNodeData).not.toHaveBeenCalled()
   })
 
   it("asks for a failed profile again when Refresh is pressed", async () => {

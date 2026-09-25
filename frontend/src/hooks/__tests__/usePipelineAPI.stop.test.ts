@@ -10,6 +10,8 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useToastStore from "../../stores/useToastStore"
+import useNodeDataStore from "../../stores/useNodeDataStore"
+import useUIStore from "../../stores/useUIStore"
 
 vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
@@ -230,5 +232,55 @@ describe("usePipelineAPI - Stop", () => {
 
     await waitFor(() => expect(result.current.previewData?.row_count).toBe(3))
     expect(result.current.previewBusy).toBe(false)
+  })
+
+  it("does not run a stopped preview again when its data changed under it", async () => {
+    useUIStore.getState().setCalculationMode("automatic")
+    const node = makeNode("A")
+    const { result } = await renderPipelineAPI([node])
+    mockPreview.mockResolvedValueOnce(okPreview)
+    act(() => result.current.refreshPreview(node))
+    await waitFor(() => expect(result.current.previewData?.row_count).toBe(3))
+
+    mockPreview.mockImplementationOnce(hangUntilAborted)
+    act(() => result.current.refreshPreview(node))
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2))
+    // Data changed while the second run was in flight.
+    act(() => useNodeDataStore.getState().bumpEpoch())
+
+    act(() => result.current.stopPreview())
+    await waitFor(() => expect(result.current.previewBusy).toBe(false))
+    await new Promise((resolve) => setTimeout(resolve, 300))
+
+    expect(mockPreview).toHaveBeenCalledTimes(2)
+    expect(result.current.previewData?.row_count).toBe(3)
+  })
+
+  it("keeps a frame preview running when its snapshot build refuses to stop, and retries on Stop", async () => {
+    const node = makeNode("A")
+    const { result } = await renderPipelineAPI([node])
+    mockPreviewInputs.mockResolvedValue({ input_node_ids: ["source"] })
+    mockStatus.mockResolvedValue({ schema_version: 1, identity_digest: "d", state: "missing", freshness: "unknown", generation: null } as never)
+    mockBuild.mockResolvedValue({ schema_version: 1, job_id: "build-1", identity_digest: "d", status: "running", joined: false, forced: false, build_class: "bounded" } as never)
+    mockJob.mockImplementation(async () => ({ status: "running", progress: { phase: "reading", rows: 0, batches: 0, bytes: 0, elapsed_seconds: 0 } }) as never)
+    mockCancelJob
+      .mockRejectedValueOnce(new Error("cancel route unreachable"))
+      .mockResolvedValueOnce({ status: "cancelled" } as never)
+
+    act(() => result.current.previewNodeFrame("A", "quotes"))
+    await waitFor(() => expect(mockJob).toHaveBeenCalled())
+
+    act(() => result.current.stopPreview())
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.some((toast) => toast.text.includes("Stopping failed"))).toBe(true),
+    )
+    expect(result.current.previewBusy).toBe(true)
+
+    await act(async () => {
+      result.current.stopPreview()
+    })
+    await waitFor(() => expect(result.current.previewBusy).toBe(false))
+    expect(mockCancelJob).toHaveBeenCalledTimes(2)
+    expect(mockPreview).not.toHaveBeenCalled()
   })
 })

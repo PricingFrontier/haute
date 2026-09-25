@@ -5,11 +5,7 @@ import {
   getInputCacheJob,
   getInputCacheStatus,
 } from "../api/client"
-import {
-  TERMINAL_JOB_STATUSES,
-  type InputCacheJobStatusResponse,
-  type InputCacheProgress,
-} from "../api/types"
+import { TERMINAL_JOB_STATUSES, type InputCacheJobStatusResponse } from "../api/types"
 import { inputSnapshotSource, type SnapshotSource } from "../utils/inputSnapshotSource"
 import { JobWaitTimeoutError, waitForJob } from "./jobPollingController"
 
@@ -29,13 +25,39 @@ const MAX_BUILD_ATTEMPTS = 3
 export class CancellationFailedError extends Error {
   override name = "CancellationFailed"
 
-  /** The build that may still be running, so the caller can cancel it again. */
-  readonly jobId: string
+  /** Every build that may still be running, so the caller can cancel them again. */
+  readonly jobIds: string[]
 
-  constructor(message: string, jobId: string) {
+  constructor(message: string, jobIds: string[]) {
     super(message)
-    this.jobId = jobId
+    this.jobIds = jobIds
   }
+}
+
+function isCancellationFailed(error: unknown): error is CancellationFailedError {
+  return (error as { name?: unknown } | null)?.name === "CancellationFailed"
+}
+
+/**
+ * Cancel each build again and wait for it to stop. Raises a
+ * `CancellationFailedError` naming only the builds that still did not stop.
+ */
+export async function cancelInputSnapshotBuilds(jobIds: string[]): Promise<void> {
+  const outcomes = await Promise.allSettled(jobIds.map((jobId) => cancelInputSnapshotBuild(jobId)))
+  const failures = outcomes.flatMap((outcome) =>
+    outcome.status === "rejected" && isCancellationFailed(outcome.reason) ? [outcome.reason] : [],
+  )
+  const other = outcomes.find(
+    (outcome): outcome is PromiseRejectedResult =>
+      outcome.status === "rejected" && !isCancellationFailed(outcome.reason),
+  )
+  if (failures.length > 0) {
+    throw new CancellationFailedError(
+      failures.map((failure) => failure.message).join(" "),
+      failures.flatMap((failure) => failure.jobIds),
+    )
+  }
+  if (other) throw other.reason
 }
 
 export interface EnsureInputSnapshotsOptions {
@@ -57,8 +79,11 @@ export interface EnsureInputSnapshotsOptions {
    * from elsewhere is not reported: aborting only stops waiting for it.
    */
   onJobStarted?: (jobId: string) => void
-  /** Each running status of a build this pass waits for (rows read so far, phase). */
-  onBuildProgress?: (progress: InputCacheProgress) => void
+  /**
+   * Each running status of a build this pass waits for. Only a `bounded` build
+   * streams its row count; an admitted-eager one reports none until it ends.
+   */
+  onBuildProgress?: (job: InputCacheJobStatusResponse) => void
 }
 
 function abortError(): DOMException {
@@ -70,7 +95,7 @@ async function waitForBuild(
   jobId: string,
   signal: AbortSignal | undefined,
   owned: boolean,
-  onBuildProgress?: (progress: InputCacheProgress) => void,
+  onBuildProgress?: (job: InputCacheJobStatusResponse) => void,
 ): Promise<InputCacheJobStatusResponse> {
   try {
     return await waitForJob({
@@ -79,7 +104,7 @@ async function waitForBuild(
       intervalMs: POLL_INTERVAL_MS,
       signal,
       onStatus: (current) => {
-        if (current.status === "running") onBuildProgress?.(current.progress)
+        if (current.status === "running") onBuildProgress?.(current)
       },
     })
   } catch (caught) {
@@ -109,7 +134,7 @@ export async function cancelInputSnapshotBuild(jobId: string): Promise<void> {
       `The snapshot build could not be cancelled: ${
         caught instanceof Error ? caught.message : String(caught)
       }`,
-      jobId,
+      [jobId],
     )
   }
   if (TERMINAL_JOB_STATUSES.has(acknowledged.status as never)) return
@@ -124,7 +149,7 @@ export async function cancelInputSnapshotBuild(jobId: string): Promise<void> {
     if (caught instanceof JobWaitTimeoutError) {
       throw new CancellationFailedError(
         "The snapshot build did not stop after it was cancelled; it may still be running.",
-        jobId,
+        [jobId],
       )
     }
     // The build was asked to stop but its state is unknown, which is a
@@ -134,7 +159,7 @@ export async function cancelInputSnapshotBuild(jobId: string): Promise<void> {
       `The snapshot build could not be confirmed as stopped: ${
         caught instanceof Error ? caught.message : String(caught)
       }`,
-      jobId,
+      [jobId],
     )
   }
 }
@@ -181,9 +206,22 @@ export async function ensureInputSnapshots(
     }
   }
 
-  await Promise.all(
+  // Every build settles before this returns, so a stop whose cancellations
+  // fail names every build still running, not only the first to fail.
+  const outcomes = await Promise.allSettled(
     dataInputs.map((source) => ensureSnapshot(source, options, notifyBuildStart)),
   )
+  const rejected = outcomes.flatMap((outcome) =>
+    outcome.status === "rejected" ? [outcome.reason as unknown] : [],
+  )
+  const failedCancellations = rejected.filter(isCancellationFailed)
+  if (failedCancellations.length > 0) {
+    throw new CancellationFailedError(
+      failedCancellations.map((failure) => failure.message).join(" "),
+      failedCancellations.flatMap((failure) => failure.jobIds),
+    )
+  }
+  if (rejected.length > 0) throw rejected[0]
 }
 
 async function ensureSnapshot(

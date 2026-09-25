@@ -175,6 +175,8 @@ type ActiveNodePreviewProps = {
   tracedCell: { rowIndex: number; column: string } | null
   previewNodeFrame: (nodeId: string, portLabel: string) => unknown
   onRefresh: () => void
+  /** After an Import of *nodeId* completes: re-preview it if it is still open. */
+  onImported: (nodeId: string) => void
   /** Whether the active node's work is running, and what stops it. */
   run: PreviewRun
 }
@@ -194,6 +196,7 @@ function ActiveNodePreview({
   tracedCell,
   previewNodeFrame,
   onRefresh,
+  onImported,
   run,
 }: ActiveNodePreviewProps) {
   return (
@@ -213,6 +216,7 @@ function ActiveNodePreview({
         tracedCell={tracedCell}
         previewNodeFrame={previewNodeFrame}
         onRefresh={onRefresh}
+        onImported={onImported}
       />
     </PreviewRunContext.Provider>
   )
@@ -233,6 +237,7 @@ function ActiveNodePreviewBody({
   tracedCell,
   previewNodeFrame,
   onRefresh,
+  onImported,
 }: Omit<ActiveNodePreviewProps, "run">) {
   const activeNodeType = activeNode ? effectiveNodeType(activeNode) : undefined
   const canRefresh = activeNode
@@ -311,7 +316,7 @@ function ActiveNodePreviewBody({
       }
       inputAction={
         documentCanExecute && canRefresh && activeNode ? (
-          <InputImportButton node={activeNode} allNodes={panelNodes} onImported={onRefresh} />
+          <InputImportButton node={activeNode} allNodes={panelNodes} onImported={onImported} />
         ) : undefined
       }
     />
@@ -1450,6 +1455,17 @@ function FlowEditor() {
     refreshNodeDataCache(activePanelNodeId)
   }, [activePanelNodeId, refreshPreview])
 
+  // An Import re-previews the node it re-read only while that node's panel is
+  // still open: it belongs to its node, and another node's preview is left alone.
+  const refreshTargetRef = useRef({ nodeId: activePanelNodeId, refresh: handlePanelPreviewRefresh })
+  useEffect(() => {
+    refreshTargetRef.current = { nodeId: activePanelNodeId, refresh: handlePanelPreviewRefresh }
+  }, [activePanelNodeId, handlePanelPreviewRefresh])
+  const handleImported = useCallback((nodeId: string) => {
+    const target = refreshTargetRef.current
+    if (target.nodeId === nodeId) target.refresh()
+  }, [])
+
   // Stop covers the preview and any work a consumer of the node started for it
   // (a shared data build, an Import). Training and optimiser runs keep their
   // own cancel buttons and are never stopped here.
@@ -1512,6 +1528,7 @@ function FlowEditor() {
       tracedCell={tracedCell}
       previewNodeFrame={previewNodeFrame}
       onRefresh={handlePanelPreviewRefresh}
+      onImported={handleImported}
       run={previewRun}
     />
   )

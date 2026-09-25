@@ -280,10 +280,16 @@ reconciliation rather than dropping them or committing a second mutation.
   snapshot build this tab started; one it joined (`joined: true`) is left
   running and only waited on no longer. If that cancellation fails
   (`CancellationFailedError`, which carries the build's `jobId`), the preview
-  stays busy, a toast says so, and the next Stop cancels that build again. A
-  stop while upstream nodes are being previewed runs nothing further. With
-  nothing sent yet (a debounced preview) it settles at once. A new
-  fetch or Refresh supersedes a pending retry.
+  stays busy, a toast says so, and the next Stop cancels them again. The error
+  carries every build that may still be running (`jobIds`): `ensureInputSnapshots`
+  lets all of a pass's builds settle before failing, and `cancelInputSnapshotBuilds`
+  retries each and keeps only those that still did not stop. A stop while
+  upstream nodes are being previewed runs nothing further. With nothing sent yet
+  (a debounced preview) it settles at once. A new fetch or Refresh supersedes a
+  pending retry. Automatic calculation does not re-run the result a stop put
+  back on screen when the node-data epoch moved during the stopped run; Refresh
+  or another preview replaces it. Frame-selection previews (`previewNodeFrame`)
+  share this lifecycle and send a progress request id.
 - **`ensureInputSnapshots`** asks `POST /api/input-cache/build` once per
   snapshot the pass needs, from `inputSnapshotSource` (the one derivation of
   which inputs read a snapshot, `utils/inputSnapshotSource.ts`). A `blocked`

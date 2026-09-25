@@ -73,10 +73,12 @@ export default function ExplorePreview({
     profile,
     executionMetrics,
     profiling,
+    ownedProfiling,
     message: profileMessage,
     error: profileError,
     refresh: retryProfile,
     cancel: cancelProfile,
+    resume: resumeProfile,
   } = useNodeDataProfile({ node, allNodes, edges, submodels, preamble, cache })
   const view = useMemo(
     () =>
@@ -112,18 +114,19 @@ export default function ExplorePreview({
   const activePaneMeta =
     EXPLORE_PREVIEW_PANES.find((pane) => pane.key === activePane) ?? EXPLORE_PREVIEW_PANES[0]
   const busy = cache.busy || profiling
-  // The frame's Stop also stops this node's profile, and its Refresh asks for a
-  // profile that failed or was stopped again.
+  // The frame's Stop also stops this node's profile (one it started; a profile
+  // joined from elsewhere is theirs), and its Refresh lets the profile run
+  // again, asking at once for one that failed or was stopped.
   const outerRun = usePreviewRun()
   const run = useMemo<PreviewRun>(
     () => ({
-      running: Boolean(outerRun?.running) || profiling,
+      running: Boolean(outerRun?.running) || ownedProfiling,
       onStop: () => {
         outerRun?.onStop()
         void cancelProfile()
       },
     }),
-    [cancelProfile, outerRun, profiling],
+    [cancelProfile, outerRun, ownedProfiling],
   )
   const refresh = useMemo(
     () =>
@@ -131,8 +134,9 @@ export default function ExplorePreview({
       (() => {
         onRefresh()
         if (profileError) void retryProfile()
+        else resumeProfile()
       }),
-    [onRefresh, profileError, retryProfile],
+    [onRefresh, profileError, resumeProfile, retryProfile],
   )
   const progressPercent = Math.min(Math.max(cache.progress * 100, 0), 100)
   const statusText = profiling

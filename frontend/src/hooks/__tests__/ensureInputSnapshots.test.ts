@@ -185,7 +185,28 @@ describe("ensureInputSnapshots", () => {
     await vi.runAllTimersAsync()
     await pending
 
-    expect(onBuildProgress).toHaveBeenCalledWith(expect.objectContaining({ rows: 1200 }))
+    expect(onBuildProgress).toHaveBeenCalledWith(
+      expect.objectContaining({ progress: expect.objectContaining({ rows: 1200 }) }),
+    )
+  })
+
+  it("names every build whose cancellation failed, not only the first", async () => {
+    vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("missing"))
+    vi.mocked(buildInputCache)
+      .mockResolvedValueOnce({ ...buildResponse(), job_id: "build-a" })
+      .mockResolvedValueOnce({ ...buildResponse(), job_id: "build-b" })
+    vi.mocked(getInputCacheJob).mockImplementation(async () => job("running"))
+    vi.mocked(cancelInputCacheJob).mockRejectedValue(new Error("cancel route unreachable"))
+    const controller = new AbortController()
+
+    const pending = ensureInputSnapshots([dataInput("a"), dataInput("b")], { signal: controller.signal })
+    await vi.waitFor(() => expect(buildInputCache).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(getInputCacheJob).toHaveBeenCalledTimes(2))
+    controller.abort()
+
+    const failure = await pending.catch((error: unknown) => error)
+    expect(failure).toMatchObject({ name: "CancellationFailed" })
+    expect((failure as { jobIds: string[] }).jobIds.sort()).toEqual(["build-a", "build-b"])
   })
 
   it("checks the live Quote Input status and awaits its full cache build", async () => {

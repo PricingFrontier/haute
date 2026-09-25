@@ -348,9 +348,13 @@ and remediation without exposing raw bounded-collection JSON.
   `previewBusy` or any registered node work (`useNodeWorkRunning`), and its Stop
   calls `stopPreview` and `stopNodeWork(nodeId)`. Ctrl/Cmd+Enter only ever
   presses Refresh, never Stop. Explore extends the context: its run also
-  covers the profile job, its Stop also cancels the profile, and its Refresh also
-  asks again for a profile that failed or was stopped; it has no separate
-  "Cancel profile" button, only "Retry profile" for a failed one.
+  covers a profile job this tab started (`startedHere` on the shared job; one
+  joined from elsewhere is left running and does not show Stop), its Stop also
+  stops the profile — a job id that arrives after Stop is cancelled at once, and
+  nothing asks for a profile on its own until the consumer resumes — and its
+  Refresh resumes profiling, asking again at once for a profile that failed or
+  was stopped. It has no separate "Cancel profile" button, only "Retry profile"
+  for a failed one.
 - A loading data preview shows its step progress once the plan is known: "Step k of
   n · <label>" with a determinate bar (`aria-label="Preview progress"`). Steps are
   counted with equal weight, so the bar can jump; before the plan is known it says
@@ -358,9 +362,14 @@ and remediation without exposing raw bounded-collection JSON.
 - **Import** (`components/InputImportButton.tsx`) sits beside Refresh in the
   data preview frame of a node that reads a snapshot (`inputSnapshotSource` of
   the node, or of its original for an instance): a Data Input other than a
-  direct Parquet scan, or a structured Quote Input. It re-reads the source with
-  `ensureInputSnapshots([input], { force: true })`, showing "Importing · N rows"
-  while it runs, and registers as the node's work so the frame's Stop stops it.
+  direct Parquet scan, or a structured Quote Input with an emitting table. It
+  re-reads the source with `ensureInputSnapshots([input], { force: true })`,
+  showing "Importing · N rows" while a bounded build streams rows and
+  "Importing…" otherwise, and registers as the node's work so the frame's Stop
+  stops it. The import belongs to the node that started it
+  (`stores/useInputImportStore.ts`), not to the open panel: opening another node
+  leaves it running, shown and stoppable on its own node, and its re-preview runs
+  only if that node is still open and still reads the same source.
   Every outcome (completed, failed, stopped) re-reads the snapshot status and
   raises the node-data epoch, since a failed Quote Input import can publish some
   tables; only a completed, unstopped import re-previews the node. Its title

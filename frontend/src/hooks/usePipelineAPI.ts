@@ -423,6 +423,10 @@ export default function usePipelineAPI({
   // The node the latest preview request is for, so a stop can restore its
   // last stored result.
   const previewTarget = useRef<Node | null>(null)
+  // The result a stop put back on screen: automatic calculation leaves it
+  // alone (it is not a continuation of the stopped run) until Refresh or
+  // another preview replaces it.
+  const stoppedDisplay = useRef<PreviewData | null>(null)
   const saveRequestSeq = useRef(0)
   const appliedSaveSeq = useRef(0)
   const invalidatePreviewRequests = useCallback(() => {
@@ -575,12 +579,37 @@ export default function usePipelineAPI({
   // and row limit, or nothing (the panel then offers Refresh).
   const restoreAfterStop = useCallback((node: Node) => {
     const stored = useNodeResultsStore.getState().getPreview(node.id)
-    setPreviewData(
+    const restored =
       stored && stored.source === activeSourceRef.current && stored.rowLimit === rowLimitRef.current
         ? stored.data
-        : null,
-    )
+        : null
+    stoppedDisplay.current = restored
+    setPreviewData(restored)
   }, [])
+
+  // Send one preview request with a fresh id and poll that request's own step
+  // progress onto the loading panel of *nodeId* while it runs; the response,
+  // not the progress, is what settles the panel.
+  const sendWithProgress = useCallback(
+    (
+      nodeId: string,
+      signal: AbortSignal,
+      isCurrent: () => boolean,
+      send: (requestId: string) => Promise<PreviewNodeResponse>,
+    ) => {
+      const requestId = newPreviewRequestId()
+      const stopPolling = pollPreviewProgress(requestId, signal, (progress) => {
+        if (!isCurrent()) return
+        setPreviewData((previous) =>
+          previous && previous.nodeId === nodeId && previous.status === "loading"
+            ? { ...previous, progress }
+            : previous,
+        )
+      })
+      return send(requestId).finally(stopPolling)
+    },
+    [],
+  )
 
   /**
    * Settle a request the user stopped. Returns false when the request was not
@@ -590,17 +619,19 @@ export default function usePipelineAPI({
     if (!stoppedRequests.current.has(requestId)) return false
     stoppedRequests.current.delete(requestId)
     if (previewRequestSeq.current !== requestId) return true
-    const failed = err as { name?: unknown; jobId?: unknown; message?: unknown } | null
-    if (failed?.name === "CancellationFailed" && typeof failed.jobId === "string") {
-      // The snapshot build may still be running, so the preview stays running
-      // and Stop cancels that build again.
-      const jobId = failed.jobId
+    const failed = err as { name?: unknown; jobIds?: unknown; message?: unknown } | null
+    if (failed?.name === "CancellationFailed" && Array.isArray(failed.jobIds)) {
+      // The snapshot builds may still be running, so the preview stays running
+      // and Stop cancels them again, until every one has stopped.
+      let pending = failed.jobIds as string[]
       addToast("error", `Stopping failed: ${String(failed.message)} Press Stop to try again.`)
       stopRetry.current = async () => {
-        const { cancelInputSnapshotBuild } = await import("./ensureInputSnapshots")
+        const { cancelInputSnapshotBuilds } = await import("./ensureInputSnapshots")
         try {
-          await cancelInputSnapshotBuild(jobId)
+          await cancelInputSnapshotBuilds(pending)
         } catch (retried) {
+          const still = (retried as { jobIds?: unknown }).jobIds
+          if (Array.isArray(still)) pending = still as string[]
           addToast("error", `Stopping failed: ${apiErrorMessage(retried)} Press Stop to try again.`)
           return
         }
@@ -710,20 +741,8 @@ export default function usePipelineAPI({
     }
 
     const portLabel = previewPortLabel(node)
-    // Poll this request's own step progress while it runs; the response, not
-    // the progress, is what settles the panel.
-    const withProgress = (send: (requestId: string) => Promise<PreviewNodeResponse>) => {
-      const requestId = newPreviewRequestId()
-      const stopPolling = pollPreviewProgress(requestId, controller.signal, (progress) => {
-        if (!requestStillCurrent()) return
-        setPreviewData((previous) =>
-          previous && previous.nodeId === node.id && previous.status === "loading"
-            ? { ...previous, progress }
-            : previous,
-        )
-      })
-      return send(requestId).finally(stopPolling)
-    }
+    const withProgress = (send: (requestId: string) => Promise<PreviewNodeResponse>) =>
+      sendWithProgress(node.id, controller.signal, requestStillCurrent, send)
     const executePreview = () => {
       if (previewRequestSeq.current !== requestId || !documentStillCurrent() || controller.signal.aborted) {
         throw new DOMException("Preview request was superseded.", "AbortError")
@@ -870,7 +889,7 @@ export default function usePipelineAPI({
           previewAbort.current = null
         }
       })
-  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, settleStopped])
+  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, sendWithProgress, settleStopped])
 
   useEffect(() => {
     fetchPreviewImmediateRef.current = fetchPreviewImmediate
@@ -1165,6 +1184,8 @@ export default function usePipelineAPI({
     const node = graphRef.current.nodes.find((n) => n.id === nodeId)
     if (!node || !canPreviewNode(node)) return
     const requestId = ++previewRequestSeq.current
+    previewTarget.current = node
+    stopRetry.current = null
     previewAbort.current?.abort()
     previewAbort.current = null
     previewDebounce.cancel()
@@ -1215,28 +1236,34 @@ export default function usePipelineAPI({
           throw new DOMException("Preview request was superseded.", "AbortError")
         }
         if (recoveryPreview) {
-          return previewRecoveryNode({
-            sourceFile: sourceFileRef.current,
-            sourceRevision: snapshotDocumentRevision,
-            targetRecoveryId: node.id,
+          return sendWithProgress(node.id, controller.signal, requestStillCurrent, (previewRequestId) =>
+            previewRecoveryNode({
+              sourceFile: sourceFileRef.current,
+              sourceRevision: snapshotDocumentRevision,
+              targetRecoveryId: node.id,
+              rowLimit: rowLimitRef.current,
+              source: activeSourceRef.current,
+              portLabel,
+              requestId: previewRequestId,
+              signal: controller.signal,
+            }),
+          )
+        }
+        return sendWithProgress(node.id, controller.signal, requestStillCurrent, (previewRequestId) =>
+          previewNode({
+            graph,
+            nodeId: runtimeNodeIdForVisibleNode(
+              graphRef.current.nodes,
+              node.id,
+              activeSubmodelIdentity,
+            ),
             rowLimit: rowLimitRef.current,
             source: activeSourceRef.current,
             portLabel,
+            requestId: previewRequestId,
             signal: controller.signal,
-          })
-        }
-        return previewNode({
-          graph,
-          nodeId: runtimeNodeIdForVisibleNode(
-            graphRef.current.nodes,
-            node.id,
-            activeSubmodelIdentity,
-          ),
-          rowLimit: rowLimitRef.current,
-          source: activeSourceRef.current,
-          portLabel,
-          signal: controller.signal,
-        })
+          }),
+        )
       })
       .then((result) => {
         const { epoch, bumpEpoch, noteAnnouncedCaptures } = useNodeDataStore.getState()
@@ -1256,6 +1283,7 @@ export default function usePipelineAPI({
         if (captured) bumpEpoch()
       })
       .catch((err: unknown) => {
+        if (settleStopped(node, requestId, err)) return
         if (previewRequestSeq.current !== requestId) return
         if (!documentStillCurrent()) return
         if (isAbortError(err) || isPreviewSupersededError(err)) return
@@ -1266,10 +1294,11 @@ export default function usePipelineAPI({
         }
       })
       .finally(() => {
-        if (previewRequestSeq.current === requestId) setPreviewBusy(false)
+        // A stop whose snapshot build refused to stop keeps the preview running.
+        if (previewRequestSeq.current === requestId && stopRetry.current === null) setPreviewBusy(false)
         if (previewAbort.current === controller) previewAbort.current = null
       })
-  }, [previewDebounce, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, addToast, ensureSnapshotsForPreviews])
+  }, [previewDebounce, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, addToast, ensureSnapshotsForPreviews, sendWithProgress, settleStopped])
 
   // Returns true when the save succeeded, false on failure — callers that
   // chain follow-on work (for example Commit) await this so they only proceed
@@ -1422,6 +1451,8 @@ export default function usePipelineAPI({
     // In manual calculation the stale preview stays on screen, marked out of
     // date, until Refresh is pressed.
     if (useUIStore.getState().calculationMode === "manual") return
+    // Nor does a result a stop put back start the stopped run again.
+    if (previewData === stoppedDisplay.current) return
     const frame = framePreviewEpochs.current.get(previewData)
     if (frame) {
       if (frame.epoch !== nodeDataEpoch) previewNodeFrame(previewData.nodeId, frame.portLabel)

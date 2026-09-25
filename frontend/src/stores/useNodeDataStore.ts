@@ -77,6 +77,11 @@ export interface NodeDataSlotJob {
  */
 export interface NodeDataProfileJob extends NodeDataSlotJob {
   dataVersion: string
+  /**
+   * This tab started the job rather than joining one running elsewhere: only
+   * such a job is its consumers' to stop.
+   */
+  startedHere?: boolean
 }
 
 /**
@@ -142,7 +147,13 @@ export interface NodeDataStore {
   ) => void
   startProfileJob: (
     slotKey: string,
-    job: { jobId: string; message: string; startedByLabel: string; dataVersion: string },
+    job: {
+      jobId: string
+      message: string
+      startedByLabel: string
+      dataVersion: string
+      startedHere?: boolean
+    },
   ) => void
   /** Record that asking for a profile failed, so a consumer can offer a retry. */
   reportProfileFailure: (slotKey: string, dataVersion: string | null, message: string) => void
@@ -303,6 +314,7 @@ const useNodeDataStore = create<NodeDataStore>((set, get) => ({
           message: job.message,
           startedByLabel: job.startedByLabel,
           dataVersion: job.dataVersion,
+          startedHere: job.startedHere,
         },
       },
       profileFailures: withoutKey(state.profileFailures, slotKey),

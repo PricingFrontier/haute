@@ -1,12 +1,16 @@
 /**
- * Import: a forced re-read of a snapshot-backed input, stopped by the node's
- * Stop, and invalidating downstream results whatever its outcome.
+ * Import: a forced re-read of a snapshot-backed input, owned by the node that
+ * started it, stopped by that node's Stop, and invalidating downstream results
+ * whatever its outcome.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import type { Node } from "@xyflow/react"
 
 import type { InputCacheJobStatusResponse, InputCacheSnapshotResponse } from "../../api/types"
 import type { SimpleNode } from "../../panels/editors"
+import useGraphStore from "../../stores/useGraphStore"
+import useInputImportStore from "../../stores/useInputImportStore"
 import useNodeDataStore from "../../stores/useNodeDataStore"
 import useNodeWorkStore, { stopNodeWork } from "../../stores/useNodeWorkStore"
 import useToastStore from "../../stores/useToastStore"
@@ -28,9 +32,15 @@ import {
 import InputImportButton from "../InputImportButton"
 
 const csvConfig = { inputType: "file", format: "csv", mode: "scan", path: "quotes.csv" }
+const emittingTable = { path: "$[:]", label: "quotes", emit: true, columns: [{ name: "id", path: "$[:].id", selected: true }] }
 
 function node(id: string, nodeType: string, config: Record<string, unknown>): SimpleNode {
   return { id, data: { label: id, nodeType, config } } as SimpleNode
+}
+
+/** The canvas holds *nodes*, as the import's continuation reads them. */
+function onCanvas(...nodes: SimpleNode[]): void {
+  useGraphStore.setState({ nodes: nodes as unknown as Node[] })
 }
 
 function snapshot(overrides: Partial<InputCacheSnapshotResponse> = {}): InputCacheSnapshotResponse {
@@ -52,7 +62,11 @@ function snapshot(overrides: Partial<InputCacheSnapshotResponse> = {}): InputCac
   }
 }
 
-function job(status: InputCacheJobStatusResponse["status"], rows = 0): InputCacheJobStatusResponse {
+function job(
+  status: InputCacheJobStatusResponse["status"],
+  rows = 0,
+  buildClass: InputCacheJobStatusResponse["build_class"] = "bounded",
+): InputCacheJobStatusResponse {
   return {
     schema_version: 1,
     job_id: "import-1",
@@ -61,7 +75,7 @@ function job(status: InputCacheJobStatusResponse["status"], rows = 0): InputCach
     terminal_reason: status === "running" ? null : status,
     message: status === "error" ? "The source could not be read." : "",
     refresh: true,
-    build_class: "bounded",
+    build_class: buildClass,
     progress: { phase: status === "running" ? "building" : "completed", rows, batches: 0, bytes: 0, elapsed_seconds: 0 },
     snapshot: null,
     error_code: null,
@@ -70,8 +84,8 @@ function job(status: InputCacheJobStatusResponse["status"], rows = 0): InputCach
 
 function renderImport(target: SimpleNode, allNodes: SimpleNode[] = [target]) {
   const onImported = vi.fn()
-  render(<InputImportButton node={target} allNodes={allNodes} onImported={onImported} />)
-  return onImported
+  const view = render(<InputImportButton node={target} allNodes={allNodes} onImported={onImported} />)
+  return { onImported, ...view }
 }
 
 describe("InputImportButton", () => {
@@ -79,6 +93,7 @@ describe("InputImportButton", () => {
     vi.clearAllMocks()
     useNodeDataStore.getState().reset()
     useNodeWorkStore.setState({ running: {} })
+    useInputImportStore.setState({ runs: {} })
     useToastStore.setState({ toasts: [] })
     vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot())
     vi.mocked(buildInputCache).mockResolvedValue({
@@ -95,11 +110,12 @@ describe("InputImportButton", () => {
 
   it("is offered only for inputs that read a snapshot", () => {
     renderImport(node("direct", "dataInput", { inputType: "file", format: "parquet", mode: "scan", path: "a.parquet" }))
-    renderImport(node("flat", "apiInput", { path: "quotes.csv", tables: [] }))
+    renderImport(node("flat", "apiInput", { path: "quotes.csv", tables: [emittingTable] }))
+    renderImport(node("no-emit", "apiInput", { path: "quotes.jsonl", tables: [] }))
     expect(screen.queryByTestId("input-import")).toBeNull()
 
     renderImport(node("csv", "dataInput", csvConfig))
-    renderImport(node("quotes", "apiInput", { path: "quotes.jsonl", tables: [] }))
+    renderImport(node("quotes", "apiInput", { path: "quotes.jsonl", tables: [emittingTable] }))
     expect(screen.getAllByTestId("input-import")).toHaveLength(2)
   })
 
@@ -107,14 +123,15 @@ describe("InputImportButton", () => {
     vi.mocked(getInputCacheJob).mockResolvedValue(job("completed"))
     const original = node("original", "dataInput", csvConfig)
     const instance = node("instance", "dataInput", { instanceOf: "original" })
-    const onImported = renderImport(instance, [original, instance])
+    onCanvas(original, instance)
+    const { onImported } = renderImport(instance, [original, instance])
     const epoch = useNodeDataStore.getState().epoch
 
     await act(async () => {
       fireEvent.click(await screen.findByTestId("input-import"))
     })
 
-    await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(onImported).toHaveBeenCalledWith("instance"))
     expect(buildInputCache).toHaveBeenCalledWith({ schema_version: 1, config: csvConfig, refresh: true })
     expect(useNodeDataStore.getState().epoch).toBeGreaterThan(epoch)
   })
@@ -122,7 +139,9 @@ describe("InputImportButton", () => {
   it("shows rows read so far, and the node's Stop cancels the import without re-previewing", async () => {
     vi.mocked(getInputCacheJob).mockResolvedValue(job("running", 1200))
     vi.mocked(cancelInputCacheJob).mockResolvedValue({ schema_version: 1, job_id: "import-1", cancellation_requested: true, status: "cancelled" })
-    const onImported = renderImport(node("csv", "dataInput", csvConfig))
+    const csv = node("csv", "dataInput", csvConfig)
+    onCanvas(csv)
+    const { onImported } = renderImport(csv)
     const epoch = useNodeDataStore.getState().epoch
 
     await act(async () => {
@@ -143,9 +162,72 @@ describe("InputImportButton", () => {
     expect(Object.values(useNodeWorkStore.getState().running)).not.toContain("csv")
   })
 
+  it("shows no row count for a build that reports none", async () => {
+    vi.mocked(getInputCacheJob).mockResolvedValue(job("running", 0, "admitted_eager"))
+    const csv = node("csv", "dataInput", csvConfig)
+    onCanvas(csv)
+    renderImport(csv)
+
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId("input-import"))
+    })
+
+    await waitFor(() => expect(getInputCacheJob).toHaveBeenCalled())
+    expect(screen.getByTestId("input-import")).toHaveTextContent("Importing…")
+    await act(async () => stopNodeWork("csv"))
+  })
+
+  it("stays with the node that started it when another node is opened", async () => {
+    let finish!: (value: InputCacheJobStatusResponse) => void
+    vi.mocked(getInputCacheJob)
+      .mockResolvedValueOnce(job("running", 10))
+      .mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    const a = node("a", "dataInput", csvConfig)
+    const b = node("b", "dataInput", { ...csvConfig, path: "other.csv" })
+    onCanvas(a, b)
+    const { onImported, rerender } = renderImport(a, [a, b])
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId("input-import"))
+    })
+    await waitFor(() => expect(getInputCacheJob).toHaveBeenCalledTimes(2))
+
+    rerender(<InputImportButton node={b} allNodes={[a, b]} onImported={onImported} />)
+
+    // B's button starts nothing and shows nothing of A's import.
+    expect(screen.getByTestId("input-import")).toHaveTextContent("Import")
+    expect(Object.values(useNodeWorkStore.getState().running)).toEqual(["a"])
+
+    await act(async () => {
+      finish(job("completed"))
+    })
+    await waitFor(() => expect(onImported).toHaveBeenCalledWith("a"))
+  })
+
+  it("does not re-preview when the node's source changed while it imported", async () => {
+    let finish!: (value: InputCacheJobStatusResponse) => void
+    vi.mocked(getInputCacheJob).mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    const csv = node("csv", "dataInput", csvConfig)
+    onCanvas(csv)
+    const { onImported } = renderImport(csv)
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId("input-import"))
+    })
+    await waitFor(() => expect(getInputCacheJob).toHaveBeenCalled())
+
+    onCanvas(node("csv", "dataInput", { ...csvConfig, path: "changed.csv" }))
+    await act(async () => {
+      finish(job("completed"))
+    })
+
+    await waitFor(() => expect(useInputImportStore.getState().runs.csv).toBeUndefined())
+    expect(onImported).not.toHaveBeenCalled()
+  })
+
   it("reports a failed import and still invalidates downstream results", async () => {
     vi.mocked(getInputCacheJob).mockResolvedValue(job("error"))
-    const onImported = renderImport(node("csv", "dataInput", csvConfig))
+    const csv = node("csv", "dataInput", csvConfig)
+    onCanvas(csv)
+    const { onImported } = renderImport(csv)
     const epoch = useNodeDataStore.getState().epoch
 
     await act(async () => {
