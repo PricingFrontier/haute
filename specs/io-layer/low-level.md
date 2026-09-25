@@ -156,7 +156,10 @@ an in-place or non-atomic fallback.
    source_signature=...)`. A `missing` source signature with a published generation reuses it with
    `warning_code="source_unavailable"` and never refreshes; without a generation preparation is
    refused as `build_failed`. Otherwise `ready`/`fresh` and `ready`/`unknown` reuse; `missing` builds;
-   `ready`/`stale` refreshes; `corrupt` raises `SourceCacheCorruptError`.
+   `ready`/`stale` refreshes; `corrupt` raises `SourceCacheCorruptError`. So a source with no
+   signature (a database query, a Databricks table) is never re-read by preparation once
+   published: the preview frame's Import (a forced `POST /api/input-cache/build`) is the one
+   action that re-reads it.
 3. `schema_only=True` records nothing and never builds; the node builder's
    `input_snapshot_missing` rejection remains the outcome for a missing generation.
 4. The cap gate: preparation runs only under an admitted `ExecutionContext` (its

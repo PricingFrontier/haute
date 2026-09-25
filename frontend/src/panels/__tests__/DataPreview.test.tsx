@@ -162,6 +162,26 @@ describe("DataPreview", () => {
     expect(screen.queryByText("Executing pipeline...")).not.toBeInTheDocument()
   })
 
+  it("shows the running step and a bar once the plan is known", () => {
+    render(<DataPreview data={makePreview({
+      status: "loading",
+      progress: { request_id: "r1", phase: "running", done: 1, total: 3, label: "Caching join" },
+    })} />)
+    expect(screen.getByRole("status")).toHaveTextContent("Step 2 of 3 · Caching join")
+    const bar = screen.getByRole("progressbar", { name: "Preview progress" })
+    expect(bar).toHaveAttribute("aria-valuenow", "1")
+    expect(bar).toHaveAttribute("aria-valuemax", "3")
+  })
+
+  it("says it is preparing inputs, without a bar, before the plan is known", () => {
+    render(<DataPreview data={makePreview({
+      status: "loading",
+      progress: { request_id: "r1", phase: "preparing", done: null, total: null, label: null },
+    })} />)
+    expect(screen.getByRole("status")).toHaveTextContent("Preparing inputs…")
+    expect(screen.queryByRole("progressbar")).toBeNull()
+  })
+
   it("renders as an embedded table body without duplicating the outer frame's title", () => {
     render(<DataPreview data={makePreview()} embedded />)
 

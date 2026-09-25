@@ -73,10 +73,6 @@ const DEBUG_ONLY_ALLOWLIST: readonly string[] = [
   // Fallback UI is already rendered when this fires; console is for devs
   // diagnosing the crash in their own DevTools.
   "components/ErrorBoundary.tsx",
-  // Cache status / progress polling / cancellation are best-effort
-  // background operations — "not yet cached" is the common case, not an
-  // error the user needs to be notified about.
-  "components/CacheFetchButton.tsx",
   // MLflow check is an optional capability probe on app startup; the
   // failure is already surfaced via the `mlflow.status === "error"` badge.
   "stores/useSettingsStore.ts",

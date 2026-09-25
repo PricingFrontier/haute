@@ -45,19 +45,15 @@ Modelling and optimiser result presentation belongs to
   Charts and Relationships tabs in that order, and renders statistics only from the shared profile of the data
   version that point currently holds. An active job remains visible and cancellable if the graph
   or active source changes while it runs.
-- Explore shows the same cache state, the same progress, and the same one build as every other
-  consumer of that data: opening Explore beside a Banding or Rating editor on the same input
+- Explore shares the same one build as every other consumer of that data: opening Explore beside a Banding or Rating editor on the same input
   joins the running job rather than starting a second one, and one narrow generation can be
   current for Banding while it is only partial for Explore's wider column demand. The state
   survives a browser or backend restart, because it is the point's state and not the browser's.
-- The header's shared data-cache indicator reports state without a separate build action: red `Not cached` when the
-  point has no data, green `Cached` when the whole demand is cached, yellow `Cache out of date`
-  or `Cached for some columns` when the data is stale or covers only some of the columns this
-  consumer reads, and — while a build runs — progress with Cancel. Caching is what the node's own
-  Refresh button does about data that is missing, stale, partial or unreadable; data that is
-  already current is left alone, because the same button is pressed to re-read a node's generated
-  fields. Refresh is also the recovery path from an unreadable snapshot. A point read straight
-  from its Parquet file states that instead, having nothing to cache.
+- Explore shows no cache state of its own; a progress bar runs while its data is built or
+  profiled. Caching is what the node's own Refresh button does about data that is missing, stale,
+  partial or unreadable; data that is already current is left alone, because the same button is
+  pressed to re-read a node's generated fields. Refresh is also the recovery path from an
+  unreadable snapshot.
 - The Explore preview's Relationships pane relates chosen features to a target and checks chosen
   key columns over the whole cached data; its choices are pane state, not config.
 - Overview cards have a fixed order and are individually enabled from config. They display
@@ -159,7 +155,7 @@ diagnostics/UI components. Its cell-click callback feeds
 [frontend-trace-ui](../frontend-trace-ui/high-level.md). Explore configuration is edited by
 [frontend-node-editors](../frontend-node-editors/high-level.md).
 [Frontend shared infrastructure](../frontend-shared/high-level.md) owns the shared data-cache and
-profile hooks, the shared cache control, background polling, and advancing jobs to terminal
+profile hooks, background polling, and advancing jobs to terminal
 result-store state.
 
 ## Failure model

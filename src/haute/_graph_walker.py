@@ -73,7 +73,8 @@ from haute._path_resolution import runtime_project_root_scoped
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import _malloc_trim, projected_or_carrier_columns, streaming_collect
 from haute._source_cache import SourceCacheError
-from haute._types import GraphEdge, GraphNode, PipelineGraph, _Frame
+from haute._step_progress import StepProgress
+from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph, _Frame
 from haute.errors import ContractMismatchError, SchemaMismatchError, is_public_contract_error
 
 if TYPE_CHECKING:
@@ -256,7 +257,7 @@ class _NodeFrame:
     output_names: list[str] | None = None
     """A display walk's output column names, after the node's own shaping."""
     scored: NodeSnapshotArtifact | None = None
-    scored_write: tuple[bool, str | None] = (False, None)
+    scored_write: tuple[bool, Mapping[str, str]] = (False, {})
 
 
 class _UpstreamFailedError(Exception):
@@ -470,11 +471,67 @@ class _Walk:
         self._init_walk_state()
         self.frames.update(start_frames)
         self._bind_plan_sources()
+        self._start_step_progress()
         for node_id in self.run_order:
             self._walk_node(node_id)
         if self.display:
             self._replan_target_preview()
         return self._result()
+
+    # ------------------------------------------------------- step progress
+
+    def _start_step_progress(self) -> None:
+        """Count a display walk's heavy steps: its planned captures and its collections.
+
+        Every other node only builds a lazy plan, so these steps are where the
+        time goes; each counts once, with equal weight.
+        """
+        self.steps_done: set[tuple[str, str]] = set()
+        self.step_reporter = (
+            self.context.step_progress if self.display and self.context is not None else None
+        )
+        self.steps_total = 0
+        if self.step_reporter is None:
+            return
+        captures = (
+            set(self.decision.captures) - set(self.decision.seeds)
+            if self.decision is not None
+            else set()
+        )
+        self.steps_total = sum(1 for node_id in self.run_order if node_id in captures) + sum(
+            1 for node_id in self.run_order if self.policy.collects(node_id)
+        )
+        if self.steps_total:
+            self.step_reporter(StepProgress(done=0, total=self.steps_total, label=""))
+
+    def _step_label(self, kind: str, node_id: str) -> str:
+        node = self.node_map.get(node_id)
+        name = (node.data.label if node is not None else "") or node_id
+        return f"{'Caching' if kind == 'capture' else 'Computing'} {name}"
+
+    def _step_started(self, kind: str, node_id: str) -> None:
+        if self.step_reporter is None:
+            return
+        self.step_reporter(
+            StepProgress(
+                done=len(self.steps_done),
+                total=max(self.steps_total, len(self.steps_done) + 1),
+                label=self._step_label(kind, node_id),
+            )
+        )
+
+    def _step_finished(self, kind: str, node_id: str) -> None:
+        if self.step_reporter is None:
+            return
+        self.steps_done.add((kind, node_id))
+        done = len(self.steps_done)
+        self.step_reporter(
+            StepProgress(
+                done=done,
+                total=max(self.steps_total, done),
+                label=self._step_label(kind, node_id),
+            )
+        )
 
     def _result(self) -> WalkResult:
         frames = (
@@ -839,6 +896,8 @@ class _Walk:
             except _UpstreamFailedError:
                 return
             except Exception as exc:
+                if type(exc) is MemoryError:
+                    raise self._budget_error(exc) from exc
                 if not self._recordable(exc):
                     raise
                 self._record_failure(node_id, exc)
@@ -900,9 +959,10 @@ class _Walk:
     def _stage_scored_capture(self, node_id: str) -> NodeSnapshotArtifact | None:
         """A batch Model Score whose output is its scored file writes it into its capture.
 
-        Only a sink walk: a display walk's Model Score scores the rows it collects.
+        A display walk captures a Model Score only when a capture below drains
+        its whole output; otherwise it scores just the rows it collects.
         """
-        if self.decision is None or self.display:
+        if self.decision is None:
             return None
         scenario = self.request.source_by_node.get(node_id, self.request.source or "live")
         return self.captures.stage_scored_output(node_id, self.node_map[node_id], scenario=scenario)
@@ -913,18 +973,28 @@ class _Walk:
         boundary: NodeBoundary,
         scored: NodeSnapshotArtifact | None,
     ) -> _NodeFrame:
-        if scored is None:
-            return self._build_node(node_id, boundary)
-        from haute._model_scorer import model_score_output_destination
+        from haute._model_scorer import model_score_output_destination, model_score_whole_output
 
+        # A captured Model Score's whole output is written, so it scores every
+        # row a batch at a time even under a preview's row limit.
+        whole_output = (
+            model_score_whole_output()
+            if self.decision is not None
+            and node_id in self.decision.captures
+            and self.node_map[node_id].data.nodeType == NodeType.MODEL_SCORE
+            else contextlib.nullcontext()
+        )
+        if scored is None:
+            with whole_output:
+                return self._build_node(node_id, boundary)
         try:
-            with model_score_output_destination(scored.part_path(0)) as destination:
+            with whole_output, model_score_output_destination(scored.directory) as destination:
                 built = self._build_node(node_id, boundary)
         except BaseException:
             scored.close()
             raise
         built.scored = scored
-        built.scored_write = (destination.used, destination.digest)
+        built.scored_write = (destination.used, destination.digests)
         return built
 
     def _build_node(self, node_id: str, boundary: NodeBoundary) -> _NodeFrame:
@@ -1304,8 +1374,9 @@ class _Walk:
         closure = self.captures.record_closure(node_id)
         if node_id not in self.decision.captures:
             return built.frame, False
-        prewritten, digest = built.scored_write
+        prewritten, digests = built.scored_write
         unshaped = self.unshaped_frames.get(node_id)
+        self._step_started("capture", node_id)
         try:
             captured = self.captures.capture(
                 node_id,
@@ -1313,7 +1384,7 @@ class _Walk:
                 closure,
                 artifact=built.scored,
                 prewritten=prewritten,
-                prewritten_digest=digest,
+                prewritten_digests=digests,
                 join=self.join_recipes.get(node_id),
                 recipe=self.write_recipes.get(node_id),
                 unshaped_columns=_schema_pairs(unshaped) if unshaped is not None else None,
@@ -1321,6 +1392,7 @@ class _Walk:
         except (SourceCacheError, OSError) as exc:
             self.store_failures.append(exc)
             raise
+        self._step_finished("capture", node_id)
         if not self.display:
             self._after_sink_capture(node_id, captured)
         return captured, True
@@ -1484,8 +1556,10 @@ class _Walk:
         if self.context is None:
             return streaming_collect(frame)
         self.context.checkpoint(label="before_collect", node_id=node_id)
+        self._step_started("collect", node_id)
         with self.context.stage("eager_collect", node_id=node_id):
             df = streaming_collect(frame, execution_context=self.context)
+        self._step_finished("collect", node_id)
         self.context.checkpoint(label="after_collect", node_id=node_id)
         return df
 
@@ -1526,6 +1600,7 @@ class _Walk:
         """Collect each frame of a bundle to the node's limit; consumers read the plans."""
         limit = self.policy.row_limit_for(node_id)
         collected: dict[str, pl.DataFrame] = {}
+        self._step_started("collect", node_id)
         for label, port_frame in bundle.items():
             capped = port_frame.head(limit) if limit else port_frame
             collected[label] = (
@@ -1533,6 +1608,7 @@ class _Walk:
                 if isinstance(capped, pl.LazyFrame)
                 else capped
             )
+        self._step_finished("collect", node_id)
         self.frames[node_id] = plans if limit else collected
         for label, df in collected.items():
             self.column_cache[(node_id, label)] = frozenset(df.columns)
@@ -1590,6 +1666,29 @@ class _Walk:
         if is_public_contract_error(exc):
             return False
         return not any(exc is failure for failure in self.store_failures)
+
+    def _budget_error(self, exc: MemoryError) -> MemoryError:
+        """A native allocation failure as the run's memory-budget error.
+
+        Native code (CatBoost's ``bad allocation``, for one) fails a request
+        the process's memory cap refuses with a bare ``MemoryError``. That is
+        the run exceeding its budget, not a fault of the node that happened to
+        allocate, so it ends the run with the budget named, as a sampled
+        overrun does.
+        """
+        context = self.context
+        limit = context.memory_limit_bytes if context is not None else None
+        rss = context.memory_sampler() if context is not None else None
+        if context is None or limit is None or rss is None:
+            return exc
+        return ExecutionMemoryLimitExceededError(
+            context.operation,
+            job_id=context.job_id,
+            rss_bytes=rss,
+            limit_bytes=limit,
+            baseline_rss_bytes=context.budget.memory_baseline_bytes,
+            rss_limit_bytes=context.rss_limit_bytes,
+        )
 
     def _record_failure(self, node_id: str, exc: Exception) -> None:
         logger.error("node_failed", node_id=node_id, error=str(exc))

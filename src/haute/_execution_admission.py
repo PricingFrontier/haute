@@ -528,8 +528,14 @@ def create_admitted_execution_context(
     memory_pressure_callback: Callable[..., None] | None = None,
     wait_out_holders: Collection[str] = (),
     wait_seconds: float = 0.0,
+    budget_profile: ExecutionProfile | None = None,
 ) -> ExecutionContext:
     """Construct an ``ExecutionContext`` after a small memory admission check.
+
+    ``budget_profile`` sizes the memory budget from another profile's policy
+    while admission and in-flight reservation still follow ``profile``: a
+    preview that builds node caches gets the cache-build budget, and is still
+    admitted, and never reserved, as a preview.
 
     ``wait_out_holders`` names in-flight holders (``"profile:operation"``) that
     are short-lived and not worth refusing for: while every holder blocking the
@@ -538,7 +544,7 @@ def create_admitted_execution_context(
     reserving are separate steps, so a waitable holder that takes the budget in
     between sends admission back to waiting until the same deadline.
     """
-    budget = execution_budget_for_profile(profile)
+    budget = execution_budget_for_profile(budget_profile or profile)
     waitable = frozenset(wait_out_holders) if profile in _IN_FLIGHT_PROFILE_SET else frozenset()
     deadline = time.monotonic() + max(wait_seconds, 0.0)
     while True:

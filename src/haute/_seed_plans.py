@@ -642,7 +642,8 @@ class _Resolver:
         """Decide full-data materialisation capture points and skipped capture reasons.
 
         Preview requests capture registered full-input operations and multi-input
-        join points without recording skips. Bounded requests cost-gate captures
+        join points without recording skips, and a batch Model Score whose whole
+        output a capture below drains. Bounded requests cost-gate captures
         using recompute facts and upstream segment analysis under the precedence:
         1. batch Model Score (MODEL_SCORE);
         2. costly code node whose recompute_cost is not declared "costly" in the
@@ -724,7 +725,59 @@ class _Resolver:
                     elif consumed or fans_out:
                         skips[node_id] = "cheap_segment"
 
+        if self.preview:
+            self._capture_drained_model_scores(executed, children, captures)
         return captures, skips
+
+    def _capture_drained_model_scores(
+        self,
+        executed: set[str],
+        children: Mapping[str, set[str]],
+        captures: dict[str, CaptureKind],
+    ) -> None:
+        """Capture a preview's batch Model Score when a capture below it drains every row.
+
+        A preview scores through a Python scan that Polars pushes its row limit
+        into, which is cheap only while nothing below needs the whole output.
+        A capture below does, and Polars applies no backpressure to a Python
+        source: draining it into that capture's write held the whole scored
+        frame in memory. Captured, the scorer writes its scored file a batch at
+        a time and everything below reads parquet parts instead.
+        """
+        # A node's output is read whole when it is captured, or when a child
+        # that reads every input row has its own output read whole. A child
+        # that may bound its rows (``head``, unproven code) drains nothing:
+        # Polars pushes its bound into the scan, which scores only those rows.
+        drained: set[str] = set()
+        for node_id in reversed(self.order):
+            if node_id not in executed:
+                continue
+            node_children = children.get(node_id, ())
+            if node_id in captures or any(
+                child in drained and self._reads_every_input_row(child, captures)
+                for child in node_children
+            ):
+                drained.add(node_id)
+            if (
+                node_id in drained
+                and node_id not in captures
+                and node_id != self.request.build_node_id
+                and self.is_node_output(node_id)
+                and self.batch_model_score(node_id)
+            ):
+                captures[node_id] = CaptureKind.MODEL_SCORE
+
+    def _reads_every_input_row(self, node_id: str, captures: Mapping[str, CaptureKind]) -> bool:
+        """Whether a node that is read whole reads every row of its inputs.
+
+        A captured batch Model Score, whatever its capture kind, scores its whole
+        input before its post-processing code runs, so a bound in that code
+        bounds nothing it reads.
+        """
+        if node_id in captures and self.batch_model_score(node_id):
+            return True
+        code = self.effective_node_map[node_id].data.config.get("code")
+        return not projection_planner.code_bounds_rows(code, self.recompute.get(node_id))
 
     # ------------------------------------------------------------- rounds
 
@@ -1447,6 +1500,33 @@ def preview_input_node_ids(
         return tuple(candidates)
     executed = resolver.resolve().executed_node_ids
     return tuple(node_id for node_id in candidates if node_id in executed)
+
+
+def preview_builds_snapshots(
+    graph: PipelineGraph,
+    target_node_id: str,
+    *,
+    source: str,
+    required_columns_by_node: Mapping[str, Iterable[str] | AllExcept] | None = None,
+    store: NodeSnapshotStore | None = None,
+) -> bool:
+    """Whether a preview's first resolution captures any node output.
+
+    A capture writes the node's whole output, however few rows the preview
+    shows, so a preview that captures is budgeted as the cache build it runs.
+    Reads store metadata only, like :func:`preview_input_node_ids`.
+    """
+    if not preview_lineage_admitted(graph, target_node_id, source=source):
+        return False
+    request = SeedPlanRequest(
+        graph=graph,
+        target_node_id=target_node_id,
+        source=source,
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        required_columns_by_node=required_columns_by_node,
+    )
+    resolver = _Resolver(request, store if store is not None else _project_store())
+    return bool(resolver.resolve().captures)
 
 
 @dataclass(frozen=True, slots=True)

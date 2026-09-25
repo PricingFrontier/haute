@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import PreviewPanelFrame from "../PreviewPanelFrame"
 import { PREVIEW_PANEL_DIMENSIONS, PREVIEW_PANEL_HEADER_HEIGHT_CLASS } from "../previewPanelLayout"
+import { PreviewRunContext } from "../previewRunContext"
 
 const COLUMN_HEIGHT = 900
 const BANNER_HEIGHT = 30
@@ -158,5 +159,39 @@ describe("PreviewPanelFrame", () => {
 
     fireEvent.click(screen.getByLabelText("Restore preview panel height"))
     expect(frameHeight()).toBe(draggedHeight)
+  })
+
+  it("reads Stop while the node's work runs, and stops it instead of refreshing", () => {
+    const onRefresh = vi.fn()
+    const onStop = vi.fn()
+    const frame = (running: boolean) => (
+      <PreviewRunContext.Provider value={{ running, onStop }}>
+        <PreviewPanelFrame nodeLabel="Claims" onRefresh={onRefresh}>
+          <div />
+        </PreviewPanelFrame>
+      </PreviewRunContext.Provider>
+    )
+    const { rerender } = render(frame(true))
+
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }))
+    expect(onStop).toHaveBeenCalledTimes(1)
+    expect(onRefresh).not.toHaveBeenCalled()
+
+    rerender(frame(false))
+    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
+    expect(onRefresh).toHaveBeenCalledTimes(1)
+  })
+
+  it("offers no Stop on a frame without Refresh, even while work runs", () => {
+    render(
+      <PreviewRunContext.Provider value={{ running: true, onStop: vi.fn() }}>
+        <PreviewPanelFrame nodeLabel="Claims">
+          <div />
+        </PreviewPanelFrame>
+      </PreviewRunContext.Provider>,
+    )
+    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument()
   })
 })

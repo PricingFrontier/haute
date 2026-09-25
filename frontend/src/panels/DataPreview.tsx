@@ -1,8 +1,7 @@
-import { memo, useState, useCallback, useRef, useEffect, useMemo, type MouseEvent } from "react"
+import { memo, useState, useCallback, useRef, useEffect, useMemo, type MouseEvent, type ReactNode } from "react"
 import { X, AlertCircle, CheckCircle2, Table2, Search, Layers } from "lucide-react"
 import { getDtypeColor } from "../utils/dtypeColors"
 import { formatValue } from "../utils/formatValue"
-import CacheStoreSize from "../components/CacheStoreSize"
 import ExecutionDiagnosticsIndicator from "../components/ExecutionDiagnosticsIndicator"
 import PreviewOutOfDateBadge from "../components/PreviewOutOfDateBadge"
 import type { ColumnInfo } from "../types/node"
@@ -11,6 +10,7 @@ import type {
   NodeTiming,
   NodeMemory,
   ExecutionMetrics,
+  PreviewProgressResponse,
   PreviewSeedPlanEntry,
 } from "../api/types"
 import PreviewPanelFrame from "./PreviewPanelFrame"
@@ -22,6 +22,8 @@ export interface PreviewData {
   status: "ok" | "error" | "loading"
   /** Cache preparation progress while waiting to execute the preview. */
   loading_message?: string
+  /** The running request's step progress, while it is loading. */
+  progress?: PreviewProgressResponse
   row_count: number
   column_count: number
   columns: ColumnInfo[]
@@ -61,6 +63,8 @@ interface DataPreviewProps {
    * provided AND the node carries 2+ frames, the top-bar shows a frame-select
    * dropdown. Omitted (or single-frame node) → no dropdown, unchanged UI. */
   onSelectFrame?: (portLabel: string) => void
+  /** An action shown beside Refresh (Import, for a snapshot-backed input). */
+  inputAction?: ReactNode
 }
 
 
@@ -89,6 +93,55 @@ type ColumnWindow = {
 type ColumnSearchEntry = {
   column: ColumnInfo
   normalizedName: string
+}
+
+/**
+ * A running preview: its step progress once the plan is known ("Step 2 of 4 ·
+ * Caching join"), "Preparing inputs" before that, or the preparation message.
+ * Steps are counted with equal weight, so the bar can jump; the label says
+ * which step is running.
+ */
+function PreviewLoading({
+  message,
+  progress,
+}: {
+  message?: string
+  progress?: PreviewProgressResponse
+}) {
+  const running =
+    progress?.phase === "running" && progress.total !== null && progress.total > 0
+      ? { done: progress.done ?? 0, total: progress.total }
+      : null
+  const text = running
+    ? `Step ${Math.min(running.done + 1, running.total)} of ${running.total}${
+        progress?.label ? ` · ${progress.label}` : ""
+      }`
+    : progress?.phase === "preparing"
+      ? message ?? "Preparing inputs…"
+      : message ?? "Executing pipeline..."
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center gap-2">
+      <div role="status" className="text-xs animate-pulse" style={{ color: "var(--text-muted)" }}>
+        {text}
+      </div>
+      {running && (
+        <div
+          role="progressbar"
+          aria-label="Preview progress"
+          aria-valuemin={0}
+          aria-valuemax={running.total}
+          aria-valuenow={running.done}
+          className="h-1 w-48 overflow-hidden rounded"
+          style={{ background: "var(--accent-soft)" }}
+        >
+          <div
+            className="h-full transition-all duration-300"
+            style={{ width: `${(running.done / running.total) * 100}%`, background: "var(--accent)" }}
+          />
+        </div>
+      )}
+    </div>
+  )
 }
 
 function normalizeColumnSearch(value: string): string {
@@ -193,7 +246,7 @@ const DataCell = memo(function DataCell({
   )
 })
 
-export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, tracedCell, embedded = false, nodeType, onSelectFrame }: DataPreviewProps) {
+export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, tracedCell, embedded = false, nodeType, onSelectFrame, inputAction }: DataPreviewProps) {
   const [columnSearch, setColumnSearch] = useState("")
 
   // Frame labels for a multi-frame producer (a multi-table apiInput). The
@@ -310,7 +363,7 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
   if (!data) {
     if (embedded || !nodeLabel) return null
     return (
-      <PreviewPanelFrame nodeLabel={nodeLabel} nodeType={nodeType} onRefresh={onRefresh}>
+      <PreviewPanelFrame nodeLabel={nodeLabel} nodeType={nodeType} onRefresh={onRefresh} actions={inputAction}>
         <div className="flex-1 flex items-center justify-center text-xs" style={{ color: "var(--text-muted)" }}>
           Refresh to preview this node.
         </div>
@@ -365,9 +418,7 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
     </div>
   ) : null
   const previewContent = data.status === "loading" ? (
-    <div className="flex-1 flex items-center justify-center">
-      <div role="status" className="text-xs animate-pulse" style={{ color: 'var(--text-muted)' }}>{data.loading_message ?? "Executing pipeline..."}</div>
-    </div>
+    <PreviewLoading message={data.loading_message} progress={data.progress} />
   ) : data.status === "error" ? (
     <div className="flex-1 flex items-center justify-center p-4">
       <div className="text-center">
@@ -516,8 +567,6 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
           <span className="text-[11px] animate-pulse" style={{ color: 'var(--text-muted)' }}>Running...</span>
         )}
         <div className="ml-auto flex items-center gap-1.5">
-          {/* A settled preview may have added captures, so it reads the size again. */}
-          <CacheStoreSize refreshKey={data.status === "loading" ? null : data} />
           {/* In embedded mode there is no PreviewPanelFrame header to carry
               the dropdown, so it lives here beside the column search; in the
               framed (canvas) case it sits in the frame's actions slot beside
@@ -543,7 +592,16 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
       nodeLabel={data.nodeLabel}
       nodeType={nodeType}
       onRefresh={onRefresh}
-      actions={frameSelectControl}
+      actions={
+        inputAction ? (
+          <>
+            {inputAction}
+            {frameSelectControl}
+          </>
+        ) : (
+          frameSelectControl
+        )
+      }
       collapsedMeta={data.status === "ok" ? `${data.row_count.toLocaleString()} rows \u00b7 ${data.column_count || columns.length} cols` : undefined}
     >
       {previewSection}

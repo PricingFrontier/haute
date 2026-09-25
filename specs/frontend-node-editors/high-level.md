@@ -84,9 +84,8 @@ backend API modules own validation and persistence.
   the data's first and last dates in steps of one month.
   Rating supports one- and two-way factor tables, value-level matching, statistics,
   paste/copy and downloadable table data.
-- Banding and Rating say whose rows their numbers describe. Rating also shows the shared
-  data-cache control; Banding shows only that basis label (the node's own Refresh caches its
-  data either way). When the node's data point is cached both read the whole dataset: Banding its
+- Banding and Rating say whose rows their numbers describe; neither has a cache control of its
+  own, since the node's Refresh caches its data. When the node's data point is cached both read the whole dataset: Banding its
   distribution, values and per-rule counts, Rating the levels of the raw factor columns its
   tables rate on, so a level absent from the preview can still be given a rate. Without a
   current point — or with one the node has moved on from — Rating says so and falls back to the
@@ -104,7 +103,7 @@ backend API modules own validation and persistence.
   known shows as pending.
 - The Rating Step editor says none of this when nothing in it reads the data: a table whose
   factors are all banded outputs takes its levels from the banding configuration, so it shows
-  neither a basis nor the cache control.
+  no basis.
 - Levels the data adds are appended to the ones the Rating Step editor already shows, never put
   in front of them: they arrive while the user is typing, and a row that moved would take the
   value meant for its neighbour. The slice of a three-factor table is held as the level itself
@@ -246,10 +245,11 @@ backend API modules own validation and persistence.
   and execution settings rather than preview/trace metadata.
 - Data Input groups providers as File, Database, Lakehouse, Databricks, and
   Inline and derives every supported field, format, mode, dependency,
-  snapshot build class, and cache control from the backend capability
+  and snapshot build class from the backend capability
   contract. A single available read mode is not rendered. Cache mode is also
-  not presented as a choice: file-backed Parquet scans directly and has no
-  cache action; every other input uses the shared Cache-as-Parquet control.
+  not presented as a choice, and the editor has no cache action: file-backed
+  Parquet scans directly, and every other input's snapshot is prepared before
+  a run.
   Its optional Polars editor transforms the resolved frame.
   Data Output presents only writable groups/modes, never Databricks or a Polars
   editor, resolves the actual destination, and keeps per-node write,

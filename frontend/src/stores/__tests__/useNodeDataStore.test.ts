@@ -542,5 +542,22 @@ describe("useNodeDataStore noteAnnouncedCaptures", () => {
       message: "Profiling this data did not finish.",
     })
   })
+
+  it("keeps a profile job this tab started as its own when a later answer joins it", () => {
+    const store = useNodeDataStore.getState()
+    store.startProfileJob("join||live", {
+      jobId: "p1", message: "Profiling", startedByLabel: "Explore", dataVersion: "v1", startedHere: true,
+    })
+    store.startProfileJob("join||live", {
+      jobId: "p1", message: "Profiling", startedByLabel: "Explore", dataVersion: "v1", startedHere: false,
+    })
+    expect(useNodeDataStore.getState().profileJobs["join||live"]?.startedHere).toBe(true)
+
+    // A different job is judged on its own answer.
+    store.startProfileJob("join||live", {
+      jobId: "p2", message: "Profiling", startedByLabel: "Explore", dataVersion: "v1", startedHere: false,
+    })
+    expect(useNodeDataStore.getState().profileJobs["join||live"]?.startedHere).toBe(false)
+  })
 })
 

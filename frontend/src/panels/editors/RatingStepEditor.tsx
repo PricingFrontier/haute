@@ -20,7 +20,6 @@ import {
 import { OneWayEditor } from "./rating/OneWayEditor"
 import { TwoWayGrid } from "./rating/TwoWayGrid"
 import useRatingLevels from "./rating/useRatingLevels"
-import DataCacheStatus from "../../components/DataCacheStatus"
 import type { SimpleNode } from "./_shared"
 import { useGraph } from "../useGraph"
 import useUIStore, { type RatingStepEditorSection } from "../../stores/useUIStore"
@@ -218,7 +217,6 @@ export default function RatingStepEditor({
     .flatMap(candidate => candidate.factors)
     .filter(factor => factor && !bandingClassification.configuredOutputs.includes(factor))
   const {
-    cache,
     levels: datasetLevels,
     totalRows: datasetRows,
     basis: levelsBasis,
@@ -472,7 +470,7 @@ export default function RatingStepEditor({
 
       {/* Only when something here reads the data. A table rating purely on
           banded outputs takes its levels from the banding config, so neither
-          the basis nor the cache control has anything to say about it. */}
+          the basis has anything to say about it. */}
       {node && ratedColumns.length > 0 && (
         <div className="flex items-center justify-between gap-2" data-testid="rating-levels-basis">
           <span
@@ -482,7 +480,6 @@ export default function RatingStepEditor({
           >
             {levelsError ? `Reading the whole dataset failed: ${levelsError}` : levelsBasisLabel}
           </span>
-          <DataCacheStatus cache={cache} />
         </div>
       )}
 

@@ -4,12 +4,12 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import Mock, patch
 
 import polars as pl
 import pytest
-from fastapi import Response
+from fastapi import Request, Response
 
 from haute._execution_admission import (
     ExecutionAdmissionError,
@@ -53,6 +53,15 @@ from tests.conftest import (
 )
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
+
+class _ConnectedClient:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+# A request whose client stays connected, for calling the preview route directly.
+_CONNECTED = cast(Request, _ConnectedClient())
 
 
 def _clear_execution_memory_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3537,7 +3546,7 @@ async def test_preview_route_creates_admitted_preview_execution_context(monkeypa
 
     with patch.object(pipeline_route, "execute_graph", side_effect=fake_execute_graph):
         response = await pipeline_route.preview_node(
-            PreviewNodeRequest(graph=graph, node_id="source")
+            PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
         )
 
     assert response.status == "ok"
@@ -3597,7 +3606,7 @@ async def test_preview_route_admits_when_warm_process_rss_exceeds_operation_budg
 
     with patch.object(pipeline_route, "execute_graph", side_effect=fake_execute_graph):
         response = await pipeline_route.preview_node(
-            PreviewNodeRequest(graph=graph, node_id="source")
+            PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
         )
 
     assert response.status == "ok"
@@ -3690,11 +3699,97 @@ async def test_preview_route_cancels_execution_context_on_timeout(monkeypatch) -
 
     with patch.object(pipeline_route, "execute_graph", side_effect=slow_execute_graph):
         with pytest.raises(HTTPException) as exc_info:
-            await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+            await pipeline_route.preview_node(
+                PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+            )
 
     assert exc_info.value.status_code == 504
     assert started.wait(2)
     assert cancel_seen.wait(2)
+
+
+class _LeavingClient:
+    """A client that disconnects as soon as it is asked."""
+
+    async def is_disconnected(self) -> bool:
+        return True
+
+
+@pytest.mark.asyncio
+async def test_a_disconnected_preview_that_times_out_keeps_admission_until_its_thread_ends(
+    monkeypatch,
+) -> None:
+    """The client leaves, the thread ignores cancellation past its timeout: its
+    admission must still be released only once the thread finishes."""
+    from fastapi import HTTPException
+
+    from haute.routes import pipeline as pipeline_route
+    from haute.schemas import NodeResult, PreviewNodeRequest
+
+    monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "thread")
+    monkeypatch.setenv("HAUTE_PREVIEW_TIMEOUT", "0.6")  # past the watcher's first poll
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": NodeType.DATA_INPUT.value,
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+    release_calls = 0
+    release_lock = threading.Lock()
+    release_worker = threading.Event()
+
+    def release_admission() -> None:
+        nonlocal release_calls
+        with release_lock:
+            release_calls += 1
+
+    preview_context = ExecutionContext(
+        operation="pipeline_preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        admission_release=release_admission,
+    )
+
+    def stubborn_execute_graph(*_args, **kwargs):
+        # Never reaches a cancellation checkpoint before its timeout.
+        assert release_worker.wait(5), "preview worker was not released"
+        return {kwargs["target_node_id"]: NodeResult(status="ok", row_count=0, column_count=0)}
+
+    monkeypatch.setattr(
+        pipeline_route, "create_admitted_execution_context", lambda *_a, **_k: preview_context
+    )
+    monkeypatch.setattr(pipeline_route, "execute_graph", stubborn_execute_graph)
+
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            await pipeline_route.preview_node(
+                PreviewNodeRequest(graph=graph, node_id="source"),
+                cast(Request, _LeavingClient()),
+            )
+        assert exc_info.value.status_code == 504
+        with release_lock:
+            assert release_calls == 0, "admission released while the thread still runs"
+
+        release_worker.set()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            with release_lock:
+                if release_calls == 1:
+                    break
+            await asyncio.sleep(0.005)
+    finally:
+        release_worker.set()
+
+    with release_lock:
+        assert release_calls == 1
 
 
 @pytest.mark.asyncio
@@ -3763,7 +3858,9 @@ async def test_preview_route_releases_admission_after_timed_out_worker_finishes(
 
     try:
         with pytest.raises(HTTPException) as exc_info:
-            await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+            await pipeline_route.preview_node(
+                PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+            )
 
         assert exc_info.value.status_code == 504
         assert worker_started.wait(2)
@@ -3840,7 +3937,9 @@ async def test_preview_route_releases_admission_when_timeout_task_already_finish
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+        await pipeline_route.preview_node(
+            PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+        )
 
     assert exc_info.value.status_code == 504
     with release_lock:
@@ -3885,7 +3984,9 @@ async def test_preview_route_maps_timeout_without_execution_context_to_http_504(
     monkeypatch.setattr(pipeline_route, "_preview_supersession", TimeoutBeforeWorker())
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+        await pipeline_route.preview_node(
+            PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+        )
 
     assert exc_info.value.status_code == 504
     assert "Preview execution timed out" in exc_info.value.detail
@@ -3918,7 +4019,9 @@ async def test_preview_route_returns_error_response_for_mismatch(monkeypatch, er
 
     monkeypatch.setattr(pipeline_route, "execute_graph", raise_mismatch)
 
-    response = await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+    response = await pipeline_route.preview_node(
+        PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+    )
 
     assert response.node_id == "source"
     assert response.status == "error"

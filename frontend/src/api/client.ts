@@ -95,6 +95,7 @@ import type {
   PolarsStepsRenderResponse,
   PreviewInputsResponse,
   PreviewNodeResponse,
+  PreviewProgressResponse,
   SaveOptimiserRequest,
   TraceSeedPlanEntry,
   SaveOptimiserResponse,
@@ -140,6 +141,7 @@ import {
   parsePipelineResponse,
   parsePreviewInputsResponse,
   parsePreviewNodeResponse,
+  parsePreviewProgressResponse,
   parseSavePipelineResponse,
   parseSchemaResponse,
   parseWriteOutputResponse,
@@ -768,6 +770,8 @@ export interface PreviewNodeArgs {
    * multi-table apiInput). Sent as `port_label`; part of the backend preview
    * cache key, so each frame is a distinct cache entry. */
   portLabel?: string
+  /** Chosen by the caller so it can poll this request's step progress. */
+  requestId?: string
   signal?: AbortSignal
   timeout?: number
 }
@@ -780,6 +784,7 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
     source,
     requestedPreviewColumns,
     portLabel,
+    requestId,
     signal,
     timeout = 120_000,
   } = args
@@ -792,9 +797,33 @@ export function previewNode(args: PreviewNodeArgs): Promise<PreviewNodeResponse>
       source: source ?? "live",
       ...(requestedPreviewColumns ? { requested_preview_columns: requestedPreviewColumns } : {}),
       ...(portLabel !== undefined ? { port_label: portLabel } : {}),
+      ...(requestId !== undefined ? { request_id: requestId } : {}),
     },
     { signal, timeout },
   ).then((data) => parsePreviewNodeResponse(data) as PreviewNodeResponse)
+}
+
+/**
+ * The step progress of this client's own preview *requestId*, or null when
+ * there is none to show: not registered yet, answered from a cache, or settled.
+ * One quick attempt, no retries: the next poll asks again.
+ */
+export async function getPreviewProgress(
+  requestId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<PreviewProgressResponse | null> {
+  try {
+    return parsePreviewProgressResponse(
+      await request<unknown>(`/api/pipeline/preview/progress/${encodeURIComponent(requestId)}`, {
+        ...options,
+        timeout: 2_000,
+        retry: { maxRetries: 0 },
+      }),
+    )
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
+  }
 }
 
 export interface PreviewInputsArgs {
@@ -852,6 +881,7 @@ export interface RecoveryPreviewNodeArgs {
   source?: string
   requestedPreviewColumns?: string[]
   portLabel?: string
+  requestId?: string
   signal?: AbortSignal
   timeout?: number
 }
@@ -867,6 +897,7 @@ export function previewRecoveryNode(
     source,
     requestedPreviewColumns,
     portLabel,
+    requestId,
     signal,
     timeout = 120_000,
   } = args
@@ -880,6 +911,7 @@ export function previewRecoveryNode(
       source: source ?? "live",
       ...(requestedPreviewColumns ? { requested_preview_columns: requestedPreviewColumns } : {}),
       ...(portLabel !== undefined ? { port_label: portLabel } : {}),
+      ...(requestId !== undefined ? { request_id: requestId } : {}),
     },
     { signal, timeout },
   ).then((data) => parsePreviewNodeResponse(data) as PreviewNodeResponse)

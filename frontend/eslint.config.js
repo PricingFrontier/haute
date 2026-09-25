@@ -129,7 +129,6 @@ export default defineConfig([
   {
     files: [
       'src/components/BranchManager.tsx',
-      'src/components/CacheFetchButton.tsx',
       'src/components/RemotePushControl.tsx',
       'src/hooks/usePipelineAPI.ts',
       'src/hooks/useWebSocketSync.ts',

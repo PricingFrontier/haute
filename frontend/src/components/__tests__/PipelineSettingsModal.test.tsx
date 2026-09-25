@@ -13,6 +13,7 @@ const mockPutExecutionSettings = vi.fn()
 
 vi.mock("../../api/client", () => ({
   fetchCacheNodes: (...args: unknown[]) => mockFetchCacheNodes(...args),
+  fetchCacheUsage: () => Promise.resolve({ schema_version: 1, total_bytes: 5 * 1024 ** 3, automatic_bytes: 0, automatic_budget_bytes: 1 }),
   clearCacheIdentities: (...args: unknown[]) => mockClearCacheIdentities(...args),
   getExecutionSettings: (...args: unknown[]) => mockGetExecutionSettings(...args),
   putExecutionSettings: (...args: unknown[]) => mockPutExecutionSettings(...args),
@@ -95,6 +96,12 @@ describe("PipelineSettingsModal", () => {
     expect(screen.queryAllByRole("meter")).toHaveLength(0)
     expect(screen.queryByText(/This pipeline ·/)).toBeNull()
     expect(screen.queryByText(/HAUTE_|budget|cap/i)).toBeNull()
+  })
+
+  it("shows the whole store's size beside the cached-data heading", async () => {
+    render(<PipelineSettingsModal onClose={vi.fn()} />)
+
+    expect(await screen.findByTestId("cache-store-size")).toHaveTextContent("5.0 GB cached")
   })
 
   it("reads the inventory once on open and again only when asked", async () => {

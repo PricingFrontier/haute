@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, renderHook, cleanup, waitFor, act, screen } from "@testing-library/react"
+import { renderHook, cleanup, waitFor, act } from "@testing-library/react"
 
 import type { NodeDataPointResponse } from "../../api/types"
 import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useToastStore from "../../stores/useToastStore"
+import useNodeWorkStore, { stopNodeWork } from "../../stores/useNodeWorkStore"
 import useNodeDataCache, { deriveAvailability, refreshNodeDataCache } from "../useNodeDataCache"
-import DataCacheStatus from "../../components/DataCacheStatus"
 
 vi.mock("../../api/client", () => ({
   getNodeDataPoint: vi.fn(),
@@ -98,6 +98,7 @@ function renderCache(nodeId: string) {
 
 describe("useNodeDataCache", () => {
   beforeEach(() => {
+    useNodeWorkStore.setState({ running: {} })
     useNodeDataStore.getState().reset()
     useSettingsStore.setState({ activeSource: "live", sources: ["live"] })
     useDocumentStatusStore.setState({
@@ -678,6 +679,86 @@ describe("useNodeDataCache", () => {
     expect(mockCancel).toHaveBeenCalledWith("job-3")
   })
 
+  it("stops a build whose job id had not arrived when Stop was pressed", async () => {
+    mockGetPoint.mockResolvedValue(point({ state: "missing", generation: null, data_version: null }))
+    let answer!: (value: Awaited<ReturnType<typeof runNodeData>>) => void
+    mockRun.mockImplementation(() => new Promise((resolve) => { answer = resolve }))
+    mockCancel.mockResolvedValue({ status: "cancelled", progress: 0, message: "Cache build cancelled" })
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.availability).toBe("missing"))
+
+    let building!: Promise<void>
+    act(() => {
+      building = result.current.run()
+    })
+    await waitFor(() => expect(mockRun).toHaveBeenCalled())
+    await act(async () => {
+      await result.current.cancel()
+    })
+    expect(mockCancel).not.toHaveBeenCalled()
+
+    await act(async () => {
+      answer({
+        status: "started",
+        job_id: "job-late",
+        cached: false,
+        message: "Caching started",
+        point: point({ state: "building", generation: null, data_version: null }),
+      })
+      await building
+    })
+
+    expect(mockCancel).toHaveBeenCalledWith("job-late")
+  })
+
+  it("leaves a build joined from elsewhere running when this node stops", async () => {
+    mockGetPoint.mockResolvedValue(point({ state: "missing", generation: null, data_version: null }))
+    mockRun.mockResolvedValue({
+      status: "joined",
+      job_id: "theirs",
+      cached: false,
+      message: "Caching",
+      point: point({ state: "building", generation: null, data_version: null }),
+    })
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.availability).toBe("missing"))
+    await act(async () => {
+      await result.current.run()
+    })
+
+    await act(async () => {
+      await result.current.cancel()
+    })
+
+    expect(mockCancel).not.toHaveBeenCalled()
+    // Not this node's work, so its frame does not offer to stop it.
+    expect(Object.values(useNodeWorkStore.getState().running)).not.toContain("explore")
+  })
+
+  it("shows the node's Stop while its own build runs, and the node's Stop cancels it", async () => {
+    mockGetPoint.mockResolvedValue(point({ state: "missing", generation: null, data_version: null }))
+    mockRun.mockResolvedValue({
+      status: "started",
+      job_id: "job-own",
+      cached: false,
+      message: "Caching started",
+      point: point({ state: "building", generation: null, data_version: null }),
+    })
+    mockCancel.mockResolvedValue({ status: "cancelled", progress: 0, message: "Cache build cancelled" })
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.availability).toBe("missing"))
+    await act(async () => {
+      await result.current.run()
+    })
+    await waitFor(() => expect(Object.values(useNodeWorkStore.getState().running)).toContain("explore"))
+
+    await act(async () => {
+      stopNodeWork("explore")
+    })
+
+    await waitFor(() => expect(mockCancel).toHaveBeenCalledWith("job-own"))
+  })
+
   it("stops showing the previous identity's answer the moment the identity changes", async () => {
     let answerSecond: ((value: NodeDataPointResponse) => void) | null = null
     let identity: "first" | "second" = "first"
@@ -789,85 +870,5 @@ describe("deriveAvailability", () => {
     expect(
       deriveAvailability(point({ generation: { ...point().generation!, fresh: false } }), false),
     ).toBe("stale")
-  })
-})
-
-describe("DataCacheStatus", () => {
-  beforeEach(() => {
-    useNodeDataStore.getState().reset()
-    useSettingsStore.setState({ activeSource: "live", sources: ["live"] })
-    useDocumentStatusStore.setState({
-      sourceFile: "main.py",
-      executionGeneration: 1,
-      loadStatus: "ready",
-      capabilities: { can_execute: true } as never,
-      graphSynchronized: true,
-    })
-    mockGetPoint.mockReset()
-  })
-
-  afterEach(() => cleanup())
-
-  function Harness({ nodeId }: { nodeId: string }) {
-    const cache = useNodeDataCache({ node: nodeById(nodeId), allNodes: nodes, edges, preamble: "" })
-    return <DataCacheStatus cache={cache} showDetails />
-  }
-
-  it("says a point has nothing cached", async () => {
-    mockGetPoint.mockResolvedValue(point({ state: "missing", generation: null, data_version: null, row_count: null, size_bytes: null, retention: null }))
-    render(<Harness nodeId="explore" />)
-
-    await waitFor(() => expect(screen.getByTestId("data-cache-status")).toHaveTextContent("Not cached"))
-    expect(screen.queryByTestId("data-cache-detail")).toBeNull()
-    // Nothing here starts a build: the node's Refresh button is the one
-    // control that brings the node up to date, cached data included.
-    expect(screen.queryByRole("button")).toBeNull()
-  })
-
-  it("names a generation that lacks columns this consumer reads", async () => {
-    mockGetPoint.mockResolvedValue(
-      point({
-        state: "partial",
-        generation: { ...point().generation!, columns: ["premium"], size_bytes: 1536, retention: "automatic" },
-      }),
-    )
-    render(<Harness nodeId="explore" />)
-
-    await waitFor(() =>
-      expect(screen.getByTestId("data-cache-status")).toHaveTextContent("Cached for some columns"),
-    )
-    expect(screen.getByTestId("data-cache-detail")).toHaveTextContent("1,000 rows · 1.5 KB · automatic")
-  })
-
-  it("offers cancel and progress while the point is being cached", async () => {
-    mockGetPoint.mockResolvedValue(
-      point({
-        state: "building",
-        generation: null,
-        data_version: null,
-        job: { job_id: "job-9", progress: 0.25, message: "Caching data" },
-      }),
-    )
-    mockCancel.mockResolvedValue({ status: "cancelled", progress: 1, message: "Cache build cancelled" })
-    render(<Harness nodeId="explore" />)
-
-    await waitFor(() => expect(screen.getByTestId("data-cache-cancel")).toBeInTheDocument())
-    expect(screen.getByTestId("data-cache-progress")).toHaveAttribute("aria-valuenow", "25")
-  })
-
-  it("states that a direct file needs no cache at all", async () => {
-    mockGetPoint.mockResolvedValue(
-      point({
-        kind: "data_input",
-        point: { producer_node_id: "source", port_label: null },
-        slot_key: "source||live",
-        reads_directly: true,
-        generation: null,
-      }),
-    )
-    render(<Harness nodeId="banding" />)
-
-    await waitFor(() => expect(screen.getByTestId("data-cache-direct")).toHaveTextContent("Reads Parquet directly"))
-    expect(screen.queryByTestId("data-cache-status")).toBeNull()
   })
 })

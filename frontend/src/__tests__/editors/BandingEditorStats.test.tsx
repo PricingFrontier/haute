@@ -423,18 +423,6 @@ describe("BandingEditor statistics", () => {
     expect(JSON.parse(histogram.getAttribute("data-boundaries")!)).toEqual([19754, 19783])
   })
 
-  it("says whose rows it counts without a cache status of its own", async () => {
-    renderEditor(editor())
-    await act(async () => {
-      vi.advanceTimersByTime(300)
-    })
-
-    expect(await screen.findByText("All rows · 1,000")).toBeInTheDocument()
-    // The node's own Refresh caches its data; the editor shows no cache control.
-    expect(screen.queryByTestId("data-cache-status")).toBeNull()
-    expect(screen.queryByText("Cached")).toBeNull()
-  })
-
   it("says why the whole dataset could not be counted, in the server's words", async () => {
     // The client builds an ApiError whose `message` is only "HTTP 422"; what
     // the user needs is the detail the server sent — for bad rules, the message

@@ -1291,3 +1291,28 @@ def test_port_label_select_through_preview_route(isolated_root) -> None:
 
     # node_frame_columns is unchanged and additive on every response.
     assert set(drivers_body["node_frame_columns"]["api"]) == {"policies", "drivers"}
+
+
+def test_a_multi_port_target_counts_its_bundle_collection_as_a_step(isolated_root) -> None:
+    """The bundle path collects the target without ``_run_collect``; it is still one step."""
+    from haute._execution_admission import create_admitted_execution_context
+    from haute._execution_context import ExecutionProfile
+    from haute._step_progress import StepProgress
+
+    data_path = isolated_root / "data.json"
+    data_path.write_text(json.dumps(_rating_records()))
+    config = _multi_port_config(data_path)
+    _build_cache_for(isolated_root, data_path, config)
+    graph = PipelineGraph(nodes=[_api_input_node("api", config)], edges=[])
+    steps: list[StepProgress] = []
+    context = create_admitted_execution_context(
+        operation="bundle_progress_test", profile=ExecutionProfile.PREVIEW_EAGER
+    )
+    context.step_progress = steps.append
+    try:
+        results = execute_graph(graph, target_node_id="api", execution_context=context)
+    finally:
+        context.release_admission()
+
+    assert results["api"].status == "ok"
+    assert steps[-1].done == steps[-1].total == 1

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import multiprocessing
 import os
 import pickle
 import queue
@@ -23,6 +24,12 @@ from haute._interactive_workers import (
     resolve_interactive_execution_mode,
     resolve_interactive_polars_threads,
 )
+
+
+def _cell() -> Any:
+    from haute._step_progress import ProgressCell
+
+    return ProgressCell(multiprocessing.get_context("spawn"))
 
 
 def _worker_identity(value: int = 0) -> tuple[int, int]:
@@ -826,7 +833,7 @@ def test_close_slot_defensive_cleanup_paths(monkeypatch: pytest.MonkeyPatch) -> 
             pass
 
     process = Process()
-    slot = worker_mod._WorkerSlot(0, _Queue(), _Queue(), process, threading.Lock(), 1)
+    slot = worker_mod._WorkerSlot(0, _Queue(), _Queue(), process, threading.Lock(), 1, _cell())
     monkeypatch.setattr(
         worker_mod, "_terminate_process", lambda proc: setattr(proc, "alive", False)
     )
@@ -1088,7 +1095,10 @@ def _start_slot_test_pool(monkeypatch: pytest.MonkeyPatch, process):
     pool = InteractiveWorkerPool(size=1, polars_threads=2)
     queues = [_Queue(), _Queue()]
     monkeypatch.setattr(worker_mod, "create_worker_queue", lambda *_args: queues.pop(0))
-    pool._ctx = SimpleNamespace(Process=lambda **_kwargs: process)
+    spawn = multiprocessing.get_context("spawn")
+    pool._ctx = SimpleNamespace(
+        Process=lambda **_kwargs: process, RawArray=spawn.RawArray, Lock=spawn.Lock
+    )
     return pool
 
 
@@ -1303,6 +1313,7 @@ def _close_slot(process, request_queue=None, result_queue=None):
         process,
         threading.Lock(),
         1,
+        _cell(),
     )
 
 

@@ -84,6 +84,7 @@ import type {
   OptimiserStatusResponse,
   PreviewInputsResponse,
   PreviewNodeResponse,
+  PreviewProgressResponse,
   PreviewSeedPlanEntry,
   SavePipelineResponse,
   SchemaResult,
@@ -1798,7 +1799,20 @@ function parseInputCacheGeneration(value: unknown, field: string): InputCacheGen
   const p = "parseInputCacheSnapshotResponse"; const obj = expectPlainObject(p, value, field)
   return { generation_id: expectString(p, obj.generation_id, `${field}.generation_id`), row_count: expectNumber(p, obj.row_count, `${field}.row_count`), column_count: expectNumber(p, obj.column_count, `${field}.column_count`), columns: parseInputCacheStringRecord(p, obj.columns, `${field}.columns`), size_bytes: expectNumber(p, obj.size_bytes, `${field}.size_bytes`), created_at: expectNumber(p, obj.created_at, `${field}.created_at`), build_class: expectStringLiteral(p, obj.build_class, `${field}.build_class`, BUILD_CLASSES) }
 }
-export function parseInputCacheBuildResponse(value: unknown): InputCacheBuildResponse { const p = "parseInputCacheBuildResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), status: expectStringLiteral(p, obj.status, "field `status`", ["running"]), joined: expectBoolean(p, obj.joined, "field `joined`"), build_class: expectStringLiteral(p, obj.build_class, "field `build_class`", ["bounded", "admitted_eager"]) } }
+export function parsePreviewProgressResponse(value: unknown): PreviewProgressResponse {
+  const p = "parsePreviewProgressResponse"
+  const obj = expectPlainObject(p, value)
+  const count = (field: "done" | "total") =>
+    obj[field] === null || obj[field] === undefined ? null : expectNumber(p, obj[field], `field \`${field}\``)
+  return {
+    request_id: expectString(p, obj.request_id, "field `request_id`"),
+    phase: expectStringLiteral(p, obj.phase, "field `phase`", ["preparing", "running"]),
+    done: count("done"),
+    total: count("total"),
+    label: obj.label === undefined ? null : expectNullableString(p, obj.label, "field `label`"),
+  }
+}
+export function parseInputCacheBuildResponse(value: unknown): InputCacheBuildResponse { const p = "parseInputCacheBuildResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), status: expectStringLiteral(p, obj.status, "field `status`", ["running", "blocked"]), joined: expectBoolean(p, obj.joined, "field `joined`"), forced: expectBoolean(p, obj.forced, "field `forced`"), build_class: expectStringLiteral(p, obj.build_class, "field `build_class`", ["bounded", "admitted_eager"]) } }
 function parseInputCacheTableStatus(value: unknown, field: string): InputCacheTableStatus {
   const p = "parseInputCacheSnapshotResponse"; const obj = expectPlainObject(p, value, field)
   return { label: expectString(p, obj.label, `${field}.label`), identity_digest: expectString(p, obj.identity_digest, `${field}.identity_digest`), state: expectStringLiteral(p, obj.state, `${field}.state`, INPUT_CACHE_SNAPSHOT_STATES), freshness: expectStringLiteral(p, obj.freshness, `${field}.freshness`, INPUT_CACHE_FRESHNESS), generation: obj.generation === null ? null : parseInputCacheGeneration(obj.generation, `${field}.generation`) }

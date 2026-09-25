@@ -24,8 +24,8 @@ import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 import * as apiInputPorts from "../apiInputPorts"
 import {
-  apiInputFrameLabels as apiInputFrameLabelsWithReserved,
   apiInputHasEmittingTable,
+  apiInputFrameLabels as apiInputFrameLabelsWithReserved,
   edgeInputName,
 } from "../apiInputPorts"
 import { buildGraph } from "../buildGraph"

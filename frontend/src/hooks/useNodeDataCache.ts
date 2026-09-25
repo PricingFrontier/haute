@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 
 import {
   cancelNodeData,
@@ -12,6 +12,7 @@ import type { NodeDataColumns, NodeDataPointResponse, NodeDataRetention } from "
 import type { SimpleEdge, SimpleNode } from "../panels/editors"
 import { buildNodeDataCacheIdentity } from "../panels/dataPointIdentity"
 import useNodeDataStore, { columnsCoverDemand } from "../stores/useNodeDataStore"
+import useNodeWorkStore, { registerNodeStop } from "../stores/useNodeWorkStore"
 import { hashConfig } from "../stores/useNodeResultsStore"
 import {
   captureDocumentExecutionFence,
@@ -55,6 +56,11 @@ export interface NodeDataCache {
   canBuild: boolean
   run: () => Promise<void>
   refresh: () => Promise<void>
+  /**
+   * Stop the build: a delegated build of this tab, or a node-data job this
+   * consumer started. A job joined from elsewhere is left running. Pressed
+   * before the build's job id arrives, it stops the build as soon as it does.
+   */
   cancel: () => Promise<void>
   clear: () => Promise<void>
 }
@@ -171,6 +177,16 @@ export default function useNodeDataCache({
     point: NodeDataPointResponse
   } | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  // Node-data jobs this consumer started (not joined): only these are its to cancel.
+  const [ownedJobId, setOwnedJobId] = useState<string | null>(null)
+  // Set by a Stop that arrives before the build's job id; the build honours it
+  // as soon as the id arrives, instead of Stop finding nothing to cancel.
+  const stopRequested = useRef(false)
+  // The delegated build this consumer is orchestrating, reachable by Stop
+  // before a render has published it to the shared slot.
+  const ownDelegatedAbort = useRef<AbortController | null>(null)
+  const workKey = useId()
+  const setWorkRunning = useNodeWorkStore((s) => s.setRunning)
   // The identity the consumer is currently asking about. Every asynchronous
   // answer is checked against it, so an answer for an identity the consumer has
   // moved past cannot replace the current one.
@@ -188,6 +204,15 @@ export default function useNodeDataCache({
   const building = Boolean(job) || Boolean(delegatedBuild)
   const availability = deriveAvailability(point, building)
   const busy = submitting || building
+  // What this consumer's node shows Stop for: its own submission, a job it
+  // started, or a delegated build of this tab. A job joined from another tab
+  // shows as building but is not this node's to stop.
+  const ownedRunning =
+    submitting || Boolean(delegatedBuild) || (job !== null && job.jobId === ownedJobId)
+  useEffect(() => {
+    setWorkRunning(workKey, ownedRunning && nodeId ? nodeId : null)
+  }, [nodeId, ownedRunning, setWorkRunning, workKey])
+  useEffect(() => () => setWorkRunning(workKey, null), [setWorkRunning, workKey])
 
   const graphPayload = useCallback(
     () => buildGraph(allNodes, edges, submodels, preamble),
@@ -284,6 +309,8 @@ export default function useNodeDataCache({
         "./ensureInputSnapshots"
       )
       const controller = new AbortController()
+      ownDelegatedAbort.current = controller
+      if (stopRequested.current) controller.abort()
       const token = nextOperationToken()
       let buildJobId: string | null = null
       startDelegatedBuild(target.slot_key, {
@@ -337,6 +364,8 @@ export default function useNodeDataCache({
         }
         finishDelegatedBuild(target.slot_key, token)
         throw err
+      } finally {
+        if (ownDelegatedAbort.current === controller) ownDelegatedAbort.current = null
       }
       finishDelegatedBuild(target.slot_key, token)
       await readPoint(fence)
@@ -353,11 +382,24 @@ export default function useNodeDataCache({
     ],
   )
 
+  const cancelOwnedJob = useCallback(
+    async (jobId: string, fence: DocumentExecutionFence) => {
+      try {
+        await cancelNodeData(jobId)
+        await readPoint(fence)
+      } catch (err) {
+        addToast("error", `Cancelling the data cache failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    },
+    [addToast, readPoint],
+  )
+
   const build = useCallback(
     async (refresh: boolean) => {
       if (!nodeId || !configHash || busy) return
       const fence = captureDocumentExecutionFence()
       if (!isDocumentExecutionFenceCurrent(fence)) return
+      stopRequested.current = false
       setSubmitting(true)
       try {
         const response = await runNodeData({
@@ -375,9 +417,15 @@ export default function useNodeDataCache({
             message: response.message || "Caching data",
             startedByLabel: nodeLabel,
           })
+          if (response.status === "started") {
+            setOwnedJobId(response.job_id)
+            // Stop was pressed while this request was in flight.
+            if (stopRequested.current) await cancelOwnedJob(response.job_id, fence)
+          }
           return
         }
         if (response.status === "delegated") {
+          if (stopRequested.current) return
           // A snapshot-backed Data Input or API-input table is built by its own
           // route, under this slot's delegated build so every consumer of the
           // point sees it running and can cancel it.
@@ -408,6 +456,7 @@ export default function useNodeDataCache({
       addToast,
       buildDelegated,
       busy,
+      cancelOwnedJob,
       configHash,
       graphPayload,
       nodeId,
@@ -462,14 +511,27 @@ export default function useNodeDataCache({
       delegatedBuild.cancel()
       return
     }
-    if (!job) return
-    try {
-      await cancelNodeData(job.jobId)
-      await readPoint(fence)
-    } catch (err) {
-      addToast("error", `Cancelling the data cache failed: ${err instanceof Error ? err.message : String(err)}`)
+    if (job && job.jobId === ownedJobId) {
+      await cancelOwnedJob(job.jobId, fence)
+      return
     }
-  }, [addToast, delegatedBuild, job, readPoint])
+    if (ownDelegatedAbort.current) {
+      ownDelegatedAbort.current.abort()
+      return
+    }
+    // No job id yet: the build in flight stops itself when it arrives.
+    if (submitting) stopRequested.current = true
+  }, [cancelOwnedJob, delegatedBuild, job, ownedJobId, submitting])
+
+  // Read when Stop is pressed, like Refresh's handler above.
+  const latestCancel = useRef(cancel)
+  useEffect(() => {
+    latestCancel.current = cancel
+  })
+  useEffect(() => {
+    if (!nodeId) return
+    return registerNodeStop(nodeId, () => void latestCancel.current())
+  }, [nodeId])
 
   const clear = useCallback(async () => {
     if (!nodeId || !configHash) return

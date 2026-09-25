@@ -2579,6 +2579,56 @@ def _fold_recompute_report(report: list[ReportedCall]) -> NodeRecomputeFacts:
     )
 
 
+# Frame methods that return some of their input's rows without reading the
+# rest: Polars pushes the row bound they set into the scan below them.
+_ROW_BOUNDING_FRAME_METHODS = frozenset(
+    {"head", "tail", "limit", "slice", "first", "last", "sample", "gather_every"}
+    # A callback receives the whole frame and may return any of its rows.
+    | {"pipe", "map_batches"}
+)
+_UNPROVEN_RECOMPUTE_REASONS = (
+    "syntax_error",
+    "unresolved_call:",
+    "unresolved_callback:",
+    "unregistered_frame_method:",
+)
+
+
+def code_bounds_rows(code: object, facts: NodeRecomputeFacts | None) -> bool:
+    """Whether node code may read fewer than all of its input rows.
+
+    Conservative: True unless every row is provably read. The code may bound
+    rows when it calls a row-bounding method (``head``, ``limit``, ``slice``...)
+    or hands the frame to a callback (``pipe``, ``map_batches``) on any receiver,
+    slices with a subscript (``df[:10]``), or has no recompute *facts* or facts
+    that leave a call unproven (an unresolved or unregistered call might bound
+    rows too; unparseable code is unproven). Some such code still reads every
+    row (``sort().head()``); it is answered True all the same. Blank code reads
+    every row.
+    """
+    if not isinstance(code, str) or not code.strip():
+        return False
+    if facts is None or facts.reason.startswith(_UNPROVEN_RECOMPUTE_REASONS):
+        return True
+    tree = ast.parse(code)
+    return any(
+        (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _ROW_BOUNDING_FRAME_METHODS
+        )
+        or (isinstance(node, ast.Subscript) and _subscript_slices(node.slice))
+        for node in ast.walk(tree)
+    )
+
+
+def _subscript_slices(index: ast.expr) -> bool:
+    """Whether a subscript index takes a slice of rows (``[:10]``, ``[0:10, "a"]``)."""
+    if isinstance(index, ast.Slice):
+        return True
+    return isinstance(index, ast.Tuple) and any(isinstance(e, ast.Slice) for e in index.elts)
+
+
 def code_recompute_facts(
     code: str,
     input_names: frozenset[str],

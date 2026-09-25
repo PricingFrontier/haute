@@ -20,6 +20,7 @@ from haute._graph_walker import CollectPolicy, WalkResult, walk_graph
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
 from haute._source_cache import SourceCacheIdentity
+from haute._step_progress import StepProgress
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 
 ALL = NodeSnapshotColumns.all()
@@ -265,11 +266,13 @@ def _previewing(
     required: dict[str, list[str]] | None = None,
     preplanned: bool = False,
     materialize_all: bool = False,
+    step_progress: Callable[[StepProgress], None] | None = None,
 ) -> Iterator[Preview]:
     import haute.execution as execution_facade
     from haute.executor import _compile_preamble, _pipeline_dir
 
     context = _context()
+    context.step_progress = step_progress
     request = SeedPlanRequest(
         graph=graph,
         target_node_id=target,
@@ -685,6 +688,36 @@ def test_capture_store_error_propagates_instead_of_a_node_error(
         _preview(graph, store, "banding")
 
 
+def test_a_preview_counts_its_captures_and_its_collection_as_steps(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    graph = _join_graph(project)
+    steps: list[StepProgress] = []
+
+    preview = _preview(graph, store, "banding", row_limit=3, step_progress=steps.append)
+
+    assert preview.captures["join"]["outcome"] == "published"
+    assert [(step.done, step.total) for step in steps] == [(0, 2), (0, 2), (1, 2), (1, 2), (2, 2)]
+    assert steps[1].label.startswith("Caching ")
+    assert steps[3].label.startswith("Computing ")
+
+
+def test_a_preview_without_captures_has_one_step(project: Path, store: NodeSnapshotStore) -> None:
+    graph = _graph(
+        project,
+        [
+            ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            ("F", NodeType.POLARS, _code("df = policies.filter(pl.col('a') > 10)")),
+        ],
+        [("policies", "F")],
+    )
+    steps: list[StepProgress] = []
+
+    _preview(graph, store, "F", step_progress=steps.append)
+
+    assert [(step.done, step.total) for step in steps] == [(0, 1), (0, 1), (1, 1)]
+
+
 def test_a_node_failing_while_it_is_captured_is_that_nodes_error(
     project: Path, store: NodeSnapshotStore
 ) -> None:
@@ -707,11 +740,15 @@ def test_a_node_failing_while_it_is_captured_is_that_nodes_error(
         [("policies", "join"), ("claims", "join"), ("join", "banding")],
     )
 
-    preview = _preview(graph, store, "banding")
+    steps: list[StepProgress] = []
+    preview = _preview(graph, store, "banding", step_progress=steps.append)
 
     assert "join" in preview.result.errors
     assert "Upstream node(s) failed" in preview.result.errors["banding"]
     assert _latest(store, graph, "join") is None
+    # The failed capture and the skipped collection never complete: progress
+    # stops short of its total, and the response carries the error.
+    assert max(step.done for step in steps) < steps[0].total
 
 
 def test_pass_through_under_a_plan_reads_only_its_selected_edge(
@@ -2174,3 +2211,189 @@ def test_an_extended_cache_hit_reports_the_current_plans_generations(
     assert builds["banding"] == 1
     assert _plan_of(second) == [("join", "seeded")]
     assert second["seed_plan"][0]["generation_id"] == gen_id
+
+
+@pytest.mark.parametrize(
+    ("post_code", "strategy"), [("", "prewritten"), ("df = df.with_columns(x=pl.lit(1))", "sliced")]
+)
+def test_a_preview_scores_a_capture_drained_model_score_in_batches(
+    project: Path,
+    store: NodeSnapshotStore,
+    monkeypatch: pytest.MonkeyPatch,
+    post_code: str,
+    strategy: str,
+) -> None:
+    """A Model Score a capture below drains writes its scored parts a batch at a time.
+
+    Left a row-local scan, the join's capture pulled it whole through Polars,
+    which applies no backpressure to a Python source: every scored batch sat
+    in memory before the capture wrote it (a 10M-row preview hit its cap).
+    """
+    from unittest.mock import MagicMock, patch
+
+    import haute._model_scorer as model_scorer
+    from haute._mlflow_io import ScoringModel
+
+    monkeypatch.setattr(model_scorer, "_SCORE_BATCH_SIZE", 30)
+    raw = MagicMock()
+    raw.feature_names_ = ["a"]
+    raw.predict.side_effect = lambda x: np.full(len(x), 0.5)
+    raw.get_cat_feature_indices.return_value = []
+    del raw.predict_proba
+    scoring = ScoringModel(
+        model=raw, feature_names=["a"], cat_feature_names=frozenset(), flavor="catboost"
+    )
+    score_config = {
+        "sourceType": "run",
+        "run_id": "abc123",
+        "artifact_path": "model.cbm",
+        "task": "regression",
+        "output_column": "pred",
+        "code": post_code,
+    }
+    graph = _graph(
+        project,
+        [
+            ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            ("claims", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("score", NodeType.MODEL_SCORE, score_config),
+            ("join", NodeType.POLARS, _code("df = score.join(claims, on='id', how='left')")),
+            ("shown", NodeType.POLARS, _code("df = join.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("policies", "score"), ("score", "join"), ("claims", "join"), ("join", "shown")],
+    )
+
+    with patch("haute._mlflow_io.load_mlflow_model", return_value=scoring):
+        preview = _preview(graph, store, "shown", source="batch")
+
+    assert preview.captures["score"]["write_strategy"] == strategy
+    if strategy == "prewritten":
+        # The scorer's own parts are the capture: one per 30-row batch.
+        from haute._chunked_writes import part_paths
+
+        capture = preview.captures["score"]
+        generation = (
+            store.inputs_root
+            / capture["identity_digest"]
+            / "generations"
+            / capture["generation_id"]
+        )
+        assert len(part_paths(generation)) == 4
+    shown = preview.rows("shown")
+    assert shown["pred"].to_list() == [0.5] * shown.height
+
+
+def test_a_preview_scores_only_the_rows_a_bounded_capture_reads(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    """``head`` between a scorer and a capture keeps the scorer row-local.
+
+    Polars pushes the bound into the scorer's scan, so the capture below it
+    scores only the rows it keeps; capturing the scorer would score them all.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from haute._mlflow_io import ScoringModel
+
+    scored_rows: list[int] = []
+
+    def predict(x: Any) -> Any:
+        scored_rows.append(len(x))
+        return np.full(len(x), 0.5)
+
+    raw = MagicMock()
+    raw.feature_names_ = ["a"]
+    raw.predict.side_effect = predict
+    raw.get_cat_feature_indices.return_value = []
+    del raw.predict_proba
+    scoring = ScoringModel(
+        model=raw, feature_names=["a"], cat_feature_names=frozenset(), flavor="catboost"
+    )
+    score_config = {
+        "sourceType": "run",
+        "run_id": "abc123",
+        "artifact_path": "model.cbm",
+        "task": "regression",
+        "output_column": "pred",
+    }
+    graph = _graph(
+        project,
+        [
+            ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            ("score", NodeType.MODEL_SCORE, score_config),
+            ("bounded", NodeType.POLARS, _code("df = score.head(10)")),
+            ("sorted", NodeType.POLARS, _code("df = bounded.sort('a', descending=True)")),
+            ("shown", NodeType.POLARS, _code("df = sorted.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("policies", "score"), ("score", "bounded"), ("bounded", "sorted"), ("sorted", "shown")],
+    )
+
+    with patch("haute._mlflow_io.load_mlflow_model", return_value=scoring):
+        preview = _preview(graph, store, "shown", source="batch")
+
+    assert set(preview.captures) == {"sorted"}
+    assert sum(scored_rows) == 10
+    assert preview.rows("shown")["a"].to_list() == [9, 8, 7]
+
+
+@pytest.mark.parametrize(
+    "post_code", ["df = df.head(10)", "df = df.head(10).sort('a', descending=True)"]
+)
+def test_a_bounded_post_code_scorer_still_drains_the_scorer_above_it(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch, post_code: str
+) -> None:
+    """``s2`` is captured, so it scores its whole input before its ``head`` runs.
+
+    Its input is then ``s1``'s scored parts, not a Python scan drained whole.
+    """
+    from unittest.mock import MagicMock, patch
+
+    import haute._model_scorer as model_scorer
+    from haute._mlflow_io import ScoringModel
+
+    monkeypatch.setattr(model_scorer, "_SCORE_BATCH_SIZE", 30)
+    scored_rows: list[int] = []
+
+    def predict(x: Any) -> Any:
+        scored_rows.append(len(x))
+        return np.full(len(x), 0.5)
+
+    raw = MagicMock()
+    raw.feature_names_ = ["a"]
+    raw.predict.side_effect = predict
+    raw.get_cat_feature_indices.return_value = []
+    del raw.predict_proba
+    scoring = ScoringModel(
+        model=raw, feature_names=["a"], cat_feature_names=frozenset(), flavor="catboost"
+    )
+
+    def score(output: str, code: str = "") -> dict[str, Any]:
+        return {
+            "sourceType": "run",
+            "run_id": "abc123",
+            "artifact_path": "model.cbm",
+            "task": "regression",
+            "output_column": output,
+            "code": code,
+        }
+
+    graph = _graph(
+        project,
+        [
+            ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            ("s1", NodeType.MODEL_SCORE, score("p1")),
+            ("s2", NodeType.MODEL_SCORE, score("p2", post_code)),
+            ("sorted", NodeType.POLARS, _code("df = s2.sort('a', descending=True)")),
+            ("shown", NodeType.POLARS, _code("df = sorted.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("policies", "s1"), ("s1", "s2"), ("s2", "sorted"), ("sorted", "shown")],
+    )
+
+    with patch("haute._mlflow_io.load_mlflow_model", return_value=scoring):
+        preview = _preview(graph, store, "shown", source="batch")
+
+    assert preview.captures["s1"]["write_strategy"] == "prewritten"
+    assert "s2" in preview.captures
+    # Each scorer scored all 100 rows, 30 a batch; ``head`` bounds s2's output.
+    assert scored_rows == [30, 30, 30, 10] * 2
+    assert preview.rows("shown")["a"].to_list() == [9, 8, 7]

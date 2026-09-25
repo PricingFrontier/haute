@@ -181,3 +181,58 @@ def test_preview_inputs_of_an_unadmitted_lineage_are_every_input_it_reads(
     # snapshot-backed Data Inputs; a flat-file API input, or a structured one
     # with no table schema, has nothing to prepare.
     assert preview_input_node_ids(graph, "J", source="live") == ("quotes", "snap")
+
+
+def test_a_preview_that_captures_is_budgeted_as_the_cache_build_it_runs(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A capture writes a node's whole output: the preview gets the cache-build budget.
+
+    It is still admitted as a preview, so it never reserves in-flight memory.
+    """
+    from haute._execution_admission import create_admitted_execution_context
+    from haute._seed_plans import preview_builds_snapshots
+    from haute.routes.pipeline import _preview_budget_profile
+    from haute.schemas import PreviewNodeRequest
+
+    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_MB", "64")
+    monkeypatch.setenv("HAUTE_NODE_SNAPSHOT_MEMORY_LIMIT_MB", "256")
+    graph = _joined(project, _csv_data_input(project))
+
+    def budget_profile(node_id: str) -> ExecutionProfile | None:
+        body = PreviewNodeRequest.model_construct(
+            graph=None, node_id=node_id, source="live", requested_preview_columns=None
+        )
+        return _preview_budget_profile(graph, body)
+
+    # ``B`` reads the join, which the preview captures; ``policies`` captures nothing.
+    assert preview_builds_snapshots(graph, "B", source="live") is True
+    assert budget_profile("B") is ExecutionProfile.NODE_SNAPSHOT
+    assert preview_builds_snapshots(graph, "policies", source="live") is False
+    assert budget_profile("policies") is None
+
+    context = create_admitted_execution_context(
+        operation="pipeline_preview",
+        profile=ExecutionProfile.PREVIEW_EAGER,
+        budget_profile=budget_profile("B"),
+    )
+    try:
+        assert context.profile is ExecutionProfile.PREVIEW_EAGER
+        assert context.memory_limit_bytes == 256 * 1024 * 1024
+        assert context.admission is not None
+        assert context.admission.config_key == "HAUTE_NODE_SNAPSHOT_MEMORY_LIMIT_MB"
+    finally:
+        context.release_admission()
+
+    # Once the join is cached the preview reads it and builds nothing.
+    _publish_join(project, graph)
+    assert budget_profile("B") is None
+
+
+def test_an_unadmitted_preview_builds_no_snapshots(project: Path) -> None:
+    """A lineage the shared cache does not admit captures nothing, whatever it reads."""
+    from haute._seed_plans import preview_builds_snapshots
+
+    graph = _joined(project, _csv_api_input(project))
+    assert preview_lineage_admitted(graph, "B", source="live") is False
+    assert preview_builds_snapshots(graph, "B", source="live") is False

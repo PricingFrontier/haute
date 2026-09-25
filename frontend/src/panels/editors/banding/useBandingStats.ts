@@ -11,7 +11,7 @@ import useWholeDataAnswer, { type WholeDataBasis } from "../shared/useWholeDataA
 export type BandingStatsBasis = WholeDataBasis
 
 export interface BandingStatsState {
-  /** The shared cache of the data this node reads, for the header control. */
+  /** The shared cache of the data this node reads, whose state the status line reports. */
   cache: NodeDataCache
   /**
    * The last statistics received. A rule edit keeps them, since the column's

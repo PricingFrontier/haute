@@ -17,6 +17,11 @@ async function openApp(page: Page): Promise<void> {
  * own Refresh button does — there is no cache button of its own — so this is
  * how a user now asks for the full dataset to be cached.
  */
+/** The Explore node's shared data, as its preview reports it. */
+function exploreData(page: Page): Locator {
+  return page.getByTestId("explore-preview-body")
+}
+
 async function refreshNode(page: Page): Promise<void> {
   await page.getByTestId("explore-preview-frame-header").getByRole("button", { name: "Refresh", exact: true }).click()
 }
@@ -102,9 +107,9 @@ test.describe("Explore cached field pivot journey", () => {
     const persistedExplore = page.getByLabel(/Explore node: browser_explore/i)
     await persistedExplore.click()
     await expect(page.getByTestId("node-panel")).toBeVisible()
-    await expect(page.getByTestId("data-cache-status")).toHaveText("Not cached")
+    await expect(exploreData(page)).toHaveAttribute("data-availability", "missing")
     await refreshNode(page)
-    await expect(page.getByTestId("explore-preview-frame")).toContainText("Cached", { timeout: 60_000 })
+    await expect(exploreData(page)).toHaveAttribute("data-availability", "current", { timeout: 60_000 })
 
     await page.reload()
     await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
@@ -249,9 +254,9 @@ test.describe("Explore cached field pivot journey", () => {
     const persistedExplore = page.getByLabel(/Explore node: browser_explore/i)
     await persistedExplore.click()
     await expect(page.getByTestId("node-panel")).toBeVisible()
-    await expect(page.getByTestId("data-cache-status")).toHaveText("Not cached")
+    await expect(exploreData(page)).toHaveAttribute("data-availability", "missing")
     await refreshNode(page)
-    await expect(page.getByTestId("explore-preview-frame")).toContainText("Cached", { timeout: 60_000 })
+    await expect(exploreData(page)).toHaveAttribute("data-availability", "current", { timeout: 60_000 })
 
     await page.getByTestId("node-panel").getByRole("tab", { name: "Pivots", exact: true }).click()
     await page.getByRole("button", { name: "Add Pivot", exact: true }).click()
@@ -366,7 +371,7 @@ test.describe("Explore cached field pivot journey", () => {
     await persistedExplore.click()
     await expect(page.getByTestId("node-panel")).toBeVisible()
     await refreshNode(page)
-    await expect(page.getByTestId("data-cache-status")).toHaveText("Cached", { timeout: 60_000 })
+    await expect(exploreData(page)).toHaveAttribute("data-availability", "current", { timeout: 60_000 })
 
     // Edit Explore Polars code to raise
     await page.getByTestId("node-panel").getByRole("tab", { name: "Polars Code", exact: true }).click()
@@ -386,7 +391,7 @@ test.describe("Explore cached field pivot journey", () => {
     // shared cache to report the edited data as stale proves it has — and a
     // Re-cache clicked before that would rebuild the *previous* code and
     // succeed, which is how this journey used to pass while proving nothing.
-    await expect(page.getByTestId("explore-preview-frame")).toContainText(/cache stale/i)
+    await expect(exploreData(page)).toHaveAttribute("data-availability", "stale")
 
     // Refresh: the data is out of date, so this re-caches it
     await refreshNode(page)
@@ -401,8 +406,7 @@ test.describe("Explore cached field pivot journey", () => {
     expect(failureMessage).not.toMatch(/File\s+"/i)
 
     // The previous generation is still there, now stale for this code
-    await expect(page.getByTestId("data-cache-status")).toHaveText("Cache out of date")
-    await expect(page.getByTestId("explore-preview-frame")).toContainText(/cache stale/i)
+    await expect(exploreData(page)).toHaveAttribute("data-availability", "stale")
 
     // Restore code and Re-cache: report is fresh again
     await editor.click()
@@ -411,7 +415,6 @@ test.describe("Explore cached field pivot journey", () => {
     await expect(editor).toContainText("derived_value")
 
     await refreshNode(page)
-    await expect(page.getByTestId("explore-preview-frame")).toContainText("Cached", { timeout: 60_000 })
-    await expect(page.getByTestId("data-cache-status")).toHaveText("Cached")
+    await expect(exploreData(page)).toHaveAttribute("data-availability", "current", { timeout: 60_000 })
   })
 })

@@ -10,11 +10,12 @@ export interface CacheStoreSizeProps {
 }
 
 /**
- * How much the project's snapshot store holds, for the preview status bar.
+ * How much the project's snapshot store holds, beside the cached-data
+ * inventory in Pipeline settings.
  *
- * Read when a preview settles rather than on a timer, because previews are
- * what add captures to the store. A failed read shows nothing: the number
- * is for information, and the cached-data inventory is where to act on it.
+ * Read with each inventory read rather than on a timer. A failed read shows
+ * nothing: the number is for information, and the inventory is where to act
+ * on it.
  */
 export default function CacheStoreSize({ refreshKey }: CacheStoreSizeProps) {
   const [usage, setUsage] = useState<CacheUsageResponse | null>(null)
@@ -41,7 +42,7 @@ export default function CacheStoreSize({ refreshKey }: CacheStoreSizeProps) {
         `Cached data: ${formatByteSize(usage.total_bytes)}. Automatic captures hold ` +
         `${formatByteSize(usage.automatic_bytes)} of their ${formatByteSize(usage.automatic_budget_bytes)} ` +
         "budget; the least recently used go first. Input snapshots and explicit builds " +
-        "stay until you clear them in Pipeline settings."
+        "stay until you clear them below."
       }
     >
       {formatByteSize(usage.total_bytes)} cached

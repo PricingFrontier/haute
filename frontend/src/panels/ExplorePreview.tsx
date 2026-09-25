@@ -1,8 +1,6 @@
-import { RefreshCw, XCircle } from "lucide-react"
+import { RefreshCw } from "lucide-react"
 import { Suspense, lazy, useCallback, useMemo } from "react"
 
-import DataCacheStatus from "../components/DataCacheStatus"
-import { dataCacheStatusText } from "../components/dataCacheLabels"
 import ExecutionDiagnosticsSummary from "../components/ExecutionDiagnosticsSummary"
 import useNodeDataCache from "../hooks/useNodeDataCache"
 import useNodeDataProfile from "../hooks/useNodeDataProfile"
@@ -15,6 +13,7 @@ import type { SimpleEdge, SimpleNode } from "./editors"
 import { exploreDataView } from "./explore/exploreDataView"
 import PreviewPanelFrame from "./PreviewPanelFrame"
 import PreviewPanelTabs from "./PreviewPanelTabs"
+import { PreviewRunContext, usePreviewRun, type PreviewRun } from "./previewRunContext"
 
 const ExploreOverviewPane = lazy(() => import("./explore/ExploreOverviewPane"))
 const ExplorePivotsPane = lazy(() => import("./explore/ExplorePivotsPane"))
@@ -44,8 +43,8 @@ const EXPLORE_PREVIEW_PANES = [
 /**
  * The Explore preview over the shared data point this node reads.
  *
- * Explore has no cache of its own: its cache state and its build come from the
- * shared data-cache hook, and the statistics the Overview, Pivots and Charts
+ * Explore has no cache of its own: its build comes from the shared data-cache
+ * hook, and the statistics the Overview, Pivots and Charts
  * panes render come from the shared `profile` analysis of the point's current
  * data version. A Banding or Rating editor on the same input therefore shows
  * the same state and shares the same build.
@@ -74,10 +73,12 @@ export default function ExplorePreview({
     profile,
     executionMetrics,
     profiling,
+    ownedProfiling,
     message: profileMessage,
     error: profileError,
     refresh: retryProfile,
     cancel: cancelProfile,
+    resume: resumeProfile,
   } = useNodeDataProfile({ node, allNodes, edges, submodels, preamble, cache })
   const view = useMemo(
     () =>
@@ -113,151 +114,167 @@ export default function ExplorePreview({
   const activePaneMeta =
     EXPLORE_PREVIEW_PANES.find((pane) => pane.key === activePane) ?? EXPLORE_PREVIEW_PANES[0]
   const busy = cache.busy || profiling
+  // The frame's Stop also stops this node's profile (one it started; a profile
+  // joined from elsewhere is theirs), and its Refresh lets the profile run
+  // again, asking at once for one that failed or was stopped.
+  const outerRun = usePreviewRun()
+  const run = useMemo<PreviewRun>(
+    () => ({
+      running: Boolean(outerRun?.running) || ownedProfiling,
+      onStop: () => {
+        outerRun?.onStop()
+        void cancelProfile()
+      },
+    }),
+    [cancelProfile, outerRun, ownedProfiling],
+  )
+  const refresh = useMemo(
+    () =>
+      onRefresh &&
+      (() => {
+        onRefresh()
+        if (profileError) void retryProfile()
+        else resumeProfile()
+      }),
+    [onRefresh, profileError, resumeProfile, retryProfile],
+  )
   const progressPercent = Math.min(Math.max(cache.progress * 100, 0), 100)
   const statusText = profiling
     ? profileMessage || "Profiling data"
     : profileError
       ? `Profiling failed: ${profileError}`
-      : dataCacheStatusText(cache)
+      : null
 
   return (
-    <PreviewPanelFrame
-      nodeLabel={nodeLabel}
-      nodeType={nodeType}
-      onRefresh={onRefresh}
-      refreshTitle="Refresh Explore outputs"
-      subtitle={`${activeSource} | ${statusText}`}
-      actions={
-        <span className="inline-flex items-center gap-1">
-          <DataCacheStatus cache={cache} showDetails />
-          {/* The profile runs after the data is cached, so its own progress and
-              its retry are actions of their own beside the cache control. */}
-          {profiling ? (
-            <button
-              type="button"
-              onClick={() => void cancelProfile()}
-              className={PREVIEW_PANEL_ACTION_BUTTON_CLASS}
+    <PreviewRunContext.Provider value={run}>
+      <PreviewPanelFrame
+        nodeLabel={nodeLabel}
+        nodeType={nodeType}
+        onRefresh={refresh}
+        refreshTitle="Refresh Explore outputs"
+        subtitle={statusText ? `${activeSource} | ${statusText}` : activeSource}
+        actions={
+          <span className="inline-flex items-center gap-1">
+            {/* The profile runs after the data is cached; Stop stops it, and a
+                failed profile has its own retry. */}
+            {profileError && !profiling ? (
+              <button
+                type="button"
+                onClick={() => void retryProfile()}
+                className={PREVIEW_PANEL_ACTION_BUTTON_CLASS}
+                style={{ color: "var(--text-on-accent)", background: "var(--danger-solid)" }}
+                title={`Profiling this data failed: ${profileError}`}
+                data-testid="explore-profile-retry"
+              >
+                <RefreshCw size={12} className="shrink-0" />
+                <span className="truncate">Retry profile</span>
+              </button>
+            ) : null}
+          </span>
+        }
+        data-testid="explore-preview-frame"
+      >
+        {busy && (
+          <div
+            role="progressbar"
+            aria-label="Explore data progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={progressPercent}
+            className="h-1 w-full shrink-0"
+            style={{ background: "var(--accent-soft)" }}
+          >
+            <div
+              className="h-full transition-all duration-300"
               style={{
-                color: "var(--danger)",
-                background: "var(--danger-soft)",
-                border: "1px solid var(--danger-border)",
+                width: `${Math.max(progressPercent, 2)}%`,
+                background: NODE_GROUP_COLORS.explore,
               }}
-              title={profileMessage || "Profiling data"}
-              data-testid="explore-profile-cancel"
-            >
-              <XCircle size={12} className="shrink-0" />
-              <span className="truncate">Cancel profile</span>
-            </button>
-          ) : profileError ? (
-            <button
-              type="button"
-              onClick={() => void retryProfile()}
-              className={PREVIEW_PANEL_ACTION_BUTTON_CLASS}
-              style={{ color: "var(--text-on-accent)", background: "var(--danger-solid)" }}
-              title={`Profiling this data failed: ${profileError}`}
-              data-testid="explore-profile-retry"
-            >
-              <RefreshCw size={12} className="shrink-0" />
-              <span className="truncate">Retry profile</span>
-            </button>
-          ) : null}
-        </span>
-      }
-      data-testid="explore-preview-frame"
-    >
-      {busy && (
+            />
+          </div>
+        )}
+
+        <ExecutionDiagnosticsSummary metrics={executionMetrics} />
+
+        <PreviewPanelTabs
+          tabs={EXPLORE_PREVIEW_PANES}
+          activeTab={activePane}
+          onChange={selectPreviewPane}
+          ariaLabel="Explore result panes"
+          accentColor={NODE_GROUP_COLORS.explore}
+          idPrefix="explore-preview"
+          equalWidth
+        />
+
+        {/* The shared data's state for this consumer, as an attribute rather
+            than a label: Refresh and Stop are the controls, and the browser
+            journeys read it to know when the data is cached. */}
         <div
-          role="progressbar"
-          aria-label="Explore data progress"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={progressPercent}
-          className="h-1 w-full shrink-0"
-          style={{ background: "var(--accent-soft)" }}
+          className="flex-1 min-h-0 flex flex-col"
+          data-testid="explore-preview-body"
+          data-availability={cache.availability}
         >
           <div
-            className="h-full transition-all duration-300"
-            style={{
-              width: `${Math.max(progressPercent, 2)}%`,
-              background: NODE_GROUP_COLORS.explore,
-            }}
-          />
+            id={`explore-preview-${activePaneMeta.key}-pane`}
+            role="tabpanel"
+            aria-labelledby={`explore-preview-${activePaneMeta.key}-tab`}
+            className="flex-1 min-h-0 flex flex-col"
+            data-testid={`explore-preview-${activePaneMeta.key}-pane`}
+          >
+            {activePane === "preview" ? (
+              <DataPreview
+                data={previewData ?? null}
+                onCellClick={onCellClick}
+                tracedCell={tracedCell}
+                embedded
+              />
+            ) : (
+              <Suspense
+                fallback={
+                  <div
+                    role="status"
+                    className="flex flex-1 items-center justify-center text-xs"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    Loading {activePane}…
+                  </div>
+                }
+              >
+                {activePane === "overview" ? (
+                  <ExploreOverviewPane node={node} report={view} />
+                ) : activePane === "pivots" ? (
+                  <ExplorePivotsPane
+                    node={node}
+                    allNodes={allNodes}
+                    edges={edges}
+                    submodels={submodels}
+                    preamble={preamble}
+                    report={view}
+                  />
+                ) : activePane === "charts" ? (
+                  <ExploreChartsPane
+                    node={node}
+                    allNodes={allNodes}
+                    edges={edges}
+                    submodels={submodels}
+                    preamble={preamble}
+                    report={view}
+                  />
+                ) : (
+                  <ExploreRelationshipsPane
+                    node={node}
+                    allNodes={allNodes}
+                    edges={edges}
+                    submodels={submodels}
+                    preamble={preamble}
+                    report={view}
+                  />
+                )}
+              </Suspense>
+            )}
+          </div>
         </div>
-      )}
-
-      <ExecutionDiagnosticsSummary metrics={executionMetrics} />
-
-      <PreviewPanelTabs
-        tabs={EXPLORE_PREVIEW_PANES}
-        activeTab={activePane}
-        onChange={selectPreviewPane}
-        ariaLabel="Explore result panes"
-        accentColor={NODE_GROUP_COLORS.explore}
-        idPrefix="explore-preview"
-        equalWidth
-      />
-
-      <div className="flex-1 min-h-0 flex flex-col" data-testid="explore-preview-body">
-        <div
-          id={`explore-preview-${activePaneMeta.key}-pane`}
-          role="tabpanel"
-          aria-labelledby={`explore-preview-${activePaneMeta.key}-tab`}
-          className="flex-1 min-h-0 flex flex-col"
-          data-testid={`explore-preview-${activePaneMeta.key}-pane`}
-        >
-          {activePane === "preview" ? (
-            <DataPreview
-              data={previewData ?? null}
-              onCellClick={onCellClick}
-              tracedCell={tracedCell}
-              embedded
-            />
-          ) : (
-            <Suspense
-              fallback={
-                <div
-                  role="status"
-                  className="flex flex-1 items-center justify-center text-xs"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  Loading {activePane}…
-                </div>
-              }
-            >
-              {activePane === "overview" ? (
-                <ExploreOverviewPane node={node} report={view} />
-              ) : activePane === "pivots" ? (
-                <ExplorePivotsPane
-                  node={node}
-                  allNodes={allNodes}
-                  edges={edges}
-                  submodels={submodels}
-                  preamble={preamble}
-                  report={view}
-                />
-              ) : activePane === "charts" ? (
-                <ExploreChartsPane
-                  node={node}
-                  allNodes={allNodes}
-                  edges={edges}
-                  submodels={submodels}
-                  preamble={preamble}
-                  report={view}
-                />
-              ) : (
-                <ExploreRelationshipsPane
-                  node={node}
-                  allNodes={allNodes}
-                  edges={edges}
-                  submodels={submodels}
-                  preamble={preamble}
-                  report={view}
-                />
-              )}
-            </Suspense>
-          )}
-        </div>
-      </div>
-    </PreviewPanelFrame>
+      </PreviewPanelFrame>
+    </PreviewRunContext.Provider>
   )
 }
