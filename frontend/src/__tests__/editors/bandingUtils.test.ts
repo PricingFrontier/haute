@@ -1,7 +1,7 @@
 /**
  * Pure logic tests for banding utility functions.
  *
- * Tests: normaliseBandingFactors, isNumericDtype, inferBandingType
+ * Tests: normaliseBandingFactors, isNumericDtype, isTemporalDtype, inferBandingType
  */
 import { describe, it, expect } from "vitest"
 import {
@@ -9,20 +9,21 @@ import {
   isNumericDtype,
   inferBandingType,
 } from "../../panels/editors/banding/bandingUtils"
+import { isTemporalDtype } from "../../utils/polarsDtypes"
 
 // ─── normaliseBandingFactors ─────────────────────────────────────
 
 describe("normaliseBandingFactors", () => {
   it("returns existing factors when present", () => {
-    const factors = [{ banding: "continuous", column: "age", outputColumn: "age_band", rules: [] }]
+    const factors = [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] }]
     const result = normaliseBandingFactors({ factors })
     expect(result).toBe(factors)
   })
 
-  it("returns default factor when factors is undefined", () => {
+  it("returns one empty Numeric (breakpoints) factor when factors is undefined", () => {
     const result = normaliseBandingFactors({})
     expect(result).toHaveLength(1)
-    expect(result[0].banding).toBe("continuous")
+    expect(result[0].banding).toBe("breakpoints")
     expect(result[0].column).toBe("")
     expect(result[0].outputColumn).toBe("")
     expect(result[0].rules).toEqual([])
@@ -90,6 +91,21 @@ describe("isNumericDtype", () => {
   })
 })
 
+// ─── isTemporalDtype ─────────────────────────────────────────────
+
+describe("isTemporalDtype", () => {
+  it.each(["Date", "Datetime(time_unit='us', time_zone=None)", "Datetime(time_unit='ns', time_zone='Europe/London')"])(
+    "recognizes %s",
+    (dtype) => {
+      expect(isTemporalDtype(dtype)).toBe(true)
+    },
+  )
+
+  it.each(["Duration(time_unit='us')", "Time", "String", "Int64", "Float64", "Boolean"])("rejects %s", (dtype) => {
+    expect(isTemporalDtype(dtype)).toBe(false)
+  })
+})
+
 // ─── inferBandingType ────────────────────────────────────────────
 
 describe("inferBandingType", () => {
@@ -115,6 +131,17 @@ describe("inferBandingType", () => {
 
   it("returns categorical for string column", () => {
     expect(inferBandingType("region", colMap)).toBe("categorical")
+  })
+
+  it("returns breakpoints for Date and Datetime columns, and categorical for a Duration", () => {
+    const dates = {
+      start_date: "Date",
+      quoted_at: "Datetime(time_unit='ns', time_zone='Europe/London')",
+      term: "Duration(time_unit='us')",
+    }
+    expect(inferBandingType("start_date", dates)).toBe("breakpoints")
+    expect(inferBandingType("quoted_at", dates)).toBe("breakpoints")
+    expect(inferBandingType("term", dates)).toBe("categorical")
   })
 
   it("returns categorical for boolean column", () => {

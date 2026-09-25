@@ -17,6 +17,11 @@ interface BandingHistogramProps {
   accentColor: string
   /** A fixed pixel width; by default the chart follows its container. */
   width?: number
+  /**
+   * How the end labels show a value; compact chart numbers by default. A date
+   * column's values are day numbers, shown as the dates they fall on.
+   */
+  formatValue?: (value: number) => string
 }
 
 export function BandingHistogram({
@@ -25,6 +30,7 @@ export function BandingHistogram({
   height = 50,
   accentColor,
   width,
+  formatValue = formatChartNumber,
 }: BandingHistogramProps) {
   if (bins.length === 0) return null
   return (
@@ -36,6 +42,7 @@ export function BandingHistogram({
           height={height}
           width={chartWidth}
           accentColor={accentColor}
+          formatValue={formatValue}
         />
       )}
     </ResponsiveChart>
@@ -48,6 +55,7 @@ function HistogramSvg({
   height,
   width,
   accentColor,
+  formatValue,
 }: Required<Omit<BandingHistogramProps, "width">> & { width: number }) {
   // The bars run edge to edge over exactly the binned data, with no padding:
   // the band boundaries are read against the data's own ends.
@@ -106,11 +114,11 @@ function HistogramSvg({
       })}
 
       <text x={0} y={height - 1} fontSize={LABEL_FONT_SIZE} fill="var(--text-muted)" textAnchor="start">
-        {formatChartNumber(min)}
+        {formatValue(min)}
       </text>
       {range !== 0 && (
         <text x={width} y={height - 1} fontSize={LABEL_FONT_SIZE} fill="var(--text-muted)" textAnchor="end">
-          {formatChartNumber(max)}
+          {formatValue(max)}
         </text>
       )}
     </ChartSvg>

@@ -245,7 +245,12 @@ class TestTripleQuoteInjection:
                 "banding",
                 {
                     "factors": [
-                        {"banding": "continuous", "column": "x", "outputColumn": "x_f", "rules": []}
+                        {
+                            "banding": "breakpoints",
+                            "column": "x",
+                            "outputColumn": "x_f",
+                            "rules": [],
+                        }
                     ]
                 },
             ),

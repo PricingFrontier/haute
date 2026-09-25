@@ -7678,6 +7678,7 @@ class TestExecutePipelineArgs:
                             "config": {
                                 "factors": [
                                     {
+                                        "banding": "breakpoints",
                                         "column": "territory",
                                         "outputColumn": "territory_band",
                                     }

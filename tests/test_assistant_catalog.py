@@ -158,7 +158,6 @@ class TestCapabilityManifest:
         assert "config_schema" not in compact["node_index"][0]
         assert {item["id"] for item in compact["recipe_index"]} == {
             "categorical_banding",
-            "continuous_banding",
             "parquet_showcase",
             "reference_join",
             "response_output",
@@ -244,11 +243,8 @@ class TestResolvedDescriptors:
         assert "scenario" in by_id["liveSwitch"].ports["inputs"]
         assert by_id["modelling"].execution.startswith("explicit long-running")
         assert by_id["dataOutput"].side_effects.startswith("writes")
-        assert by_id["banding"].examples == ("continuous_banding",)
-        assert by_id["banding"].recipes == (
-            "categorical_banding",
-            "continuous_banding",
-        )
+        assert by_id["banding"].examples == ("discrete_banding",)
+        assert by_id["banding"].recipes == ("categorical_banding",)
         assert by_id["dataInput"].recipes == ("parquet_showcase",)
         assert by_id["edgeJoin"].recipes == ("parquet_showcase", "reference_join")
         assert by_id["polars"].recipes == ("parquet_showcase",)
@@ -348,20 +344,19 @@ class TestResolvedDescriptors:
         recipe_branches = recipe_schema["oneOf"]
         assert {branch["properties"]["recipe_id"]["const"] for branch in recipe_branches} == {
             "categorical_banding",
-            "continuous_banding",
             "parquet_showcase",
             "reference_join",
             "response_output",
             "rating_step",
         }
-        continuous = next(
+        categorical = next(
             branch
             for branch in recipe_branches
-            if branch["properties"]["recipe_id"]["const"] == "continuous_banding"
+            if branch["properties"]["recipe_id"]["const"] == "categorical_banding"
         )
-        assert "rules" in continuous["required"]
-        assert "output_name" in continuous["properties"]
-        assert "arguments" not in continuous["properties"]
+        assert "rules" in categorical["required"]
+        assert "output_name" in categorical["properties"]
+        assert "arguments" not in categorical["properties"]
         assert {
             "plan_aborted",
             "plan_already_applied",
@@ -429,7 +424,6 @@ def test_banding_descriptor_exposes_canonical_type_enum() -> None:
     factor_schema = descriptor.as_dict()["config_schema"]["properties"]["factors"]["items"]
 
     assert factor_schema["properties"]["banding"]["enum"] == [
-        "continuous",
-        "categorical",
         "breakpoints",
+        "categorical",
     ]

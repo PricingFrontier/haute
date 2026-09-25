@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable, Mapping
 from dataclasses import replace
+from typing import Literal
 
 from haute._codegen_builders import (
     _build_params,
@@ -57,6 +58,15 @@ from haute.errors import ConfigError, HauteError, ParseError
 
 logger = get_logger(component="codegen")
 
+ContractSource = Literal["builder", "offline", "declared"]
+"""How generation derives a node's ``contract=`` annotation.
+
+``"builder"`` derives it from the builder, as a save does. ``"offline"``
+derives what the parse-time check compares against, never loading an
+external model artifact (recovery). ``"declared"`` derives nothing and emits
+only the node's declaration.
+"""
+
 __all__ = [
     "graph_to_code",
     "graph_to_code_multi",
@@ -97,7 +107,7 @@ def _format_contract_kwarg(
     node: GraphNode,
     parent_name_by_id: dict[str, str] | None = None,
     *,
-    derive: bool = True,
+    contract_source: ContractSource = "builder",
 ) -> str | None:
     """Return the ``contract=...`` decorator kwarg source, or ``None``.
 
@@ -114,23 +124,27 @@ def _format_contract_kwarg(
     concrete derived side replaces it, so a config edit never leaves a stale
     annotation that the post-save parse check rejects.
 
-    Instance nodes, and callers passing ``derive=False``, emit the
-    declaration unchanged: an instance's own config does not describe the
-    columns it references, and offline recovery generation must not derive
-    from external model artifacts.  An instance with no declaration returns
+    *contract_source* picks the derivation (see :data:`ContractSource`).
+    Instance nodes, and ``"declared"`` generation, emit the declaration
+    unchanged: an instance's own config does not describe the columns it
+    references.  An instance with no declaration returns
     ``None`` because its contract comes from the original node.  A declared
     ``"opaque"`` is also emitted unchanged: it declares no side, so it can
     neither go stale against the config nor override the builder.
     """
     config = node.data.config
     declared = Contract.from_user_declared(config.get("contract"))
-    if config.get("instanceOf") or not derive:
+    if config.get("instanceOf") or contract_source == "declared":
         if declared is None:
             return None
         return _format_contract_source(declared, parent_name_by_id=parent_name_by_id)
     if declared == Contract.opaque():
         return f'contract="{OPAQUE_CONTRACT_SENTINEL}"'
-    derived = _derive_contract_for_codegen(node)
+    derived = (
+        _derive_contract_for_codegen(node)
+        if contract_source == "builder"
+        else resolve_parse_time_contract(node.data.nodeType, config)
+    )
     if declared is None:
         # Annotate the builder contract alone, which documents only fully
         # concrete contracts.
@@ -281,7 +295,7 @@ def _node_to_code(
     source_names: list[str] | None = None,
     source_ids: list[str] | None = None,
     *,
-    derive_contract: bool = True,
+    contract_source: ContractSource = "builder",
 ) -> str:
     """Generate code for a single node.
 
@@ -298,12 +312,12 @@ def _node_to_code(
 
     code = _generate_node_code(node, source_names)
 
-    if not derive_contract and node.data.config.get("contract") is None:
+    if contract_source == "declared" and node.data.config.get("contract") is None:
         return code
     contract_kwarg = _format_contract_kwarg(
         node,
         parent_name_by_id=_parent_name_by_id(source_ids, source_names),
-        derive=derive_contract,
+        contract_source=contract_source,
     )
     if contract_kwarg is not None:
         try:

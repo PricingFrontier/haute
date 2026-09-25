@@ -76,6 +76,7 @@ from haute._rating import (
     _combine_rating_columns,
     _normalise_banding_factors,
     _normalise_combined_outputs,
+    banding_factor_is_active,
     is_rating_dtype_descriptor,
     rating_dtype_descriptor,
 )
@@ -796,9 +797,10 @@ def _build_output(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
 
 def _banding_columns(config: dict[str, Any]) -> _ColumnContract:
-    factors = config.get("factors") or []
-    produced = {f["outputColumn"] for f in factors if f.get("outputColumn")}
-    referenced = {f["column"] for f in factors if f.get("column")}
+    # Execution skips a draft factor, so the contract must not promise its output.
+    factors = [f for f in config.get("factors") or [] if banding_factor_is_active(f)]
+    produced = {f["outputColumn"] for f in factors}
+    referenced = {f["column"] for f in factors}
     return produced, referenced
 
 

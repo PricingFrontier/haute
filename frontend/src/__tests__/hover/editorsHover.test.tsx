@@ -509,12 +509,10 @@ function makeBandingNode(outputColumn: string, assignments: string[]): SimpleNod
       nodeType: "banding",
       config: {
         factors: [{
-          banding: "continuous",
+          banding: "categorical",
           column: outputColumn,
           outputColumn,
-          rules: assignments.map((a) => ({
-            op1: ">", val1: "0", op2: "", val2: "", assignment: a,
-          })),
+          rules: assignments.map((a) => ({ value: a, assignment: a })),
         }],
       },
     },

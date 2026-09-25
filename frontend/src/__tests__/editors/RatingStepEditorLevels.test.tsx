@@ -233,10 +233,10 @@ describe("RatingStepEditor levels", () => {
         config: {
           factors: [
             {
-              banding: "continuous",
+              banding: "breakpoints",
               column: "premium",
               outputColumn: "premium_band",
-              rules: [{ op1: ">", val1: "0", op2: "", val2: "", assignment: "high" }],
+              rules: [{ boundary: "100", label: "low" }, { boundary: "", label: "high" }],
             },
           ],
         },
@@ -541,10 +541,10 @@ describe("RatingStepEditor levels", () => {
         config: {
           factors: [
             {
-              banding: "continuous",
+              banding: "breakpoints",
               column: "premium",
               outputColumn: "premium_band",
-              rules: [{ op1: ">", val1: "0", op2: "", val2: "", assignment: "high" }],
+              rules: [{ boundary: "100", label: "low" }, { boundary: "", label: "high" }],
             },
           ],
         },

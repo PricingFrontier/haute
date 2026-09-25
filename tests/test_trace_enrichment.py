@@ -711,8 +711,8 @@ class TestRatingStepEdgeCases:
 # ===========================================================================
 
 
-class TestBandingContinuous:
-    """Continuous banding using Polars when/then patterns."""
+class TestPolarsRangeBanding:
+    """Range banding written as Polars when/then chains in a transform node."""
 
     def test_middle_band(self, tmp_path):
         """Value falls in a middle band."""
@@ -2474,118 +2474,115 @@ class TestEnrichRowLineageType:
 # ===========================================================================
 
 
-class TestMatchContinuousRule:
-    """Tests for _match_continuous_rule with all operator combinations."""
+class TestMatchIntervalRule:
+    """Tests for _match_interval_rule with every interval operator."""
 
     def test_less_than_true(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(5, {"op1": "<", "val1": 10}) is True
+        assert _match_interval_rule(5, {"op1": "<", "val1": 10}) is True
 
     def test_less_than_false(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(10, {"op1": "<", "val1": 10}) is False
+        assert _match_interval_rule(10, {"op1": "<", "val1": 10}) is False
 
     def test_less_than_equal_true(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(10, {"op1": "<=", "val1": 10}) is True
+        assert _match_interval_rule(10, {"op1": "<=", "val1": 10}) is True
 
     def test_less_than_equal_false(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(11, {"op1": "<=", "val1": 10}) is False
+        assert _match_interval_rule(11, {"op1": "<=", "val1": 10}) is False
 
     def test_greater_than_true(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(15, {"op1": ">", "val1": 10}) is True
+        assert _match_interval_rule(15, {"op1": ">", "val1": 10}) is True
 
     def test_greater_than_false(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(10, {"op1": ">", "val1": 10}) is False
+        assert _match_interval_rule(10, {"op1": ">", "val1": 10}) is False
 
     def test_greater_than_equal_true(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(10, {"op1": ">=", "val1": 10}) is True
+        assert _match_interval_rule(10, {"op1": ">=", "val1": 10}) is True
 
     def test_greater_than_equal_false(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(9, {"op1": ">=", "val1": 10}) is False
+        assert _match_interval_rule(9, {"op1": ">=", "val1": 10}) is False
 
-    def test_equal_single_eq(self):
-        from haute._trace_enrichment import _match_continuous_rule
+    @pytest.mark.parametrize("op", ["=", "=="])
+    def test_equality_is_not_an_interval_operator(self, op):
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(10, {"op1": "=", "val1": 10}) is True
-
-    def test_equal_double_eq(self):
-        from haute._trace_enrichment import _match_continuous_rule
-
-        assert _match_continuous_rule(10, {"op1": "==", "val1": 10}) is True
+        with pytest.raises(ValueError, match="unsupported operator"):
+            _match_interval_rule(10, {"op1": op, "val1": 10})
 
     def test_not_equal_is_rejected(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
         with pytest.raises(ValueError, match="unsupported operator"):
-            _match_continuous_rule(5, {"op1": "!=", "val1": 10})
+            _match_interval_rule(5, {"op1": "!=", "val1": 10})
 
     def test_not_equal_diamond_is_rejected(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
         with pytest.raises(ValueError, match="unsupported operator"):
-            _match_continuous_rule(5, {"op1": "<>", "val1": 10})
+            _match_interval_rule(5, {"op1": "<>", "val1": 10})
 
     def test_two_conditions_range(self):
         """Test a range rule: val >= 10 AND val < 20."""
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
         rule = {"op1": ">=", "val1": 10, "op2": "<", "val2": 20}
-        assert _match_continuous_rule(10, rule) is True
-        assert _match_continuous_rule(15, rule) is True
-        assert _match_continuous_rule(20, rule) is False
-        assert _match_continuous_rule(9, rule) is False
+        assert _match_interval_rule(10, rule) is True
+        assert _match_interval_rule(15, rule) is True
+        assert _match_interval_rule(20, rule) is False
+        assert _match_interval_rule(9, rule) is False
 
     def test_none_input_returns_false(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(None, {"op1": "<", "val1": 10}) is False
+        assert _match_interval_rule(None, {"op1": "<", "val1": 10}) is False
 
     def test_non_numeric_input_returns_false(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule("abc", {"op1": "<", "val1": 10}) is False
+        assert _match_interval_rule("abc", {"op1": "<", "val1": 10}) is False
 
     def test_empty_rule_is_not_usable(self):
         """A rule without a usable comparison cannot receive trace credit."""
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(5, {}) is False
+        assert _match_interval_rule(5, {}) is False
 
     def test_missing_value_leaves_rule_unusable(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule(5, {"op1": "<", "val1": ""}) is False
+        assert _match_interval_rule(5, {"op1": "<", "val1": ""}) is False
 
     def test_non_numeric_threshold_is_rejected(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
         with pytest.raises(ValueError, match="non-numeric threshold"):
-            _match_continuous_rule(5, {"op1": "<", "val1": "abc"})
+            _match_interval_rule(5, {"op1": "<", "val1": "abc"})
 
     def test_unknown_operator_is_rejected(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
         with pytest.raises(ValueError, match="unsupported operator"):
-            _match_continuous_rule(5, {"op1": "??", "val1": 10})
+            _match_interval_rule(5, {"op1": "??", "val1": 10})
 
     def test_string_numeric_input(self):
-        from haute._trace_enrichment import _match_continuous_rule
+        from haute._trace_enrichment import _match_interval_rule
 
-        assert _match_continuous_rule("5", {"op1": "<", "val1": 10}) is True
+        assert _match_interval_rule("5", {"op1": "<", "val1": 10}) is True
 
 
 class TestEnrichBandingRealConfig:
@@ -2672,8 +2669,8 @@ class TestEnrichBandingRealConfig:
         assert result["is_default"] is True
         assert result["rule_index"] == -1
 
-    def test_continuous_banding_match(self):
-        """Continuous banding matches a range rule."""
+    def test_left_closed_breakpoint_banding_match(self):
+        """A left-closed breakpoint factor reports its [lower, upper) interval."""
         from haute._trace_enrichment import enrich_banding
 
         config = {
@@ -2681,17 +2678,18 @@ class TestEnrichBandingRealConfig:
                 {
                     "column": "age",
                     "outputColumn": "age_band",
-                    "banding": "continuous",
+                    "banding": "breakpoints",
                     "rules": [
-                        {"op1": "<", "val1": 25, "assignment": "young"},
-                        {"op1": ">=", "val1": 25, "op2": "<", "val2": 65, "assignment": "adult"},
-                        {"op1": ">=", "val1": 65, "assignment": "senior"},
+                        {"boundary": "25", "label": "young"},
+                        {"boundary": "65", "label": "adult"},
+                        {"boundary": "", "label": "senior"},
                     ],
+                    "rightClosed": False,
                     "default": "unknown",
                 }
             ]
         }
-        input_row = {"age": 35}
+        input_row = {"age": 25}
         output_row = {"age_band": "adult"}
 
         result = enrich_banding(config, input_row, output_row)
@@ -2699,7 +2697,9 @@ class TestEnrichBandingRealConfig:
         assert result["input_column"] == "age"
         assert result["output_column"] == "age_band"
         assert result["lower_bound"] == 25.0
+        assert result["lower_inclusive"] is True
         assert result["upper_bound"] == 65.0
+        assert result["upper_inclusive"] is False
         assert result["rule_index"] == 1
         assert result["is_default"] is False
 
@@ -2733,6 +2733,31 @@ class TestEnrichBandingRealConfig:
         assert result["lower_inclusive"] is False
         assert result["upper_bound"] == 65.0
         assert result["upper_inclusive"] is True
+
+    def test_a_date_band_is_credited_by_calendar_day_in_the_values_zone(self):
+        """A date band compares a traced time-zoned value by its own calendar day."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from haute._trace_enrichment import enrich_banding
+
+        config = {
+            "factors": [
+                {
+                    "column": "start",
+                    "outputColumn": "start_band",
+                    "banding": "breakpoints",
+                    "rules": {"2024-06-30": "June", "": "July+"},
+                }
+            ]
+        }
+        # 00:30 on 1 July in London is still 30 June in UTC.
+        start = datetime(2024, 7, 1, 0, 30, tzinfo=ZoneInfo("Europe/London"))
+
+        result = enrich_banding(config, {"start": start}, {"start_band": "July+"})
+
+        assert result["matched_band"] == "July+"
+        assert result["status"] == "matched"
 
     def test_compact_categorical_banding_trace_matches_rule(self):
         """Trace enrichment accepts the compact sidecar rule map."""
@@ -2789,8 +2814,8 @@ class TestEnrichBandingRealConfig:
                 {
                     "column": "age",
                     "outputColumn": "age_band",
-                    "banding": "continuous",
-                    "rules": [{"op1": "<", "val1": 25, "assignment": "young"}],
+                    "banding": "breakpoints",
+                    "rules": [{"boundary": "25", "label": "young"}],
                 },
                 {
                     "column": "region",
@@ -2822,8 +2847,8 @@ class TestEnrichBandingRealConfig:
                 {
                     "column": "age",
                     "outputColumn": "age_band",
-                    "banding": "continuous",
-                    "rules": [{"op1": "<", "val1": 25, "assignment": "young"}],
+                    "banding": "breakpoints",
+                    "rules": [{"boundary": "25", "label": "young"}],
                 },
                 {
                     "column": "region",
@@ -2846,8 +2871,8 @@ class TestEnrichBandingRealConfig:
         assert "output_column" not in result
         assert "matched_band" not in result
 
-    def test_continuous_banding_no_match_uses_default(self):
-        """Continuous banding falls to default when no rule matches."""
+    def test_breakpoint_banding_no_match_uses_default(self):
+        """Breakpoint banding falls to default when no band holds the value."""
         from haute._trace_enrichment import enrich_banding
 
         config = {
@@ -2855,9 +2880,9 @@ class TestEnrichBandingRealConfig:
                 {
                     "column": "score",
                     "outputColumn": "score_band",
-                    "banding": "continuous",
+                    "banding": "breakpoints",
                     "rules": [
-                        {"op1": "<", "val1": 0, "assignment": "negative"},
+                        {"boundary": "0", "label": "negative"},
                     ],
                     "default": "other",
                 }
@@ -2879,8 +2904,8 @@ class TestEnrichBandingRealConfig:
                 {
                     "column": "age",
                     "outputColumn": "age_band",
-                    "banding": "continuous",
-                    "rules": [{"op1": "<", "val1": 25, "assignment": "young"}],
+                    "banding": "breakpoints",
+                    "rules": [{"boundary": "25", "label": "young"}],
                     "default": None,
                 },
                 {
@@ -2901,8 +2926,8 @@ class TestEnrichBandingRealConfig:
         assert result["matched_band"] == "young"
         assert result["input_value"] == 20
 
-    def test_continuous_banding_none_input(self):
-        """Continuous banding with None input value does not match any rule."""
+    def test_breakpoint_banding_none_input(self):
+        """Breakpoint banding with None input value does not match any band."""
         from haute._trace_enrichment import enrich_banding
 
         config = {
@@ -2910,8 +2935,8 @@ class TestEnrichBandingRealConfig:
                 {
                     "column": "age",
                     "outputColumn": "age_band",
-                    "banding": "continuous",
-                    "rules": [{"op1": "<", "val1": 25, "assignment": "young"}],
+                    "banding": "breakpoints",
+                    "rules": [{"boundary": "25", "label": "young"}],
                     "default": "unknown",
                 }
             ]

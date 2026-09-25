@@ -539,11 +539,9 @@ decisions, preconditions, allowed operation kinds, postconditions, linked
 examples, and stable failures. Planning never writes, and every planner output
 is parsed by the same primitive validator before it can enter dry-run or apply.
 A recipe cannot grant authority, choose an omitted pricing assumption, or
-bypass revision, egress, save, or verification policy. Continuous-banding recipe rules
-use a closed nested contract: each rule requires a supported `op1`, finite numeric
-`val1`, and non-empty `assignment`; an optional second bound requires both `op2`
-and `val2`. The categorical-banding recipe instead uses closed rules containing exactly
-a non-null finite JSON scalar `value` and non-empty `assignment`. Recipe argument
+bypass revision, egress, save, or verification policy. The categorical-banding recipe
+uses closed rules containing exactly a non-null finite JSON scalar `value` and non-empty
+`assignment`. There is no numeric-banding recipe. Recipe argument
 descriptions distinguish graph node names from output column names. The rating-step recipe
 uses a provider-facing positional contract instead of canonical dynamic row keys: each
 table declares one to three ordered `factors`, an `output_column`, a finite
@@ -578,9 +576,8 @@ substitute a generic node.
 
 For each turn, a conservative deterministic recognizer may suggest one recipe in the
 provider system guidance when a single unambiguous explicit pattern is present: a
-band/banding term plus a continuous, range, breakpoint, bucket, or comparison-operator cue
-for continuous banding; a band/banding term plus categorical or discrete for categorical
-banding; join for a reference join; or the phrase rating step.
+band/banding term plus categorical or discrete for categorical banding; join for a
+reference join; or the phrase rating step.
 An explicit request to build, create, author, or make a Parquet pipeline as a showcase of
 multiple node types suggests `parquet_showcase`. The showcase cue accepts `showcase`, the
 closed phrase `node types`, or `many … types`, so a harmless typo in the intervening noun
@@ -598,7 +595,7 @@ intervening turn also ends with `NEEDS_INPUT:`. A normal answer, completed mutat
 unqualified assistant response closes the chain, so stale request guidance is never revived.
 A standalone `response output` request suggests `response_output`; when a specialist recipe
 request also asks for a response output, that specialist suggestion owns the downstream
-output instead. Categorical or discrete banding never suggests the continuous recipe. A
+output instead. A
 unique match is appended only as advisory provider guidance. No lexical result changes the
 provider-visible tools or schemas, populates an argument, rewrites a tool call, or authorizes
 or rejects an executor operation. The source-bound executor constructor receives no user

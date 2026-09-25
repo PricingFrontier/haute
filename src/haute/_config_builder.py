@@ -118,7 +118,7 @@ def _build_node_config(
             raw_factors = decorator_kwargs["factors"]
             config["factors"] = [
                 {
-                    "banding": f.get("banding", "continuous"),
+                    "banding": f.get("banding", ""),
                     "column": f.get("column", ""),
                     "outputColumn": f.get("output_column", ""),
                     "rules": f.get("rules", []),
@@ -130,7 +130,7 @@ def _build_node_config(
             # Single-factor format → wrap into factors array
             config["factors"] = [
                 {
-                    "banding": decorator_kwargs.get("banding", "continuous"),
+                    "banding": decorator_kwargs.get("banding", ""),
                     "column": decorator_kwargs.get("column", ""),
                     "outputColumn": decorator_kwargs.get("output_column", ""),
                     "rules": decorator_kwargs.get("rules", []),

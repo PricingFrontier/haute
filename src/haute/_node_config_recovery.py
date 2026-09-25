@@ -639,6 +639,27 @@ def validate_recovery_config(
     return issues
 
 
+# Fields besides the discriminant that select a Data Input/Output branch: the
+# palette is a parquet scan/sink, whose defaults do not fit another format or mode.
+_PALETTE_BRANCH_FIELDS = {
+    NodeType.DATA_INPUT: ("format", "mode"),
+    NodeType.DATA_OUTPUT: ("format", "mode"),
+}
+
+
+def _palette_is_branch_of(
+    node_type: NodeType, source: dict[str, Any], defaults: dict[str, Any]
+) -> bool:
+    """Whether the palette default describes *source*'s branch, so it may fill its gaps."""
+    discriminant = _DISCRIMINANTS.get(node_type)
+    if discriminant and source.get(discriminant[0]) != defaults.get(discriminant[0]):
+        return False
+    return all(
+        field not in source or source[field] == defaults.get(field)
+        for field in _PALETTE_BRANCH_FIELDS.get(node_type, ())
+    )
+
+
 def reconcile_config(
     node_type: NodeType, raw: dict[str, Any], *, reset: bool = False
 ) -> ConfigRecoveryResult:
@@ -722,7 +743,20 @@ def reconcile_config(
         recovered = _reconcile_value(value, hints[key], default, _pointer("", key), changes, issues)
         if recovered is not _UNRECOVERED:
             candidate[key] = recovered
-    # Absent fields stay absent: recovery never inserts a palette value for a
-    # field the author omitted. Only an explicit reset seeds the full default.
+    if not reset and _palette_is_branch_of(node_type, source, defaults):
+        # A field added or renamed since the file was saved takes the palette
+        # default, as a new node would. An absent ``steps`` stays absent: it
+        # means the body's code runs, and ``[]`` would discard that code.
+        for key, default in defaults.items():
+            if key in source or key == "steps":
+                continue
+            candidate[key] = default
+            changes.append(
+                RecoveryFieldChange(
+                    path=_pointer("", key),
+                    outcome="defaulted",
+                    reason="Missing from the saved configuration; the palette default was used.",
+                )
+            )
     issues.extend(validate_recovery_config(node_type, candidate))
     return ConfigRecoveryResult(candidate, changes, issues)

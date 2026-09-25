@@ -1224,10 +1224,10 @@ class TestSelectedColumnsCodegen:
                     "config": {
                         "factors": [
                             {
-                                "banding": "continuous",
+                                "banding": "breakpoints",
                                 "column": "area",
                                 "outputColumn": "area_factor",
-                                "rules": [{"from": 0, "to": 10, "value": "1.0"}],
+                                "rules": [{"boundary": "10", "label": "1.0"}],
                             }
                         ],
                         "selected_columns": ["area", "area_factor"],
@@ -1597,18 +1597,10 @@ class TestTemplateParamConsistency:
                     "config": {
                         "factors": [
                             {
-                                "banding": "continuous",
+                                "banding": "breakpoints",
                                 "column": "age",
                                 "outputColumn": "age_factor",
-                                "rules": [
-                                    {
-                                        "op1": ">=",
-                                        "val1": 0,
-                                        "op2": "<",
-                                        "val2": 100,
-                                        "assignment": "1.0",
-                                    }
-                                ],
+                                "rules": [{"boundary": "100", "label": "1.0"}],
                             }
                         ],
                     },
@@ -1631,7 +1623,7 @@ class TestTemplateParamConsistency:
                     "config": {
                         "factors": [
                             {
-                                "banding": "continuous",
+                                "banding": "breakpoints",
                                 "column": "age",
                                 "outputColumn": "age_f",
                                 "rules": [],
@@ -1705,7 +1697,7 @@ class TestTemplateParamConsistency:
                     "config": {
                         "factors": [
                             {
-                                "banding": "continuous",
+                                "banding": "breakpoints",
                                 "column": "x",
                                 "outputColumn": "x_f",
                                 "rules": [],
@@ -2270,7 +2262,7 @@ def test_every_config_backed_builder_emits_its_config_decorator(node_type: NodeT
     raw_code = _generate_node_code(node, source_names=sources)
 
     assert raw_code.startswith(decorator + "\n")
-    assert _node_to_code(node, source_names=sources, derive_contract=False) == raw_code
+    assert _node_to_code(node, source_names=sources, contract_source="declared") == raw_code
 
 
 @pytest.mark.parametrize(
@@ -2290,7 +2282,7 @@ def test_rating_step_codegen_rejects_a_config_it_does_not_render(config, message
     node = _n({"id": "rs", "data": {"label": "Rate", "nodeType": "ratingStep", "config": config}})
 
     with pytest.raises(ValueError, match=message):
-        _node_to_code(node, source_names=["quotes"], derive_contract=False)
+        _node_to_code(node, source_names=["quotes"], contract_source="declared")
 
 
 class TestPassthroughAndBehaviouralCodegen:
@@ -3829,18 +3821,10 @@ class TestRoundTripEdgeCases:
                     "config": {
                         "factors": [
                             {
-                                "banding": "continuous",
+                                "banding": "breakpoints",
                                 "column": "age",
                                 "outputColumn": "age_factor",
-                                "rules": [
-                                    {
-                                        "op1": ">=",
-                                        "val1": 0,
-                                        "op2": "<",
-                                        "val2": 100,
-                                        "assignment": "1.0",
-                                    }
-                                ],
+                                "rules": [{"boundary": "100", "label": "1.0"}],
                             },
                             {
                                 "banding": "discrete",

@@ -697,7 +697,7 @@ class TestRatingStepMultiplyTables:
 class TestBandingThenRating:
     """C.3: data_source -> banding -> rating_step -> output
 
-    Pattern: Continuous variable banded, then looked up in a rate table.
+    Pattern: A numeric variable banded, then looked up in a rate table.
     Why: Banding + rating is the standard actuarial pipeline pattern.
     """
 
@@ -774,17 +774,12 @@ class TestBandingTraceLineage:
                 {
                     "column": "risk_age",
                     "outputColumn": "age_band",
-                    "banding": "continuous",
+                    "banding": "breakpoints",
                     "rules": [
-                        {"op1": "<", "val1": 25, "assignment": "young"},
-                        {
-                            "op1": ">=",
-                            "val1": 25,
-                            "op2": "<",
-                            "val2": 65,
-                            "assignment": "adult",
-                        },
+                        {"boundary": "25", "label": "young"},
+                        {"boundary": "65", "label": "adult"},
                     ],
+                    "rightClosed": False,
                     "default": "senior",
                 }
             ]

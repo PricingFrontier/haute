@@ -22,27 +22,49 @@ Each factor has:
 |---|---|
 | `column` | **Required.** Input column to band |
 | `outputColumn` | **Required.** Name of the new banded column |
-| `banding` | **Required.** `"continuous"`, `"categorical"`, or `"breakpoints"` |
-| `rules` | **Required.** Rules defining each band. Continuous rules are a list; categorical and breakpoint sidecars use key/value maps |
+| `banding` | **Required.** `"breakpoints"` (numeric bands) or `"categorical"` |
+| `rules` | **Required.** Rules defining each band. In the JSON sidecar they are a key/value map |
 | `default` | Value assigned to rows that don't match any rule |
+| `rightClosed` | Breakpoints only. `true` (the default) makes each band include its upper boundary; `false` makes it include its lower one |
 
-Rules are evaluated top to bottom. The first match wins.
-
-**Continuous rules** define ranges using operator/value pairs. Each rule can use one or both conditions. Operators: `<`, `<=`, `>`, `>=`, `=`.
-
-This example bands driver age into three groups:
+**Breakpoint rules** define ordered numeric bands. Each key is the upper
+boundary of a band and its value is the band's name; use an empty-string key for
+the open-ended final band. Bands are closed on the right by default, so `25`
+covers everything up to and including 25:
 
 ```json
 {
   "factors": [{
-    "banding": "continuous",
+    "banding": "breakpoints",
     "column": "driver_age",
     "outputColumn": "age_band",
-    "rules": [
-      { "op1": ">=", "val1": "18", "op2": "<=", "val2": "25", "assignment": "18-25" },
-      { "op1": ">",  "val1": "25", "op2": "<=", "val2": "65", "assignment": "26-65" },
-      { "op1": ">",  "val1": "65", "op2": "",   "val2": "",   "assignment": "65+" }
-    ],
+    "rules": {
+      "25": "18-25",
+      "65": "26-65",
+      "": "65+"
+    },
+    "default": "Unknown"
+  }]
+}
+```
+
+**Dates work the same way.** On a Date or Datetime column, write each boundary
+as a date (`YYYY-MM-DD`) or a date and time (`YYYY-MM-DD HH:MM`); every boundary
+in one factor must be the same kind. A date covers its whole day, even on a
+Datetime column, so `"2024-03-31"` includes everything up to midnight at the end
+of 31 March. Times are read in the column's own time zone. This suits rules that
+change on a date, such as a rate change for policies starting from 1 April:
+
+```json
+{
+  "factors": [{
+    "banding": "breakpoints",
+    "column": "start_date",
+    "outputColumn": "rate_period",
+    "rules": {
+      "2024-03-31": "Before April 2024",
+      "": "From April 2024"
+    },
     "default": "Unknown"
   }]
 }
@@ -67,26 +89,6 @@ source value is the key and the assigned group is the value:
 }
 ```
 
-**Breakpoint rules** are a concise way to define ordered numeric bands. The
-boundary is the key and the assigned band is the value. Use an empty-string key
-for the open-ended final band:
-
-```json
-{
-  "factors": [{
-    "banding": "breakpoints",
-    "column": "driver_age",
-    "outputColumn": "age_band",
-    "rules": {
-      "25": "18-25",
-      "65": "26-65",
-      "": "65+"
-    },
-    "default": "Unknown"
-  }]
-}
-```
-
 **Before and after:**
 
 ```
@@ -98,5 +100,5 @@ BEFORE                              AFTER
 | 71         | Diesel    |          | 71         | Diesel    | 65+      | Standard  |
 ```
 
-!!! warning "Watch for gaps"
-    Rows that don't match any rule get the `default` value. Make sure your ranges don't have gaps unless you intentionally want unmatched rows to fall through to the default.
+!!! warning "What falls to the default"
+    Rows with a missing value get the `default`, as do categorical values you haven't listed. Without an open-ended final breakpoint, values above the last boundary get it too.

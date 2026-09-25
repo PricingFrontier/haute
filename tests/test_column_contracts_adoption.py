@@ -171,8 +171,8 @@ def _minimal_config_for(nt: NodeType) -> dict[str, Any]:
                 {
                     "column": "age",
                     "outputColumn": "age_band",
-                    "banding": "continuous",
-                    "rules": [{"max": 25, "value": "0"}],
+                    "banding": "breakpoints",
+                    "rules": [{"boundary": "25", "label": "0"}],
                 }
             ]
         }
@@ -263,8 +263,8 @@ class TestCodegenEmitsContractMetadata:
                         {
                             "column": "age",
                             "outputColumn": "age_band",
-                            "banding": "continuous",
-                            "rules": [{"max": 25, "value": "0"}],
+                            "banding": "breakpoints",
+                            "rules": [{"boundary": "25", "label": "0"}],
                         }
                     ],
                 ),
@@ -327,8 +327,8 @@ class TestCodegenEmitsContractMetadata:
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
-                        "rules": [{"op1": "<=", "val1": "25", "assignment": "0"}],
+                        "banding": "breakpoints",
+                        "rules": [{"boundary": "25", "label": "0"}],
                     }
                 ]
             },
@@ -442,8 +442,8 @@ class TestParserValidatesUserDeclaredContracts:
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
-                        "rules": [{"max": 25, "value": "0"}],
+                        "banding": "breakpoints",
+                        "rules": [{"boundary": "25", "label": "0"}],
                     }
                 ]
             },
@@ -499,8 +499,8 @@ pipeline.connect("src", "band")
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
-                        "rules": [{"max": 25, "value": "0"}],
+                        "banding": "breakpoints",
+                        "rules": [{"boundary": "25", "label": "0"}],
                     }
                 ]
             },
@@ -554,8 +554,8 @@ pipeline.connect("src", "band")
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
-                        "rules": [{"max": 25, "value": "0"}],
+                        "banding": "breakpoints",
+                        "rules": [{"boundary": "25", "label": "0"}],
                     }
                 ]
             },
@@ -720,8 +720,8 @@ class TestExecutorAssertsContractsAtBoundaries:
                         {
                             "column": "age",  # not present upstream!
                             "outputColumn": "age_band",
-                            "banding": "continuous",
-                            "rules": [{"max": 25, "value": "0"}],
+                            "banding": "breakpoints",
+                            "rules": [{"boundary": "25", "label": "0"}],
                         }
                     ],
                 ),
@@ -730,9 +730,10 @@ class TestExecutorAssertsContractsAtBoundaries:
         )
         with pytest.raises(cls) as excinfo:
             execute_graph(graph)
-        assert "age" in str(excinfo.value), (
-            "Contract error must name the missing column so the user "
-            "knows what to fix. Got: " + str(excinfo.value)
+        # The preview shows this text as it is: it names the missing column
+        # and nothing about the input's other columns.
+        assert str(excinfo.value) == (
+            "'band' needs the column 'age', which is not in its input. (node_id=band)"
         )
 
     def test_declared_output_missing_raises_contract_mismatch(self, tmp_path: Path):
@@ -771,9 +772,9 @@ class TestExecutorAssertsContractsAtBoundaries:
         )
         with pytest.raises(cls) as excinfo:
             execute_graph(graph)
-        assert "new_col" in str(excinfo.value), (
-            "Contract error on output-side must name the missing promised "
-            f"column. Got: {excinfo.value!r}"
+        assert str(excinfo.value) == (
+            "'t' did not create the column 'new_col', which its contract says it outputs. "
+            "(node_id=t)"
         )
 
     def test_user_declared_input_missing_from_parent_raises_at_execution(self, tmp_path: Path):
@@ -840,14 +841,9 @@ class TestExecutorAssertsContractsAtBoundaries:
     def test_contract_check_does_not_raise_on_clean_pipeline(self, tmp_path: Path):
         """Well-formed pipelines execute end-to-end without spurious errors.
 
-        The rule format uses ``op1 / val1`` + ``assignment`` — the
-        actual schema ``_apply_banding`` consumes — so the banding node
-        truly produces ``age_band`` and the output-side contract check
-        is satisfied.  The earlier ``{"max": 25, "value": "0"}`` form in
-        this test was a spec artefact that never produced an
-        ``age_band`` column at runtime and would always fail the
-        output contract; that was a test bug the adoption work
-        surfaced.
+        The rule is a real breakpoint (``boundary`` + ``label``), so the
+        banding node truly produces ``age_band`` and the output-side
+        contract check is satisfied.
         """
         import polars as pl_
 
@@ -870,9 +866,9 @@ class TestExecutorAssertsContractsAtBoundaries:
                         {
                             "column": "age",
                             "outputColumn": "age_band",
-                            "banding": "continuous",
+                            "banding": "breakpoints",
                             "rules": [
-                                {"op1": "<=", "val1": "25", "assignment": "0"},
+                                {"boundary": "25", "label": "0"},
                             ],
                             "default": "1",
                         }
@@ -884,6 +880,101 @@ class TestExecutorAssertsContractsAtBoundaries:
         # Should not raise — the contract is consistent and inputs present.
         result = execute_graph(graph)
         assert result is not None
+
+    def test_draft_banding_factor_passes_through_without_a_contract_error(self, tmp_path: Path):
+        """A factor with its columns chosen but no rules yet is a draft no-op.
+
+        Execution skips it, so the node's contract must neither promise its
+        output column nor read its input column; otherwise previewing a
+        half-written factor fails the output check.
+        """
+        import polars as pl_
+
+        from haute.executor import execute_graph
+
+        pq = tmp_path / "x.parquet"
+        pl_.DataFrame({"cover": ["comp", "tpft"], "premium": [1.0, 2.0]}).write_parquet(pq)
+        draft = {
+            "banding": "categorical",
+            "column": "cover",
+            "outputColumn": "cover_band",
+            "rules": {},
+            "default": None,
+        }
+        assert get_column_contract(NodeType.BANDING, {"factors": [draft]}) == (set(), set())
+
+        graph = PipelineGraph(
+            nodes=[
+                _node("src", NodeType.DATA_INPUT, **make_ready_file_input_config(pq)),
+                _node("band", NodeType.BANDING, factors=[draft]),
+            ],
+            edges=[_e("src", "band")],
+        )
+        results = execute_graph(graph)
+        assert results["band"].status == "ok", results["band"].error
+        assert [column.name for column in results["band"].columns] == ["cover", "premium"]
+
+    @pytest.mark.parametrize(
+        ("needed", "upstream", "expected"),
+        [
+            pytest.param(
+                {"age"},
+                {"agee", "height"},
+                "'Age band' needs the column 'age', which is not in its input. "
+                "Its input has a similar column: 'agee'. (node_id=band_1)",
+                id="similar-column",
+            ),
+            pytest.param(
+                {"age"},
+                set(),
+                "'Age band' needs the column 'age', but its input has no columns. (node_id=band_1)",
+                id="empty-input",
+            ),
+            pytest.param(
+                {"c1", "c2", "c3", "c4", "c5", "c6", "c7"},
+                {"height"},
+                "'Age band' needs the columns 'c1', 'c2', 'c3', 'c4', 'c5' and 2 more, "
+                "which are not in its input. (node_id=band_1)",
+                id="many-missing",
+            ),
+        ],
+    )
+    def test_input_check_message_names_only_what_is_missing(
+        self, needed: set[str], upstream: set[str], expected: str
+    ):
+        from haute._contracts import Contract
+        from haute._execute_lazy import _assert_inputs_satisfy_contract
+
+        node = GraphNode(
+            id="band_1", data=NodeData(label="Age band", nodeType=NodeType.BANDING, config={})
+        )
+        with pytest.raises(haute_errors.ContractMismatchError) as excinfo:
+            _assert_inputs_satisfy_contract(
+                node,
+                Contract(inputs=frozenset(needed), outputs=None),
+                frozenset(upstream),
+            )
+        assert str(excinfo.value) == expected
+        # The text is bounded; the context still names every missing column.
+        assert excinfo.value.context["missing"] == sorted(needed)
+
+    def test_output_check_message_names_only_the_missing_outputs(self):
+        from haute._contracts import Contract
+        from haute._execute_lazy import _assert_outputs_satisfy_contract
+
+        node = GraphNode(
+            id="t_1", data=NodeData(label="Transform", nodeType=NodeType.POLARS, config={})
+        )
+        with pytest.raises(haute_errors.ContractMismatchError) as excinfo:
+            _assert_outputs_satisfy_contract(
+                node,
+                Contract(inputs=None, outputs=frozenset({"a_band", "b_band", "premium"})),
+                frozenset({"premium", "quote_id", "a_bnd"}),
+            )
+        assert str(excinfo.value) == (
+            "'Transform' did not create the columns 'a_band' and 'b_band', "
+            "which its contract says it outputs. (node_id=t_1)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -928,9 +1019,8 @@ class TestContractOverheadBenchmark:
                             {
                                 "column": "age",
                                 "outputColumn": f"band_{i}",
-                                "banding": "continuous",
-                                # Use the canonical op1/val1/assignment rule schema.
-                                "rules": [{"op1": "<=", "val1": "25", "assignment": "0"}],
+                                "banding": "breakpoints",
+                                "rules": [{"boundary": "25", "label": "0"}],
                                 "default": "1",
                             }
                         ],

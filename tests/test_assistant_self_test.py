@@ -95,7 +95,6 @@ class TestSelfTestCaseLoading:
 
         assert set(by_id) == {
             "smoke_categorical_banding",
-            "smoke_continuous_banding",
             "smoke_execution_write_blocked",
             "smoke_file_pipeline_authoring",
             "smoke_join_clarification",
@@ -173,10 +172,10 @@ class TestSelfTestCaseLoading:
         cases = load_self_test_cases(CASES_ROOT, projects_root=PROJECTS_ROOT)
         selected = select_self_test_cases(
             cases,
-            ("smoke_join_roles", "smoke_continuous_banding"),
+            ("smoke_join_roles", "smoke_categorical_banding"),
         )
         assert [case.id for case in selected] == [
-            "smoke_continuous_banding",
+            "smoke_categorical_banding",
             "smoke_join_roles",
         ]
 
@@ -405,14 +404,16 @@ class _ApplyingProvider:
                 "recipe",
                 "plan_recipe",
                 {
-                    "recipe_id": "continuous_banding",
+                    "recipe_id": "categorical_banding",
                     "source": "quotes",
-                    "name": "age_band",
-                    "column": "driver_age",
-                    "output_column": "driver_age_band",
+                    "name": "region_band",
+                    "column": "region",
+                    "output_column": "region_group",
                     "rules": [
-                        {"op1": "<=", "val1": 25, "assignment": "young"},
-                        {"op1": ">", "val1": 25, "assignment": "experienced"},
+                        {"value": "north", "assignment": "core"},
+                        {"value": "south", "assignment": "core"},
+                        {"value": "east", "assignment": "other"},
+                        {"value": "west", "assignment": "other"},
                     ],
                     "default": "unknown",
                 },
@@ -453,7 +454,7 @@ async def test_scripted_provider_runs_real_disposable_mutation_flow() -> None:
     case = next(
         case
         for case in load_self_test_cases(CASES_ROOT, projects_root=PROJECTS_ROOT)
-        if case.id == "smoke_continuous_banding"
+        if case.id == "smoke_categorical_banding"
     )
     config = AssistantConfig(
         provider="openai",

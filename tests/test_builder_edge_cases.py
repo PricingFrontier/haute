@@ -86,15 +86,9 @@ class TestResolveInstanceNode:
                             {
                                 "column": "age",
                                 "outputColumn": "age_band",
-                                "banding": "continuous",
+                                "banding": "breakpoints",
                                 "rules": [
-                                    {
-                                        "op1": ">=",
-                                        "val1": 0,
-                                        "op2": "<",
-                                        "val2": 50,
-                                        "assignment": "young",
-                                    },
+                                    {"boundary": "50", "label": "young"},
                                 ],
                             }
                         ],
@@ -476,9 +470,9 @@ class TestBuildBandingEdgeCases:
                     {
                         "column": "",
                         "outputColumn": "out",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "rules": [
-                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 10, "assignment": "low"},
+                            {"boundary": "10", "label": "low"},
                         ],
                     },
                 ],
@@ -498,9 +492,9 @@ class TestBuildBandingEdgeCases:
                     {
                         "column": "age",
                         "outputColumn": "",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "rules": [
-                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 50, "assignment": "young"},
+                            {"boundary": "50", "label": "young"},
                         ],
                     },
                 ],

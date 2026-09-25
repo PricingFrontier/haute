@@ -20,7 +20,7 @@ from haute._trace_correlation import (
     _trace_values_match,
 )
 from haute._trace_enrichment import (
-    _match_continuous_rule,
+    _match_interval_rule,
     detect_row_lineage_type,
 )
 from haute._trace_waterfall import (
@@ -258,28 +258,29 @@ class TestTraceValuesMatchNearZero:
 
 
 # ---------------------------------------------------------------------------
-# F693 — continuous banding equality must be dtype-faithful (Float32)
+# F693 — interval re-matching must be dtype-faithful (Float32)
 # ---------------------------------------------------------------------------
 
 
-class TestContinuousRuleDtypeFaithful:
-    def test_float32_banded_value_matches_equality_rule(self):
+class TestIntervalRuleDtypeFaithful:
+    def test_float32_banded_value_matches_its_closed_boundary(self):
         widened = float(pl.Series([0.1], dtype=pl.Float32).item())
-        rule = {"op1": "=", "val1": 0.1}
+        # The first interval of a right-closed breakpoint at 0.1.
+        rule = {"op1": "<=", "val1": 0.1}
 
-        # Widened float64 exact == fails (the self-contradiction bug)...
-        assert _match_continuous_rule(widened, rule) is False
+        # Widened float64 comparison fails (the self-contradiction bug)...
+        assert _match_interval_rule(widened, rule) is False
         # ...but comparing in the source Float32 domain reproduces the
         # engine's own match.
-        assert _match_continuous_rule(widened, rule, pl.Float32) is True
+        assert _match_interval_rule(widened, rule, pl.Float32) is True
 
     def test_dtype_faithful_range_rule_still_matches(self):
         widened = float(pl.Series([5.5], dtype=pl.Float32).item())
         rule = {"op1": ">=", "val1": 5.5}
-        assert _match_continuous_rule(widened, rule, pl.Float32) is True
+        assert _match_interval_rule(widened, rule, pl.Float32) is True
 
     def test_none_dtype_uses_native_value_comparison(self):
-        assert _match_continuous_rule(10, {"op1": "=", "val1": 10}) is True
+        assert _match_interval_rule(10, {"op1": "<=", "val1": 10}) is True
 
 
 # ---------------------------------------------------------------------------

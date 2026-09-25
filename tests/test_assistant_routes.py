@@ -704,7 +704,7 @@ class TestTurnReservation:
         recipe_tool = next(
             tool for tool in provider.calls[0]["tools"] if tool["name"] == "plan_recipe"
         )
-        assert len(recipe_tool["input_schema"]["oneOf"]) == 6
+        assert len(recipe_tool["input_schema"]["oneOf"]) == 5
 
     async def test_pre_stream_failure_after_reservation_releases_the_lock(
         self, configured: Path, monkeypatch: pytest.MonkeyPatch

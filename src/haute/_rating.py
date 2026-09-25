@@ -12,11 +12,12 @@ import math
 import operator
 import re
 from collections.abc import Iterable, Mapping
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from os import PathLike
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import polars as pl
 
@@ -40,22 +41,89 @@ logger = get_logger(component="rating")
 # Banding
 # ---------------------------------------------------------------------------
 
+# The operators of the interval rules breakpoints become (`_breakpoints_to_rules`).
 SUPPORTED_BANDING_OPERATORS = MappingProxyType(
     {
         "<": operator.lt,
         "<=": operator.le,
         ">": operator.gt,
         ">=": operator.ge,
-        "=": operator.eq,
-        "==": operator.eq,
     }
 )
-SUPPORTED_BANDING_TYPES = frozenset({"continuous", "categorical", "breakpoints"})
+SUPPORTED_BANDING_TYPES = frozenset({"breakpoints", "categorical"})
 
 
-def _banding_rule_comparators(rule: dict[str, Any]) -> list[tuple[str, float]]:
+def require_banding_type(banding_type: str, *, subject: str = "Banding") -> None:
+    """Raise unless *banding_type* is one of the banding types; there is no default."""
+    if banding_type not in SUPPORTED_BANDING_TYPES:
+        allowed = ", ".join(sorted(SUPPORTED_BANDING_TYPES))
+        raise ValueError(
+            f"{subject} has unsupported banding type {banding_type!r}; expected one of: {allowed}"
+        )
+
+
+BoundaryKind = Literal["number", "date", "datetime"]
+
+_DATE_BOUNDARY = re.compile(r"\d{4}-\d{2}-\d{2}")
+_DATETIME_BOUNDARY = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?")
+
+
+def parse_breakpoint_boundary(boundary: str) -> float | date | datetime:
+    """Read one breakpoint boundary: a number, a date, or a date and time.
+
+    A date is ``YYYY-MM-DD``; a date and time is ``YYYY-MM-DD HH:MM`` with
+    optional seconds and fraction, ``T`` or a space between. A time carries no
+    UTC offset: it is read in the banded column's own time zone.
+    """
+    text = boundary.strip()
+    try:
+        number = float(text)
+    except ValueError:
+        pass
+    else:
+        if not math.isfinite(number):
+            raise ValueError(f"Breakpoint has non-finite boundary '{boundary}'")
+        return number
+    try:
+        if _DATE_BOUNDARY.fullmatch(text):
+            return date.fromisoformat(text)
+        if _DATETIME_BOUNDARY.fullmatch(text):
+            return datetime.fromisoformat(text)
+    except ValueError:
+        pass
+    raise ValueError(
+        f"Breakpoint has unreadable boundary '{boundary}'; expected a number, a date "
+        "(YYYY-MM-DD) or a date and time (YYYY-MM-DD HH:MM)"
+    )
+
+
+def _boundary_kind(value: float | date | datetime) -> BoundaryKind:
+    if isinstance(value, datetime):
+        return "datetime"
+    if isinstance(value, date):
+        return "date"
+    return "number"
+
+
+def breakpoints_kind(breakpoints: list[dict[str, Any]] | dict[str, Any]) -> BoundaryKind:
+    """The one kind every bounded breakpoint shares; a mix is rejected."""
+    kinds = {
+        _boundary_kind(parse_breakpoint_boundary(boundary))
+        for bp in normalise_banding_rules("breakpoints", breakpoints)
+        if (boundary := str(bp.get("boundary", "") or "").strip())
+    }
+    if len(kinds) > 1:
+        raise ValueError(
+            "Breakpoints mix " + " and ".join(sorted(kinds)) + " boundaries; use one kind"
+        )
+    return kinds.pop() if kinds else "number"
+
+
+def _banding_rule_comparators(
+    rule: dict[str, Any],
+) -> list[tuple[str, float | date | datetime]]:
     """Return the validated operator/threshold pairs usable by one rule."""
-    comparators: list[tuple[str, float]] = []
+    comparators: list[tuple[str, float | date | datetime]] = []
     for suffix in ("1", "2"):
         op = str(rule.get(f"op{suffix}", "") or "").strip()
         val = rule.get(f"val{suffix}")
@@ -64,6 +132,10 @@ def _banding_rule_comparators(rule: dict[str, Any]) -> list[tuple[str, float]]:
         evaluator = SUPPORTED_BANDING_OPERATORS.get(op)
         if evaluator is None:
             raise ValueError(f"Banding rule has unsupported operator '{op}' for op{suffix}")
+        if isinstance(val, date):
+            # A date or date-and-time boundary, already read from the breakpoint.
+            comparators.append((op, val))
+            continue
         try:
             num = float(val)
         except (ValueError, TypeError):
@@ -75,7 +147,7 @@ def _banding_rule_comparators(rule: dict[str, Any]) -> list[tuple[str, float]]:
 
 
 def _banding_condition(col: pl.Expr, rule: dict[str, Any]) -> pl.Expr | None:
-    """Build a Polars boolean expression from a continuous banding rule."""
+    """Build a Polars boolean expression from one interval rule of a breakpoint."""
     parts: list[pl.Expr] = [
         SUPPORTED_BANDING_OPERATORS[op](col, threshold)
         for op, threshold in _banding_rule_comparators(rule)
@@ -88,18 +160,52 @@ def _banding_condition(col: pl.Expr, rule: dict[str, Any]) -> pl.Expr | None:
     return result
 
 
-def banding_numeric_column_expr(col: pl.Expr, dtype: Any) -> pl.Expr:
-    """The column a numeric banding rule is compared against.
+def _is_temporal(dtype: Any) -> bool:
+    return isinstance(dtype, pl.Date | pl.Datetime) or dtype in (pl.Date, pl.Datetime)
 
-    NaN and infinity are not values a range claims: comparing them would let
-    them match an arbitrary rule, so they are made missing first and fall to the
-    default with everything else that is absent. The expression stays local to
+
+def banding_comparison_expr(
+    col: pl.Expr, dtype: Any, kind: BoundaryKind, output_column: str = ""
+) -> pl.Expr:
+    """The column breakpoints of *kind* are compared against.
+
+    Numbers compare a numeric column, with NaN and infinity made missing first
+    so they fall to the default rather than matching an arbitrary band. Dates
+    compare a Date column, or a Datetime column's calendar date; dates and times
+    compare a Datetime column's wall-clock time. Both read a time-zoned column
+    in its own zone. Any other pairing is refused. The expression stays local to
     one banding output — aliasing it back onto the source column would change
     that column for every downstream node.
     """
-    if dtype in (pl.Float32, pl.Float64):
-        return pl.when(col.is_nan() | col.is_infinite()).then(pl.lit(None)).otherwise(col)
-    return col
+    subject = f"Banding output {output_column!r}" if output_column else "Banding"
+    if dtype == pl.Null:
+        # An all-null column holds nothing to compare: every row takes the default.
+        return col
+    if kind == "number":
+        if _is_temporal(dtype) or (dtype is not None and not dtype.is_numeric()):
+            raise ValueError(f"{subject} has number breakpoints, but its column is {dtype}")
+        if dtype in (pl.Float32, pl.Float64):
+            return pl.when(col.is_nan() | col.is_infinite()).then(pl.lit(None)).otherwise(col)
+        return col
+    if isinstance(dtype, pl.Datetime) or dtype == pl.Datetime:
+        wall_clock = col.dt.replace_time_zone(None) if getattr(dtype, "time_zone", None) else col
+        return wall_clock.dt.date() if kind == "date" else wall_clock
+    if (dtype == pl.Date) and kind == "date":
+        return col
+    what = "date" if kind == "date" else "date-and-time"
+    raise ValueError(f"{subject} has {what} breakpoints, but its column is {dtype}")
+
+
+def banding_temporal_ordinal_expr(col: pl.Expr, dtype: Any) -> pl.Expr:
+    """Days since 1970-01-01 of a Date or Datetime column's wall-clock value.
+
+    The banding statistics measure a date column on this scale, fractional for
+    a Datetime, so the editor can draw and generate bands in dates.
+    """
+    if isinstance(dtype, pl.Datetime) or dtype == pl.Datetime:
+        wall_clock = col.dt.replace_time_zone(None) if getattr(dtype, "time_zone", None) else col
+        return wall_clock.dt.epoch("ms").cast(pl.Float64) / 86_400_000
+    return col.cast(pl.Int32).cast(pl.Float64)
 
 
 def banding_categorical_claims(rules: list[dict[str, Any]]) -> dict[str, tuple[int, str]]:
@@ -119,25 +225,23 @@ def banding_categorical_claims(rules: list[dict[str, Any]]) -> dict[str, tuple[i
     return claims
 
 
-def banding_continuous_claims(
-    banding_type: str,
-    rules: list[dict[str, Any]],
+def banding_interval_claims(
+    breakpoints: list[dict[str, Any]],
     *,
     right_closed: bool = True,
 ) -> list[tuple[int, dict[str, Any]]]:
-    """The continuous rules execution evaluates, in order, each with its source index.
+    """The interval rules execution evaluates for *breakpoints*, in order, each with its source.
 
-    Breakpoints are converted to intervals first, and execution evaluates those
-    intervals sorted by boundary with the open-ended one last — so a rule's
-    index is its position in *rules* as the user wrote them, not its position in
-    the chain.
+    Execution evaluates the intervals sorted by boundary with the open-ended one
+    last — so a rule's index is its breakpoint's position in *breakpoints* as
+    the user wrote them, not its position in the chain.
     """
-    if banding_type == "breakpoints":
-        return [
-            (source, rule)
-            for rule, source in _breakpoints_to_rules_with_sources(rules, right_closed=right_closed)
-        ]
-    return list(enumerate(rules))
+    return [
+        (source, rule)
+        for rule, source in _breakpoints_to_rules_with_sources(
+            breakpoints, right_closed=right_closed
+        )
+    ]
 
 
 def banding_rule_claim_expr(
@@ -162,11 +266,7 @@ def banding_rule_claim_expr(
 
     Rules execution would reject raise the same :class:`ValueError` it raises.
     """
-    if mode not in SUPPORTED_BANDING_TYPES:
-        allowed = ", ".join(sorted(SUPPORTED_BANDING_TYPES))
-        raise ValueError(
-            f"Banding has unsupported banding type {mode!r}; expected one of: {allowed}"
-        )
+    require_banding_type(mode)
     prepared = normalise_banding_rules(mode, rules)
     unclaimed = pl.lit(None, dtype=pl.Int32)
     if not prepared:
@@ -188,16 +288,16 @@ def banding_rule_claim_expr(
             .alias("claim")
         )
 
-    col = banding_numeric_column_expr(column_expr, dtype)
+    col = banding_comparison_expr(column_expr, dtype, breakpoints_kind(prepared), output_column)
     chain: Any = None
-    for index, rule in banding_continuous_claims(mode, prepared, right_closed=right_closed):
+    for index, rule in banding_interval_claims(prepared, right_closed=right_closed):
         cond = _banding_condition(col, rule)
         if cond is None or not str(rule.get("assignment", "")):
             continue
         claim = pl.lit(index, dtype=pl.Int32)
         chain = pl.when(cond).then(claim) if chain is None else chain.when(cond).then(claim)
     if chain is None:
-        raise ValueError(_no_usable_rule_message(output_column, "continuous"))
+        raise ValueError(_no_usable_rule_message(output_column, "breakpoints"))
     claimed: pl.Expr = chain.otherwise(unclaimed).alias("claim")
     return claimed
 
@@ -220,14 +320,15 @@ def _apply_banding(
 ) -> _Frame:
     """Apply banding rules to a column, producing a new output column.
 
-    Continuous rules use operator/value pairs to define ranges::
+    Breakpoint rules name the upper bound of each band::
 
-        {"op1": ">", "val1": 0, "op2": "<=", "val2": 25, "assignment": "0-25"}
+        {"boundary": "25", "label": "0-25"}
 
     Categorical rules map exact values to groups::
 
         {"value": "Semi-detached House", "assignment": "House"}
     """
+    require_banding_type(banding_type, subject=f"Banding output {output_column!r}")
     rules = normalise_banding_rules(banding_type, rules)
     has_configured_rules = bool(rules)
     col = pl.col(column)
@@ -246,19 +347,18 @@ def _apply_banding(
         cat_expr = col.cast(pl.Utf8).replace_strict(remap, default=default_lit).alias(output_column)
         return lf.with_columns(cat_expr)
 
-    # Breakpoints mode: convert to continuous rules first
-    if banding_type == "breakpoints":
-        rules = _breakpoints_to_rules(rules, right_closed=right_closed)
+    # Breakpoints become interval rules, evaluated as a when/then chain.
+    kind = breakpoints_kind(rules)
+    rules = _breakpoints_to_rules(rules, right_closed=right_closed)
 
-    # For continuous banding, sanitize NaN/Inf in float columns so they
-    # don't match arbitrary rules — they fall cleanly to the default.
+    # The column as breakpoints of this kind compare it; for numbers, NaN/Inf
+    # are made missing so they fall cleanly to the default.
     if hasattr(lf, "collect_schema"):
         schema = lf.collect_schema()
     else:
         schema = dict(zip(lf.columns, lf.dtypes))  # type: ignore[assignment]
-    col = banding_numeric_column_expr(col, schema.get(column))
+    col = banding_comparison_expr(col, schema.get(column), kind, output_column)
 
-    # Continuous: build a when/then chain
     chain: Any = None
     for rule in rules:
         cond = _banding_condition(col, rule)
@@ -272,7 +372,7 @@ def _apply_banding(
 
     if chain is None:
         if has_configured_rules:
-            raise ValueError(f"Banding output {output_column!r} has no usable continuous rule")
+            raise ValueError(_no_usable_rule_message(output_column, "breakpoints"))
         return lf
     final_expr = chain.otherwise(default_lit).alias(output_column)
     return lf.with_columns(final_expr)
@@ -295,10 +395,12 @@ def _breakpoints_to_rules_with_sources(
     breakpoints: list[dict[str, Any]] | dict[str, Any],
     right_closed: bool = True,
 ) -> list[tuple[dict[str, Any], int]]:
-    """Convert breakpoint-format rules to continuous banding rules.
+    """Convert breakpoint-format rules to the interval rules execution evaluates.
 
-    Each breakpoint has a ``boundary`` (numeric string) and a ``label``.
-    The last breakpoint may have an empty boundary to create an open-ended rule.
+    Each breakpoint has a ``boundary`` (a number, date or date and time; see
+    :func:`parse_breakpoint_boundary`) and a ``label``, and every bounded one is
+    the same kind. The last breakpoint may have an empty boundary to create an
+    open-ended rule.
 
     When *right_closed* is True, intervals are ``(lower, upper]`` — the first
     rule uses ``<=`` for its upper bound and subsequent rules use ``>`` / ``<=``.
@@ -307,6 +409,7 @@ def _breakpoints_to_rules_with_sources(
     breakpoints = normalise_banding_rules("breakpoints", breakpoints)
     if not breakpoints:
         return []
+    breakpoints_kind(breakpoints)
 
     # Separate breakpoints with boundaries from the open-ended tail
     bounded: list[dict[str, Any]] = []
@@ -321,13 +424,8 @@ def _breakpoints_to_rules_with_sources(
             open_ended_source = source
             open_ended_count += 1
         else:
-            try:
-                num = float(boundary)
-            except (ValueError, TypeError):
-                raise ValueError(f"Breakpoint has non-numeric boundary '{boundary}'")
-            if not math.isfinite(num):
-                raise ValueError(f"Breakpoint has non-finite boundary '{boundary}'")
-            bounded.append({"boundary": num, "label": label, "source": source})
+            parsed = parse_breakpoint_boundary(boundary)
+            bounded.append({"boundary": parsed, "label": label, "source": source})
 
     # Reject more than one open-ended boundary: only the last would ever win,
     # so extras would be silently dropped (fail loud instead).
@@ -351,14 +449,14 @@ def _breakpoints_to_rules_with_sources(
     bounded.sort(key=lambda b: b["boundary"])
 
     # Reject duplicate boundaries — they produce empty intervals
-    seen_boundaries: set[float] = set()
+    seen_boundaries: set[float | date] = set()
     for entry in bounded:
         if entry["boundary"] in seen_boundaries:
             raise ValueError(f"Duplicate breakpoint boundary '{entry['boundary']}'")
         seen_boundaries.add(entry["boundary"])
 
     rules: list[tuple[dict[str, Any], int]] = []
-    prev_boundary: float | None = None
+    prev_boundary: float | date | None = None
 
     for entry in bounded:
         b = entry["boundary"]
@@ -406,27 +504,22 @@ def _normalise_banding_factors(config: dict[str, Any]) -> list[dict[str, Any]]:
 def validate_banding_config(config: dict[str, Any]) -> list[dict[str, Any]]:
     """Validate and return canonical banding factors.
 
-    A factor without a column, output column, or rules remains a supported
-    draft no-op. Once all three are configured, the discriminant and rule
-    shape must be executable rather than being silently skipped at runtime.
+    Every factor names a banding type, draft or not. A factor without a column,
+    output column, or rules remains a supported draft no-op; once all three are
+    configured, the rule shape must be executable rather than being silently
+    skipped at runtime.
     """
 
     factors = normalise_banding_factors(config)
     for index, factor in enumerate(factors):
-        configured_type = str(factor.get("banding", "") or "").strip()
+        banding_type = str(factor.get("banding", "") or "").strip()
+        require_banding_type(banding_type, subject=f"Banding factor {index}")
         column = str(factor.get("column", "") or "").strip()
         output_column = str(factor.get("outputColumn", "") or "").strip()
         configured_rules = factor.get("rules", []) or []
 
         if not column or not output_column or not configured_rules:
             continue
-        banding_type = configured_type or "continuous"
-        if banding_type not in SUPPORTED_BANDING_TYPES:
-            allowed = ", ".join(sorted(SUPPORTED_BANDING_TYPES))
-            raise ValueError(
-                f"Banding factor {index} has unsupported banding type "
-                f"{banding_type!r}; expected one of: {allowed}"
-            )
         rules = normalise_banding_rules(banding_type, configured_rules)
         if not rules:
             continue
@@ -440,23 +533,27 @@ def validate_banding_config(config: dict[str, Any]) -> list[dict[str, Any]]:
                 raise ValueError(f"Banding output {output_column!r} has no usable categorical rule")
             continue
 
-        continuous_rules = (
-            _breakpoints_to_rules(
-                rules,
-                right_closed=bool(factor.get("rightClosed", True)),
-            )
-            if banding_type == "breakpoints"
-            else rules
+        intervals = _breakpoints_to_rules(
+            rules,
+            right_closed=bool(factor.get("rightClosed", True)),
         )
-        usable = False
-        for rule in continuous_rules:
-            comparators = _banding_rule_comparators(rule)
-            assignment = rule.get("assignment")
-            if comparators and assignment not in (None, ""):
-                usable = True
+        usable = any(
+            _banding_rule_comparators(rule) and rule.get("assignment") not in (None, "")
+            for rule in intervals
+        )
         if not usable:
-            raise ValueError(f"Banding output {output_column!r} has no usable continuous rule")
+            raise ValueError(_no_usable_rule_message(output_column, "breakpoints"))
     return factors
+
+
+def banding_factor_is_active(factor: dict[str, Any]) -> bool:
+    """Return whether execution applies *factor* rather than skipping it as a draft.
+
+    A factor missing its column, output column, or rules is a draft: the
+    node passes the frame through for it. The node's column contract asks
+    the same question, so it never promises a draft's output column.
+    """
+    return bool(factor.get("column") and factor.get("outputColumn") and factor.get("rules"))
 
 
 def _apply_banding_factors(lf: _Frame, factors: Iterable[dict[str, Any]]) -> _Frame:
@@ -467,22 +564,23 @@ def _apply_banding_factors(lf: _Frame, factors: Iterable[dict[str, Any]]) -> _Fr
     point :func:`apply_banding_from_config`, so the GUI canvas and a
     standalone run of the saved file band identically.
 
-    Factors missing a column, output column, or rules are skipped — the
-    node is a passthrough for those factors (matching the executor's
-    long-standing semantics; an empty config is a documented no-op).
+    Draft factors (see :func:`banding_factor_is_active`) are skipped — the
+    node is a passthrough for those factors (an empty config is a
+    documented no-op) — but only once their type is checked: a draft names
+    one of the banding types too.
     """
-    for factor in factors:
-        col = factor.get("column", "")
-        out = factor.get("outputColumn", "")
-        rules = factor.get("rules", []) or []
-        if not col or not out or not rules:
+    for index, factor in enumerate(factors):
+        require_banding_type(
+            str(factor.get("banding", "") or ""), subject=f"Banding factor {index}"
+        )
+        if not banding_factor_is_active(factor):
             continue
         lf = _apply_banding(
             lf,
-            col,
-            out,
-            factor.get("banding", "continuous"),
-            rules,
+            factor["column"],
+            factor["outputColumn"],
+            factor.get("banding", ""),
+            factor["rules"],
             factor.get("default"),
             right_closed=factor.get("rightClosed", True),
         )

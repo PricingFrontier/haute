@@ -61,6 +61,16 @@ def _banding(nid: str, factors: list[dict] | None = None) -> GraphNode:
     return _node(nid, NodeType.BANDING, factors=factors or [])
 
 
+def _band_factor(column: str, output_column: str) -> dict:
+    """An active breakpoints factor banding *column* into *output_column*."""
+    return {
+        "banding": "breakpoints",
+        "column": column,
+        "outputColumn": output_column,
+        "rules": [{"boundary": "25", "label": "low"}],
+    }
+
+
 def _polars(nid: str) -> GraphNode:
     """Opaque POLARS node (unknown produced + referenced).
 
@@ -276,7 +286,7 @@ class TestLinearChain:
             _source("src"),
             _banding(
                 "band",
-                factors=[{"column": "age", "outputColumn": "age_band"}],
+                factors=[_band_factor("age", "age_band")],
             ),
             _output("out", fields=["age_band", "extra"]),
         ]
@@ -345,8 +355,8 @@ class TestDiamond:
         """
         nodes = [
             _source("src"),
-            _banding("ba", factors=[{"column": "a", "outputColumn": "a_band"}]),
-            _banding("bb", factors=[{"column": "b", "outputColumn": "b_band"}]),
+            _banding("ba", factors=[_band_factor("a", "a_band")]),
+            _banding("bb", factors=[_band_factor("b", "b_band")]),
             _output("o1", fields=["a_band", "shared"]),
             _output("o2", fields=["b_band", "shared"]),
         ]
@@ -452,8 +462,8 @@ class TestContractAlgebra:
             _banding(
                 "band",
                 factors=[
-                    {"column": "a", "outputColumn": "a_band"},
-                    {"column": "b", "outputColumn": "b_band"},
+                    _band_factor("a", "a_band"),
+                    _band_factor("b", "b_band"),
                 ],
             ),
             _output("out", fields=["a_band", "extra"]),
@@ -482,7 +492,7 @@ class TestContractAlgebra:
             _source("src"),
             _banding(
                 "band",
-                factors=[{"column": "age", "outputColumn": "age_band"}],
+                factors=[_band_factor("age", "age_band")],
             ),
             _output("out", fields=["age_band"]),
         ]
@@ -1384,8 +1394,8 @@ def _equivalence_cases() -> list[tuple[str, Callable[[], tuple[list[str], dict, 
     def diamond_distinct():
         nodes = [
             _source("src"),
-            _banding("ba", factors=[{"column": "a", "outputColumn": "a_band"}]),
-            _banding("bb", factors=[{"column": "b", "outputColumn": "b_band"}]),
+            _banding("ba", factors=[_band_factor("a", "a_band")]),
+            _banding("bb", factors=[_band_factor("b", "b_band")]),
             _output("o1", fields=["a_band", "shared"]),
             _output("o2", fields=["b_band", "shared"]),
         ]
@@ -1558,10 +1568,7 @@ def _build_realistic_200_node_graph() -> tuple[
         outputs = []
         for b in range(count):
             factors = [
-                {
-                    "column": f"{bank_id}_b{b}_c{fi}",
-                    "outputColumn": f"{bank_id}_b{b}_o{fi}",
-                }
+                _band_factor(f"{bank_id}_b{b}_c{fi}", f"{bank_id}_b{b}_o{fi}")
                 for fi in range(factors_per_banding)
             ]
             bid = add(_banding(f"{bank_id}_b{b}", factors=factors), [parent_id])

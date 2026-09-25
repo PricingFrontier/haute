@@ -24,7 +24,7 @@
 | `frontend/src/hooks/useNodeDataCache.ts` | One consumer node's view of the data it reads: the point, its availability for that consumer's demand, and `run`, `refresh`, `cancel`, and `clear`. |
 | `frontend/src/hooks/useNodeDataProfile.ts` | The shared `profile` analysis of the data one consumer reads: asked for once per slot and data version while the point is `current`, fenced against a document that has moved on, stored per slot so every pane showing that data gets it, with `cancel` for the running job, and `error` plus `refresh` so a failed attempt is retried rather than left as an empty pane. Each request names the version it asks about, which the job it starts carries. |
 | `frontend/src/utils/operationToken.ts` | `nextOperationToken`: a process-unique token that tells one asynchronous operation apart from the operation that replaced it. |
-| `frontend/src/panels/dataPointIdentity.ts` | `buildNodeDataCacheIdentity`: the identity that gates a consumer's `point` request — its upstream subgraph plus the original of every instance in it, each node's data-affecting configuration, every edge with its handles, the submodels, and the preamble. |
+| `frontend/src/panels/dataPointIdentity.ts` | `buildNodeDataCacheIdentity`: the identity that gates a consumer's `point` request — its upstream subgraph plus the original of every instance in it, each node's data-affecting configuration (for a Banding or Rating Step consumer itself, only its column demand), every edge with its handles, the submodels, and the preamble. |
 | `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, the server's streaming chunk size (loaded from and written to `/api/execution-settings`), section open/closed state, the MLflow destinations inventory cache (fetched once with probing, re-fetched by `invalidateMlflow()`), data sources, file-listing cache. The pure destination helpers live in `frontend/src/utils/mlflowDestinations.ts`, and the shared per-node control is the destination selector component described under the MLflow destination surface below. |
 | `frontend/src/stores/useToastStore.ts` | Zustand store: toast queue with dedup, capped at 10 entries. |
 | `frontend/src/stores/useUIStore.ts` | Zustand store: modal/panel open flags (git/utility/imports/assistant, mutually exclusive by construction — each setter clears the others), sync banner, node panel width, per-node Explore/modelling selection memory (editor pane, preview pane, and the configured chart/pivot Configure-subview ids), hover highlight, node search open flag. |
@@ -74,7 +74,7 @@
 | `frontend/src/utils/mlflowOptimiser.ts` | Pure MLflow run/model metadata classifier: the canonical `params.mode` value selects ratebook versus online; absent or invalid values yield the empty mode. |
 | `frontend/src/utils/mlflowModelMetadata.ts` | Pure MLflow model metadata helpers for Model Score: `resolveLoadedVersion` (the loaded version a stored choice resolves to; `latest` is the newest) and `recordedModelTask` (a run's recorded `task` param when it is `regression` or `classification`, else `null`). |
 | `frontend/src/components/NodeTypeIcon.tsx` | Shared node-type icon wrapper: looks up canonical metadata and deliberately renders the Polars icon for an absent or unknown type, so compact lists never crash on incomplete historical data. |
-| `frontend/src/components/ToggleButtonGroup.tsx` | Generic controlled segmented single-choice group with radio semantics, roving `tabIndex`, Arrow/Home/End selection and focus movement, optional accessible name, and token-derived active styling. |
+| `frontend/src/components/ToggleButtonGroup.tsx` | Generic controlled segmented single-choice group with radio semantics, roving `tabIndex`, Arrow/Home/End selection and focus movement over enabled options, per-option `disabled` with a `disabledReason` tooltip, optional accessible name, and token-derived active styling. |
 | `frontend/src/components/form/CommittedTextField.tsx` | Controlled-looking input/textarea with a local draft: commits once on blur (and Enter for the input), skips no-op commits, and discards a stale draft when the external value changes, preserving one edit/one undo snapshot. `ValidatedTextField` is the validated single-line variant the API Input and Output editors share: an invalid candidate is refused with its error beside the field and the draft kept, an invalid committed value shows its error too, a commit its owner refuses (`{ ok: false }`) keeps the draft, an owner's `commitError` shows while the value itself is valid, and a non-blocking `warning` shows only when there is no error. |
 | `frontend/src/components/form/ConfigCheckbox.tsx` | Labelled controlled checkbox using a caller id or React `useId`, disabled semantics, and shared accent/text tokens. |
 | `frontend/src/components/form/EditorLabel.tsx` | Consistent micro-label primitive; can be a correctly associated `<label>` or non-form span/div for display-only content. |
@@ -571,7 +571,11 @@ it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
    each node's data-affecting configuration (Explore's overview, pivot, chart, and formula
    settings excluded), every edge with its source and target handles, the submodels, and the
    preamble. Covering more than the backend's signature costs an extra request, never a wrong
-   answer.
+   answer. A Banding or Rating Step consumer reads its input rather than its own output, so its
+   own configuration enters only as the column demand the backend derives from it (the factor
+   columns, as `_data_points._banding_demand` / `_rating_step_demand`): editing its rules or
+   table entries neither re-asks nor drops the answer it holds, while choosing another column
+   does.
 2. `hooks/useNodeDataCache.ts` asks for the point on mount, whenever that identity changes, and
    whenever the store's node-data epoch changes; a rerender that keeps the identity (a canvas
    drag) does not re-ask. Every request, build, cancel, and clear captures the document
@@ -805,7 +809,8 @@ same Vitest config.
 
 Additional leaf coverage:
 `frontend/src/components/__tests__/ToggleButtonGroup.test.tsx` covers click and
-Arrow/Home/End radio-group selection/focus behaviour;
+Arrow/Home/End radio-group selection/focus behaviour, including disabled options that
+neither a click nor the keys select;
 `frontend/src/components/form/__tests__/CommittedTextField.test.tsx`,
 `frontend/src/__tests__/components/form/ConfigCheckbox.test.tsx`, and
 `frontend/src/__tests__/components/form/EditorLabel.test.tsx` cover commit boundaries,

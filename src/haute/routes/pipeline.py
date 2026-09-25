@@ -106,6 +106,7 @@ from haute._worker_isolation import (
 from haute.errors import (
     BoundedMemoryUnsupportedError,
     ConfigError,
+    ContractColumnsMissingError,
     ContractMismatchError,
     ParseError,
     SchemaMismatchError,
@@ -222,6 +223,7 @@ _PREVIEW_TARGET_REMOTE_IDENTITY = (__name__, "_PreviewTargetNotReturnedError")
 _TRACE_CONTRACT_REMOTE_IDENTITIES = frozenset(
     {
         (ContractMismatchError.__module__, ContractMismatchError.__name__),
+        (ContractColumnsMissingError.__module__, ContractColumnsMissingError.__name__),
         (SchemaMismatchError.__module__, SchemaMismatchError.__name__),
     }
 )

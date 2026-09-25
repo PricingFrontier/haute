@@ -226,14 +226,14 @@ class TestBuildNodeConfigProducesValidKeys:
             ),
             pytest.param(
                 NodeType.BANDING,
-                {"factors": [{"banding": "continuous", "column": "x", "rules": []}]},
+                {"factors": [{"banding": "breakpoints", "column": "x", "rules": []}]},
                 "",
                 ["df"],
                 id="banding_multi",
             ),
             pytest.param(
                 NodeType.BANDING,
-                {"banding": "continuous", "column": "x", "rules": []},
+                {"banding": "breakpoints", "column": "x", "rules": []},
                 "",
                 ["df"],
                 id="banding_single",

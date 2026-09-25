@@ -2251,6 +2251,16 @@ present a structural or schema result as execution evidence.
   missing input/output columns and checkpoint/eager projection mismatches in
   `_execute_lazy.py` and the graph walker, and by the walker's `project_output` for a chunk;
   it is re-raised with `SchemaMismatchError` even while a preview records node failures.
+  The boundary checks (`_assert_inputs_satisfy_contract`,
+  `_assert_outputs_satisfy_contract`) raise its subclass `ContractColumnsMissingError`,
+  whose context keeps `node_id` and every missing column (sorted, as `missing`) for
+  callers, while its rendered text, which a preview shows as it is, is the message and
+  the node id only. The message names the node by its quoted label and at most five
+  missing columns (then "and N more"). The input side reads `'<label>' needs the
+  column 'x', which is not in its input.` (or `… but its input has no columns.` when
+  the upstream frame has none) and adds `Its input has a similar column: 'y'.` for a
+  close spelling match; the output side reads `'<label>' did not create the column 'x',
+  which its contract says it outputs.` Neither lists the frame's other columns.
 - `SchemaMismatchError` (`haute.errors`, extends `HauteError`) — raised for a
   simple inferred join whose parent key dtypes differ. It propagates on lazy,
   fail-fast eager, and swallow-mode eager calls through the same explicit branch

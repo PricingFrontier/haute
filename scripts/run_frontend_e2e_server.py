@@ -222,25 +222,14 @@ _BROWSER_OUTPUT_CONFIG = """{
 _BROWSER_MIXED_BANDING_CONFIG = """{
   "factors": [
     {
-      "banding": "continuous",
+      "banding": "breakpoints",
       "column": "proposer_age",
       "outputColumn": "proposer_age_band",
-      "rules": [
-        {
-          "op1": "<=",
-          "val1": "40",
-          "op2": "",
-          "val2": "",
-          "assignment": "Age 40 or below"
-        },
-        {
-          "op1": ">",
-          "val1": "40",
-          "op2": "",
-          "val2": "",
-          "assignment": "Age over 40"
-        }
-      ],
+      "rules": {
+        "40": "Age 40 or below",
+        "": "Age over 40"
+      },
+      "rightClosed": true,
       "default": "Age other"
     },
     {

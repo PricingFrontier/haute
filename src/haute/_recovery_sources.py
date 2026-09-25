@@ -178,7 +178,7 @@ def require_generated_body(
                 data=NodeData(label=authored_id, nodeType=node_type, config=candidate),
             ),
             source_names=params,
-            derive_contract=False,
+            contract_source="declared",
         )
     except (HauteError, ValueError) as exc:
         raise conflict(problem) from exc

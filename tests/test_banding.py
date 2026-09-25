@@ -1,16 +1,23 @@
-"""Tests for banding node type — continuous and categorical."""
+"""Tests for banding node type — breakpoints and categorical."""
 
 from __future__ import annotations
 
 import math
 import re
+from datetime import date, datetime
 from pathlib import Path
 
 import polars as pl
 import polars.testing as plt
 import pytest
 
-from haute._rating import _apply_banding, _breakpoints_to_rules
+from haute._rating import (
+    _apply_banding,
+    _breakpoints_to_rules,
+    banding_temporal_ordinal_expr,
+    parse_breakpoint_boundary,
+    validate_banding_config,
+)
 from haute.executor import _build_node_fn
 from haute.graph_utils import GraphNode, NodeData, NodeType, PipelineGraph
 from tests.conftest import write_node_config
@@ -22,7 +29,7 @@ from tests.conftest import write_node_config
 
 def _banding_node(
     nid: str,
-    banding: str = "continuous",
+    banding: str = "breakpoints",
     column: str = "",
     output_column: str = "",
     rules: list | None = None,
@@ -55,96 +62,283 @@ def _multi_banding_node(nid: str, factors: list[dict]) -> GraphNode:
 # ---------------------------------------------------------------------------
 
 
-class TestApplyBandingContinuous:
+class TestApplyBandingBreakpoints:
     def test_single_upper_bound(self):
         lf = pl.DataFrame({"age": [0, 5, 10, 20]}).lazy()
         rules = [
-            {"op1": "<=", "val1": 5, "assignment": "young"},
-            {"op1": ">", "val1": 5, "op2": "<=", "val2": 15, "assignment": "mid"},
-            {"op1": ">", "val1": 15, "assignment": "old"},
+            {"boundary": "5", "label": "young"},
+            {"boundary": "15", "label": "mid"},
+            {"boundary": "", "label": "old"},
         ]
-        result = _apply_banding(lf, "age", "age_band", "continuous", rules).collect()
+        result = _apply_banding(lf, "age", "age_band", "breakpoints", rules).collect()
         assert result["age_band"].to_list() == ["young", "young", "mid", "old"]
 
     def test_open_ended_ranges(self):
         lf = pl.DataFrame({"x": [-5, 0, 100]}).lazy()
         rules = [
-            {"op1": "<", "val1": 0, "assignment": "negative"},
-            {"op1": ">=", "val1": 0, "assignment": "non_negative"},
+            {"boundary": "0", "label": "negative"},
+            {"boundary": "", "label": "non_negative"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules, right_closed=False).collect()
         assert result["band"].to_list() == ["negative", "non_negative", "non_negative"]
 
     def test_default_value(self):
         lf = pl.DataFrame({"x": [1, 50]}).lazy()
         rules = [
-            {"op1": "<=", "val1": 10, "assignment": "low"},
+            {"boundary": "10", "label": "low"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules, default="other").collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules, default="other").collect()
         assert result["band"].to_list() == ["low", "other"]
 
     def test_null_default_when_unmatched(self):
         lf = pl.DataFrame({"x": [1, 50]}).lazy()
         rules = [
-            {"op1": "<=", "val1": 10, "assignment": "low"},
+            {"boundary": "10", "label": "low"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules).collect()
         assert result["band"].to_list() == ["low", None]
 
     def test_empty_rules_passthrough(self):
         lf = pl.DataFrame({"x": [1, 2]}).lazy()
-        result = _apply_banding(lf, "x", "band", "continuous", []).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", []).collect()
         assert "band" not in result.columns
 
-    def test_string_values_coerced(self):
-        """val1/val2 may arrive as strings from the GUI."""
+    def test_numeric_boundaries_coerced(self):
+        """A boundary may arrive as a number rather than the sidecar's string."""
         lf = pl.DataFrame({"x": [3, 7]}).lazy()
         rules = [
-            {"op1": "<=", "val1": "5", "assignment": "low"},
-            {"op1": ">", "val1": "5", "assignment": "high"},
+            {"boundary": 5, "label": "low"},
+            {"boundary": "", "label": "high"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules).collect()
         assert result["band"].to_list() == ["low", "high"]
 
     def test_all_rows_matched(self):
         """When every row matches a rule, no default values appear."""
         lf = pl.DataFrame({"x": [1, 5, 10]}).lazy()
         rules = [
-            {"op1": "<=", "val1": 5, "assignment": "low"},
-            {"op1": ">", "val1": 5, "assignment": "high"},
+            {"boundary": "5", "label": "low"},
+            {"boundary": "", "label": "high"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules).collect()
         assert result["band"].null_count() == 0
 
     def test_single_row(self):
         """Banding works on a single-row DataFrame."""
         lf = pl.DataFrame({"x": [42]}).lazy()
-        rules = [{"op1": ">=", "val1": 0, "assignment": "pos"}]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        rules = [
+            {"boundary": "0", "label": "neg"},
+            {"boundary": "", "label": "pos"},
+        ]
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules).collect()
         assert result["band"].to_list() == ["pos"]
 
     def test_column_with_spaces_in_name(self):
         """Column names with spaces should work in banding."""
         lf = pl.DataFrame({"age group": [10, 30]}).lazy()
         rules = [
-            {"op1": "<=", "val1": 20, "assignment": "young"},
-            {"op1": ">", "val1": 20, "assignment": "old"},
+            {"boundary": "20", "label": "young"},
+            {"boundary": "", "label": "old"},
         ]
-        result = _apply_banding(lf, "age group", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "age group", "band", "breakpoints", rules).collect()
         assert result["band"].to_list() == ["young", "old"]
 
     def test_null_input_values(self):
         """Null values in input column should not match any rule."""
         lf = pl.DataFrame({"x": [1, None, 10]}).lazy()
         rules = [
-            {"op1": "<=", "val1": 5, "assignment": "low"},
-            {"op1": ">", "val1": 5, "assignment": "high"},
+            {"boundary": "5", "label": "low"},
+            {"boundary": "", "label": "high"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules, default="dflt").collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules, default="dflt").collect()
         bands = result["band"].to_list()
         assert bands[0] == "low"
-        assert bands[1] == "dflt", f"Null row should get default value, got {bands[1]!r}"
+        assert bands[1] == "dflt", f"Null row should get default, got {bands[1]!r}"
         assert bands[2] == "high"
+
+
+class TestBandingTypeIsRequired:
+    """There is no default banding type: only breakpoints and categorical run."""
+
+    @pytest.mark.parametrize("banding_type", ["continuous", ""])
+    def test_apply_banding_rejects_an_unsupported_type(self, banding_type):
+        lf = pl.DataFrame({"x": [1, 50]}).lazy()
+        rules = [{"boundary": "10", "label": "low"}]
+        with pytest.raises(
+            ValueError,
+            match=(
+                f"Banding output 'band' has unsupported banding type {banding_type!r}; "
+                "expected one of: breakpoints, categorical"
+            ),
+        ):
+            _apply_banding(lf, "x", "band", banding_type, rules)
+
+    @pytest.mark.parametrize(
+        "draft",
+        [
+            {"banding": "continuous", "column": "", "outputColumn": "", "rules": []},
+            {"column": "", "outputColumn": "", "rules": []},
+        ],
+        ids=["continuous", "missing"],
+    )
+    def test_running_a_config_rejects_a_draft_without_a_supported_type(self, draft):
+        """A saved file is run without save-time validation, so the run checks it."""
+        from haute._rating import apply_banding_from_config
+
+        lf = pl.DataFrame({"x": [1]}).lazy()
+        with pytest.raises(ValueError, match="Banding factor 0 has unsupported banding type"):
+            apply_banding_from_config(lf, {"factors": [draft]})
+
+    @pytest.mark.parametrize(
+        "factor",
+        [
+            {
+                "banding": "continuous",
+                "column": "x",
+                "outputColumn": "band",
+                "rules": [{"op1": "<=", "val1": 10, "assignment": "low"}],
+            },
+            {"column": "x", "outputColumn": "band", "rules": [{"boundary": "10", "label": "a"}]},
+            # A draft factor still names its type.
+            {"banding": "continuous", "column": "", "outputColumn": "", "rules": []},
+            {"column": "", "outputColumn": "", "rules": []},
+        ],
+        ids=["configured-continuous", "configured-missing", "draft-continuous", "draft-missing"],
+    )
+    def test_validate_banding_config_rejects_a_factor_without_a_supported_type(self, factor):
+        from haute._rating import validate_banding_config
+
+        valid = {"banding": "categorical", "column": "", "outputColumn": "", "rules": []}
+        with pytest.raises(
+            ValueError,
+            match="Banding factor 1 has unsupported banding type .*; "
+            "expected one of: breakpoints, categorical",
+        ):
+            validate_banding_config({"factors": [valid, factor]})
+
+    def test_a_banding_node_with_a_continuous_factor_fails_to_run(self):
+        node = _banding_node(
+            "band_age",
+            banding="continuous",
+            column="age",
+            output_column="age_band",
+            rules=[{"op1": "<=", "val1": 25, "assignment": "young"}],
+        )
+        _, fn, _ = _build_node_fn(node)
+        with pytest.raises(ValueError, match="unsupported banding type 'continuous'"):
+            fn(pl.DataFrame({"age": [20]}).lazy())
+
+
+class TestDateBreakpoints:
+    """Breakpoints band Date and Datetime columns by date or by date and time."""
+
+    DATES = pl.DataFrame(
+        {"d": pl.Series([date(2024, 1, 1), date(2024, 3, 31), date(2024, 4, 1), None])}
+    )
+    # 23:30 on 30 June and 00:30 on 1 July, London summer time: in UTC both are
+    # still 30 June, so only reading the column's own zone puts the second in July.
+    LONDON = pl.DataFrame(
+        {"t": [datetime(2024, 6, 30, 23, 30), datetime(2024, 7, 1, 0, 30)]}
+    ).with_columns(pl.col("t").dt.replace_time_zone("Europe/London"))
+
+    def test_a_date_column_is_banded_up_to_and_including_each_date(self):
+        out = _apply_banding(
+            self.DATES.lazy(), "d", "b", "breakpoints", {"2024-03-31": "Q1", "": "later"}, "none"
+        ).collect()
+        assert out["b"].to_list() == ["Q1", "Q1", "later", "none"]
+
+    def test_a_left_closed_date_band_stops_before_its_date(self):
+        out = _apply_banding(
+            self.DATES.lazy(),
+            "d",
+            "b",
+            "breakpoints",
+            {"2024-03-31": "Q1", "": "later"},
+            "none",
+            right_closed=False,
+        ).collect()
+        assert out["b"].to_list() == ["Q1", "later", "later", "none"]
+
+    def test_a_date_bands_a_datetime_by_its_calendar_day_in_its_own_zone(self):
+        out = _apply_banding(
+            self.LONDON.lazy(), "t", "b", "breakpoints", {"2024-06-30": "June", "": "July+"}
+        ).collect()
+        assert out["b"].to_list() == ["June", "July+"]
+
+    def test_a_date_and_time_bands_a_datetime_by_its_wall_clock_time(self):
+        rules = [
+            {"boundary": "2024-07-01 00:00", "label": "before"},
+            {"boundary": "", "label": "after"},
+        ]
+        out = _apply_banding(self.LONDON.lazy(), "t", "b", "breakpoints", rules).collect()
+        assert out["b"].to_list() == ["before", "after"]
+
+    @pytest.mark.parametrize("boundary", ["2023-02-30", "2024-01-01 25:00"])
+    def test_a_boundary_shaped_like_a_date_but_not_one_is_unreadable(self, boundary):
+        with pytest.raises(ValueError, match=f"unreadable boundary '{boundary}'"):
+            parse_breakpoint_boundary(boundary)
+
+    def test_the_statistics_measure_dates_in_wall_clock_days_since_1970(self):
+        naive = pl.DataFrame({"t": [datetime(1970, 1, 2, 12, 0), datetime(2024, 7, 1, 0, 30)]})
+        # 00:30 on 1 July in London is still 30 June in UTC; the wall clock counts.
+        zoned = naive.with_columns(pl.col("t").dt.replace_time_zone("Europe/London"))
+        dates = pl.DataFrame({"d": [date(1970, 1, 1), date(1969, 12, 31), date(2024, 1, 1)]})
+
+        def measured(frame: pl.DataFrame, column: str) -> list[float]:
+            expr = banding_temporal_ordinal_expr(pl.col(column), frame.schema[column])
+            return frame.select(expr)[column].to_list()
+
+        # 2024-01-01 is day 19723, and 1 July 182 days later.
+        july_first_half_past_midnight = 19723 + 182 + 0.5 / 24
+        assert measured(naive, "t") == pytest.approx([1.5, july_first_half_past_midnight])
+        assert measured(zoned, "t") == pytest.approx([1.5, july_first_half_past_midnight])
+        assert measured(dates, "d") == [0.0, -1.0, 19723.0]
+
+    def test_an_all_null_column_takes_the_default(self):
+        frame = pl.DataFrame({"d": [None, None]})
+        out = _apply_banding(
+            frame.lazy(), "d", "b", "breakpoints", {"2024-03-31": "Q1"}, "none"
+        ).collect()
+        assert out["b"].to_list() == ["none", "none"]
+
+    @pytest.mark.parametrize(
+        ("frame", "column", "rules", "message"),
+        [
+            (DATES, "d", {"25": "x"}, "has number breakpoints, but its column is Date"),
+            (
+                DATES,
+                "d",
+                {"2024-01-01 10:00": "x"},
+                "has date-and-time breakpoints, but its column is Date",
+            ),
+            (
+                pl.DataFrame({"n": [1.0]}),
+                "n",
+                {"2024-01-01": "x"},
+                "has date breakpoints, but its column is Float64",
+            ),
+        ],
+        ids=["numbers-on-a-date", "times-on-a-date", "dates-on-a-number"],
+    )
+    def test_a_boundary_of_the_wrong_kind_for_its_column_fails(self, frame, column, rules, message):
+        with pytest.raises(ValueError, match=f"Banding output 'b' {message}"):
+            _apply_banding(frame.lazy(), column, "b", "breakpoints", rules).collect()
+
+    @pytest.mark.parametrize(
+        ("rules", "message"),
+        [
+            ({"31/03/2024": "x"}, "unreadable boundary '31/03/2024'"),
+            ({"2024-03-31T10:00+01:00": "x"}, "unreadable boundary"),
+            ({"25": "a", "2024-03-31": "b"}, "Breakpoints mix date and number boundaries"),
+        ],
+        ids=["uk-format", "utc-offset", "mixed"],
+    )
+    def test_an_unreadable_or_mixed_boundary_fails_validation(self, rules, message):
+        from haute._rating import validate_banding_config
+
+        factor = {"banding": "breakpoints", "column": "d", "outputColumn": "b", "rules": rules}
+        with pytest.raises(ValueError, match=message):
+            validate_banding_config({"factors": [factor]})
 
 
 class TestApplyBandingCategorical:
@@ -180,15 +374,15 @@ class TestApplyBandingCategorical:
 
 
 class TestBuildNodeFn:
-    def test_banding_node_fn_continuous(self):
+    def test_banding_node_fn_breakpoints(self):
         node = _banding_node(
             "band_age",
-            banding="continuous",
+            banding="breakpoints",
             column="age",
             output_column="age_band",
             rules=[
-                {"op1": "<=", "val1": 25, "assignment": "young"},
-                {"op1": ">", "val1": 25, "assignment": "older"},
+                {"boundary": "25", "label": "young"},
+                {"boundary": "", "label": "older"},
             ],
         )
         func_name, fn, is_source = _build_node_fn(node)
@@ -259,10 +453,10 @@ class TestBandingParser:
             {
                 "factors": [
                     {
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "column": "age",
                         "outputColumn": "age_band",
-                        "rules": [{"op1": "<=", "val1": 25, "assignment": "young"}],
+                        "rules": [{"boundary": "25", "label": "young"}],
                     }
                 ]
             },
@@ -285,11 +479,10 @@ def band_age(df: pl.LazyFrame) -> pl.LazyFrame:
         factors = node.data.config["factors"]
         assert len(factors) == 1
         f = factors[0]
-        assert f["banding"] == "continuous"
+        assert f["banding"] == "breakpoints"
         assert f["column"] == "age"
         assert f["outputColumn"] == "age_band"
-        assert len(f["rules"]) == 1
-        assert f["rules"][0]["assignment"] == "young"
+        assert f["rules"] == [{"boundary": "25", "label": "young"}]
 
     def test_parse_categorical_banding(self, tmp_path):
         from haute.parser import parse_pipeline_source
@@ -412,10 +605,10 @@ class TestBandingCodegen:
 
         node = _banding_node(
             "band_age",
-            banding="continuous",
+            banding="breakpoints",
             column="age",
             output_column="age_band",
-            rules=[{"op1": "<=", "val1": 25, "assignment": "young"}],
+            rules=[{"boundary": "25", "label": "young"}],
         )
         graph = PipelineGraph(nodes=[node], edges=[])
         code = graph_to_code(graph, "test")
@@ -543,15 +736,15 @@ def _executor_banding_output(band_node: GraphNode, input_df: pl.DataFrame) -> pl
 class TestBandingStandaloneExecution:
     """`pipeline.run()` of the SAVED file must band — not silently pass through."""
 
-    def test_standalone_run_applies_continuous_banding(self, tmp_path):
+    def test_standalone_run_applies_breakpoint_banding(self, tmp_path):
         factors = [
             {
-                "banding": "continuous",
+                "banding": "breakpoints",
                 "column": "age",
                 "outputColumn": "age_band",
                 "rules": [
-                    {"op1": "<=", "val1": 25, "assignment": "young"},
-                    {"op1": ">", "val1": 25, "assignment": "older"},
+                    {"boundary": "25", "label": "young"},
+                    {"boundary": "", "label": "older"},
                 ],
                 "default": "unknown",
             }
@@ -626,12 +819,12 @@ class TestBandingStandaloneExecution:
         """Multi-factor emission (factors= decorator) must also band standalone."""
         factors = [
             {
-                "banding": "continuous",
+                "banding": "breakpoints",
                 "column": "age",
                 "outputColumn": "age_band",
                 "rules": [
-                    {"op1": "<=", "val1": 25, "assignment": "young"},
-                    {"op1": ">", "val1": 25, "assignment": "older"},
+                    {"boundary": "25", "label": "young"},
+                    {"boundary": "", "label": "older"},
                 ],
             },
             {
@@ -674,12 +867,12 @@ class TestBandingStandaloneExecution:
 
         factors = [
             {
-                "banding": "continuous",
+                "banding": "breakpoints",
                 "column": "age",
                 "outputColumn": "age_band",
                 "rules": [
-                    {"op1": "<=", "val1": 25, "assignment": "young"},
-                    {"op1": ">", "val1": 25, "assignment": "older"},
+                    {"boundary": "25", "label": "young"},
+                    {"boundary": "", "label": "older"},
                 ],
                 "default": "unknown",
             },
@@ -758,12 +951,12 @@ class TestMultiFactor:
             "multi",
             [
                 {
-                    "banding": "continuous",
+                    "banding": "breakpoints",
                     "column": "age",
                     "outputColumn": "age_band",
                     "rules": [
-                        {"op1": "<=", "val1": 25, "assignment": "young"},
-                        {"op1": ">", "val1": 25, "assignment": "older"},
+                        {"boundary": "25", "label": "young"},
+                        {"boundary": "", "label": "older"},
                     ],
                 },
                 {
@@ -789,13 +982,13 @@ class TestMultiFactor:
             "partial",
             [
                 {
-                    "banding": "continuous",
+                    "banding": "breakpoints",
                     "column": "x",
                     "outputColumn": "x_band",
-                    "rules": [{"op1": "<=", "val1": 10, "assignment": "low"}],
+                    "rules": [{"boundary": "10", "label": "low"}],
                 },
                 {
-                    "banding": "continuous",
+                    "banding": "breakpoints",
                     "column": "",
                     "outputColumn": "",
                     "rules": [],
@@ -815,10 +1008,10 @@ class TestMultiFactor:
             "multi",
             [
                 {
-                    "banding": "continuous",
+                    "banding": "breakpoints",
                     "column": "a",
                     "outputColumn": "a_band",
-                    "rules": [{"op1": "<=", "val1": 5, "assignment": "low"}],
+                    "rules": [{"boundary": "5", "label": "low"}],
                 },
                 {
                     "banding": "categorical",
@@ -841,10 +1034,10 @@ class TestMultiFactor:
             "multi",
             [
                 {
-                    "banding": "continuous",
+                    "banding": "breakpoints",
                     "column": "a",
                     "outputColumn": "a_band",
-                    "rules": [{"op1": "<=", "val1": 5, "assignment": "low"}],
+                    "rules": [{"boundary": "5", "label": "low"}],
                 },
                 {
                     "banding": "categorical",
@@ -869,7 +1062,7 @@ class TestMultiFactor:
         assert pn.data.nodeType == "banding"
         factors = pn.data.config["factors"]
         assert len(factors) == 2
-        assert factors[0]["banding"] == "continuous"
+        assert factors[0]["banding"] == "breakpoints"
         assert factors[0]["column"] == "a"
         assert factors[1]["banding"] == "categorical"
         assert factors[1]["column"] == "b"
@@ -892,55 +1085,43 @@ class TestMultiFactor:
 
 
 class TestBandingHardening:
-    def test_non_numeric_value_raises(self):
-        """A rule with val1='abc' should raise ValueError, not be silently skipped."""
+    @pytest.mark.parametrize(
+        ("boundary", "message"),
+        [
+            ("abc", "unreadable boundary"),
+            ("nan", "non-finite"),
+            ("inf", "non-finite"),
+            ("-inf", "non-finite"),
+        ],
+    )
+    def test_unusable_boundary_raises(self, boundary, message):
+        """An unusable boundary raises ValueError rather than being skipped."""
         lf = pl.DataFrame({"x": [1, 2, 3]}).lazy()
-        rules = [{"op1": "<=", "val1": "abc", "assignment": "low"}]
-        with pytest.raises(ValueError, match="non-numeric"):
-            _apply_banding(lf, "x", "band", "continuous", rules)
+        rules = [{"boundary": boundary, "label": "low"}]
+        with pytest.raises(ValueError, match=message):
+            _apply_banding(lf, "x", "band", "breakpoints", rules)
 
-    def test_nan_boundary_raises(self):
-        """A rule with val1='nan' should raise ValueError (non-finite)."""
-        lf = pl.DataFrame({"x": [1, 2, 3]}).lazy()
-        rules = [{"op1": "<=", "val1": "nan", "assignment": "low"}]
-        with pytest.raises(ValueError, match="non-finite"):
-            _apply_banding(lf, "x", "band", "continuous", rules)
-
-    def test_inf_boundary_raises(self):
-        """A rule with val1='inf' should raise ValueError (non-finite)."""
-        lf = pl.DataFrame({"x": [1, 2, 3]}).lazy()
-        rules = [{"op1": "<=", "val1": "inf", "assignment": "low"}]
-        with pytest.raises(ValueError, match="non-finite"):
-            _apply_banding(lf, "x", "band", "continuous", rules)
-
-    def test_neg_inf_boundary_raises(self):
-        """A rule with val1='-inf' should raise ValueError (non-finite)."""
-        lf = pl.DataFrame({"x": [1, 2, 3]}).lazy()
-        rules = [{"op1": "<=", "val1": "-inf", "assignment": "low"}]
-        with pytest.raises(ValueError, match="non-finite"):
-            _apply_banding(lf, "x", "band", "continuous", rules)
-
-    def test_empty_assignment_skipped(self):
-        """A continuous rule with assignment='' should be skipped (no '' band created)."""
+    def test_empty_label_skipped(self):
+        """A breakpoint with label='' should be skipped (no '' band created)."""
         lf = pl.DataFrame({"x": [1, 50]}).lazy()
         rules = [
-            {"op1": "<=", "val1": 10, "assignment": ""},
-            {"op1": ">", "val1": 10, "assignment": "high"},
+            {"boundary": "10", "label": ""},
+            {"boundary": "", "label": "high"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules, default="dflt").collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules, default="dflt").collect()
         bands = result["band"].to_list()
-        # x=1 matches first rule but assignment is empty, so should fall through to default
-        assert bands[0] == "dflt", f"Empty assignment should be skipped, got {bands[0]!r}"
+        # x=1 falls in the first interval but its label is empty, so it takes the default
+        assert bands[0] == "dflt", f"Empty label should be skipped, got {bands[0]!r}"
         assert bands[1] == "high"
 
     def test_nan_input_falls_to_default(self):
         """NaN values in the input column should get the default, not match arbitrary rules."""
         lf = pl.DataFrame({"x": [1.0, float("nan"), 10.0]}).lazy()
         rules = [
-            {"op1": "<=", "val1": 5, "assignment": "low"},
-            {"op1": ">", "val1": 5, "assignment": "high"},
+            {"boundary": "5", "label": "low"},
+            {"boundary": "", "label": "high"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules, default="dflt").collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules, default="dflt").collect()
         bands = result["band"].to_list()
         assert bands[0] == "low"
         assert bands[1] == "dflt", f"NaN should get default, got {bands[1]!r}"
@@ -958,11 +1139,11 @@ class TestBandingHardening:
         (would fail if the first banding nulled its NaN in place)."""
         lf = pl.DataFrame({"x": [1.0, float("nan"), 10.0]}).lazy()
         rules = [
-            {"op1": "<=", "val1": 5, "assignment": "low"},
-            {"op1": ">", "val1": 5, "assignment": "high"},
+            {"boundary": "5", "label": "low"},
+            {"boundary": "", "label": "high"},
         ]
-        first = _apply_banding(lf, "x", "band1", "continuous", rules, default="d1")
-        second = _apply_banding(first, "x", "band2", "continuous", rules, default="d2").collect()
+        first = _apply_banding(lf, "x", "band1", "breakpoints", rules, default="d1")
+        second = _apply_banding(first, "x", "band2", "breakpoints", rules, default="d2").collect()
         assert second["band1"].to_list() == ["low", "d1", "high"]
         # If the source column had been overwritten to null by the first
         # banding, the second banding would also see null -> "d2" at index 1,
@@ -974,10 +1155,10 @@ class TestBandingHardening:
         """Inf values in the input column should get the default, not match arbitrary rules."""
         lf = pl.DataFrame({"x": [1.0, float("inf"), float("-inf")]}).lazy()
         rules = [
-            {"op1": "<=", "val1": 5, "assignment": "low"},
-            {"op1": ">", "val1": 5, "assignment": "high"},
+            {"boundary": "5", "label": "low"},
+            {"boundary": "", "label": "high"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules, default="dflt").collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules, default="dflt").collect()
         bands = result["band"].to_list()
         assert bands[0] == "low"
         assert bands[1] == "dflt", f"Inf should get default, got {bands[1]!r}"
@@ -1003,9 +1184,10 @@ class TestBreakpointsMode:
             {"boundary": "65", "label": "Senior"},
             {"boundary": "", "label": "Elderly"},
         ]
-        rules = _breakpoints_to_rules(breakpoints, right_closed=True)
         lf = pl.DataFrame({"age": [10, 18, 20, 25, 30, 65, 80]}).lazy()
-        result = _apply_banding(lf, "age", "age_band", "continuous", rules).collect()
+        result = _apply_banding(
+            lf, "age", "age_band", "breakpoints", breakpoints, right_closed=True
+        ).collect()
         bands = result["age_band"].to_list()
         assert bands[0] == "Young"  # 10 <= 18
         assert bands[1] == "Young"  # 18 <= 18
@@ -1021,9 +1203,10 @@ class TestBreakpointsMode:
             {"boundary": "10", "label": "A"},
             {"boundary": "20", "label": "B"},
         ]
-        rules = _breakpoints_to_rules(breakpoints, right_closed=True)
         lf = pl.DataFrame({"x": [10, 15, 20]}).lazy()
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(
+            lf, "x", "band", "breakpoints", breakpoints, right_closed=True
+        ).collect()
         bands = result["band"].to_list()
         assert bands[0] == "A"  # <= 10
         assert bands[1] == "B"  # 10 < 15 <= 20
@@ -1035,9 +1218,10 @@ class TestBreakpointsMode:
             {"boundary": "10", "label": "A"},
             {"boundary": "20", "label": "B"},
         ]
-        rules = _breakpoints_to_rules(breakpoints, right_closed=False)
         lf = pl.DataFrame({"x": [5, 10, 15, 20]}).lazy()
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(
+            lf, "x", "band", "breakpoints", breakpoints, right_closed=False
+        ).collect()
         bands = result["band"].to_list()
         assert bands[0] == "A"  # 5 < 10
         assert bands[1] == "B"  # 10 >= 10 and 10 < 20
@@ -1050,9 +1234,10 @@ class TestBreakpointsMode:
             {"boundary": "100", "label": "Low"},
             {"boundary": "", "label": "High"},
         ]
-        rules = _breakpoints_to_rules(breakpoints, right_closed=True)
         lf = pl.DataFrame({"x": [50, 100, 200, 1000]}).lazy()
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(
+            lf, "x", "band", "breakpoints", breakpoints, right_closed=True
+        ).collect()
         bands = result["band"].to_list()
         assert bands[0] == "Low"
         assert bands[1] == "Low"
@@ -1084,9 +1269,10 @@ class TestBreakpointsMode:
             {"boundary": "18", "label": "Young"},
             {"boundary": "25", "label": "Adult"},
         ]
-        rules = _breakpoints_to_rules(breakpoints, right_closed=True)
         lf = pl.DataFrame({"age": [10, 20, 30, 70]}).lazy()
-        result = _apply_banding(lf, "age", "band", "continuous", rules).collect()
+        result = _apply_banding(
+            lf, "age", "band", "breakpoints", breakpoints, right_closed=True
+        ).collect()
         bands = result["band"].to_list()
         assert bands[0] == "Young"  # <= 18
         assert bands[1] == "Adult"  # 18 < 20 <= 25
@@ -1096,7 +1282,7 @@ class TestBreakpointsMode:
     def test_breakpoints_non_numeric_boundary_raises(self):
         """A breakpoint with boundary='abc' should raise ValueError."""
         breakpoints = [{"boundary": "abc", "label": "Bad"}]
-        with pytest.raises(ValueError, match="non-numeric"):
+        with pytest.raises(ValueError, match="unreadable boundary"):
             _breakpoints_to_rules(breakpoints)
 
     def test_breakpoints_nan_boundary_raises(self):
@@ -1142,14 +1328,14 @@ class TestBreakpointsMode:
         with pytest.raises(ValueError, match="at most one open-ended boundary"):
             _breakpoints_to_rules(breakpoints)
 
-    def test_continuous_banding_integer_column(self):
+    def test_breakpoint_banding_integer_column(self):
         """Integer columns should work without NaN sanitization issues."""
         lf = pl.DataFrame({"x": [1, 5, 10]}).lazy()
         rules = [
-            {"op1": "<=", "val1": 5, "assignment": "low"},
-            {"op1": ">", "val1": 5, "assignment": "high"},
+            {"boundary": "5", "label": "low"},
+            {"boundary": "", "label": "high"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules).collect()
         assert result["band"].to_list() == ["low", "low", "high"]
 
     def test_apply_banding_breakpoints_right_closed_passthrough(self):
@@ -1225,20 +1411,20 @@ class TestBandingEditorMetadata:
         config = {
             "factors": [
                 {
-                    "banding": "continuous",
+                    "banding": "breakpoints",
                     "column": "age",
                     "_prevRules": {"categorical": []},
                     "rules": [
-                        {"op1": ">", "val1": "10", "_id": "rule_1", "assignment": "a"},
+                        {"boundary": "10", "_id": "rule_1", "label": "a"},
                     ],
                 }
             ]
         }
         result = _prepare_config_for_sidecar(NodeType.BANDING, config, node_label="banding")
         assert "_prevRules" not in result["factors"][0]
-        assert "_id" not in result["factors"][0]["rules"][0]
-        assert result["factors"][0]["banding"] == "continuous"
-        assert result["factors"][0]["rules"][0]["op1"] == ">"
+        assert result["factors"][0]["banding"] == "breakpoints"
+        # The rule row loses its _id and compacts to the sidecar's boundary map.
+        assert result["factors"][0]["rules"] == {"10": "a"}
 
     def test_preserves_non_underscore_keys(self):
         from haute._config_io import _prepare_config_for_sidecar
@@ -1258,7 +1444,7 @@ class TestBandingEditorMetadata:
             "rules": [{"key": "18-25", "value": 25}],
         },
         {
-            "banding": "continuous",
+            "banding": "breakpoints",
             "column": "proposer_age",
             "outputColumn": "age_band",
             "rules": [{"key": "18-25", "value": 25}],
@@ -1269,4 +1455,17 @@ def test_validate_banding_config_rejects_unusable_authored_factor(factor) -> Non
     from haute._rating import validate_banding_config
 
     with pytest.raises(ValueError):
+        validate_banding_config({"factors": [factor]})
+
+
+@pytest.mark.parametrize(
+    "rules",
+    [
+        [{"boundary": "10", "label": ""}],
+        [{"boundary": "2024-03-31", "label": ""}, {"boundary": "", "label": ""}],
+    ],
+)
+def test_validate_banding_config_rejects_breakpoints_that_band_nothing(rules) -> None:
+    factor = {"banding": "breakpoints", "column": "x", "outputColumn": "x_band", "rules": rules}
+    with pytest.raises(ValueError, match="Banding output 'x_band' has no usable breakpoints rule"):
         validate_banding_config({"factors": [factor]})

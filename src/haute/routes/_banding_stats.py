@@ -31,7 +31,11 @@ from haute._data_points import (
 from haute._execution_context import ExecutionCancellationToken, ExecutionContext
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._polars_utils import cancellable_streaming_collect
-from haute._rating import banding_rule_claim_expr
+from haute._rating import (
+    banding_rule_claim_expr,
+    banding_temporal_ordinal_expr,
+    require_banding_type,
+)
 from haute.routes._node_data_service import NodeDataService, node_data_project_root
 from haute.routes._synchronous_analysis import run_synchronous_analysis
 from haute.schemas import (
@@ -42,7 +46,7 @@ from haute.schemas import (
 )
 
 BANDING_STATS_VERSION = 1
-NUMERIC_BANDING_MODES = frozenset({"continuous", "breakpoints"})
+NUMERIC_BANDING_MODES = frozenset({"breakpoints"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,7 +86,7 @@ def _unprocessable(message: str) -> HTTPException:
 
 
 def _factor_mode(factor: dict[str, Any]) -> str:
-    return str(factor.get("banding") or "continuous")
+    return str(factor.get("banding") or "")
 
 
 def _factor_column(factor: dict[str, Any]) -> str:
@@ -92,6 +96,11 @@ def _factor_column(factor: dict[str, Any]) -> str:
 
 def _is_numeric(dtype: Any) -> bool:
     return bool(getattr(dtype, "is_numeric", lambda: False)())
+
+
+def _is_date(dtype: Any) -> bool:
+    """Date and Datetime, the temporal dtypes breakpoints can band."""
+    return isinstance(dtype, pl.Date | pl.Datetime) or dtype in (pl.Date, pl.Datetime)
 
 
 class BandingStatsService:
@@ -195,12 +204,16 @@ class BandingStatsService:
         context: ExecutionContext,
     ) -> _BandingStats:
         mode = _factor_mode(body.factor)
+        try:
+            require_banding_type(mode)
+        except ValueError as exc:
+            raise _unprocessable(str(exc)) from exc
         frame = leased.scan
         schema = frame.collect_schema()
         if column not in schema:
             raise _unprocessable(f"Column {column!r} is not in the data this node reads.")
         dtype = schema[column]
-        if mode in NUMERIC_BANDING_MODES and not _is_numeric(dtype):
+        if mode in NUMERIC_BANDING_MODES and not (_is_numeric(dtype) or _is_date(dtype)):
             raise _unprocessable(
                 f"Column {column!r} is {dtype}, which {mode} banding cannot compare."
             )
@@ -218,7 +231,13 @@ class BandingStatsService:
             null_count=int(totals.item(0, "nulls")),
         )
         if mode in NUMERIC_BANDING_MODES:
-            stats = self._numeric(stats, body, frame, column, context)
+            measured = (
+                # A date column is measured in wall-clock days since 1970-01-01.
+                frame.select(banding_temporal_ordinal_expr(pl.col(column), dtype).alias(column))
+                if _is_date(dtype)
+                else frame
+            )
+            stats = self._numeric(stats, body, measured, column, context)
         else:
             stats = self._categorical(stats, body, frame, column, context)
         return self._with_rule_counts(stats, body, frame, column, dtype, context)

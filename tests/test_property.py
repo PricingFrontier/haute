@@ -273,14 +273,14 @@ class TestBandingProperties:
         ),
     )
     @settings(max_examples=100)
-    def test_continuous_banding_covers_all_rows(self, values, threshold):
-        """Two complementary rules (<=t, >t) should assign every row."""
+    def test_breakpoint_banding_covers_all_rows(self, values, threshold):
+        """A boundary plus the open-ended band (<=t, >t) should assign every row."""
         lf = pl.DataFrame({"x": values}).lazy()
         rules = [
-            {"op1": "<=", "val1": threshold, "assignment": "low"},
-            {"op1": ">", "val1": threshold, "assignment": "high"},
+            {"boundary": str(threshold), "label": "low"},
+            {"boundary": "", "label": "high"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules).collect()
         assert result["band"].null_count() == 0
         assert set(result["band"].to_list()) <= {"low", "high"}
 
@@ -312,8 +312,8 @@ class TestBandingProperties:
     def test_banding_preserves_row_count(self, values):
         """Banding never changes the number of rows."""
         lf = pl.DataFrame({"x": values}).lazy()
-        rules = [{"op1": "<=", "val1": 0, "assignment": "neg"}]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        rules = [{"boundary": "0", "label": "neg"}]
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules).collect()
         assert len(result) == len(values)
 
 
@@ -623,11 +623,11 @@ class TestBandingMonotonicity:
         lf = pl.DataFrame({"x": [float(v) for v in values]}).lazy()
         # Non-overlapping ordered bands: (-inf, 10], (10, 20], (20, inf)
         rules = [
-            {"op1": "<=", "val1": 10, "assignment": "A"},
-            {"op1": ">", "val1": 10, "op2": "<=", "val2": 20, "assignment": "B"},
-            {"op1": ">", "val1": 20, "assignment": "C"},
+            {"boundary": "10", "label": "A"},
+            {"boundary": "20", "label": "B"},
+            {"boundary": "", "label": "C"},
         ]
-        result = _apply_banding(lf, "x", "band", "continuous", rules).collect()
+        result = _apply_banding(lf, "x", "band", "breakpoints", rules).collect()
         bands = result["band"].to_list()
         # Filter out nulls, then check band labels never go backward
         band_order = {"A": 0, "B": 1, "C": 2}

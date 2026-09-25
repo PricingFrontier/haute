@@ -239,7 +239,9 @@ semantic tokens that all panels consume; it also owns native-control, scrollbar,
 Flow interaction defaults. `NodeTypeIcon` displays the canonical icon/colour and maps an
 unknown node type to Polars. `ToggleButtonGroup` is a real single-choice radio
 group: only the selected option is in the tab order and Arrow keys/Home/End change both
-selection and focus. The shared form primitives associate labels with controls, honour
+selection and focus. An option can be disabled with a reason: it is greyed, neither a click
+nor Arrow/Home/End selects it (they skip to the next enabled option), and the reason is its
+tooltip. The shared form primitives associate labels with controls, honour
 disabled state, and buffer text locally until an explicit commit boundary, so typing into a
 graph-backed configuration cannot create one undo entry per character.
 
