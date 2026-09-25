@@ -291,6 +291,14 @@ reconciliation rather than dropping them or committing a second mutation.
   waited for without cancelling it and then asked again, at most three times.
   `onBuildProgress` reports each running status (rows read, phase) of the
   build it waits for.
+- **Step progress.** Every preview and recovery-preview request carries a fresh
+  `request_id` (`newPreviewRequestId`), and `pollPreviewProgress`
+  (`hooks/previewProgressPoller.ts`) asks `GET /api/pipeline/preview/progress/{id}`
+  every 250 ms while that request is in flight, writing each answer to the
+  loading `PreviewData.progress` of the node it is for. A 404 or failed poll is an
+  expected absence and polling continues; only the request's own settlement (or
+  its abort) stops it. A Refresh's upstream previews label the loading panel
+  "Previewing inputs (k of n)" before the target's own progress follows.
 - **`GraphDiff`** (`graphDiff.ts`) —
   `{ added, removed, changed, moved: Set<string> }` node ids, keyed by the
   comparison view's two graph versions.

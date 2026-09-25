@@ -4,12 +4,12 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import Mock, patch
 
 import polars as pl
 import pytest
-from fastapi import Response
+from fastapi import Request, Response
 
 from haute._execution_admission import (
     ExecutionAdmissionError,
@@ -53,6 +53,15 @@ from tests.conftest import (
 )
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
+
+
+class _ConnectedClient:
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+# A request whose client stays connected, for calling the preview route directly.
+_CONNECTED = cast(Request, _ConnectedClient())
 
 
 def _clear_execution_memory_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3537,7 +3546,7 @@ async def test_preview_route_creates_admitted_preview_execution_context(monkeypa
 
     with patch.object(pipeline_route, "execute_graph", side_effect=fake_execute_graph):
         response = await pipeline_route.preview_node(
-            PreviewNodeRequest(graph=graph, node_id="source")
+            PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
         )
 
     assert response.status == "ok"
@@ -3597,7 +3606,7 @@ async def test_preview_route_admits_when_warm_process_rss_exceeds_operation_budg
 
     with patch.object(pipeline_route, "execute_graph", side_effect=fake_execute_graph):
         response = await pipeline_route.preview_node(
-            PreviewNodeRequest(graph=graph, node_id="source")
+            PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
         )
 
     assert response.status == "ok"
@@ -3690,7 +3699,9 @@ async def test_preview_route_cancels_execution_context_on_timeout(monkeypatch) -
 
     with patch.object(pipeline_route, "execute_graph", side_effect=slow_execute_graph):
         with pytest.raises(HTTPException) as exc_info:
-            await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+            await pipeline_route.preview_node(
+                PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+            )
 
     assert exc_info.value.status_code == 504
     assert started.wait(2)
@@ -3763,7 +3774,9 @@ async def test_preview_route_releases_admission_after_timed_out_worker_finishes(
 
     try:
         with pytest.raises(HTTPException) as exc_info:
-            await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+            await pipeline_route.preview_node(
+                PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+            )
 
         assert exc_info.value.status_code == 504
         assert worker_started.wait(2)
@@ -3840,7 +3853,9 @@ async def test_preview_route_releases_admission_when_timeout_task_already_finish
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+        await pipeline_route.preview_node(
+            PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+        )
 
     assert exc_info.value.status_code == 504
     with release_lock:
@@ -3885,7 +3900,9 @@ async def test_preview_route_maps_timeout_without_execution_context_to_http_504(
     monkeypatch.setattr(pipeline_route, "_preview_supersession", TimeoutBeforeWorker())
 
     with pytest.raises(HTTPException) as exc_info:
-        await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+        await pipeline_route.preview_node(
+            PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+        )
 
     assert exc_info.value.status_code == 504
     assert "Preview execution timed out" in exc_info.value.detail
@@ -3918,7 +3935,9 @@ async def test_preview_route_returns_error_response_for_mismatch(monkeypatch, er
 
     monkeypatch.setattr(pipeline_route, "execute_graph", raise_mismatch)
 
-    response = await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
+    response = await pipeline_route.preview_node(
+        PreviewNodeRequest(graph=graph, node_id="source"), _CONNECTED
+    )
 
     assert response.node_id == "source"
     assert response.status == "error"

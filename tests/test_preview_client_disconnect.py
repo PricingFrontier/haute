@@ -9,6 +9,7 @@ checkpoints, and never starts a request that was still queued.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 from typing import Any, cast
@@ -152,3 +153,44 @@ async def test_a_preview_still_queued_for_a_slot_never_runs_once_its_client_leav
     # Answered at once: it does not wait for a slot it no longer needs.
     assert time.monotonic() - started_at < 5
     assert executed == []
+
+
+async def test_a_running_preview_reports_its_steps_to_its_own_request_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._step_progress import StepProgress
+
+    monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "thread")
+    reported = threading.Event()
+    release = threading.Event()
+
+    def reporting_execute_graph(*_args: Any, execution_context: Any, **_kwargs: Any) -> Any:
+        execution_context.step_progress(StepProgress(done=1, total=2, label="Caching join"))
+        reported.set()
+        assert release.wait(30)
+        raise RuntimeError("released")
+
+    monkeypatch.setattr(pipeline_routes, "execute_graph", reporting_execute_graph)
+    body = _body().model_copy(update={"request_id": "req-1"})
+    preview = asyncio.ensure_future(
+        pipeline_routes._preview_canonical_graph(body, cast(Request, _Client()))
+    )
+    await _wait_for(reported)
+
+    progress = pipeline_routes.preview_progress_of("req-1")
+    assert (progress.phase, progress.done, progress.total, progress.label) == (
+        "running",
+        1,
+        2,
+        "Caching join",
+    )
+    with pytest.raises(HTTPException) as unknown:
+        pipeline_routes.preview_progress_of("someone-else")
+    assert unknown.value.status_code == 404
+
+    release.set()
+    with contextlib.suppress(Exception):
+        await preview
+    with pytest.raises(HTTPException) as settled:
+        pipeline_routes.preview_progress_of("req-1")
+    assert settled.value.status_code == 404

@@ -408,6 +408,18 @@ export interface PreviewInputsResponse {
   input_node_ids: string[]
 }
 
+/**
+ * A running preview's step progress: `preparing` until its execution plan is
+ * known, then `running` with its planned heavy steps completed of the total.
+ */
+export interface PreviewProgressResponse {
+  request_id: string
+  phase: "preparing" | "running"
+  done: number | null
+  total: number | null
+  label: string | null
+}
+
 export interface SubmodelCreateResponse {
   status: string
   submodel_file: string

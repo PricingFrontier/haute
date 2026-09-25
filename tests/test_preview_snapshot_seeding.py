@@ -20,6 +20,7 @@ from haute._graph_walker import CollectPolicy, WalkResult, walk_graph
 from haute._node_snapshots import NodeSnapshotColumns, NodeSnapshotStore
 from haute._seed_plans import SeedPlan, SeedPlanRequest, open_seed_plan
 from haute._source_cache import SourceCacheIdentity
+from haute._step_progress import StepProgress
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 
 ALL = NodeSnapshotColumns.all()
@@ -265,11 +266,13 @@ def _previewing(
     required: dict[str, list[str]] | None = None,
     preplanned: bool = False,
     materialize_all: bool = False,
+    step_progress: Callable[[StepProgress], None] | None = None,
 ) -> Iterator[Preview]:
     import haute.execution as execution_facade
     from haute.executor import _compile_preamble, _pipeline_dir
 
     context = _context()
+    context.step_progress = step_progress
     request = SeedPlanRequest(
         graph=graph,
         target_node_id=target,
@@ -685,6 +688,36 @@ def test_capture_store_error_propagates_instead_of_a_node_error(
         _preview(graph, store, "banding")
 
 
+def test_a_preview_counts_its_captures_and_its_collection_as_steps(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    graph = _join_graph(project)
+    steps: list[StepProgress] = []
+
+    preview = _preview(graph, store, "banding", row_limit=3, step_progress=steps.append)
+
+    assert preview.captures["join"]["outcome"] == "published"
+    assert [(step.done, step.total) for step in steps] == [(0, 2), (0, 2), (1, 2), (1, 2), (2, 2)]
+    assert steps[1].label.startswith("Caching ")
+    assert steps[3].label.startswith("Computing ")
+
+
+def test_a_preview_without_captures_has_one_step(project: Path, store: NodeSnapshotStore) -> None:
+    graph = _graph(
+        project,
+        [
+            ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            ("F", NodeType.POLARS, _code("df = policies.filter(pl.col('a') > 10)")),
+        ],
+        [("policies", "F")],
+    )
+    steps: list[StepProgress] = []
+
+    _preview(graph, store, "F", step_progress=steps.append)
+
+    assert [(step.done, step.total) for step in steps] == [(0, 1), (0, 1), (1, 1)]
+
+
 def test_a_node_failing_while_it_is_captured_is_that_nodes_error(
     project: Path, store: NodeSnapshotStore
 ) -> None:
@@ -707,11 +740,15 @@ def test_a_node_failing_while_it_is_captured_is_that_nodes_error(
         [("policies", "join"), ("claims", "join"), ("join", "banding")],
     )
 
-    preview = _preview(graph, store, "banding")
+    steps: list[StepProgress] = []
+    preview = _preview(graph, store, "banding", step_progress=steps.append)
 
     assert "join" in preview.result.errors
     assert "Upstream node(s) failed" in preview.result.errors["banding"]
     assert _latest(store, graph, "join") is None
+    # The failed capture and the skipped collection never complete: progress
+    # stops short of its total, and the response carries the error.
+    assert max(step.done for step in steps) < steps[0].total
 
 
 def test_pass_through_under_a_plan_reads_only_its_selected_edge(

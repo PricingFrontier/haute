@@ -42,6 +42,7 @@ import {
 } from "../utils/submodelRuntimeTarget"
 import { executionWarningNodeIds } from "../utils/executionDiagnostics"
 import { instanceOriginal } from "../utils/instanceOriginal"
+import { newPreviewRequestId, pollPreviewProgress } from "./previewProgressPoller"
 import { apiErrorMessage } from "../api/errors"
 import { useDebouncedCallback } from "./useDebouncedCallback"
 export { columnFingerprint } from "../utils/columnFingerprint"
@@ -709,6 +710,20 @@ export default function usePipelineAPI({
     }
 
     const portLabel = previewPortLabel(node)
+    // Poll this request's own step progress while it runs; the response, not
+    // the progress, is what settles the panel.
+    const withProgress = (send: (requestId: string) => Promise<PreviewNodeResponse>) => {
+      const requestId = newPreviewRequestId()
+      const stopPolling = pollPreviewProgress(requestId, controller.signal, (progress) => {
+        if (!requestStillCurrent()) return
+        setPreviewData((previous) =>
+          previous && previous.nodeId === node.id && previous.status === "loading"
+            ? { ...previous, progress }
+            : previous,
+        )
+      })
+      return send(requestId).finally(stopPolling)
+    }
     const executePreview = () => {
       if (previewRequestSeq.current !== requestId || !documentStillCurrent() || controller.signal.aborted) {
         throw new DOMException("Preview request was superseded.", "AbortError")
@@ -733,7 +748,7 @@ export default function usePipelineAPI({
         throw new Error("The pipeline changed while preparing this preview. Refresh to preview the updated pipeline.")
       }
       if (recoveryPreview) {
-        return previewRecoveryNode({
+        return withProgress((requestId) => previewRecoveryNode({
           sourceFile: sourceFileRef.current,
           sourceRevision: snapshotDocumentRevision,
           targetRecoveryId: node.id,
@@ -741,10 +756,11 @@ export default function usePipelineAPI({
           source: snapshotSource,
           requestedPreviewColumns: previewColumnNamesForNode(node, snapshotSource, structuralVersion),
           portLabel,
+          requestId,
           signal: controller.signal,
-        })
+        }))
       }
-      return previewNode({
+      return withProgress((requestId) => previewNode({
           graph,
           nodeId: runtimeNodeIdForVisibleNode(
             graphRef.current.nodes,
@@ -755,8 +771,9 @@ export default function usePipelineAPI({
           source: snapshotSource,
           requestedPreviewColumns: previewColumnNamesForNode(node, snapshotSource, structuralVersion),
           portLabel,
+          requestId,
           signal: controller.signal,
-        })
+        }))
     }
     const previewRequest =
       recoveryPreview || options?.snapshotsEnsured
@@ -1023,9 +1040,22 @@ export default function usePipelineAPI({
       let activeCount = 0
       let settledCount = 0
 
+      // The target's own step progress follows these upstream previews.
+      const reportUpstream = () => {
+        if (!requestStillCurrent()) return
+        setPreviewData((previous) =>
+          previous && previous.nodeId === node.id && previous.status === "loading"
+            ? {
+                ...previous,
+                loading_message: `Previewing inputs (${settledCount} of ${staleUpstream.length})`,
+              }
+            : previous,
+        )
+      }
       const finishOne = () => {
         activeCount -= 1
         settledCount += 1
+        reportUpstream()
         drain()
       }
 
@@ -1076,6 +1106,7 @@ export default function usePipelineAPI({
         }
       }
 
+      reportUpstream()
       drain()
     })
 

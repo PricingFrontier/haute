@@ -351,6 +351,10 @@ and remediation without exposing raw bounded-collection JSON.
   covers the profile job, its Stop also cancels the profile, and its Refresh also
   asks again for a profile that failed or was stopped; it has no separate
   "Cancel profile" button, only "Retry profile" for a failed one.
+- A loading data preview shows its step progress once the plan is known: "Step k of
+  n · <label>" with a determinate bar (`aria-label="Preview progress"`). Steps are
+  counted with equal weight, so the bar can jump; before the plan is known it says
+  "Preparing inputs…" (or the preparation message) with no bar.
 - **Import** (`components/InputImportButton.tsx`) sits beside Refresh in the
   data preview frame of a node that reads a snapshot (`inputSnapshotSource` of
   the node, or of its original for an instance): a Data Input other than a

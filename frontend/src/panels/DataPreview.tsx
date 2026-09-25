@@ -10,6 +10,7 @@ import type {
   NodeTiming,
   NodeMemory,
   ExecutionMetrics,
+  PreviewProgressResponse,
   PreviewSeedPlanEntry,
 } from "../api/types"
 import PreviewPanelFrame from "./PreviewPanelFrame"
@@ -21,6 +22,8 @@ export interface PreviewData {
   status: "ok" | "error" | "loading"
   /** Cache preparation progress while waiting to execute the preview. */
   loading_message?: string
+  /** The running request's step progress, while it is loading. */
+  progress?: PreviewProgressResponse
   row_count: number
   column_count: number
   columns: ColumnInfo[]
@@ -90,6 +93,55 @@ type ColumnWindow = {
 type ColumnSearchEntry = {
   column: ColumnInfo
   normalizedName: string
+}
+
+/**
+ * A running preview: its step progress once the plan is known ("Step 2 of 4 ·
+ * Caching join"), "Preparing inputs" before that, or the preparation message.
+ * Steps are counted with equal weight, so the bar can jump; the label says
+ * which step is running.
+ */
+function PreviewLoading({
+  message,
+  progress,
+}: {
+  message?: string
+  progress?: PreviewProgressResponse
+}) {
+  const running =
+    progress?.phase === "running" && progress.total !== null && progress.total > 0
+      ? { done: progress.done ?? 0, total: progress.total }
+      : null
+  const text = running
+    ? `Step ${Math.min(running.done + 1, running.total)} of ${running.total}${
+        progress?.label ? ` · ${progress.label}` : ""
+      }`
+    : progress?.phase === "preparing"
+      ? message ?? "Preparing inputs…"
+      : message ?? "Executing pipeline..."
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center gap-2">
+      <div role="status" className="text-xs animate-pulse" style={{ color: "var(--text-muted)" }}>
+        {text}
+      </div>
+      {running && (
+        <div
+          role="progressbar"
+          aria-label="Preview progress"
+          aria-valuemin={0}
+          aria-valuemax={running.total}
+          aria-valuenow={running.done}
+          className="h-1 w-48 overflow-hidden rounded"
+          style={{ background: "var(--accent-soft)" }}
+        >
+          <div
+            className="h-full transition-all duration-300"
+            style={{ width: `${(running.done / running.total) * 100}%`, background: "var(--accent)" }}
+          />
+        </div>
+      )}
+    </div>
+  )
 }
 
 function normalizeColumnSearch(value: string): string {
@@ -366,9 +418,7 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
     </div>
   ) : null
   const previewContent = data.status === "loading" ? (
-    <div className="flex-1 flex items-center justify-center">
-      <div role="status" className="text-xs animate-pulse" style={{ color: 'var(--text-muted)' }}>{data.loading_message ?? "Executing pipeline..."}</div>
-    </div>
+    <PreviewLoading message={data.loading_message} progress={data.progress} />
   ) : data.status === "error" ? (
     <div className="flex-1 flex items-center justify-center p-4">
       <div className="text-center">

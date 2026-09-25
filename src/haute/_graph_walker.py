@@ -73,6 +73,7 @@ from haute._path_resolution import runtime_project_root_scoped
 from haute._polars_selectors import preamble_selector_aliases
 from haute._polars_utils import _malloc_trim, projected_or_carrier_columns, streaming_collect
 from haute._source_cache import SourceCacheError
+from haute._step_progress import StepProgress
 from haute._types import GraphEdge, GraphNode, PipelineGraph, _Frame
 from haute.errors import ContractMismatchError, SchemaMismatchError, is_public_contract_error
 
@@ -470,11 +471,67 @@ class _Walk:
         self._init_walk_state()
         self.frames.update(start_frames)
         self._bind_plan_sources()
+        self._start_step_progress()
         for node_id in self.run_order:
             self._walk_node(node_id)
         if self.display:
             self._replan_target_preview()
         return self._result()
+
+    # ------------------------------------------------------- step progress
+
+    def _start_step_progress(self) -> None:
+        """Count a display walk's heavy steps: its planned captures and its collections.
+
+        Every other node only builds a lazy plan, so these steps are where the
+        time goes; each counts once, with equal weight.
+        """
+        self.steps_done: set[tuple[str, str]] = set()
+        self.step_reporter = (
+            self.context.step_progress if self.display and self.context is not None else None
+        )
+        self.steps_total = 0
+        if self.step_reporter is None:
+            return
+        captures = (
+            set(self.decision.captures) - set(self.decision.seeds)
+            if self.decision is not None
+            else set()
+        )
+        self.steps_total = sum(1 for node_id in self.run_order if node_id in captures) + sum(
+            1 for node_id in self.run_order if self.policy.collects(node_id)
+        )
+        if self.steps_total:
+            self.step_reporter(StepProgress(done=0, total=self.steps_total, label=""))
+
+    def _step_label(self, kind: str, node_id: str) -> str:
+        node = self.node_map.get(node_id)
+        name = (node.data.label if node is not None else "") or node_id
+        return f"{'Caching' if kind == 'capture' else 'Computing'} {name}"
+
+    def _step_started(self, kind: str, node_id: str) -> None:
+        if self.step_reporter is None:
+            return
+        self.step_reporter(
+            StepProgress(
+                done=len(self.steps_done),
+                total=max(self.steps_total, len(self.steps_done) + 1),
+                label=self._step_label(kind, node_id),
+            )
+        )
+
+    def _step_finished(self, kind: str, node_id: str) -> None:
+        if self.step_reporter is None:
+            return
+        self.steps_done.add((kind, node_id))
+        done = len(self.steps_done)
+        self.step_reporter(
+            StepProgress(
+                done=done,
+                total=max(self.steps_total, done),
+                label=self._step_label(kind, node_id),
+            )
+        )
 
     def _result(self) -> WalkResult:
         frames = (
@@ -1306,6 +1363,7 @@ class _Walk:
             return built.frame, False
         prewritten, digest = built.scored_write
         unshaped = self.unshaped_frames.get(node_id)
+        self._step_started("capture", node_id)
         try:
             captured = self.captures.capture(
                 node_id,
@@ -1321,6 +1379,7 @@ class _Walk:
         except (SourceCacheError, OSError) as exc:
             self.store_failures.append(exc)
             raise
+        self._step_finished("capture", node_id)
         if not self.display:
             self._after_sink_capture(node_id, captured)
         return captured, True
@@ -1484,8 +1543,10 @@ class _Walk:
         if self.context is None:
             return streaming_collect(frame)
         self.context.checkpoint(label="before_collect", node_id=node_id)
+        self._step_started("collect", node_id)
         with self.context.stage("eager_collect", node_id=node_id):
             df = streaming_collect(frame, execution_context=self.context)
+        self._step_finished("collect", node_id)
         self.context.checkpoint(label="after_collect", node_id=node_id)
         return df
 
@@ -1526,6 +1587,7 @@ class _Walk:
         """Collect each frame of a bundle to the node's limit; consumers read the plans."""
         limit = self.policy.row_limit_for(node_id)
         collected: dict[str, pl.DataFrame] = {}
+        self._step_started("collect", node_id)
         for label, port_frame in bundle.items():
             capped = port_frame.head(limit) if limit else port_frame
             collected[label] = (
@@ -1533,6 +1595,7 @@ class _Walk:
                 if isinstance(capped, pl.LazyFrame)
                 else capped
             )
+        self._step_finished("collect", node_id)
         self.frames[node_id] = plans if limit else collected
         for label, df in collected.items():
             self.column_cache[(node_id, label)] = frozenset(df.columns)

@@ -30,6 +30,7 @@ from haute._native_memory_limit import (
 )
 from haute._polars_utils import current_streaming_chunk_size, set_streaming_chunk_size
 from haute._process_memory import process_rss_bytes
+from haute._step_progress import ProgressCell, StepProgress, bind_job_progress
 from haute._worker_isolation import (
     IsolatedWorkerError,
     IsolatedWorkerHostError,
@@ -187,6 +188,8 @@ class _WorkerSlot:
     process: BaseProcess
     lock: threading.Lock
     generation: int
+    # The running job's step progress, written by the worker (see _step_progress).
+    progress: ProgressCell
     closed: bool = False
 
 
@@ -208,6 +211,7 @@ def _interactive_worker_entrypoint(
     request_queue: Any,
     result_queue: Any,
     preload_modules: tuple[str, ...],
+    progress_cell: ProgressCell | None = None,
 ) -> None:
     lease = NativeMemoryLease()
     try:
@@ -261,7 +265,8 @@ def _interactive_worker_entrypoint(
             with native_memory_backend_scope(backend):
                 if run_function:
                     try:
-                        value = function(*args, **kwargs)
+                        with bind_job_progress(progress_cell, job_id):
+                            value = function(*args, **kwargs)
                         envelope = ("result", job_id, "ok", value)
                     except BaseException as raised:
                         failure = (
@@ -429,6 +434,7 @@ class InteractiveWorkerPool:
         absolute_rss_limit_bytes: int | None = None,
         memory_growth_limit_bytes: int | None = None,
         require_memory_limit: bool = False,
+        on_progress: Callable[[StepProgress], None] | None = None,
         **kwargs: Any,
     ) -> T:
         if timeout_seconds <= 0:
@@ -503,6 +509,7 @@ class InteractiveWorkerPool:
                     absolute_rss_limit_bytes=absolute_rss_limit_bytes,
                     memory_growth_limit_bytes=memory_growth_limit_bytes,
                     require_memory_limit=require_memory_limit,
+                    on_progress=on_progress,
                 ),
             )
         finally:
@@ -521,10 +528,13 @@ class InteractiveWorkerPool:
     def _start_slot(self, *, index: int, generation: int) -> _WorkerSlot:
         request_queue = create_worker_queue(self._ctx, 1)
         result_queue = create_worker_queue(self._ctx, 1)
+        # A replaced slot gets a fresh cell and lock: a worker killed while
+        # holding the old lock leaves it behind with the old process.
+        progress = ProgressCell(self._ctx)
         process = self._ctx.Process(
             target=_interactive_worker_entrypoint,
             name=f"haute-interactive-{index}-{generation}",
-            args=(request_queue, result_queue, self._preload_modules),
+            args=(request_queue, result_queue, self._preload_modules, progress),
         )
         try:
             # Polars reads POLARS_MAX_THREADS only at import, which happens
@@ -556,6 +566,7 @@ class InteractiveWorkerPool:
             process=process,
             lock=threading.Lock(),
             generation=generation,
+            progress=progress,
         )
 
     def _wait_for_ready(self, process: BaseProcess, result_queue: Any) -> None:
@@ -618,9 +629,11 @@ class InteractiveWorkerPool:
         absolute_rss_limit_bytes: int | None,
         memory_growth_limit_bytes: int | None,
         require_memory_limit: bool,
+        on_progress: Callable[[StepProgress], None] | None = None,
     ) -> Any:
         deadline = time.monotonic() + timeout_seconds
         sampler_unavailable_logged = False
+        progress_sequence = 0
         while True:
             if self._shutdown_event.is_set():
                 self._close_slot(slot, graceful=False)
@@ -635,6 +648,14 @@ class InteractiveWorkerPool:
                 )
             except queue.Empty:
                 raw_result = None
+
+            if on_progress is not None and raw_result is None:
+                # Never waits: a held lock (or a worker that died holding it)
+                # only skips this poll's reading.
+                update = slot.progress.try_read(job_id)
+                if update is not None and update[0] > progress_sequence:
+                    progress_sequence = update[0]
+                    on_progress(update[1])
 
             if raw_result is not None:
                 try:
@@ -969,6 +990,7 @@ async def run_in_interactive_worker(
     absolute_rss_limit_bytes: int | None = None,
     memory_growth_limit_bytes: int | None = None,
     require_memory_limit: bool = False,
+    on_progress: Callable[[StepProgress], None] | None = None,
     **kwargs: Any,
 ) -> T:
     """Run one pool call without allowing ASGI cancellation to orphan its thread."""
@@ -989,6 +1011,7 @@ async def run_in_interactive_worker(
             absolute_rss_limit_bytes=absolute_rss_limit_bytes,
             memory_growth_limit_bytes=memory_growth_limit_bytes,
             require_memory_limit=require_memory_limit,
+            on_progress=on_progress,
             **kwargs,
         )
 

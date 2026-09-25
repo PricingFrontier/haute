@@ -3,6 +3,7 @@ import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import {
   ApiError,
   ApiTimeoutError,
+  getPreviewProgress,
   HAUTE_SESSION_EXPIRED_EVENT,
   bootstrapHauteSession,
   checkHauteSession,
@@ -725,6 +726,24 @@ describe("endpoint contracts", () => {
       if (url === "/api/databricks/catalogs") return jsonResponse({ catalogs: [] })
       return jsonResponse({})
     })
+  })
+
+  it("previewNode sends the caller's request id so it can poll its progress", async () => {
+    await previewNode({ graph: { nodes: [], edges: [] }, nodeId: "n1", rowLimit: 5, requestId: "req-1" })
+
+    const [, init] = mockFetch.mock.calls.find(([url]) => url === "/api/pipeline/preview")!
+    expect(JSON.parse(init.body as string).request_id).toBe("req-1")
+  })
+
+  it("getPreviewProgress reads a running request and treats 404 as nothing to show", async () => {
+    mockFetch.mockReturnValueOnce(jsonResponse({ request_id: "req-1", phase: "running", done: 1, total: 2, label: "Caching join" }))
+    await expect(getPreviewProgress("req-1")).resolves.toEqual({
+      request_id: "req-1", phase: "running", done: 1, total: 2, label: "Caching join",
+    })
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toBe("/api/pipeline/preview/progress/req-1")
+
+    mockFetch.mockReturnValueOnce(jsonResponse({ detail: "No preview in progress with this id." }, 404))
+    await expect(getPreviewProgress("req-1")).resolves.toBeNull()
   })
 
   it("previewNode posts to /api/pipeline/preview with correct body", async () => {
