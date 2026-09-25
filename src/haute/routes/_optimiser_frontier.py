@@ -20,6 +20,8 @@ from typing import Any, Literal, Protocol, cast
 from fastapi import HTTPException
 
 from haute._logging import get_logger
+from haute._price_contour import price_contour
+from haute._ratebook_collar import COMBINED_FACTOR_BOUNDS_KEY
 from haute._types import SolveResultLike
 from haute.routes._background_jobs import (
     BackgroundJobStoppedError,
@@ -55,6 +57,7 @@ from haute.routes._optimiser_service import (
     _solve_timeout_from_config,
 )
 from haute.routes._optimiser_solver import (
+    _FRONTIER_FACTOR_TABLES_KEY,
     _FRONTIER_GENERATION_KEY,
     _RATEBOOK_FACTOR_LEVEL_ORDER_KEY,
     _auto_frontier_ranges_from_config,
@@ -63,6 +66,7 @@ from haute.routes._optimiser_solver import (
     _ratebook_factor_dtypes_from_artifact,
     _ratebook_factor_level_counts_from_artifact,
     _serialise_ratebook_factor_tables,
+    frontier_point_factor_tables,
     solver_worker_context,
 )
 from haute.schemas import (
@@ -321,8 +325,8 @@ def _frontier_point_result_dict(job: Mapping[str, Any], point_index: int) -> dic
 
     base_result = _base_result_for_frontier(job)
     result_dict = apply_frontier_point_summary(base_result, summary)
-    result_dict["baseline_objective"] = float(base_result.get("baseline_objective", 0.0))
-    result_dict["baseline_constraints"] = dict(base_result.get("baseline_constraints", {}))
+    result_dict["baseline_objective"] = float(base_result["baseline_objective"])
+    result_dict["baseline_constraints"] = dict(base_result["baseline_constraints"])
     result_dict["selected_frontier_point"] = point_index
     return result_dict
 
@@ -407,14 +411,16 @@ def _summary_solve_result(result: dict[str, Any]) -> SolveResultLike:
         lambdas=result["lambdas"],
         total_objective=result["total_objective"],
         total_constraints=result["constraints"],
-        baseline_objective=result.get("baseline_objective", 0.0),
-        baseline_constraints=result.get("baseline_constraints", {}),
+        baseline_objective=result["baseline_objective"],
+        baseline_constraints=result["baseline_constraints"],
         converged=result["converged"],
         iterations=result.get("iterations"),
         cd_iterations=result.get("cd_iterations"),
         clamp_rate=result.get("clamp_rate"),
         factor_tables=result.get("factor_tables"),
         factor_dtypes=result.get("factor_dtypes"),
+        # Ratebook only; a frontier point inherits its solve's collar.
+        combined_factor_bounds=result.get(COMBINED_FACTOR_BOUNDS_KEY),
     )
 
 
@@ -446,26 +452,64 @@ def _cached_materialised_ratebook_frontier_result(
     return None
 
 
+def _frontier_point_factor_tables_or_raise(
+    job: Mapping[str, Any],
+    point_index: int,
+) -> dict[str, dict[str, float]]:
+    """The factor tables price-contour kept for a retained ratebook frontier point."""
+    tables = job.get(_FRONTIER_FACTOR_TABLES_KEY)
+    points, _frontier_data = _frontier_points_or_raise(job)
+    if not isinstance(tables, list) or len(tables) != len(points):
+        raise HTTPException(
+            status_code=500,
+            detail="Job frontier factor tables are missing or do not match the frontier points",
+        )
+    point_tables = tables[point_index]
+    if not isinstance(point_tables, dict):
+        raise HTTPException(status_code=500, detail="Job frontier factor tables are invalid")
+    return point_tables
+
+
+def _frontier_point_totals_for_all_constraints(
+    job: Mapping[str, Any],
+    point: Mapping[str, Any],
+) -> dict[str, float]:
+    """The row's ``total_<name>`` for every configured constraint, swept or not.
+
+    Point summaries list only the swept constraints, but a materialised point
+    is what save and MLflow publish, so it carries every configured total. The
+    library emits ``total_<name>`` for every constraint on every row.
+    """
+    names = list(job.get("config", {}).get("constraints", {}))
+    missing = [name for name in names if f"total_{name}" not in point]
+    if missing:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Frontier point is missing constraint totals for {missing}",
+        )
+    return {name: _as_finite_float(point[f"total_{name}"], field=f"total_{name}") for name in names}
+
+
 def _materialised_ratebook_result_dict(
     result_dict: dict[str, Any],
-    solve_result: SolveResultLike,
+    factor_tables: dict[str, dict[str, float]],
     factor_level_counts: dict[str, dict[str, int]],
     factor_level_order: dict[str, list[str]],
     factor_dtypes: dict[str, list[dict[str, Any]]],
 ) -> dict[str, Any]:
+    """A ratebook frontier point as a full result.
+
+    ``result_dict`` is the point's frontier row summary. price-contour reports
+    a row's totals as the canonical evaluation of that point's factor tables,
+    so the row's totals, λ, convergence and clamp rate are the point's, and the
+    tables are attached as they are, with no re-solve.
+    """
     materialised = dict(result_dict)
     materialised.update(
         {
-            "total_objective": solve_result.total_objective,
-            "baseline_objective": solve_result.baseline_objective,
-            "constraints": solve_result.total_constraints,
-            "baseline_constraints": solve_result.baseline_constraints,
-            "lambdas": solve_result.lambdas,
-            "converged": solve_result.converged,
-            "cd_iterations": getattr(solve_result, "cd_iterations", None),
-            "clamp_rate": getattr(solve_result, "clamp_rate", None),
+            "cd_iterations": result_dict["iterations"],
             "factor_tables": _serialise_ratebook_factor_tables(
-                getattr(solve_result, "factor_tables", None),
+                factor_tables,
                 factor_level_counts,
                 factor_level_order,
                 factor_dtypes,
@@ -770,12 +814,9 @@ class OptimiserFrontierService:
                 body.include_ratebook_tables
                 and _result_mode({**job, "base_result": base_result}, result_dict) == "ratebook"
             ):
-                _materialised_job, materialised_result, _solve_result = (
-                    self.materialise_ratebook_point(
-                        body.job_id,
-                        selected_point,
-                        result_dict,
-                    )
+                _materialised_job, materialised_result = self.materialise_ratebook_point(
+                    body.job_id,
+                    selected_point,
                 )
                 self._store.clear_result_data(body.job_id, keys=("solve_result",))
                 return materialised_result
@@ -870,31 +911,45 @@ class OptimiserFrontierService:
         self,
         job_id: str,
         point_index: int,
-        result_dict: dict[str, Any],
-    ) -> tuple[Mapping[str, Any], dict[str, Any], SolveResultLike]:
+    ) -> tuple[Mapping[str, Any], dict[str, Any]]:
+        """Attach a ratebook frontier point's factor tables to its row summary.
+
+        Needs no solver or grid: the frontier kept each point's tables, and
+        the row's totals are the canonical evaluation of exactly those tables.
+        The row, its tables and the commit all come from one snapshot under the
+        parent lock that a frontier recompute publishes under, so a recompute
+        can never pair one point's totals with another point's tables.
+        """
+        with self.parent_lock(job_id):
+            return self._materialise_ratebook_point_locked(job_id, point_index)
+
+    def _materialise_ratebook_point_locked(
+        self,
+        job_id: str,
+        point_index: int,
+    ) -> tuple[Mapping[str, Any], dict[str, Any]]:
         job = self._store.require_completed_job(job_id)
+        result_dict = _frontier_point_result_for_job(job, point_index)
         cached_result = _cached_materialised_ratebook_frontier_result(
             job,
             point_index,
             result_dict["lambdas"],
         )
         if cached_result is not None:
-            return job, cached_result, _summary_solve_result(cached_result)
+            return job, cached_result
 
-        job, solver, quote_grid, factor_contexts, factor_columns = (
-            self.ratebook_runtime_state_or_raise(
-                job_id,
-            )
-        )
+        factor_tables = _frontier_point_factor_tables_or_raise(job, point_index)
+        point, _frontier_data = _frontier_point_or_raise(job, point_index)
+        result_dict["constraints"] = _frontier_point_totals_for_all_constraints(job, point)
         base_result = _base_result_for_frontier(job)
-        constraints_override = _frontier_point_constraints_override(job, point_index)
-        solve_result = solver.solve(
-            quote_grid,
-            factor_contexts,
-            factor_columns=factor_columns,
-            lambdas=result_dict["lambdas"],
-            _constraints_override=constraints_override,
-        )
+        factor_columns = job.get("factor_columns_valid")
+        if not isinstance(factor_columns, list) or not all(
+            isinstance(group, list) and all(isinstance(col, str) for col in group)
+            for group in factor_columns
+        ):
+            raise HTTPException(
+                status_code=500, detail="Ratebook factor column metadata is invalid"
+            )
         factor_level_counts = job.get("factor_level_counts")
         if not isinstance(factor_level_counts, dict):
             artifact_handles = _artifact_handles_or_raise(job)
@@ -925,7 +980,7 @@ class OptimiserFrontierService:
             )
         materialised = _materialised_ratebook_result_dict(
             result_dict,
-            solve_result,
+            factor_tables,
             factor_level_counts,
             factor_level_order,
             factor_dtypes,
@@ -947,7 +1002,7 @@ class OptimiserFrontierService:
                     "Re-run the solve to materialise it again."
                 ),
             )
-        return updated_job, materialised, solve_result
+        return updated_job, materialised
 
     def solve_result_for_selected_point(
         self,
@@ -957,13 +1012,7 @@ class OptimiserFrontierService:
     ) -> tuple[Mapping[str, Any], dict[str, Any], SolveResultLike]:
         selected_result = _frontier_point_result_for_job(job, point_index)
         if _result_mode(job, selected_result) == "ratebook":
-            updated_job, selected_result, _materialised_solve_result = (
-                self.materialise_ratebook_point(
-                    job_id,
-                    point_index,
-                    selected_result,
-                )
-            )
+            updated_job, selected_result = self.materialise_ratebook_point(job_id, point_index)
             return updated_job, selected_result, _summary_solve_result(selected_result)
         return job, selected_result, _summary_solve_result(selected_result)
 
@@ -1049,44 +1098,13 @@ class OptimiserFrontierService:
                         ),
                     )
 
-            from price_contour import apply_from_grid
-
-            apply_result = apply_from_grid(
+            apply_result = price_contour().apply_from_grid(
                 quote_grid,
                 lambdas=result_dict["lambdas"],
                 constraints=job.get("config", {}).get("constraints", {}),
             )
             df = _dataframe_or_raise(apply_result, context="Apply result")
             new_handle = _persist_apply_result_artifact(apply_result)
-            if new_handle is None:
-                with self.parent_lock(job_id):
-                    latest_job = self._store.require_completed_job(job_id)
-                    if _frontier_generation_or_raise(latest_job) != frontier_generation:
-                        raise HTTPException(
-                            status_code=409,
-                            detail=(
-                                "The frontier changed while materialising the selected point. "
-                                "Select a point from the current frontier and try again."
-                            ),
-                        )
-                    updated_job = self._store.atomic_update(
-                        job_id,
-                        {
-                            "base_result": base_result,
-                            "selected_frontier_point": point_index,
-                            "result": result_dict,
-                        },
-                        expected_status="completed",
-                    )
-                    if updated_job is None:
-                        raise HTTPException(
-                            status_code=409,
-                            detail=(
-                                "Optimiser job state changed while materialising the frontier "
-                                "point. Re-run the solve to materialise it again."
-                            ),
-                        )
-                return df, result_dict, False
 
             owns_new_handle = True
             duplicate_handle = False
@@ -1248,6 +1266,11 @@ class OptimiserFrontierService:
                         "result": result_dict,
                         "base_result": dict(result_dict),
                         "frontier_data": frontier_dict,
+                        _FRONTIER_FACTOR_TABLES_KEY: frontier_point_factor_tables(
+                            frontier_result,
+                            mode=mode,
+                            points_returned=frontier_dict["points_returned"],
+                        ),
                         _FRONTIER_GENERATION_KEY: next_frontier_generation,
                         "selected_frontier_point": None,
                         "artifact_handles": retained_handles,

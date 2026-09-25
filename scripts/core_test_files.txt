@@ -27,6 +27,10 @@
 # every registry callable present and introspectable, the leading positionals
 # haute supplies unmoved, and the keyword names haute hardcodes still accepted
 # — over exact equality with the one polars version the schema records.
+# test_price_contour_guard is here by design too: the dependency-floors and
+# unlocked-resolve lanes install price-contour away from the lockfile, and the
+# guard's own tests (plus the session-wide verification in conftest) prove the
+# resolved build satisfies the pinned range and exposes every symbol haute calls.
 tests/test_git_engine.py
 tests/test_model_scorer.py
 tests/test_optimiser_routes.py
@@ -36,3 +40,4 @@ tests/test_api_contracts.py
 tests/test_api_contract_generation.py
 tests/test_optional_dependency_extras.py
 tests/test_polars_io_interface_contracts.py
+tests/test_price_contour_guard.py

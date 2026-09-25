@@ -14,6 +14,8 @@
 | `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT`, `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_apply_preview_payload`, `limited_frontier_payload`. |
 | `src/haute/routes/_frontier_point_summary.py` | The one derivation of a frontier point's solve summary: `frontier_point_summary` (from a `price-contour` frontier row), `apply_frontier_point_summary` (overlays it on a base result) and `FrontierPointDataError` (a malformed point, carrying the HTTP status the route reports). See Frontier point summaries below. |
 | `src/haute/_builders.py` | Cross-component runtime registry owned by [execution-engine](../execution-engine/low-level.md). The optimiser component consumes its optimiser-apply online/ratebook closures; saved artifact validation and trace reconstruction must remain contract-compatible with those closures. |
+| `src/haute/_ratebook_collar.py` | The ratebook combined-factor collar: `COMBINED_FACTOR_BOUNDS_KEY`, `combined_factor_bounds_from_grid` (the solve's `[sv_min, sv_max]`), `parse_combined_factor_bounds` and `CombinedFactorBoundsError`, shared by the solver, artifact validation, the runtime apply and the trace. |
+| `src/haute/_price_contour.py` | The one runtime import point for the external `price_contour` library: `price_contour()` verifies the installed build once per process and returns the package; `price_contour_install()` reports the verified version and where it was installed from (the deploy container pin reads it). See The price-contour guard below. |
 | `src/haute/_optimiser_io.py` | Loads a previously saved optimiser artifact for an optimiser-apply node — from a local JSON file (content-hash cached) or from MLflow (`load_mlflow_optimiser_artifact(..., destination="")`, cached on the resolved backend identity plus run-id/version, so the same run on two destinations never aliases and an unresolvable destination fails before any cache lookup). Analogous to `_mlflow_io.py` and `_io.py`. |
 | `src/haute/_optimiser_apply_explainability.py` | Builds a structured trace-detail payload for one clicked optimiser-apply output row, for both online and ratebook modes. Consumed by the tracing subsystem, not exposed as its own route. |
 | `src/haute/schemas.py` | Shared Pydantic contracts owned by [server-api](../server-api/low-level.md) for optimiser solve/estimate/status, auto-range, frontier, apply, save, and MLflow-log routes. |
@@ -83,7 +85,9 @@ A job is a plain dict living in the shared `JobStore`. Fields this component rea
 `node_label`, `start_time`, `timeout`, `result`, `base_result` (the pre-frontier-point-overlay
 summary, used to reconstruct any frontier point without re-solving), `frontier_data` (the raw,
 unlimited frontier points — distinct from `result["frontier"]`, which is the size-limited
-frontend payload), `frontier_generation` (a non-negative integer initialised to `0` at solve
+frontend payload), `frontier_factor_tables` (ratebook only: one `{factor: {level: rate}}` dict per
+retained frontier point, aligned with `frontier_data["points"]`, stored by the solve-time
+frontier and replaced by every recompute; `None` for online jobs), `frontier_generation` (a non-negative integer initialised to `0` at solve
 completion and incremented by every explicit recompute), `selected_frontier_point`,
 `artifact_handles` (dict of named artifact handles, see below), `publish_summary` (the anchor's
 MLflow summary — `params`/`metrics`/`artifacts` from `solver.summary(solve_result)` — computed
@@ -113,6 +117,72 @@ root rejection, relative-path rejection, directory/file mismatch rejection).
 A `RuntimeError` subclass raised for every trace-enrichment failure; always caught at the
 top-level `explain_optimiser_apply_from_config` entry point and turned into an `"error"` status
 payload — it never escapes to the caller.
+
+### The price-contour guard
+
+`src/haute/_price_contour.py` is the guard. Every runtime use of `price_contour` goes through `price_contour()`; callers look symbols up on
+the returned module at call time (`price_contour().RatebookOptimiser(...)`), so tests that
+patch `price_contour.<name>` keep working. `if TYPE_CHECKING:` imports of library types remain
+allowed; `tests/test_decoupling_contracts.py` rejects any other `price_contour` import in
+`src/haute` and any symbol read off `price_contour()` that the guard does not verify.
+
+The first call (cached with `functools.cache`; a failure is not cached) imports the package and
+its native extension `price_contour._price_contour` and collects **every** problem into one
+`PriceContourCompatibilityError` (a `RuntimeError`):
+
+- no `price-contour` distribution metadata;
+- the module's `__version__` differs from the distribution metadata (a stale or shadowing
+  build, such as `0.0.0+local`);
+- the version is outside `REQUIRED_SPECIFIER`, which equals `pyproject.toml`'s
+  `price-contour` specifier exactly (`>=0.5.0,<0.6`, pinned by
+  `tests/test_dependency_contracts.py`); prereleases are rejected even inside the range;
+- a missing entry of `REQUIRED_SYMBOLS` (every class, function and method haute calls);
+- a keyword haute passes by name that a Python wrapper no longer accepts
+  (`REQUIRED_PARAMETERS`, checked with `inspect.signature`; PyO3 classes are covered by the
+  symbol check only);
+- a failed import, chained as the error's cause.
+
+The message names the installed version, the required specifier, the module path, the install
+source (`editable checkout <path>` or `direct URL <url>` from PEP 610 `direct_url.json`, else
+`wheel`) and the remedy: `uv sync --locked`, or `uv run maturin develop --release` in a
+checkout. A verified install logs one `price_contour_verified` INFO line with version, source
+and path. The test session verifies the real install once before any test patches it.
+
+The deploy container pins `price-contour==<verified version>` through
+`_pinned_price_contour_dependency` and raises `DeployError` when the build is an editable or
+direct-URL install, because the container reinstalls from the package index by version and
+cannot reproduce it; an incompatible install raises `DeployError` carrying the guard's
+diagnosis.
+
+### The price-contour contract haute relies on (0.5)
+
+The library's own contract is section 13 ("Consumer Contract") of the design-decisions document in the price-contour repository.
+Haute depends on these parts of it:
+
+- **Canonical ratebook evaluation.** Every ratebook total (solve result and frontier row) is
+  the evaluation of the final factor tables by one kernel: each quote at the grid step nearest
+  the f32 product of its factor rates, clamped to the end steps, an exact midpoint going to the
+  lower step. `RatebookResult.quote_results` is that per-quote frame and
+  `RatebookOptimiser.evaluate(grid, factors, factor_tables)` reproduces it exactly. The
+  combined-factor collar (`combined_factor_bounds`) is the same end-step clamp applied at
+  deployment.
+- **Ratebook frontier points.** `RatebookOptimiser.frontier(...).factor_tables` holds each
+  point's tables, aligned with `points`; each row's totals are those tables' canonical
+  evaluation. Haute keeps the retained points' tables as the job's `frontier_factor_tables` and
+  materialises a selected point from them (see "Frontier computation and point selection").
+- **Absolute bounds.** Frontier rows carry `bound_<c>` (absolute) beside `threshold_<c>` (the
+  user's units, a fraction for `min_pct`/`max_pct`) for every constraint; solve results carry
+  `constraint_bounds`.
+- **One baseline rule.** Every baseline is the scenario value nearest 1.0 (f32, lowest on a
+  tie); totals accumulate f32 values in f64.
+- **Fail loud.** The library raises rather than returning a default for missing frontier
+  totals or λ, a zero-baseline pct constraint, an unknown warm-start λ name, a non-positive
+  candidate range, scenario values that are not strictly increasing, and the reserved
+  constraint names `objective`, `step` and `scenario_value` (which haute's config validation
+  also rejects).
+- **`clamp_rate`** is a search-space diagnostic (the mean share of candidate targets outside
+  the scenario range across the search), not a count of quotes at an edge; that count is
+  `n_quotes_clamped_low` / `n_quotes_clamped_high`.
 
 ### Solver worker-context guard (`_optimiser_solver.py`)
 
@@ -261,13 +331,19 @@ an execution-context stage — calls:
   into their canonical, apply-joinable level keys
   (`_ratebook_factor_level_counts_from_artifact` /
   `_ratebook_factor_dtypes_from_artifact` → `_serialise_ratebook_factor_tables`, see Edge
-  cases).
+  cases). It records the solve's **combined-factor collar**,
+  `combined_factor_bounds = {"min": sv[0], "max": sv[-1]}` from the solved grid's
+  `QuoteGrid.scenario_values` (the Float32 grid values widened to Python floats, exactly what
+  the solver scored; `combined_factor_bounds_from_grid` in `src/haute/_ratebook_collar.py`),
+  and reads `clamp_rate` and `cd_iterations` directly off the library result. See Runtime
+  ratebook apply below.
 
 Both call the shared `_finalize_solve_result`, which builds the API-facing
 `result_dict`, optionally computes an efficient frontier inline (non-fatal on failure — a
-frontier failure is recorded but does not fail the solve), persists the apply-result artifact
-(freeing the in-memory result dataframe as a side effect — see Artifact lifecycle below), and
-atomically transitions the job to `completed`.
+frontier failure is recorded but does not fail the solve), persists the online apply-result
+artifact (online mode only: `_persist_apply_result_artifact` requires a per-quote Polars
+frame and raises `TypeError` otherwise; it frees the in-memory result dataframe as a side
+effect — see Artifact lifecycle below), and atomically transitions the job to `completed`.
 
 The solver worker classifies failures by the boundary that translated them.
 `_OptimiserSolveInputError` names a user-actionable input-adaptation failure and
@@ -426,11 +502,17 @@ running frontier job to `cancelled`. A terminal job is returned unchanged. The w
 point's totals/constraints/lambdas into a full result summary
 (`_frontier_point_result_dict`, which applies `frontier_point_summary` to the base result, so it
 equals the point's entry in `point_summaries`) without re-solving; for a ratebook job with
-`include_ratebook_tables` requested, it additionally *materialises* that point by re-running the
-already-built solver against the point's lambdas
-(`OptimiserFrontierService.materialise_ratebook_point`) —
-cached if the job's current result already matches that point's lambdas exactly, otherwise
-re-solved and the job updated atomically (409 if the job's state changed concurrently).
+`include_ratebook_tables` requested, it additionally *materialises* that point
+(`OptimiserFrontierService.materialise_ratebook_point`) by attaching the factor tables the
+library's frontier kept for it (`frontier_factor_tables[point_index]`) to the point's row
+summary. It never re-solves and needs no solver, grid or factor contexts: price-contour 0.5
+reports every ratebook frontier row's totals as the canonical evaluation of that point's
+tables, so the row's totals, λ, convergence and clamp rate are the point's exactly, and
+`cd_iterations` is the row's `iterations` (the ratebook frontier's CD pass count). (Re-solving
+with the row's λ, as haute did before 0.5, could land on different tables than the row the user
+picked.) The result is cached when the job's current result already matches that point's
+lambdas exactly, otherwise the job is updated atomically (409 if its state changed
+concurrently). Missing or misaligned `frontier_factor_tables` is a `500`, never a re-solve.
 
 ### Frontier point summaries
 
@@ -475,16 +557,18 @@ fallback. Neither route reads, touches or clears heavy job state for the anchor,
 clears any heavy state afterwards. The anchor resolves to
 `_summary_solve_result(_base_result_for_frontier(job))` — the lightweight completion summary,
 which carries lambdas, totals, baselines, `converged`, `iterations` (online), `cd_iterations`,
-`clamp_rate`, `factor_tables` and `factor_dtypes` (ratebook) — and its MLflow metrics, params and
+`clamp_rate`, `factor_tables`, `factor_dtypes` and `combined_factor_bounds` (ratebook) — and its
+MLflow metrics, params and
 artifacts come from the job's `publish_summary` (a `400` telling the user to re-run the solve
 when it is missing). A frontier point resolves through
 `OptimiserFrontierService.solve_result_for_selected_point`: online points from their stored
 summaries, ratebook points from the cached materialised result or, when not cached, by
-materialising through the retained runtime (its existing "re-run the solve" `400` when the runtime
-is gone). The routes build a shared JSON payload via `_build_artifact_payload`
+materialising from the job's `frontier_factor_tables` (no runtime state needed). The routes build a shared JSON payload via `_build_artifact_payload`
 (lambdas, objective/constraint totals, baseline totals, convergence/iteration counts,
 column-name config, frontier-selection provenance for a point target only, and for ratebook the
-factor tables plus ordered dtype descriptors taken from the target's own result), plus the audit
+factor tables plus ordered dtype descriptors taken from the target's own result, `clamp_rate`,
+and the solve's `combined_factor_bounds` — a frontier point shares its solve's grid and so its
+collar), plus the audit
 trail: `solver_settings` (from the solve-time config snapshot with the solver defaults applied:
 `max_iter`, `tolerance`, `chunk_size`, and `record_history` for online or `max_cd_iterations` and
 `cd_tolerance` for ratebook; `frontier_enabled`, `frontier_steps` and `frontier_ranges` when the
@@ -495,8 +579,11 @@ anchor), `input_summary` (`n_quotes`/`n_steps` from the result plus the job's
 the node configuration changed since the solve). The existing `constraints` key stays the
 configured constraints, because `OPTIMISER_APPLY` reads it. The payload is validated with
 `_validate_artifact_payload` (rejects a missing lambda
-mapping, a missing total objective, missing or malformed ratebook factor-table/dtype metadata, or
-*any* non-finite float anywhere in the payload, naming up to 5 offending JSON paths), then either
+mapping, a missing total objective, missing or malformed ratebook factor-table/dtype metadata, a
+ratebook `clamp_rate` that is not a finite number, ratebook `combined_factor_bounds` that are not
+exactly `{"min", "max"}` finite numbers with `min <= max` (there is no legacy reader: a ratebook
+artifact without them is invalid), or *any* non-finite float anywhere in the payload, naming up
+to 5 offending JSON paths), then either
 atomically write it to disk
 (`atomic_write_text`, with `allow_nan=False` as a defence-in-depth backstop behind the explicit
 validation) or attach it as an MLflow run artifact alongside metrics/params and (if present) a
@@ -646,6 +733,23 @@ exposed depends on the artifact's constraints (`has_ratio_constraint`):
   scoring for that read — and applies to the input filtered to those quotes, so upstream
   scoring runs only for their scenario rows. Without a limit the apply reads every row.
 
+### Runtime ratebook apply (`_apply_ratebook` in `src/haute/_builders.py`)
+
+`_apply_ratebook` is the one ratebook apply: the executor, generated code (`_node_apply.py`) and
+the deploy scorer all reach it through `_dispatch_apply`. It first parses the artifact's
+`combined_factor_bounds` with `parse_combined_factor_bounds` (`src/haute/_ratebook_collar.py`),
+raising `CombinedFactorBoundsError` (a `ValueError`) when they are missing or malformed. Then,
+per factor table, it validates the dtype contract, joins the rates into
+`{table}_optimised_factor` and fills an unseen level with the neutral `1.0` (after the miss is
+counted and logged). The per-factor columns are never clamped. Their product becomes
+`optimised_factor`, which is then clipped to `[min, max]`: the order is neutral fill → product →
+collar. A product inside the collar, or exactly on an edge, is unchanged bit for bit; a product
+past an edge deploys at that edge, which is the grid-end step the solver evaluated for it. This
+is the Q17 decision in [optimiser validation](../roadmap/optimiser-validation.md): the deployed
+factor never leaves the range the solve scored. Inside the range the deployed factor is the
+unsnapped product; the solver evaluated the nearest grid step, so the two agree exactly only on
+grid values.
+
 ### Trace explainability (`src/haute/_optimiser_apply_explainability.py`)
 
 `explain_optimiser_apply_from_config(config, input_row, output_row, *, input_frames,
@@ -750,16 +854,20 @@ whether the table is a composite (joins on multiple columns, split via
 `normalise_rating_key` used at runtime; ties resolved by walking entries in *reverse* to mirror the engine's
 `unique(keep="last")` deduplication), applies the multiplicative neutral element `1.0` and marks
 the factor `unseen` if no entry matches (the engine's own loud-neutral miss-path behaviour, not
-an error), and accumulates a running product. The ladder is reconciled against the actual output
-column at the end; a mismatch raises `OptimiserApplyTraceError`. An artifact with no usable
+an error), and accumulates a running product. After the ladder it applies the artifact's
+`combined_factor_bounds` exactly as `_apply_ratebook` does and reports it as `collar`
+(`min`, `max`, `before` — the running product — `after` — the clamped value — and `applied`,
+true when the product lay outside the bounds). The clamped value is reconciled against the
+actual output column; a mismatch, or missing or malformed bounds, raises
+`OptimiserApplyTraceError`. An artifact with no usable
 factor-table entries also raises because an empty ladder has no value that can be reconciled.
 
 Every raised exception anywhere in this call graph is caught by
-`explain_optimiser_apply_from_config`'s outer `try`/`except` and converted to `_error_detail(...)`
-— an `ImportError` is specifically rewritten into an actionable
-"install the missing library" message (falling back to a generic phrasing if the import
-machinery didn't populate `exc.name`), everything else is logged with `exc_info=True` and
-returned as a generic `status: "error"` payload.
+`explain_optimiser_apply_from_config`'s outer `try`/`except`, logged with `exc_info=True` and
+converted to `_error_detail(...)`, a `status: "error"` payload carrying the exception type and
+message. An unusable `price-contour` install surfaces as the guard's own
+`PriceContourCompatibilityError` (see [The price-contour guard](#the-price-contour-guard)),
+whose message already names every problem and the remedy.
 
 ## Edge cases and invariants
 
@@ -906,8 +1014,8 @@ returned as a generic `status: "error"` payload.
   `OptimiserApplyTraceError` (a `RuntimeError`), for every domain failure (missing artifact
   source, missing/blank artifact or config column, unmatched input row, empty ratebook input
   frame, non-numeric/non-finite factor value, output-column reconciliation mismatch). The public
-  entry point catches `ImportError` separately (to give an actionable "install the missing
-  library" message) and `Exception` generally, converting both into the `status: "error"`
+  entry point catches `Exception` generally (including the guard's
+  `PriceContourCompatibilityError`), converting it into the `status: "error"`
   payload described above — no exception from this module is ever allowed to reach the tracing
   subsystem's caller.
 - **Artifact-load failures never leak library internals.** Every wrapped artifact-load
@@ -1017,7 +1125,8 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
   errors, reconciliation-mismatch and missing-output-column error surfacing, explicit-empty
   config-value rejection (`optimised_value_column`, artifact `quote_id`, artifact `mode`),
   Polars-type-mismatch fallback to the Python match path, duplicate-level "last wins" agreement
-  with the runtime engine, and the `ImportError`-without-`exc.name` safe-rendering case. Limited
+  with the runtime engine, and an incompatible `price-contour` install surfacing the guard's
+  diagnosis. Limited
   traces pin a `max_pct` ratio explanation linearised against the whole portfolio, a custom
   quote-id column explained from exactly the clicked quote's rows, and
   `test_trace_correlates_only_the_input_an_apply_reads`.

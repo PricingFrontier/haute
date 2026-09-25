@@ -163,6 +163,7 @@ def test_build_artifact_payload_matches_ratebook_golden_snapshot(
         iterations=11,
         cd_iterations=4,
         clamp_rate=0.05,
+        combined_factor_bounds={"min": 0.9, "max": 1.1},
     )
 
     payload = _build_artifact_payload(job, solve_result, version_override="rb_v1")

@@ -493,6 +493,8 @@ def test_save_reraises_http_exception_from_artifact_build(
                 "lambdas": {},
                 "total_objective": 1.0,
                 "constraints": {},
+                "baseline_objective": 0.0,
+                "baseline_constraints": {},
                 "converged": True,
             },
             "config": {"mode": "online"},
@@ -904,81 +906,6 @@ def test_apply_returns_400_when_quote_grid_value_is_none_after_touch(
 # ---------------------------------------------------------------------------
 
 
-def test_apply_falls_back_to_in_memory_when_persistence_unavailable(
-    client,
-    clean_job_store,
-):
-    """When ``_persist_apply_result_artifact`` returns None (e.g. artifact
-    root is unwritable), the apply must still return the correct preview
-    from the in-memory dataframe — without crashing or persisting a partial
-    artifact handle."""
-    persisted_df = pl.DataFrame({"quote_id": ["q1"], "optimal_scenario_value": [0.99]})
-    apply_result = SimpleNamespace(
-        total_objective=130.0,
-        baseline_objective=90.0,
-        total_constraints={"volume": 0.93},
-        baseline_constraints={"volume": 0.85},
-        lambdas={"volume": 0.55},
-        converged=True,
-        dataframe=persisted_df,
-    )
-    quote_grid = MagicMock()
-    seed_job(
-        clean_job_store,
-        "apply_no_persist",
-        {
-            "status": "completed",
-            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
-            "frontier_data": {
-                "status": "ok",
-                "points": [
-                    {
-                        "total_objective": 130.0,
-                        "total_volume": 0.93,
-                        "lambda_volume": 0.55,
-                        "threshold_volume": 0.93,
-                        "converged": True,
-                    }
-                ],
-                "n_points": 1,
-                "constraint_names": ["volume"],
-            },
-            "result": {
-                "mode": "online",
-                "total_objective": 95.0,
-                "baseline_objective": 90.0,
-                "constraints": {"volume": 0.85},
-                "baseline_constraints": {"volume": 0.85},
-                "lambdas": {"volume": 0.0},
-                "converged": True,
-            },
-            "quote_grid": quote_grid,
-            "artifact_handles": {},
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
-    )
-
-    with (
-        patch("price_contour.apply_from_grid", return_value=apply_result),
-        patch("haute.routes._optimiser_frontier._persist_apply_result_artifact", return_value=None),
-    ):
-        resp = client.post(
-            "/api/optimiser/apply",
-            json={"job_id": "apply_no_persist", "point_index": 0},
-        )
-
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["from_artifact"] is False
-    assert data["row_count"] == persisted_df.height
-    response_preview = pl.DataFrame(data["preview"])
-    assert response_preview.equals(persisted_df)
-    # No frontier_apply_result handle was registered (persistence failed).
-    job = clean_job_store.require_job("apply_no_persist")
-    assert "frontier_apply_result:0" not in job.get("artifact_handles", {})
-
-
 # ---------------------------------------------------------------------------
 # /apply — atomic_update race with successful persistence triggers cleanup
 # ---------------------------------------------------------------------------
@@ -1094,6 +1021,7 @@ def test_mlflow_log_ratebook_anchor_uses_its_own_factor_tables(
         "cd_iterations": 3,
         "clamp_rate": 0.02,
         "factor_tables": anchor_tables,
+        "combined_factor_bounds": {"min": 0.9, "max": 1.1},
         "factor_dtypes": factor_dtypes,
     }
     seed_job(
@@ -1135,6 +1063,7 @@ def test_mlflow_log_ratebook_anchor_uses_its_own_factor_tables(
     assert payload["factor_tables"] == anchor_tables
     assert payload["factor_dtypes"] == factor_dtypes
     assert payload["clamp_rate"] == 0.02
+    assert payload["combined_factor_bounds"] == {"min": 0.9, "max": 1.1}
     assert payload["cd_iterations"] == 3
     assert payload["solver_settings"]["max_cd_iterations"] == 10
     params = store.get_run(resp.json()["run_id"]).data.params
@@ -1146,80 +1075,220 @@ def test_mlflow_log_ratebook_anchor_uses_its_own_factor_tables(
 # ---------------------------------------------------------------------------
 
 
+_RATEBOOK_POINT_TABLES = {"region": {"North": 1.0}}
+_RATEBOOK_FACTOR_DTYPES = {"region": [{"column": "region", "dtype": {"kind": "String"}}]}
+
+
+def _ratebook_materialise_job(**overrides: object) -> dict:
+    """A completed ratebook job with one retained frontier point and its tables.
+
+    Carries no solver, quote grid or factor contexts: materialising a
+    ratebook point reads the tables the frontier kept, never re-solving.
+    """
+    job = {
+        "status": "completed",
+        "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
+        "frontier_data": {
+            "status": "ok",
+            "points": [
+                {
+                    "total_objective": 130.0,
+                    "total_volume": 0.93,
+                    "lambda_volume": 0.55,
+                    "threshold_volume": 0.93,
+                    "iterations": 4,
+                    "clamp_rate": 0.01,
+                    "converged": True,
+                }
+            ],
+            "n_points": 1,
+            "constraint_names": ["volume"],
+        },
+        "frontier_factor_tables": [_RATEBOOK_POINT_TABLES],
+        "result": {
+            "mode": "ratebook",
+            "total_objective": 95.0,
+            "baseline_objective": 90.0,
+            "constraints": {"volume": 0.85},
+            "baseline_constraints": {"volume": 0.85},
+            "lambdas": {"volume": 0.0},
+            "converged": True,
+        },
+        "factor_columns_valid": [["region"]],
+        "factor_level_counts": {"region": {"North": 1}},
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
+        "factor_dtypes": _RATEBOOK_FACTOR_DTYPES,
+        "artifact_handles": {},
+        "created_at": time.time(),
+        "completed_at": time.time(),
+    }
+    job.update(overrides)
+    return job
+
+
+def _select_ratebook_point(client, job_id: str):
+    return client.post(
+        "/api/optimiser/frontier/select",
+        json={"job_id": job_id, "point_index": 0, "include_ratebook_tables": True},
+    )
+
+
+def test_ratebook_materialise_reads_totals_and_tables_from_one_frontier(
+    client,
+    clean_job_store,
+    monkeypatch,
+):
+    """A recompute that publishes between the select route's first read and the
+    materialisation must not pair one point's totals with another's tables:
+    materialisation re-reads the row and its tables together under the parent
+    lock that recompute publishes under."""
+    import haute.routes._optimiser_frontier as frontier_module
+
+    seed_job(clean_job_store, "ratebook_recompute_race", _ratebook_materialise_job())
+    new_point = {
+        "total_objective": 240.0,
+        "total_volume": 1.02,
+        "lambda_volume": 0.3,
+        "threshold_volume": 1.0,
+        "iterations": 6,
+        "clamp_rate": 0.02,
+        "converged": True,
+    }
+    new_tables = {"region": {"North": 1.21}}
+    original = frontier_module._frontier_point_result_dict
+    recomputed = False
+
+    def recompute_after_first_read(job, point_index):
+        nonlocal recomputed
+        result = original(job, point_index)
+        if not recomputed:
+            recomputed = True
+            assert clean_job_store.atomic_update(
+                "ratebook_recompute_race",
+                {
+                    "frontier_data": {
+                        "status": "ok",
+                        "points": [new_point],
+                        "n_points": 1,
+                        "constraint_names": ["volume"],
+                    },
+                    "frontier_factor_tables": [new_tables],
+                },
+                expected_status="completed",
+            )
+        return result
+
+    monkeypatch.setattr(frontier_module, "_frontier_point_result_dict", recompute_after_first_read)
+    resp = _select_ratebook_point(client, "ratebook_recompute_race")
+
+    assert resp.status_code == 200, resp.text
+    selected = resp.json()
+    assert selected["total_objective"] == 240.0
+    assert selected["constraints"] == {"volume": 1.02}
+    assert selected["cd_iterations"] == 6
+    assert [row["optimal_scenario_value"] for row in selected["factor_tables"]["region"]] == [1.21]
+
+
+def test_ratebook_materialise_keeps_unswept_constraint_totals(client, clean_job_store):
+    """Point summaries list only the swept constraints; a materialised ratebook
+    point (which is what save and MLflow publish) carries the frontier row's
+    total for every configured constraint."""
+    job = _ratebook_materialise_job(
+        config={
+            "mode": "ratebook",
+            "constraints": {"volume": {"min": 0.9}, "loss": {"max": 25.0}},
+        }
+    )
+    job["frontier_data"]["points"][0].update(
+        {"total_loss": 20.0, "lambda_loss": 0.1, "threshold_loss": 25.0}
+    )
+    job["result"]["constraints"] = {"volume": 0.85, "loss": 21.0}
+    job["result"]["baseline_constraints"] = {"volume": 0.85, "loss": 21.0}
+    seed_job(clean_job_store, "ratebook_unswept", job)
+
+    resp = _select_ratebook_point(client, "ratebook_unswept")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["constraints"] == {"volume": 0.93, "loss": 20.0}
+    stored = clean_job_store.require_job("ratebook_unswept")["result"]
+    assert stored["constraints"] == {"volume": 0.93, "loss": 20.0}
+
+
+def test_ratebook_materialise_attaches_kept_tables_to_frontier_row_without_heavy_state(
+    client,
+    clean_job_store,
+):
+    """With no solver, grid or factor contexts on the job, a ratebook point
+    materialises from the frontier row and the tables the frontier kept."""
+    seed_job(clean_job_store, "ratebook_no_heavy", _ratebook_materialise_job())
+
+    resp = _select_ratebook_point(client, "ratebook_no_heavy")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["total_objective"] == 130.0
+    assert data["constraints"] == {"volume": 0.93}
+    assert data["lambdas"] == {"volume": 0.55}
+    assert data["converged"] is True
+    assert data["cd_iterations"] == 4
+    assert data["clamp_rate"] == 0.01
+    assert data["factor_tables"] == {
+        "region": [{"__factor_group__": "North", "optimal_scenario_value": 1.0, "quote_count": 1}]
+    }
+    assert data.get("warning") is None
+    stored = clean_job_store.require_job("ratebook_no_heavy")["result"]
+    assert stored["factor_tables"] == data["factor_tables"]
+    assert stored["factor_dtypes"] == _RATEBOOK_FACTOR_DTYPES
+
+
+@pytest.mark.parametrize(
+    "frontier_factor_tables",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param([_RATEBOOK_POINT_TABLES, _RATEBOOK_POINT_TABLES], id="misaligned"),
+    ],
+)
+def test_ratebook_materialise_rejects_missing_or_misaligned_frontier_factor_tables(
+    client,
+    clean_job_store,
+    frontier_factor_tables,
+):
+    """A ratebook point cannot be materialised without the tables the frontier
+    kept for it; a missing or misaligned list is a loud 500, never a re-solve."""
+    job = _ratebook_materialise_job()
+    if frontier_factor_tables is None:
+        del job["frontier_factor_tables"]
+    else:
+        job["frontier_factor_tables"] = frontier_factor_tables
+    seed_job(clean_job_store, "ratebook_no_tables", job)
+
+    resp = _select_ratebook_point(client, "ratebook_no_tables")
+
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == (
+        "Job frontier factor tables are missing or do not match the frontier points"
+    )
+    assert clean_job_store.require_job("ratebook_no_tables").get("selected_frontier_point") is None
+
+
 def test_ratebook_materialise_emits_non_converged_warning_in_response(
     client,
     clean_job_store,
 ):
-    """When the ratebook re-solve at a frontier point fails to converge,
-    the response and stored result must carry the standard warning so the
-    UI can show it.  Without this, non-convergence is silent."""
-    factor_contexts = SimpleNamespace(n_quotes=1, factor_specs=[["region"]])
-    solver = MagicMock()
-    # Solver returns a non-converged result for the frontier point.
-    solver.solve.return_value = SimpleNamespace(
-        total_objective=120.0,
-        baseline_objective=90.0,
-        total_constraints={"volume": 0.93},
-        baseline_constraints={"volume": 0.85},
-        lambdas={"volume": 0.55},
-        converged=False,
-        cd_iterations=1,
-        clamp_rate=0.0,
-        # Solver-side factor_tables are {factor: {level: scenario_value}}.
-        factor_tables={"region": {"North": 1.0}},
-    )
-    point = {
-        "total_objective": 120.0,
-        "total_volume": 0.93,
-        "lambda_volume": 0.55,
-        "threshold_volume": 0.93,
-        "converged": False,
-    }
-    seed_job(
-        clean_job_store,
-        "ratebook_warn",
-        {
-            "status": "completed",
-            "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
-            "frontier_data": {
-                "status": "ok",
-                "points": [point],
-                "n_points": 1,
-                "constraint_names": ["volume"],
-            },
-            "result": {
-                "mode": "ratebook",
-                "total_objective": 95.0,
-                "baseline_objective": 90.0,
-                "constraints": {"volume": 0.85},
-                "baseline_constraints": {"volume": 0.85},
-                "lambdas": {"volume": 0.0},
-                "converged": True,
-            },
-            "solver": solver,
-            "quote_grid": MagicMock(),
-            "ratebook_factor_contexts": factor_contexts,
-            "factor_columns_valid": [["region"]],
-            "factor_level_counts": {"region": {"North": 1}},
-            "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
-            "artifact_handles": {},
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
-    )
+    """When the frontier row at the selected point did not converge, the
+    response and stored result must carry the standard warning so the UI can
+    show it.  Without this, non-convergence is silent."""
+    job = _ratebook_materialise_job()
+    job["frontier_data"]["points"][0]["converged"] = False
+    seed_job(clean_job_store, "ratebook_warn", job)
 
-    resp = client.post(
-        "/api/optimiser/frontier/select",
-        json={
-            "job_id": "ratebook_warn",
-            "point_index": 0,
-            "include_ratebook_tables": True,
-        },
-    )
+    resp = _select_ratebook_point(client, "ratebook_warn")
 
     assert resp.status_code == 200
     data = resp.json()
     assert data["converged"] is False
+    assert data["cd_iterations"] == 4
+    assert data["factor_tables"]["region"][0]["optimal_scenario_value"] == 1.0
     assert data["warning"] is not None
     assert "did not converge" in data["warning"].lower()
     # The same warning is in the stored result (so subsequent reads see it).
@@ -1234,70 +1303,14 @@ def test_ratebook_materialise_rejects_missing_dtype_metadata(
     clean_job_store,
 ):
     """A persisted ratebook cannot be materialised without its dtype contract."""
-    factor_contexts = SimpleNamespace(n_quotes=1, factor_specs=[["region"]])
-    solver = MagicMock()
-    solver.solve.return_value = SimpleNamespace(
-        total_objective=120.0,
-        baseline_objective=90.0,
-        total_constraints={"volume": 0.93},
-        baseline_constraints={"volume": 0.85},
-        lambdas={"volume": 0.55},
-        converged=True,
-        cd_iterations=1,
-        clamp_rate=0.0,
-        factor_tables={"region": {"North": 1.0}},
-    )
-    point = {
-        "total_objective": 120.0,
-        "total_volume": 0.93,
-        "lambda_volume": 0.55,
-        "threshold_volume": 0.93,
-        "converged": True,
-    }
-    seed_job(
-        clean_job_store,
-        "ratebook_missing_dtypes",
-        {
-            "status": "completed",
-            "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
-            "frontier_data": {
-                "status": "ok",
-                "points": [point],
-                "n_points": 1,
-                "constraint_names": ["volume"],
-            },
-            "result": {
-                "mode": "ratebook",
-                "total_objective": 95.0,
-                "baseline_objective": 90.0,
-                "constraints": {"volume": 0.85},
-                "baseline_constraints": {"volume": 0.85},
-                "lambdas": {"volume": 0.0},
-                "converged": True,
-            },
-            "solver": solver,
-            "quote_grid": MagicMock(),
-            "ratebook_factor_contexts": factor_contexts,
-            "factor_columns_valid": [["region"]],
-            "factor_level_counts": {"region": {"North": 1}},
-            "artifact_handles": {},
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
-    )
+    job = _ratebook_materialise_job()
+    del job["factor_dtypes"]
+    seed_job(clean_job_store, "ratebook_missing_dtypes", job)
 
-    response = client.post(
-        "/api/optimiser/frontier/select",
-        json={
-            "job_id": "ratebook_missing_dtypes",
-            "point_index": 0,
-            "include_ratebook_tables": True,
-        },
-    )
+    response = _select_ratebook_point(client, "ratebook_missing_dtypes")
 
     assert response.status_code == 500
     assert response.json()["detail"] == "Ratebook factor dtype metadata is missing"
-    solver.solve.assert_called_once()
 
 
 def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe_required(
@@ -1329,6 +1342,7 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
         "converged": True,
         "selected_frontier_point": 0,
         "factor_tables": factor_tables,
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": factor_dtypes,
     }
     seed_job(
@@ -1359,6 +1373,7 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
             "ratebook_factor_contexts": factor_contexts,
             "factor_columns_valid": [["region"]],
             "factor_level_counts": {"region": {"North": 1}},
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": factor_dtypes,
             "artifact_handles": {},
             "created_at": time.time(),
@@ -1386,71 +1401,13 @@ def test_ratebook_materialise_returns_409_on_atomic_update_race(
     client,
     clean_job_store,
 ):
-    """Concurrent state change between solve and write surfaces as 409, not
-    a generic 500.  The user gets a clear "re-run the solve" instruction."""
-    factor_contexts = SimpleNamespace(n_quotes=1, factor_specs=[["region"]])
-    solver = MagicMock()
-    solver.solve.return_value = SimpleNamespace(
-        total_objective=130.0,
-        baseline_objective=90.0,
-        total_constraints={"volume": 0.93},
-        baseline_constraints={"volume": 0.85},
-        lambdas={"volume": 0.55},
-        converged=True,
-        cd_iterations=1,
-        clamp_rate=0.0,
-        # Solver-side factor_tables are {factor: {level: scenario_value}}.
-        factor_tables={"region": {"North": 1.0}},
-    )
-    point = {
-        "total_objective": 130.0,
-        "total_volume": 0.93,
-        "lambda_volume": 0.55,
-        "threshold_volume": 0.93,
-        "converged": True,
-    }
-    seed_job(
-        clean_job_store,
-        "ratebook_race",
-        {
-            "status": "completed",
-            "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
-            "frontier_data": {
-                "status": "ok",
-                "points": [point],
-                "n_points": 1,
-                "constraint_names": ["volume"],
-            },
-            "result": {
-                "mode": "ratebook",
-                "total_objective": 95.0,
-                "baseline_objective": 90.0,
-                "constraints": {"volume": 0.85},
-                "baseline_constraints": {"volume": 0.85},
-                "lambdas": {"volume": 0.0},
-                "converged": True,
-            },
-            "solver": solver,
-            "quote_grid": MagicMock(),
-            "ratebook_factor_contexts": factor_contexts,
-            "factor_columns_valid": [["region"]],
-            "factor_level_counts": {"region": {"North": 1}},
-            "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
-            "artifact_handles": {},
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
-    )
+    """Concurrent state change between reading the point and writing it
+    surfaces as 409, not a generic 500.  The user gets a clear "re-run the
+    solve" instruction."""
+    seed_job(clean_job_store, "ratebook_race", _ratebook_materialise_job())
 
     with patch.object(clean_job_store, "atomic_update", return_value=None):
-        resp = client.post(
-            "/api/optimiser/frontier/select",
-            json={
-                "job_id": "ratebook_race",
-                "point_index": 0,
-                "include_ratebook_tables": True,
-            },
-        )
+        resp = _select_ratebook_point(client, "ratebook_race")
 
     assert resp.status_code == 409
     detail = resp.json()["detail"]
@@ -1462,125 +1419,73 @@ def test_ratebook_runtime_state_or_raise_rejects_partial_heavy_objects(
     client,
     clean_job_store,
 ):
-    """Touch may report success but the underlying values can still be
-    None under a tight TTL race; the explicit check at line 637 is what
+    """A ratebook frontier recompute needs the solver and quote grid.  Touch
+    may report success but the underlying values can still be None under a
+    tight TTL race; the explicit check in ``ratebook_runtime_state_or_raise``
     catches that and surfaces a 400 rather than an AttributeError 500.
     """
     seed_job(
         clean_job_store,
         "ratebook_partial",
-        {
-            "status": "completed",
-            "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
-            "frontier_data": {
-                "status": "ok",
-                "points": [
-                    {
-                        "total_objective": 130.0,
-                        "total_volume": 0.93,
-                        "lambda_volume": 0.55,
-                        "threshold_volume": 0.93,
-                        "converged": True,
-                    }
-                ],
-                "n_points": 1,
-                "constraint_names": ["volume"],
-            },
-            "result": {
-                "mode": "ratebook",
-                "total_objective": 95.0,
-                "baseline_objective": 90.0,
-                "constraints": {"volume": 0.85},
-                "baseline_constraints": {"volume": 0.85},
-                "lambdas": {"volume": 0.0},
-                "converged": True,
-            },
+        _ratebook_materialise_job(
             # Keys present, values None — the race window.
-            "solver": None,
-            "quote_grid": None,
-            "factors_df": None,
-            "factor_columns_valid": [["region"]],
-            "artifact_handles": {},
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
+            solver=None,
+            quote_grid=None,
+            factors_df=None,
+        ),
     )
 
     with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
         resp = client.post(
-            "/api/optimiser/frontier/select",
-            json={
-                "job_id": "ratebook_partial",
-                "point_index": 0,
-                "include_ratebook_tables": True,
-            },
+            "/api/optimiser/frontier",
+            json={"job_id": "ratebook_partial", "threshold_ranges": {"volume": [0.85, 0.95]}},
         )
 
     assert resp.status_code == 400
     assert "ratebook runtime state is not available" in resp.json()["detail"].lower()
 
 
+@pytest.mark.parametrize(
+    "request_route",
+    [pytest.param("select", id="materialise"), pytest.param("frontier", id="recompute")],
+)
 def test_ratebook_runtime_state_rejects_invalid_factor_columns_metadata(
     client,
     clean_job_store,
+    request_route,
 ):
     """If ``factor_columns_valid`` is malformed (e.g. a list containing
-    non-string entries), the materialise path must surface a 500 with a
-    typed message — not blow up later inside ``solver.solve``."""
-    factors_df = pl.DataFrame({"region": ["North"]})
+    non-string entries), both the materialise path and the recompute path
+    must surface a 500 with a typed message — not blow up later inside the
+    solver."""
     solver = MagicMock()  # Must NOT be called: validation rejects first.
     seed_job(
         clean_job_store,
         "ratebook_bad_factors",
-        {
-            "status": "completed",
-            "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
-            "frontier_data": {
-                "status": "ok",
-                "points": [
-                    {
-                        "total_objective": 130.0,
-                        "total_volume": 0.93,
-                        "lambda_volume": 0.55,
-                        "threshold_volume": 0.93,
-                        "converged": True,
-                    }
-                ],
-                "n_points": 1,
-                "constraint_names": ["volume"],
-            },
-            "result": {
-                "mode": "ratebook",
-                "total_objective": 95.0,
-                "baseline_objective": 90.0,
-                "constraints": {"volume": 0.85},
-                "baseline_constraints": {"volume": 0.85},
-                "lambdas": {"volume": 0.0},
-                "converged": True,
-            },
-            "solver": solver,
-            "quote_grid": MagicMock(),
-            "factors_df": factors_df,
+        _ratebook_materialise_job(
+            solver=solver,
+            quote_grid=MagicMock(),
+            ratebook_factor_contexts=SimpleNamespace(n_quotes=1, factor_specs=[["region"]]),
             # Malformed: list-of-list-of-string is required.
-            "factor_columns_valid": [[42]],
-            "artifact_handles": {},
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
+            factor_columns_valid=[[42]],
+        ),
     )
 
-    resp = client.post(
-        "/api/optimiser/frontier/select",
-        json={
-            "job_id": "ratebook_bad_factors",
-            "point_index": 0,
-            "include_ratebook_tables": True,
-        },
-    )
+    if request_route == "select":
+        resp = _select_ratebook_point(client, "ratebook_bad_factors")
+    else:
+        resp = client.post(
+            "/api/optimiser/frontier",
+            json={
+                "job_id": "ratebook_bad_factors",
+                "threshold_ranges": {"volume": [0.85, 0.95]},
+            },
+        )
 
     assert resp.status_code == 500
-    assert "factor column metadata" in resp.json()["detail"].lower()
+    assert resp.json()["detail"] == "Ratebook factor column metadata is invalid"
     solver.solve.assert_not_called()
+    solver.frontier.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -3196,6 +3196,17 @@ class OptimiserFrontierPointSummary(BaseModel):
     frontier_error: str | None
 
 
+class OptimiserCombinedFactorBounds(BaseModel):
+    """The scenario range a ratebook solve scored: the deployed factor's collar.
+
+    ``min``/``max`` are the solved grid's first and last scenario values
+    (Float32 widened). Every apply clips the combined ratebook factor to them.
+    """
+
+    min: float
+    max: float
+
+
 class OptimiserSolveResult(BaseModel):
     mode: str | None = None
     total_objective: float
@@ -3214,6 +3225,8 @@ class OptimiserSolveResult(BaseModel):
     scenario_value_stats: OptimiserScenarioValueStats | None = None
     scenario_value_histogram: OptimiserScenarioValueHistogram | None = None
     clamp_rate: float | None = None
+    # Ratebook only; ``None`` for online solves.
+    combined_factor_bounds: OptimiserCombinedFactorBounds | None = None
     frontier: OptimiserFrontierResponse | None = None
     frontier_error: str | None = None
     selected_frontier_point: int | None = None
@@ -3271,6 +3284,8 @@ class OptimiserFrontierSelectResponse(BaseModel):
     scenario_value_stats: OptimiserScenarioValueStats | None = None
     scenario_value_histogram: OptimiserScenarioValueHistogram | None = None
     clamp_rate: float | None = None
+    # Ratebook only: the solve's collar, shared by every frontier point.
+    combined_factor_bounds: OptimiserCombinedFactorBounds | None = None
     error: str | None = None
 
 

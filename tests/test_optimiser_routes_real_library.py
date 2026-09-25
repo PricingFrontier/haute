@@ -71,6 +71,10 @@ _TERMINAL = {
 }
 
 
+# ``_scored_frame``'s default grid, np.linspace(0.8, 1.2, 3) in Float32.
+_DEFAULT_GRID_BOUNDS = {"min": float(np.float32(0.8)), "max": float(np.float32(1.2))}
+
+
 def _poll_until_done(client: TestClient, job_id: str, timeout: float = 60) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -88,6 +92,7 @@ def _scored_frame(
     n_steps: int = 3,
     *,
     extra_constraint_columns: bool = False,
+    scenario_values: np.ndarray | None = None,
 ) -> pl.DataFrame:
     """Long-format scored frame in the shape price-contour expects."""
     rng = np.random.RandomState(7)
@@ -96,7 +101,8 @@ def _scored_frame(
     mults: list[float] = []
     incomes: list[float] = []
     volumes: list[float] = []
-    scenario_values = np.linspace(0.8, 1.2, n_steps).astype(np.float32)
+    if scenario_values is None:
+        scenario_values = np.linspace(0.8, 1.2, n_steps).astype(np.float32)
     for q in range(n_quotes):
         base_income = float(rng.uniform(100, 1000))
         base_volume = float(rng.uniform(0.5, 1.5))
@@ -164,25 +170,37 @@ def _online_graph(data_path: str, config: dict | None = None) -> dict:
     return graph.model_dump()
 
 
-def _ratebook_fixture_paths(tmp_path, n_quotes: int = 9, n_steps: int = 3) -> tuple[str, str]:
+def _ratebook_fixture_paths(
+    tmp_path,
+    n_quotes: int = 9,
+    n_steps: int = 3,
+    *,
+    scenario_values: np.ndarray | None = None,
+    with_age: bool = False,
+) -> tuple[str, str]:
     """Write scored + per-quote banding parquets for a real ratebook solve."""
-    scored = _scored_frame(n_quotes=n_quotes, n_steps=n_steps)
+    scored = _scored_frame(n_quotes=n_quotes, n_steps=n_steps, scenario_values=scenario_values)
     scored_path = tmp_path / "rb_scored.parquet"
     scored.write_parquet(scored_path)
 
     regions = ["North", "South", "East"]
-    banding = pl.DataFrame(
-        {
-            "quote_id": [f"q_{q:04d}" for q in range(n_quotes)],
-            "region": [regions[q % len(regions)] for q in range(n_quotes)],
-        }
-    )
+    banding_columns: dict[str, list[str]] = {
+        "quote_id": [f"q_{q:04d}" for q in range(n_quotes)],
+        "region": [regions[q % len(regions)] for q in range(n_quotes)],
+    }
+    if with_age:
+        banding_columns["age"] = [("young", "old")[(q // 3) % 2] for q in range(n_quotes)]
+    banding = pl.DataFrame(banding_columns)
     banding_path = tmp_path / "rb_banding.parquet"
     banding.write_parquet(banding_path)
     return str(scored_path), str(banding_path)
 
 
-def _ratebook_graph(scored_path: str, banding_path: str) -> dict:
+def _ratebook_graph(
+    scored_path: str,
+    banding_path: str,
+    factor_columns: list[list[str]] | None = None,
+) -> dict:
     graph = make_graph(
         {
             "nodes": [
@@ -218,7 +236,7 @@ def _ratebook_graph(scored_path: str, banding_path: str) -> dict:
                             "tolerance": 1e-4,
                             "max_cd_iterations": 3,
                             "cd_tolerance": 1e-3,
-                            "factor_columns": [["region"]],
+                            "factor_columns": factor_columns or [["region"]],
                             "banding_source": "banding",
                             "data_input": "source",
                         },
@@ -251,11 +269,13 @@ def _solve_completed(client: TestClient, graph: dict) -> str:
 class TestRealLibraryShapeContracts:
     """Pin the real price-contour result shapes the routes consume."""
 
-    def test_ratebook_result_has_no_per_quote_dataframe(self) -> None:
-        """The real ``RatebookResult`` carries factor tables and aggregates
-        only — no ``dataframe`` and no ``iterations``.  The apply/detail
-        route logic must never assume otherwise."""
-        from price_contour import RatebookOptimiser
+    def test_ratebook_result_pins_the_0_5_consumer_contract(self) -> None:
+        """The real ``RatebookResult`` (price-contour 0.5): factor tables,
+        aggregates from the canonical evaluation, and a per-quote
+        ``quote_results`` frame — never an online-style ``dataframe``."""
+        from dataclasses import fields
+
+        import price_contour as pc
 
         df = _scored_frame(n_quotes=6, n_steps=3)
         factors = pl.DataFrame(
@@ -264,7 +284,7 @@ class TestRealLibraryShapeContracts:
                 "region": ["N", "S", "N", "S", "N", "S"],
             }
         )
-        solver = RatebookOptimiser(
+        solver = pc.RatebookOptimiser(
             objective="expected_income",
             constraints={"volume": {"min": 0.90}},
             factor_columns=[["region"]],
@@ -273,12 +293,9 @@ class TestRealLibraryShapeContracts:
         )
         result = solver.solve(df, factors)
 
-        assert not hasattr(result, "dataframe"), (
-            "RatebookResult grew a .dataframe attribute — the /apply route's "
-            "ratebook 422 gate can now be revisited."
-        )
+        assert not hasattr(result, "dataframe")
         assert not hasattr(result, "iterations")
-        assert set(vars(result).keys()) == {
+        assert [f.name for f in fields(result) if not f.name.startswith("_")] == [
             "factor_tables",
             "lambdas",
             "total_objective",
@@ -288,10 +305,12 @@ class TestRealLibraryShapeContracts:
             "cd_iterations",
             "converged",
             "clamp_rate",
-            "per_factor_results",
-        }
-        assert isinstance(result.factor_tables, dict)
-        assert set(result.factor_tables) == {"region"}
+        ]
+        assert dict(result.quote_results.schema) == pc.quote_results_schema(["volume"])
+        assert result.quote_results.height == 6
+        assert result.constraint_bounds == {"volume": 0.90}
+        assert isinstance(result.n_quotes_clamped_low, int)
+        assert isinstance(result.per_factor_results[0], pc.PerFactorRecord)
         assert set(result.factor_tables["region"]) == {"N", "S"}
         assert isinstance(result.cd_iterations, int)
         assert isinstance(result.clamp_rate, float)
@@ -444,6 +463,8 @@ class TestRatebookApplyDetailContract:
             assert row["quote_count"] == 3
         assert isinstance(select_resp.json()["cd_iterations"], int)
         assert isinstance(select_resp.json()["clamp_rate"], float)
+        # A frontier point shares its solve's grid, so its collar is the solve's.
+        assert selected["combined_factor_bounds"] == _DEFAULT_GRID_BOUNDS
 
         out_path = tmp_path / "rb_selected.json"
         save_resp = client.post(
@@ -470,6 +491,68 @@ class TestRatebookApplyDetailContract:
         }
         saved_rows = saved["factor_tables"]["region"]
         assert {row["__factor_group__"] for row in saved_rows} == {"North", "South", "East"}
+        assert saved["combined_factor_bounds"] == _DEFAULT_GRID_BOUNDS
+
+    def test_selected_point_is_its_frontier_row_exactly_without_resolving(
+        self,
+        client,
+        tmp_path,
+        clean_job_store,
+        monkeypatch,
+    ):
+        """A ratebook frontier point is materialised from the factor tables the
+        frontier kept for it (price-contour 0.5), not by re-solving: selecting
+        works with every heavy object gone and ``solve`` forbidden, the totals
+        are the frontier row's exactly, and the tables reproduce them through
+        the library's canonical ``evaluate``."""
+        import price_contour as pc
+
+        scored_path, banding_path = _ratebook_fixture_paths(tmp_path, with_age=True)
+        job_id = _solve_completed(
+            client, _ratebook_graph(scored_path, banding_path, [["region"], ["age"]])
+        )
+        frontier_status = run_frontier_and_wait(
+            client,
+            {
+                "job_id": job_id,
+                "threshold_ranges": {"volume": [4.0, 6.0]},
+                "n_points_per_dim": 3,
+            },
+        )
+        assert frontier_status["status"] == "completed", frontier_status.get("message", "")
+        points = frontier_status["result"]["points"]
+        assert len(points) == 3
+
+        clean_job_store.clear_result_data(job_id)
+
+        def _no_resolve(*_args, **_kwargs):
+            raise AssertionError("frontier point selection must not re-solve")
+
+        monkeypatch.setattr(pc.RatebookOptimiser, "solve", _no_resolve)
+
+        scored = pl.read_parquet(scored_path)
+        banding = pl.read_parquet(banding_path)
+        evaluator = pc.RatebookOptimiser(
+            objective="expected_income",
+            constraints={"volume": {"min": 0.90}},
+            factor_columns=[["region"], ["age"]],
+        )
+        for index, point in enumerate(points):
+            resp = client.post(
+                "/api/optimiser/frontier/select",
+                json={"job_id": job_id, "point_index": index, "include_ratebook_tables": True},
+            )
+            assert resp.status_code == 200, resp.text
+            selected = resp.json()
+            assert selected["total_objective"] == point["total_objective"]
+            assert selected["constraints"] == {"volume": point["total_volume"]}
+            tables = {
+                name: {row["__factor_group__"]: row["optimal_scenario_value"] for row in rows}
+                for name, rows in selected["factor_tables"].items()
+            }
+            evaluation = evaluator.evaluate(scored, banding, tables)
+            assert evaluation.total_objective == point["total_objective"]
+            assert evaluation.total_constraints == {"volume": point["total_volume"]}
 
     def test_save_without_point_pins_real_artifact_shape(self, client, tmp_path):
         scored_path, banding_path = _ratebook_fixture_paths(tmp_path)
@@ -486,6 +569,7 @@ class TestRatebookApplyDetailContract:
         assert isinstance(saved["cd_iterations"], int)
         assert saved["iterations"] is None
         assert isinstance(saved["clamp_rate"], float)
+        assert saved["combined_factor_bounds"] == _DEFAULT_GRID_BOUNDS
         assert saved["factor_dtypes"] == {
             "region": [{"column": "region", "dtype": {"kind": "String"}}]
         }
@@ -493,6 +577,87 @@ class TestRatebookApplyDetailContract:
         assert {row["__factor_group__"] for row in rows} == {"North", "South", "East"}
         for row in rows:
             assert set(row) == {"__factor_group__", "optimal_scenario_value", "quote_count"}
+
+
+@pytest.mark.usefixtures("_widen_sandbox_root")
+class TestRatebookCombinedFactorCollar:
+    """Q17: the deployed ratebook factor never leaves the grid range the solve scored."""
+
+    def test_the_collar_is_the_float32_grid_the_solver_scored(self, client, tmp_path):
+        grid = np.linspace(0.9, 1.1, 5, dtype=np.float32)
+        scored_path, banding_path = _ratebook_fixture_paths(
+            tmp_path, n_steps=5, scenario_values=grid
+        )
+        job_id = _solve_completed(client, _ratebook_graph(scored_path, banding_path))
+
+        status = _poll_until_done(client, job_id)
+        out_path = tmp_path / "rb_f32.json"
+        save_resp = client.post(
+            "/api/optimiser/save", json={"job_id": job_id, "output_path": str(out_path)}
+        )
+        assert save_resp.status_code == 200, save_resp.text
+        saved = json.loads(out_path.read_text())
+
+        expected = {"min": float(np.float32(0.9)), "max": float(np.float32(1.1))}
+        assert saved["combined_factor_bounds"] == expected
+        assert saved["combined_factor_bounds"]["max"] != 1.1
+        assert status["result"]["combined_factor_bounds"] == expected
+
+    def test_quotes_whose_product_leaves_the_grid_deploy_at_the_edge(self, client, tmp_path):
+        from haute._builders import _apply_ratebook
+
+        grid = np.array([0.95, 1.05], dtype=np.float32)
+        scored_path, banding_path = _ratebook_fixture_paths(
+            tmp_path, n_quotes=12, n_steps=2, scenario_values=grid, with_age=True
+        )
+        # North quotes earn more at the top of the grid, every other quote at the
+        # bottom, so the solve drives some rates to the far ends of the default
+        # candidate range (0.70-1.40) and their products leave the grid.
+        scored = pl.read_parquet(scored_path)
+        banding = pl.read_parquet(banding_path)
+        scored = (
+            scored.join(banding, on="quote_id")
+            .with_columns(
+                pl.when(pl.col("region") == "North")
+                .then(pl.col("scenario_value") * 100.0)
+                .otherwise((2.0 - pl.col("scenario_value")) * 100.0)
+                .cast(pl.Float32)
+                .alias("expected_income")
+            )
+            .drop("region", "age")
+        )
+        scored.write_parquet(scored_path)
+        job_id = _solve_completed(
+            client, _ratebook_graph(scored_path, banding_path, [["region"], ["age"]])
+        )
+        out_path = tmp_path / "rb_collar.json"
+        save_resp = client.post(
+            "/api/optimiser/save", json={"job_id": job_id, "output_path": str(out_path)}
+        )
+        assert save_resp.status_code == 200, save_resp.text
+        artifact = json.loads(out_path.read_text())
+        low, high = float(np.float32(0.95)), float(np.float32(1.05))
+        assert artifact["combined_factor_bounds"] == {"min": low, "max": high}
+
+        deployed = _apply_ratebook(
+            pl.read_parquet(banding_path).lazy(), artifact, "", "__v__"
+        ).collect()
+        products = [
+            region * age
+            for region, age in zip(
+                deployed["region_optimised_factor"], deployed["age_optimised_factor"]
+            )
+        ]
+
+        outside = [product for product in products if not low <= product <= high]
+        assert outside, "fixture must push some factor products past the grid"
+        for product, factor in zip(products, deployed["optimised_factor"]):
+            if product > high:
+                assert factor == high
+            elif product < low:
+                assert factor == low
+            else:
+                assert factor == product
 
 
 # ---------------------------------------------------------------------------

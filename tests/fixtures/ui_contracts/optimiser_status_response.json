@@ -63,6 +63,7 @@
       ]
     },
     "clamp_rate": null,
+    "combined_factor_bounds": null,
     "warning": null,
     "frontier_error": null,
     "selected_frontier_point": null,

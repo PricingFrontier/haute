@@ -374,11 +374,15 @@ most: a silent wrong answer here mis-prices real policies.
 MLflow stacks. A container image installs only what scoring imports (decided
 24 September 2026). Its Dockerfile installs a pinned scoring runtime — `polars`,
 `pyarrow`, `numpy`, `pydantic`, `fastapi`, `uvicorn[standard]`, `structlog`, `xxhash`,
-`psutil`, `orjson`, `msgspec`, `joblib` and `price-contour` — then `haute` itself with
+`psutil`, `orjson`, `msgspec`, `joblib`, `packaging` (the price-contour guard's version check)
+and `price-contour` — then `haute` itself with
 `--no-deps`. To that it adds each bundled artefact's model runtime by file suffix, and
 `mlflow` when the served graph has an optimiser apply that loads its artefact from MLflow
 at run time. Every package is pinned to the version installed in the deploying
-environment. A third-party package that the pipeline's own code imports, and that is
+environment. `price-contour` is pinned to the version haute's compatibility guard verified
+(see [optimiser](../optimiser/low-level.md#the-price-contour-guard)); a build from an editable
+checkout or a direct URL refuses to deploy with a `DeployError`, because the container
+reinstalls from the package index by version and would not run the same solver code. A third-party package that the pipeline's own code imports, and that is
 neither in the runtime nor detected from an artefact, is not installed. A test serves
 the container smoke example in process with every other `haute` dependency made
 unimportable, and the weekly container-smoke lane builds and serves the real image.

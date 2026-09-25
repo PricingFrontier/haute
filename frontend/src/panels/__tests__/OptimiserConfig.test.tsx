@@ -2814,7 +2814,7 @@ describe("OptimiserConfig", () => {
     })
 
     it("loads a ratebook frontier point's factor tables for the CSV", async () => {
-      const ratebook = makeSolveResult({ mode: "ratebook", factor_tables: {} })
+      const ratebook = makeSolveResult({ mode: "ratebook", factor_tables: {}, combined_factor_bounds: { min: 0.9, max: 1.1 } })
       const summary = (total_objective: number) => ({
         total_objective, constraints: {}, lambdas: {}, converged: true, iterations: null,
         cd_iterations: null, clamp_rate: null, history: null, scenario_value_stats: null,
@@ -2856,7 +2856,7 @@ describe("OptimiserConfig", () => {
     })
 
     function seedRatebookFrontier() {
-      const ratebook = makeSolveResult({ mode: "ratebook", factor_tables: {} })
+      const ratebook = makeSolveResult({ mode: "ratebook", factor_tables: {}, combined_factor_bounds: { min: 0.9, max: 1.1 } })
       const summary = (total_objective: number) => ({
         total_objective, constraints: {}, lambdas: {}, converged: true, iterations: null,
         cd_iterations: null, clamp_rate: null, history: null, scenario_value_stats: null,
@@ -3040,14 +3040,36 @@ describe("OptimiserConfig", () => {
       expect(screen.getByRole("button", { name: "Log to MLflow" })).toBeEnabled()
     })
 
-    it("offers the factor tables as CSV for a ratebook result", () => {
+    it("offers the factor tables as CSV for a ratebook result and states its collar", () => {
       const ratebook = makeSolveResult({
         mode: "ratebook",
         factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1 }] },
+        combined_factor_bounds: { min: 0.8999999761581421, max: 1.100000023841858 },
       })
       const config = seedSolve({ result: ratebook, originalResult: ratebook })
       renderConfig(makeProps({ config }))
       expect(screen.getByRole("button", { name: "Download factor tables (CSV)" })).toBeInTheDocument()
+      expect(screen.getByTestId("optimiser-combined-factor-collar")).toHaveTextContent(
+        "Combined factor collar [0.8999999761581421, 1.100000023841858] — apply it in your rating engine.",
+      )
+    })
+
+    it("refuses to offer a ratebook CSV without the solve's collar", () => {
+      const ratebook = makeSolveResult({
+        mode: "ratebook",
+        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1 }] },
+        combined_factor_bounds: null,
+      })
+      const config = seedSolve({ result: ratebook, originalResult: ratebook })
+      renderConfig(makeProps({ config }))
+      expect(screen.queryByRole("button", { name: "Download factor tables (CSV)" })).not.toBeInTheDocument()
+      expect(screen.getByRole("alert")).toHaveTextContent("no combined factor collar")
+    })
+
+    it("states no collar for an online result", () => {
+      const config = seedSolve()
+      renderConfig(makeProps({ config }))
+      expect(screen.queryByTestId("optimiser-combined-factor-collar")).not.toBeInTheDocument()
     })
   })
 

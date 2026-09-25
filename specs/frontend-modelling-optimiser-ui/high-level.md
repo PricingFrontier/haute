@@ -412,7 +412,12 @@ Pane ownership:
   save shows the written project-relative path and a **Use in Apply node** choice listing the
   graph's Apply Optimisation nodes, which points the chosen node's file source at that path. A
   successful log shows the run id and link, as modelling's Export pane does. A ratebook result
-  also offers **Download factor tables (CSV)**. Before any solve the section explains that there
+  also offers **Download factor tables (CSV)** and states its combined-factor collar,
+  "Combined factor collar [min, max] — apply it in your rating engine", from the solve's
+  `combined_factor_bounds` (every frontier point shares its solve's collar). The CSV repeats the
+  collar on every row as `combined_factor_min` and `combined_factor_max`, so the file stays one
+  rectangular table. A ratebook result without a collar shows an alert asking for a re-run and
+  offers no CSV. Before any solve the section explains that there
   is nothing to publish yet; while a solve runs the actions are disabled. When the configuration
   has changed since the solve, a warning says so, the actions read **Save outdated result** and
   **Log outdated result**, and the request records that the result was stale when published.

@@ -36,6 +36,14 @@ This loads the latest version of the `motor_pricing_optimiser` model from the re
 
 In **online mode**, the node adds the optimal price for each quote as a new column. In **ratebook mode**, it applies the optimised factor tables  - each quote receives the adjusted factors. The output includes all columns from the input plus the optimisation results.
 
+In ratebook mode each factor table adds a `<table>_optimised_factor` column, and their product is the combined `optimised_factor`. A level the tables have never seen rates `1.0`.
+
+### The combined factor collar
+
+The optimiser scored every quote at a scenario value inside the range of its scenario grid: when a quote's factor product fell outside that range, the solve priced it at the nearest end. The saved ratebook records that range as `combined_factor_bounds`, for example `{"min": 0.9, "max": 1.1}`, and the node clips `optimised_factor` to it. So a quote whose factors multiply to `1.2` deploys at `1.1`, the value the optimiser evaluated for it. The individual `<table>_optimised_factor` columns are not clipped.
+
+If you take the factor tables into another rating engine (the **Download factor tables (CSV)** button on the optimiser's Publish section), apply the same collar there: the CSV and the Publish section both state it. A ratebook artifact without `combined_factor_bounds` is rejected when it is applied.
+
 ## Source types
 
 | Source type | Use case | Required config |

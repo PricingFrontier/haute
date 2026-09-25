@@ -1148,6 +1148,12 @@ def _reduce_frontier_range_batches(
     # API-facing summaries/metadata while preserving the 24h status record.
 
 
+# price-contour names each constraint's outputs ``total_<name>``, ``lambda_<name>``
+# and ``optimal_<name>``; these names collide with its own ``total_objective``,
+# ``optimal_step`` and ``optimal_scenario_value`` columns.
+RESERVED_OPTIMISER_CONSTRAINT_NAMES = frozenset({"objective", "step", "scenario_value"})
+
+
 class OptimiserSolveService:
     """Orchestrates the full optimisation solve lifecycle.
 
@@ -3143,6 +3149,21 @@ class OptimiserSolveService:
                 status_code=400,
                 detail=f"Unsupported optimiser mode '{mode}'."
                 " Currently supported: online, ratebook.",
+            )
+
+        constraints = config.get("constraints") or {}
+        reserved = sorted(
+            name for name in constraints if name in RESERVED_OPTIMISER_CONSTRAINT_NAMES
+        )
+        if reserved:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Constraint name(s) {reserved} are reserved: price-contour already names "
+                    "its outputs total_objective, optimal_step and optimal_scenario_value, so "
+                    "a constraint called objective, step or scenario_value would overwrite "
+                    "one of them. Rename the constraint."
+                ),
             )
 
         if mode == "ratebook":

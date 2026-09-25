@@ -56,6 +56,7 @@ def _make_ratebook_artifact(version: str = "rb_v1") -> dict:
                 {"__factor_group__": "Manchester", "optimal_scenario_value": 0.98},
             ],
         },
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": {
             "region": [{"column": "region", "dtype": {"kind": "String"}}],
         },
@@ -871,6 +872,7 @@ def _make_composite_artifact(version: str = "rb_comp_v1") -> dict:
                 },
             ],
         },
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": {
             "channel:age_band": [
                 {"column": "channel", "dtype": {"kind": "String"}},
@@ -923,6 +925,7 @@ class TestExecutorRatebookComposite:
                     },
                 ],
             },
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": {
                 "a:b:c": [
                     {"column": "a", "dtype": {"kind": "String"}},
@@ -991,6 +994,7 @@ class TestExecutorRatebookComposite:
                     {"__factor_group__": f"online{_SEP}25", "optimal_scenario_value": 1.15},
                 ],
             },
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": {
                 "channel:age": [
                     {"column": "channel", "dtype": {"kind": "String"}},
@@ -1014,6 +1018,7 @@ class TestExecutorRatebookComposite:
                     {"__factor_group__": "combo-1", "optimal_scenario_value": 1.30},
                 ],
             },
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": {
                 "channel:age_band": [{"column": "channel:age_band", "dtype": {"kind": "String"}}]
             },
@@ -1036,6 +1041,7 @@ class TestRatebookCompositeContractErrors:
                     },
                 ],
             },
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": {
                 "channel:age_band": [
                     {"column": "channel", "dtype": {"kind": "String"}},
@@ -1056,6 +1062,7 @@ class TestRatebookCompositeContractErrors:
                     {"__factor_group__": f"north{_SEP}east", "optimal_scenario_value": 1.0},
                 ],
             },
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
         }
         df = pl.DataFrame({"region": [f"north{_SEP}east"]})
@@ -1071,6 +1078,7 @@ class TestRatebookCompositeContractErrors:
                     {"__factor_group__": f"x{_SEP}y", "optimal_scenario_value": 1.0},
                 ],
             },
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": {
                 "a:a": [
                     {"column": "a", "dtype": {"kind": "String"}},
@@ -1091,6 +1099,7 @@ class TestRatebookCompositeContractErrors:
                     {"__factor_group__": f"online{_SEP}x", "optimal_scenario_value": 1.0},
                 ],
             },
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": {
                 "channel:": [
                     {"column": "channel", "dtype": {"kind": "String"}},

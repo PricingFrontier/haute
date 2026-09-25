@@ -11,10 +11,14 @@ from unittest.mock import patch
 
 import pytest
 
+from haute._price_contour import price_contour_install
 from haute.deploy import DeployConfig, resolve_config
 from haute.deploy._container import build_and_push_image, prepare_build_directory
 from haute.errors import DeployError
 from scripts.container_smoke import run_smoke
+
+# Container builds pin price-contour from the package index; see the fixture.
+pytestmark = pytest.mark.usefixtures("released_price_contour")
 
 
 def _resolve_minimal_live_quote(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -134,6 +138,13 @@ class TestContainerSmokeServeCheck:
         assert (build_dir / "image" / "Dockerfile").is_file()
 
     @pytest.mark.timeout(180)
+    @pytest.mark.skipif(
+        price_contour_install().kind != "wheel",
+        reason=(
+            "The CLI subprocess builds against the real price-contour install, and a "
+            "container build refuses an editable or direct-URL one (CI installs the wheel)."
+        ),
+    )
     def test_cli_serve_check_boots_the_generated_app_and_scores_the_golden_request(
         self, tmp_path: Path
     ) -> None:

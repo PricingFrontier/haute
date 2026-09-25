@@ -324,6 +324,7 @@ class TestPreviewRuntimeFileInvalidation:
                         {"__factor_group__": "Manchester", "optimal_scenario_value": 0.98},
                     ],
                 },
+                "combined_factor_bounds": {"min": 0.1, "max": 10.0},
                 "factor_dtypes": {"region": [{"column": "region", "dtype": {"kind": "String"}}]},
             }
 

@@ -7,6 +7,7 @@ import tomllib
 from pathlib import Path
 
 from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
 
@@ -85,21 +86,22 @@ def test_polars_floor_supports_ordered_and_sliced_streaming_joins() -> None:
     assert max(lower_bounds) >= Version("1.44.2")
 
 
-def test_price_contour_floor_supports_ratebook_factor_contexts() -> None:
-    """Ratebook frontier materialisation needs the 0.4.1 factor-context API."""
+def test_price_contour_guard_specifier_is_the_declared_dependency() -> None:
+    """The runtime guard enforces exactly the range the package metadata declares.
+
+    The floor is 0.5.0: haute materialises ratebook frontier points from the
+    per-point factor tables, and reads the canonical ratebook evaluation, that
+    release introduced.
+    """
+    from haute._price_contour import REQUIRED_SPECIFIER
+
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     dependencies = project["project"]["dependencies"]
-    price_contour_requirement = next(
-        Requirement(dep) for dep in dependencies if Requirement(dep).name == "price-contour"
-    )
-    lower_bounds = [
-        Version(spec.version)
-        for spec in price_contour_requirement.specifier
-        if spec.operator in {">=", "=="}
-    ]
+    declared = next(dep for dep in dependencies if Requirement(dep).name == "price-contour")
 
-    assert lower_bounds
-    assert max(lower_bounds) >= Version("0.4.1")
+    assert declared == f"price-contour{REQUIRED_SPECIFIER}"
+    assert SpecifierSet(REQUIRED_SPECIFIER).contains("0.5.0")
+    assert not SpecifierSet(REQUIRED_SPECIFIER).contains("0.4.1")
 
 
 def _setup_uv_pins(workflow_text: str) -> list[str | None]:

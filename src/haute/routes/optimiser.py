@@ -39,9 +39,14 @@ from haute._mlflow_utils import (
     ensure_experiment,
     registry_uri_for_tracking,
 )
+from haute._ratebook_collar import (
+    COMBINED_FACTOR_BOUNDS_KEY,
+    CombinedFactorBoundsError,
+    parse_combined_factor_bounds,
+)
 from haute._rating import is_rating_dtype_descriptor
 from haute._sandbox import _get_project_root, contained_path
-from haute._types import SolveResultLike
+from haute._types import RatebookSolveResultLike, SolveResultLike
 from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
@@ -204,12 +209,12 @@ def _frontier_select_response(result: dict[str, Any]) -> OptimiserFrontierSelect
     return OptimiserFrontierSelectResponse(
         status="ok",
         point_index=result.get("selected_frontier_point"),
-        total_objective=result.get("total_objective", 0.0),
-        constraints=result.get("constraints", {}),
-        baseline_objective=result.get("baseline_objective", 0.0),
-        baseline_constraints=result.get("baseline_constraints", {}),
-        lambdas=result.get("lambdas", {}),
-        converged=result.get("converged", True),
+        total_objective=result["total_objective"],
+        constraints=result["constraints"],
+        baseline_objective=result["baseline_objective"],
+        baseline_constraints=result["baseline_constraints"],
+        lambdas=result["lambdas"],
+        converged=result["converged"],
         iterations=result.get("iterations"),
         cd_iterations=result.get("cd_iterations"),
         factor_tables=result.get("factor_tables", {}),
@@ -218,6 +223,7 @@ def _frontier_select_response(result: dict[str, Any]) -> OptimiserFrontierSelect
         scenario_value_stats=result.get("scenario_value_stats"),
         scenario_value_histogram=result.get("scenario_value_histogram"),
         clamp_rate=result.get("clamp_rate"),
+        combined_factor_bounds=result.get(COMBINED_FACTOR_BOUNDS_KEY),
     )
 
 
@@ -569,9 +575,9 @@ def _build_artifact_payload(
         "mode": job_config.get("mode", "online"),
         "lambdas": solve_result.lambdas,
         "total_objective": solve_result.total_objective,
-        "baseline_objective": getattr(solve_result, "baseline_objective", None),
+        "baseline_objective": solve_result.baseline_objective,
         "total_constraints": solve_result.total_constraints,
-        "baseline_constraints": getattr(solve_result, "baseline_constraints", None),
+        "baseline_constraints": solve_result.baseline_constraints,
         "constraints": job_config.get("constraints"),
         "objective": job_config.get("objective"),
         "quote_id": job_config.get("quote_id", "quote_id"),
@@ -606,9 +612,12 @@ def _build_artifact_payload(
             factor_dtypes = result_payload.get("factor_dtypes")
         if factor_dtypes is None:
             factor_dtypes = job.get("factor_dtypes")
+        ratebook_result = cast(RatebookSolveResultLike, solve_result)
         payload["factor_tables"] = factor_tables
         payload["factor_dtypes"] = factor_dtypes
-        payload["clamp_rate"] = getattr(solve_result, "clamp_rate", None)
+        payload["clamp_rate"] = ratebook_result.clamp_rate
+        # The scenario range the solve scored; every apply clamps to it (Q17).
+        payload[COMBINED_FACTOR_BOUNDS_KEY] = getattr(solve_result, COMBINED_FACTOR_BOUNDS_KEY)
     # Audit trail. ``constraints`` above stays the configured specs, which
     # OPTIMISER_APPLY reads; ``effective_constraints`` records the thresholds
     # in force for this target.
@@ -726,6 +735,29 @@ def _validate_artifact_payload(payload: dict[str, Any]) -> None:
                         ),
                     )
                 seen_columns.add(column)
+        clamp_rate = payload.get("clamp_rate")
+        if (
+            isinstance(clamp_rate, bool)
+            or not isinstance(clamp_rate, (int, float))
+            or not math.isfinite(clamp_rate)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Ratebook solve result has no finite clamp_rate (got {clamp_rate!r}). "
+                    "Re-run the solve before saving."
+                ),
+            )
+        try:
+            parse_combined_factor_bounds(payload.get(COMBINED_FACTOR_BOUNDS_KEY))
+        except CombinedFactorBoundsError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Ratebook solve result has no valid combined-factor collar: {exc}. "
+                    "Re-run the solve before saving."
+                ),
+            ) from exc
     bad_paths = _non_finite_paths(payload)
     if bad_paths:
         shown = ", ".join(bad_paths[:5])

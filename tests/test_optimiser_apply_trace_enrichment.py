@@ -79,6 +79,7 @@ def _ratebook_artifact(version: str = "rb_v1") -> dict:
                 {"__factor_group__": "old", "optimal_scenario_value": 0.95},
             ],
         },
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": {
             "region": [{"column": "region", "dtype": {"kind": "String"}}],
             "age_band": [{"column": "age_band", "dtype": {"kind": "String"}}],
@@ -662,6 +663,7 @@ def _composite_ratebook_artifact(version: str = "rb_comp_v1") -> dict:
                 {"__factor_group__": "London", "optimal_scenario_value": 1.20},
             ],
         },
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": {
             "channel:age_band": [
                 {"column": "channel", "dtype": {"kind": "String"}},
@@ -794,6 +796,7 @@ def test_ratebook_execute_trace_float_keyed_levels_agree_with_engine(tmp_path):
                 {"__factor_group__": "30.5", "optimal_scenario_value": 3.0},
             ],
         },
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": {
             "age": [{"column": "age", "dtype": {"kind": "Float64"}}],
         },
@@ -1143,32 +1146,27 @@ def test_ratebook_match_entry_uses_last_duplicate_to_match_runtime(tmp_path):
     assert london["factor_value"] == pytest.approx(1.20)
 
 
-def test_optimiser_apply_emits_friendly_error_when_price_contour_missing(tmp_path, monkeypatch):
-    """A missing price_contour install must produce a deploy-time-friendly error
-    rather than a bare ``ImportError`` string.
+def test_optimiser_apply_trace_reports_an_incompatible_price_contour(tmp_path, monkeypatch):
+    """An unusable price_contour install surfaces the guard's full diagnosis.
 
-    Trace enrichment runs in two contexts: production (where price_contour is
-    always present) and devboxes/test environments (where it may not be). The
-    error message must clearly state the dependency is missing so a deploy
-    operator can fix the environment without parsing Python tracebacks.
+    The trace keeps its structured ``status: "error"`` contract, and the message
+    is the compatibility guard's own: what is wrong and how to fix it.
     """
-    import builtins
-
+    from haute import _optimiser_apply_explainability as explainability
+    from haute._price_contour import PriceContourCompatibilityError
     from haute._trace_enrichment import enrich_optimiser_apply
 
     artifact_path = _write_json(tmp_path / "online.json", _online_artifact())
-    real_import = builtins.__import__
+    diagnosis = (
+        "haute cannot use the installed price-contour:\n"
+        "  - version 0.2.7 does not satisfy >=0.4.1,<0.5\n"
+        "Install the locked build with `uv sync --locked`"
+    )
 
-    def fake_import(name, *args, **kwargs):
-        if name == "price_contour":
-            # CPython sets ``name`` on import-not-found automatically; passing
-            # it explicitly mirrors that production behaviour so the test
-            # exercises the real wrapping path (otherwise ``exc.name`` is
-            # ``None`` and the rendered message reads "uv add None").
-            raise ImportError("No module named 'price_contour'", name="price_contour")
-        return real_import(name, *args, **kwargs)
+    def incompatible() -> None:
+        raise PriceContourCompatibilityError(diagnosis)
 
-    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr(explainability, "price_contour", incompatible)
 
     detail = enrich_optimiser_apply(
         {
@@ -1182,14 +1180,8 @@ def test_optimiser_apply_emits_friendly_error_when_price_contour_missing(tmp_pat
     )
 
     assert detail["status"] == "error"
-    assert detail["error_type"] == "OptimiserApplyTraceError"
-    # The user-facing message should name the missing library so a deploy
-    # operator can fix the environment without grepping the traceback.
-    assert "'price_contour'" in detail["error"]
-    # The hint must include the install command — ``exc.name`` flows into the
-    # rendered ``uv add ...`` so a regression in the wrapping (e.g. dropping
-    # ``exc.name`` for a generic placeholder) is caught.
-    assert "uv add price_contour" in detail["error"]
+    assert detail["error_type"] == "PriceContourCompatibilityError"
+    assert detail["error"] == diagnosis
 
 
 def test_optimiser_apply_rejects_explicit_empty_mode(tmp_path):
@@ -1258,45 +1250,6 @@ def test_ratebook_apply_rejects_explicit_empty_optimised_value_column(tmp_path):
     assert detail["status"] == "error"
     assert detail["error_type"] == "OptimiserApplyTraceError"
     assert "optimised_value_column" in detail["error"]
-
-
-def test_optimiser_apply_import_error_without_name_still_renders_safely(tmp_path, monkeypatch):
-    """Defensive: an ``ImportError`` without ``name`` (rare; e.g. a chained or
-    re-raised one) must not produce a literal ``None`` in the user message.
-    """
-    import builtins
-
-    from haute._trace_enrichment import enrich_optimiser_apply
-
-    artifact_path = _write_json(tmp_path / "online.json", _online_artifact())
-    real_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == "price_contour":
-            # Deliberately omit ``name=`` to simulate a re-raised ImportError
-            # whose ``name`` attribute was never set.
-            raise ImportError("No module named 'price_contour'")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-
-    detail = enrich_optimiser_apply(
-        {
-            "sourceType": "file",
-            "artifact_path": artifact_path,
-        },
-        input_row={},
-        output_row={"quote_id": "q1", "optimal_scenario_value": 1.1},
-        input_frames=[_scored_online_df()],
-        source_names=["scored"],
-    )
-
-    assert detail["status"] == "error"
-    assert detail["error_type"] == "OptimiserApplyTraceError"
-    # Falling back to a generic placeholder is fine — what's NOT fine is
-    # exposing the literal ``None`` from ``exc.name`` to the user.
-    assert "'None'" not in detail["error"]
-    assert "None library" not in detail["error"]
 
 
 def test_load_artifact_from_config_forwards_destination():
@@ -1371,3 +1324,97 @@ def test_ratebook_trace_shows_the_published_effective_constraints(tmp_path):
     assert detail["status"] == "ok"
     assert detail["constraints"] == {"predicted_volume": {"min": 0.9}}
     assert detail["effective_constraints"] == {"predicted_volume": {"min": 0.97}}
+
+
+def _collared_trace(tmp_path, bounds, *, region: str, age_band: str, output: float):
+    """Trace one clicked ratebook row under the given combined-factor collar."""
+    from haute._trace_enrichment import enrich_optimiser_apply
+
+    artifact = _ratebook_artifact()
+    artifact["combined_factor_bounds"] = bounds
+    artifact_path = _write_json(tmp_path / "ratebook_collar.json", artifact)
+    banded = pl.DataFrame(
+        {"quote_id": ["q1"], "region": [region], "age_band": [age_band], "base_price": [100.0]}
+    )
+    return enrich_optimiser_apply(
+        {"sourceType": "file", "artifact_path": artifact_path, "ratebook_input": "banded"},
+        input_row={},
+        output_row={
+            "quote_id": "q1",
+            "region": region,
+            "age_band": age_band,
+            "optimised_factor": output,
+        },
+        input_frames=[banded],
+        source_names=["banded"],
+    )
+
+
+def test_ratebook_trace_reconciles_a_collared_product_and_reports_the_collar(tmp_path):
+    # London 1.05 x young 1.10 = 1.155, past the collar's max of 1.1.
+    detail = _collared_trace(
+        tmp_path,
+        {"min": 0.9, "max": 1.1},
+        region="London",
+        age_band="young",
+        output=1.1,
+    )
+
+    assert detail["status"] == "ok", detail
+    assert detail["factor_ladder"][-1]["running_product_after"] == pytest.approx(1.05 * 1.10)
+    assert detail["collar"] == {
+        "min": 0.9,
+        "max": 1.1,
+        "before": 1.05 * 1.10,
+        "after": 1.1,
+        "applied": True,
+    }
+    assert detail["final_value"] == 1.1
+
+
+def test_ratebook_trace_reports_an_unapplied_collar_inside_the_range(tmp_path):
+    detail = _collared_trace(
+        tmp_path,
+        {"min": 0.9, "max": 1.1},
+        region="Manchester",
+        age_band="old",
+        output=0.98 * 0.95,
+    )
+
+    assert detail["status"] == "ok", detail
+    assert detail["collar"] == {
+        "min": 0.9,
+        "max": 1.1,
+        "before": 0.98 * 0.95,
+        "after": 0.98 * 0.95,
+        "applied": False,
+    }
+
+
+def test_ratebook_trace_rejects_an_output_that_skipped_the_collar(tmp_path):
+    detail = _collared_trace(
+        tmp_path,
+        {"min": 0.9, "max": 1.1},
+        region="London",
+        age_band="young",
+        output=1.05 * 1.10,
+    )
+
+    assert detail["status"] == "error"
+    assert detail["error_type"] == "OptimiserApplyTraceError"
+    assert "collared=1.1" in detail["error"]
+
+
+@pytest.mark.parametrize(
+    ("bounds", "fragment"),
+    [
+        (None, "must be an object"),
+        ({"min": 1.2, "max": 1.1}, "greater than max"),
+    ],
+)
+def test_ratebook_trace_rejects_missing_or_malformed_collar(tmp_path, bounds, fragment):
+    detail = _collared_trace(tmp_path, bounds, region="London", age_band="young", output=1.1)
+
+    assert detail["status"] == "error"
+    assert detail["error_type"] == "OptimiserApplyTraceError"
+    assert fragment in detail["error"]

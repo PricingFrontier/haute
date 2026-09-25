@@ -122,6 +122,7 @@ def test_ratebook_apply_reuses_the_same_dtype_contract(case: RatingKeyCase) -> N
                 }
             ]
         },
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": {"factor": [{"column": "factor", "dtype": case.descriptor}]},
     }
 
@@ -139,6 +140,7 @@ def test_ratebook_rejects_missing_dtype_metadata_before_lookup() -> None:
     artifact = {
         "mode": "ratebook",
         "factor_tables": {"factor": [{"__factor_group__": "0.1", "optimal_scenario_value": 2.0}]},
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
     }
 
     with pytest.raises(RatingFactorDtypeContractError, match="factor_dtypes"):
@@ -154,6 +156,7 @@ def test_ratebook_rejects_missing_dtype_metadata_for_empty_table() -> None:
     artifact = {
         "mode": "ratebook",
         "factor_tables": {"factor": []},
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
     }
 
     with pytest.raises(RatingFactorDtypeContractError, match="factor_dtypes"):
@@ -169,6 +172,7 @@ def test_ratebook_rejects_dtype_record_with_extra_fields() -> None:
     artifact = {
         "mode": "ratebook",
         "factor_tables": {"factor": []},
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": {
             "factor": [
                 {
@@ -193,6 +197,7 @@ def test_ratebook_rejects_exact_dtype_drift_before_neutral_miss() -> None:
     artifact = {
         "mode": "ratebook",
         "factor_tables": {"factor": [{"__factor_group__": "0.1", "optimal_scenario_value": 2.0}]},
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": {"factor": [{"column": "factor", "dtype": {"kind": "Float64"}}]},
     }
 
@@ -212,6 +217,7 @@ def test_ratebook_rejects_unsupported_apply_dtype_as_typed_contract_error() -> N
     artifact = {
         "mode": "ratebook",
         "factor_tables": {"factor": []},
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": {"factor": [{"column": "factor", "dtype": {"kind": "String"}}]},
     }
 

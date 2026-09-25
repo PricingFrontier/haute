@@ -12,6 +12,7 @@
       {"__factor_group__": "East", "optimal_scenario_value": 1.0}
     ]
   },
+  "combined_factor_bounds": {"min": 0.9, "max": 1.1},
   "factor_dtypes": {
     "region": [{"column": "region", "dtype": {"kind": "String"}}]
   }

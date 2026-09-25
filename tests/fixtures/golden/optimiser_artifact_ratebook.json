@@ -45,6 +45,10 @@
     ]
   },
   "clamp_rate": 0.05,
+  "combined_factor_bounds": {
+    "min": 0.9,
+    "max": 1.1
+  },
   "solver_settings": {
     "max_iter": 50,
     "tolerance": 1e-06,

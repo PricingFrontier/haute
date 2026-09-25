@@ -51,6 +51,9 @@ from haute.errors import DeployError
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from tests._deploy_helpers import make_resolved_deploy
 
+# Container builds pin price-contour from the package index; see the fixture.
+pytestmark = pytest.mark.usefixtures("released_price_contour")
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

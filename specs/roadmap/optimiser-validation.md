@@ -13,11 +13,17 @@ decisions below. Codex ran small in-memory probes against the installed
 `price_contour` and Polars; the facts it established are recorded under
 Scope and in the price_contour context.
 
-**Picking this up.** The next session has `price_contour` installed locally
-for editing. The haute-only packages (`OPT-V01` onwards) need no product
-decision and can start at once. The price_contour packages (`OPT-PC01` to
-`OPT-PC03`) and the ratebook half of wave 4 (`OPT-V09C`) depend on the
-choice described in "Price-contour context" below. Everything ships as
+**Picking this up.** `price_contour` is installed into haute's `.venv` as an
+editable install of the checkout at `../price-contour` (`uv pip install -e
+../price-contour`). Python edits to the library are live immediately; Rust
+edits need a rebuild (`uv pip install -e ../price-contour` again, or
+`maturin develop --release` from the checkout). A plain `uv sync` replaces
+the editable install with the locked wheel, so re-run the install after
+syncing. The haute-only packages (`OPT-V01` onwards) need no product
+decision and can start at once. The ratebook half of wave 4 (`OPT-V09C`)
+builds on the price-contour 0.5.0 contract described below (Q8 and Q17 are
+decided; see Decisions); the one remaining library package is `OPT-PC02`.
+Everything ships as
 **one PR** on its own branch, with one Codex review of the whole branch
 diff before the PR and one Playwright e2e run at the end. The agent never
 merges.
@@ -61,8 +67,82 @@ Out of scope (see "Out of scope and not applicable" below):
 - **Delivery (Q13).** One PR for all waves.
 - **Moot after Q1:** the nominated price column for dislocation (Q2), the
   dislocation weighting default, and the arbitrary price passthrough (Q14).
-- **Pending:** ratebook per-quote results (Q8), taken up in the
-  price_contour session. See "Price-contour context".
+- **The deployed ratebook factor is collared to the scored grid range
+  (Q17, decided 25 September 2026).** The solver priced each quote at the
+  grid step nearest its factor product, clamped to the grid ends; the
+  Optimiser Apply node multiplied the rates with no clamp, so a quote whose
+  product lay past a grid end deployed at a rate the solve never scored.
+  The solve now records the grid's `[sv_min, sv_max]` (from
+  `QuoteGrid.scenario_values`, Float32 widened, exactly what was scored) as
+  `combined_factor_bounds` on the job result, the frontier-select response,
+  the saved and MLflow-logged artifact, and every frontier point (they share
+  the solve's grid). `_apply_ratebook`, the one apply path behind preview,
+  generated code and the deploy scorer, clips `optimised_factor` to it after
+  the neutral fill and the product; per-factor columns stay unclamped. The
+  trace adds a collar step and reconciles against the clamped value, and the
+  factor-table CSV and Publish section state the collar for an external
+  rating engine. A ratebook artifact without the bounds is invalid (no legacy
+  reader). Inside the range the deployed factor is still the unsnapped
+  product: snapping to the nearest step was not adopted.
+- **Ratebook per-quote results take option (a) (Q8, decided 25 September
+  2026).** price-contour 0.5.0 surfaces the per-quote frame the solver
+  computes (`RatebookResult.quote_results`) and a public
+  `RatebookOptimiser.evaluate()`; see "Price-contour contract (0.5.0)" below.
+  The wave 4 tabs describe the solver-evaluated step; after the collar, the
+  deployed factor differs from it only by the within-range rounding to the
+  nearest step, which `quote_results.factor_product` makes visible.
+
+## Price-contour contract (0.5.0)
+
+The library changes this plan needed were built in the sibling checkout
+(`../price-contour`, branch `feat/haute-link-0.5`, version 0.5.0). Its
+`docs/DESIGN_DECISIONS.md` §13 is the contract, and haute's side is
+specified in [the optimiser low-level spec](../optimiser/low-level.md).
+Haute pins `price-contour>=0.5.0,<0.6`, and its runtime guard
+(`src/haute/_price_contour.py`) requires the new surface, so **the haute PR
+merges only after 0.5.0 is released to PyPI and `uv.lock` is regenerated**
+(`uv lock --upgrade-package price-contour`). Until then haute runs against the
+editable checkout.
+
+What the remaining packages can rely on:
+
+- **Canonical ratebook evaluation.** Every reported ratebook number comes
+  from one Rust kernel that prices each quote at the grid step nearest the
+  f32 product of the final factor tables (products outside the grid clamp to
+  the end steps; an exact midpoint goes to the lower step).
+  `RatebookResult.quote_results` holds `quote_id`, `optimal_step`,
+  `optimal_scenario_value`, `optimal_objective`, `optimal_<c>`,
+  `factor_product`, `clamped_low` and `clamped_high`; the result also carries
+  `n_quotes_clamped_low/high`, `scenario_values`, `baseline_scenario_value`
+  and `constraint_bounds`. `RatebookOptimiser.evaluate(grid, factors,
+  factor_tables)` runs the same kernel and reproduces a result exactly.
+- **Ratebook frontier points.** The frontier keeps each point's factor tables
+  (`factor_tables`, aligned with `points`), and each row's totals are that
+  point's canonical evaluation. Haute stores them as `frontier_factor_tables`
+  and materialises a selected point from them, exactly and without a solver
+  or grid; `evaluate(grid, factors, tables)` gives the point's per-quote rows.
+- **Absolute bounds.** Every frontier emits `bound_<c>` for every constraint,
+  swept or not, next to `threshold_<c>` (which stays in the user's units, a
+  fraction for pct constraints); solve results expose `constraint_bounds`.
+- **One baseline rule.** Sum, pct and ratio baselines all use the scenario
+  value nearest 1.0 (f32, lowest on a tie). Every total, including a reported
+  ratio's numerator and denominator, accumulates f32 values in f64.
+- **Fail loud.** No reported value is a silent default. Missing frontier
+  totals or λ, a zero-baseline pct constraint, an unknown warm-start λ name,
+  a non-positive candidate range, scenario values that are not strictly
+  increasing, a reserved constraint name (`objective`, `step`,
+  `scenario_value`) and an ignored `parallel=True` all raise; unpersisted
+  fields raise `ResultUnavailableError`.
+- **Explicit contracts.** Dict outputs follow constraint order;
+  `per_factor_results` records carry `cd_iteration`, `factor`,
+  `factor_index`, totals, λ, `clamp_rate`, `inner_iterations` and
+  `inner_converged`; `quote_results_schema` and `frontier_points_schema` give
+  exact schemas, and the Python-orchestrated online frontier matches the Rust
+  one; the package ships `py.typed`.
+- **`clamp_rate` is a search-space diagnostic:** the mean, over every grouped
+  solve, of the fraction of (quote, candidate) targets that fell strictly
+  outside the scenario range. It does not count quotes at an edge;
+  `n_quotes_clamped_low/high` do. Help copy (`OPT-V03`, `OPT-V07`) says so.
 
 ## Priorities
 
@@ -82,9 +162,7 @@ Out of scope (see "Out of scope and not applicable" below):
 | OPT-V11 | Planned | P3 | A Segments tab: chosen adjustments by analysis column (and rating factor with `OPT-V09C`). |
 | OPT-V12 | Planned | P3 | A Quotes explorer sorted, filtered and searched server-side over the chosen scenarios. |
 | OPT-V13 | Planned | P2 | One e2e walk of every optimiser pane and one snapshot refresh. |
-| OPT-PC01 | Decision | P3 | price_contour evaluates ratebook solutions per quote (or exposes its factor-product-to-step rule) so haute can show ratebook adjustments per quote. |
 | OPT-PC02 | Deferred | P3 | price_contour's point apply can be cancelled or chunked, so rapid frontier stepping stops wasted work. |
-| OPT-PC03 | Planned | P3 | `clamp_rate` has a documented, verified definition that haute's help copy can quote. |
 
 ## Planned improvements
 
@@ -106,8 +184,12 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
 
 - **Files.** `frontend/src/panels/optimiser/optimiserHelpers.ts`, `frontend/src/panels/optimiser/constraintAttainment.ts` *(new)*, `frontend/src/panels/optimiser/ConstraintAttainmentTable.tsx` *(new)*, `frontend/src/panels/optimiser/SummaryTab.tsx`, `frontend/src/panels/optimiser/DetailCard.tsx`, `frontend/src/panels/optimiser/lambdaCopy.ts`, `frontend/src/stores/useNodeResultsStore.ts`, `src/haute/routes/_optimiser_frontier.py`, `src/haute/routes/_frontier_point_summary.py`, `src/haute/routes/optimiser.py`, and the tests listed below.
 - **Backend changes.**
-  1. **Keep all constraints in point summaries.** Split `constraint_names`, meaning **every** configured constraint, from `swept_axes`, meaning `ranges.keys()`. Pass both through `limited_frontier_payload` (`_optimiser_frontier.py:1227`) and `_frontier_point_summary.py:115`, so a selected point carries `threshold_*`, `total_*` and λ for unswept constraints too.
-  2. **`min_pct`/`max_pct` are supported, so there is no deletion branch.** The effective absolute bound is `pct × baseline_total` of that constraint. The backend returns it, as `effective_bounds: {name: {kind, bound}}` on the solve result and on each point summary, so the frontend never re-derives it.
+  1. **Keep all constraints in point summaries.** Split `constraint_names`, meaning **every** configured constraint, from `swept_axes`, meaning `ranges.keys()`. There are **three** swept-only call sites, and all three change: `limited_frontier_payload` for the recompute route (`_optimiser_frontier.py:1227-1230`), `limited_frontier_payload` for the frontier built during the solve (`_optimiser_solver.py:917-919`), and frontier select, which re-derives summaries from the stored `frontier_data["constraint_names"]` (`_optimiser_frontier.py:311-318`). `_frontier_point_summary.py:115` then carries `threshold_*`, `total_*` and λ for unswept constraints too.
+     - Today the raw `points` rows already carry every library column (`_optimiser_limits.py:93`), and point-summary λ already covers every constraint (`frontier_point_lambdas`). Only `point_summaries[].constraints` is filtered, and summaries have no threshold field. The fix is still backend-owned, so the frontend reads one typed source rather than re-parsing raw rows.
+  2. **`min_pct`/`max_pct` are supported by the library, so there is no deletion branch.** The effective absolute bound is `pct × baseline_total` of that constraint, where `baseline_total` is taken at the grid's nearest-1.0 step (see "Price-contour contract (0.5.0)"). The backend returns it, as `effective_bounds: {name: {kind, bound}}` on the solve result and on each point summary, so the frontend never re-derives it.
+     - **Frontier `threshold_*` is a fraction for pct constraints**, not an absolute bound. Since price-contour 0.5.0 every frontier row also carries `bound_<c>` (the absolute bound, for every constraint) and solve results carry `constraint_bounds`: `effective_bounds` reads those, so haute never multiplies a fraction by a baseline itself. `_frontier_point_constraints_override` (`_optimiser_frontier.py`) keeps building the constraint specs published as `effective_constraints`.
+     - The constraint editor offers only min and max (`OptimiserConstraintSettings.tsx:34, 152`), so pct constraints reach haute only through hand-written config. Adding them to the UI is out of scope; the backend contract still handles them correctly.
+  3. **Goldens.** Regenerate the contracts and goldens in this package, so the contract change lands with its first caller. OPT-V04 then types the rows on top.
 - **Frontend changes.**
   1. Replace `isConstraintMet(type, _ratio, abs, thr)` with a pure `constraintAttainment({kind, bound, achieved})`. It returns `{kind, bound, achieved, slack, slackPct, status: 'met'|'breached'}`.
      - `met` is a strict comparison on the Float64 values the backend returns. The signed `slackPct` is always shown, so "Breached by 0.01%" is readable rather than just red.
@@ -116,21 +198,21 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
   2. Add a store selector, `effectiveConstraintBounds`. It returns the displayed result's backend `effective_bounds`, and both panes read it. This removes the two divergent derivations and the `pointThreshold ?? spec ?? 0` fallback.
   3. `ConstraintAttainmentTable` shows Constraint | Kind | Bound | Achieved | Slack | Status | λ. Status is a text chip plus an icon, with colour as a secondary cue. Use it in both panes.
   4. Show λ for ratebook results on Summary as well, dropping the `mode !== 'ratebook'` gate so it matches DetailCard.
-  5. Rewrite `LAMBDA_HELP` in `lambdaCopy.ts`: no "0 means not binding" and no "gained per unit relaxed" wording. See OPT-V06 for the signed trade-off.
-- **Risks.** Contract change on point summaries: regenerate the goldens here, or fold this change into OPT-V04. There are no silent fallbacks.
+  5. Rewrite `lambdaCopy.ts`: `LAMBDA_LABEL` (today "λ (shadow price)") becomes "λ (multiplier)", and `LAMBDA_HELP` and the file's doc comment lose the "0 means not binding" and "gained per unit relaxed" wording. See OPT-V06 for the signed trade-off.
+- **Risks.** Contract change on point summaries (goldens regenerated here). There are no silent fallbacks.
 
 **Acceptance:**
 
 - `optimiser/__tests__/constraintAttainment.test.ts` *(new)*: min and max at, above and below the bound; slack sign; non-finite input throws.
-- `SummaryTab.test.tsx` *(new)* and `DetailCard.test.tsx` *(new)*: a row with positive λ and positive slack reads "Met" and is not labelled binding.
-- pytest: a two-constraint solve sweeping only one. The selected point's summary contains the unswept constraint's bound, total and λ. Mutate `constraint_names` back to `ranges.keys()` and confirm the test fails.
-- pytest: a `min_pct` constraint's `effective_bounds` equals pct × baseline total, and a real prebuilt-grid solve produces it.
+- `panels/optimiser/__tests__/SummaryTab.test.tsx` *(new; the modelling file of the same name is separate)* and `panels/optimiser/__tests__/DetailCard.test.tsx` *(new)*: a row with positive λ and positive slack reads "Met" and is not labelled binding.
+- pytest: a two-constraint solve sweeping only one. The selected point's summary contains the unswept constraint's bound, total and λ, through all three call sites (solve-time frontier, recompute, select). Mutate each `constraint_names` back to `ranges.keys()` and confirm the test fails.
+- pytest: a `min_pct` constraint's `effective_bounds` equals pct × baseline total on the solve result **and on a swept frontier point** (where the library reports the threshold as a fraction), from a real prebuilt-grid solve.
 - G03 regression in `panels/__tests__/OptimiserPreview.test.tsx`: select a point whose swept threshold differs from the solved one; both panes print the same bound and status. Mutate the selector back to `cached.constraints` and confirm the test fails.
-- Update `optimiserHelpers.test.ts:48-49`, which pins the "red" behaviour.
+- Rewrite the tests that pin today's behaviour: `optimiserHelpers.test.ts:48-49` (the "red" state); in `OptimiserPreview.test.tsx`, 1217 ("hides Lambdas section in ratebook mode"), 1130 and 1144 (green/red dot), 891 (met/unmet indicators), and 320, 929 and 1169 (the "λ (shadow price)" label).
 
 **Dependencies:** Size M. **Depends on:** none.
 
-**Evidence:** Current code this package changes or relies on: `frontend/src/panels/optimiser/optimiserHelpers.ts`, `frontend/src/panels/optimiser/SummaryTab.tsx`, `frontend/src/panels/optimiser/DetailCard.tsx`, `frontend/src/panels/optimiser/lambdaCopy.ts`, `frontend/src/stores/useNodeResultsStore.ts`, `src/haute/routes/_optimiser_frontier.py`, `src/haute/routes/_frontier_point_summary.py`, `src/haute/routes/optimiser.py`, `frontend/src/panels/modelling/__tests__/SummaryTab.test.tsx`, `frontend/src/panels/__tests__/OptimiserPreview.test.tsx`, `frontend/src/panels/optimiser/__tests__/optimiserHelpers.test.ts`.
+**Evidence:** Current code this package changes or relies on: `frontend/src/panels/optimiser/optimiserHelpers.ts`, `frontend/src/panels/optimiser/SummaryTab.tsx`, `frontend/src/panels/optimiser/DetailCard.tsx`, `frontend/src/panels/optimiser/lambdaCopy.ts`, `frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx`, `frontend/src/stores/useNodeResultsStore.ts`, `src/haute/routes/_optimiser_frontier.py`, `src/haute/routes/_optimiser_solver.py`, `src/haute/routes/_optimiser_limits.py`, `src/haute/routes/_frontier_point_summary.py`, `src/haute/routes/optimiser.py`, `frontend/src/panels/modelling/__tests__/SummaryTab.test.tsx`, `frontend/src/panels/__tests__/OptimiserPreview.test.tsx`, `frontend/src/panels/optimiser/__tests__/optimiserHelpers.test.ts`.
 
 ### OPT-V02 — Selected-point integrity, state handling and shared fixtures
 
@@ -139,40 +221,40 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
 **Plan:**
 
 - **Files.** `frontend/src/panels/OptimiserPreview.tsx`, `frontend/src/panels/optimiser/SummaryTab.tsx`, `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/optimiser/QuotesTab.tsx`, `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/panels/optimiser/__tests__/fixtures.ts` *(new)*, `frontend/src/panels/__tests__/OptimiserPreview.test.tsx`, `frontend/src/panels/__tests__/OptimiserPreview.storeIntegration.test.tsx`.
-- **Backend changes.** Add `frontier_generation` to `OptimiserFrontierResponse` (`schemas.py:3122`) and the select response, regenerate the contracts and goldens, and add a pytest that it increments on recompute. OPT-V04 later types the points, but the generation lands here with its first caller.
+- **Backend changes.** `frontier_generation` already exists on the job internally (it is bumped on recompute). Expose it on `OptimiserFrontierResponse` (`schemas.py:3122`), the select response and the solve result, regenerate the contracts and goldens, and add a pytest that the exposed value increments on recompute. OPT-V04 later types the points, but the generation lands here with its first caller.
 - **Frontend changes.**
   1. Move the stats grid out of the histogram guard, so a point's `scenario_value_stats` (from its `sv_*` columns) render when its histogram is null. Label the stats "Frontier point N" or "As solved".
   2. Add `solvedResult` (the cached original result) to `OptimiserPreviewData`.
      - Convergence availability is decided from `solvedResult`, so the tab no longer vanishes on point select.
      - It shows the as-solved history under "History is recorded for the solved result; frontier point N: converged/not, K iterations".
-  3. Reset the tab to its default on a `jobId` change, **not** on `[nodeId, result]`. `applyFrontierPointSummary` creates a new result on every stepper press (`useNodeResultsStore.ts:447-452`).
+  3. Reset the tab to its default when the `jobId` or the `nodeId` changes. Today the tab is plain `useState` (`OptimiserPreview.tsx:132-134`) with no reset at all, and App.tsx mounts the preview with no `key`, so the tab survives a new solve and a switch between optimiser nodes. Do **not** copy ModellingPreview's `[nodeId, result]` reset (`ModellingPreview.tsx:126-132`): `applyFrontierPointSummary` creates a new result on every stepper press (`useNodeResultsStore.ts:455-459`), so keying on `result` would reset the tab on every step.
   4. Show `result.warning` (the non-convergence reason) as an amber strip in the preview.
   5. Delete the unreachable "No frontier data available" branch (`OptimiserPreview.tsx:467-473`).
   6. Add Retry buttons to the Quotes and Rates error states.
-  7. Cache `/apply` responses in the store under a **full request identity**: `(jobId, frontierGeneration, target: 'solved'|pointIndex, canonical query)`, where the query is sort, filters, search, offset and limit (OPT-V12 extends it). Keep at most 16 entries (LRU) and clear them on a new job or a frontier recompute. Every response is checked against the identity current when it arrives; a late response from an earlier job, generation or query is dropped. `frontierGeneration` comes from the frontier response (added in this package).
-  9. `solvedResult` also anchors the as-solved frontier marker (fixing `OptimiserPreview.tsx:485-486`), so the marker no longer moves when a point is selected.
-  8. Add shared fixtures:
+  7. Cache `/apply` responses in the store under a **full request identity**: `(jobId, frontierGeneration, target: 'solved'|pointIndex, canonical query)`, where the query is sort, filters, search, offset and limit (OPT-V12 extends it). Keep at most 16 entries (LRU) and clear them on a new job or a frontier recompute. Every response is checked against the identity current when it arrives; a late response from an earlier job, generation or query is dropped. `frontierGeneration` comes from the frontier response (exposed in this package).
+  8. `solvedResult` also anchors the as-solved frontier marker (fixing `OptimiserPreview.tsx:485-486`), so the marker no longer moves when a point is selected.
+  9. Add shared fixtures:
      - online with non-null stats and histogram, frontier points carrying `threshold_*`, `converged` and `iterations`, and history with `lambdas` and `total_constraints`;
      - ratebook with factor tables and `quote_count`.
-     Replace the null fixtures at `OptimiserPreview.test.tsx:162-163` and `storeIntegration.test.tsx:65-66`.
+     Replace the null fixtures in both factories: `makePointSummary` (`OptimiserPreview.test.tsx:162-163`) and the shared `makeSolveResultFactory`, plus `storeIntegration.test.tsx:65-66`.
 - **Risks.** The Convergence wording must not imply that the history belongs to the point.
 
 **Acceptance:**
 
 - The stats persist after point select.
 - Pressing the stepper while on Convergence keeps Convergence.
-- Pressing the stepper does not reset the tab; a new `jobId` does.
+- Pressing the stepper does not reset the tab; a new `jobId` does, and so does switching to another optimiser node.
 - Retry refetches.
 - Reopening Quotes makes no second call.
 - After a frontier recompute, the same point index refetches.
 - A late response from an earlier job or generation is discarded.
 - The as-solved marker keeps its position after a point is selected.
 - The warning is visible.
-- Rewrite the fallback tests (709-790) that assumed Convergence disappears.
+- Convergence staying visible after point select is untested today, so it gets **new** tests. The "tab switching" block (709-790) stays; its "hides Convergence tab when no history data" case (769) remains valid for a solve with no recorded history.
 
 **Dependencies:** Size M. **Depends on:** none.
 
-**Evidence:** Current code this package changes or relies on: `frontend/src/panels/OptimiserPreview.tsx`, `frontend/src/panels/optimiser/SummaryTab.tsx`, `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/optimiser/QuotesTab.tsx`, `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/panels/__tests__/OptimiserPreview.test.tsx`, `frontend/src/panels/__tests__/OptimiserPreview.storeIntegration.test.tsx`, `src/haute/schemas.py`.
+**Evidence:** Current code this package changes or relies on: `frontend/src/App.tsx`, `frontend/src/panels/OptimiserPreview.tsx`, `frontend/src/panels/ModellingPreview.tsx`, `frontend/src/panels/optimiser/SummaryTab.tsx`, `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/optimiser/QuotesTab.tsx`, `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/panels/__tests__/OptimiserPreview.test.tsx`, `frontend/src/panels/__tests__/OptimiserPreview.storeIntegration.test.tsx`, `src/haute/schemas.py`, `src/haute/routes/_optimiser_frontier.py`.
 
 ### OPT-V03 — Shared ResultsWorkspace shell, optimiser on it, provenance strip
 
@@ -203,15 +285,15 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
      - a provenance slot and an intro `{title, description}`;
      - the `role=tabpanel` body keyed by tab, with `aria-labelledby` and the `validation-workspace` class.
   2. The `validation.css` import moves into `ResultsWorkspace`, so the optimiser is styled even when no model has been opened in the session. Replace the hard-coded `--model-accent` with `--results-accent` and `--results-accent-soft`, defaulting to the model tokens. `ChartScaffold.tsx` **stays where it is**: it already has consumers outside modelling (e.g. `editors/banding/BandingHistogram.tsx`).
-  3. Move ModellingPreview onto the shell with no behaviour change. Share the diagnostics-set label helper, which removes the duplication with `modelling/SummaryTab.tsx:227-229` and guards the `evaluation!` non-null assertion.
+  3. Move ModellingPreview onto the shell with no behaviour change. Share the diagnostics-set label helper, which removes the duplication between `ModellingPreview.tsx:290` and `modelling/SummaryTab.tsx:227-229`, and replace the `evaluation!` non-null assertion in the diagnostics strip (`ModellingPreview.tsx:294`) with an explicit guard.
   4. OptimiserPreview on the shell:
-     - ariaLabel "Optimiser validation", `idPrefix` "optimiser-preview", accent `var(--warning-strong)`;
+     - ariaLabel "Optimiser validation", `idPrefix` "optimiser-preview", accent from a new `--optimiser-accent` / `--optimiser-accent-soft` token pair. It must **not** reuse a warning colour: the amber strip (OPT-V02) and breached statuses use the warning palette, and a warning-coloured accent would make the whole pane read as a warning;
      - add `optimiserPreviewHeight` to `useUIStore`;
      - keep `HeaderPointStepper` as a header action.
-  5. `OPTIMISER_VIEW_INTRODUCTIONS` for Frontier, Summary, Rates, Quotes and Convergence. **Clamp-rate copy waits for Q7.**
+  5. `OPTIMISER_VIEW_INTRODUCTIONS` for Frontier, Summary, Rates, Quotes and Convergence. Clamp-rate copy uses the definition in "Price-contour contract (0.5.0)".
   6. Provenance strip: "Online|Ratebook · N quotes × M scenario steps · As solved|Frontier point i of N · Expected values from the scoring models on the solve quotes; not observed outcomes."
   7. FrontierTab stacks the chart above the detail card below the 640 px container breakpoint. Replace the 9–11 px uppercase labels with the modelling type scale.
-- **Risks.** Keep the extraction mechanical. The selected-row colour in modelling depends on the token default. The canvas-assurance snapshots will change; they are regenerated in OPT-V13.
+- **Risks.** Keep the extraction mechanical. It is: `PreviewPanelFrame` already takes `initialHeight`, `onHeightChange` and `focused`, `PreviewPanelTabs` already takes `appearance` and `idPrefix`, and `validation.css` already has the container query at 640 px. The selected-row colour in modelling depends on the token default. The canvas-assurance snapshots will change; they are regenerated in OPT-V13.
 
 **Acceptance:**
 
@@ -241,10 +323,11 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
 - **Backend changes.**
   1. Replace `OptimiserFrontierResponse.points: list[dict]` with a strict `OptimiserFrontierPoint`: `total_objective`, `thresholds`, `totals`, `lambdas` maps, `converged`, `iterations`, and `sv_*` stats. Replace the factor-table rows with strict models: level, rate, quote_count, plus declared factor keys.
      - A model validator enforces **map-key completeness**. `thresholds`, `totals` and `lambdas` each hold exactly the configured constraint names, and `effective_bounds` (from OPT-V01) matches them.
-  2. Return `input_summary` (`data_source`, `source_file`, `graph_fingerprint`, solver settings) on `OptimiserSolveResult`. Today it is built only for the artifact (`optimiser.py:526-541`).
+  2. Return `input_summary` (`data_source`, `source_file`, `graph_fingerprint`, solver settings) on `OptimiserSolveResult`. Today `_input_summary` (`optimiser.py:526-541`) builds it only for the artifact, from the job's `input_provenance` (`_optimiser_service.py:1209`); reuse both rather than building a second summary.
   3. Add `diagnostics_errors: list[{diagnostic, error_type, message}]`. Populate it where stats currently return `None` silently (`_optimiser_solver.py:159-168`) and where the frontier fails, keeping `frontier_error` in the list.
   4. Remove the `.get(..., 0.0)` and `{}` baseline fallbacks (`optimiser.py:209-210`, `_optimiser_frontier.py:324-325, 410-411`). A missing baseline is an error, not a zero.
-  5. Run the finite-JSON walk on the optimiser status payload, mirroring the modelling status route's `_result_finite_validated`.
+     - The library side already raises on a missing frontier total or λ (price-contour 0.5.0), so the strict rows here never receive a fabricated zero from it.
+  5. Run the finite-JSON walk on the optimiser status payload (`optimiser.py:312-352`). The walk already exists as `_non_finite_paths` (`optimiser.py:626`), used today only by the artifact payload validation (`optimiser.py:729`); mirror the modelling status route's `_result_finite_validated` in how it is applied.
   6. Regenerate the contracts, the goldens and the OpenAPI fingerprint.
 - **Frontend changes.**
   1. Delete DetailCard's ad-hoc `optionalPointNumber` parsers (13-58) and the ad-hoc factor parsing, in favour of generated types and one guard. The throw paths go with them, so no error boundary is needed.
@@ -252,7 +335,7 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
   3. The provenance strip adds the source.
   4. A "Diagnostics issues" `role=alert` in Summary, reusing the modelling pattern (`modelling/SummaryTab.tsx:256-309`).
 - **Risks.**
-  - The price_contour point columns are dynamic. Enumerate them from a real solve before typing them as maps.
+  - The price_contour point columns are dynamic, and differ by mode (see "Price-contour contract (0.5.0)"; `frontier_points_schema` gives the exact columns per mode): ratebook points have `clamp_rate` and **no** `sv_*` columns, so the `sv_*` stats are optional on a ratebook point and required on an online one. Pct thresholds arrive as fractions. Pin both shapes with a test against a real solve before typing them as maps.
   - The MLflow frontier CSV (`optimiser.py` ~960-970) must move to the new shape.
   - Contract changes trip the OpenAPI fingerprint and the mypy Literal gates.
   - **Legacy stats transition.** `scenario_value_stats` and `scenario_value_histogram` stay typed as they are in OPT-V04. OPT-V10 owns their removal, and in the same change updates the point summaries, OPT-V02's fixtures and the Summary pane.
@@ -274,8 +357,8 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
 
 - **Files.** `frontend/src/panels/modelling/LossTab.tsx`, `frontend/src/panels/modelling/LossChart.tsx`, `frontend/src/panels/IterationLinesChart.tsx` *(new, extracted)*, `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/OptimiserConfig.tsx`, `src/haute/routes/_optimiser_solver.py`, `src/haute/routes/_optimiser_frontier.py`, `src/haute/schemas.py`, `frontend/src/panels/optimiser/__tests__/ConvergenceChart.test.tsx`, `frontend/src/panels/modelling/__tests__/LossTab.test.tsx`, `frontend/src/panels/modelling/__tests__/LossChart.test.tsx`, `tests/test_optimiser_routes_real_library.py`.
 - **Backend changes.**
-  1. Map `RatebookResult.per_factor_results` into a typed `ratebook_cd_trace: [{cd_iteration, factor, total_objective, lambdas}]`, replacing the hard-coded `history=None` for ratebook (`_optimiser_solver.py` ~1224, `_optimiser_frontier.py` ~474).
-  2. The trace carries objective and λ only. It has no constraint totals, and it is empty after load, so label it "live solves only".
+  1. Map `RatebookResult.per_factor_results` into a typed `ratebook_cd_trace: [{cd_iteration, factor, total_objective, total_constraints, lambdas}]`, replacing the hard-coded `history=None` for ratebook (`_optimiser_solver.py` ~1224, `_optimiser_frontier.py` ~474).
+  2. The trace carries the objective, the constraint totals and λ per pass and factor (price-contour 0.5.0 records), so the ratebook view can draw constraint totals against their bounds like the online one. A result loaded from a format-1 save has no trace; label the view "live solves only".
   3. Cap its length the way `loss_history` is capped.
   4. Default for `record_history`: see Q5.
 - **Frontend changes.**
@@ -288,13 +371,13 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
   3. For ratebook: the objective by CD pass, coloured by factor.
   4. A `ChartValuesTable` replaces the ad-hoc iterations table.
   5. Empty state: "History was not recorded; enable Record history in the Solve pane" (`OptimiserConfig.tsx:111, 696`).
-- **Risks.** `per_factor_results` is internal to price_contour, so pin its shape with a test against the installed version.
+- **Risks.** `per_factor_results` records name their factor and pass explicitly (`cd_iteration`, `factor`, `factor_index`, price-contour 0.5.0), so the trace never infers the factor from position; pin the record fields with a test against the installed version.
 
 **Acceptance:**
 
 - The LossTab and LossChart tests stay unchanged. Mutate the adapter to prove they exercise it.
 - Convergence: real tick values; bound lines; a zero λ change on the log axis; the ratebook view; the empty state.
-- pytest: a real small ratebook solve gives a finite trace whose last objective equals `total_objective`.
+- pytest: a real small ratebook solve gives a finite trace whose last objective agrees with `total_objective` to a relative 1e-6. It is not exact by design: the trace reports each inner solve on the search's working multiplier, and `total_objective` is the canonical evaluation of the final tables.
 
 **Dependencies:** Size M. **Depends on:** OPT-V03.
 
@@ -316,7 +399,10 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
   2. `frontierSlices.ts` groups the n^k grid by the other constraints' `threshold_*` values. Exact equality is safe because those values come from linspace. "Holding <other> at" selects pick a slice, and the slice is drawn as a line in bound order, so the chart shows a frontier rather than a projected cloud. The footnote states the slice size and any truncation at `FRONTIER_POINT_LIMIT`.
      - **Slice identity contract.** Every point keeps its **global** index through filtering, overlap grouping, stepping and publishing. Selection, the stepper and `/frontier/select` always use the global index, never a slice-local one.
      - When a point is selected from outside the displayed slice (for example from Summary), the slice switches to the one containing it. The as-solved anchor comes from `solvedResult` (OPT-V02) and always renders; when it lies outside the current slice it is drawn hollow, with the legend note "as solved (different slice)".
-     - **Feasible means converged and every effective bound met.** "Every" includes unswept constraints, judged with OPT-V01's `constraintAttainment`, because `converged=True` can coexist with a breached bound. Codex saw a converged ratebook point with volume 4.968 against a minimum of 5.5, and haute forwards `converged` separately from the totals (`_optimiser_frontier.py:459`).
+     - **Feasible means converged and every effective bound met.** "Every" includes unswept constraints, judged with OPT-V01's `constraintAttainment` against the **absolute** effective bound (pct thresholds are fractions on the raw point; see OPT-V01). The two modes mean different things by `converged`:
+       - **online**: λ converged **and** every constraint met within the library's own tolerance (`|t| · tol · 10`, `online.rs:154`), so a breach here is at most that tolerance;
+       - **ratebook**: only that the factor values stopped moving (max |Δfactor| over a CD pass < `cd_tolerance`, `grouped_py.rs:582-583`). There is no feasibility check at all. Codex saw a converged ratebook point with volume 4.968 against a minimum of 5.5.
+       Haute forwards `converged` separately from the totals (`_optimiser_frontier.py:465`), so the check is haute's in both modes, and DetailCard's reason text names which kind of convergence failed or which bound is breached.
      - The line joins **feasible** points only. Non-converged points are drawn hollow; converged-but-breached points get a distinct cross marker labelled "breached". Both stay selectable and inspectable, with the reason in DetailCard, and neither is ever joined.
   3. Extract AveTab's focus/hover aria-live detail into `ChartFocusDetail`, used by both AveTab and the frontier.
   4. DetailCard:
@@ -360,7 +446,7 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
 - **Files.** `frontend/src/panels/modelling/GLMRelativitiesTab.tsx`, `frontend/src/panels/RelativityBars.tsx` *(new, extracted)*, `frontend/src/panels/modelling/FeatureBrowser.tsx`, `frontend/src/panels/modelling/FeatureDiagnosticTab.tsx`, `frontend/src/panels/optimiser/RatebookRatesTab.tsx`, `frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx`, `frontend/src/panels/optimiser/ratebookFactorTables.ts`, `frontend/src/panels/__tests__/GLMComponents.test.tsx`, `frontend/src/panels/optimiser/__tests__/RatebookRatesTab.test.tsx` *(new)*, `frontend/src/panels/optimiser/__tests__/RatebookImpactBeeswarm.test.tsx` *(new)*.
 - **Backend changes.** None. `quote_count` per level already ships.
 - **Frontend changes.**
-  1. Extract the diverging-around-1.0 bar list from GLMRelativitiesTab into `RelativityBars`, with chart tokens replacing `var(--accent)`.
+  1. Extract the diverging-around-1.0 bar list from GLMRelativitiesTab into `RelativityBars`. The bars already use `--chart-above`/`--chart-below` (`GLMRelativitiesTab.tsx:18-19, 104`); what needs tokenising is the hard-coded `rgba(255,255,255,.15/.3)` at 95 and 118. `var(--accent)` stays on the sort toggle (62-63), which is not part of the extraction.
   2. Rates tab in the FeatureDiagnosticTab layout:
      - a FeatureBrowser of factors ranked by quote-weighted \|log rate\|, labelled "Rate spread" (how far the factor's rates move from 1.0), with search;
      - `RelativityBars` in banding order;
@@ -407,19 +493,20 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
      - The chosen frame must contain the configured `quote_id` column, with the same dtype rules (`_invalid_quote_id_dtype_detail`).
      - Each column must be constant within a quote, validated loudly: a quote with two different values is a named error.
      - All of this is added to `OptimiserConfig`, the config key lists and the staleness key in `_cache.py`, so changing the frame or the columns makes the result stale.
-     - **UI:** in OptimiserConfig, an "Analysis input" select listing the connected frames (defaulting to the data input), then a multi-select of that frame's columns from its schema, with help text saying they are used only for result breakdowns.
+     - **UI:** in the optimiser **Data** pane (the config is split into Data, Factors, Constraints, Solve and Export panes, `optimiserPanes.ts`), an "Analysis input" select listing the connected frames (defaulting to the data input), then a multi-select of that frame's columns from its schema, with help text saying they are used only for result breakdowns.
   2. **Two paths, depending on the chosen frame.**
      - *The frame is the data input*: carry the columns through input preparation, as below.
-     - *The frame is a different connected input*: resolve it as a side input (as `extract_ratebook_factors` does for `banding_source`, `_optimiser_input.py:826`), project it to `quote_id` + the analysis columns, reduce it to one row per quote, and stream it into the same `quote_analysis.parquet`.
+     - *The frame is a different connected input*: project it to `quote_id` + the analysis columns, reduce it to one row per quote, and stream it into the same `quote_analysis.parquet`.
+       - **This is more than reusing the `banding_source` resolver.** Online setup executes only up to the data-input node (`_setup_execution_target_node_id`, `_optimiser_input.py:412-428`). A side input counts as consumed only if it is in that node's lineage (`_optimiser_service.py:3198-3201`), and `_optimiser_side_input_ids` preserves `banding_source` only in ratebook mode. As things stand, a separate analysis frame would be neither executed nor preserved in online mode. The package therefore also changes: the setup execution target (so the analysis frame's branch runs in both modes), the projection seeds (`_optimiser_solve_required_columns_by_node`, so only `quote_id` + the analysis columns are demanded from it), the seed/capture plan, and `_optimiser_side_input_ids` (so `analysis_input` is preserved in both modes). `extract_ratebook_factors` (`_optimiser_input.py:826`) is the model for the streamed extraction once the frame is available.
        - **Coverage rule:** a solve quote with no row in the analysis frame falls into a "Missing" level, and the count is shown in the Segments tab. Analysis-frame quotes that are not in the solve are ignored.
-     - **Carry-through (data-input path).** Today both stages drop non-solver columns: the upstream column demand (`_optimiser_input.py:461`) and the validation projection (`_optimiser_input.py:757`), before the worker writes the projected frame (`_optimiser_service.py:1517`). Extend both stages to retain the configured `analysis_columns`, and only those, through to the worker's parquet. The solver's own inputs (the grid build and the library call) still see solver columns only.
+     - **Carry-through (data-input path).** Today both stages drop non-solver columns: the upstream column demand (`_optimiser_input.py:461`) and the validation projection (`_optimiser_input.py:757`), before the worker writes the projected frame (`_optimiser_service.py:~1527`). Extend both stages to retain the configured `analysis_columns`, and only those, through to the worker's parquet. The solver's own inputs (the grid build and the library call) still see solver columns only.
   2b. **Extraction.** In `_build_grid_from_parquet`, before the solver input is deleted, stream `quote_analysis.parquet` (`quote_id` + the analysis columns, one row per quote). The scan is projected and grouped with `group_by(quote_id).first()`, sunk with `sink_parquet` and never collected. The constant-within-quote check is a streamed `n_unique` per quote, reduced to a boolean before any collection.
   3. **Cardinality metadata.** Also record each column's `approx_n_unique` and maximum string byte length, for OPT-V11's gate.
   4. **Ownership contract**, as approved:
      - setup ownership, and explicit adoption into the completion `artifact_handles` map (`_optimiser_solver.py:956`);
-     - `JobStore.lease` defers deletion while a reader holds the file, and collection happens inside the lease;
-     - cleanup on failure or cancel, and startup reaping;
-     - the file lives for the **24-hour job lifetime**, not the 15-minute heavy-state lifetime, and is untouched by `_clear_result_data_after_user_action` and by frontier recompute.
+     - `JobStore.lease` *(new; JobStore has no lease concept today)* defers deletion while a reader holds the file, and collection happens inside the lease;
+     - cleanup on failure or cancel, and startup reaping, built on the existing `register_artifact_cleaner` / `detach_artifact_handle` (`_job_store.py`) and `reap_stale_optimiser_artifacts` (`_optimiser_artifacts.py:85`);
+     - the file lives for the **24-hour job lifetime**, not the heavy-state lifetime (15 minutes idle, extended by `touch_heavy_objects` up to the job lifetime, `_job_store.py:506-535`), and is untouched by `_clear_result_data_after_user_action` and by frontier recompute.
   5. **Durable scenario grid.** Always, with or without analysis columns, record the immutable `scenario_grid: list[{optimal_step, scenario_value}]`. It is the complete sorted grid, taken from the solver input at setup, and it is returned on `OptimiserSolveResult` and kept in the job for its 24-hour lifetime. It is the **only** source for the bar set, "grid contains 1.0" and the range edges; nothing is inferred from the chosen rows. (Two grids, `[0.8,1.0,1.2,1.4]` and `[0.8,0.95,1.2,1.4]`, can produce identical apply frames.)
   6. With no analysis columns configured, no side table is written. The segment views show their empty state only when there are **neither** analysis keys **nor** factor keys (see OPT-V09C).
 
@@ -429,11 +516,12 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
 - **Measured scaling:** the setup process's peak RSS with and without extraction, at 1M and 5M quotes × 10 steps, with thresholds in the spec. The largest size runs once, in the background.
 - Mutation-check the lease deferral.
 - pytest (side-input path): a separate connected frame supplies `region`, is joined by `quote_id`, and produces the same side table; a solve quote missing from it lands in "Missing" with the right count; a frame without `quote_id` is refused with an actionable message; changing `analysis_input` makes the result stale.
+- pytest (side-input path, **online mode**): the separate frame is executed and preserved even though it is outside the data input's lineage; only `quote_id` + the analysis columns are demanded from it (mutation: drop the execution-target change and watch the test fail).
 - vitest: the frame select lists only the connected inputs, the column multi-select follows the chosen frame's schema, and switching frames clears columns that no longer exist.
 
-**Dependencies:** Size M. **Depends on:** OPT-V04.
+**Dependencies:** Size L (M for the data-input path alone; the side-input path's execution changes add the rest). **Depends on:** OPT-V04.
 
-**Evidence:** Current code this package changes or relies on: `src/haute/_types.py`, `src/haute/_cache.py`, `src/haute/routes/_optimiser_input.py`, `src/haute/routes/_optimiser_service.py`, `src/haute/routes/_optimiser_artifacts.py`, `src/haute/routes/_optimiser_solver.py`, `src/haute/routes/_job_store.py`, `frontend/src/panels/OptimiserConfig.tsx`, `docs/building-models/nodes/optimiser.md`, `tests/test_job_store.py`.
+**Evidence:** Current code this package changes or relies on: `src/haute/_types.py`, `src/haute/_cache.py`, `src/haute/routes/_optimiser_input.py`, `src/haute/routes/_optimiser_service.py`, `src/haute/routes/_optimiser_artifacts.py`, `src/haute/routes/_optimiser_solver.py`, `src/haute/routes/_job_store.py`, `frontend/src/panels/OptimiserConfig.tsx`, `frontend/src/panels/optimiser/optimiserPanes.ts`, `docs/building-models/nodes/optimiser.md`, `tests/test_job_store.py`.
 
 ### OPT-V09B — Bounded queries over the chosen scenarios
 
@@ -446,7 +534,7 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
   1. `choice_query(job, target, reducer)` works over the target's apply result: the as-solved apply, or the point's apply artifact.
      - It uses the chosen `scenario_value`, the `optimal_step` index, and the objective and constraints at the chosen scenario. When analysis columns exist, it joins the OPT-V09A side table 1:1 on `quote_id`, with the row count asserted.
      - Callers pass a **reducer** (histogram, group-by or top-k) that runs in the lazy plan and returns a small result. No API returns the whole frame.
-  2. Replace `load_apply_artifact`'s eager read (`_optimiser_artifacts.py:364`) with `scan_parquet` inside a lease. In the same package, adapt the `/apply` callers (`optimiser.py:424`, `_optimiser_limits.py:70`) to a lazy count plus a bounded `head(limit)`, collected inside the lease.
+  2. Replace `_load_apply_result_artifact`'s eager `pl.read_parquet` (`_optimiser_artifacts.py:339, 364`) with `scan_parquet` inside a lease. In the same package, adapt **all three** callers: the `/apply` route (`optimiser.py:424`), point materialisation (`materialise_point_apply`, `_optimiser_frontier.py:1019`), and the preview builder that consumes the frame (`limited_apply_preview_payload`, `_optimiser_limits.py:70`), which becomes a lazy count plus a bounded `head(limit)`, collected inside the lease.
   3. **Admission** for each query, with its own estimate; over budget returns an actionable refusal. Single-flight is keyed by `(job, generation, target, query)`.
   4. **Point materialisation**, as approved:
      - `apply_from_grid` cannot be interrupted;
@@ -455,6 +543,7 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
      - a shared result per point, where a disconnecting caller detaches only itself.
   5. **Availability.** The as-solved target is available for 24 hours. A point is available if its artifact exists, or while the grid is alive. Otherwise the response is a named 410.
   6. **Precision.** Totals are Float64 sums of the Float32 values the solver ingested. Summed objective and constraints at the chosen scenarios equal the solved totals.
+  7. **Reuse check.** `ApplyOptimiser.with_explainer_columns` (`_optimiser_apply_explainability.py:194-202`) already emits per-quote `selected`, `is_baseline` and `linearised_<name>` columns. Before writing new reducers, check whether any Quotes-explorer column (OPT-V12) is already produced there; do not build a second derivation of the same value.
 
 **Acceptance:**
 
@@ -465,28 +554,31 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
 
 **Evidence:** Current code this package changes or relies on: `src/haute/routes/_optimiser_artifacts.py`, `src/haute/routes/_optimiser_frontier.py`, `src/haute/routes/optimiser.py`, `src/haute/routes/_optimiser_limits.py`, `src/haute/_execution_admission.py`, `tests/test_optimiser_apply.py`.
 
-### OPT-V09C — Ratebook per-quote choices (decision: Q8)
+### OPT-V09C — Ratebook per-quote choices (decisions: Q8, Q17)
 
-**Why:** Ratebook solves return no per-quote frame, so the wave 4 tabs cannot describe them without a canonical per-quote evaluation from price_contour.
+**Why:** The wave 4 tabs describe ratebook solves from the library's canonical per-quote evaluation (price-contour 0.5.0), never from a haute reconstruction.
 
 **Plan:**
 
-- A ratebook solve has no per-quote frame, and haute refuses to substitute the online apply (`_optimiser_frontier.py:89`, `_builders.py:1914`).
-- The options are: **(a)** a canonical per-quote evaluation primitive in price_contour (OPT-PC01), persisted while the grid is alive; **(a′)** the library exposes only its factor-product → step rule and haute reads the values from the in-memory grid during the solve; or **(b)** the Adjustments, Segments and Quotes tabs stay **online-only**, with an explicit "not available for ratebook solves" state.
+- **Persist the canonical frames.** At solve completion, persist `RatebookResult.quote_results` as the job's apply artifact (the same handle, reaper and cleanup as online). For a frontier point, `RatebookOptimiser.evaluate(grid, contexts, frontier_factor_tables[i]).quote_results` is the point's apply artifact, materialised through `OPT-V09B`. Then remove the ratebook `/apply` gate (`_RATEBOOK_APPLY_DETAIL_UNSUPPORTED`, `_optimiser_frontier.py`), which exists only because no per-quote frame was available.
+- **Two different "ratebook adjustments" exist (Q17).**
+  - **Solver-evaluated:** the solver prices each quote at the grid step nearest its factor product, clamped to the grid ends (see "Price-contour contract (0.5.0)"). The objective and constraint totals, and the frontier, are computed on this.
+  - **Deployed:** the Optimiser Apply node's ratebook path (`_apply_ratebook` in `_builders.py`) multiplies the looked-up factor rates into `optimised_factor` with **no** snapping to the grid, then clips it to the solve's `combined_factor_bounds` (Q17, decided: see Decisions).
+  - They agree exactly when the product lands on a grid value inside the range, and at both edges: a quote whose product is past a grid end now deploys at that end, the step the solver evaluated. Inside the range they can differ by the rounding to the nearest step. The wave 4 tabs describe **the solver-evaluated step**, because the objective and constraint values at that step are the only ones the solve vouches for, together with a per-quote "deployed factor differs from evaluated step" flag and a portfolio count for the within-range rounding, so the gap is visible rather than hidden.
+- The "deployed factor differs from evaluated step" flag compares the frame's `factor_product` (the f32 product the kernel used) with its `optimal_scenario_value`; it is never recomputed in haute.
 - Ratebook reviewers already have the Rates tab (OPT-V07) and the beeswarm.
-- Under (a), the tests are per-quote and aggregate agreement for the objective and every constraint.
-- **Factor segments under (a).** A quote's factor memberships come from the separate banding source and are already persisted separately (`_optimiser_input.py:869, 893`). `choice_query` gains a second, leased 1:1 join on `quote_id` to those per-quote factor rows. A composite factor is grouped by **all** its constituent columns, and its level label matches the Rates tab.
+- The tests are per-quote and aggregate agreement for the objective and every constraint.
+- **Factor segments.** A quote's factor memberships come from the separate banding source and are already persisted separately (`_optimiser_input.py:869, 893`). `choice_query` gains a second, leased 1:1 join on `quote_id` to those per-quote factor rows. A composite factor is grouped by **all** its constituent columns, and its level label matches the Rates tab.
   - Factor keys make the Segments view non-empty even with no analysis columns.
   - Test: a composite factor with **no analysis columns configured** produces factor segments whose counts sum to `n_quotes`.
-- Under (b), none of this applies.
 
 **Acceptance:**
 
-See the plan: agreement tests per quote and in aggregate for the objective and every constraint under (a) or (a′); under (b), the explicit unavailable state renders for ratebook results on all three tabs.
+Agreement tests per quote and in aggregate for the objective and every constraint, for the as-solved result and a frontier point. Also: a quote whose deployed factor differs from its evaluated step (within-range rounding only, since the collar closed the past-the-edge gap) is flagged as "deployed factor differs from evaluated step", and the flagged count matches a hand count on a small fixture; a quote whose product lies past a grid edge is not flagged, because it deploys at the edge step.
 
-**Dependencies:** Q8 decides between canonical evaluation and online-only; consumes OPT-PC01 under (a) or (a′). Depends on OPT-V09B.
+**Dependencies:** Q8 and Q17 are decided (canonical evaluation; the collar, with the tabs describing the evaluated step). Needs price-contour 0.5.0. Depends on OPT-V09B.
 
-**Evidence:** Current code this package changes or relies on: `src/haute/routes/_optimiser_frontier.py`, `src/haute/_builders.py`.
+**Evidence:** Current code this package changes or relies on: `src/haute/routes/_optimiser_frontier.py`, `src/haute/_builders.py` (`_apply_ratebook`).
 
 ### OPT-V10 — Adjustments tab: the distribution of chosen scenario values, including for the selected point
 
@@ -650,39 +742,9 @@ The named specs locally; CI runs the full suite.
 
 **Evidence:** Current code this package changes or relies on: `frontend/e2e/canvas-assurance.spec.ts`, `.github/workflows/e2e-snapshots.yml`, `frontend/e2e/core-flows.spec.ts`.
 
-### OPT-PC01 — Per-quote evaluation of ratebook solutions in price_contour
-
-**Why:** In ratebook mode the optimiser does not choose a scenario per quote. It solves for factor-table rates, and each quote's adjustment follows from the product of its factor rates. `RatebookResult` returns the factor tables and the portfolio totals, but no per-quote frame saying which scenario each quote landed on, or what its objective and constraint values are there. So the Adjustments, Segments and Quotes tabs (`OPT-V10` to `OPT-V12`) cannot describe a ratebook solve.
-
-Haute cannot safely rebuild those values itself. The solver maps the factor product onto the scenario grid, clamping or remapping at the grid edges, inside price_contour's Rust code, and that rule is not documented clearly (see `OPT-PC03`: Codex saw a `clamp_rate` of 0.42 with every final factor inside the range). A haute copy could quietly disagree with what the solver actually evaluated, which is the worst failure for sign-off. Haute already refuses to substitute the online apply for ratebook results for this reason.
-
-**What a ratebook reviewer gains**, for the as-solved result and any frontier point:
-1. **Adjustments.** How much of the book goes up, down or stays unadjusted, and how much is pinned at the edge of the scenario range. Rates multiply together, so quotes can be pushed past the grid ends; this shows the effect that `clamp_rate` only hints at.
-2. **Segments.** The mean final adjustment by analysis column and by rating factor. The factor view differs from the Rates tab: a level's rate may be 1.05, but its quotes' final adjustments also depend on every other factor.
-3. **Quotes.** Look up a quote, or the most-adjusted quotes, with its final adjustment and its objective and constraint values at that adjustment.
-
-**Plan:**
-1. In the price_contour checkout, read the ratebook evaluation path (the Rust code behind `RatebookResult` and the per-factor coordinate descent) to find where each quote's factor product becomes a grid step.
-2. Choose one of two shapes:
-   - **(a) Full evaluation.** `evaluate_ratebook(grid, factor_tables, quote_factors) -> frame[quote_id, optimal_step, scenario_value, objective, <constraints>…]`, running the same code path the solver uses.
-   - **(a′) Rule only.** Expose the factor-product → step mapping, for example `ratebook_steps(grid, factor_tables, quote_factors) -> frame[quote_id, optimal_step]`. Haute then reads the objective and constraints at that step from the grid while it is still in memory. This is a smaller library change with the same guarantee, provided the read happens during the solve and frontier materialisation, before the 15-minute heavy-state eviction.
-3. Release price_contour and raise haute's pin (`price-contour>=0.4.1,<0.5` in `pyproject.toml`) to the new version.
-4. Haute's side is `OPT-V09C`.
-
-**Acceptance:** For the objective and every constraint, per quote and in aggregate, the output agrees with `RatebookResult`'s totals, using the precision rule (Float32 inputs promoted to Float64 before summing). This holds:
-- on a small real ratebook solve;
-- on selected frontier points;
-- at both clamp edges, with a composite factor.
-
-A mutation of the step rule (for example, rounding instead of the library's rule) fails the agreement test.
-
-**Dependencies:** Q8 must choose (a) or (a′) over (b), which keeps the tabs online-only. `OPT-V09C` consumes this. Size L for (a), M for (a′).
-
-**Evidence:** `src/haute/routes/_optimiser_solver.py`, `src/haute/routes/_optimiser_frontier.py`, `src/haute/_builders.py`, `src/haute/routes/_optimiser_input.py`, `pyproject.toml`.
-
 ### OPT-PC02 — Cancellable or chunked point apply in price_contour
 
-**Why:** `apply_from_grid` is one Rust call with no cancellation argument and no slicing API (`price_contour/apply.py`, lines 482 and 534, in the installed 0.4.1). A frontier-point materialisation, once started, cannot be stopped, so rapid stepping through frontier points wastes work. `OPT-V09B` bounds this in haute: one materialisation per job, a latest-wins queue of depth 1, and admission before the call. But it cannot abort the apply that is already running.
+**Why:** `apply_from_grid` is one Rust call with no cancellation argument and no slicing API (`python/price_contour/apply.py:482-534`). Nothing in the library is cancellable today. The recent "Chunking ratebook" change (86e9e8c) chunks the ratebook factor-context build for memory, not the apply. `apply_lambdas_to_parquet_chunked` streams parquet to parquet in chunks and is a possible building block, but it is still one uninterruptible call, with no passthrough columns and no ratio constraints. A frontier-point materialisation, once started, cannot be stopped, so rapid stepping through frontier points wastes work. `OPT-V09B` bounds this in haute: one materialisation per job, a latest-wins queue of depth 1, and admission before the call. But it cannot abort the apply that is already running.
 
 **Plan:** Add a cancel token (checked between quote chunks in Rust), or a chunked apply API that haute can drive and stop between chunks. Haute's V09B scheduler then cancels the running apply when a newer point replaces it.
 
@@ -692,84 +754,32 @@ A mutation of the step rule (for example, rounding instead of the library's rule
 
 **Evidence:** `src/haute/routes/_optimiser_frontier.py`, `src/haute/routes/_optimiser_artifacts.py`.
 
-### OPT-PC03 — A verified definition of clamp_rate
+## Price-contour behaviour the packages rely on
 
-**Why:** `price_contour/ratebook.py` (around line 569 in 0.4.1) copies `clamp_rate` from Rust. The installed package docs (`price_contour-0.4.1.dist-info/METADATA`, around line 606) describe boundary-hit remappings. Neither of the two readings the plan assumed matches: Codex observed a `clamp_rate` of 0.42 with every final factor value inside the scenario range. Haute's Rates and Summary help copy (`OPT-V03`, `OPT-V07`) must say what the number means.
+Beyond the 0.5.0 contract above, these library facts shape the remaining
+packages (paths are in the `../price-contour` checkout):
 
-**Plan:**
-1. Read the Rust aggregation in the price_contour checkout and find its numerator and denominator: per quote or per level, per coordinate-descent pass or final.
-2. Document the definition in price_contour's docstring and README.
-3. Add a price_contour test that pins it.
-4. Write haute's intro and tooltip copy from that definition.
-
-**Acceptance:** A small hand-constructed ratebook case whose expected `clamp_rate` is computed by hand matches the library's value, and haute's copy states the same definition.
-
-**Dependencies:** None. It informs the copy in `OPT-V03` and `OPT-V07`. Size S.
-
-**Evidence:** `src/haute/routes/_optimiser_solver.py`, `frontend/src/panels/optimiser/SummaryTab.tsx`.
-
-## Price-contour context
-
-This section is for the session with price_contour checked out locally. It
-collects every library fact the planning and review rounds relied on, with
-line numbers from the installed 0.4.1 wheel (`.venv/Lib/site-packages/price_contour/`).
-Re-check them against the source checkout.
-
-**What the library does today**
-
-- **Baseline ("nearest 1.0") rule** (`apply.py` 190-192, 337-344): per quote,
-  the row with the smallest |scenario_value − 1.0|, taking the lowest
-  `scenario_index` on a tie. Haute's Scenario Expander builds grids with
-  `np.linspace(min, max, steps, dtype=float32)`, so an even step count has
-  no exact 1.0 row. Under the Q1 decision, haute uses this only for
-  `min_pct`/`max_pct` bounds and the "grid contains 1.0" flag.
-- **λ sign convention** (`apply.py` 284): the objective gains `+λ` for a min
-  constraint and `−λ` for a max constraint. A positive λ can occur together
-  with positive slack in this discrete solve; Codex probed a converged
-  point with bound 5.0, achieved 5.18 and λ 0.949. Haute must not call a
+- **λ sign convention** (`apply.py:284-294`; Rust `solver/argmax.rs`).
+  Each quote picks the step that maximises objective + Σ sₖ·λₖ·constraintₖ,
+  with sₖ = +1 for a min constraint and −1 for a max constraint; λ is kept
+  ≥ 0. A positive λ can occur with positive slack in this discrete solve
+  (Codex probed bound 5.0, achieved 5.18, λ 0.949), so haute never calls a
   positive λ "binding" (`OPT-V01`).
-- **Converged is not feasible.** A six-quote ratebook probe returned
-  `converged=True` with volume 4.968 against a minimum of 5.5
-  (`ratebook.py` 554 gives the coordinate-descent flag). Haute treats a
-  point as feasible only when it has converged **and** meets every
-  effective bound (`OPT-V06`).
-- **`min_pct`/`max_pct`** are supported as a fraction of the baseline total
-  (`solver.py` 750). Haute returns the effective absolute bound (`OPT-V01`).
-- **`apply_from_grid`** (`apply.py` 482, 534) takes only the grid, the
-  lambdas and the constraints. It has no passthrough columns (an extra
-  `premium` column disappears from both solve and apply output), no
-  cancellation and no slicing. Haute carries analysis columns in its own
-  side table (`OPT-V09A`); cancellation is `OPT-PC02`.
-- **Ratebook coordinate-descent trace** (`ratebook.py` 108-134, 264):
-  `RatebookResult.per_factor_results` carries only `total_objective` and
-  `lambdas` per pass and factor, and it is **empty after
-  `RatebookResult.load`**. `OPT-V05` pins this shape with a test against
-  the installed version.
-- **Precision.** Haute casts objective and constraint inputs to Float32.
-  The library's baseline equals those Float32 values promoted to Float64
-  and summed; a Polars Float32 sum differs in the seventh significant
-  figure. Every reconciliation in this roadmap uses Float64-of-Float32
-  sums.
-- **Frontier points** emit `threshold_*` and `total_*` for **every**
-  constraint, swept or not. Haute's point summaries currently keep only
-  the swept ones (`OPT-V01` fixes this).
-
-**Options for Q8 (ratebook per-quote results)**
-
-| Option | Library change | Haute work | Ratebook reviewers get |
-|---|---|---|---|
-| (a) Full per-quote evaluation | New function returning per-quote step, scenario value, objective and constraints (`OPT-PC01`) | `OPT-V09C` persists it while the grid is alive | Adjustments, Segments (including by rating factor) and Quotes, all matching the solve exactly |
-| (a′) Step rule only | Expose the factor-product → step mapping (`OPT-PC01`, smaller) | `OPT-V09C` computes steps and reads the values from the in-memory grid during the solve | The same, with the same guarantee, provided the grid read happens before eviction |
-| (b) Online-only | None | `OPT-V09C` shows an explicit "not available for ratebook solves" state | The Rates tab and beeswarm (`OPT-V07`) only |
-
-Option (b) can be followed later by (a) or (a′) without redoing any haute
-work. The recommendation: if ratebook is how rates are actually set in
-production, take (a′), falling back to (a) if the rule cannot be exposed
-cleanly.
-
-**Not needed after Q1:** a passthrough-metric column for an arbitrary
-price, which was once Q14. Dislocation is out of scope, so no price column
-is required.
+- **`converged` differs by mode.** Online: λ converged and every constraint
+  met within `|t| · tol · 10`. Ratebook: only that the factor values stopped
+  moving over a CD pass; no feasibility check (a six-quote probe converged
+  with volume 4.968 against a minimum of 5.5). Haute judges feasibility
+  itself (`OPT-V06`).
+- **`apply_from_grid`** (`apply.py:482-534`) takes only the grid, the
+  lambdas and the constraints: no passthrough columns (haute carries
+  analysis columns in its own side table, `OPT-V09A`), no cancellation and no
+  slicing (`OPT-PC02`).
+- **Ratebook CD trace.** `per_factor_results` is empty after
+  `RatebookResult.load` of a format-1 save and not persisted per quote;
+  `OPT-V05` labels the trace "live solves only".
+- **Precision.** Haute casts objective and constraint inputs to Float32;
+  every reconciliation in this roadmap uses Float64 sums of those Float32
+  values, as the library does.
 
 ## Screens today and gaps
 
@@ -794,8 +804,8 @@ A grep of optimiser code in the frontend and the backend finds no validation, ho
 | Tests | One test file per tab, `ValidationWorkspace.test.tsx`, and an e2e that asserts Summary and Model Info | No dedicated test file for Summary, DetailCard, Quotes, Rates or the beeswarm. Every fixture sets the distribution stats to `null`. The e2e touches only the Frontier tab |
 
 Code facts confirmed during planning, which change what the drafts assumed:
-- **"Current" is not the `scenario_value == 1.0` row.** price_contour picks, per quote, the row with the smallest `|scenario_value − 1.0|`, taking the lowest `scenario_index` on a tie (`.venv/Lib/site-packages/price_contour/apply.py:190-192, 337-344`). The Scenario Expander uses `np.linspace(min, max, steps, float32)` (`src/haute/_node_apply.py:272`), and with an even step count the grid has no 1.0 row.
-- **The in-memory grid does not last.** The heavy objects (`solver`, `solve_result`, `quote_grid`, `factors_df`) expire after 15 minutes (`src/haute/routes/_job_store.py:35-37`). `/apply` drops all of them when there is no frontier (`src/haute/routes/optimiser.py:224-231`). Per-point apply artifacts are capped at 8 (`_optimiser_frontier.py:77`).
+- **"Current" is not the `scenario_value == 1.0` row.** price_contour picks one grid-wide step with the smallest `|scenario_value − 1.0|` in f32, taking the lowest index on a tie (`data.rs:96-119` in the checkout; see "Price-contour contract (0.5.0)"). The Scenario Expander uses `np.linspace(min, max, steps, float32)` (`src/haute/_node_apply.py:272`), and with an even step count the grid has no 1.0 row.
+- **The in-memory grid does not last.** The heavy objects (`solver`, `solve_result`, `quote_grid`, `factors_df`, `ratebook_factor_contexts`) expire after 15 minutes idle (`src/haute/routes/_job_store.py:35-37`); `touch_heavy_objects` slides the window, up to the 24-hour job lifetime (`_job_store.py:506-535`). `/apply` drops all of them when there is no frontier (`src/haute/routes/optimiser.py:224-231`). Per-point apply artifacts are capped at 8 (`_optimiser_frontier.py:77`).
 - **The solver input is deleted in `_build_grid`'s `finally`** (`src/haute/routes/_optimiser_service.py:3566-3596`), before the solve starts. Any extraction has to happen in `_build_grid_from_parquet` (:3598).
 - **Ratebook factors are already persisted** as an artifact (`_optimiser_artifacts.py:208-310`, `optimiser_ratebook_factors`).
 - **`validation.css` is imported only by `ModellingPreview.tsx:30`.** Both previews are lazy chunks.
@@ -804,15 +814,15 @@ Code facts confirmed during planning, which change what the drafts assumed:
 - **`_DEFAULT_TOLERANCE = 1e-6`** is the λ-convergence tolerance, not a feasibility tolerance (`_optimiser_solver.py:84`).
 
 Facts added after Codex plan review round 1:
-- **Frontier point summaries drop unswept constraints.** `limited_frontier_payload(..., constraint_names=list(ranges.keys()))` (`_optimiser_frontier.py:1227-1230`) and `_frontier_point_summary.py:115` keep only the swept axes, even though price_contour emits `threshold_*` and `total_*` for every constraint. A frontend selector cannot recover the missing rows; the backend has to be fixed (OPT-V01).
+- **Frontier point summaries drop unswept constraints.** `limited_frontier_payload(..., constraint_names=list(ranges.keys()))` at `_optimiser_frontier.py:1227-1230` and `_optimiser_solver.py:917-919`, and frontier select's re-derivation from the stored `constraint_names` (`_optimiser_frontier.py:311-318`), keep only the swept axes in `point_summaries[].constraints`, even though price_contour emits `threshold_*` and `total_*` for every constraint. The raw `points` rows still carry every column, and summary λ covers every constraint, but the typed summary the panes should read does not; the backend is fixed in OPT-V01.
 - **The as-solved frontier marker moves.** It is read from the displayed `result` (`OptimiserPreview.tsx:485-486`), which becomes the selected point's result (`useNodeResultsStore.ts:461`).
 - **A positive λ does not mean the constraint is tight.** Codex probed a converged point with bound 5.0, achieved 5.18 and λ 0.949. The solver is discrete, so a positive multiplier and positive slack can occur together. `lambdaCopy.ts` ("0 means not binding") is loose in the other direction too.
 - **λ sign convention.** The library adds `+λ` for a min constraint and `−λ` for a max constraint (`price_contour/apply.py:284`).
-- **`min_pct`/`max_pct` are live.** Config validation accepts them and the library supports thresholds as a fraction of the baseline (`_optimiser_service.py:3130`, `_optimiser_solver.py:1049`, `price_contour/solver.py:750`).
+- **`min_pct`/`max_pct` are live in the library, not in the UI.** Haute passes constraints to the library unvalidated (`_validate_config` does not inspect them), and only `_CONSTRAINT_THRESHOLD_KEYS` (`_optimiser_frontier.py:78`) names the pct kinds. The library sets the bound as baseline × fraction (`solver_py.rs:450-499`) and reports frontier thresholds as fractions. The constraint editor offers only min and max (`OptimiserConstraintSettings.tsx:34, 152`).
 - **Ratebook results omit `n_quotes` and `n_steps`** (`_optimiser_solver.py:1219`).
 - **Objective and constraint inputs are cast to Float32** (`_optimiser_input.py:760`). The library's baseline equals the Float32 values promoted to Float64 and then summed; a Polars Float32 sum differs in the 7th significant figure.
 - **Point apply artifacts are looked up before the grid** (`_optimiser_frontier.py:995`), so a materialised point stays usable after the grid is evicted.
-- **Nothing leases job-owned files to a reader.** JobStore deletes owned files when the job expires (`_job_store.py:284`), and completion builds a fresh `artifact_handles` map (`_optimiser_solver.py:956`). `load_apply_artifact` reads the whole parquet eagerly (`_optimiser_artifacts.py:364`).
+- **Nothing leases job-owned files to a reader.** JobStore deletes owned files when the job expires (`_job_store.py:284`), and completion builds a fresh `artifact_handles` map (`_optimiser_solver.py:956`). `_load_apply_result_artifact` reads the whole parquet eagerly (`_optimiser_artifacts.py:339, 364`), and has three callers (`optimiser.py:424`, `_optimiser_frontier.py:1019`, and the preview builder in `_optimiser_limits.py:70`).
 - **Point materialisation cannot be cancelled.** It runs synchronously outside the parent lock and only handles duplicates afterwards (`_optimiser_frontier.py:1054`), so a browser abort does not stop the backend work.
 - **Premium is not guaranteed to be a column.** The required columns are the configurable objective, scenario, ID and constraint columns (`_optimiser_input.py:725`).
 
@@ -871,16 +881,13 @@ One-to-one with the gap analysis. Several are closed in re-scoped form after the
 | 1 | `OPT-V01`, `OPT-V02`, then `OPT-V03` | Correctness and the shared shell | Fixes the wrong constraint status, the vanishing views and the moving anchor before any rebuild. `OPT-V03` follows `OPT-V02` because both edit `OptimiserPreview.tsx`. |
 | 2 | `OPT-V04`, then `OPT-V05`, `OPT-V06`, `OPT-V07` | Contract first, then charts | Typed rows land before the frontier rebuild; the charts reuse the extracted modelling components. |
 | 3a | Spec updates for wave 4 (lifecycle, precision, adjustment statistics), then `OPT-V09A`, then `OPT-V09B` | Backend foundation | Specs first. Measured-RSS results gate the analytics. |
-| 3b | `OPT-V10`, then `OPT-V11`, then `OPT-V12`, serially | Descriptive analytics | All three edit `schemas.py`, `client.ts` and the workspace. `OPT-V09C` and `OPT-PC01` run alongside if Q8 chooses (a) or (a′). |
+| 3b | `OPT-V10`, then `OPT-V11`, then `OPT-V12`, serially | Descriptive analytics | All three edit `schemas.py`, `client.ts` and the workspace. `OPT-V09C` runs alongside. |
 | 4 | `OPT-V13`; the affected checks (targeted tests, `tsc -b --noEmit`, `tests/test_docs_accuracy.py`, the OpenAPI fingerprint); one Codex review of the branch diff; then the PR | e2e and snapshots once | One PR (Q13). |
 
-`OPT-PC02` is deferred, and `OPT-PC03` can be taken whenever the
-price_contour checkout is open, before `OPT-V03`'s help copy is written.
+`OPT-PC02` is deferred.
 
 ## Open questions
 
-- **Q8, ratebook per-quote results:** (a), (a′) or (b). See "Price-contour
-  context".
 - **Q4, Adjustments weighting default:** the plan uses quote count, with an
   optional non-negative objective or constraint column at the chosen
   scenario.
@@ -904,6 +911,10 @@ price_contour checkout is open, before `OPT-V03`'s help copy is written.
   only in the config (the plan), or make the Scenario Expander always
   include 1.0?
 - **Q15, interruptible apply:** see `OPT-PC02`.
+- **Q17 (resolved 25 September 2026):** the Apply node clamps the combined
+  factor to the scored grid range (`combined_factor_bounds`) and does not
+  snap inside it; the wave 4 tabs describe the solver-evaluated step with a
+  flag for within-range rounding. See Decisions and `OPT-V09C`.
 
 ## Planning and review record
 
@@ -931,6 +942,25 @@ price_contour checkout is open, before `OPT-V03`'s help copy is written.
   5. **Round 5: approved.**
   6. **Round 6 (lean re-cut): changes requested.** Analysis columns were projected away before extraction. The grid needed a durable source. The ratebook factor join was missing. A zero-weight segment was undefined. Comparison wording remained.
   7. **Round 7: approved.**
+- **Verification against the code (25 September 2026, after round 7).**
+  Three read-only agents checked every claim against haute's frontend,
+  haute's backend and the price_contour source checkout, with one small
+  ratebook probe. The spec was corrected as follows:
+  - The per-quote ratebook frame already existed inside the library, so the
+    recommendation for Q8 moved from (a′) to (a).
+  - Frontier `threshold_*` is a fraction for pct constraints (OPT-V01,
+    OPT-V06).
+  - `clamp_rate` was defined: a search-space diagnostic.
+  - The deployed ratebook factor is not snapped to the grid; Q17 added.
+  - Online and ratebook `converged` differ (OPT-V06).
+  - OPT-V09A's side-input path needs execution-plan changes in online mode.
+  - Two more swept-only call sites (OPT-V01) and a third apply-artifact
+    reader (OPT-V09B).
+  - OPT-V02's tab reset and test claims corrected; OPT-V01 now covers
+    `LAMBDA_LABEL` and every test that pins old behaviour.
+  - Smaller file and line corrections throughout, and haute's `.venv` moved
+    from a stale price_contour 0.2.7 to an editable install of the
+    checkout.
 - **Existing bugs the review confirmed**, all covered by packages above:
   - Summary and DetailCard judge constraints against different bounds (`OPT-V01`).
   - Frontier point summaries drop unswept constraints (`OPT-V01`).

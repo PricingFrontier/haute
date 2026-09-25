@@ -66,6 +66,7 @@ def _artifact(
         "version": "rb_v1",
         "mode": "ratebook",
         "factor_tables": factor_tables,
+        "combined_factor_bounds": {"min": 0.1, "max": 10.0},
         "factor_dtypes": factor_dtypes,
     }
 
@@ -343,6 +344,7 @@ def real_ratebook_artifact_payload(real_ratebook_solve: dict[str, Any]) -> dict[
             "cd_iterations": solve_result.cd_iterations,
             "clamp_rate": solve_result.clamp_rate,
             "factor_tables": serialised,
+            "combined_factor_bounds": {"min": 0.1, "max": 10.0},
             "factor_dtypes": factor_dtypes,
         },
     }

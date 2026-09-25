@@ -134,6 +134,10 @@ export default function OptimiserPublishSection({
     const factorTables = isRatebook && hasFactorTables(cached.result.factor_tables)
       ? cached.result.factor_tables as FactorTables
       : null
+    // The scenario range the solve scored. Every frontier point shares its
+    // solve's grid, so the solve's collar is the collar of whichever target is
+    // published; the Apply node clips the combined factor to it.
+    const collar = isRatebook ? cached.originalResult.combined_factor_bounds : null
     // A frontier point's tables arrive only when it is materialised; the Rates
     // tab does that on view, and Export can ask for them here.
     const tablesKey = `${jobId}:${target ?? "solved"}`
@@ -271,9 +275,9 @@ export default function OptimiserPublishSection({
             label={isStale ? "Log outdated result" : "Log to MLflow"}
             tone="log"
           />
-          {factorTables && (
+          {factorTables && collar && (
             <ActionButton
-              onClick={() => downloadTextFile(factorTablesCsv(factorTables), `${nodeLabel}_factor_tables.csv`, "text/csv")}
+              onClick={() => downloadTextFile(factorTablesCsv(factorTables, collar), `${nodeLabel}_factor_tables.csv`, "text/csv")}
               disabled={false}
               busy={false}
               icon={<Download size={12} />}
@@ -292,6 +296,21 @@ export default function OptimiserPublishSection({
             />
           )}
         </div>
+        {collar && (
+          <p data-testid="optimiser-combined-factor-collar" className="text-xs" style={{ color: "var(--text-secondary)" }}>
+            {`Combined factor collar [${collar.min}, ${collar.max}] — apply it in your rating engine. `}
+            <span style={{ color: "var(--text-muted)" }}>
+              The optimiser scored only this range, so the Apply Optimisation node clips each quote&apos;s product of
+              factors to it. The CSV repeats it on every row.
+            </span>
+          </p>
+        )}
+        {isRatebook && !collar && (
+          <div role="alert" className="px-3 py-2 rounded-lg text-xs" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>
+            This ratebook result has no combined factor collar, so its factor tables cannot be published safely. Re-run
+            the solve.
+          </div>
+        )}
         {pointTablesLoad?.status === "error" && (
           <div role="alert" className="px-3 py-2 rounded-lg text-xs" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>
             Factor tables could not be loaded: {pointTablesLoad.error}
