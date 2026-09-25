@@ -227,3 +227,12 @@ def test_a_preview_that_captures_is_budgeted_as_the_cache_build_it_runs(
     # Once the join is cached the preview reads it and builds nothing.
     _publish_join(project, graph)
     assert budget_profile("B") is None
+
+
+def test_an_unadmitted_preview_builds_no_snapshots(project: Path) -> None:
+    """A lineage the shared cache does not admit captures nothing, whatever it reads."""
+    from haute._seed_plans import preview_builds_snapshots
+
+    graph = _joined(project, _csv_api_input(project))
+    assert preview_lineage_admitted(graph, "B", source="live") is False
+    assert preview_builds_snapshots(graph, "B", source="live") is False

@@ -2112,3 +2112,62 @@ def test_a_captured_scorer_writes_every_row_in_batches_under_a_row_limit(
         assert result_lf.collect()["pred"].to_list() == [0.5] * 5
     finally:
         _cleanup_registered_temp_files(temp_paths)
+
+
+def test_a_batch_whose_scored_schema_changes_fails_and_leaves_no_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each batch is its own part, so every part must keep the first one's schema.
+
+    A classifier's labels are not cast: one returning integers for a batch and
+    floats for the next would write parts that cannot scan back as one frame.
+    """
+    import tempfile
+
+    import haute._model_scorer as model_scorer
+
+    input_path = str(tmp_path / "input.parquet")
+    pl.DataFrame({"a": [1.0, 2.0]}).write_parquet(input_path)
+    sm = _make_scoring_model(feature_names=["a"])
+    sm._model.predict.side_effect = [np.array([0]), np.array([0.5])]
+    created: list[str] = []
+    real_mkdtemp = tempfile.mkdtemp
+
+    def tracked_mkdtemp(*args: Any, **kwargs: Any) -> str:
+        kwargs["dir"] = tmp_path
+        path = real_mkdtemp(*args, **kwargs)
+        created.append(path)
+        return path
+
+    monkeypatch.setattr(tempfile, "mkdtemp", tracked_mkdtemp)
+    monkeypatch.setattr(model_scorer, "_SCORE_BATCH_SIZE", 1)
+
+    with pytest.raises(ValueError, match="schema changed between batches"):
+        _batch_score_to_parquet(sm, input_path, ["a"], "pred", "classification")
+
+    assert created and not any(Path(path).exists() for path in created)
+
+
+def test_a_failed_score_into_a_callers_directory_removes_its_parts_but_not_the_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The caller owns a destination it supplied: only the parts written are removed."""
+    import haute._model_scorer as model_scorer
+
+    input_path = str(tmp_path / "input.parquet")
+    pl.DataFrame({"a": [1.0, 2.0]}).write_parquet(input_path)
+    sm = _make_scoring_model(feature_names=["a"])
+    sm._model.predict.side_effect = [np.array([0.5]), RuntimeError("second batch")]
+    monkeypatch.setattr(model_scorer, "_SCORE_BATCH_SIZE", 1)
+    generation = tmp_path / "generation"
+    generation.mkdir()
+    (generation / "keep.txt").write_text("the caller's", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="second batch"):
+        with model_score_output_destination(generation) as destination:
+            _batch_score_to_parquet(
+                sm, input_path, ["a"], "pred", "regression", destination=destination
+            )
+
+    assert generation.is_dir()
+    assert sorted(path.name for path in generation.iterdir()) == ["keep.txt"]

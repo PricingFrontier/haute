@@ -2583,6 +2583,8 @@ def _fold_recompute_report(report: list[ReportedCall]) -> NodeRecomputeFacts:
 # rest: Polars pushes the row bound they set into the scan below them.
 _ROW_BOUNDING_FRAME_METHODS = frozenset(
     {"head", "tail", "limit", "slice", "first", "last", "sample", "gather_every"}
+    # A callback receives the whole frame and may return any of its rows.
+    | {"pipe", "map_batches"}
 )
 _UNPROVEN_RECOMPUTE_REASONS = (
     "syntax_error",
@@ -2597,19 +2599,18 @@ def code_bounds_rows(code: object, facts: NodeRecomputeFacts | None) -> bool:
 
     Conservative: True unless every row is provably read. The code may bound
     rows when it calls a row-bounding method (``head``, ``limit``, ``slice``...)
-    on any receiver, slices with a subscript (``df[:10]``), or leaves a call
-    unproven in its recompute *facts* (an unresolved or unregistered call might
-    bound rows too). Some such code still reads every row (``sort().head()``);
-    it is answered True all the same. Blank code reads every row.
+    or hands the frame to a callback (``pipe``, ``map_batches``) on any receiver,
+    slices with a subscript (``df[:10]``), or has no recompute *facts* or facts
+    that leave a call unproven (an unresolved or unregistered call might bound
+    rows too; unparseable code is unproven). Some such code still reads every
+    row (``sort().head()``); it is answered True all the same. Blank code reads
+    every row.
     """
     if not isinstance(code, str) or not code.strip():
         return False
-    if facts is not None and facts.reason.startswith(_UNPROVEN_RECOMPUTE_REASONS):
+    if facts is None or facts.reason.startswith(_UNPROVEN_RECOMPUTE_REASONS):
         return True
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return True
+    tree = ast.parse(code)
     return any(
         (
             isinstance(node, ast.Call)

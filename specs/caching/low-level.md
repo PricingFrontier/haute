@@ -361,9 +361,9 @@ resulting plan.
   output is drained when it is captured, or when a child whose code reads every input row has its
   output drained. A captured batch Model Score, whatever its capture kind, reads every input row (it
   scores its whole input before its post-processing code runs); other code reads every input row unless it calls a row-bounding
-  method (`head`, `tail`, `limit`, `slice`, `first`, `last`, `sample`, `gather_every`) on any
-  receiver, slices with a subscript (`df[:10]`), or its recompute facts leave a call unproven
-  (`projection.code_bounds_rows`). The check is conservative: code that bounds rows only after
+  method (`head`, `tail`, `limit`, `slice`, `first`, `last`, `sample`, `gather_every`) or hands the frame to a
+  callback (`pipe`, `map_batches`) on any receiver, slices with a subscript (`df[:10]`), or has
+  no recompute facts or facts that leave a call unproven (`projection.code_bounds_rows`). The check is conservative: code that bounds rows only after
   reading them all (`sort(...).head(10)`) still counts as bounding, and its scorer keeps the
   row-local scan. A row bound below the scorer is pushed into its scan, which then scores only
   the rows kept. Drained, its row-local scan would be

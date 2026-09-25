@@ -2093,7 +2093,10 @@ def test_capture_set_is_settled_before_execution_and_claims(
         ("df = M.head(10)", False),
         ("df = M.slice(0, 10)", False),
         ("df = M[:10]", False),
+        ("df = M[0:10, ['a']]", False),
         ("df = my_helper(M)", False),
+        # A callback receives the whole frame and may return any of its rows.
+        ("df = M.pipe(lambda frame: frame)", False),
         # Reads every row, but a bounding call anywhere is answered
         # conservatively: the scorer keeps the row-local scan it had before.
         ("df = M.sort('a').head(10)", False),
@@ -2169,3 +2172,15 @@ def test_a_captured_scorer_below_drains_the_scorer_above_despite_its_post_code_b
         "M2": m2_kind,
         "M1": CaptureKind.MODEL_SCORE,
     }
+
+
+def test_code_without_recompute_facts_is_unproven() -> None:
+    """A node the planner holds no facts for cannot be proven to read every row."""
+    from haute.projection import code_bounds_rows, code_recompute_facts
+
+    code = "df = M.with_columns(pl.lit(1).alias('one'))"
+    assert code_bounds_rows(code, code_recompute_facts(code, frozenset({"M"}))) is False
+    assert code_bounds_rows(code, None) is True
+    assert code_bounds_rows("", None) is False
+    broken = "df = M.with_columns("
+    assert code_bounds_rows(broken, code_recompute_facts(broken, frozenset({"M"}))) is True

@@ -1986,7 +1986,6 @@ def _batch_score_to_parquet(
 
     reader = None
     wrote_any = False
-    success = False
     want_proba = task == "classification"
     can_predict_proba = want_proba and _raw_model_supports_predict_proba(scoring_model)
     normalised_levels = _normalise_runtime_categorical_levels(
@@ -2121,16 +2120,16 @@ def _batch_score_to_parquet(
             write_part(empty)
         if destination is not None:
             destination.digests = digests
-        success = True
+    except BaseException:
+        # A failure leaves nothing: the parts written so far, and the
+        # directory too unless it was the caller's.
+        for path in written:
+            with suppress(FileNotFoundError):
+                path.unlink()
+        if created_dir:
+            shutil.rmtree(out_dir, ignore_errors=True)
+        raise
     finally:
         if reader is not None:
             reader.close()
-        if not success:
-            # A failure leaves nothing: the parts written so far, and the
-            # directory too unless it was the caller's.
-            for path in written:
-                with suppress(FileNotFoundError):
-                    path.unlink()
-            if created_dir:
-                shutil.rmtree(out_dir, ignore_errors=True)
     return str(out_dir)
