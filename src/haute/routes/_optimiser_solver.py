@@ -17,7 +17,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from itertools import product
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -35,6 +35,8 @@ from haute._logging import get_logger
 from haute._polars_utils import (
     streaming_collect,
 )
+from haute._price_contour import price_contour
+from haute._ratebook_collar import COMBINED_FACTOR_BOUNDS_KEY, combined_factor_bounds_from_grid
 from haute._rating import (
     normalise_rating_key,
     rating_dtype_descriptor,
@@ -90,6 +92,9 @@ _DEFAULT_MAX_CD_ITERATIONS = 10  # max coordinate-descent iterations (ratebook)
 _DEFAULT_CD_TOLERANCE = 1e-3  # coordinate-descent convergence tolerance (ratebook)
 
 
+_DEFAULT_FRONTIER_STEPS = 15  # frontier points per constraint dimension (inline frontier)
+
+
 class _OptimiserSolveInputError(Exception):
     """A user-actionable error while adapting optimiser solver input."""
 
@@ -99,6 +104,20 @@ class _OptimiserSolverExecutionError(Exception):
 
 
 _FRONTIER_GENERATION_KEY = "frontier_generation"
+# Job key: one ``factor_tables`` dict per retained ratebook frontier point,
+# aligned with ``frontier_data["points"]``. price-contour reports each row's
+# totals as the canonical evaluation of these tables, so a point is
+# materialised from them exactly, without re-solving (roadmap OPT-PC01).
+_FRONTIER_FACTOR_TABLES_KEY = "frontier_factor_tables"
+
+
+def frontier_point_factor_tables(
+    frontier_result: Any, *, mode: str, points_returned: int
+) -> list[dict[str, dict[str, float]]] | None:
+    """The retained points' factor tables for a ratebook frontier, else None."""
+    if mode != "ratebook":
+        return None
+    return list(frontier_result.factor_tables[:points_returned])
 
 
 _SOLVER_WORKER_ACTIVE: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -552,11 +571,6 @@ def _ratebook_factor_dtypes_from_artifact(
     )
 
 
-def _quote_grid_quote_ids(quote_grid: Any) -> list[str]:
-    """Return quote ids from a price-contour QuoteGrid as concrete strings."""
-    return [str(quote_id) for quote_id in quote_grid.quote_ids]
-
-
 def _ratebook_factor_artifact_quote_id(
     handle: dict[str, Any],
     config: Mapping[str, Any],
@@ -579,12 +593,11 @@ def _build_ratebook_factor_contexts(
     chunk_decision: _ChunkSizeDecision | None = None,
 ) -> Any:
     """Build price-contour factor contexts from a persisted ratebook factor artifact."""
-    from price_contour import build_ratebook_factor_contexts_from_parquet_chunked
-
     artifact_path, _artifact_dir = _optimiser_artifacts._validate_ratebook_factors_artifact_handle(
         handle
     )
-    quote_ids = _quote_grid_quote_ids(quote_grid)
+    # ``QuoteGrid.quote_ids`` is already a fresh ``list[str]`` (a PyO3 ``Vec<String>``).
+    quote_ids = quote_grid.quote_ids
     try:
         if chunk_decision is None:
             chunk_decision = _chunk_size_decision_for_parquet(
@@ -595,7 +608,7 @@ def _build_ratebook_factor_contexts(
         chunk_size = chunk_decision.chunk_size
     except ValueError as exc:
         raise RuntimeError(f"Ratebook factor context chunk sizing failed: {exc}") from exc
-    return build_ratebook_factor_contexts_from_parquet_chunked(
+    return price_contour().build_ratebook_factor_contexts_from_parquet_chunked(
         str(artifact_path),
         factor_columns,
         chunk_size,
@@ -767,6 +780,45 @@ def _compute_ratebook_factor_level_order(
     return _ratebook_factor_level_order(graph, node_id, config)
 
 
+def _json_records(value: Any) -> Any:
+    """Replace every Polars frame nested in *value* with its row records."""
+    import polars as pl
+
+    if isinstance(value, pl.DataFrame):
+        return value.to_dicts()
+    if isinstance(value, dict):
+        return {key: _json_records(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_records(item) for item in value]
+    return value
+
+
+def _publish_summary(
+    solver: Any,
+    solve_result: SolveResultLike,
+    *,
+    job_id: str,
+) -> dict[str, Any] | None:
+    """The anchor's MLflow summary, holding no frame, or ``None`` if it cannot be built.
+
+    A failure here must not fail a finished solve: it is logged, and logging the
+    anchor to MLflow later asks the user to re-run the solve.
+    """
+    try:
+        summary = solver.summary(solve_result)
+    except Exception as exc:
+        logger.warning("publish_summary_failed", error=str(exc), job_id=job_id, exc_info=True)
+        return None
+    if not isinstance(summary, dict):
+        logger.warning(
+            "publish_summary_invalid",
+            summary_type=type(summary).__name__,
+            job_id=job_id,
+        )
+        return None
+    return cast(dict[str, Any], _json_records(summary))
+
+
 def _finalize_solve_result(
     solve_result: SolveResultLike,
     *,
@@ -830,6 +882,7 @@ def _finalize_solve_result(
 
     # ── Compute efficient frontier when explicitly requested (non-fatal) ────
     frontier_data = None
+    frontier_factor_tables: list[dict[str, dict[str, float]]] | None = None
     frontier_error = None
     # Read through JobStore so concurrent eviction cannot race this snapshot.
     job_snapshot: Mapping[str, Any] = store.get_job(job_id) or {}
@@ -837,7 +890,7 @@ def _finalize_solve_result(
     constraints = config.get("constraints")
     if constraints and config.get("frontier_enabled") is True:
         try:
-            frontier_steps = config.get("frontier_steps", 15)
+            frontier_steps = config.get("frontier_steps", _DEFAULT_FRONTIER_STEPS)
             ranges = _auto_frontier_ranges_from_config(config)
             if ranges:
                 enforce_frontier_compute_budget(
@@ -876,6 +929,11 @@ def _finalize_solve_result(
                     frontier_result.points,
                     constraint_names=list(ranges.keys()),
                 )
+                frontier_factor_tables = frontier_point_factor_tables(
+                    frontier_result,
+                    mode=mode,
+                    points_returned=frontier_data["points_returned"],
+                )
                 logger.info(
                     "frontier_computed",
                     n_points=frontier_data["n_points"],
@@ -895,6 +953,9 @@ def _finalize_solve_result(
     result_dict["frontier"] = frontier_data
     if frontier_error is not None:
         result_dict["frontier_error"] = frontier_error
+    # Built before the publisher persists (and drops) the apply dataframe the
+    # online summary reads, so publishing never needs the solver again.
+    publish_summary = _publish_summary(solver, solve_result, job_id=job_id)
     completion_elapsed = _job_elapsed_seconds(
         store.get_job(job_id) or job_snapshot,
         elapsed,
@@ -911,8 +972,9 @@ def _finalize_solve_result(
     def publish_completion_fields() -> Mapping[str, Any]:
         """Persist durable artifacts only after this worker owns completion."""
         artifact_handles: dict[str, Any] = {}
-        apply_result_handle = _optimiser_artifacts._persist_apply_result_artifact(solve_result)
-        if apply_result_handle is not None:
+        # Only an online solve has a per-quote frame; ratebook has factor tables.
+        if mode == "online":
+            apply_result_handle = _optimiser_artifacts._persist_apply_result_artifact(solve_result)
             artifact_handles[_optimiser_artifacts._APPLY_RESULT_HANDLE_KEY] = apply_result_handle
             uncommitted_handles.append(
                 (
@@ -942,7 +1004,9 @@ def _finalize_solve_result(
             "factor_columns_valid": factor_columns,
             "result": result_dict,
             "base_result": dict(result_dict),
+            "publish_summary": publish_summary,
             "frontier_data": frontier_data,
+            _FRONTIER_FACTOR_TABLES_KEY: frontier_factor_tables,
             "artifact_handles": artifact_handles,
             **(extra_job_fields or {}),
             _FRONTIER_GENERATION_KEY: 0,
@@ -986,8 +1050,6 @@ def _solve_online(
     config: dict[str, Any],
 ) -> None:
     """Run the online optimiser solver on a pre-built QuoteGrid."""
-    from price_contour import OnlineOptimiser
-
     if ctx.store is None:
         raise RuntimeError("_solve_online requires SolveContext.store to be set.")
     store = ctx.store
@@ -1000,7 +1062,7 @@ def _solve_online(
     if check_cancelled is not None:
         check_cancelled()
     try:
-        solver = OnlineOptimiser(
+        solver = price_contour().OnlineOptimiser(
             objective=config["objective"],
             constraints=config["constraints"] or None,
             max_iter=config.get("max_iter", _DEFAULT_MAX_ITER),
@@ -1066,8 +1128,6 @@ def _solve_ratebook(
     factor_level_order: dict[str, list[str]] | None = None,
 ) -> None:
     """Run the ratebook optimiser solver on a pre-built QuoteGrid."""
-    from price_contour import RatebookOptimiser
-
     if ctx.store is None:
         raise RuntimeError("_solve_ratebook requires SolveContext.store to be set.")
     store = ctx.store
@@ -1118,7 +1178,7 @@ def _solve_ratebook(
         raise _OptimiserSolveInputError(str(exc)) from exc
 
     try:
-        solver = RatebookOptimiser(
+        solver = price_contour().RatebookOptimiser(
             objective=config["objective"],
             constraints=constraints,
             factor_columns=factor_columns_valid,
@@ -1174,7 +1234,11 @@ def _solve_ratebook(
             "cd_iterations": solve_result.cd_iterations,
             "factor_tables": factor_tables_serialised,
             "factor_dtypes": factor_dtypes,
-            "clamp_rate": getattr(solve_result, "clamp_rate", None),
+            "clamp_rate": solve_result.clamp_rate,
+            # The scenario range the solve scored: the deployed collar (Q17).
+            COMBINED_FACTOR_BOUNDS_KEY: combined_factor_bounds_from_grid(
+                quote_grid.scenario_values
+            ),
             "history": None,
         },
         extra_job_fields={

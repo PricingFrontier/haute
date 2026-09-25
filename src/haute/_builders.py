@@ -69,6 +69,8 @@ from haute._polars_steps import (
     render_polars_steps,
     step_input_names,
 )
+from haute._price_contour import price_contour
+from haute._ratebook_collar import COMBINED_FACTOR_BOUNDS_KEY, parse_combined_factor_bounds
 from haute._rating import (
     _apply_banding_factors,
     _apply_rating_step_outputs,
@@ -1600,8 +1602,6 @@ def _apply_online(
     the result's order only. Ratio constraints linearise against the whole
     apply-time frame, so their apply always reads every input row.
     """
-    from price_contour import ApplyOptimiser
-
     qid_col = artifact.get("quote_id", "quote_id")
     step_col = artifact.get("scenario_index", "scenario_index")
     mult_col = artifact.get("scenario_value", "scenario_value")
@@ -1609,7 +1609,7 @@ def _apply_online(
     constraints = artifact.get("constraints") or {}
 
     def apply(frame: _Frame) -> pl.DataFrame:
-        applier = ApplyOptimiser(
+        applier = price_contour().ApplyOptimiser(
             lambdas=artifact["lambdas"],
             objective=objective,
             constraints=constraints,
@@ -1799,7 +1799,13 @@ def _apply_ratebook(
     keys — see :func:`_ratebook_lookup_table`.  Unseen factor levels rate
     1.0 with a counted ``rating_table_lookup_misses`` WARNING per table
     (3b.5) — neutral, never silent.
+
+    The combined ``optimised_factor`` is then clipped to the artifact's
+    ``combined_factor_bounds`` — the scenario range the solve scored (Q17) —
+    so no quote deploys at a factor the solver never evaluated. The order is
+    neutral fill, product, clamp; per-factor columns are never clamped.
     """
+    collar_min, collar_max = parse_combined_factor_bounds(artifact.get(COMBINED_FACTOR_BOUNDS_KEY))
     factor_tables = artifact.get("factor_tables", {})
     factor_dtypes = artifact.get("factor_dtypes")
     schema_by_name: dict[str, Any]
@@ -1921,11 +1927,16 @@ def _apply_ratebook(
                 "multiply",
                 "optimised_factor",
             )
-            available.add("optimised_factor")
-            schema_by_name["optimised_factor"] = pl.Float64
         elif len(factor_cols) == 1:
             result_lf = result_lf.with_columns(
                 pl.col(factor_cols[0]).alias("optimised_factor"),
+            )
+        if factor_cols:
+            # The collar: the solve scored only scenario values in
+            # [collar_min, collar_max], pricing a product past either end at
+            # that end. Clip the combined factor, never the per-factor columns.
+            result_lf = result_lf.with_columns(
+                pl.col("optimised_factor").clip(collar_min, collar_max),
             )
             available.add("optimised_factor")
             schema_by_name["optimised_factor"] = pl.Float64

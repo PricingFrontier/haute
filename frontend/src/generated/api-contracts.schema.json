@@ -8203,6 +8203,25 @@
       "title": "OptimiserChunkFallback",
       "type": "object"
     },
+    "OptimiserCombinedFactorBounds": {
+      "description": "The scenario range a ratebook solve scored: the deployed factor's collar.\n\n``min``/``max`` are the solved grid's first and last scenario values\n(Float32 widened). Every apply clips the combined ratebook factor to them.",
+      "properties": {
+        "max": {
+          "title": "Max",
+          "type": "number"
+        },
+        "min": {
+          "title": "Min",
+          "type": "number"
+        }
+      },
+      "required": [
+        "min",
+        "max"
+      ],
+      "title": "OptimiserCombinedFactorBounds",
+      "type": "object"
+    },
     "OptimiserEstimateResponse": {
       "description": "Result shape for ``POST /api/optimiser/estimate``.",
       "properties": {
@@ -8799,6 +8818,17 @@
           "default": null,
           "title": "Clamp Rate"
         },
+        "combined_factor_bounds": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserCombinedFactorBounds"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "constraints": {
           "additionalProperties": {
             "type": "number"
@@ -8941,6 +8971,7 @@
         "scenario_value_stats",
         "scenario_value_histogram",
         "clamp_rate",
+        "combined_factor_bounds",
         "error"
       ],
       "title": "OptimiserFrontierSelectResponse",
@@ -9198,6 +9229,10 @@
     },
     "OptimiserSaveResponse": {
       "properties": {
+        "apply_path": {
+          "title": "Apply Path",
+          "type": "string"
+        },
         "message": {
           "default": "",
           "title": "Message",
@@ -9223,6 +9258,7 @@
       "required": [
         "status",
         "path",
+        "apply_path",
         "message"
       ],
       "title": "OptimiserSaveResponse",
@@ -9394,6 +9430,17 @@
           ],
           "default": null,
           "title": "Clamp Rate"
+        },
+        "combined_factor_bounds": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserCombinedFactorBounds"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "constraints": {
           "additionalProperties": {
@@ -9579,6 +9626,7 @@
         "scenario_value_stats",
         "scenario_value_histogram",
         "clamp_rate",
+        "combined_factor_bounds",
         "frontier",
         "frontier_error",
         "selected_frontier_point"

@@ -30,5 +30,25 @@
     "selected_from_frontier": true,
     "point_index": 1,
     "n_frontier_points": 4
-  }
+  },
+  "solver_settings": {
+    "max_iter": 50,
+    "tolerance": 1e-06,
+    "chunk_size": 4096,
+    "record_history": true
+  },
+  "effective_constraints": {
+    "loss": {
+      "min": 0.92
+    }
+  },
+  "input_summary": {
+    "n_quotes": 250,
+    "n_steps": 5,
+    "node_id": "my_opt",
+    "data_source": "batch",
+    "source_file": "main.py",
+    "graph_fingerprint": "f00d"
+  },
+  "stale_at_publish": true
 }

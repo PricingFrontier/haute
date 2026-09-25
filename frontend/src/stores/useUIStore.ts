@@ -13,6 +13,7 @@ export type RatingStepEditorSection = "tables" | "combined"
 export type ExplorePane = "code" | "overview" | "pivots" | "charts" | "export"
 export type ExplorePreviewPane = "preview" | "overview" | "pivots" | "charts" | "relationships"
 export type ModellingPane = "target" | "features" | "params" | "split" | "train" | "export"
+export type OptimiserPane = "data" | "factors" | "constraints" | "solve" | "export"
 /** Whether clicking a node calculates its preview ("automatic") or only
  *  shows its last result until Refresh is pressed ("manual"). */
 export type CalculationMode = "automatic" | "manual"
@@ -71,6 +72,8 @@ interface UIState {
   setExploreConfiguredPivot: (nodeId: string, pivotId: string | null) => void
   modellingPanes: Record<string, ModellingPane>
   setModellingPane: (nodeId: string, pane: ModellingPane) => void
+  optimiserPanes: Record<string, OptimiserPane>
+  setOptimiserPane: (nodeId: string, pane: OptimiserPane) => void
 
   // Hover highlight — when set, connected edges glow and unconnected nodes/edges dim
   hoveredNodeId: string | null
@@ -154,6 +157,10 @@ const useUIStore = create<UIState>()((set) => ({
   modellingPanes: {},
   setModellingPane: (nodeId, pane) => set((state) => ({
     modellingPanes: setNodeIdEntry(state.modellingPanes, nodeId, pane),
+  })),
+  optimiserPanes: {},
+  setOptimiserPane: (nodeId, pane) => set((state) => ({
+    optimiserPanes: setNodeIdEntry(state.optimiserPanes, nodeId, pane),
   })),
 
   // Hover highlight

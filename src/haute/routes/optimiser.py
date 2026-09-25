@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -36,9 +39,14 @@ from haute._mlflow_utils import (
     ensure_experiment,
     registry_uri_for_tracking,
 )
+from haute._ratebook_collar import (
+    COMBINED_FACTOR_BOUNDS_KEY,
+    CombinedFactorBoundsError,
+    parse_combined_factor_bounds,
+)
 from haute._rating import is_rating_dtype_descriptor
 from haute._sandbox import _get_project_root, contained_path
-from haute._types import SolveResultLike
+from haute._types import RatebookSolveResultLike, SolveResultLike
 from haute._worker_isolation import resolve_worker_memory_enforcement
 from haute.routes._job_lifecycle import require_job_status
 from haute.routes._job_store import get_job_store
@@ -48,13 +56,16 @@ from haute.routes._optimiser_artifacts import (
     _load_apply_result_artifact,
 )
 from haute.routes._optimiser_frontier import (
+    _CONSTRAINT_THRESHOLD_KEYS,
     OptimiserFrontierService,
     _artifact_handles_or_raise,
+    _base_result_for_frontier,
     _dataframe_or_raise,
+    _frontier_point_constraints_override,
     _frontier_point_mlflow_summary,
     _job_has_frontier_points,
     _reject_ratebook_apply_detail,
-    _selected_or_requested_frontier_point,
+    _summary_solve_result,
 )
 from haute.routes._optimiser_input import (
     ESTIMATE_MAPPED_ERRORS,
@@ -66,7 +77,14 @@ from haute.routes._optimiser_limits import (
     limited_apply_preview_payload,
 )
 from haute.routes._optimiser_service import OptimiserSolveService, _with_flattened_optimiser_graph
-from haute.routes._optimiser_solver import _job_elapsed_seconds
+from haute.routes._optimiser_solver import (
+    _DEFAULT_CD_TOLERANCE,
+    _DEFAULT_FRONTIER_STEPS,
+    _DEFAULT_MAX_CD_ITERATIONS,
+    _DEFAULT_MAX_ITER,
+    _DEFAULT_TOLERANCE,
+    _job_elapsed_seconds,
+)
 from haute.routes._optimiser_worker import OptimiserEstimateOutcome, optimiser_estimate_worker
 from haute.routes.pipeline import (
     _interactive_affinity_key,
@@ -116,17 +134,6 @@ def _prepare_optimiser_execution_request(
     if graph is body.graph:
         return body
     return body.model_copy(update={"graph": graph})
-
-
-def _touch_heavy_objects_or_raise(
-    job_id: str,
-    *,
-    required_keys: tuple[str, ...],
-    detail: str,
-) -> None:
-    """Reserve completed-job heavy runtime state before using it."""
-    if not _store.touch_heavy_objects(job_id, required_keys=required_keys):
-        raise HTTPException(status_code=400, detail=detail)
 
 
 def _estimate_timeout() -> float:
@@ -202,12 +209,12 @@ def _frontier_select_response(result: dict[str, Any]) -> OptimiserFrontierSelect
     return OptimiserFrontierSelectResponse(
         status="ok",
         point_index=result.get("selected_frontier_point"),
-        total_objective=result.get("total_objective", 0.0),
-        constraints=result.get("constraints", {}),
-        baseline_objective=result.get("baseline_objective", 0.0),
-        baseline_constraints=result.get("baseline_constraints", {}),
-        lambdas=result.get("lambdas", {}),
-        converged=result.get("converged", True),
+        total_objective=result["total_objective"],
+        constraints=result["constraints"],
+        baseline_objective=result["baseline_objective"],
+        baseline_constraints=result["baseline_constraints"],
+        lambdas=result["lambdas"],
+        converged=result["converged"],
         iterations=result.get("iterations"),
         cd_iterations=result.get("cd_iterations"),
         factor_tables=result.get("factor_tables", {}),
@@ -216,6 +223,7 @@ def _frontier_select_response(result: dict[str, Any]) -> OptimiserFrontierSelect
         scenario_value_stats=result.get("scenario_value_stats"),
         scenario_value_histogram=result.get("scenario_value_histogram"),
         clamp_rate=result.get("clamp_rate"),
+        combined_factor_bounds=result.get(COMBINED_FACTOR_BOUNDS_KEY),
     )
 
 
@@ -383,11 +391,12 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
     job: Mapping[str, Any] = _store.require_completed_job(body.job_id)
     _reject_ratebook_apply_detail(job)
 
-    target_point_index = _selected_or_requested_frontier_point(job, body.point_index)
-    if target_point_index is not None:
+    # ``point_index`` names the target: a frontier point, or (``None``) the
+    # job's own solve — never the server-side selected point.
+    if body.point_index is not None:
         df, result, from_artifact = _frontier_service.materialise_point_apply(
             body.job_id,
-            target_point_index,
+            body.point_index,
         )
         response = OptimiserApplyResponse(
             status="ok",
@@ -396,7 +405,8 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
             from_artifact=from_artifact,
             **limited_apply_preview_payload(df),
         )
-        _store.clear_result_data(body.job_id)
+        # Keep the solver and quote grid so the other points stay inspectable.
+        _clear_result_data_after_user_action(body.job_id)
         return response
 
     solve_result = job.get("solve_result")
@@ -418,9 +428,7 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
                 detail="Job has no apply artifact handle. Re-run the solve to regenerate it.",
             )
         df = _load_apply_result_artifact(apply_handle)
-        job_result: object = job.get("result")
-        if not isinstance(job_result, dict):
-            raise HTTPException(status_code=500, detail="Job summary is missing")
+        job_result = _base_result_for_frontier(job)
         raw_total_objective = job_result.get("total_objective")
         raw_constraints = job_result.get("constraints", {})
         if not isinstance(raw_total_objective, (int, float)) or not isinstance(
@@ -499,15 +507,59 @@ def select_frontier_point(body: OptimiserFrontierSelectRequest) -> OptimiserFron
     return _frontier_select_response(_frontier_service.select_point(body))
 
 
+def _solver_settings(job_config: Mapping[str, Any]) -> dict[str, Any]:
+    """The solver settings a solve ran with, from its solve-time config snapshot."""
+    settings: dict[str, Any] = {
+        "max_iter": job_config.get("max_iter", _DEFAULT_MAX_ITER),
+        "tolerance": job_config.get("tolerance", _DEFAULT_TOLERANCE),
+        "chunk_size": job_config.get("chunk_size"),
+    }
+    if job_config.get("mode") == "ratebook":
+        settings["max_cd_iterations"] = job_config.get(
+            "max_cd_iterations", _DEFAULT_MAX_CD_ITERATIONS
+        )
+        settings["cd_tolerance"] = job_config.get("cd_tolerance", _DEFAULT_CD_TOLERANCE)
+    else:
+        # The ratebook solver records no history, so the flag is online-only.
+        settings["record_history"] = bool(job_config.get("record_history", False))
+    if job_config.get("frontier_enabled") is True:
+        settings["frontier_enabled"] = True
+        settings["frontier_steps"] = job_config.get("frontier_steps", _DEFAULT_FRONTIER_STEPS)
+        settings["frontier_ranges"] = job_config.get("frontier_ranges")
+    return settings
+
+
+def _input_summary(job: Mapping[str, Any]) -> dict[str, Any]:
+    """Cheap provenance of the data a solve ran on; nothing is read or hashed."""
+    summary = job.get("base_result")
+    if not isinstance(summary, dict):
+        summary = job.get("result")
+    counts = summary if isinstance(summary, dict) else {}
+    provenance = job.get("input_provenance")
+    known = provenance if isinstance(provenance, dict) else {}
+    return {
+        "n_quotes": counts.get("n_quotes"),
+        "n_steps": counts.get("n_steps"),
+        "node_id": known.get("node_id"),
+        "data_source": known.get("data_source"),
+        "source_file": known.get("source_file"),
+        "graph_fingerprint": known.get("graph_fingerprint"),
+    }
+
+
 def _build_artifact_payload(
     job: Mapping[str, Any],
     solve_result: SolveResultLike,
     version_override: str = "",
-    selected_frontier_point: int | None = None,
+    *,
+    point_index: int | None = None,
+    stale_at_publish: bool = False,
 ) -> dict[str, Any]:
     """Build the JSON payload for an optimiser artifact.
 
     Shared by both file-save and MLflow-log paths to avoid duplication.
+    *solve_result* is the published target: the anchor solve when
+    *point_index* is ``None``, otherwise that frontier point.
     """
     from datetime import datetime, timezone
 
@@ -523,9 +575,9 @@ def _build_artifact_payload(
         "mode": job_config.get("mode", "online"),
         "lambdas": solve_result.lambdas,
         "total_objective": solve_result.total_objective,
-        "baseline_objective": getattr(solve_result, "baseline_objective", None),
+        "baseline_objective": solve_result.baseline_objective,
         "total_constraints": solve_result.total_constraints,
-        "baseline_constraints": getattr(solve_result, "baseline_constraints", None),
+        "baseline_constraints": solve_result.baseline_constraints,
         "constraints": job_config.get("constraints"),
         "objective": job_config.get("objective"),
         "quote_id": job_config.get("quote_id", "quote_id"),
@@ -540,36 +592,43 @@ def _build_artifact_payload(
     setup_chunking = job.get("setup_chunking")
     if isinstance(setup_chunking, dict):
         payload["setup_chunking"] = setup_chunking
-    # Frontier provenance — record which point was selected (if any)
-    selected_idx = (
-        selected_frontier_point
-        if selected_frontier_point is not None
-        else job.get("selected_frontier_point")
-    )
+    # Frontier provenance — only a frontier-point target records one.
     frontier_data = job.get("frontier_data")
-    if selected_idx is not None and frontier_data:
+    if point_index is not None and frontier_data:
         payload["frontier_selection"] = {
             "selected_from_frontier": True,
-            "point_index": selected_idx,
+            "point_index": point_index,
             "n_frontier_points": frontier_data.get("n_points", 0),
         }
     if job_config.get("mode") == "ratebook":
+        # The target's own tables first: ``job["result"]`` may hold another
+        # (selected) point's.
         result_payload = job.get("result")
-        factor_tables = (
-            result_payload.get("factor_tables") if isinstance(result_payload, dict) else None
-        )
-        if factor_tables is None:
-            factor_tables = getattr(solve_result, "factor_tables", None)
-        factor_dtypes = (
-            result_payload.get("factor_dtypes") if isinstance(result_payload, dict) else None
-        )
+        factor_tables = getattr(solve_result, "factor_tables", None)
+        if factor_tables is None and isinstance(result_payload, dict):
+            factor_tables = result_payload.get("factor_tables")
+        factor_dtypes = getattr(solve_result, "factor_dtypes", None)
+        if factor_dtypes is None and isinstance(result_payload, dict):
+            factor_dtypes = result_payload.get("factor_dtypes")
         if factor_dtypes is None:
             factor_dtypes = job.get("factor_dtypes")
-        if factor_dtypes is None:
-            factor_dtypes = getattr(solve_result, "factor_dtypes", None)
+        ratebook_result = cast(RatebookSolveResultLike, solve_result)
         payload["factor_tables"] = factor_tables
         payload["factor_dtypes"] = factor_dtypes
-        payload["clamp_rate"] = getattr(solve_result, "clamp_rate", None)
+        payload["clamp_rate"] = ratebook_result.clamp_rate
+        # The scenario range the solve scored; every apply clamps to it (Q17).
+        payload[COMBINED_FACTOR_BOUNDS_KEY] = getattr(solve_result, COMBINED_FACTOR_BOUNDS_KEY)
+    # Audit trail. ``constraints`` above stays the configured specs, which
+    # OPTIMISER_APPLY reads; ``effective_constraints`` records the thresholds
+    # in force for this target.
+    payload["solver_settings"] = _solver_settings(job_config)
+    payload["effective_constraints"] = (
+        _frontier_point_constraints_override(job, point_index)
+        if point_index is not None
+        else job_config.get("constraints")
+    )
+    payload["input_summary"] = _input_summary(job)
+    payload["stale_at_publish"] = stale_at_publish
     return payload
 
 
@@ -676,6 +735,29 @@ def _validate_artifact_payload(payload: dict[str, Any]) -> None:
                         ),
                     )
                 seen_columns.add(column)
+        clamp_rate = payload.get("clamp_rate")
+        if (
+            isinstance(clamp_rate, bool)
+            or not isinstance(clamp_rate, (int, float))
+            or not math.isfinite(clamp_rate)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Ratebook solve result has no finite clamp_rate (got {clamp_rate!r}). "
+                    "Re-run the solve before saving."
+                ),
+            )
+        try:
+            parse_combined_factor_bounds(payload.get(COMBINED_FACTOR_BOUNDS_KEY))
+        except CombinedFactorBoundsError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Ratebook solve result has no valid combined-factor collar: {exc}. "
+                    "Re-run the solve before saving."
+                ),
+            ) from exc
     bad_paths = _non_finite_paths(payload)
     if bad_paths:
         shown = ", ".join(bad_paths[:5])
@@ -691,136 +773,142 @@ def _validate_artifact_payload(payload: dict[str, Any]) -> None:
         )
 
 
+def _publish_target(
+    job_id: str,
+    job: Mapping[str, Any],
+    point_index: int | None,
+) -> tuple[Mapping[str, Any], SolveResultLike, dict[str, Any] | None]:
+    """Resolve an explicit publish target without touching heavy job state.
+
+    ``None`` is the job's own solve, published from its lightweight summary;
+    a number is that frontier point (whose selected-result dict is returned).
+    """
+    if point_index is not None:
+        job, selected_result, solve_result = _frontier_service.solve_result_for_selected_point(
+            job_id,
+            job,
+            point_index,
+        )
+        return job, solve_result, selected_result
+    return job, _summary_solve_result(_base_result_for_frontier(job)), None
+
+
+_save_destination_locks_guard = threading.Lock()
+_save_destination_locks: dict[str, threading.Lock] = {}
+
+
+@contextmanager
+def _save_destination_lock(destination: Path) -> Iterator[None]:
+    """Serialise saves to one file, so two cannot both pass ``overwrite=False``."""
+    key = os.path.normcase(os.path.abspath(destination))
+    with _save_destination_locks_guard:
+        lock = _save_destination_locks.setdefault(key, threading.Lock())
+    with lock:
+        yield
+
+
 @router.post("/save", response_model=OptimiserSaveResponse)
 def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
-    """Save the optimisation result to disk."""
+    """Save the optimisation result to a project file.
+
+    Publishing reads only the job's lightweight summaries, so it never needs
+    or releases the solve's heavy runtime state.
+    """
     job: Mapping[str, Any] = _store.require_completed_job(body.job_id)
+    job, solve_result, _selected_result = _publish_target(body.job_id, job, body.point_index)
 
-    selected_frontier_point = _selected_or_requested_frontier_point(job, body.point_index)
-    solve_result: SolveResultLike
-    if selected_frontier_point is not None:
-        job, _selected_result, solve_result = _frontier_service.solve_result_for_selected_point(
-            body.job_id,
-            job,
-            selected_frontier_point,
-        )
-    else:
-        _touch_heavy_objects_or_raise(
-            body.job_id,
-            required_keys=("solve_result",),
-            detail="Job has no solve result",
-        )
-        job = _store.require_completed_job(body.job_id)
-        maybe_solve_result = cast(SolveResultLike | None, job.get("solve_result"))
-        if maybe_solve_result is None:
-            raise HTTPException(status_code=400, detail="Job has no solve result")
-        solve_result = maybe_solve_result
+    # Relative and absolute paths both resolve inside the project root, the
+    # base the pipeline's own file reads use.
+    project_root = _get_project_root().resolve()
+    out = contained_path(project_root, body.output_path)
+    apply_path = Path(os.path.relpath(out, project_root)).as_posix()
 
-    from haute.routes._helpers import pipeline_dir
-
-    # Absolute paths resolve against the project root (security boundary).
-    # Relative paths resolve against the pipeline directory (e.g. rating/)
-    # so outputs land next to the pipeline file, not at the project root.
-    user_path = Path(body.output_path)
-    if user_path.is_absolute():
-        base = _get_project_root()
-    else:
-        base = pipeline_dir()
-    out = contained_path(base, body.output_path)
-
+    payload = _build_artifact_payload(
+        job,
+        solve_result,
+        version_override=body.version,
+        point_index=body.point_index,
+        stale_at_publish=body.stale,
+    )
+    _validate_artifact_payload(payload)
     try:
-        out.parent.mkdir(parents=True, exist_ok=True)
-
-        payload = _build_artifact_payload(
-            job,
-            solve_result,
-            version_override=body.version,
-            selected_frontier_point=selected_frontier_point,
-        )
-        _validate_artifact_payload(payload)
-        # Atomic write (same posture as the schema-mapping save in
-        # `_helpers.save_sidecar`): stage to a sibling temp then rename, so a
-        # crash or disk error mid-write can never tear the previous artifact
-        # — this file is what OPTIMISER_APPLY prices from. `allow_nan=False`
-        # is a backstop behind `_validate_artifact_payload`: nothing
-        # non-finite may ever reach disk.
-        atomic_write_text(out, json.dumps(payload, indent=2, default=str, allow_nan=False))
-        logger.info("result_saved", path=str(out), job_id=body.job_id)
-
-        response = OptimiserSaveResponse(
-            status="ok",
-            path=str(out),
-            message=f"Saved optimisation result to {out}",
-        )
-        _clear_result_data_after_user_action(body.job_id)
-        return response
+        with _save_destination_lock(out):
+            if not body.overwrite and out.exists():
+                # A structured detail: the save pane dispatches on the code.
+                result_exists = {
+                    "error_code": "optimiser_result_exists",
+                    "message": f"Optimiser result already exists: {apply_path}",
+                }
+                raise HTTPException(status_code=409, detail=result_exists)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            # Atomic write (same posture as the schema-mapping save in
+            # `_helpers.save_sidecar`): stage to a sibling temp then rename, so a
+            # crash or disk error mid-write can never tear the previous artifact
+            # — this file is what OPTIMISER_APPLY prices from. `allow_nan=False`
+            # is a backstop behind `_validate_artifact_payload`: nothing
+            # non-finite may ever reach disk.
+            atomic_write_text(out, json.dumps(payload, indent=2, default=str, allow_nan=False))
     except OSError as exc:
         logger.error("save_failed", error=str(exc), job_id=body.job_id, exc_info=True)
         raise HTTPException(
             status_code=500,
             detail="Filesystem error saving optimiser result. Check the server logs for details.",
-        )
+        ) from None
+    logger.info("result_saved", path=str(out), job_id=body.job_id)
+    return OptimiserSaveResponse(
+        status="ok",
+        path=str(out),
+        apply_path=apply_path,
+        message=f"Saved optimisation result to {apply_path}",
+    )
 
 
 @router.post("/mlflow/log", response_model=OptimiserMlflowLogResponse)
 def mlflow_log(body: OptimiserMlflowLogRequest) -> OptimiserMlflowLogResponse:
-    """Log optimisation results to MLflow."""
+    """Log optimisation results to MLflow.
+
+    Like save, this reads only lightweight summaries: the anchor's MLflow
+    summary was computed once when the solve completed.
+    """
     require_mlflow_installed()
     job: Mapping[str, Any] = _store.require_completed_job(body.job_id)
-
-    selected_frontier_point = _selected_or_requested_frontier_point(job, body.point_index)
-    selected_result: dict[str, Any] | None = None
-    solve_result: SolveResultLike
-    solver: Any | None = None
-    if selected_frontier_point is not None:
-        job, selected_result, solve_result = _frontier_service.solve_result_for_selected_point(
-            body.job_id,
-            job,
-            selected_frontier_point,
-        )
-    else:
-        _touch_heavy_objects_or_raise(
-            body.job_id,
-            required_keys=("solve_result",),
-            detail="Job has no solve result",
-        )
-        _touch_heavy_objects_or_raise(
-            body.job_id,
-            required_keys=("solver", "solve_result"),
-            detail=(
-                "Solver is not available for this job. Re-run the solve to log results to MLflow."
-            ),
-        )
-        job = _store.require_completed_job(body.job_id)
-        maybe_solve_result = cast(SolveResultLike | None, job.get("solve_result"))
-        solver = job.get("solver")
-        if maybe_solve_result is None:
-            raise HTTPException(status_code=400, detail="Job has no solve result")
-        solve_result = maybe_solve_result
-        if solver is None:
+    job, solve_result, selected_result = _publish_target(body.job_id, job, body.point_index)
+    summary: dict[str, Any]
+    if body.point_index is None:
+        publish_summary = job.get("publish_summary")
+        if not isinstance(publish_summary, dict):
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Solver is not available for this job. "
+                    "The MLflow summary for this solve is not available. "
                     "Re-run the solve to log results to MLflow."
                 ),
             )
+        summary = publish_summary
+    else:
+        summary = _frontier_point_mlflow_summary(
+            job,
+            cast(dict[str, Any], selected_result),
+            body.point_index,
+        )
 
     try:
-        response = _log_optimiser_run(
+        return _log_optimiser_run(
             body,
             job,
             solve_result=solve_result,
-            solver=solver,
-            selected_result=selected_result,
-            selected_frontier_point=selected_frontier_point,
+            summary=summary,
         )
     except HTTPException:
         raise
     except Exception as exc:
         raise mlflow_log_http_exception(exc, job_id=body.job_id) from None
-    _clear_result_data_after_user_action(body.job_id)
-    return response
+
+
+def _mlflow_param_value(value: Any) -> str:
+    if isinstance(value, dict | list):
+        return json.dumps(value, sort_keys=True, default=str)
+    return str(value)
 
 
 def _log_optimiser_run(
@@ -828,9 +916,7 @@ def _log_optimiser_run(
     job: Mapping[str, Any],
     *,
     solve_result: SolveResultLike,
-    solver: Any | None,
-    selected_result: dict[str, Any] | None,
-    selected_frontier_point: int | None,
+    summary: dict[str, Any],
 ) -> OptimiserMlflowLogResponse:
     """Log one optimiser run through a client bound to the resolved destination.
 
@@ -859,16 +945,16 @@ def _log_optimiser_run(
     )
 
     node_label = job.get("node_label", "optimiser")
-    # ``selected_frontier_point is None`` IFF ``selected_result is None``; in
-    # that case the caller has already required a non-None ``solver``.
-    if selected_frontier_point is None:
-        summary = cast(Any, solver).summary(solve_result)
-    else:
-        summary = _frontier_point_mlflow_summary(
-            job,
-            cast(dict[str, Any], selected_result),
-            selected_frontier_point,
-        )
+    # The complete artifact OPTIMISER_APPLY reads, built before the run exists.
+    complete_payload = _build_artifact_payload(
+        job,
+        solve_result,
+        point_index=body.point_index,
+        stale_at_publish=body.stale,
+    )
+    params = {key: str(value) for key, value in summary["params"].items()}
+    for name, value in (complete_payload.get("solver_settings") or {}).items():
+        params[f"solver_settings.{name}"] = _mlflow_param_value(value)
 
     # The request carries the node's current setting; the job's solve-time
     # config snapshot is never a fallback.
@@ -885,7 +971,7 @@ def _log_optimiser_run(
         client.log_batch(
             run_id,
             metrics=[Metric(key, value, timestamp, 0) for key, value in summary["metrics"].items()],
-            params=[Param(key, str(value)) for key, value in summary["params"].items()],
+            params=[Param(key, value) for key, value in params.items()],
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -896,12 +982,6 @@ def _log_optimiser_run(
                 artifact_path.write_text(json.dumps(data, indent=2, default=str))
                 client.log_artifact(run_id, str(artifact_path))
 
-            # The complete artifact OPTIMISER_APPLY reads.
-            complete_payload = _build_artifact_payload(
-                job,
-                solve_result,
-                selected_frontier_point=selected_frontier_point,
-            )
             complete_path = Path(tmpdir) / "optimiser_result.json"
             complete_path.write_text(json.dumps(complete_payload, indent=2, default=str))
             client.log_artifact(run_id, str(complete_path))
@@ -919,13 +999,18 @@ def _log_optimiser_run(
                 client.log_artifact(run_id, str(frontier_path))
                 client.set_tag(run_id, "frontier.n_points", str(frontier_data["n_points"]))
 
-            selected_index = (
-                selected_frontier_point
-                if selected_frontier_point is not None
-                else job.get("selected_frontier_point")
-            )
-            if selected_index is not None:
-                client.set_tag(run_id, "frontier.selected_point_index", str(selected_index))
+            client.set_tag(run_id, "stale_at_publish", str(body.stale).lower())
+            if body.point_index is not None:
+                client.set_tag(run_id, "frontier.selected_point_index", str(body.point_index))
+                effective_constraints = complete_payload.get("effective_constraints") or {}
+                for name, spec in effective_constraints.items():
+                    for key in _CONSTRAINT_THRESHOLD_KEYS:
+                        if key in spec:
+                            client.set_tag(
+                                run_id,
+                                f"effective_constraint.{name}.{key}",
+                                str(spec[key]),
+                            )
         status = "FINISHED"
     finally:
         client.set_terminated(run_id, status)

@@ -19,7 +19,7 @@ import {
   type LoadAvailability,
 } from "../types/node"
 import type { PipelineDiagnostic } from "../types/pipelineDocument"
-import useUIStore, { type ExplorePane, type ModellingPane } from "../stores/useUIStore"
+import useUIStore, { type ExplorePane, type ModellingPane, type OptimiserPane } from "../stores/useUIStore"
 import useNodeDataStore, { profileForConsumer } from "../stores/useNodeDataStore"
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -27,6 +27,7 @@ import useDocumentStatusStore, { documentReadOnlyReason } from "../stores/useDoc
 import { recoverySummaryKey, useRecoverySummaryStore } from "../stores/useRecoverySummaryStore"
 import { buildNodeDataCacheIdentity } from "./dataPointIdentity"
 import { modellingPanesFor, resolveModellingPane } from "./modelling/modellingPanes"
+import { optimiserPanesFor, resolveOptimiserPane } from "./optimiser/optimiserPanes"
 import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
@@ -71,7 +72,7 @@ type NodePanelProps = {
 
 // ─── Node types that do NOT show the Columns tab ──
 // Output already has its own field selection; submodels/ports are placeholders;
-// modelling and explore nodes are sink-only (no outputs).
+// modelling, optimiser and explore nodes are sink-only (no outputs).
 //
 // API input column selection lives in `tables[].columns[]` in its Schema panel.
 const NO_COLUMNS_TAB = new Set<string>([
@@ -80,6 +81,7 @@ const NO_COLUMNS_TAB = new Set<string>([
   NODE_TYPES.SUBMODEL,
   NODE_TYPES.SUBMODEL_PORT,
   NODE_TYPES.MODELLING,
+  NODE_TYPES.OPTIMISER,
   NODE_TYPES.EXPLORE,
 ])
 
@@ -1380,6 +1382,14 @@ function NodePanelContent({
   }, [])
   const setModellingPane = useUIStore((s) => s.setModellingPane)
   const hasActiveTrainJob = useNodeResultsStore((s) => Boolean(s.trainJobs[node.id]))
+  const rememberedOptimiserPane = useUIStore((s) => s.optimiserPanes[node.id])
+  const setOptimiserPane = useUIStore((s) => s.setOptimiserPane)
+  const hasActiveSolveJob = useNodeResultsStore((s) => Boolean(s.solveJobs[node.id]))
+  // The lazily loaded optimiser editor owns its Solve issues; the panel only badges tabs.
+  const [optimiserPaneIssues, setOptimiserPaneIssues] = useState<{ nodeId: string; panes: readonly OptimiserPane[] }>({ nodeId: "", panes: [] })
+  const onOptimiserPaneIssuesChange = useCallback((nodeId: string, panes: readonly OptimiserPane[]) => {
+    setOptimiserPaneIssues({ nodeId, panes })
+  }, [])
   const activeSource = useSettingsStore((s) => s.activeSource)
   const documentDiagnostics = useDocumentStatusStore((s) => s.diagnostics)
   const canRepair = useDocumentStatusStore((s) => s.capabilities?.can_repair === true)
@@ -1475,6 +1485,22 @@ function NodePanelContent({
     return onUpdateNode(node.id, clearCachedResultShape({ ...node.data, config: nextConfig }))
   }, [documentReadOnly, node, onUpdateNode, readOnly, scopedSaving])
 
+  // Export's "Use in Apply node" points another node at a saved artifact, under
+  // the same read-only guards as this node's own edits.
+  const handleOtherNodeConfigUpdate = useCallback((targetId: string, patch: Record<string, unknown>): OnUpdateConfigResult => {
+    if (readOnly || scopedSaving) {
+      return {
+        ok: false,
+        error: documentReadOnly ? documentReadOnlyReason() : "This submodel instance is read-only.",
+      }
+    }
+    if (!onUpdateNode) return { ok: false, error: "Node update handler is unavailable." }
+    const target = allNodes.find((candidate) => candidate.id === targetId)
+    if (!target) return { ok: false, error: `Cannot update missing node "${targetId}".` }
+    const targetConfig = (target.data.config ?? {}) as Record<string, unknown>
+    return onUpdateNode(targetId, clearCachedResultShape({ ...target.data, config: { ...targetConfig, ...patch } }))
+  }, [allNodes, documentReadOnly, onUpdateNode, readOnly, scopedSaving])
+
   const configWithNodeId = useMemo(
     () => ({ ...config, _nodeId: node.id }),
     [config, node.id]
@@ -1550,6 +1576,20 @@ function NodePanelContent({
         ? { kind: "warning" as const, label: `${pane.label} needs attention`, compact: true }
         : undefined,
   }))
+  const optimiserMode = typeof config.mode === "string" ? config.mode : "online"
+  const showOptimiserPanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.OPTIMISER
+  const activeOptimiserPane = resolveOptimiserPane(optimiserMode, showOptimiserPanes ? rememberedOptimiserPane : undefined)
+  const flaggedOptimiserPanes = showOptimiserPanes && optimiserPaneIssues.nodeId === node.id
+    ? optimiserPaneIssues.panes
+    : []
+  const optimiserTabs = optimiserPanesFor(optimiserMode).map((pane) => ({
+    ...pane,
+    indicator: pane.key === "solve" && hasActiveSolveJob
+      ? { kind: "active" as const, label: "Solve is running" }
+      : flaggedOptimiserPanes.includes(pane.key)
+        ? { kind: "warning" as const, label: `${pane.label} needs attention`, compact: true }
+        : undefined,
+  }))
 
   const accentColor = NODE_TYPE_META[nodeType as NodeTypeValue]?.color ?? "var(--accent)"
   const configEditor = !isKnownNodeType ? (
@@ -1574,6 +1614,9 @@ function NodePanelContent({
       pivotColumns={pivotColumns}
       activeExplorePane={activeExplorePane}
       activeModellingPane={activeModellingPane}
+      activeOptimiserPane={activeOptimiserPane}
+      onOptimiserPaneIssuesChange={onOptimiserPaneIssuesChange}
+      onUpdateNodeConfig={handleOtherNodeConfigUpdate}
       onModellingPaneIssuesChange={onModellingPaneIssuesChange}
       onDeleteEdge={onDeleteEdge}
       onDeleteSubmodelInputPort={
@@ -1651,6 +1694,17 @@ function NodePanelContent({
           accentColor={accentColor}
           equalWidth
           idPrefix="modelling"
+        />
+      )}
+      {showOptimiserPanes && (
+        <PreviewPanelTabs
+          tabs={optimiserTabs}
+          activeTab={activeOptimiserPane}
+          onChange={(pane) => setOptimiserPane(node.id, pane)}
+          ariaLabel="Optimiser panes"
+          accentColor={accentColor}
+          equalWidth
+          idPrefix="optimiser"
         />
       )}
 

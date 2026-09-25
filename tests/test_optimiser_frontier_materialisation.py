@@ -162,7 +162,7 @@ def test_save_explicit_frontier_point_without_solve_result(
     assert saved["frontier_selection"]["point_index"] == 0
 
 
-def test_save_selected_frontier_point_does_not_use_stale_solve_result(
+def test_save_without_point_saves_the_anchor_not_the_selected_point(
     client,
     clean_job_store,
     tmp_path: Path,
@@ -197,11 +197,14 @@ def test_save_selected_frontier_point_does_not_use_stale_solve_result(
     finally:
         set_project_root(original_root)
 
+    # No point index is the job's own solve, from its summary: neither the
+    # server-selected point nor the (stale) heavy solve result.
     assert resp.status_code == 200
     saved = json.loads(out_path.read_text())
-    assert saved["total_objective"] == 130.0
-    assert saved["total_constraints"] == {"volume": 0.93}
-    assert saved["lambdas"] == {"volume": 0.55}
+    assert saved["total_objective"] == 99.0
+    assert saved["total_constraints"] == {"volume": 0.88}
+    assert saved["lambdas"] == {"volume": 0.1}
+    assert "frontier_selection" not in saved
 
 
 def test_mlflow_log_explicit_frontier_point_without_solver_or_solve_result(
@@ -239,11 +242,14 @@ def test_apply_explicit_frontier_point_materialises_online_result_to_disk(
         dataframe=pl.DataFrame({"quote_id": ["q1"], "optimal_scenario_value": [1.04]}),
     )
     quote_grid = MagicMock()
+    solver = MagicMock()
     seed_job(
         clean_job_store,
         "apply_point",
         _online_frontier_job(
             quote_grid=quote_grid,
+            solver=solver,
+            solve_result=SimpleNamespace(),
         ),
     )
 
@@ -268,8 +274,10 @@ def test_apply_explicit_frontier_point_materialises_online_result_to_disk(
     assert job["selected_frontier_point"] == 1
     handle = job["artifact_handles"]["frontier_apply_result:1"]
     assert Path(handle["path"]).is_file()
+    # Only the solve result is released, so other points stay inspectable.
     assert "solve_result" not in job
-    assert "quote_grid" not in job
+    assert job["quote_grid"] is quote_grid
+    assert job["solver"] is solver
 
 
 def test_concurrent_frontier_point_materialisations_preserve_both_handles(

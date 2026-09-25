@@ -16,7 +16,7 @@
 | `frontend/src/trace/BandingDetail.tsx`, `frontend/src/trace/bandingRows.ts` | Banding detail renderer and normalised display rows/ranges. |
 | `frontend/src/trace/RatingStepDetail.tsx`, `frontend/src/trace/ratingStepHelpers.ts` | Rating detail renderer and table/output normalisers. |
 | `frontend/src/trace/ModelScoreDetail.tsx`, `frontend/src/trace/modelScoreHelpers.ts` | Score/contribution view and typed model-score field extraction. |
-| `frontend/src/trace/OptimiserApplyDetail.tsx`, `frontend/src/trace/optimiserApplyHelpers.ts` | Online/ratebook/error optimiser detail and candidate/chart/score helpers. |
+| `frontend/src/trace/OptimiserApplyDetail.tsx`, `frontend/src/trace/optimiserApplyHelpers.ts` | Online/ratebook/error optimiser detail and candidate/chart/score helpers. The ratebook ladder ends with a "Combined factor collar" row: the `[min, max]` bounds, the product before the collar, the deployed value after it, and a "clipped" chip when the collar applied. |
 | `frontend/src/trace/ScenarioExpanderDetail.tsx`, `frontend/src/trace/scenarioExpanderHelpers.ts` | Scenario expansion view and shape guards/row helpers. |
 | `frontend/src/trace/LiveSwitchDetail.tsx`, `frontend/src/trace/liveSwitchHelpers.ts` | Live-switch detail and typed extraction. |
 | `frontend/src/trace/traceHelpers.ts`, `frontend/src/trace/traceFormatting.ts`, `frontend/src/trace/traceOrigins.ts` | Waterfall/chain/source transformations, trace value formatting and origin classification. |

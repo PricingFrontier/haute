@@ -343,6 +343,8 @@ vi.mock("../../stores/useNodeResultsStore", () => {
   const state = {
     trainJobs: {},
     previews: {},
+    solveResults: {},
+    solveJobs: {},
     getOptimiserPreview: vi.fn(() => null),
     selectFrontierPoint: vi.fn(),
     updateFrontierAfterSelect: vi.fn(),
@@ -621,16 +623,17 @@ describe("OptimiserPreview hover chrome is class-driven", () => {
       container.querySelectorAll("button"),
     ) as HTMLButtonElement[]
     const summaryTab = buttons.find((b) => b.textContent?.trim() === "Summary")
-    const exportTab = buttons.find((b) => b.textContent?.trim() === "Export")
+    const inactiveTab = buttons.find((b) =>
+      ["Quotes", "Rates", "Convergence"].includes(b.textContent?.trim() ?? ""),
+    )
     expect(summaryTab, "Summary tab rendered").toBeTruthy()
-    expect(exportTab, "Export tab rendered").toBeTruthy()
-    // Default tab when frontier is null is Summary.  Summary should
-    // carry the accent styling, Export should carry the chrome styling.
-    // We just assert the two active/inactive tabs have *different* inline
-    // styles — the exact literals may evolve but the distinction must
-    // survive the hover migration (because it's state-driven, not hover).
+    expect(inactiveTab, "an inactive result tab rendered").toBeTruthy()
+    // Default tab when frontier is null is Summary. We assert the active and
+    // an inactive tab have *different* inline styles — the exact literals may
+    // evolve but the distinction must survive the hover migration (because
+    // it's state-driven, not hover).
     expect(summaryTab!.getAttribute("style")).not.toEqual(
-      exportTab!.getAttribute("style"),
+      inactiveTab!.getAttribute("style"),
     )
   })
 })

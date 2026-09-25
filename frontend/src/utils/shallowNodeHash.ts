@@ -14,7 +14,7 @@
  * result-only keys here; do NOT remove input keys.
  */
 
-import { MODELLING_EXPORT_CONFIG_KEYS, MODELLING_NODE_TYPE } from "./modellingExportConfig"
+import { exportConfigKeysFor } from "./modellingExportConfig"
 import { authoredPolarsConfig, steppedSurfaceFor } from "./polarsStepInputs"
 
 const INPUT_KEYS = ["nodeType", "label", "description", "config", "code", "func_name"] as const
@@ -25,7 +25,7 @@ const EXPLORE_NODE_TYPE = "explore"
 // without retaining old graph payloads after React releases them.
 const objectInputHashCache = new WeakMap<object, string>()
 const exploreConfigInputHashCache = new WeakMap<object, string>()
-const modellingConfigInputHashCache = new WeakMap<object, string>()
+const publishConfigInputHashCache = new WeakMap<object, string>()
 const polarsConfigInputHashCache = new WeakMap<object, string>()
 const nodeDataHashCache = new WeakMap<Record<string, unknown>, string>()
 
@@ -77,22 +77,22 @@ function stringifyExploreConfig(value: unknown): string {
   return serialized
 }
 
-function stringifyModellingConfig(value: unknown): string {
+function stringifyConfigWithoutExportKeys(value: unknown, exportKeys: readonly string[]): string {
   if (value === undefined) return ""
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return stringifyInputValue("config", value)
   }
 
-  const cached = modellingConfigInputHashCache.get(value)
+  const cached = publishConfigInputHashCache.get(value)
   if (cached !== undefined) return cached
 
   const dataConfig = { ...(value as Record<string, unknown>) }
-  for (const key of MODELLING_EXPORT_CONFIG_KEYS) delete dataConfig[key]
+  for (const key of exportKeys) delete dataConfig[key]
   const serialized = JSON.stringify(dataConfig)
   if (serialized === undefined) {
     throw new TypeError(`Cannot hash object-valued node input "config"`)
   }
-  modellingConfigInputHashCache.set(value, serialized)
+  publishConfigInputHashCache.set(value, serialized)
   return serialized
 }
 
@@ -112,8 +112,9 @@ function stringifyNodeInputValue(data: Record<string, unknown>, key: InputKey): 
       return hash
     }
   }
-  if (key === "config" && data.nodeType === MODELLING_NODE_TYPE) {
-    return stringifyModellingConfig(data[key])
+  const exportKeys = key === "config" ? exportConfigKeysFor(data.nodeType) : []
+  if (exportKeys.length > 0) {
+    return stringifyConfigWithoutExportKeys(data[key], exportKeys)
   }
   return stringifyInputValue(key, data[key])
 }
@@ -127,10 +128,10 @@ function stringifyNodeInputValue(data: Record<string, unknown>, key: InputKey): 
  * matters. Explore ``config.overview``, ``config.pivot_formulas``,
  * ``config.pivots``, and ``config.charts`` do not affect the materialised
  * dataframe and are ignored so changing pivot calculations or presentation
- * does not invalidate cached Explore data. A modelling node's export settings
- * (``MODELLING_EXPORT_CONFIG_KEYS``: MLflow destination and experiment, model
- * file path) are ignored for the same reason: they say where a trained model is
- * published, not what the pipeline computes or how the model trains. Stepped
+ * does not invalidate cached Explore data. Modelling and optimiser export settings
+ * (``exportConfigKeysFor``: MLflow destination and experiment, model file or
+ * result file path) are ignored for the same reason: they say where a result is
+ * published, not what the pipeline computes or how the result is produced. Stepped
  * transforms hash their authored steps, excluding generated code and its
  * validation message; refreshing those caches cannot change execution.
  * Result-only keys (_columns, _availableColumns, _schemaWarnings,

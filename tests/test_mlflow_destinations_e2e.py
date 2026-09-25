@@ -310,29 +310,27 @@ def _scored_frame() -> pl.DataFrame:
 
 
 def _seed_optimiser_job(store: Any, job_id: str, config: dict[str, Any] | None = None) -> None:
-    solver = MagicMock()
-    solver.summary.return_value = {
-        "params": {"mode": "online"},
-        "metrics": {"total_objective": 165.0},
-        "artifacts": {},
-    }
-    solve_result = SimpleNamespace(
-        lambdas={"predicted_volume": 0.0},
-        total_objective=165.0,
-        baseline_objective=135.0,
-        total_constraints={"predicted_volume": 0.9},
-        baseline_constraints={"predicted_volume": 1.0},
-        converged=True,
-        iterations=10,
-        cd_iterations=None,
-    )
+    # Logging publishes from the completion summaries alone.
     seed_job(
         store,
         job_id,
         {
             "status": "completed",
-            "solver": solver,
-            "solve_result": solve_result,
+            "result": {
+                "mode": "online",
+                "lambdas": {"predicted_volume": 0.0},
+                "total_objective": 165.0,
+                "baseline_objective": 135.0,
+                "constraints": {"predicted_volume": 0.9},
+                "baseline_constraints": {"predicted_volume": 1.0},
+                "converged": True,
+                "iterations": 10,
+            },
+            "publish_summary": {
+                "params": {"mode": "online"},
+                "metrics": {"total_objective": 165.0},
+                "artifacts": {},
+            },
             "config": dict(config or OPTIMISER_CONFIG),
             "node_label": "opt",
             "created_at": time.time(),

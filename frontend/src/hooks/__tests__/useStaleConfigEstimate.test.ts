@@ -67,6 +67,33 @@ describe("useStaleConfigEstimate", () => {
     expect(result.current.isStale).toBe(false)
   })
 
+  it("re-requests only when the declared estimate inputs change", async () => {
+    const endpoint = vi.fn().mockResolvedValue(sampleEstimate)
+    const context = { source: "source_a", structuralVersion: 1 }
+    const { result, rerender } = renderHook(
+      ({ config }) => useStaleConfigEstimate<FakeEstimate>(
+        "node_1",
+        config,
+        { configHash: hashConfig(configA), source: "source_a", structuralVersion: 1 },
+        endpoint,
+        context,
+        { estimateInputs: { algorithm: config.algorithm } },
+      ),
+      { initialProps: { config: configA as Record<string, unknown> } },
+    )
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(endpoint).toHaveBeenCalledTimes(1)
+
+    // A non-input edit marks the result stale but does not re-estimate.
+    rerender({ config: configB })
+    await act(async () => {})
+    expect(result.current.isStale).toBe(true)
+    expect(endpoint).toHaveBeenCalledTimes(1)
+
+    rerender({ config: { ...configB, algorithm: "glm" } })
+    await waitFor(() => expect(endpoint).toHaveBeenCalledTimes(2))
+  })
+
   it("does not fetch when nodeId is empty", async () => {
     const endpoint = vi.fn().mockResolvedValue(sampleEstimate)
 

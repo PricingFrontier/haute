@@ -1,6 +1,6 @@
 import { NODE_TYPES } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
-import type { ExplorePane, ModellingPane } from "../stores/useUIStore"
+import type { ExplorePane, ModellingPane, OptimiserPane } from "../stores/useUIStore"
 import {
   ApiInputEditor,
   BandingEditor,
@@ -26,7 +26,7 @@ import {
   TransformEditor,
 } from "./LazyNodeEditors"
 import type { LoadPivotFilterMembers } from "./editors/ExplorePivotsConfig"
-import type { InputSource, OnReplaceConfig, OnUpdateConfig, SimpleNode } from "./editors"
+import type { InputSource, OnReplaceConfig, OnUpdateConfig, OnUpdateConfigResult, SimpleNode } from "./editors"
 
 type Column = { name: string; dtype: string }
 
@@ -61,6 +61,9 @@ export type NodeConfigEditorProps = {
   pivotColumns: Column[]
   activeExplorePane: ExplorePane
   activeModellingPane: ModellingPane
+  activeOptimiserPane: OptimiserPane
+  onOptimiserPaneIssuesChange?: (nodeId: string, panes: readonly OptimiserPane[]) => void
+  onUpdateNodeConfig?: (nodeId: string, patch: Record<string, unknown>) => OnUpdateConfigResult
   onModellingPaneIssuesChange?: (nodeId: string, panes: readonly ModellingPane[]) => void
   onDeleteEdge?: (edgeId: string) => void
   onDeleteSubmodelInputPort?: (portName: string) => void
@@ -106,6 +109,9 @@ export function NodeConfigEditor({
   pivotColumns,
   activeExplorePane,
   activeModellingPane,
+  activeOptimiserPane,
+  onOptimiserPaneIssuesChange,
+  onUpdateNodeConfig,
   onModellingPaneIssuesChange,
   onDeleteEdge,
   onDeleteSubmodelInputPort,
@@ -184,7 +190,7 @@ export function NodeConfigEditor({
       return <ModellingConfig config={configWithNodeId} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} activePane={activeModellingPane} onPaneIssuesChange={onModellingPaneIssuesChange} />
 
     case NODE_TYPES.OPTIMISER:
-      return <OptimiserConfig config={configWithNodeId} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} accentColor={accentColor} deferColumnFetch={selectedPreviewLoading} />
+      return <OptimiserConfig config={configWithNodeId} onUpdate={onUpdateConfig} upstreamColumns={effectiveColumns} accentColor={accentColor} deferColumnFetch={selectedPreviewLoading} activePane={activeOptimiserPane} onPaneIssuesChange={onOptimiserPaneIssuesChange} onUpdateNodeConfig={onUpdateNodeConfig} />
 
     case NODE_TYPES.OPTIMISER_APPLY:
       return <OptimiserApplyEditor config={config} onUpdate={onUpdateConfig} inputSources={inputSources} onDeleteInput={onDeleteEdge} accentColor={accentColor} />

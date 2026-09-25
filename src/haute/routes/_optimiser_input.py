@@ -40,6 +40,7 @@ from haute._polars_utils import (
     read_parquet_metadata,
     streaming_collect,
 )
+from haute._price_contour import price_contour
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -997,8 +998,6 @@ def build_quote_grid(
     execution_context: ExecutionContext | None,
 ) -> QuoteGrid:
     """Admit the resident grid, then build it from the solver-input parquet."""
-    from price_contour import build_grid_from_parquet_chunked
-
     objective = config["objective"]
     qid_col = config.get("quote_id", "quote_id")
     mult_col = config.get("scenario_value", "scenario_value")
@@ -1011,7 +1010,7 @@ def build_quote_grid(
         chunk_size,
         execution_context,
     )
-    return build_grid_from_parquet_chunked(
+    grid: QuoteGrid = price_contour().build_grid_from_parquet_chunked(
         input_path,
         constraint_cols,
         chunk_size,
@@ -1020,6 +1019,7 @@ def build_quote_grid(
         scenario_value=mult_col,
         objective=objective,
     )
+    return grid
 
 
 # ---------------------------------------------------------------------------

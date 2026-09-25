@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import useOptimiserPublishStore from "../../stores/useOptimiserPublishStore"
 import OptimiserPreview from "../OptimiserPreview"
 import type { OptimiserPreviewData, FrontierData } from "../OptimiserPreview"
-import type { FrontierPointSummary, MlflowDestinationEntry, OptimiserSolveResult } from "../../api/types"
+import type { FrontierPointSummary, OptimiserSolveResult } from "../../api/types"
 import type { SimpleNode } from "../editors"
 import type { MlflowInventoryState } from "../../utils/mlflowDestinations"
 import { makeSolveResult as makeSolveResultFactory, makeHistoryEntry } from "../../test-utils/factories"
@@ -13,8 +14,11 @@ const mockSelectFrontierPointAPI = vi.fn()
 const mockSaveOptimiser = vi.fn()
 const mockLogOptimiserToMlflow = vi.fn()
 const mockApplyOptimiser = vi.fn()
+const mockSolveOptimiser = vi.fn()
 
 vi.mock("../../api/client", () => ({
+  solveOptimiser: (...args: unknown[]) => mockSolveOptimiser(...args),
+  cancelOptimiserSolve: vi.fn(),
   selectFrontierPoint: (...args: unknown[]) => mockSelectFrontierPointAPI(...args),
   saveOptimiser: (...args: unknown[]) => mockSaveOptimiser(...args),
   logOptimiserToMlflow: (...args: unknown[]) => mockLogOptimiserToMlflow(...args),
@@ -31,16 +35,35 @@ vi.mock("../../hooks/useDragResize", () => ({
 }))
 
 const mockStoreSelectPoint = vi.fn()
-const mockStoreUpdateAfterSelect = vi.fn()
-
-vi.mock("../../stores/useNodeResultsStore", () => ({
-  default: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({
-      getOptimiserPreview: () => null,
-      selectFrontierPoint: mockStoreSelectPoint,
-      updateFrontierAfterSelect: mockStoreUpdateAfterSelect,
-    }),
+/** The cached solve the stale check compares with the node's config; none by default. */
+const mockSolveState = vi.hoisted(() => ({
+  results: {} as Record<string, unknown>,
+  /** The source-aware data-input column cache the editor and Re-run share. */
+  columnCache: {} as Record<string, unknown>,
 }))
+const mockStoreUpdateAfterSelect = vi.fn()
+const mockStartSolveJob = vi.fn()
+
+vi.mock("../../stores/useNodeResultsStore", async (importOriginal) => {
+  const state = () => ({
+    getOptimiserPreview: () => null,
+    selectFrontierPoint: mockStoreSelectPoint,
+    updateFrontierAfterSelect: mockStoreUpdateAfterSelect,
+    solveResults: mockSolveState.results,
+    solveJobs: {},
+    columnCache: mockSolveState.columnCache,
+    setColumns: vi.fn(),
+    startSolveJob: mockStartSolveJob,
+    failSolveJob: vi.fn(),
+  })
+  return {
+    ...(await importOriginal<typeof import("../../stores/useNodeResultsStore")>()),
+    default: Object.assign(
+      (selector: (s: Record<string, unknown>) => unknown) => selector(state()),
+      { getState: state },
+    ),
+  }
+})
 
 /**
  * The inventory the preview reads. `base()` is the default workspace: MLflow
@@ -69,20 +92,31 @@ const mlflowMockState = vi.hoisted(() => {
 })
 
 vi.mock("../../stores/useSettingsStore", () => ({
-  default: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({ mlflow: mlflowMockState.current }),
+  default: Object.assign(
+    (selector: (s: Record<string, unknown>) => unknown) =>
+      selector({ mlflow: mlflowMockState.current, activeSource: "live" }),
+    { getState: () => ({ activeSource: "live" }) },
+  ),
   useMlflowDestinations: () => mlflowMockState.current,
 }))
 
-const MLFLOW_SERVER_UNCONFIGURED: MlflowDestinationEntry = {
-  key: "server",
-  configured: false,
-  destination: "",
-  config_source: "",
-  detail: "No MLflow server is configured. Set [mlflow] tracking_uri in haute.toml.",
-  probed: false,
-  ok: false,
-  category: "",
+/** The input feeding the optimiser in the stale-result tests. */
+const QUOTES_NODE: SimpleNode = {
+  id: "quotes",
+  data: {
+    label: "quotes",
+    description: "",
+    nodeType: "dataInput",
+    config: {},
+    _defaultInputName: "quotes",
+    _sourceHandleInputNames: {},
+    _columns: [
+      { name: "profit", dtype: "Float64" },
+      { name: "quote_id", dtype: "String" },
+      { name: "scenario_index", dtype: "Int64" },
+      { name: "scenario_value", dtype: "Float64" },
+    ],
+  },
 }
 
 /** An optimiser node carrying `config`, as the preview finds it in the graph. */
@@ -187,6 +221,9 @@ describe("OptimiserPreview", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    useOptimiserPublishStore.setState({ byNode: {} })
+    mockSolveState.results = {}
+    mockSolveState.columnCache = {}
     mlflowMockState.current = mlflowMockState.base()
     mockSelectFrontierPointAPI.mockResolvedValue({
       status: "ok",
@@ -280,7 +317,7 @@ describe("OptimiserPreview", () => {
     it("renders lambda values", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Summary"))
-      expect(screen.getByText("Lambdas")).toBeInTheDocument()
+      expect(screen.getByText("λ (shadow price)")).toBeInTheDocument()
       expect(screen.getByText("0.005000")).toBeInTheDocument()
     })
 
@@ -816,187 +853,12 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText("Point details")).toBeInTheDocument()
     })
 
-    it("detail card shows Save Result button", () => {
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-      expect(screen.getByText("Save Result")).toBeInTheDocument()
-    })
-
-    it("detail card shows Log to MLflow button when MLflow is available", () => {
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-      expect(screen.getByText("Log to MLflow")).toBeInTheDocument()
-    })
-
-    it("Save passes the selected point index directly without selecting it first", async () => {
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Save Result"))
-
-      await waitFor(() => {
-        expect(mockSaveOptimiser).toHaveBeenCalledWith({
-          job_id: "job_123",
-          // portableKey(label) + node id: casing preserved, node-unique.
-          output_path: "output/optimiser_My_Optimiser_opt_1.json",
-          point_index: 0,
-        })
-      })
-      expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
-    })
-
-    it("Log to MLflow passes the selected point index directly without selecting it first", async () => {
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Log to MLflow"))
-
-      await waitFor(() => {
-        expect(mockLogOptimiserToMlflow).toHaveBeenCalledWith({
-          job_id: "job_123",
-          point_index: 0,
-          destination: "",
-          experiment_name: null,
-        })
-      })
-      expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
-    })
-
-    it("logs to the node's own destination, re-read at click time", async () => {
-      const data = makeData({ frontier: makeFrontier(), selectedPointIndex: 0 })
-      const view = render(
-        <OptimiserPreview
-          data={data}
-          nodeId="opt_1"
-          allNodes={[optimiserNode({ mlflow_destination: "local" })]}
-          edges={[]}
-        />,
-      )
-
-      fireEvent.click(screen.getByText("Log to MLflow"))
-      await waitFor(() => {
-        expect(mockLogOptimiserToMlflow).toHaveBeenLastCalledWith({
-          job_id: "job_123",
-          point_index: 0,
-          destination: "local",
-          experiment_name: null,
-        })
-      })
-
-      // "Use auto" on the node afterwards: the next log follows the config.
-      view.rerender(
-        <OptimiserPreview
-          data={data}
-          nodeId="opt_1"
-          allNodes={[optimiserNode({})]}
-          edges={[]}
-        />,
-      )
-      fireEvent.click(screen.getByText("Log to MLflow"))
-      await waitFor(() => {
-        expect(mockLogOptimiserToMlflow).toHaveBeenLastCalledWith({
-          job_id: "job_123",
-          point_index: 0,
-          destination: "",
-          experiment_name: null,
-        })
-      })
-    })
-
-    it("logs to the node's current experiment and shows the server's message on failure", async () => {
-      const { ApiError } = await vi.importActual<typeof import("../../api/client")>("../../api/client")
-      mockLogOptimiserToMlflow.mockRejectedValueOnce(
-        new ApiError("HTTP 502", 502, undefined, undefined, {
-          error_code: "mlflow_connectivity",
-          message: "Could not reach the MLflow tracking server, so the run was not logged.",
-        }),
-      )
-      const data = makeData({ frontier: makeFrontier(), selectedPointIndex: 0 })
-      render(
-        <OptimiserPreview
-          data={data}
-          nodeId="opt_1"
-          allNodes={[optimiserNode({ mlflow_experiment: "/Shared/pricing/opt" })]}
-          edges={[]}
-        />,
-      )
-
-      fireEvent.click(screen.getByText("Log to MLflow"))
-      await waitFor(() => {
-        expect(mockLogOptimiserToMlflow).toHaveBeenLastCalledWith({
-          job_id: "job_123",
-          point_index: 0,
-          destination: "",
-          experiment_name: "/Shared/pricing/opt",
-        })
-      })
-      expect(
-        await screen.findByText(
-          "MLflow log failed: Could not reach the MLflow tracking server, so the run was not logged.",
-        ),
-      ).toBeInTheDocument()
-      expect(screen.queryByText(/ApiError|HTTP 502/)).toBeNull()
-    })
-
-    it("disables the detail card log action with the node's own reason and offers Configure", async () => {
-      mlflowMockState.current = {
-        ...mlflowMockState.base(),
-        destinations: [MLFLOW_SERVER_UNCONFIGURED, ...mlflowMockState.base().destinations],
-      }
-      const { default: useUIStore } = await import("../../stores/useUIStore")
-      useUIStore.setState({ mlflowSettingsOpen: false })
-
-      render(
-        <OptimiserPreview
-          data={makeData({ frontier: makeFrontier(), selectedPointIndex: 0 })}
-          nodeId="opt_1"
-          allNodes={[optimiserNode({ mlflow_destination: "server" })]}
-          edges={[]}
-        />,
-      )
-
-      const logButton = screen.getByRole("button", { name: /Log to MLflow/i })
-      expect(logButton).toBeDisabled()
-      expect(logButton).toHaveAttribute("title", MLFLOW_SERVER_UNCONFIGURED.detail)
-      const reason = screen.getByTestId("detail-card-mlflow-reason")
-      expect(reason).toHaveTextContent(MLFLOW_SERVER_UNCONFIGURED.detail)
-      expect(screen.queryByText(/toolbar/i)).toBeNull()
-
-      fireEvent.click(within(reason).getByRole("button", { name: "Configure" }))
-      expect(useUIStore.getState().mlflowSettingsOpen).toBe(true)
-    })
-
-    it("keeps the detail card log action enabled when only another remote is unconfigured", () => {
-      mlflowMockState.current = {
-        ...mlflowMockState.base(),
-        destinations: [MLFLOW_SERVER_UNCONFIGURED, ...mlflowMockState.base().destinations],
-      }
-      render(
-        <OptimiserPreview
-          data={makeData({ frontier: makeFrontier(), selectedPointIndex: 0 })}
-          nodeId="opt_1"
-          allNodes={[optimiserNode({ mlflow_destination: "local" })]}
-          edges={[]}
-        />,
-      )
-      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeEnabled()
-      expect(screen.queryByTestId("detail-card-mlflow-reason")).toBeNull()
+    it("offers no publish actions on the detail card and points to the Export pane", () => {
+      renderPreview({ data: makeData({ frontier: makeFrontier(), selectedPointIndex: 0 }) })
+      expect(screen.getByText("Point details")).toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: /Save/ })).not.toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: /Log to MLflow/ })).not.toBeInTheDocument()
+      expect(screen.getByText("Save or log this point from the node's Export pane.")).toBeInTheDocument()
     })
 
     it("clicking a scatter point switches locally without a select API call", () => {
@@ -1012,7 +874,7 @@ describe("OptimiserPreview", () => {
       expect(mockStoreUpdateAfterSelect).not.toHaveBeenCalled()
     })
 
-    it("clicking the selected scatter point deselects locally without a select API call", () => {
+    it("clicking the selected scatter point keeps it selected", () => {
       renderPreview({
         data: makeData({
           frontier: makeFrontier(),
@@ -1020,10 +882,9 @@ describe("OptimiserPreview", () => {
         }),
       })
 
-      const selectedPoint = screen.getByRole("button", { name: "Select frontier point 3" })
-      fireEvent.click(selectedPoint)
+      fireEvent.click(screen.getByRole("button", { name: "Select frontier point 3" }))
 
-      expect(mockStoreSelectPoint).toHaveBeenCalledWith("opt_1", null)
+      expect(mockStoreSelectPoint).not.toHaveBeenCalled()
       expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
     })
 
@@ -1065,7 +926,7 @@ describe("OptimiserPreview", () => {
           selectedPointIndex: 0,
         }),
       })
-      expect(screen.getByText("Lambdas")).toBeInTheDocument()
+      expect(screen.getByText("λ (shadow price)")).toBeInTheDocument()
     })
 
     it("detail card reads nested constraint and lambda maps from frontier rows", () => {
@@ -1154,217 +1015,114 @@ describe("OptimiserPreview", () => {
     })
   })
 
-  describe("Export tab", () => {
-    it("renders Export tab button", () => {
+  describe("Quotes tab", () => {
+    it("offers Quotes for online results and no Export tab", () => {
       renderPreview()
-      expect(screen.getByText("Export")).toBeInTheDocument()
+      expect(screen.getByRole("tab", { name: "Quotes" })).toBeInTheDocument()
+      expect(screen.queryByRole("tab", { name: "Export" })).not.toBeInTheDocument()
     })
 
-    it("switches to Export tab on click and shows save option", () => {
-      renderPreview()
-      fireEvent.click(screen.getByText("Export"))
-      expect(screen.getByText("Save to file")).toBeInTheDocument()
-      expect(screen.getByText("Save result")).toBeInTheDocument()
-    })
-
-    it("Export tab shows Log to MLflow section when MLflow connected", () => {
-      renderPreview()
-      fireEvent.click(screen.getByText("Export"))
-      const mlflowElements = screen.getAllByText("Log to MLflow")
-      expect(mlflowElements.length).toBeGreaterThanOrEqual(2)
-    })
-
-    it("names the node's destination under the Export tab button", () => {
-      renderPreview({ allNodes: [optimiserNode({ mlflow_destination: "local" })] })
-      fireEvent.click(screen.getByText("Export"))
-      expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
-        "Destination: Local folder - C:/proj/mlruns",
-      )
-    })
-
-    it("keeps the MLflow action visible but disabled with the reason when off", async () => {
-      mlflowMockState.current = {
-        ...mlflowMockState.base(),
-        status: "error",
-        installed: false,
-        importable: false,
-        destinations: [],
-        detail: "MLflow package is not installed. Install it with: pip install mlflow",
-      }
-      const { default: useUIStore } = await import("../../stores/useUIStore")
-      useUIStore.setState({ mlflowSettingsOpen: false })
-      renderPreview()
-      fireEvent.click(screen.getByText("Export"))
-      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeDisabled()
-      expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
-        /MLflow package is not installed/,
-      )
-      expect(screen.queryByText(/toolbar/i)).toBeNull()
-      fireEvent.click(screen.getByRole("button", { name: /configure mlflow/i }))
-      expect(useUIStore.getState().mlflowSettingsOpen).toBe(true)
-    })
-
-    it("disables the Export tab action for the node's own unconfigured remote", () => {
-      mlflowMockState.current = {
-        ...mlflowMockState.base(),
-        destinations: [MLFLOW_SERVER_UNCONFIGURED, ...mlflowMockState.base().destinations],
-      }
-      renderPreview({ allNodes: [optimiserNode({ mlflow_destination: "server" })] })
-      fireEvent.click(screen.getByText("Export"))
-      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeDisabled()
-      expect(screen.getByTestId("mlflow-export-destination")).toHaveTextContent(
-        MLFLOW_SERVER_UNCONFIGURED.detail,
-      )
-    })
-
-    it("shows on-demand result detail loading state", async () => {
-      let resolveApply: (value: unknown) => void = () => {}
-      mockApplyOptimiser.mockReturnValueOnce(new Promise((resolve) => { resolveApply = resolve }))
-
-      renderPreview()
-      fireEvent.click(screen.getByText("Export"))
-      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
-
-      expect(mockApplyOptimiser).toHaveBeenCalledWith(
-        { job_id: "job_123" },
-        { signal: expect.any(AbortSignal) },
-      )
-      expect(screen.getByText("Loading result detail...")).toBeInTheDocument()
-      expect(screen.getByRole("button", { name: /Save result/i })).toBeDisabled()
-      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeDisabled()
-
-      resolveApply({
-        status: "ok",
-        total_objective: 1250000,
-        constraints: { loss_ratio: 0.66 },
-        from_artifact: false,
-        preview: [{ quote_id: "Q001" }],
-        row_count: 1,
-        preview_row_count: 1,
-        preview_row_limit: 100,
-        preview_truncated: false,
-        error: null,
-      })
-
-      await waitFor(() => {
-        expect(screen.queryByText("Loading result detail...")).not.toBeInTheDocument()
-      })
-    })
-
-    it("shows loaded detail metadata and capped slice state", async () => {
+    it("shows the solved result's per-quote detail without a point index", async () => {
       mockApplyOptimiser.mockResolvedValueOnce({
         status: "ok",
         total_objective: 1250000,
         constraints: { loss_ratio: 0.66 },
         from_artifact: true,
-        preview: [{ quote_id: "Q001" }],
+        preview: [{ quote_id: "Q001", optimal_scenario_value: 1.05 }],
         row_count: 1250,
         preview_row_count: 100,
         preview_row_limit: 100,
         preview_truncated: true,
         error: null,
       })
-
       renderPreview()
-      fireEvent.click(screen.getByText("Export"))
-      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
+      fireEvent.click(screen.getByRole("tab", { name: "Quotes" }))
 
-      await waitFor(() => {
-        expect(screen.getByText(/100 of 1,250 rows loaded/)).toBeInTheDocument()
-      })
-      expect(screen.getByText(/capped at 100/)).toBeInTheDocument()
-      expect(screen.getByRole("button", { name: /Save result/i })).toBeDisabled()
-      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeDisabled()
+      expect(await screen.findByText("Q001")).toBeInTheDocument()
+      expect(mockApplyOptimiser).toHaveBeenCalledWith({ job_id: "job_123" }, { signal: expect.any(AbortSignal) })
+      expect(screen.getByText(/100 of 1,250 quotes, with the scenario the solved result chose/)).toBeInTheDocument()
+      expect(screen.getByText(/capped at 100 rows/)).toBeInTheDocument()
     })
 
-    it("shows result detail failure state", async () => {
+    it("follows the selected frontier point and says when detail cannot load", async () => {
       mockApplyOptimiser.mockRejectedValueOnce(new Error("artifact missing"))
+      renderPreview({ data: makeData({ frontier: makeFrontier(), selectedPointIndex: 1 }) })
+      fireEvent.click(screen.getByRole("tab", { name: "Quotes" }))
 
-      renderPreview()
-      fireEvent.click(screen.getByText("Export"))
-      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
-
-      await waitFor(() => {
-        expect(screen.getByText(/Detail load failed/)).toBeInTheDocument()
-      })
-      expect(screen.getByText(/artifact missing/)).toBeInTheDocument()
-      expect(screen.getByRole("button", { name: /Save result/i })).not.toBeDisabled()
-      expect(screen.getByRole("button", { name: /Log to MLflow/i })).not.toBeDisabled()
-    })
-
-    it("loads result detail for the selected frontier point by passing point_index to apply", async () => {
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-      fireEvent.click(screen.getByText("Export"))
-      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
-
-      await waitFor(() => {
-        expect(mockApplyOptimiser).toHaveBeenCalledWith(
-          { job_id: "job_123", point_index: 0 },
-          { signal: expect.any(AbortSignal) },
-        )
-      })
-      expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
-    })
-
-    it("clears loaded result detail when the selected frontier point changes", async () => {
-      const firstData = makeData({
-        frontier: makeFrontier(),
-        selectedPointIndex: 0,
-      })
-      const { rerender } = renderPreview({ data: firstData })
-      fireEvent.click(screen.getByText("Export"))
-      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
-
-      expect(await screen.findByText(/1 of 1 rows loaded/)).toBeInTheDocument()
-      expect(screen.getByRole("button", { name: /Save result/i })).toBeDisabled()
-      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeDisabled()
-
-      rerender(
-        <OptimiserPreview
-          data={{ ...firstData, selectedPointIndex: 1 }}
-          nodeId="opt_1"
-          allNodes={[]}
-          edges={[]}
-        />,
+      expect(await screen.findByRole("alert")).toHaveTextContent("Per-quote detail could not be loaded: artifact missing")
+      expect(mockApplyOptimiser).toHaveBeenCalledWith(
+        { job_id: "job_123", point_index: 1 },
+        { signal: expect.any(AbortSignal) },
       )
-
-      await waitFor(() => {
-        expect(screen.queryByText(/1 of 1 rows loaded/)).not.toBeInTheDocument()
-      })
-      expect(screen.getByRole("button", { name: /Save result/i })).toBeEnabled()
-      expect(screen.getByRole("button", { name: /Log to MLflow/i })).toBeEnabled()
     })
 
-    it("aborts an in-flight result detail request when the job changes", async () => {
-      let firstReject: (reason?: unknown) => void = () => {}
-      mockApplyOptimiser
-        .mockImplementationOnce((_payload: unknown, options: { signal: AbortSignal }) => {
-          options.signal.addEventListener("abort", () => {
-            firstReject(new DOMException("Aborted", "AbortError"))
-          })
-          return new Promise((_resolve, reject) => {
-            firstReject = reject
-          })
-        })
+    it("has no Quotes tab for ratebook results", () => {
+      renderPreview({ data: makeData({ result: makeSolveResult({ mode: "ratebook" }) }) })
+      expect(screen.queryByRole("tab", { name: "Quotes" })).not.toBeInTheDocument()
+    })
+  })
 
-      const { rerender } = renderPreview()
-      fireEvent.click(screen.getByText("Export"))
-      fireEvent.click(screen.getByRole("button", { name: /Load detail/i }))
-      const firstSignal = mockApplyOptimiser.mock.calls[0][1].signal as AbortSignal
-
-      rerender(<OptimiserPreview data={makeData({ jobId: "job_456" })} nodeId="opt_1" allNodes={[]} edges={[]} />)
-      expect(firstSignal.aborted).toBe(true)
-
-      await waitFor(() => {
-        expect(screen.queryByText("Loading result detail...")).not.toBeInTheDocument()
+  describe("stale result", () => {
+    it("says when the config changed since the solve and re-runs from the preview", async () => {
+      mockSolveState.results = { opt_1: { configHash: "an-older-config", source: "live", structuralVersion: 0 } }
+      mockSolveOptimiser.mockResolvedValue({ status: "started", job_id: "job_999" })
+      renderPreview({
+        allNodes: [QUOTES_NODE, optimiserNode({ objective: "profit" })],
+        edges: [{ id: "e1", source: "quotes", target: "opt_1" }],
       })
-      expect(mockApplyOptimiser).toHaveBeenCalledTimes(1)
-      expect(screen.queryByText(/Detail load failed/)).not.toBeInTheDocument()
+
+      expect(screen.getByText("The configuration has changed since this result was solved.")).toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Re-run" }))
+      await waitFor(() => expect(mockSolveOptimiser).toHaveBeenCalledWith(expect.objectContaining({ node_id: "opt_1" })))
+      await waitFor(() => expect(mockStartSolveJob).toHaveBeenCalledWith(
+        "opt_1", "job_999", "My Optimiser", {}, expect.any(String), "live", expect.any(Number),
+      ))
+    })
+
+    it("keeps Re-run disabled with the reason while the Solve pane would refuse", () => {
+      mockSolveState.results = { opt_1: { configHash: "an-older-config", source: "live", structuralVersion: 0 } }
+      renderPreview({
+        allNodes: [
+          QUOTES_NODE,
+          optimiserNode({
+            objective: "profit",
+            constraints: { volume: { min: 1 } },
+            frontier_enabled: true,
+            frontier_steps: 10_001,
+            frontier_ranges: { volume: { min: 0, max: 2 } },
+          }),
+        ],
+        edges: [{ id: "e1", source: "quotes", target: "opt_1" }],
+      })
+
+      expect(screen.getByRole("button", { name: "Re-run" })).toBeDisabled()
+      expect(screen.getByText(/It cannot be re-run yet: The frontier would run 10,001 solves/)).toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Re-run" }))
+      expect(mockSolveOptimiser).not.toHaveBeenCalled()
+    })
+
+    it("judges Re-run against the cached input columns the editor uses", async () => {
+      const { default: useGraphStore } = await import("../../stores/useGraphStore")
+      mockSolveState.results = { opt_1: { configHash: "an-older-config", source: "live", structuralVersion: 0 } }
+      mockSolveState.columnCache = {
+        "opt_1:live": {
+          columns: [{ name: "profit", dtype: "Float64" }, { name: "scenario_index", dtype: "Int64" }, { name: "scenario_value", dtype: "Float64" }],
+          structuralVersion: useGraphStore.getState().structuralVersion,
+        },
+      }
+      const unknownColumnsInput = { ...QUOTES_NODE, data: { ...QUOTES_NODE.data, _columns: undefined } }
+      renderPreview({
+        allNodes: [unknownColumnsInput, optimiserNode({ objective: "profit" })],
+        edges: [{ id: "e1", source: "quotes", target: "opt_1" }],
+      })
+
+      expect(screen.getByRole("button", { name: "Re-run" })).toBeDisabled()
+      expect(screen.getByText(/Quote ID uses "quote_id", which the input does not have/)).toBeInTheDocument()
+    })
+
+    it("shows no strip while the result matches the config", () => {
+      renderPreview()
+      expect(screen.queryByText("The configuration has changed since this result was solved.")).not.toBeInTheDocument()
     })
   })
 
@@ -1408,7 +1166,7 @@ describe("OptimiserPreview", () => {
     it("renders lambda constraint name", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Summary"))
-      const lambdaSection = screen.getByText("Lambdas")
+      const lambdaSection = screen.getByText("λ (shadow price)")
       expect(lambdaSection).toBeInTheDocument()
       expect(screen.getAllByText("loss_ratio").length).toBeGreaterThanOrEqual(1)
     })
@@ -1436,81 +1194,6 @@ describe("OptimiserPreview", () => {
     })
   })
 
-  describe("save and log failure messages", () => {
-    it("shows error text when save fails", async () => {
-      mockSaveOptimiser.mockRejectedValueOnce(new Error("disk full"))
-
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Save Result"))
-
-      await waitFor(() => {
-        expect(screen.getByText(/Save failed/)).toBeInTheDocument()
-      })
-    })
-
-    it("prefers structured detail when save fails", async () => {
-      mockSaveOptimiser.mockRejectedValueOnce({
-        message: "HTTP 422",
-        detail: "The selected point cannot be saved.",
-      })
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Save Result"))
-
-      expect(await screen.findByText(
-        "Save failed: The selected point cannot be saved.",
-      )).toBeInTheDocument()
-      expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument()
-    })
-
-    it("shows error text when MLflow log fails", async () => {
-      mockLogOptimiserToMlflow.mockRejectedValueOnce(new Error("tracking server down"))
-
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Log to MLflow"))
-
-      await waitFor(() => {
-        expect(screen.getByText(/MLflow log failed/)).toBeInTheDocument()
-      })
-    })
-
-    it("prefers structured detail when MLflow logging fails", async () => {
-      mockLogOptimiserToMlflow.mockRejectedValueOnce({
-        message: "HTTP 503",
-        detail: "The tracking server rejected this run.",
-      })
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Log to MLflow"))
-
-      expect(await screen.findByText(
-        "MLflow log failed: The tracking server rejected this run.",
-      )).toBeInTheDocument()
-      expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument()
-    })
-  })
 
   describe("ratebook mode", () => {
     it("shows CD iterations for ratebook mode", () => {

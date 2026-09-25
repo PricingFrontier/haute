@@ -1380,6 +1380,7 @@ export interface OptimiserSolveResult {
   baseline_objective: number;
   cd_iterations: number | null;
   clamp_rate: number | null;
+  combined_factor_bounds: OptimiserCombinedFactorBounds | null;
   constraints: {
     [k: string]: number;
   };
@@ -1405,6 +1406,16 @@ export interface OptimiserSolveResult {
   total_objective: number;
   warning: string | null;
 }
+/**
+ * The scenario range a ratebook solve scored: the deployed factor's collar.
+ *
+ * ``min``/``max`` are the solved grid's first and last scenario values
+ * (Float32 widened). Every apply clips the combined ratebook factor to them.
+ */
+export interface OptimiserCombinedFactorBounds {
+  max: number;
+  min: number;
+}
 export interface OptimiserApplyResponse {
   constraints: {
     [k: string]: number;
@@ -1422,6 +1433,7 @@ export interface OptimiserApplyResponse {
   total_objective: number;
 }
 export interface OptimiserSaveResponse {
+  apply_path: string;
   message: string;
   path: string | null;
   status: string;
@@ -1528,6 +1540,7 @@ export interface OptimiserFrontierSelectResponse {
   baseline_objective: number;
   cd_iterations: number | null;
   clamp_rate: number | null;
+  combined_factor_bounds: OptimiserCombinedFactorBounds | null;
   constraints: {
     [k: string]: number;
   };

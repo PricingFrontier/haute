@@ -775,6 +775,7 @@ class TestTomlStructure:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("released_price_contour")
 class TestDockerfileStructure:
     """Validate that generated Dockerfiles have valid structure."""
 

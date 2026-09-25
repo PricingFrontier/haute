@@ -404,6 +404,7 @@ export function makeSolveResult(overrides: Partial<OptimiserSolveResult> = {}): 
     scenario_value_stats: null,
     scenario_value_histogram: null,
     clamp_rate: null,
+    combined_factor_bounds: null,
     frontier: null,
     frontier_error: null,
     selected_frontier_point: null,
@@ -475,6 +476,7 @@ export function makeFrontierSelect(
     scenario_value_stats: null,
     scenario_value_histogram: null,
     clamp_rate: null,
+    combined_factor_bounds: null,
     error: null,
     ...overrides,
   }

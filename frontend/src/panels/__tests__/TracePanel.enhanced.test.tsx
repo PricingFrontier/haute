@@ -989,6 +989,7 @@ describe("TracePanel - Node Detail", () => {
                 output_value: 0.65,
                 base_value: 1,
                 final_value: 0.65,
+                collar: { min: 0.5, max: 1.5, before: 0.65, after: 0.65, applied: false },
                 factors: [
                   { name: "channel_band", input_value: "market", factor_value: 0.65, running_total: 0.65, status: "matched" },
                 ],

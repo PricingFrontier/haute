@@ -13,8 +13,6 @@ from __future__ import annotations
 import pickle
 import time
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 from fastapi import HTTPException
@@ -119,18 +117,16 @@ class TestContainedPath:
 def _optimiser_job() -> dict:
     return {
         "status": "completed",
-        "solve_result": SimpleNamespace(
-            lambdas={"lambda_1": 0.5},
-            total_objective=100.0,
-            total_constraints={"volume": 0.9},
-            converged=True,
-            baseline_objective=90.0,
-            baseline_constraints={"volume": 0.85},
-            dataframe=MagicMock(),
-            iterations=10,
-            cd_iterations=5,
-        ),
-        "solver": MagicMock(),
+        # Save publishes from the completion summary.
+        "result": {
+            "lambdas": {"lambda_1": 0.5},
+            "total_objective": 100.0,
+            "constraints": {"volume": 0.9},
+            "converged": True,
+            "baseline_objective": 90.0,
+            "baseline_constraints": {"volume": 0.85},
+            "iterations": 10,
+        },
         "config": {},
         "node_label": "test_opt",
         "created_at": time.time(),

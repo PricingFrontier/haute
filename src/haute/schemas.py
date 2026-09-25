@@ -3196,6 +3196,17 @@ class OptimiserFrontierPointSummary(BaseModel):
     frontier_error: str | None
 
 
+class OptimiserCombinedFactorBounds(BaseModel):
+    """The scenario range a ratebook solve scored: the deployed factor's collar.
+
+    ``min``/``max`` are the solved grid's first and last scenario values
+    (Float32 widened). Every apply clips the combined ratebook factor to them.
+    """
+
+    min: float
+    max: float
+
+
 class OptimiserSolveResult(BaseModel):
     mode: str | None = None
     total_objective: float
@@ -3214,6 +3225,8 @@ class OptimiserSolveResult(BaseModel):
     scenario_value_stats: OptimiserScenarioValueStats | None = None
     scenario_value_histogram: OptimiserScenarioValueHistogram | None = None
     clamp_rate: float | None = None
+    # Ratebook only; ``None`` for online solves.
+    combined_factor_bounds: OptimiserCombinedFactorBounds | None = None
     frontier: OptimiserFrontierResponse | None = None
     frontier_error: str | None = None
     selected_frontier_point: int | None = None
@@ -3271,27 +3284,41 @@ class OptimiserFrontierSelectResponse(BaseModel):
     scenario_value_stats: OptimiserScenarioValueStats | None = None
     scenario_value_histogram: OptimiserScenarioValueHistogram | None = None
     clamp_rate: float | None = None
+    # Ratebook only: the solve's collar, shared by every frontier point.
+    combined_factor_bounds: OptimiserCombinedFactorBounds | None = None
     error: str | None = None
 
 
 class OptimiserSaveRequest(BaseModel):
     job_id: str
+    # Relative to the project root; an absolute path must stay inside it.
     output_path: str
     version: str = ""  # optional user-specified version label; auto-generated if empty
+    # ``None`` publishes the job's own solve; a number publishes that frontier point.
     point_index: int | None = Field(default=None, ge=0)
+    # An existing file is replaced only when this is true; otherwise the save is a 409.
+    overwrite: bool = False
+    # Whether the node configuration changed since the solve; recorded as ``stale_at_publish``.
+    stale: bool = False
 
 
 class OptimiserSaveResponse(BaseModel):
     status: str
     path: str | None = None
+    # The written file relative to the project root, POSIX separators: an Optimiser
+    # Apply node's ``artifact_path``.
+    apply_path: str
     message: str = ""
 
 
 class OptimiserMlflowLogRequest(BaseModel):
     job_id: str
+    # ``None`` logs the job's own solve; a number logs that frontier point.
     point_index: int | None = Field(default=None, ge=0)
     experiment_name: str | None = None
     destination: Literal["", "databricks", "server", "local"] = ""
+    # Whether the node configuration changed since the solve; recorded as ``stale_at_publish``.
+    stale: bool = False
 
 
 class OptimiserMlflowLogResponse(MlflowLogResponse):

@@ -237,6 +237,21 @@ export function OptimiserRatebookDetail({ detail }: {
               <span className="text-center" style={{ color: "var(--text-primary)" }}>{formatValue(factor.running_total)}</span>
             </TraceDetailTableRow>
           ))}
+          <TraceDetailTableRow key="__collar__" gridClass={ratebookGridClass}>
+            <span style={{ overflowWrap: "anywhere", color: "var(--text-secondary)" }}>
+              Combined factor collar
+              {detail.collar.applied && (
+                <span className="ml-1">
+                  <TraceDetailChip tone="warning" mono={false}>clipped</TraceDetailChip>
+                </span>
+              )}
+            </span>
+            <span className="text-center" style={{ color: "var(--text-muted)", overflowWrap: "anywhere" }}>
+              {`[${formatValue(detail.collar.min)}, ${formatValue(detail.collar.max)}]`}
+            </span>
+            <span className="text-center" style={{ color: "var(--accent)" }}>{formatValue(detail.collar.before)}</span>
+            <span className="text-center" style={{ color: "var(--text-primary)" }}>{formatValue(detail.collar.after)}</span>
+          </TraceDetailTableRow>
         </TraceDetailTable>
       )}
     </TraceDetailPanel>

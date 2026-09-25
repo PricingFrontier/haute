@@ -39,6 +39,7 @@ import {
   getFrontierStatus,
   getOptimiserFrontierAutoRangeStatus,
   getOptimiserStatus,
+  cancelOptimiserSolve,
   getPendingSaves,
   getTrainStatus,
   getWorkingBranches,
@@ -767,6 +768,19 @@ describe("client runtime contracts", () => {
       cause: expect.any(Error),
     })
     await expect(getOptimiserStatus("job-1")).rejects.toBeInstanceOf(ApiResponseValidationError)
+  })
+
+  it("cancelOptimiserSolve posts to the job's cancel route and validates the status it returns", async () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("optimiser_status_response")
+    mockFetch.mockReturnValueOnce(jsonResponse({ ...fixture, status: "cancelled", result: null, frontier: null }))
+
+    await expect(cancelOptimiserSolve("job 1")).resolves.toMatchObject({ status: "cancelled" })
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/optimiser/solve/cancel/job%201")
+    expect(opts.method).toBe("POST")
+
+    mockFetch.mockReturnValueOnce(jsonResponse({ ...fixture, elapsed_seconds: "bad" }))
+    await expect(cancelOptimiserSolve("job-1")).rejects.toBeInstanceOf(ApiResponseValidationError)
   })
 
   it("getNodeDataStatus rejects malformed status payloads as response validation errors", async () => {

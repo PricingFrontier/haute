@@ -1262,10 +1262,17 @@ export interface ApplyOptimiserRequest {
   point_index?: number
 }
 
+/** Omitting `point_index` publishes the job's own solve; a number, that frontier point. */
 export interface SaveOptimiserRequest {
   job_id: string
   output_path: string
   point_index?: number
+  /** Artifact version label; blank lets the server derive one. */
+  version?: string
+  /** Replace an existing file instead of refusing with `optimiser_result_exists`. */
+  overwrite?: boolean
+  /** The node config changed since the solve; recorded as `stale_at_publish`. */
+  stale?: boolean
 }
 
 export interface LogOptimiserToMlflowRequest {
@@ -1274,6 +1281,8 @@ export interface LogOptimiserToMlflowRequest {
   point_index?: number
   /** `""` logs to the local folder. */
   destination: "" | MlflowDestinationKey
+  /** The node config changed since the solve; recorded as `stale_at_publish`. */
+  stale?: boolean
 }
 
 export type FrontierPoint = Record<string, unknown> & {

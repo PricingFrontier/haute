@@ -284,6 +284,7 @@ function ActiveNodePreviewBody({
           nodeId={activeNodeId!}
           allNodes={panelNodes}
           edges={panelEdges}
+          submodels={submodels}
         />
       </Suspense>
     )

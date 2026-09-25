@@ -12,8 +12,7 @@ from __future__ import annotations
 import sys
 import time
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -43,18 +42,16 @@ def _make_completed_job(tmp_path: Path) -> dict:
     """Create a fake completed optimiser job with a solve result."""
     return {
         "status": "completed",
-        "solve_result": SimpleNamespace(
-            lambdas={"lambda_1": 0.5},
-            total_objective=100.0,
-            total_constraints={"volume": 0.9},
-            converged=True,
-            baseline_objective=90.0,
-            baseline_constraints={"volume": 0.85},
-            dataframe=MagicMock(),
-            iterations=10,
-            cd_iterations=5,
-        ),
-        "solver": MagicMock(),
+        # Save publishes from the completion summary.
+        "result": {
+            "lambdas": {"lambda_1": 0.5},
+            "total_objective": 100.0,
+            "constraints": {"volume": 0.9},
+            "converged": True,
+            "baseline_objective": 90.0,
+            "baseline_constraints": {"volume": 0.85},
+            "iterations": 10,
+        },
         "config": {},
         "node_label": "test_opt",
         "created_at": time.time(),
@@ -135,13 +132,13 @@ class TestOptimiserSavePathTraversal:
         job_id = "save_ok"
         seed_job(clean_job_store, job_id, _make_completed_job(tmp_path))
 
-        with patch("haute.routes._helpers.pipeline_dir", return_value=tmp_path):
-            resp = client.post(
-                "/api/optimiser/save",
-                json={"job_id": job_id, "output_path": "output/result.json"},
-            )
+        resp = client.post(
+            "/api/optimiser/save",
+            json={"job_id": job_id, "output_path": "output/result.json"},
+        )
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
+        assert resp.json()["apply_path"] == "output/result.json"
         assert (tmp_path / "output" / "result.json").exists()
 
     def test_traversal_blocked(self, client, clean_job_store, tmp_path):

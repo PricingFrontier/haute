@@ -99,6 +99,23 @@ describe("useKeyboardShortcuts", () => {
     expect(params.handleSave).toHaveBeenCalledOnce()
   })
 
+  it("Ctrl+S in a text field commits the field before saving", async () => {
+    const order: string[] = []
+    const input = document.createElement("input")
+    input.addEventListener("blur", () => order.push("field committed"))
+    document.body.append(input)
+    vi.mocked(params.handleSave).mockImplementation(() => { order.push("saved") })
+    try {
+      input.focus()
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true }))
+      expect(params.handleSave).not.toHaveBeenCalled()
+      await waitFor(() => expect(params.handleSave).toHaveBeenCalledOnce())
+      expect(order).toEqual(["field committed", "saved"])
+    } finally {
+      input.remove()
+    }
+  })
+
   it("keeps modal keyboard interactions from closing or changing the background graph", () => {
     const dialog = document.createElement("div")
     dialog.setAttribute("role", "dialog")

@@ -3346,6 +3346,7 @@ describe("API response guards", () => {
       scenario_value_stats: null,
       scenario_value_histogram: null,
       clamp_rate: null,
+      combined_factor_bounds: null,
       error: null,
     }
     expect(() =>
