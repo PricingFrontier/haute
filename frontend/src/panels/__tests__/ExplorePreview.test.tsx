@@ -875,6 +875,76 @@ describe("ExplorePreview", () => {
     expect(mockCancelNodeData).not.toHaveBeenCalled()
   })
 
+  it("keeps profiling paused after Stop until Refresh resumes it", async () => {
+    const currentPoint = point("current", DATA_VERSION)
+    mockGetNodeDataPoint.mockResolvedValue(currentPoint)
+    mockGetNodeDataProfile.mockResolvedValue({
+      status: "started",
+      job_id: "profile-1",
+      message: "Profiling data",
+      point: currentPoint,
+    })
+    const frame = (running: boolean) => (
+      <PreviewRunContext.Provider value={{ running, onStop: vi.fn() }}>
+        <ExplorePreview
+          node={exploreNode}
+          allNodes={[sourceNode, exploreNode]}
+          edges={edges}
+          submodels={{}}
+          preamble="import polars as pl"
+          previewData={null}
+          onRefresh={vi.fn()}
+        />
+      </PreviewRunContext.Provider>
+    )
+    const { rerender } = render(frame(true))
+    // Stopped before the data point arrives, so before any profile is asked for.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("preview-stop"))
+    })
+    await waitFor(() =>
+      expect(screen.getByTestId("explore-preview-body")).toHaveAttribute("data-availability", "current"),
+    )
+    await act(async () => {})
+    expect(mockGetNodeDataProfile).not.toHaveBeenCalled()
+
+    rerender(frame(false))
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
+    })
+
+    await waitFor(() => expect(mockGetNodeDataProfile).toHaveBeenCalledTimes(1))
+  })
+
+  it("does not carry one node's stopped profiling to the next node opened", async () => {
+    const currentPoint = point("current", DATA_VERSION)
+    mockGetNodeDataPoint.mockResolvedValue(currentPoint)
+    let answer!: (value: unknown) => void
+    mockGetNodeDataProfile.mockImplementation(() => new Promise((resolve) => { answer = resolve }))
+    const other = makeNode("explore_2", "Explore Other", "explore")
+    const allNodes = [sourceNode, exploreNode, other]
+    const bothEdges: SimpleEdge[] = [...edges, { id: "e2", source: "source_1", target: "explore_2" }]
+    const view = (target: SimpleNode) => (
+      <PreviewRunContext.Provider value={{ running: true, onStop: vi.fn() }}>
+        <ExplorePreview node={target} allNodes={allNodes} edges={bothEdges} submodels={{}} preamble="import polars as pl" previewData={null} onRefresh={vi.fn()} />
+      </PreviewRunContext.Provider>
+    )
+    const { rerender } = render(view(exploreNode))
+    await waitFor(() => expect(mockGetNodeDataProfile).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("preview-stop"))
+    })
+    await act(async () => {
+      answer({ status: "failed", message: "stopped", point: currentPoint })
+    })
+
+    rerender(view(other))
+
+    await waitFor(() =>
+      expect(mockGetNodeDataProfile).toHaveBeenCalledWith(expect.objectContaining({ node_id: "explore_2" })),
+    )
+  })
+
   it("asks for a failed profile again when Refresh is pressed", async () => {
     const currentPoint = point("current", DATA_VERSION)
     mockGetNodeDataPoint.mockResolvedValue(currentPoint)

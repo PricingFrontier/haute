@@ -314,7 +314,11 @@ const useNodeDataStore = create<NodeDataStore>((set, get) => ({
           message: job.message,
           startedByLabel: job.startedByLabel,
           dataVersion: job.dataVersion,
-          startedHere: job.startedHere,
+          // A later `joined` answer for the same job never takes away that
+          // this tab started it.
+          startedHere:
+            job.startedHere ||
+            (state.profileJobs[slotKey]?.jobId === job.jobId && state.profileJobs[slotKey]?.startedHere),
         },
       },
       profileFailures: withoutKey(state.profileFailures, slotKey),

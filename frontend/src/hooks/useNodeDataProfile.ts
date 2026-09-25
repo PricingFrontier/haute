@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 import { cancelNodeData, getNodeDataProfile } from "../api/client"
 import type { ExecutionMetrics, NodeDataProfile } from "../api/types"
@@ -85,9 +85,13 @@ export default function useNodeDataProfile({
   // The request currently owned by this consumer. Store resets retain the data
   // version but advance the epoch, so they deliberately create a new identity.
   const asked = useRef<string | null>(null)
-  // Set by Stop: a job id that arrives afterwards is cancelled at once, and
-  // nothing asks for a profile on its own until the consumer resumes.
-  const stopped = useRef(false)
+  // The node whose profiling Stop paused: a job id that arrives afterwards is
+  // cancelled at once, and nothing asks for that node's profile on its own
+  // until it resumes. Kept by node, so another node opened in the same panel
+  // profiles as usual; kept in state as well, so resuming asks again.
+  const [stoppedNode, setStoppedNode] = useState<string | null>(null)
+  const stoppedNodeRef = useRef<string | null>(null)
+  const stopped = nodeId !== null && stoppedNode === nodeId
   const profile = entry && entry.dataVersion === dataVersion ? entry.profile : null
   // A failure describes one attempt on one data version; rebuilt data is asked
   // for again by itself.
@@ -113,7 +117,7 @@ export default function useNodeDataProfile({
       }
       if ((response.status === "started" || response.status === "joined") && response.job_id) {
         if (response.status === "started") {
-          if (stopped.current) {
+          if (stoppedNodeRef.current === nodeId) {
             // Stop was pressed while this request was in flight.
             void cancelNodeData(response.job_id).catch((err: unknown) => {
               addToast(
@@ -156,7 +160,7 @@ export default function useNodeDataProfile({
     // point is current, and once per data version.
     if (!enabled || !slotKey || !dataVersion || cache.availability !== "current") return
     // A stopped consumer asks for nothing on its own until it resumes.
-    if (stopped.current) return
+    if (stopped) return
     const requestKey = `${slotKey}:${dataVersion}:${epoch}`
     if (profile || job || failure || asked.current === requestKey) return
     const fence = captureDocumentExecutionFence()
@@ -173,10 +177,11 @@ export default function useNodeDataProfile({
       if (asked.current === requestKey) asked.current = null
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addToast, cache.availability, dataVersion, enabled, epoch, failure, job, profile, slotKey])
+  }, [addToast, cache.availability, dataVersion, enabled, epoch, failure, job, profile, slotKey, stopped])
 
   const refresh = useCallback(async () => {
-    stopped.current = false
+    stoppedNodeRef.current = null
+    setStoppedNode(null)
     if (!dataVersion) return
     if (slotKey) clearProfileFailure(slotKey)
     const fence = captureDocumentExecutionFence()
@@ -194,7 +199,8 @@ export default function useNodeDataProfile({
   }, [addToast, ask, clearProfileFailure, dataVersion, reportProfileFailure, slotKey])
 
   const cancel = useCallback(async () => {
-    stopped.current = true
+    stoppedNodeRef.current = nodeId
+    setStoppedNode(nodeId)
     // The poller moves the cancelled job to its terminal state, so this only
     // asks; it never writes the shared store itself.
     if (!job?.startedHere) return
@@ -206,10 +212,11 @@ export default function useNodeDataProfile({
         `Cancelling the data profile failed: ${err instanceof Error ? err.message : String(err)}`,
       )
     }
-  }, [addToast, job])
+  }, [addToast, job, nodeId])
 
   const resume = useCallback(() => {
-    stopped.current = false
+    stoppedNodeRef.current = null
+    setStoppedNode(null)
   }, [])
 
   return {

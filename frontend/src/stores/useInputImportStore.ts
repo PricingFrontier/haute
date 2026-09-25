@@ -5,7 +5,10 @@ import type { Node } from "@xyflow/react"
 import { apiErrorMessage } from "../api/errors"
 import { inputSnapshotSource } from "../utils/inputSnapshotSource"
 import { instanceOriginal } from "../utils/instanceOriginal"
-import { captureDocumentExecutionFence, isDocumentExecutionFenceCurrent } from "./useDocumentStatusStore"
+import useDocumentStatusStore, {
+  captureDocumentExecutionFence,
+  isDocumentExecutionFenceCurrent,
+} from "./useDocumentStatusStore"
 import useGraphStore from "./useGraphStore"
 import useNodeDataStore from "./useNodeDataStore"
 import useNodeWorkStore, { registerNodeStop } from "./useNodeWorkStore"
@@ -63,12 +66,21 @@ export function startInputImport(nodeId: string, input: Node, onImported: (nodeI
   const workKey = `import:${nodeId}`
   // Set while builds refused to stop: Stop cancels them again.
   let retry: (() => Promise<void>) | null = null
+  let ended = false
   const addToast = useToastStore.getState().addToast
 
-  const settle = (completed: boolean) => {
+  // Everything that ties this run to its node, released exactly once.
+  const release = () => {
+    if (ended) return false
+    ended = true
     setRun(nodeId, null)
     useNodeWorkStore.getState().setRunning(workKey, null)
     unregisterStop()
+    unsubscribeDocument()
+    return true
+  }
+  const settle = (completed: boolean) => {
+    if (!release()) return
     if (!isDocumentExecutionFenceCurrent(fence)) return
     useNodeDataStore.getState().bumpEpoch()
     if (completed && !controller.signal.aborted && currentSourceKey(nodeId) === sourceKey) {
@@ -81,6 +93,13 @@ export function startInputImport(nodeId: string, input: Node, onImported: (nodeI
       return
     }
     controller.abort()
+  })
+  // A replaced document is another pipeline, whose node may reuse this id: the
+  // run retires at once, stopping its build, so it is never shown, stopped, or
+  // continued as the new document's.
+  const unsubscribeDocument = useDocumentStatusStore.subscribe(() => {
+    if (isDocumentExecutionFenceCurrent(fence)) return
+    if (release()) controller.abort()
   })
 
   setRun(nodeId, { rows: null })

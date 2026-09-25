@@ -9,6 +9,7 @@ import type { Node } from "@xyflow/react"
 
 import type { InputCacheJobStatusResponse, InputCacheSnapshotResponse } from "../../api/types"
 import type { SimpleNode } from "../../panels/editors"
+import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useInputImportStore from "../../stores/useInputImportStore"
 import useNodeDataStore from "../../stores/useNodeDataStore"
@@ -220,6 +221,29 @@ describe("InputImportButton", () => {
     })
 
     await waitFor(() => expect(useInputImportStore.getState().runs.csv).toBeUndefined())
+    expect(onImported).not.toHaveBeenCalled()
+  })
+
+  it("retires when the document is replaced, so the new document's node can import", async () => {
+    vi.mocked(getInputCacheJob).mockResolvedValue(job("running", 5))
+    vi.mocked(cancelInputCacheJob).mockResolvedValue({ schema_version: 1, job_id: "import-1", cancellation_requested: true, status: "cancelled" })
+    const csv = node("csv", "dataInput", csvConfig)
+    onCanvas(csv)
+    const { onImported } = renderImport(csv)
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId("input-import"))
+    })
+    await waitFor(() => expect(getInputCacheJob).toHaveBeenCalled())
+
+    // Another pipeline is loaded; its node reuses the id "csv".
+    act(() => {
+      useDocumentStatusStore.setState((state) => ({ executionGeneration: state.executionGeneration + 1 }))
+    })
+
+    await waitFor(() => expect(useInputImportStore.getState().runs.csv).toBeUndefined())
+    expect(Object.values(useNodeWorkStore.getState().running)).not.toContain("csv")
+    await waitFor(() => expect(cancelInputCacheJob).toHaveBeenCalledWith("import-1"))
+    expect(screen.getByTestId("input-import")).toHaveTextContent("Import")
     expect(onImported).not.toHaveBeenCalled()
   })
 
