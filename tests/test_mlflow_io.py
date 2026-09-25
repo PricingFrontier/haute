@@ -1037,8 +1037,15 @@ class TestLoadRustystatsModel:
         from haute.errors import ConfigError
 
         path = _write_rsglm(tmp_path, pickle.dumps({"result_state": {}}))
-        with pytest.raises(ConfigError, match=r"schema_version None.*Retrain it"):
+        with pytest.raises(ConfigError, match=r"from 'model.rsglm' was saved") as raised:
             _load_rustystats_model(path)
+        # The file name alone, never the cache directory it sits in.
+        assert str(tmp_path) not in str(raised.value)
+        assert "Retrain it" in str(raised.value)
+
+        # Loaded from MLflow, the error names the run instead.
+        with pytest.raises(ConfigError, match=r"from MLflow run 'abc123' was saved"):
+            load_local_model(path, source="MLflow run 'abc123'")
 
     def test_encoding_aliases_resolve_to_unique_raw_columns(self, tmp_path):
         mock_model = MagicMock()
@@ -1818,7 +1825,9 @@ class TestLoadMlflowModelFastCache:
             )
 
         assert result is fake_sm
-        load_local.assert_called_once_with(str(cached), task="regression")
+        load_local.assert_called_once_with(
+            str(cached), task="regression", source="MLflow run 'abc123'"
+        )
         resolve_source.assert_not_called()
 
         cache_key = _model_cache_key(
@@ -1932,7 +1941,7 @@ class TestLoadMlflowModelRetry:
 
         call_count = 0
 
-        def load_rs_side_effect(path):
+        def load_rs_side_effect(path, *, source=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
