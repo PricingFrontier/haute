@@ -18,8 +18,9 @@
   Every factor, draft or configured, names one of those two types; there is no
   default type, and any other value (the removed `continuous`, a pseudo-type such
   as `"age"`, or none) is rejected by `validate_banding_config`, by runtime
-  (`_apply_banding`) and by the whole-data rule counts (`banding_rule_claim_expr`),
-  each through `require_banding_type`. A configured factor also needs a non-empty
+  (`_apply_banding_factors` checks every factor, a draft included, before it skips
+  drafts, and `_apply_banding` checks again) and by the whole-data rule counts
+  (`banding_rule_claim_expr`), each through `require_banding_type`. A configured factor also needs a non-empty
   `column`, `outputColumn`, and `rules`, and at least one rule usable for its type.
   Mixed rule vocabularies such as `{key, value}` are rejected by the shared config
   validator before save/codegen. Runtime rejects blank assignments and invalid

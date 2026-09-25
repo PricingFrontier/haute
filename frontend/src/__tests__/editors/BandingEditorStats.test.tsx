@@ -354,6 +354,22 @@ describe("BandingEditor statistics", () => {
     expect(mockGetBandingStats).not.toHaveBeenCalled()
   })
 
+  it("says to Refresh, rather than counting on, when the server finds the data needs caching again", async () => {
+    // The point looked current, but its cache went (evicted, say) before the question arrived.
+    mockGetBandingStats.mockResolvedValue(stats({ status: "cache_required" }))
+
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+
+    await waitFor(() => expect(mockGetBandingStats).toHaveBeenCalled())
+    expect(await screen.findByText("Not cached · Refresh this node to count all rows")).toBeInTheDocument()
+    expect(screen.queryByText("Counting…")).toBeNull()
+    const cells = Array.from(document.querySelectorAll("td")).map((cell) => cell.textContent?.trim() ?? "")
+    expect(cells.filter((text) => /^\d+$/.test(text) || text === "…")).toEqual([])
+  })
+
   it("never shows full-data counts for data that has moved on", async () => {
     mockGetNodeDataPoint.mockResolvedValue(point("stale", DATA_VERSION))
 

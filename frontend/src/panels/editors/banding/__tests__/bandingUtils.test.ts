@@ -21,7 +21,7 @@ import {
   calendarSettingsFromBreakpoints,
   type CalendarGenerateSettings,
 } from "../bandingUtils"
-import type { CategoricalRule } from "../../../../types/banding"
+import type { BreakpointRule, CategoricalRule } from "../../../../types/banding"
 
 describe("detectDuplicateCategorical", () => {
   it("returns empty when no duplicates", () => {
@@ -273,7 +273,7 @@ describe("day numbers", () => {
 
 describe("calendar breakpoints", () => {
   it("ends each band the day before the next starts, capping the last at End", () => {
-    expect(generateCalendarBreakpoints({ start: "2024-01-01", end: "2024-03-15", step: 1, unit: "months" })).toEqual([
+    expect(generateCalendarBreakpoints({ start: "2024-01-01", end: "2024-03-15", step: 1, unit: "months" }, true)).toEqual([
       { boundary: "2024-01-31", label: "2024-01-01–2024-01-31" },
       { boundary: "2024-02-29", label: "2024-02-01–2024-02-29" },
       { boundary: "2024-03-15", label: "2024-03-01–2024-03-15" },
@@ -282,7 +282,7 @@ describe("calendar breakpoints", () => {
 
   it("steps whole months from Start, clamping a band that starts past a shorter month's end", () => {
     // Jan 31 + 1 month is Feb 29; + 2 months is Mar 31 again, not Mar 29.
-    expect(generateCalendarBreakpoints({ start: "2024-01-31", end: "2024-04-29", step: 1, unit: "months" })).toEqual([
+    expect(generateCalendarBreakpoints({ start: "2024-01-31", end: "2024-04-29", step: 1, unit: "months" }, true)).toEqual([
       { boundary: "2024-02-28", label: "2024-01-31–2024-02-28" },
       { boundary: "2024-03-30", label: "2024-02-29–2024-03-30" },
       { boundary: "2024-04-29", label: "2024-03-31–2024-04-29" },
@@ -297,26 +297,65 @@ describe("calendar breakpoints", () => {
     { start: "2024-01-01", end: "2024-02-29", step: 1, unit: "months" }, // two bands
     { start: "2024-01-31", end: "2024-04-29", step: 1, unit: "months" }, // month-end clamping
     { start: "2020-01-01", end: "2024-12-31", step: 1, unit: "years" },
-  ])("reads back the settings that generated them: %o", (settings) => {
-    expect(calendarSettingsFromBreakpoints(generateCalendarBreakpoints(settings))).toEqual(settings)
+  ])("reads back the settings that generated them, either closure: %o", (settings) => {
+    for (const rightClosed of [true, false]) {
+      expect(calendarSettingsFromBreakpoints(generateCalendarBreakpoints(settings, rightClosed), rightClosed)).toEqual(
+        settings,
+      )
+    }
+  })
+
+  it("puts each band's Up to on the day after its last when bands stop before their Up to", () => {
+    expect(generateCalendarBreakpoints({ start: "2024-01-01", end: "2024-01-02", step: 1, unit: "days" }, false)).toEqual([
+      { boundary: "2024-01-02", label: "2024-01-01–2024-01-01" },
+      { boundary: "2024-01-03", label: "2024-01-02–2024-01-02" },
+    ])
+  })
+
+  // The engine's rule for a date breakpoint on a Date column (pinned by
+  // tests/test_banding.py TestDateBreakpoints): a day takes the first band
+  // whose Up to it is on or before (right-closed), or before (left-closed).
+  const bandOf = (day: number, rules: BreakpointRule[], rightClosed: boolean) =>
+    rules.find((rule) => {
+      const upTo = boundaryDayNumber(rule.boundary)!
+      return rightClosed ? day <= upTo : day < upTo
+    })?.label
+
+  it.each<[CalendarGenerateSettings, boolean]>([
+    [{ start: "2024-01-01", end: "2024-01-02", step: 1, unit: "days" }, false],
+    [{ start: "2024-01-01", end: "2024-01-02", step: 1, unit: "days" }, true],
+    [{ start: "2024-01-31", end: "2024-04-29", step: 1, unit: "months" }, false],
+    [{ start: "2024-01-31", end: "2024-04-29", step: 1, unit: "months" }, true],
+    [{ start: "2024-01-01", end: "2024-03-24", step: 2, unit: "weeks" }, false],
+  ])("bands every day from Start to End under the label naming it: %o, right-closed %s", (settings, rightClosed) => {
+    const rules = generateCalendarBreakpoints(settings, rightClosed)
+    const start = boundaryDayNumber(settings.start)!
+    const end = boundaryDayNumber(settings.end)!
+    for (let day = start; day <= end; day += 1) {
+      const date = dayNumberToDate(day)
+      const label = bandOf(day, rules, rightClosed)
+      expect(label, date).toBeDefined()
+      const [first, last] = label!.split("–")
+      expect(first <= date && date <= last, `${date} in ${label}`).toBe(true)
+    }
   })
 
   it("reads a whole number of years before months, and weeks before days", () => {
-    const twelveMonths = generateCalendarBreakpoints({ start: "2022-01-01", end: "2024-12-31", step: 12, unit: "months" })
-    expect(calendarSettingsFromBreakpoints(twelveMonths)).toEqual({
+    const twelveMonths = generateCalendarBreakpoints({ start: "2022-01-01", end: "2024-12-31", step: 12, unit: "months" }, true)
+    expect(calendarSettingsFromBreakpoints(twelveMonths, true)).toEqual({
       start: "2022-01-01",
       end: "2024-12-31",
       step: 1,
       unit: "years",
     })
-    const fourteenDays = generateCalendarBreakpoints({ start: "2024-01-01", end: "2024-03-24", step: 14, unit: "days" })
-    expect(calendarSettingsFromBreakpoints(fourteenDays)).toMatchObject({ step: 2, unit: "weeks" })
+    const fourteenDays = generateCalendarBreakpoints({ start: "2024-01-01", end: "2024-03-24", step: 14, unit: "days" }, true)
+    expect(calendarSettingsFromBreakpoints(fourteenDays, true)).toMatchObject({ step: 2, unit: "weeks" })
   })
 
   it("starts uneven date breakpoints from their lowest and highest dates and their band count in days", () => {
     const bp = (boundary: string) => ({ boundary, label: boundary })
     // 52 days from Jan 10 to Mar 1 inclusive, over 3 bands.
-    expect(calendarSettingsFromBreakpoints([bp("2024-03-01"), bp(""), bp("2024-01-10"), bp("2024-01-15")])).toEqual({
+    expect(calendarSettingsFromBreakpoints([bp("2024-03-01"), bp(""), bp("2024-01-10"), bp("2024-01-15")], true)).toEqual({
       start: "2024-01-10",
       end: "2024-03-01",
       step: 17,
@@ -324,9 +363,18 @@ describe("calendar breakpoints", () => {
     })
   })
 
-  it("reads date-and-time breakpoints by their calendar dates", () => {
+  it("reads date-and-time breakpoints by the last day their bands reach", () => {
     const bp = (boundary: string) => ({ boundary, label: boundary })
-    expect(calendarSettingsFromBreakpoints([bp("2024-01-31 23:00"), bp("2024-02-29 12:00")])).toEqual({
+    const monthly = { start: "2024-01-01", end: "2024-02-29", step: 1, unit: "months" }
+    expect(calendarSettingsFromBreakpoints([bp("2024-01-31 23:00"), bp("2024-02-29 12:00")], true)).toEqual(monthly)
+    // A band up to midnight reaches no further into that day.
+    expect(calendarSettingsFromBreakpoints([bp("2024-02-01 00:00"), bp("2024-03-01 00:00")], true)).toEqual(monthly)
+    expect(calendarSettingsFromBreakpoints([bp("2024-02-01 00:00"), bp("2024-03-01 00:00")], false)).toEqual(monthly)
+  })
+
+  it("reads a left-closed date as its band ending the day before", () => {
+    const bp = (boundary: string) => ({ boundary, label: boundary })
+    expect(calendarSettingsFromBreakpoints([bp("2024-02-01"), bp("2024-03-01")], false)).toEqual({
       start: "2024-01-01",
       end: "2024-02-29",
       step: 1,
@@ -336,9 +384,9 @@ describe("calendar breakpoints", () => {
 
   it("reads nothing from fewer than two date breakpoints", () => {
     const bp = (boundary: string) => ({ boundary, label: boundary })
-    expect(calendarSettingsFromBreakpoints([bp("2024-01-31"), bp("")])).toBeNull()
-    expect(calendarSettingsFromBreakpoints([bp("10"), bp("20")])).toBeNull()
-    expect(calendarSettingsFromBreakpoints([])).toBeNull()
+    expect(calendarSettingsFromBreakpoints([bp("2024-01-31"), bp("")], true)).toBeNull()
+    expect(calendarSettingsFromBreakpoints([bp("10"), bp("20")], true)).toBeNull()
+    expect(calendarSettingsFromBreakpoints([], true)).toBeNull()
   })
 
   it.each([
@@ -348,6 +396,6 @@ describe("calendar breakpoints", () => {
     [{ start: "", end: "2024-12-31", step: 1, unit: "months" }, "Start and End must be dates"],
     [{ start: "2000-01-01", end: "2040-01-01", step: 1, unit: "days" }, "more than 10000 bands"],
   ] as [CalendarGenerateSettings, string][])("refuses %o", (settings, message) => {
-    expect(() => generateCalendarBreakpoints(settings)).toThrow(message)
+    expect(() => generateCalendarBreakpoints(settings, true)).toThrow(message)
   })
 })

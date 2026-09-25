@@ -66,7 +66,7 @@ export default function BandingEditor({
   // and distribution below are execution's rather than a sample's.
   const graph = useGraph()
   const node = nodeId ? graph.allNodes.find((candidate: SimpleNode) => candidate.id === nodeId) ?? null : null
-  const { cache, stats, current: statsCurrent, error: statsError } = useBandingStats({
+  const { cache, stats, current: statsCurrent, cacheRequired, error: statsError } = useBandingStats({
     node,
     allNodes: graph.allNodes,
     edges: graph.edges,
@@ -199,11 +199,13 @@ export default function BandingEditor({
   // describes the column, so it stays: categorical counts follow the edit from
   // the data's value counts, and a count not yet known is pending (null).
   const availability = cache.availability
-  // The whole dataset's answer is on its way (rather than needing a Refresh).
+  // The whole dataset's answer is on its way (rather than needing a Refresh,
+  // which the server can say even of a point that looked current).
   const counting =
     node !== null &&
     !stats &&
     !statsError &&
+    !cacheRequired &&
     (availability === "checking" || availability === "current" || availability === "building")
   const wholeDataCounts = (() => {
     const rules = factor.rules || []
@@ -312,7 +314,8 @@ export default function BandingEditor({
       accentColor={accentColor}
       dataMin={asDate(dataMinMax.dataMin)}
       dataMax={asDate(dataMinMax.dataMax)}
-      initial={calendarSettingsFromBreakpoints(breakpointRules)}
+      rightClosed={rightClosed}
+      initial={calendarSettingsFromBreakpoints(breakpointRules, rightClosed)}
     />
   ) : (
     <GenerateBandsDialog

@@ -168,6 +168,22 @@ class TestBandingTypeIsRequired:
             _apply_banding(lf, "x", "band", banding_type, rules)
 
     @pytest.mark.parametrize(
+        "draft",
+        [
+            {"banding": "continuous", "column": "", "outputColumn": "", "rules": []},
+            {"column": "", "outputColumn": "", "rules": []},
+        ],
+        ids=["continuous", "missing"],
+    )
+    def test_running_a_config_rejects_a_draft_without_a_supported_type(self, draft):
+        """A saved file is run without save-time validation, so the run checks it."""
+        from haute._rating import apply_banding_from_config
+
+        lf = pl.DataFrame({"x": [1]}).lazy()
+        with pytest.raises(ValueError, match="Banding factor 0 has unsupported banding type"):
+            apply_banding_from_config(lf, {"factors": [draft]})
+
+    @pytest.mark.parametrize(
         "factor",
         [
             {

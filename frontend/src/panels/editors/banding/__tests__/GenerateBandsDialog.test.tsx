@@ -44,6 +44,7 @@ describe("GenerateBandsDialog", () => {
       render(
         <GenerateBandsDialog
           temporal
+          rightClosed
           onGenerate={vi.fn()}
           onClose={vi.fn()}
           accentColor="#22d3ee"
@@ -64,7 +65,7 @@ describe("GenerateBandsDialog", () => {
 
     it("generates bands stepping whole months, each up to the day before the next starts", () => {
       const onGenerate = vi.fn()
-      render(<GenerateBandsDialog temporal onGenerate={onGenerate} onClose={vi.fn()} accentColor="#22d3ee" />)
+      render(<GenerateBandsDialog temporal rightClosed onGenerate={onGenerate} onClose={vi.fn()} accentColor="#22d3ee" />)
       fireEvent.change(screen.getByLabelText("Start"), { target: { value: "2024-01-01" } })
       fireEvent.change(screen.getByLabelText("End"), { target: { value: "2024-03-15" } })
       fireEvent.click(screen.getByRole("button", { name: "Generate" }))
@@ -75,11 +76,12 @@ describe("GenerateBandsDialog", () => {
       ])
     })
 
-    it("starts from the settings it is given rather than the data's dates", () => {
+    it("starts from the settings it is given, and ends each band before its Up to when left-closed", () => {
       const onGenerate = vi.fn()
       render(
         <GenerateBandsDialog
           temporal
+          rightClosed={false}
           onGenerate={onGenerate}
           onClose={vi.fn()}
           accentColor="#22d3ee"
@@ -96,8 +98,8 @@ describe("GenerateBandsDialog", () => {
       fireEvent.change(screen.getByLabelText("Step"), { target: { value: "14" } })
       fireEvent.click(screen.getByRole("button", { name: "Generate" }))
       expect(onGenerate).toHaveBeenCalledWith([
-        { boundary: "2024-01-14", label: "2024-01-01–2024-01-14" },
-        { boundary: "2024-01-28", label: "2024-01-15–2024-01-28" },
+        { boundary: "2024-01-15", label: "2024-01-01–2024-01-14" },
+        { boundary: "2024-01-29", label: "2024-01-15–2024-01-28" },
       ])
     })
 
@@ -106,6 +108,7 @@ describe("GenerateBandsDialog", () => {
       render(
         <GenerateBandsDialog
           temporal
+          rightClosed
           onGenerate={onGenerate}
           onClose={vi.fn()}
           accentColor="#22d3ee"

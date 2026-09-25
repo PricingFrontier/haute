@@ -564,3 +564,15 @@ class ContractMismatchError(HauteError):
     The error always names the offending node id and the columns at
     fault, so a user can fix a typo'd contract in one edit.
     """
+
+
+class ContractColumnsMissingError(ContractMismatchError):
+    """A node's frame lacks columns its contract names, at a node boundary.
+
+    ``context["missing"]`` keeps every missing column for callers. The rendered
+    text, which a preview shows as it is, is the message (naming at most five of
+    them) and the node id, so a long list never swamps it.
+    """
+
+    def _render(self) -> str:
+        return f"{self.message} (node_id={self.context['node_id']})"

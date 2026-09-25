@@ -733,8 +733,7 @@ class TestExecutorAssertsContractsAtBoundaries:
         # The preview shows this text as it is: it names the missing column
         # and nothing about the input's other columns.
         assert str(excinfo.value) == (
-            "'band' needs the column 'age', which is not in its input. "
-            "(node_id=band, missing=['age'])"
+            "'band' needs the column 'age', which is not in its input. (node_id=band)"
         )
 
     def test_declared_output_missing_raises_contract_mismatch(self, tmp_path: Path):
@@ -775,7 +774,7 @@ class TestExecutorAssertsContractsAtBoundaries:
             execute_graph(graph)
         assert str(excinfo.value) == (
             "'t' did not create the column 'new_col', which its contract says it outputs. "
-            "(node_id=t, missing=['new_col'])"
+            "(node_id=t)"
         )
 
     def test_user_declared_input_missing_from_parent_raises_at_execution(self, tmp_path: Path):
@@ -922,22 +921,20 @@ class TestExecutorAssertsContractsAtBoundaries:
                 {"age"},
                 {"agee", "height"},
                 "'Age band' needs the column 'age', which is not in its input. "
-                "Its input has a similar column: 'agee'. (node_id=band_1, missing=['age'])",
+                "Its input has a similar column: 'agee'. (node_id=band_1)",
                 id="similar-column",
             ),
             pytest.param(
                 {"age"},
                 set(),
-                "'Age band' needs the column 'age', but its input has no columns. "
-                "(node_id=band_1, missing=['age'])",
+                "'Age band' needs the column 'age', but its input has no columns. (node_id=band_1)",
                 id="empty-input",
             ),
             pytest.param(
                 {"c1", "c2", "c3", "c4", "c5", "c6", "c7"},
                 {"height"},
                 "'Age band' needs the columns 'c1', 'c2', 'c3', 'c4', 'c5' and 2 more, "
-                "which are not in its input. (node_id=band_1, "
-                "missing=['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7'])",
+                "which are not in its input. (node_id=band_1)",
                 id="many-missing",
             ),
         ],
@@ -958,6 +955,8 @@ class TestExecutorAssertsContractsAtBoundaries:
                 frozenset(upstream),
             )
         assert str(excinfo.value) == expected
+        # The text is bounded; the context still names every missing column.
+        assert excinfo.value.context["missing"] == sorted(needed)
 
     def test_output_check_message_names_only_the_missing_outputs(self):
         from haute._contracts import Contract
@@ -974,7 +973,7 @@ class TestExecutorAssertsContractsAtBoundaries:
             )
         assert str(excinfo.value) == (
             "'Transform' did not create the columns 'a_band' and 'b_band', "
-            "which its contract says it outputs. (node_id=t_1, missing=['a_band', 'b_band'])"
+            "which its contract says it outputs. (node_id=t_1)"
         )
 
 

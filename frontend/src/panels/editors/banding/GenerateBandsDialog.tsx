@@ -33,6 +33,8 @@ interface CalendarProps extends CommonProps {
   dataMax?: string
   /** The settings the field's breakpoints imply, to start from. */
   initial?: CalendarGenerateSettings | null
+  /** Whether the factor's bands include their "Up to" date, which sets each band's boundary. */
+  rightClosed: boolean
 }
 
 type GenerateBandsDialogProps = NumericProps | CalendarProps
@@ -144,7 +146,7 @@ function NumericGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, i
  * years from Start, the last capped at End. Without settings to start from it
  * offers the data's first and last dates in steps of one month.
  */
-function CalendarGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, initial }: CalendarProps) {
+function CalendarGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, initial, rightClosed }: CalendarProps) {
   const [start, setStart] = useState(initial?.start ?? dataMin ?? "")
   const [end, setEnd] = useState(initial?.end ?? dataMax ?? "")
   const [step, setStep] = useState<number | "">(initial?.step ?? 1)
@@ -155,7 +157,7 @@ function CalendarGenerate({ onGenerate, onClose, accentColor, dataMin, dataMax, 
     setError(null)
     let breakpoints: GeneratedBreakpoints
     try {
-      breakpoints = generateCalendarBreakpoints({ start, end, step: step === "" ? NaN : step, unit })
+      breakpoints = generateCalendarBreakpoints({ start, end, step: step === "" ? NaN : step, unit }, rightClosed)
     } catch (err) {
       // The generator refuses settings it cannot use with a message for the user.
       if (!(err instanceof RangeError)) throw err

@@ -566,9 +566,13 @@ def _apply_banding_factors(lf: _Frame, factors: Iterable[dict[str, Any]]) -> _Fr
 
     Draft factors (see :func:`banding_factor_is_active`) are skipped — the
     node is a passthrough for those factors (an empty config is a
-    documented no-op).
+    documented no-op) — but only once their type is checked: a draft names
+    one of the banding types too.
     """
-    for factor in factors:
+    for index, factor in enumerate(factors):
+        require_banding_type(
+            str(factor.get("banding", "") or ""), subject=f"Banding factor {index}"
+        )
         if not banding_factor_is_active(factor):
             continue
         lf = _apply_banding(

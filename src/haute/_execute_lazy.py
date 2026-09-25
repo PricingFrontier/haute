@@ -62,6 +62,7 @@ from haute._types import (
 from haute.chunking import classify_chunk_local_polars_code
 from haute.errors import (
     ConfigError,
+    ContractColumnsMissingError,
     ContractMismatchError,
     ContractResolutionError,
     SchemaMismatchError,
@@ -334,7 +335,7 @@ def _assert_inputs_satisfy_contract(
         if similar:
             noun = "a similar column" if len(similar) == 1 else "similar columns"
             message += f" Its input has {noun}: {', '.join(map(repr, similar))}."
-    raise ContractMismatchError(message, node_id=node.id, missing=missing)
+    raise ContractColumnsMissingError(message, node_id=node.id, missing=missing)
 
 
 def _assert_outputs_satisfy_contract(
@@ -357,7 +358,7 @@ def _assert_outputs_satisfy_contract(
     missing = sorted(contract.outputs - output_columns)
     if not missing:
         return
-    raise ContractMismatchError(
+    raise ContractColumnsMissingError(
         f"{_node_display_name(node)} did not create {_name_columns(missing)}, "
         "which its contract says it outputs.",
         node_id=node.id,

@@ -21,6 +21,8 @@ export interface BandingStatsState {
   stats: BandingStatsResponse | null
   /** Whether `stats` counts the rules as they are now, not before the last edit. */
   current: boolean
+  /** The server found the data is not cached after all: no count comes without a Refresh. */
+  cacheRequired: boolean
   loading: boolean
   basis: BandingStatsBasis
   error: string | null
@@ -79,7 +81,7 @@ export default function useBandingStats({
     [factor, histogramBins],
   )
   const outputColumn = factor?.outputColumn ?? ""
-  const { cache, answer, answerIsCurrent, loading, basis, error } = useWholeDataAnswer<BandingStatsResponse>({
+  const { cache, answer, answerIsCurrent, cacheRequired, loading, basis, error } = useWholeDataAnswer<BandingStatsResponse>({
     node,
     allNodes,
     edges,
@@ -106,5 +108,5 @@ export default function useBandingStats({
     },
     failureMessage: "the data could not be counted",
   })
-  return { cache, stats: answer, current: answerIsCurrent, loading, basis, error }
+  return { cache, stats: answer, current: answerIsCurrent, cacheRequired, loading, basis, error }
 }

@@ -316,12 +316,14 @@ function calendarBandDays(start: number, end: number, step: number, unit: Calend
 
 /**
  * Breakpoints stepping `step` units from Start: band k starts at Start + k
- * steps, its "Up to" is the day before the next band starts (the last capped
- * at End, so it may be shorter), and it is labelled by its first and last day.
+ * steps and ends the day before the next band starts (the last capped at End,
+ * so it may be shorter), and it is labelled by its first and last day. Its
+ * "Up to" is that last day when the factor's bands include their upper bound
+ * (`rightClosed`), and otherwise the day after it, which the band stops before.
  * Throws a RangeError, whose message is for the user, for settings Generate
  * cannot use.
  */
-export function generateCalendarBreakpoints(settings: CalendarGenerateSettings): BreakpointRule[] {
+export function generateCalendarBreakpoints(settings: CalendarGenerateSettings, rightClosed: boolean): BreakpointRule[] {
   const start = matchedDayNumber(settings.start.trim().match(DATE_PATTERN))
   const end = matchedDayNumber(settings.end.trim().match(DATE_PATTERN))
   if (start === null || end === null) throw new RangeError("Start and End must be dates")
@@ -334,7 +336,7 @@ export function generateCalendarBreakpoints(settings: CalendarGenerateSettings):
     throw new RangeError(`That makes more than ${MAX_CALENDAR_BANDS} bands; use a longer step`)
   }
   return bands.map(([first, last]) => ({
-    boundary: dayNumberToDate(last),
+    boundary: dayNumberToDate(rightClosed ? last : last + 1),
     label: `${dayNumberToDate(first)}–${dayNumberToDate(last)}`,
   }))
 }
@@ -367,16 +369,21 @@ function wholeUnitStart(anchors: number[], unit: CalendarUnit): { start: number;
 /**
  * The Generate settings to start from for date `breakpoints`: the whole step
  * of years, months, weeks or days (checked in that order) that regenerates
- * exactly their "Up to" dates, the last band possibly shorter; failing that,
- * their lowest and highest dates with their band count spread over that range
- * in days. A date and time counts by its calendar date. Null with fewer than
+ * exactly the last day of each band, the last band possibly shorter; failing
+ * that, the lowest and highest of those days with their band count spread over
+ * that range in days. A band's last day is the last calendar day it reaches:
+ * its "Up to" date when `rightClosed`, else the day before; for a date and
+ * time, the day it falls on (the day before at midnight). Null with fewer than
  * two date boundaries; numbers and an open-ended breakpoint are ignored.
  */
-export function calendarSettingsFromBreakpoints(breakpoints: BreakpointRule[]): CalendarGenerateSettings | null {
+export function calendarSettingsFromBreakpoints(
+  breakpoints: BreakpointRule[],
+  rightClosed: boolean,
+): CalendarGenerateSettings | null {
   const days = breakpoints
-    .map((bp) => boundaryDayNumber(bp.boundary ?? ""))
-    .filter((dayNumber): dayNumber is number => dayNumber !== null)
-    .map(Math.floor)
+    .map((bp) => boundarySplitDayNumber(bp.boundary ?? "", rightClosed))
+    .filter((split): split is number => split !== null)
+    .map((split) => Math.ceil(split) - 1)
     .sort((a, b) => a - b)
   if (days.length < 2) return null
   const lowest = days[0]

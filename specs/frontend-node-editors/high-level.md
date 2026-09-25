@@ -76,12 +76,16 @@ backend API modules own validation and persistence.
   expected format, and warns on a boundary it cannot read, one out of order, or a mix of kinds;
   the histogram and its end labels read as dates. On a date column Generate asks for a Start and
   End date and a Step of so many days, weeks, months or years: each band starts where the last
-  ended, its "Up to" is the day before the next band starts (the last capped at End), and it is
-  labelled by its first and last day (`2024-01-01–2024-01-31`). Reopening it on date breakpoints
-  that step by a whole number of years, months, weeks or days (checked in that order, the last
-  band possibly shorter) starts from that step; other date breakpoints start from their lowest
-  and highest dates and the band count in days, and a factor with fewer than two starts from
-  the data's first and last dates in steps of one month.
+  ended and ends the day before the next band starts (the last capped at End), and it is
+  labelled by its first and last day (`2024-01-01–2024-01-31`). Its "Up to" is that last day,
+  or the day after it when the factor's bands stop before their "Up to" (left-closed), so the
+  bands hold the days their labels name either way. Reopening it on date breakpoints whose bands'
+  last days step by a whole number of years, months, weeks or days (checked in that order, the
+  last band possibly shorter) starts from that step; other date breakpoints start from the
+  lowest and highest of those days and the band count in days, and a factor with fewer than two
+  starts from the data's first and last dates in steps of one month. A band's last day is the
+  last calendar day it reaches under the factor's closure (for a date and time, the day it falls
+  on, or the day before at midnight).
   Rating supports one- and two-way factor tables, value-level matching, statistics,
   paste/copy and downloadable table data.
 - Banding and Rating say whose rows their numbers describe; neither has a cache control of its
@@ -96,7 +100,8 @@ backend API modules own validation and persistence.
   "Not cached · Refresh this node to count all rows", "Cached data is out of date · Refresh this
   node to count all rows", or the failure in the server's words — the counts show as pending
   while they are being counted and are absent otherwise, and there is no histogram or "x of N
-  rows". Its categorical value list then offers the preview's values without counts, and
+  rows". A server answer that the data needs caching, which can come for a point that looked
+  current, reads "Not cached" too rather than counting on. Its categorical value list then offers the preview's values without counts, and
   Generate may start from the preview's range. Editing Banding's rules does not drop the whole
   dataset's answer while the new counts are asked: its total, values and distribution stay,
   categorical counts follow the edit at once from the data's value counts, and a count not yet
