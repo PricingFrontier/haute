@@ -751,10 +751,20 @@ def _load_rustystats_model(path: str) -> ScoringModel:
     """
     import rustystats as rs
 
+    from haute.errors import ConfigError
     from haute.modelling._glm_terms import ENCODING_TERM_TYPES
 
     with open(path, "rb") as f:
-        model = rs.GLMModel.from_bytes(f.read())
+        data = f.read()
+    try:
+        model = rs.GLMModel.from_bytes(data)
+    except rs.exceptions.ValidationError as exc:
+        # RustyStats refuses files written under another serialization schema,
+        # e.g. a GLM trained before the RustyStats 0.9 upgrade.
+        raise ConfigError(
+            f"The RustyStats GLM {path!r} cannot be loaded by RustyStats "
+            f"{rs.__version__} ({exc}). Retrain it with this version of Haute."
+        ) from exc
     terms = model.terms_dict
     aliases = (
         {
