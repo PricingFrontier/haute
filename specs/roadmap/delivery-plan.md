@@ -40,10 +40,8 @@ merges, remove its rounds from the table.
 
 | Phase | Round | Theme | Packages, in order | Needs | Size | Why here |
 |---|---:|---|---|---|---|---|
-| B | 5 | Optimiser estimate | `OPT-P16` | — | M | Moves the last pipeline read out of the server process, onto the warm worker pool. |
-| B | 6 | Optimiser frontier | `OPT-P06`, `OPT-P12`, `OPT-P14` | — | L | The benchmark decides `OPT-P06`; `OPT-P12` and `OPT-P14` finish splitting the optimiser service. |
-| B | 7 | Domain errors | `API-R02` | 6 | L | Services stop raising HTTP types after the optimiser service has been split, so its errors are converted once, in their final modules. |
-| B | 8 | Worker primitive | `ROAD-WORKER-05` | 5, 7 | L | One worker primitive and one failure family, mapped once to HTTP and job states, after the estimate has moved and services raise domain errors. |
+| B | 7 | Domain errors | `API-R02` | — | L | Services stop raising HTTP types after the optimiser service has been split, so its errors are converted once, in their final modules. |
+| B | 8 | Worker primitive | `ROAD-WORKER-05` | 7 | L | One worker primitive and one failure family, mapped once to HTTP and job states, after the estimate has moved and services raise domain errors. |
 | C | 9 | Project context | `PCFG-R04` | 8 | L | The worker request format changes once, after the primitive. Two or more PRs: the context, accessor, fixture and ratchet with the first modules, then the remaining `chdir` migration and the deletion of the fallbacks. |
 | D | 10 | Generated contracts | `API-R03`: node data, cache, JSON-cache status and input cache; output write, destination and assemble dry run; one shared execution-metrics validator | 8 | L | The groups that carry no node config or editor document, generated once the job failure records have settled. |
 | D | 11 | Reuse | `SUB-R01` | — | L | Node-level instances go before the editor-state move and the typed configs would have to model them. Its first step proves the one-node submodel form and stops if an instance use is not covered. |

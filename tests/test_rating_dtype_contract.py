@@ -17,7 +17,7 @@ from haute._rating import (
 )
 from haute._trace_enrichment import _enrich_single_table
 from haute.errors import RatingFactorDtypeContractError
-from haute.routes._optimiser_service import (
+from haute.routes._optimiser_solver import (
     _ratebook_factor_dtypes,
     _ratebook_factor_level_counts,
     _serialise_ratebook_factor_tables,

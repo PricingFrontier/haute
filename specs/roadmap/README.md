@@ -22,7 +22,6 @@ or maintenance issue; `P3` opportunistic work.
 | [Engineering quality](engineering-quality.md) | Dead code, test organisation | `ENGQ-R01` |
 | [Explore and EDA](explore-eda.md) | Advanced pivot and PivotChart parity | — |
 | [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
-| [Optimiser](optimiser.md) | Service extraction, scaling, input isolation | `OPT-P06` |
 | [Pipeline config](pipeline-config.md) | Project context, typed configs, editor state, node specification | `PCFG-R04` |
 | [Sandbox security](sandbox-security.md) | Every containment comparison through the one check | `SBX-R01` |
 | [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |

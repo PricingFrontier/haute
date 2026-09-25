@@ -59,7 +59,8 @@ Interactive preview and trace are dispatched to the execution engine's warm isol
 worker pool. Their HTTP deadline is destructive for the worker, not merely a response
 deadline: after a 504 the timed-out computation no longer consumes CPU or memory.
 Same-key supersession likewise kills obsolete work before the replacement is admitted
-to that affinity slot. OUTPUT dry-runs use the warm pool; API Input table builds, output
+to that affinity slot. OUTPUT dry-runs and the optimiser input estimate use the warm pool;
+API Input table builds, output
 writes, and Explore materialisation use killable one-shot workers under the same
 admitted native-memory policy. Irreversible file/cache publication remains
 parent-owned; a transactional database or lakehouse sink necessarily performs its

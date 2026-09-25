@@ -141,7 +141,8 @@ def test_an_estimate_completes_while_a_solve_is_running(
 ) -> None:
     from haute._sandbox import set_project_root
     from haute.routes._job_store import JobStore
-    from haute.routes._optimiser_service import OptimiserSolveService, SolveContext
+    from haute.routes._optimiser_service import OptimiserSolveService
+    from haute.routes._optimiser_solver import SolveContext
 
     # Unpinned, the solve reserves 70% of available RAM from the in-flight
     # budget and admission refuses the estimate before it could wait on

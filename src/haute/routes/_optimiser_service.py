@@ -7,15 +7,12 @@ The route handler becomes a thin adapter that delegates to
 from __future__ import annotations
 
 import contextlib
-import contextvars
 import dataclasses
-import functools
 import gc
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from itertools import product
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -28,7 +25,6 @@ if TYPE_CHECKING:
 
     from haute.chunking import ChunkPlan
 
-from haute._banding_config import normalise_banding_factors
 from haute._contracts import Contract, get_column_contract
 from haute._env import int_env, optional_int_env
 from haute._execution_admission import (
@@ -54,19 +50,11 @@ from haute._polars_utils import (
     bounded_collect_batches,
     streaming_collect,
 )
-from haute._rating import (
-    normalise_rating_key,
-    rating_dtype_descriptor,
-    rating_dtype_from_descriptor,
-)
 from haute._sandbox import _get_project_root
 from haute._seed_plans import SeedPlan, SeedPlanHandoff, SeedPlanRequest, open_seed_plan
 from haute._types import (
     GraphNode,
-    OnlineSolveResultLike,
     PipelineGraph,
-    RatebookSolveResultLike,
-    SolveResultLike,
 )
 from haute._worker_isolation import (
     IsolatedWorkerError,
@@ -103,7 +91,6 @@ from haute.routes._contract_errors import (
     contract_error_terminal_reason,
     memory_limit_http_exception,
 )
-from haute.routes._frontier_point_summary import NON_CONVERGED_WARNING
 from haute.routes._job_lifecycle import (
     TERMINAL_REASONS,
     JobLifecycle,
@@ -119,8 +106,6 @@ from haute.routes._job_store import (
 from haute.routes._optimiser_input import (
     _NULL_QUOTE_ID_DETAIL_PREFIX,
     OptimiserSetupError,
-    _chunk_size_decision_for_parquet,
-    _ChunkSizeDecision,
     _data_source_feeds_optimiser_through_parallel_edges,
     _execution_stage,
     _explicit_chunk_size_from_config,
@@ -129,10 +114,10 @@ from haute.routes._optimiser_input import (
     _optimiser_solve_required_columns_by_node,
     _positive_int,
     _resolve_optimiser_data_input_id,
-    _resolve_optimiser_input_edge,
     _setup_execution_target_node_id,
     _solve_columns_by_node,
     build_quote_grid,
+    estimate_input_metrics,
     extract_ratebook_factors,
     grid_chunk_decision,
     grid_construction_failures,
@@ -141,9 +126,15 @@ from haute.routes._optimiser_input import (
     validate_and_project_auto_range,
     write_solver_input,
 )
-from haute.routes._optimiser_limits import (
-    enforce_frontier_compute_budget,
-    limited_frontier_payload,
+from haute.routes._optimiser_solver import (
+    SolveContext,
+    _compute_ratebook_factor_level_order,
+    _job_elapsed_seconds,
+    _OptimiserSolveInputError,
+    _OptimiserSolverExecutionError,
+    _solve_online,
+    _solve_ratebook,
+    solver_worker_context,
 )
 from haute.routes._optimiser_worker import (
     FrontierAutoRangeWorkerOutcome,
@@ -166,14 +157,9 @@ from haute.schemas import (
     OptimiserFrontierRange,
     OptimiserSolveRequest,
     OptimiserSolveResponse,
-    _normalise_frontier_range_pair,
 )
 
 logger = get_logger(component="server.optimiser.solve")
-
-# ── Default constants ─────────────────────────────────────────────
-_HISTOGRAM_BINS = 20  # bin count for scenario-value distribution histogram
-_DEFAULT_MAX_ITER = 50  # max solver iterations (online & ratebook)
 
 
 # Env-tunable defaults — resolved per call so overrides set after import
@@ -198,25 +184,13 @@ def _default_auto_range_partitions() -> int:
 _DEFAULT_AUTO_RANGE_TARGET_CHUNK_MIN_BYTES = 16 * 1024 * 1024
 _DEFAULT_AUTO_RANGE_TARGET_CHUNK_MAX_BYTES = 512 * 1024 * 1024
 _DEFAULT_AUTO_RANGE_TARGET_CHUNK_BUDGET_DIVISOR = 16
-_DEFAULT_TOLERANCE = 1e-6  # convergence tolerance for solver
-_DEFAULT_MAX_CD_ITERATIONS = 10  # max coordinate-descent iterations (ratebook)
-_DEFAULT_CD_TOLERANCE = 1e-3  # coordinate-descent convergence tolerance (ratebook)
 _JOB_TYPE_KEY = "job_type"
-
-
-class _OptimiserSolveInputError(Exception):
-    """A user-actionable error while adapting optimiser solver input."""
-
-
-class _OptimiserSolverExecutionError(Exception):
-    """An exception raised by the external price-contour solver boundary."""
 
 
 _SOLVE_JOB_TYPE: Literal["solve"] = "solve"
 _ESTIMATE_JOB_TYPE: Literal["estimate"] = "estimate"
 _FRONTIER_AUTO_RANGE_JOB_TYPE: Literal["frontier_auto_range"] = "frontier_auto_range"
 _FRONTIER_RECOMPUTE_JOB_TYPE: Literal["frontier_recompute"] = "frontier_recompute"
-_FRONTIER_GENERATION_KEY = "frontier_generation"
 _GRAPH_NODE_SETUP_COORDINATION_TYPE = "optimiser_graph_node_setup"
 _AUTO_RANGE_BUCKET_COLUMN = "__haute_frontier_auto_range_bucket"
 _FRONTIER_AUTO_RANGE_CANCELLED_STATUS = "cancelled"
@@ -231,6 +205,12 @@ class _OptimiserSolveRunningJob(RunningJobFields):
     node_label: str
     start_time: float
     timeout: int | None
+
+
+class _OptimiserEstimateRunningJob(RunningJobFields):
+    job_type: Literal["estimate"]
+    config: dict[str, Any]
+    node_label: str
 
 
 class _FrontierAutoRangeRunningJob(RunningJobFields):
@@ -264,41 +244,6 @@ _NON_BLOCKING_RUNNING_JOB_TYPES = frozenset(
 # outside it. Pinned by
 # ``tests/test_optimiser_routes.py::TestSolverWorkerContextGuard``.
 # ---------------------------------------------------------------------------
-
-_SOLVER_WORKER_ACTIVE: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "haute_optimiser_solver_worker",
-    default=False,
-)
-
-
-@contextlib.contextmanager
-def solver_worker_context() -> Iterator[None]:
-    """Mark the current thread of execution as an optimiser solver worker.
-
-    Entered only by the background job runners (solve worker, frontier sweep
-    worker). Guarded entrypoints refuse to run outside it.
-    """
-    token = _SOLVER_WORKER_ACTIVE.set(True)
-    try:
-        yield
-    finally:
-        _SOLVER_WORKER_ACTIVE.reset(token)
-
-
-def require_solver_worker_context(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Fail loud if a heavy solver entrypoint runs outside a worker context."""
-
-    @functools.wraps(fn)
-    def _guarded(*args: Any, **kwargs: Any) -> Any:
-        if not _SOLVER_WORKER_ACTIVE.get():
-            raise RuntimeError(
-                f"{fn.__name__} is a heavy solver entrypoint and must run inside a "
-                "background solver worker (solver_worker_context), never inline in a "
-                "request handler. Submit a job and poll its status instead."
-            )
-        return fn(*args, **kwargs)
-
-    return _guarded
 
 
 def _with_flattened_optimiser_graph(
@@ -424,6 +369,9 @@ class _StreamingAutoRangePlan:
     required_output_columns_by_node: Mapping[str, frozenset[str] | set[str] | None]
     base_required_columns: frozenset[str] | None
     chunk_plan: ChunkPlan
+    # False for a structural plan (no row was sampled): it fixes the base
+    # node and its columns, but its chunk size is a placeholder.
+    sized: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -523,15 +471,6 @@ def _auto_range_target_chunk_bytes() -> int:
         _DEFAULT_AUTO_RANGE_TARGET_CHUNK_MAX_BYTES,
         max(_DEFAULT_AUTO_RANGE_TARGET_CHUNK_MIN_BYTES, budget_scaled),
     )
-
-
-def _job_elapsed_seconds(job: Mapping[str, Any], fallback: float = 0.0) -> float:
-    """Return wall-clock elapsed seconds for a job when start_time is available."""
-    start_time = job.get("start_time")
-    fallback_elapsed = max(0.0, float(fallback))
-    if isinstance(start_time, bool) or not isinstance(start_time, int | float):
-        return fallback_elapsed
-    return max(fallback_elapsed, time.monotonic() - float(start_time), 0.0)
 
 
 def _auto_range_input_required_columns(
@@ -779,12 +718,17 @@ def _build_streaming_auto_range_plan(
     *,
     mode: str,
     required_columns_by_node: Mapping[str, Iterable[str]],
+    sample_row_widths: bool = True,
 ) -> tuple[_StreamingAutoRangePlan | None, _ChunkFallback | None]:
     """Build a strict online auto-range plan that chunks before expansion.
 
     The streaming plan is returned only when the shared chunk planner can prove
     the scenario suffix.  Structural mismatches fall back silently; a lost
     chunk optimisation is returned as a fallback record so the job can warn.
+
+    Without *sample_row_widths* and without a configured chunk size, the plan
+    is structural: byte-budget sizing, which samples rows of the target
+    plan, is left to the worker that runs the job, and the plan is unsized.
     """
     from haute._builders import resolve_instance_node
 
@@ -852,14 +796,16 @@ def _build_streaming_auto_range_plan(
         from haute.chunking import ChunkPlanRequest, chunk_plan
 
         explicit_chunk_size = _auto_range_explicit_chunk_size_from_config(config)
+        sized = explicit_chunk_size is not None or sample_row_widths
+        structural_chunk_size = explicit_chunk_size if sized else 1
         generic_chunk_plan = chunk_plan(
             ChunkPlanRequest(
                 graph=graph,
                 target_node_id=data_input_id,
                 chunk_start_node_id=base_node_id,
-                chunk_size=explicit_chunk_size,
+                chunk_size=structural_chunk_size,
                 target_chunk_bytes=(
-                    None if explicit_chunk_size is not None else _auto_range_target_chunk_bytes()
+                    None if structural_chunk_size is not None else _auto_range_target_chunk_bytes()
                 ),
                 required_columns_by_node=required_columns_by_node,
                 source="batch",
@@ -912,127 +858,10 @@ def _build_streaming_auto_range_plan(
             required_output_columns_by_node=required_output_columns_by_node,
             base_required_columns=(frozenset(base_needed) if base_needed is not None else None),
             chunk_plan=generic_chunk_plan,
+            sized=sized,
         ),
         None,
     )
-
-
-def _compute_scenario_value_stats(
-    solve_result: SolveResultLike,
-) -> tuple[
-    dict[str, float] | None,
-    dict[str, list[int] | list[float]] | None,
-]:
-    """Compute scenario value distribution statistics and histogram from solve result."""
-    if not hasattr(solve_result, "dataframe"):
-        return None, None
-    df = solve_result.dataframe
-    if "optimal_scenario_value" not in df.columns:
-        return None, None
-
-    col = df["optimal_scenario_value"]
-    n = len(col)
-    if n == 0:
-        return None, None
-    # polars' sample std (ddof=1) is undefined (null) for a single quote and
-    # would crash the float() cast after the solve already succeeded. A
-    # complete one-quote result set has exactly zero spread, so 0.0 is the
-    # true population statistic for n == 1 — not a fabricated estimate
-    # (mirrors the degenerate-input convention used by the gini metrics).
-    # The response schema (OptimiserScenarioValueStats.std) and the frontend
-    # guard both require ``std`` to be a number, so omitting or nulling just
-    # this field is not a shape the contract permits.
-    stats = {
-        "mean": float(col.mean()),
-        "std": 0.0 if n == 1 else float(col.std()),
-        "min": float(col.min()),
-        "max": float(col.max()),
-        "p5": float(col.quantile(0.05)),
-        "p25": float(col.quantile(0.25)),
-        "p50": float(col.quantile(0.50)),
-        "p75": float(col.quantile(0.75)),
-        "p95": float(col.quantile(0.95)),
-        "pct_increase": float((col > 1.0).sum() / n) if n else 0.0,
-        "pct_decrease": float((col < 1.0).sum() / n) if n else 0.0,
-    }
-
-    vals = col.to_numpy()
-    counts, edges = np.histogram(vals, bins=_HISTOGRAM_BINS)
-    histogram: dict[str, list[int] | list[float]] = {
-        "counts": [int(c) for c in counts],
-        "edges": [float(e) for e in edges],
-    }
-    return stats, histogram
-
-
-@require_solver_worker_context
-def _compute_frontier(
-    solver: Any,
-    quote_grid: QuoteGrid,
-    *,
-    mode: str,
-    ratebook_factors: Any | None,
-    threshold_ranges: dict[str, tuple[float, float]],
-    n_points_per_dim: int,
-    factor_columns: list[list[str]] | None = None,
-    initial_lambdas: dict[str, float] | None = None,
-    check_cancelled: Callable[[], None] | None = None,
-) -> Any:
-    """Call the mode-specific frontier API."""
-    if check_cancelled is not None:
-        check_cancelled()
-    if mode == "ratebook":
-        if ratebook_factors is None:
-            raise RuntimeError("Ratebook frontier requires prepared factor contexts.")
-        frontier_kwargs: dict[str, Any] = {
-            "threshold_ranges": threshold_ranges,
-            "n_points_per_dim": n_points_per_dim,
-        }
-        if factor_columns is not None:
-            frontier_kwargs["factor_columns"] = factor_columns
-        if initial_lambdas is not None:
-            frontier_kwargs["initial_lambdas"] = initial_lambdas
-        result = solver.frontier(
-            quote_grid,
-            ratebook_factors,
-            **frontier_kwargs,
-        )
-        if check_cancelled is not None:
-            check_cancelled()
-        return result
-    frontier_kwargs = {
-        "threshold_ranges": threshold_ranges,
-        "n_points_per_dim": n_points_per_dim,
-    }
-    if initial_lambdas is not None:
-        frontier_kwargs["initial_lambdas"] = initial_lambdas
-    result = solver.frontier(quote_grid, **frontier_kwargs)
-    if check_cancelled is not None:
-        check_cancelled()
-    return result
-
-
-def _auto_frontier_ranges_from_config(config: dict[str, Any]) -> dict[str, tuple[float, float]]:
-    """Build absolute frontier ranges from canonical per-constraint config."""
-    constraints = config.get("constraints") or {}
-    if not constraints:
-        return {}
-
-    configured_ranges = config.get("frontier_ranges")
-    if configured_ranges is not None:
-        if not isinstance(configured_ranges, dict):
-            raise ValueError("frontier_ranges must be an object keyed by constraint name.")
-        ranges: dict[str, tuple[float, float]] = {}
-        for cname in constraints:
-            if cname not in configured_ranges:
-                raise ValueError(f"frontier_ranges is missing a range for constraint {cname!r}.")
-            ranges[str(cname)] = _normalise_frontier_range_pair(
-                configured_ranges[cname],
-                field=f"frontier_ranges.{cname}",
-            )
-        return ranges
-
-    raise ValueError("frontier_ranges must provide min and max for each constraint.")
 
 
 class _ScenarioFrontierRangeAccumulator:
@@ -1292,930 +1121,9 @@ def _reduce_frontier_range_batches(
             execution_context=execution_context,
         )
 
-
-_RATEBOOK_FACTOR_LEVEL_SEPARATOR = "\x1f"
-_RATEBOOK_FACTOR_LEVEL_ORDER_KEY = "factor_level_order"
-
-
-def _ratebook_factor_table_name(columns: list[str]) -> str:
-    return ":".join(columns)
-
-
-def _ratebook_factor_level_key(
-    values: list[Any],
-    dtypes: list[pl.DataType],
-) -> str:
-    """Canonical level key for one observed factor-level tuple (3b.10).
-
-    Components are canonicalised through the shared
-    :func:`haute._rating.normalise_rating_key`, so save-time level keys agree
-    with the keys the apply-side rating join derives from frame values
-    (Float64 ``25.0`` -> ``"25"``; strings stay verbatim).
-    """
-    parts: list[str] = []
-    if len(dtypes) != len(values):
-        raise ValueError("Ratebook factor values and dtypes must have the same length.")
-    for value, dtype in zip(values, dtypes):
-        canonical = normalise_rating_key(value, dtype)
-        if canonical is None:
-            raise ValueError("Ratebook factor counts cannot be computed with null factor levels.")
-        parts.append(canonical)
-    return _RATEBOOK_FACTOR_LEVEL_SEPARATOR.join(parts)
-
-
-def _canonical_ratebook_table_level(
-    name: str,
-    level: Any,
-    level_counts: dict[str, int],
-    dtypes: list[pl.DataType],
-) -> str:
-    """Save-time canonical key for a solver-emitted factor level (3b.10).
-
-    price-contour stringifies typed factor values, which widens Float32 values
-    to Python Float64 representations. Reconstruct each emitted component
-    through the exact originating dtype from the solved factor artifact before
-    canonicalisation. ``level_counts`` was built from that same typed artifact,
-    so the resulting key must exist exactly; no candidate search or dtype
-    inference is permitted.
-    """
-    if len(dtypes) == 1:
-        components = [level]
-    elif isinstance(level, str):
-        components = level.split(_RATEBOOK_FACTOR_LEVEL_SEPARATOR)
-    else:
-        raise ValueError(
-            f"Ratebook factor table {name!r} has a non-string composite level {level!r}."
-        )
-    if len(components) != len(dtypes):
-        raise ValueError(
-            f"Ratebook factor table {name!r} level {level!r} has {len(components)} "
-            f"component(s), expected {len(dtypes)}."
-        )
-    canonical = _ratebook_factor_level_key(components, dtypes)
-    if canonical not in level_counts:
-        raise ValueError(
-            f"Ratebook factor counts missing for level {level!r} in factor table {name!r}."
-        )
-    return canonical
-
-
-def _append_unique_factor_level(levels: list[str], seen: set[str], value: object) -> None:
-    if value is None or value == "":
-        return
-    level = str(value)
-    if level in seen:
-        return
-    seen.add(level)
-    levels.append(level)
-
-
-def _banding_rule_output_level(rule: dict[str, Any]) -> object:
-    """Return the rule's output level (``assignment`` or ``label``)."""
-    if "assignment" in rule:
-        return rule["assignment"]
-    return rule["label"]
-
-
-def _find_node_by_id(graph: PipelineGraph, node_id: str) -> GraphNode | None:
-    """Return the graph node with the given id, or ``None`` if absent."""
-    return next((node for node in graph.nodes if node.id == node_id), None)
-
-
-def _ratebook_factor_level_order(
-    graph: PipelineGraph,
-    node_id: str,
-    config: dict[str, Any],
-) -> dict[str, list[str]]:
-    """Extract factor-level display order from the configured banding source."""
-    banding_edge = _resolve_optimiser_input_edge(
-        graph,
-        node_id,
-        config,
-        field="banding_source",
-    )
-    if banding_edge is None:
-        return {}
-
-    banding_node = _find_node_by_id(graph, banding_edge.source)
-    if banding_node is None or banding_node.data.nodeType != NodeType.BANDING:
-        return {}
-
-    order: dict[str, list[str]] = {}
-    for factor in normalise_banding_factors(banding_node.data.config):
-        output_column = factor.get("outputColumn")
-        if not isinstance(output_column, str) or not output_column:
-            continue
-
-        levels: list[str] = []
-        seen: set[str] = set()
-        rules = factor.get("rules")
-        if isinstance(rules, list):
-            for rule in rules:
-                if isinstance(rule, dict):
-                    _append_unique_factor_level(levels, seen, _banding_rule_output_level(rule))
-        _append_unique_factor_level(levels, seen, factor.get("default"))
-        if levels:
-            order[output_column] = levels
-    return order
-
-
-def _ratebook_factor_table_level_order(
-    table_name: str,
-    factor_level_order: dict[str, list[str]],
-) -> list[str]:
-    direct_order = factor_level_order.get(table_name)
-    if direct_order is not None:
-        return direct_order
-
-    columns = table_name.split(":")
-    if len(columns) <= 1:
-        return []
-
-    component_orders = [factor_level_order.get(column) for column in columns]
-    if any(order is None for order in component_orders):
-        return []
-    populated_orders = [order for order in component_orders if order is not None]
-    return [_RATEBOOK_FACTOR_LEVEL_SEPARATOR.join(values) for values in product(*populated_orders)]
-
-
-def _ratebook_factor_table_position(
-    table_name: str,
-    factor_level_order: dict[str, list[str]],
-) -> tuple[int, ...] | None:
-    factor_positions = {name: index for index, name in enumerate(factor_level_order)}
-    direct_position = factor_positions.get(table_name)
-    if direct_position is not None:
-        return (direct_position,)
-
-    columns = table_name.split(":")
-    if len(columns) <= 1:
-        return None
-    positions = [factor_positions.get(column) for column in columns]
-    if any(position is None for position in positions):
-        return None
-    return tuple(position for position in positions if position is not None)
-
-
-def _ratebook_factor_table_sort_key(
-    index_and_item: tuple[int, tuple[Any, Any]],
-    factor_level_order: dict[str, list[str]],
-) -> tuple[int, tuple[int, ...]]:
-    original_index, (name, _table) = index_and_item
-    fallback = (1, (original_index,))
-    if not isinstance(name, str):
-        return fallback
-    position = _ratebook_factor_table_position(name, factor_level_order)
-    return (0, position) if position is not None else fallback
-
-
-def _ratebook_factor_level_counts(
-    factors_df: Any | None,
-    factor_columns: list[list[str]] | None,
-) -> dict[str, dict[str, int]]:
-    """Count quote exposure for each ratebook factor level.
-
-    Table keys mirror price-contour's factor table output: single-column
-    groups use the column name, composite groups join column names with
-    ":".  Level keys are CANONICAL (3b.10): each component goes through the
-    shared ``normalise_rating_key`` (joined with the unit separator), so the
-    saved keys agree with what the apply-side rating join derives from frame
-    values.  Two raw levels collapsing to one canonical key — possible only
-    when a source column mixes value types — fail loudly, never merge.
-    """
-    import polars as pl
-
-    if factors_df is None:
-        return {}
-
-    is_lazy = isinstance(factors_df, pl.LazyFrame)
-    schema = factors_df.collect_schema() if is_lazy else factors_df.schema
-    schema_names = set(schema.names())
-    counts: dict[str, dict[str, int]] = {}
-    for columns in factor_columns or []:
-        if not columns:
-            continue
-        missing = [column for column in columns if column not in schema_names]
-        if missing:
-            raise ValueError(
-                "Ratebook factor count columns are missing from aligned factors dataframe: "
-                f"{missing}"
-            )
-        table_name = _ratebook_factor_table_name(columns)
-        grouped = factors_df.group_by(columns).agg(pl.len().alias("quote_count"))
-        if is_lazy:
-            count_rows = streaming_collect(grouped).to_dicts()
-        else:
-            count_rows = grouped.to_dicts()
-        table_counts: dict[str, int] = {}
-        level_sources: dict[str, list[Any]] = {}
-        column_dtypes = [schema[column] for column in columns]
-        for row in count_rows:
-            values = [row[column] for column in columns]
-            level_key = _ratebook_factor_level_key(values, column_dtypes)
-            if level_key in table_counts:
-                raise ValueError(
-                    f"Ratebook factor levels {level_sources[level_key]!r} and {values!r} in "
-                    f"factor table {table_name!r} both canonicalise to {level_key!r}; the "
-                    "source column mixes value types. Cast it to a single type upstream."
-                )
-            table_counts[level_key] = int(row["quote_count"])
-            level_sources[level_key] = values
-        counts[table_name] = table_counts
-    return counts
-
-
-def _ratebook_factor_dtypes(
-    factors_df: Any | None,
-    factor_columns: list[list[str]] | None,
-) -> dict[str, list[dict[str, Any]]]:
-    """Describe every solved factor table's ordered originating dtypes."""
-    import polars as pl
-
-    if factors_df is None:
-        return {}
-    schema = (
-        factors_df.collect_schema() if isinstance(factors_df, pl.LazyFrame) else factors_df.schema
-    )
-    schema_names = set(schema.names())
-    result: dict[str, list[dict[str, Any]]] = {}
-    for columns in factor_columns or []:
-        if not columns:
-            continue
-        missing = [column for column in columns if column not in schema_names]
-        if missing:
-            raise ValueError(
-                "Ratebook factor dtype columns are missing from aligned factors "
-                f"dataframe: {missing}"
-            )
-        result[_ratebook_factor_table_name(columns)] = [
-            {
-                "column": column,
-                "dtype": rating_dtype_descriptor(schema[column]),
-            }
-            for column in columns
-        ]
-    return result
-
-
-def _ratebook_factor_level_counts_from_artifact(
-    handle: dict[str, Any],
-    factor_columns: list[list[str]] | None,
-) -> dict[str, dict[str, int]]:
-    """Count ratebook factor levels from the persisted factor artifact lazily."""
-    return _ratebook_factor_level_counts(
-        _optimiser_artifacts._scan_ratebook_factors_artifact(handle),
-        factor_columns,
-    )
-
-
-def _ratebook_factor_dtypes_from_artifact(
-    handle: dict[str, Any],
-    factor_columns: list[list[str]] | None,
-) -> dict[str, list[dict[str, Any]]]:
-    """Read ratebook dtype metadata from the persisted solved-factor schema."""
-    return _ratebook_factor_dtypes(
-        _optimiser_artifacts._scan_ratebook_factors_artifact(handle),
-        factor_columns,
-    )
-
-
-def _quote_grid_quote_ids(quote_grid: Any) -> list[str]:
-    """Return quote ids from a price-contour QuoteGrid as concrete strings."""
-    return [str(quote_id) for quote_id in quote_grid.quote_ids]
-
-
-def _ratebook_factor_artifact_quote_id(
-    handle: dict[str, Any],
-    config: Mapping[str, Any],
-) -> str:
-    """Resolve the quote-id column available in a ratebook factor artifact."""
-    columns = handle.get("columns")
-    available = set(columns) if isinstance(columns, list) else set()
-    qid_col = str(config.get("quote_id", "quote_id"))
-    if qid_col in available:
-        return qid_col
-    raise RuntimeError(f"Ratebook banding source must include quote id column {qid_col!r}.")
-
-
-def _build_ratebook_factor_contexts(
-    handle: dict[str, Any],
-    quote_grid: Any,
-    config: Mapping[str, Any],
-    factor_columns: list[list[str]],
-    *,
-    chunk_decision: _ChunkSizeDecision | None = None,
-) -> Any:
-    """Build price-contour factor contexts from a persisted ratebook factor artifact."""
-    from price_contour import build_ratebook_factor_contexts_from_parquet_chunked
-
-    artifact_path, _artifact_dir = _optimiser_artifacts._validate_ratebook_factors_artifact_handle(
-        handle
-    )
-    quote_ids = _quote_grid_quote_ids(quote_grid)
-    try:
-        if chunk_decision is None:
-            chunk_decision = _chunk_size_decision_for_parquet(
-                config,
-                artifact_path,
-                source="ratebook_factor_contexts",
-            )
-        chunk_size = chunk_decision.chunk_size
-    except ValueError as exc:
-        raise RuntimeError(f"Ratebook factor context chunk sizing failed: {exc}") from exc
-    return build_ratebook_factor_contexts_from_parquet_chunked(
-        str(artifact_path),
-        factor_columns,
-        chunk_size,
-        quote_id=_ratebook_factor_artifact_quote_id(handle, config),
-        expected_quote_ids=quote_ids,
-        expected_n_quotes=quote_grid.n_quotes,
-    )
-
-
-def _sort_ratebook_factor_tables(
-    factor_tables: dict[Any, Any],
-    factor_level_order: dict[str, list[str]],
-) -> list[tuple[Any, Any]]:
-    """Order factor tables by the configured banding-rule order.
-
-    Tables not present in ``factor_level_order`` retain their original
-    insertion order behind the configured ones (fallback bucket ``1``).
-    """
-    return [
-        item
-        for _index, item in sorted(
-            enumerate(factor_tables.items()),
-            key=lambda item: _ratebook_factor_table_sort_key(item, factor_level_order),
-        )
-    ]
-
-
-def _serialise_ratebook_factor_table_rows(
-    name: str,
-    table: dict[Any, Any],
-    level_counts: dict[str, int],
-    factor_level_order: dict[str, list[str]],
-    factor_dtypes: list[pl.DataType],
-) -> list[dict[str, Any]]:
-    """Serialise one factor table's rows, ordered by configured level order.
-
-    Levels not present in the configured order fall through to insertion order
-    behind the ordered ones, matching the table-level ordering convention.
-
-    Saved ``__factor_group__`` labels are CANONICAL (3b.10): solver-emitted
-    levels are translated through :func:`_canonical_ratebook_table_level`
-    using the solved frame's exact ordered factor dtypes, so a Float32 value
-    widened by Python is reconstructed before the apply key is saved. Two
-    emitted levels collapsing to one canonical key fail loudly —
-    last-writer-wins would silently drop a solved rate.
-    """
-    configured_level_order = _ratebook_factor_table_level_order(name, factor_level_order)
-    level_positions = {level: index for index, level in enumerate(configured_level_order)}
-    ordered_rows: list[tuple[tuple[int, int], dict[str, Any]]] = []
-    emitted_by_canonical: dict[str, Any] = {}
-    for original_index, (level, scenario_value) in enumerate(table.items()):
-        level_key = _canonical_ratebook_table_level(
-            name,
-            level,
-            level_counts,
-            factor_dtypes,
-        )
-        if level_key in emitted_by_canonical:
-            raise ValueError(
-                f"Ratebook factor table {name!r} levels {emitted_by_canonical[level_key]!r} "
-                f"and {level!r} both canonicalise to {level_key!r}; the solver input mixed "
-                "value types in one factor column. Cast it to a single type and re-solve."
-            )
-        emitted_by_canonical[level_key] = level
-        scenario_float = float(scenario_value)
-        if not np.isfinite(scenario_float):
-            raise ValueError(f"Ratebook factor table {name!r} contains a non-finite rate.")
-        sort_key = (
-            (0, level_positions[level_key]) if level_key in level_positions else (1, original_index)
-        )
-        ordered_rows.append(
-            (
-                sort_key,
-                {
-                    "__factor_group__": level_key,
-                    "optimal_scenario_value": scenario_float,
-                    # The canonical key is always counted: the translation
-                    # fails loudly when no counts key matches the level.
-                    "quote_count": int(level_counts[level_key]),
-                },
-            )
-        )
-    return [row for _sort_key, row in sorted(ordered_rows, key=lambda item: item[0])]
-
-
-def _ratebook_serialisation_dtypes(
-    table_name: str,
-    records: object,
-) -> list[pl.DataType]:
-    """Validate and reconstruct one table's ordered factor dtype metadata."""
-    expected_columns = table_name.split(":")
-    if not isinstance(records, list) or len(records) != len(expected_columns):
-        raise ValueError(
-            f"Ratebook factor_dtypes for {table_name!r} must contain one ordered "
-            "record per factor column."
-        )
-    dtypes: list[pl.DataType] = []
-    for index, (expected_column, record) in enumerate(zip(expected_columns, records)):
-        if not isinstance(record, dict) or set(record) != {"column", "dtype"}:
-            raise ValueError(
-                f"Ratebook factor_dtypes for {table_name!r} has a malformed "
-                f"record at index {index}."
-            )
-        column = record.get("column")
-        descriptor = record.get("dtype")
-        if column != expected_column:
-            raise ValueError(
-                f"Ratebook factor_dtypes for {table_name!r} expected column "
-                f"{expected_column!r} at index {index}, got {column!r}."
-            )
-        try:
-            dtypes.append(rating_dtype_from_descriptor(descriptor))
-        except ValueError as exc:
-            raise ValueError(
-                f"Ratebook factor_dtypes for {table_name!r} has an invalid dtype "
-                f"descriptor at index {index}."
-            ) from exc
-    return dtypes
-
-
-def _serialise_ratebook_factor_tables(
-    factor_tables: Any,
-    factor_level_counts: dict[str, dict[str, int]],
-    factor_level_order: dict[str, list[str]],
-    factor_dtypes: dict[str, list[dict[str, Any]]],
-) -> dict[str, list[dict[str, Any]]]:
-    """Serialise ratebook factor tables for the API, ordered by banding rules.
-
-    Level labels are canonicalised against ``factor_level_counts`` at save
-    time (3b.10) — see :func:`_serialise_ratebook_factor_table_rows`.
-    """
-    if not isinstance(factor_tables, dict):
-        raise ValueError("Ratebook factor tables are invalid")
-    if not isinstance(factor_dtypes, dict):
-        raise ValueError("Ratebook factor_dtypes are invalid")
-
-    serialised: dict[str, list[dict[str, Any]]] = {}
-    for name, table in _sort_ratebook_factor_tables(factor_tables, factor_level_order):
-        if not isinstance(name, str) or not isinstance(table, dict):
-            raise ValueError("Ratebook factor tables are invalid")
-        level_counts = factor_level_counts.get(name)
-        if level_counts is None:
-            raise ValueError(f"Ratebook factor counts missing for factor table {name!r}.")
-        table_dtypes = _ratebook_serialisation_dtypes(name, factor_dtypes.get(name))
-        serialised[name] = _serialise_ratebook_factor_table_rows(
-            name,
-            table,
-            level_counts,
-            factor_level_order,
-            table_dtypes,
-        )
-    return serialised
-
-
-def _compute_ratebook_factor_level_order(
-    graph: PipelineGraph,
-    node_id: str,
-    config: dict[str, Any],
-    mode: str,
-) -> dict[str, list[str]]:
-    """Return the banding-rule level order for ratebook mode, ``{}`` otherwise.
-
-    Computed once at solve start from the graph and threaded through to the
-    background solver as an explicit parameter — never injected into the
-    user-facing config dict.
-    """
-    if mode != "ratebook":
-        return {}
-    return _ratebook_factor_level_order(graph, node_id, config)
-
-
-def _finalize_solve_result(
-    solve_result: SolveResultLike,
-    *,
-    mode: str,
-    solver: Any,
-    quote_grid: QuoteGrid,
-    store: JobStore,
-    job_id: str,
-    elapsed: float,
-    extra_fields: dict[str, Any] | None = None,
-    extra_job_fields: dict[str, Any] | None = None,
-    factors_df: pl.DataFrame | None = None,
-    ratebook_factors_handle: dict[str, Any] | None = None,
-    ratebook_factor_contexts: Any | None = None,
-    factor_columns: list[list[str]] | None = None,
-    check_cancelled: Callable[[], None] | None = None,
-) -> None:
-    """Build the result dict and update the job with the solve outcome.
-
-    Shared by ``_solve_online`` and ``_solve_ratebook`` to avoid duplicating
-    the ~30 lines of result-dict construction, convergence warning, and
-    store update boilerplate.
-
-    Parameters
-    ----------
-    solve_result:
-        The solver result object (online or ratebook).
-    mode:
-        ``"online"`` or ``"ratebook"``.
-    solver:
-        The solver instance (stored on the job for later use).
-    quote_grid:
-        The QuoteGrid (stored on the job for apply/frontier operations).
-    store:
-        The job store — updates are applied atomically via dict replacement.
-    job_id:
-        The job ID to update in the store.
-    elapsed:
-        Wall-clock seconds since the solve started.
-    extra_fields:
-        Mode-specific keys to merge into the result dict (e.g.
-        ``iterations``, ``factor_tables``).
-    """
-    scenario_value_stats, scenario_value_histogram = _compute_scenario_value_stats(solve_result)
-
-    result_dict: dict[str, Any] = {
-        "mode": mode,
-        "total_objective": solve_result.total_objective,
-        "baseline_objective": solve_result.baseline_objective,
-        "constraints": solve_result.total_constraints,
-        "baseline_constraints": solve_result.baseline_constraints,
-        "lambdas": solve_result.lambdas,
-        "converged": solve_result.converged,
-        "scenario_value_stats": scenario_value_stats,
-        "scenario_value_histogram": scenario_value_histogram,
-    }
-    if extra_fields:
-        result_dict.update(extra_fields)
-    if not solve_result.converged:
-        result_dict["warning"] = NON_CONVERGED_WARNING
-
-    # ── Compute efficient frontier when explicitly requested (non-fatal) ────
-    frontier_data = None
-    frontier_error = None
-    # Read through JobStore so concurrent eviction cannot race this snapshot.
-    job_snapshot: Mapping[str, Any] = store.get_job(job_id) or {}
-    config = job_snapshot.get("config", {})
-    constraints = config.get("constraints")
-    if constraints and config.get("frontier_enabled") is True:
-        try:
-            frontier_steps = config.get("frontier_steps", 15)
-            ranges = _auto_frontier_ranges_from_config(config)
-            if ranges:
-                enforce_frontier_compute_budget(
-                    n_points_per_dim=frontier_steps,
-                    n_constraints=len(ranges),
-                )
-                progress_job = store.atomic_update(
-                    job_id,
-                    {
-                        "message": "Computing efficient frontier",
-                        "progress": 0.8,
-                        "elapsed_seconds": _job_elapsed_seconds(job_snapshot, elapsed),
-                    },
-                    expected_status="running",
-                )
-                if progress_job is None:
-                    logger.info(
-                        "frontier_start_skipped",
-                        job_id=job_id,
-                        expected_status="running",
-                    )
-                    return
-                job_snapshot = progress_job
-                frontier_result = _compute_frontier(
-                    solver,
-                    quote_grid,
-                    mode=mode,
-                    ratebook_factors=ratebook_factor_contexts if mode == "ratebook" else None,
-                    factor_columns=factor_columns,
-                    threshold_ranges=ranges,
-                    n_points_per_dim=frontier_steps,
-                    initial_lambdas=solve_result.lambdas,
-                    check_cancelled=check_cancelled,
-                )
-                frontier_data = limited_frontier_payload(
-                    frontier_result.points,
-                    constraint_names=list(ranges.keys()),
-                )
-                logger.info(
-                    "frontier_computed",
-                    n_points=frontier_data["n_points"],
-                    job_id=job_id,
-                )
-        except (BackgroundJobStoppedError, ExecutionCancelledError):
-            raise
-        except Exception as exc:
-            frontier_error = f"Frontier unavailable: {exc}"
-            logger.warning(
-                "frontier_computation_failed",
-                error=str(exc),
-                job_id=job_id,
-                exc_info=True,
-            )
-
-    result_dict["frontier"] = frontier_data
-    if frontier_error is not None:
-        result_dict["frontier_error"] = frontier_error
-    completion_elapsed = _job_elapsed_seconds(
-        store.get_job(job_id) or job_snapshot,
-        elapsed,
-    )
-    uncommitted_handles: list[tuple[dict[str, Any], str]] = []
-    if ratebook_factors_handle is not None:
-        uncommitted_handles.append(
-            (
-                ratebook_factors_handle,
-                "solve_completion_orphan_factor_artifact_cleanup_failed",
-            )
-        )
-
-    def publish_completion_fields() -> Mapping[str, Any]:
-        """Persist durable artifacts only after this worker owns completion."""
-        artifact_handles: dict[str, Any] = {}
-        apply_result_handle = _optimiser_artifacts._persist_apply_result_artifact(solve_result)
-        if apply_result_handle is not None:
-            artifact_handles[_optimiser_artifacts._APPLY_RESULT_HANDLE_KEY] = apply_result_handle
-            uncommitted_handles.append(
-                (
-                    apply_result_handle,
-                    "solve_completion_orphan_apply_artifact_cleanup_failed",
-                )
-            )
-
-        factor_handle = ratebook_factors_handle
-        if factor_handle is None:
-            factor_handle = _optimiser_artifacts._persist_ratebook_factors_artifact(factors_df)
-            if factor_handle is not None:
-                uncommitted_handles.append(
-                    (
-                        factor_handle,
-                        "solve_completion_orphan_factor_artifact_cleanup_failed",
-                    )
-                )
-        if factor_handle is not None:
-            artifact_handles[_optimiser_artifacts._RATEBOOK_FACTORS_HANDLE_KEY] = factor_handle
-
-        completion_fields: dict[str, Any] = {
-            "progress": 1.0,
-            "solver": solver,
-            "solve_result": solve_result,
-            "quote_grid": quote_grid,
-            "factor_columns_valid": factor_columns,
-            "result": result_dict,
-            "base_result": dict(result_dict),
-            "frontier_data": frontier_data,
-            "artifact_handles": artifact_handles,
-            **(extra_job_fields or {}),
-            _FRONTIER_GENERATION_KEY: 0,
-        }
-        if ratebook_factor_contexts is not None:
-            completion_fields["ratebook_factor_contexts"] = ratebook_factor_contexts
-        return completion_fields
-
-    def cleanup_uncommitted_handles() -> None:
-        for handle, event in uncommitted_handles:
-            _optimiser_artifacts._cleanup_orphan_apply_result_artifact(
-                handle,
-                job_id=job_id,
-                event=event,
-            )
-
-    # Artifact persistence and the terminal record now share the store's one
-    # running-job claim. Cancellation either wins before the publisher runs or
-    # observes the complete artifact/result pair afterwards.
-    try:
-        updated_job = JobLifecycle(store).publish_completion(
-            job_id,
-            publish=publish_completion_fields,
-            message="Completed",
-            elapsed_seconds=completion_elapsed,
-        )
-    except BaseException:
-        cleanup_uncommitted_handles()
-        raise
-    if updated_job is None:
-        logger.info("solve_completion_skipped", job_id=job_id, expected_status="running")
-        cleanup_uncommitted_handles()
-        return
-
     # The job store keeps these heavy runtime objects for its short
     # heavy-object retention window, then slims the completed job down to
     # API-facing summaries/metadata while preserving the 24h status record.
-
-
-@require_solver_worker_context
-def _solve_online(
-    ctx: SolveContext,
-    *,
-    quote_grid: QuoteGrid,
-    config: dict[str, Any],
-) -> None:
-    """Run the online optimiser solver on a pre-built QuoteGrid."""
-    from price_contour import OnlineOptimiser
-
-    if ctx.store is None:
-        raise RuntimeError("_solve_online requires SolveContext.store to be set.")
-    store = ctx.store
-    job_id = ctx.job_id
-    check_cancelled = ctx.check_cancelled
-    if ctx.start_time is None:
-        raise RuntimeError("_solve_online requires SolveContext.start_time to be set.")
-    start_time = ctx.start_time
-
-    if check_cancelled is not None:
-        check_cancelled()
-    try:
-        solver = OnlineOptimiser(
-            objective=config["objective"],
-            constraints=config["constraints"] or None,
-            max_iter=config.get("max_iter", _DEFAULT_MAX_ITER),
-            tolerance=config.get("tolerance", _DEFAULT_TOLERANCE),
-            record_history=config.get("record_history", False),
-        )
-        solve_result: OnlineSolveResultLike = solver.solve(quote_grid)
-    except (BackgroundJobStoppedError, ExecutionCancelledError):
-        raise
-    except Exception as exc:
-        raise _OptimiserSolverExecutionError(str(exc)) from exc
-    if check_cancelled is not None:
-        check_cancelled()
-    elapsed = time.monotonic() - start_time
-    logger.info(
-        "solve_completed",
-        mode="online",
-        elapsed=f"{elapsed:.2f}s",
-        converged=solve_result.converged,
-    )
-
-    _finalize_solve_result(
-        solve_result,
-        mode="online",
-        solver=solver,
-        quote_grid=solve_result.grid,
-        factors_df=None,
-        store=store,
-        job_id=job_id,
-        elapsed=elapsed,
-        extra_fields={
-            "iterations": solve_result.iterations,
-            "n_quotes": solve_result.n_quotes,
-            "n_steps": solve_result.n_steps,
-            "history": solve_result.history if config.get("record_history") else None,
-        },
-        check_cancelled=check_cancelled,
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class SolveContext:
-    """Per-solve context that travels end-to-end through the solver pipeline."""
-
-    job_id: str
-    node_id: str
-    mode: str
-    store: JobStore | None = None
-    execution_context: ExecutionContext | None = None
-    setup_singleflight_key: tuple[str, str, str] | None = None
-    registration_already_active: bool = False
-    start_time: float | None = None
-    check_cancelled: Callable[[], None] | None = None
-
-
-@require_solver_worker_context
-def _solve_ratebook(
-    ctx: SolveContext,
-    *,
-    quote_grid: QuoteGrid,
-    config: dict[str, Any],
-    ratebook_factors_handle: dict[str, Any] | None,
-    factor_level_order: dict[str, list[str]] | None = None,
-) -> None:
-    """Run the ratebook optimiser solver on a pre-built QuoteGrid."""
-    from price_contour import RatebookOptimiser
-
-    if ctx.store is None:
-        raise RuntimeError("_solve_ratebook requires SolveContext.store to be set.")
-    store = ctx.store
-    job_id = ctx.job_id
-    check_cancelled = ctx.check_cancelled
-    if ctx.start_time is None:
-        raise RuntimeError("_solve_ratebook requires SolveContext.start_time to be set.")
-    start_time = ctx.start_time
-
-    if ratebook_factors_handle is None:
-        raise _OptimiserSolveInputError(
-            "Ratebook mode requires a banding source. "
-            "Select a banding node in the Rating Factor Source dropdown."
-        )
-    if check_cancelled is not None:
-        check_cancelled()
-
-    constraints = config["constraints"]
-
-    raw_factor_columns = config.get("factor_columns", [])
-    available_raw = ratebook_factors_handle.get("columns")
-    available_cols = set(available_raw) if isinstance(available_raw, list) else set()
-    missing = [c for group in raw_factor_columns for c in group if c not in available_cols]
-    if missing:
-        raise _OptimiserSolveInputError(
-            f"Missing ratebook factor columns in banding source: {missing}. "
-            f"Available columns: {sorted(available_cols)}"
-        )
-    factor_columns_valid = [list(group) for group in raw_factor_columns]
-
-    factor_artifact_path, _factor_artifact_dir = (
-        _optimiser_artifacts._validate_ratebook_factors_artifact_handle(ratebook_factors_handle)
-    )
-    factor_chunk_decision = _chunk_size_decision_for_parquet(
-        config,
-        factor_artifact_path,
-        source="ratebook_factor_contexts",
-    )
-    try:
-        factor_contexts = _build_ratebook_factor_contexts(
-            ratebook_factors_handle,
-            quote_grid,
-            config,
-            factor_columns_valid,
-            chunk_decision=factor_chunk_decision,
-        )
-    except ValueError as exc:
-        raise _OptimiserSolveInputError(str(exc)) from exc
-
-    try:
-        solver = RatebookOptimiser(
-            objective=config["objective"],
-            constraints=constraints,
-            factor_columns=factor_columns_valid,
-            max_iter=config.get("max_iter", _DEFAULT_MAX_ITER),
-            max_cd_iterations=config.get("max_cd_iterations", _DEFAULT_MAX_CD_ITERATIONS),
-            cd_tolerance=config.get("cd_tolerance", _DEFAULT_CD_TOLERANCE),
-            tolerance=config.get("tolerance", _DEFAULT_TOLERANCE),
-        )
-        solve_result: RatebookSolveResultLike = solver.solve(quote_grid, factor_contexts)
-    except (BackgroundJobStoppedError, ExecutionCancelledError):
-        raise
-    except Exception as exc:
-        raise _OptimiserSolverExecutionError(str(exc)) from exc
-    if check_cancelled is not None:
-        check_cancelled()
-    elapsed = time.monotonic() - start_time
-    converged = solve_result.converged
-    logger.info("solve_completed", mode="ratebook", elapsed=f"{elapsed:.2f}s", converged=converged)
-
-    factor_level_counts = _ratebook_factor_level_counts_from_artifact(
-        ratebook_factors_handle,
-        factor_columns_valid,
-    )
-    factor_dtypes = _ratebook_factor_dtypes_from_artifact(
-        ratebook_factors_handle,
-        factor_columns_valid,
-    )
-    resolved_level_order = factor_level_order or {}
-    existing_setup_chunking = store.require_job(job_id).get("setup_chunking")
-    setup_chunking = (
-        dict(existing_setup_chunking) if isinstance(existing_setup_chunking, Mapping) else {}
-    )
-    setup_chunking["ratebook_factor_contexts"] = factor_chunk_decision.provenance
-    factor_tables_serialised = _serialise_ratebook_factor_tables(
-        solve_result.factor_tables,
-        factor_level_counts,
-        resolved_level_order,
-        factor_dtypes,
-    )
-
-    _finalize_solve_result(
-        solve_result,
-        mode="ratebook",
-        solver=solver,
-        quote_grid=quote_grid,
-        ratebook_factors_handle=ratebook_factors_handle,
-        ratebook_factor_contexts=factor_contexts,
-        factor_columns=factor_columns_valid,
-        store=store,
-        job_id=job_id,
-        elapsed=elapsed,
-        extra_fields={
-            "cd_iterations": solve_result.cd_iterations,
-            "factor_tables": factor_tables_serialised,
-            "factor_dtypes": factor_dtypes,
-            "clamp_rate": getattr(solve_result, "clamp_rate", None),
-            "history": None,
-        },
-        extra_job_fields={
-            "factor_level_counts": factor_level_counts,
-            "factor_dtypes": factor_dtypes,
-            _RATEBOOK_FACTOR_LEVEL_ORDER_KEY: resolved_level_order,
-            "setup_chunking": setup_chunking,
-        },
-        check_cancelled=check_cancelled,
-    )
 
 
 class OptimiserSolveService:
@@ -2913,7 +1821,10 @@ class OptimiserSolveService:
             active = self._active_frontier_auto_range_start(setup_job_key)
             if active is not None:
                 return active
-        prepared = self._prepare_frontier_auto_range(body)
+        prepared = self._prepare_frontier_auto_range(
+            body,
+            sample_row_widths=resolve_interactive_execution_mode() != "process",
+        )
         node = prepared["node"]
         config = prepared["config"]
         with self._start_lock:
@@ -3308,11 +2219,14 @@ class OptimiserSolveService:
         body: OptimiserFrontierAutoRangeRequest,
         *,
         prepare_snapshot_inputs: bool = True,
+        sample_row_widths: bool = True,
     ) -> dict[str, Any]:
         """Validate an auto-range request and plan it, chunked when the chain allows.
 
         An auto-range worker re-plans with ``prepare_snapshot_inputs=False``:
-        its parent prepared the inputs and holds the plan's leases.
+        its parent prepared the inputs and holds the plan's leases. A parent
+        that runs the job in a worker plans with ``sample_row_widths=False``,
+        so no row is read in the server process; the worker sizes the chunks.
         """
         node = _find_optimiser_node(body.graph, body.node_id)
         config = dict(node.data.config)
@@ -3337,6 +2251,7 @@ class OptimiserSolveService:
             config,
             mode=mode,
             required_columns_by_node=required_columns_by_node,
+            sample_row_widths=sample_row_widths,
         )
         return {
             "node": node,
@@ -3495,15 +2410,16 @@ class OptimiserSolveService:
         try:
             with contextlib.ExitStack() as resources:
                 if isolate and resolve_interactive_execution_mode() == "process":
-                    ranges, worker_metrics = self._frontier_ranges_in_worker(
+                    ranges, worker_metrics, worker_fallback = self._frontier_ranges_in_worker(
                         body,
                         job_id,
-                        resources,
                         streaming_plan=streaming_plan,
                         required_columns_by_node=required_columns_by_node,
                         timeout=timeout,
                         execution_context=execution_context,
                     )
+                    if worker_fallback is not None:
+                        chunk_fallback = worker_fallback
                 elif streaming_plan is not None:
                     ranges = self._chunked_frontier_ranges(
                         body,
@@ -3791,6 +2707,9 @@ class OptimiserSolveService:
         """Execute to the base node, then expand, score and reduce one base chunk at a time."""
         import polars as pl
 
+        if not streaming_plan.sized:
+            raise RuntimeError("An unsized auto-range chunk plan cannot run in process.")
+
         from haute._cache import preamble_execution_fingerprint
         from haute.chunking import ChunkRunnerRequest, iter_chunked_frames
         from haute.executor import _compile_preamble, _pipeline_dir
@@ -3915,19 +2834,21 @@ class OptimiserSolveService:
         self,
         body: OptimiserFrontierAutoRangeRequest,
         job_id: str,
-        resources: contextlib.ExitStack,
         *,
         streaming_plan: _StreamingAutoRangePlan | None,
         required_columns_by_node: Mapping[str, Iterable[str]],
         timeout: int,
         execution_context: ExecutionContext,
-    ) -> tuple[dict[str, dict[str, float]], Mapping[str, Any] | None]:
-        """Supervise one hard-capped worker that computes the auto-range totals.
+    ) -> tuple[dict[str, dict[str, float]], Mapping[str, Any] | None, dict[str, Any] | None]:
+        """Supervise the hard-capped worker that computes the auto-range totals.
 
         The seed plan the worker's execution adopts is opened here: at the
         streaming base for a chunked job, at the data input otherwise. The
-        job's remaining timeout bounds the worker. Returns the totals and the
-        worker's execution metrics.
+        worker sizes a chunked plan's chunks; when sizing loses the plan it
+        reports the fallback, which is recorded on the job, and a whole-frame
+        worker runs under a whole-frame seed plan. The job's remaining timeout
+        bounds each worker. Returns the totals, the worker's execution metrics
+        and the fallback, if any.
         """
         self._store.atomic_update(
             job_id,
@@ -3938,52 +2859,92 @@ class OptimiserSolveService:
             },
             expected_status="running",
         )
-        self._raise_if_frontier_auto_range_stopped(job_id)
-        if streaming_plan is not None:
-            handoff = self._open_setup_seed_plan(
-                body,
+        outcome = self._frontier_ranges_attempt(
+            body,
+            job_id,
+            streaming_plan=streaming_plan,
+            required_columns_by_node=required_columns_by_node,
+            timeout=timeout,
+            execution_context=execution_context,
+        )
+        chunk_fallback = outcome.chunk_fallback
+        if chunk_fallback is not None:
+            self._store.atomic_update(
                 job_id,
-                resources,
-                required_columns_by_node=_chunked_base_required_columns(streaming_plan),
-                target_node_id=streaming_plan.base_node_id,
-                execution_context=execution_context,
+                {"chunk_fallback": chunk_fallback},
+                expected_status="running",
             )
-        else:
-            handoff = self._open_setup_seed_plan(
+            outcome = self._frontier_ranges_attempt(
                 body,
                 job_id,
-                resources,
+                streaming_plan=None,
                 required_columns_by_node=required_columns_by_node,
+                timeout=timeout,
                 execution_context=execution_context,
             )
+            if outcome.chunk_fallback is not None:
+                raise RuntimeError("A whole-frame auto-range worker reported a chunk fallback")
+        if outcome.ranges is None:
+            raise RuntimeError("Auto-range worker returned neither ranges nor a failure")
+        return outcome.ranges, outcome.execution_metrics, chunk_fallback
+
+    def _frontier_ranges_attempt(
+        self,
+        body: OptimiserFrontierAutoRangeRequest,
+        job_id: str,
+        *,
+        streaming_plan: _StreamingAutoRangePlan | None,
+        required_columns_by_node: Mapping[str, Iterable[str]],
+        timeout: int,
+        execution_context: ExecutionContext,
+    ) -> FrontierAutoRangeWorkerOutcome:
+        """Open one attempt's seed plan and run one auto-range worker under it."""
         self._raise_if_frontier_auto_range_stopped(job_id)
-        remaining = timeout - self._job_elapsed(job_id)
-        if remaining <= 0:
-            raise self._time_out_frontier_auto_range(job_id, timeout)
-        with worker_scratch_directory() as scratch_dir:
-            outcome = self._run_optimiser_worker(
-                frontier_auto_range_worker,
-                FrontierAutoRangeWorkerRequest(
-                    body=body,
-                    project_root=str(_get_project_root()),
-                    seed_plan=handoff,
-                    chunked=streaming_plan is not None,
-                    scratch_dir=scratch_dir,
-                ),
-                job_id=job_id,
-                node_id=body.node_id,
-                execution_context=execution_context,
-                timeout_seconds=remaining,
-                process_name="haute-optimiser-auto-range",
-                on_timeout=lambda: self._time_out_frontier_auto_range(job_id, timeout),
-            )
+        # The attempt's seed plan is held until its worker has exited.
+        with contextlib.ExitStack() as resources:
+            if streaming_plan is not None:
+                handoff = self._open_setup_seed_plan(
+                    body,
+                    job_id,
+                    resources,
+                    required_columns_by_node=_chunked_base_required_columns(streaming_plan),
+                    target_node_id=streaming_plan.base_node_id,
+                    execution_context=execution_context,
+                )
+            else:
+                handoff = self._open_setup_seed_plan(
+                    body,
+                    job_id,
+                    resources,
+                    required_columns_by_node=required_columns_by_node,
+                    execution_context=execution_context,
+                )
+            self._raise_if_frontier_auto_range_stopped(job_id)
+            remaining = timeout - self._job_elapsed(job_id)
+            if remaining <= 0:
+                raise self._time_out_frontier_auto_range(job_id, timeout)
+            with worker_scratch_directory() as scratch_dir:
+                outcome = self._run_optimiser_worker(
+                    frontier_auto_range_worker,
+                    FrontierAutoRangeWorkerRequest(
+                        body=body,
+                        project_root=str(_get_project_root()),
+                        seed_plan=handoff,
+                        chunked=streaming_plan is not None,
+                        scratch_dir=scratch_dir,
+                    ),
+                    job_id=job_id,
+                    node_id=body.node_id,
+                    execution_context=execution_context,
+                    timeout_seconds=remaining,
+                    process_name="haute-optimiser-auto-range",
+                    on_timeout=lambda: self._time_out_frontier_auto_range(job_id, timeout),
+                )
         if not isinstance(outcome, FrontierAutoRangeWorkerOutcome):
             raise RuntimeError(f"Auto-range worker returned {type(outcome).__name__}")
         if outcome.failure is not None:
             raise OptimiserWorkerFailureError(outcome.failure)
-        if outcome.ranges is None:
-            raise RuntimeError("Auto-range worker returned neither ranges nor a failure")
-        return outcome.ranges, outcome.execution_metrics
+        return outcome
 
     def _time_out_frontier_auto_range(
         self,
@@ -4080,6 +3041,63 @@ class OptimiserSolveService:
     # ------------------------------------------------------------------
     # Private orchestration steps
     # ------------------------------------------------------------------
+
+    def estimate_input(
+        self,
+        body: OptimiserEstimateRequest,
+        *,
+        execution_context: ExecutionContext,
+    ) -> dict[str, int | float | None]:
+        """Count the optimiser's projected input for ``POST /estimate``.
+
+        Cost contract (pinned by the single-scan tests in
+        ``tests/test_optimiser_routes_real_library.py``): execute the pipeline
+        up to the optimiser's data input, then run exactly ONE streaming
+        aggregation scan over the quote-id column, with the null-``quote_id``
+        check folded in. Solve-grade value validation is left to the solve.
+        The estimate job is tagged so it never blocks a solve, and is removed
+        on every exit. The caller owns *execution_context*'s admission.
+        """
+        body = cast(OptimiserEstimateRequest, _with_flattened_optimiser_graph(body))
+        node = _find_optimiser_node(body.graph, body.node_id)
+        config = node.data.config
+        self._validate_config(config)
+        data_input_id = _resolve_optimiser_data_input_id(body.graph, body.node_id, config)
+        required_columns_by_node = _optimiser_solve_required_columns_by_node(
+            body.graph,
+            body.node_id,
+            config,
+        )
+        initial_job: _OptimiserEstimateRunningJob = {
+            "status": "running",
+            "job_type": _ESTIMATE_JOB_TYPE,
+            "message": "Estimating optimiser input",
+            "config": dict(config),
+            "node_label": node.data.label,
+        }
+        job_id = self._store.create_job(initial_job)
+        try:
+            # The seed plan entered on this stack is held while the estimate
+            # reads its frames, and released on every exit.
+            with contextlib.ExitStack() as resources:
+                lazy_outputs = self._execute_pipeline(
+                    body,
+                    job_id,
+                    resources,
+                    required_columns_by_node=required_columns_by_node,
+                    target_node_id=data_input_id or body.node_id,
+                    execution_context=execution_context,
+                )
+                source_lf = self._resolve_data_input_frame(
+                    lazy_outputs,
+                    body.graph,
+                    config,
+                    body.node_id,
+                    job_id,
+                )
+                return estimate_input_metrics(source_lf, config)
+        finally:
+            self._store.delete_job(job_id)
 
     @staticmethod
     def _validate_config(config: dict[str, Any]) -> str:
