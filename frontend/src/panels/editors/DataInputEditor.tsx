@@ -1,15 +1,13 @@
 import { CommittedTextArea, EditorLabel } from "../../components/form"
 import type { IoCapabilityGroup, IoFormatCapability } from "../../api/types"
 import { WarehousePicker, CatalogTablePicker } from "./_DatabricksSelector"
-import InputSnapshotCacheButton from "./_InputSnapshotCacheButton"
 import IoFormatEditor, { IoArgumentsEditor } from "./_IoFormatEditor"
-import { hasNonEmptyString, ioBranchConfig, ioProviderFieldsReady } from "./_ioProvider"
+import { hasNonEmptyString, ioBranchConfig } from "./_ioProvider"
 import IoProviderPicker from "./_IoProviderPicker"
 import { useIoCapabilities } from "./_ioFormats"
 import { INPUT_STYLE, SchemaPreview } from "./_shared"
 import type { OnReplaceConfig, OnUpdateConfig } from "./_shared"
 import { useSchemaFetch } from "../../hooks/useSchemaFetch"
-import { dataInputIsDirect } from "../../utils/dataInputMode"
 
 const INPUT_COMMON_KEYS = [
   "instanceOf",
@@ -51,24 +49,6 @@ function inputBranchConfig(
     requestedFormat,
     preserveProviderFields,
   })
-}
-
-function formatAndModeReady(
-  group: IoCapabilityGroup,
-  format: IoFormatCapability | undefined,
-  config: Record<string, unknown>,
-): boolean {
-  if (group.name === "databricks") return true
-  const capability = format?.input
-  if (!capability || capability.engines_missing.length > 0) return false
-  if (capability.modes.length === 0) return true
-  const configuredMode = typeof config.mode === "string" ? config.mode : ""
-  if (!configuredMode) return capability.modes.length === 1
-  // The capability payload advertises only the default mode; the backend
-  // (resolve_input_mode) is the authority on availability and fails loudly,
-  // so a stored explicit mode is ready whenever it is in the closed
-  // vocabulary — membership here would wrongly block backend-valid `read`.
-  return configuredMode === "scan" || configuredMode === "read"
 }
 
 function databricksConfigurationErrors(config: Record<string, unknown>): string[] {
@@ -133,16 +113,6 @@ export default function DataInputEditor({
   const groups = (capabilities?.groups ?? []).filter((group) => group.input_available)
   const group = groups.find((candidate) => candidate.name === config.inputType)
   const format = group?.formats.find((candidate) => candidate.name === config.format)
-  // Config-driven, mirroring the runtime derivation: a stored `read`-mode
-  // Parquet input is snapshot-backed and needs the cache control too.
-  const requiresSnapshot =
-    group !== undefined &&
-    (group.name === "databricks" || format !== undefined) &&
-    !dataInputIsDirect(config)
-  const requiredReady =
-    group !== undefined &&
-    ioProviderFieldsReady("input", group, config) &&
-    formatAndModeReady(group, format, config)
   const databricksErrors =
     group?.name === "databricks" ? databricksConfigurationErrors(config) : []
   const schemaRequired =
@@ -250,13 +220,6 @@ export default function DataInputEditor({
           accentColor={accentColor}
         />
       ) : null}
-
-      {requiresSnapshot && group && (
-        <InputSnapshotCacheButton
-          config={config}
-          requiredReady={requiredReady}
-        />
-      )}
 
       {schemaRequired && configuredPath && (
         <section aria-label="Detected schema" className="space-y-2">

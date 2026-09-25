@@ -1,8 +1,6 @@
 import { RefreshCw, XCircle } from "lucide-react"
 import { Suspense, lazy, useCallback, useMemo } from "react"
 
-import DataCacheStatus from "../components/DataCacheStatus"
-import { dataCacheStatusText } from "../components/dataCacheLabels"
 import ExecutionDiagnosticsSummary from "../components/ExecutionDiagnosticsSummary"
 import useNodeDataCache from "../hooks/useNodeDataCache"
 import useNodeDataProfile from "../hooks/useNodeDataProfile"
@@ -44,8 +42,8 @@ const EXPLORE_PREVIEW_PANES = [
 /**
  * The Explore preview over the shared data point this node reads.
  *
- * Explore has no cache of its own: its cache state and its build come from the
- * shared data-cache hook, and the statistics the Overview, Pivots and Charts
+ * Explore has no cache of its own: its build comes from the shared data-cache
+ * hook, and the statistics the Overview, Pivots and Charts
  * panes render come from the shared `profile` analysis of the point's current
  * data version. A Banding or Rating editor on the same input therefore shows
  * the same state and shares the same build.
@@ -118,7 +116,7 @@ export default function ExplorePreview({
     ? profileMessage || "Profiling data"
     : profileError
       ? `Profiling failed: ${profileError}`
-      : dataCacheStatusText(cache)
+      : null
 
   return (
     <PreviewPanelFrame
@@ -126,12 +124,11 @@ export default function ExplorePreview({
       nodeType={nodeType}
       onRefresh={onRefresh}
       refreshTitle="Refresh Explore outputs"
-      subtitle={`${activeSource} | ${statusText}`}
+      subtitle={statusText ? `${activeSource} | ${statusText}` : activeSource}
       actions={
         <span className="inline-flex items-center gap-1">
-          <DataCacheStatus cache={cache} showDetails />
           {/* The profile runs after the data is cached, so its own progress and
-              its retry are actions of their own beside the cache control. */}
+              its retry are actions of their own. */}
           {profiling ? (
             <button
               type="button"

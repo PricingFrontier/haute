@@ -316,8 +316,6 @@ describe("BandingEditor statistics", () => {
 
     expect(await screen.findByText("Cached data is out of date")).toBeInTheDocument()
     expect(mockGetBandingStats).not.toHaveBeenCalled()
-    // The state every consumer shows says so; Refresh is what puts it right.
-    expect(screen.getByTestId("data-cache-status")).toHaveTextContent("Cache out of date")
   })
 
   it("says why the whole dataset could not be counted, in the server's words", async () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, renderHook, cleanup, waitFor, act, screen } from "@testing-library/react"
+import { renderHook, cleanup, waitFor, act } from "@testing-library/react"
 
 import type { NodeDataPointResponse } from "../../api/types"
 import useNodeDataStore from "../../stores/useNodeDataStore"
@@ -7,7 +7,6 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useToastStore from "../../stores/useToastStore"
 import useNodeDataCache, { deriveAvailability, refreshNodeDataCache } from "../useNodeDataCache"
-import DataCacheStatus from "../../components/DataCacheStatus"
 
 vi.mock("../../api/client", () => ({
   getNodeDataPoint: vi.fn(),
@@ -789,85 +788,5 @@ describe("deriveAvailability", () => {
     expect(
       deriveAvailability(point({ generation: { ...point().generation!, fresh: false } }), false),
     ).toBe("stale")
-  })
-})
-
-describe("DataCacheStatus", () => {
-  beforeEach(() => {
-    useNodeDataStore.getState().reset()
-    useSettingsStore.setState({ activeSource: "live", sources: ["live"] })
-    useDocumentStatusStore.setState({
-      sourceFile: "main.py",
-      executionGeneration: 1,
-      loadStatus: "ready",
-      capabilities: { can_execute: true } as never,
-      graphSynchronized: true,
-    })
-    mockGetPoint.mockReset()
-  })
-
-  afterEach(() => cleanup())
-
-  function Harness({ nodeId }: { nodeId: string }) {
-    const cache = useNodeDataCache({ node: nodeById(nodeId), allNodes: nodes, edges, preamble: "" })
-    return <DataCacheStatus cache={cache} showDetails />
-  }
-
-  it("says a point has nothing cached", async () => {
-    mockGetPoint.mockResolvedValue(point({ state: "missing", generation: null, data_version: null, row_count: null, size_bytes: null, retention: null }))
-    render(<Harness nodeId="explore" />)
-
-    await waitFor(() => expect(screen.getByTestId("data-cache-status")).toHaveTextContent("Not cached"))
-    expect(screen.queryByTestId("data-cache-detail")).toBeNull()
-    // Nothing here starts a build: the node's Refresh button is the one
-    // control that brings the node up to date, cached data included.
-    expect(screen.queryByRole("button")).toBeNull()
-  })
-
-  it("names a generation that lacks columns this consumer reads", async () => {
-    mockGetPoint.mockResolvedValue(
-      point({
-        state: "partial",
-        generation: { ...point().generation!, columns: ["premium"], size_bytes: 1536, retention: "automatic" },
-      }),
-    )
-    render(<Harness nodeId="explore" />)
-
-    await waitFor(() =>
-      expect(screen.getByTestId("data-cache-status")).toHaveTextContent("Cached for some columns"),
-    )
-    expect(screen.getByTestId("data-cache-detail")).toHaveTextContent("1,000 rows · 1.5 KB · automatic")
-  })
-
-  it("offers cancel and progress while the point is being cached", async () => {
-    mockGetPoint.mockResolvedValue(
-      point({
-        state: "building",
-        generation: null,
-        data_version: null,
-        job: { job_id: "job-9", progress: 0.25, message: "Caching data" },
-      }),
-    )
-    mockCancel.mockResolvedValue({ status: "cancelled", progress: 1, message: "Cache build cancelled" })
-    render(<Harness nodeId="explore" />)
-
-    await waitFor(() => expect(screen.getByTestId("data-cache-cancel")).toBeInTheDocument())
-    expect(screen.getByTestId("data-cache-progress")).toHaveAttribute("aria-valuenow", "25")
-  })
-
-  it("states that a direct file needs no cache at all", async () => {
-    mockGetPoint.mockResolvedValue(
-      point({
-        kind: "data_input",
-        point: { producer_node_id: "source", port_label: null },
-        slot_key: "source||live",
-        reads_directly: true,
-        generation: null,
-      }),
-    )
-    render(<Harness nodeId="banding" />)
-
-    await waitFor(() => expect(screen.getByTestId("data-cache-direct")).toHaveTextContent("Reads Parquet directly"))
-    expect(screen.queryByTestId("data-cache-status")).toBeNull()
   })
 })

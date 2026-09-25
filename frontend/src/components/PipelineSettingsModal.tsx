@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Loader2, RefreshCw, TriangleAlert, X } from "lucide-react"
 
+import CacheStoreSize from "./CacheStoreSize"
 import ModalShell from "./ModalShell"
 import { clearCacheIdentities, fetchCacheNodes } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
@@ -491,7 +492,12 @@ export default function PipelineSettingsModal({ onClose }: { onClose: () => void
         </div>
 
         <div className="flex items-center justify-between gap-3">
-          <SectionHeading>Cached data</SectionHeading>
+          <div className="flex items-baseline gap-2 min-w-0">
+            <SectionHeading>Cached data</SectionHeading>
+            {/* Each inventory read, including the one after a clear, reads the
+                store's size again. */}
+            <CacheStoreSize refreshKey={nodes} />
+          </div>
           <button
             data-testid="cache-usage-refresh"
             onClick={refresh}

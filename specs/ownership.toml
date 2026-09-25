@@ -42,12 +42,6 @@ consumers = ["hosted-project-storage"]
 reason = "The branch indicator hosts the storage and fork chips beside the working-branch control."
 
 [[shared_file]]
-path = "frontend/src/components/DataCacheStatus.tsx"
-primary = "frontend-shared"
-consumers = ["frontend-preview-explore"]
-reason = "Shared UI owns the one cache state every consumer of a data point shows; the Explore preview renders it in its header."
-
-[[shared_file]]
 path = "frontend/src/components/ExecutionDiagnosticsSummary.tsx"
 primary = "frontend-modelling-optimiser-ui"
 consumers = ["frontend-preview-explore"]
@@ -64,12 +58,6 @@ path = "frontend/src/components/Toolbar.tsx"
 primary = "frontend-shared"
 consumers = ["frontend-assistant-ui"]
 reason = "The common toolbar is extended by the assistant entry point."
-
-[[shared_file]]
-path = "frontend/src/components/dataCacheLabels.ts"
-primary = "frontend-shared"
-consumers = ["frontend-preview-explore"]
-reason = "Shared UI owns the cache control's status and detail wording; the Explore preview states the same status in its subtitle."
 
 [[shared_file]]
 path = "frontend/src/components/form/CommittedTextField.tsx"

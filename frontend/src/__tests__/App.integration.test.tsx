@@ -1068,11 +1068,10 @@ describe("App integration - load a pipeline with nodes", () => {
     const exploreNode = await screen.findByText("Claims Explore")
     fireEvent.click(exploreNode)
 
-    expect(await screen.findByTestId("data-cache-status")).toHaveTextContent("Not cached")
-    expect(vi.mocked(api.getNodeDataPoint)).toHaveBeenCalledWith(expect.objectContaining({
+    await waitFor(() => expect(vi.mocked(api.getNodeDataPoint)).toHaveBeenCalledWith(expect.objectContaining({
       node_id: "explore_1",
       source: "live",
-    }))
+    })))
     await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledTimes(1))
     expect(vi.mocked(api.previewNode)).toHaveBeenCalledWith(expect.objectContaining({
       nodeId: "explore_1",

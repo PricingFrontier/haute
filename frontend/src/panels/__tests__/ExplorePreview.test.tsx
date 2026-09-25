@@ -39,7 +39,6 @@ vi.mock("../../api/client", () => ({
   getNodeDataProfile: (...args: unknown[]) => mockGetNodeDataProfile(...args),
   clearInputCache: vi.fn(),
   // The embedded preview's status bar reads the snapshot store's size.
-  fetchCacheUsage: vi.fn(() => Promise.resolve({ schema_version: 1, total_bytes: 0, automatic_bytes: 0, automatic_budget_bytes: 1 })),
 }))
 
 class MockResizeObserver {
@@ -309,7 +308,7 @@ describe("ExplorePreview", () => {
 
     const nodeTitle = screen.getByText("Explore Claims")
     const previewTab = screen.getByRole("tab", { name: "Preview" })
-    await screen.findByTestId("data-cache-status")
+    await waitFor(() => expect(mockGetNodeDataPoint).toHaveBeenCalled())
 
     expect(screen.getByTestId("explore-preview-frame")).toBeInTheDocument()
     expect(screen.getByTestId("explore-preview-frame")).toHaveStyle({
@@ -584,14 +583,16 @@ describe("ExplorePreview", () => {
     expect(screen.queryByTestId("explore-dataset-snapshot-card")).not.toBeInTheDocument()
   })
 
-  it("renders the shared cache state of the data it reads", async () => {
+  it("reads the shared data point without a cache state of its own", async () => {
     renderExplore()
 
-    expect(await screen.findByTestId("data-cache-status")).toHaveTextContent("Not cached")
-    expect(mockGetNodeDataPoint).toHaveBeenCalledWith(
-      expect.objectContaining({ node_id: "explore_1", source: "pricing" }),
+    await waitFor(() =>
+      expect(mockGetNodeDataPoint).toHaveBeenCalledWith(
+        expect.objectContaining({ node_id: "explore_1", source: "pricing" }),
+      ),
     )
-    expect(screen.getByTestId("explore-preview-frame")).toHaveTextContent("pricing | Not cached")
+    await act(async () => {})
+    expect(screen.getByTestId("explore-preview-frame")).not.toHaveTextContent(/cached/i)
   })
 
   it("asks the shared build for the data and shows its progress", async () => {
@@ -600,8 +601,7 @@ describe("ExplorePreview", () => {
     // way to start a build.
     // Wait for the point to arrive: until it has, the pane does not yet know
     // whether anything needs caching.
-    expect(await screen.findByTestId("data-cache-status")).toHaveTextContent("Not cached")
-    expect(screen.queryByTestId("data-cache-button")).toBeNull()
+    await waitFor(() => expect(mockGetNodeDataPoint).toHaveBeenCalled())
     // Let the pane's effects settle, as they have by the time a user reads the
     // panel and clicks; only then does Refresh know there is nothing cached.
     await act(async () => {})
@@ -614,8 +614,9 @@ describe("ExplorePreview", () => {
         expect.objectContaining({ node_id: "explore_1", refresh: false }),
       ),
     )
-    expect(await screen.findByTestId("data-cache-cancel")).toBeInTheDocument()
-    expect(screen.getByRole("progressbar", { name: "Explore data progress" })).toBeInTheDocument()
+    expect(
+      await screen.findByRole("progressbar", { name: "Explore data progress" }),
+    ).toBeInTheDocument()
   })
 
   it("reads the shared profile once the point is cached, and says so", async () => {
@@ -623,8 +624,6 @@ describe("ExplorePreview", () => {
 
     renderExplore(null, exploreNodeWithConfig({ overview: { dataset_snapshot: true } }))
 
-    expect(await screen.findByTestId("data-cache-status")).toHaveTextContent("Cached")
-    expect(screen.getByTestId("explore-preview-frame")).toHaveTextContent("pricing | Cached")
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
     expect(await screen.findByText("4,321")).toBeInTheDocument()
   })
