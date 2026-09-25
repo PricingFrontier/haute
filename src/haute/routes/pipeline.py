@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
@@ -81,6 +81,11 @@ from haute._seed_plans import (
     preview_input_node_ids,
 )
 from haute._source_cache import new_staging_token
+from haute._step_progress import (
+    StepProgress,
+    StepProgressReporter,
+    current_job_progress_reporter,
+)
 from haute._submodel_instances import qualified_runtime_node_id, resolve_submodel_instances
 from haute._topo import ancestors
 from haute._types import GraphEdge, GraphNode, NodeData, SubmodelDefinition
@@ -148,9 +153,11 @@ from haute.routes._isolated_worker_async import (
     WorkerCancellationGate,
     run_cancellable_worker_transaction,
 )
+from haute.routes._preview_progress import preview_progress
 from haute.routes._runtime_path_errors import runtime_path_http_exception
 from haute.routes._save_pipeline import SavePipelineService, StaleDocumentRevisionError
 from haute.routes._supersession import SupersededRequestError, SupersessionCoordinator
+from haute.routes._synchronous_analysis import await_until_disconnected
 from haute.routes._timeouts import (
     BlockingWorkTimeoutError,
     run_blocking_with_response_timeout,
@@ -178,6 +185,7 @@ from haute.schemas import (
     PreviewInputsResponse,
     PreviewNodeRequest,
     PreviewNodeResponse,
+    PreviewProgressResponse,
     PreviewSeedPlanEntry,
     ReadJsonRequest,
     ReadJsonResponse,
@@ -1084,6 +1092,8 @@ def _execute_preview_worker(
     staging_token: str | None = None,
 ) -> PreviewNodeResponse:
     context = create_isolated_execution_context(budget)
+    # The parent reads this job's step progress from the worker's progress cell.
+    context.step_progress = current_job_progress_reporter()
     try:
         try:
             results = execute_graph(
@@ -1315,14 +1325,25 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
             trace_context.release_admission(preserve_primary_error=True)
 
 
-async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeResponse:
+async def _preview_canonical_graph(
+    body: PreviewNodeRequest, http_request: Request
+) -> PreviewNodeResponse:
     """Run pipeline up to a specific node and return its output.
 
     Accepts an optional ``row_limit`` (default 100) that is pushed into
-    the Polars lazy query plan so only that many rows are scanned.
+    the Polars lazy query plan so only that many rows are scanned. A client
+    that disconnects (the browser's Stop) cancels the preview's own token, so
+    the worker or thread stops; a request still queued never executes.
     """
     preview_token = ExecutionCancellationToken()
     preview_context: ExecutionContext | None = None
+    request_id = body.request_id
+    step_progress: StepProgressReporter | None = None
+    if request_id is not None:
+        preview_progress.open(request_id)
+
+        def step_progress(progress: StepProgress) -> None:
+            preview_progress.report(request_id, progress)
 
     try:
         graph = flatten_graph(body.graph)
@@ -1339,8 +1360,11 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
 
         fingerprint_memo = GraphFingerprintMemo()
 
+        preview_started = False
+
         async def _run_preview() -> PreviewNodeResponse:
-            nonlocal preview_context
+            nonlocal preview_context, preview_started
+            preview_started = True
             preview_context = create_admitted_execution_context(
                 operation="pipeline_preview",
                 profile=ExecutionProfile.PREVIEW_EAGER,
@@ -1368,9 +1392,12 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
                         absolute_rss_limit_bytes=budget.process_rss_limit_bytes,
                         memory_growth_limit_bytes=budget.memory_limit_bytes,
                         require_memory_limit=resolve_worker_memory_enforcement() == "required",
+                        on_progress=step_progress,
                     )
                 finally:
                     _discard_preview_staging(staging_token)
+
+            preview_context.step_progress = step_progress
 
             def _execute_graph_in_thread() -> dict[str, Any]:
                 return execute_graph(
@@ -1393,20 +1420,30 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
             )
             return _preview_response_from_results(graph, body, results, preview_context)
 
-        response = await _preview_supersession.run_latest(
-            _preview_supersession_key(
-                graph,
-                body.source,
-                body.node_id,
-                body.row_limit,
-                body.requested_preview_columns,
-                body.port_label,
-                memo=fingerprint_memo,
+        response = await await_until_disconnected(
+            http_request,
+            _preview_supersession.run_latest(
+                _preview_supersession_key(
+                    graph,
+                    body.source,
+                    body.node_id,
+                    body.row_limit,
+                    body.requested_preview_columns,
+                    body.port_label,
+                    memo=fingerprint_memo,
+                ),
+                _run_preview,
+                limiter=_preview_work_slots,
+                cancel_active=preview_token.cancel,
+                superseded_message="Preview request superseded by a newer request",
             ),
-            _run_preview,
-            limiter=_preview_work_slots,
-            cancel_active=preview_token.cancel,
-            superseded_message="Preview request superseded by a newer request",
+            cancel=preview_token.cancel,
+            # Until it starts, a request queued for a work slot holds nothing.
+            started=lambda: preview_started,
+            # A thread still running past its response timeout keeps its
+            # admission until it finishes; the handler below defers the release.
+            propagate=(BlockingWorkTimeoutError,),
+            detail="The client closed the preview request before it finished.",
         )
         return response
     except InteractiveWorkerMemoryLimitError as e:
@@ -1479,14 +1516,38 @@ async def _preview_canonical_graph(body: PreviewNodeRequest) -> PreviewNodeRespo
     except _PreviewTargetNotReturnedError as e:
         raise HTTPException(status_code=404, detail=str(e)) from None
     finally:
+        if request_id is not None:
+            preview_progress.close(request_id)
         if preview_context is not None:
             preview_context.release_admission(preserve_primary_error=True)
 
 
+@router.get(
+    "/pipeline/preview/progress/{request_id}",
+    response_model=PreviewProgressResponse,
+)
+def preview_progress_of(request_id: str) -> PreviewProgressResponse:
+    """The step progress of the caller's own in-flight preview.
+
+    404 when the id is unknown or its preview has settled, which the client
+    treats as "nothing to show", not as a failure of the preview.
+    """
+    progress = preview_progress.get(request_id)
+    if progress is None:
+        raise HTTPException(status_code=404, detail="No preview in progress with this id.")
+    return PreviewProgressResponse(
+        request_id=request_id,
+        phase=progress.phase,
+        done=progress.done,
+        total=progress.total,
+        label=progress.label,
+    )
+
+
 @router.post("/pipeline/preview", response_model=PreviewNodeResponse)
-async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
+async def preview_node(body: PreviewNodeRequest, http_request: Request) -> PreviewNodeResponse:
     """Preview a client-supplied canonical graph."""
-    return await _preview_canonical_graph(body)
+    return await _preview_canonical_graph(body, http_request)
 
 
 @router.post("/pipeline/preview/inputs", response_model=PreviewInputsResponse)
@@ -1769,12 +1830,14 @@ def _plan_recovery_preview(
         source=body.source,
         requested_preview_columns=body.requested_preview_columns,
         port_label=body.port_label,
+        request_id=body.request_id,
     )
 
 
 @router.post("/pipeline/recovery-preview", response_model=PreviewNodeResponse)
 async def recovery_preview_node(
     body: RecoveryPreviewRequest,
+    http_request: Request,
 ) -> PreviewNodeResponse | JSONResponse:
     """Preview one server-validated ready closure from a recovery document."""
     try:
@@ -1801,7 +1864,7 @@ async def recovery_preview_node(
                 provided_revision=body.source_revision,
             )
         request = _plan_recovery_preview(document, body)
-        return await _preview_canonical_graph(request)
+        return await _preview_canonical_graph(request, http_request)
     except _RecoveryPreviewRequestError as exc:
         return _pipeline_recovery_error_response(exc.status_code, exc.detail)
 

@@ -58,7 +58,7 @@ backend API modules own validation and persistence.
   place of that label, carrying the server's own message, and the preview basis continues.
 - The Rating Step editor says none of this when nothing in it reads the data: a table whose
   factors are all banded outputs takes its levels from the banding configuration, so it shows
-  neither a basis nor the cache control.
+  no basis.
 - Levels the data adds are appended to the ones the Rating Step editor already shows, never put
   in front of them: they arrive while the user is typing, and a row that moved would take the
   value meant for its neighbour. The slice of a three-factor table is held as the level itself
@@ -200,10 +200,11 @@ backend API modules own validation and persistence.
   and execution settings rather than preview/trace metadata.
 - Data Input groups providers as File, Database, Lakehouse, Databricks, and
   Inline and derives every supported field, format, mode, dependency,
-  snapshot build class, and cache control from the backend capability
+  and snapshot build class from the backend capability
   contract. A single available read mode is not rendered. Cache mode is also
-  not presented as a choice: file-backed Parquet scans directly and has no
-  cache action; every other input uses the shared Cache-as-Parquet control.
+  not presented as a choice, and the editor has no cache action: file-backed
+  Parquet scans directly, and every other input's snapshot is prepared before
+  a run.
   Its optional Polars editor transforms the resolved frame.
   Data Output presents only writable groups/modes, never Databricks or a Polars
   editor, resolves the actual destination, and keeps per-node write,

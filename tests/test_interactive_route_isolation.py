@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+from typing import cast
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
 from tests.conftest import make_ready_file_input_config
+
+
+class _ConnectedClient:
+    async def is_disconnected(self) -> bool:
+        return False
 
 
 def _file_input_graph() -> dict[str, object]:
@@ -537,7 +543,7 @@ def test_interactive_route_worker_failures_have_stable_http_status(
             {"graph": _file_input_graph(), "node_id": "source", "row_limit": 2}
         )
         monkeypatch.setattr(pipeline_mod, "_preview_supersession", _RaisingCoordinator(error))
-        invocation = pipeline_mod._preview_canonical_graph(body)
+        invocation = pipeline_mod._preview_canonical_graph(body, cast(Request, _ConnectedClient()))
     else:
         body = TraceRequest.model_validate(
             {

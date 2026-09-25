@@ -5,7 +5,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react"
-import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, RefreshCw } from "lucide-react"
+import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, RefreshCw, Square } from "lucide-react"
 
 import NodeTypeIcon from "../components/NodeTypeIcon"
 import { useDragResize } from "../hooks/useDragResize"
@@ -14,6 +14,7 @@ import {
   PREVIEW_PANEL_DIMENSIONS,
   PREVIEW_PANEL_HEADER_HEIGHT_CLASS,
 } from "./previewPanelLayout"
+import { usePreviewRun } from "./previewRunContext"
 
 const FRAME_ICON_SIZE = 14
 
@@ -62,17 +63,40 @@ export default function PreviewPanelFrame({
     : "Expand preview panel to top"
   const TopButtonIcon = expandedToTop ? ChevronDown : collapsed ? ChevronsUp : ChevronUp
   const CollapseButtonIcon = expandedToTop ? ChevronsDown : ChevronDown
+  // While the node's work runs, Refresh reads Stop and stops it. Only this
+  // button stops: the Refresh shortcut never does, so pressing it twice cannot
+  // cancel the run it just started.
+  const run = usePreviewRun()
+  const stopping = Boolean(onRefresh && run?.running)
   const refreshButton = onRefresh && (
-    <button
-      type="button"
-      onClick={onRefresh}
-      className={`${PREVIEW_PANEL_ACTION_BUTTON_CLASS} shrink-0 transition-opacity hover:opacity-[0.85]`}
-      style={{ background: "var(--accent)", color: "var(--text-on-accent)" }}
-      title={refreshTitle}
-    >
-      <RefreshCw size={11} aria-hidden="true" />
-      Refresh
-    </button>
+    stopping ? (
+      <button
+        type="button"
+        onClick={run?.onStop}
+        className={`${PREVIEW_PANEL_ACTION_BUTTON_CLASS} shrink-0 transition-opacity hover:opacity-[0.85]`}
+        style={{
+          color: "var(--danger)",
+          background: "var(--danger-soft)",
+          border: "1px solid var(--danger-border)",
+        }}
+        title="Stop this node's work"
+        data-testid="preview-stop"
+      >
+        <Square size={10} aria-hidden="true" />
+        Stop
+      </button>
+    ) : (
+      <button
+        type="button"
+        onClick={onRefresh}
+        className={`${PREVIEW_PANEL_ACTION_BUTTON_CLASS} shrink-0 transition-opacity hover:opacity-[0.85]`}
+        style={{ background: "var(--accent)", color: "var(--text-on-accent)" }}
+        title={refreshTitle}
+      >
+        <RefreshCw size={11} aria-hidden="true" />
+        Refresh
+      </button>
+    )
   )
 
   const handleToggleTop = () => {

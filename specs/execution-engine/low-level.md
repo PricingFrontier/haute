@@ -36,6 +36,7 @@
 | `src/haute/_ram_estimate.py` | Workload-side estimation: `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision), `estimate_gpu_vram_bytes()`, and the `MaterialisationEstimate` contract consumed by strategy planning. Its per-estimate graph index canonicalises the submitted graph with the executor's own runtime path resolver (`canonical_dataframe_execution_graph()`) before indexing nodes, so every estimate describes the files execution actually opens rather than a copy a differently anchored relative locator would name. It imports graph models directly from `_types.py` so admission and route cold imports do not re-enter the execution facade. |
 | `src/haute/_cardinality.py` | Pure, overflow-safe join row-bound formulas for every supported join strategy. It validates finite non-negative input bounds and the closed Polars uniqueness contract (`m:m`, `1:1`, `1:m`, `m:1`) and returns both the upper bound and auditable evidence. |
 | `src/haute/_estimate_calibration.py` | Process-local, upward-only per-`ExecutionProfile` calibration of materialisation estimates: conservatively rounds calibrated bytes, ratchets observed underestimates with a capped safety margin, exposes immutable diagnostic state, and clears inherited state after fork. |
+| `src/haute/_step_progress.py` | A preview's step progress: `StepProgress(done, total, label)`, the `ProgressCell` a warm worker writes (shared memory under its own lock; the parent only ever tries the lock without blocking), and the job binding (`bind_job_progress`, `current_job_progress_reporter`). |
 | `src/haute/_interactive_workers.py` | Warm, killable spawn-worker pool for interactive preview and trace execution (and the optimiser input estimate): validates process/thread mode, resolves the per-worker Polars thread cap (`resolve_interactive_polars_threads()`), runs affinity-bound serialisable jobs, supervises readiness, timeout, cancellation and RSS limits, and replaces failed workers without leaking stale results. |
 | `src/haute/_process_memory.py` | The one process-memory probe, read through psutil on every platform: this process's resident, private (Windows commit) and virtual bytes and thread count, another process's resident bytes, and liveness. A figure the operating system will not give is unobservable (no value), never zero. The execution context, worker supervision, the native caps' baselines and the modelling memory log all read it. |
 
@@ -1069,6 +1070,24 @@ IsolatedExecutionBudget)`. A worker constructs a fresh local `ExecutionContext` 
 that budget and returns only the route result/metrics envelope. Parent locks,
 cancellation tokens, callbacks, Polars frames, and contexts never cross the process
 boundary.
+
+**Step progress.** Each slot has a `ProgressCell`: shared memory guarded by its own
+`multiprocessing.Lock`, created with the slot and replaced with it, passed to the
+worker at start. While a job runs, `bind_job_progress` makes
+`current_job_progress_reporter()` write whole `{job, seq, done, total, label}` updates
+to it under the lock; the preview worker target installs that reporter as its
+context's `step_progress`. `run(..., on_progress=...)` reads the cell on each poll with
+`acquire(block=False)`, skips the poll when the lock is held, and accepts an update only
+for the running job id with a newer sequence, so a warm worker's previous job is never
+read as this one's and a worker that dies holding the lock never stalls supervision,
+timeouts, crash handling or Stop. Progress never enters the result, acknowledgement
+or release envelopes. The display walk counts its heavy steps once the plan is fixed
+(`_Walk._start_step_progress`): the planned captures in its run order that are not
+seeds, plus the nodes its policy collects (a Quote Input bundle's collection counts
+once). It reports `done=0` with that total, then each step's start ("Caching X",
+"Computing X") and completion. A failed capture or skipped collection simply never
+completes, so progress stops short and the response carries the error; a walk without
+a reporter reports nothing.
 
 The supervisor starts a request deadline only after its affinity slot is acquired. It
 polls the result channel, worker liveness, parent cancellation/supersession, and child

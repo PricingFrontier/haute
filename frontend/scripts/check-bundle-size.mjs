@@ -186,7 +186,6 @@ export const LAZY_ONLY_MODULEPRELOAD_CHUNK_PREFIXES = [
   "_shared",
   "useMlflowBrowser",
   "useStaleConfigEstimate",
-  "CacheFetchButton",
   "ColumnTable",
   "ToggleButtonGroup",
   "EditorLabel",

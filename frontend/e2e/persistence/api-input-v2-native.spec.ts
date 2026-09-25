@@ -115,7 +115,7 @@ test.describe("apiInput persistence", () => {
       ).toEqual([])
     })
 
-    await test.step("3. Preview prepares the tables, and the cache control rebuilds them", async () => {
+    await test.step("3. Preview prepares the tables, and Import rebuilds them", async () => {
       // Each emitting table is an input snapshot: the preview's preparation
       // builds any table that is missing before it runs. Request the preview
       // after the inferred schema has been committed to graph state; the
@@ -130,24 +130,28 @@ test.describe("apiInput persistence", () => {
         "bottom preview renders once the tables are prepared",
       ).toBeVisible({ timeout: 10000 })
 
-      const cacheBtn = page.getByRole("button", { name: /cache as parquet|refresh cache/i })
-      await expect(cacheBtn, "the tables' cache control is visible").toBeVisible({
+      const importBtn = page.getByTestId("input-import")
+      await expect(importBtn, "the tables' Import action is beside Refresh").toBeVisible({
         timeout: 5000,
       })
       const buildResponsePromise = page.waitForResponse((r) =>
         r.url().includes("/api/input-cache/build"),
       )
-      await cacheBtn.click()
+      await importBtn.click()
       const buildResponse = await buildResponsePromise
       const buildBody = await buildResponse.text().catch(() => "<could not read>")
       expect(
         buildResponse.status(),
-        `table build accepted (actual body: ${buildBody.slice(0, 500)})`,
+        `forced table build accepted (actual body: ${buildBody.slice(0, 500)})`,
       ).toBe(202)
-      await expect(
-        page.getByRole("button", { name: /refresh cache/i }),
-        "the control reports the tables ready after the build",
-      ).toBeVisible({ timeout: 30000 })
+      expect(buildResponse.request().postDataJSON()?.refresh, "Import re-reads the source").toBe(true)
+      await expect(importBtn, "Import settles once every table is rebuilt").toHaveText("Import", {
+        timeout: 30000,
+      })
+      await expect(importBtn, "the tables report when they were imported").toHaveAttribute(
+        "title",
+        /^Imported /,
+      )
     })
 
     await test.step("4. Canonical table schema persists on disk", async () => {

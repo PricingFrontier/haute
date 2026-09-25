@@ -21,13 +21,12 @@
 | File | Responsibility |
 | --- | --- |
 | `frontend/src/panels/DataPreview.tsx` | Virtualised preview table, frame selection, search, cell callbacks and value formatting. |
-| `frontend/src/panels/PreviewPanelFrame.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Resizable/collapsible frame and generic ARIA tab strip with optional visible/assistive per-tab indicators. |
+| `frontend/src/panels/PreviewPanelFrame.tsx`, `frontend/src/panels/previewRunContext.ts`, `frontend/src/panels/PreviewPanelTabs.tsx` | Resizable/collapsible frame and generic ARIA tab strip with optional visible/assistive per-tab indicators. |
 | `frontend/src/panels/previewPanelLayout.ts` | Shared preview-panel dimensions and header/action layout constants. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-diagnostic banner owned by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md) and consumed by Explore progress and cache reports. |
 | `frontend/src/components/ExecutionDiagnosticsIndicator.tsx` | Compact preview-header execution diagnostic indicator. |
-| `frontend/src/components/CacheStoreSize.tsx` | The snapshot store's size in the preview status bar, read from `GET /api/cache/usage` when a preview settles. |
 | `frontend/src/panels/ExplorePreview.tsx` | Explore's shared-data-cache and profile composition: the data-cache action, the profiling progress, and the Preview/Overview/Pivots/Charts tabs. It owns no cache of its own. |
-| `frontend/src/hooks/useNodeDataCache.ts`, `frontend/src/hooks/useNodeDataProfile.ts`, `frontend/src/components/DataCacheStatus.tsx`, `frontend/src/components/dataCacheLabels.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned shared data-cache state, the shared `profile` analysis of the data a consumer reads, and the one cache state and its wording every consumer shows. |
+| `frontend/src/hooks/useNodeDataCache.ts`, `frontend/src/hooks/useNodeDataProfile.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned shared data-cache state and the shared `profile` analysis of the data a consumer reads. |
 | `frontend/src/panels/explore/exploreDataView.ts` | Adapts a point's profile into what the Explore panes render, and returns nothing when the profile does not describe the data version the point currently holds. |
 | `frontend/src/stores/useNodeDataStore.ts` (`slotForConsumer`, `profileForConsumer`) | [frontend-shared](../frontend-shared/low-level.md)-owned reads of what a consumer node was last told it reads, answered only for the identity the answer was recorded under. |
 | `frontend/src/api/types.ts`, `frontend/src/types/guards.ts`, `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/stores/useNodeDataStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned Explore API contracts, runtime guards, node-scoped pivot job/result state, and the slot-keyed data-point/profile state consumed by the preview panes. |
@@ -44,6 +43,7 @@
 | `frontend/src/panels/explore/ExploreTableActions.tsx` | Read-only copy-as-TSV and download-as-CSV actions for supported Explore tables, built on the shared table serializers. |
 | `frontend/src/panels/explore/DistinctInfoButton.tsx`, `frontend/src/panels/explore/StatValueCell.tsx` | Distinct-count explanation and reusable optional-stat cell. |
 | `frontend/src/panels/explore/exploreTableStyles.ts`, `frontend/src/panels/explore/ExploreTableHead.tsx` | What the Explore report tables share: the cell padding, uppercase label style, text-colour styles and row border, and `ExploreTableHead`, the header row (column headers with `scope="col"`, a blank label rendered as an `aria-hidden` spacer, an optional dense variant for nested tables and a sticky variant for scrolling ones). |
+| `frontend/e2e/input-import.spec.ts` | Import browser journey: a CSV Data Input previews its rows, the file grows, and Import re-reads it and previews the new rows. |
 | `frontend/e2e/explore.spec.ts` | Explore browser journey: author/connect an Explore node, cache its data and reload, configure Pivots using the profile's schema, and observe fixed decimal formats in the calculated result. |
 
 ## Key types and data structures
@@ -78,11 +78,8 @@
 3. One delegated tbody click handler reads row/column dataset attributes and calls the supplied
    trace callback. Embedded mode omits outer frame chrome; normal mode uses the shared frame.
 4. The status bar of an `ok` preview states its row and column counts and any execution
-   diagnostic, and nothing about where its rows came from. In every state the status bar
-   also shows the project's snapshot-store size (`CacheStoreSize`). It is read again
-   whenever a preview settles, and the last reading stays while the next preview runs.
-   Its tooltip gives the automatic captures' share of their budget, and a failed read
-   shows nothing. Reading a `seeded` entry instead of
+   diagnostic, and nothing about where its rows came from. It shows no cache size: the
+   store's size is project-wide and lives in Pipeline settings. Reading a `seeded` entry instead of
    recomputing the node is ordinary operation, not a finding, so it is not reported there; the
    warning and error affordances stay for things the user has to act on. `seed_plan` still
    reaches the trace, which is seeded from exactly what the preview read.
@@ -122,19 +119,14 @@
    `ExploreOverviewPane` is a `React.lazy` boundary, so its report-card and export code stays out
    of startup JavaScript. Suspense renders a labelled Overview loading state inside the existing
    tabpanel until that module is ready.
-4. The cache state is the shared `DataCacheStatus`: red `Not cached` for a point with no data,
-   green `Cached` when the whole demand is cached, amber `Cache out of date` or `Cached for some
-   columns` when the cached data is stale or covers only some of the columns this consumer reads,
-   a muted `Checking cache` while the point is being resolved, and — while a build runs — a
-   Cancel button with that build's determinate progress. Nothing in it starts a build: the node's
-   Refresh button does, through `refreshNodeDataCache(nodeId)`, which asks every consumer
-   registered for that node to bring its data up to date. `missing` sends a plain build; `stale`,
-   `partial` and `corrupt` send a refresh, which is also the recovery path from an unreadable
-   snapshot; `current`, `building` and `checking` do nothing, so a Refresh pressed to re-read a
-   node's generated fields never recomputes a dataset that has not changed. A point read straight
-   from its Parquet file has nothing to cache, so the state is replaced by `Reads Parquet
-   directly`. The frame's subtitle states the same status in words, and while the profile runs it
-   states the profile's progress instead.
+4. Explore shows no cache state of its own. The node's Refresh button brings its data up to date
+   through `refreshNodeDataCache(nodeId)`, which asks every consumer registered for that node to
+   do so: `missing` sends a plain build; `stale`, `partial` and `corrupt` send a refresh, which is
+   also the recovery path from an unreadable snapshot; `current`, `building` and `checking` do
+   nothing, so a Refresh pressed to re-read a node's generated fields never recomputes a dataset
+   that has not changed. While the data is built or profiled, a progress bar runs under the
+   frame's header. The subtitle names the source and, while the profile runs or after it fails,
+   the profile's progress or failure.
 5. `frontend/src/panels/explore/overviewConfig.ts` drops malformed config values. The overview
    pane renders no-enabled-cards, no-report, or the ordered enabled renderer set.
    `frontend/src/panels/explore/chartConfig.ts` instead returns an explicit parse failure for a
@@ -349,7 +341,51 @@ and remediation without exposing raw bounded-collection JSON.
   renders the labelled Refresh button immediately before its size controls in
   both open and collapsed headers. All preview variants forward the active
   node's existing refresh callback; Explore retains its "Refresh Explore outputs"
-  tooltip. A previewable active node without results gets an explicit empty
+  tooltip. While the `PreviewRunContext` (`panels/previewRunContext.ts`) the App
+  provides around the active node's preview reports `running`, the same button
+  reads **Stop** (danger styling, `data-testid="preview-stop"`) and calls its
+  `onStop` instead; a frame without `onRefresh` shows neither. The App's run is
+  `previewBusy` or any registered node work (`useNodeWorkRunning`), and its Stop
+  calls `stopPreview` and `stopNodeWork(nodeId)`. Ctrl/Cmd+Enter only ever
+  presses Refresh, never Stop. Explore extends the context: its run also
+  covers a profile job this tab started (`startedHere` on the shared job, kept
+  when a later answer joins the same job; one joined from elsewhere is left
+  running and does not show Stop), its Stop also stops the profile — a job id
+  that arrives after Stop is cancelled at once, and nothing asks for that node's
+  profile on its own until the consumer resumes; the pause is kept per node (every
+  stopped node's late job is cancelled, whichever was stopped last), so another
+  node opened in the panel profiles as usual — and its Refresh resumes
+  profiling (a state change, so an eligible profile is asked for at once), asking
+  again at once for a profile that failed or was stopped. It has no separate "Cancel profile" button, only "Retry profile"
+  for a failed one.
+- A loading data preview shows its step progress once the plan is known: "Step k of
+  n · <label>" with a determinate bar (`aria-label="Preview progress"`). Steps are
+  counted with equal weight, so the bar can jump; before the plan is known it says
+  "Preparing inputs…" (or the preparation message) with no bar.
+- **Import** (`components/InputImportButton.tsx`) sits beside Refresh in the
+  data preview frame of a node that reads a snapshot (`inputSnapshotSource` of
+  the node, or of its original for an instance): a Data Input other than a
+  direct Parquet scan, or a structured Quote Input with an emitting table. It
+  re-reads the source with `ensureInputSnapshots([input], { force: true })`,
+  showing "Importing · N rows" while a bounded build streams rows and
+  "Importing…" otherwise, and registers as the node's work so the frame's Stop
+  stops it. The import belongs to the node that started it
+  (`stores/useInputImportStore.ts`), not to the open panel: opening another node
+  leaves it running, shown and stoppable on its own node, and its re-preview runs
+  only if that node is still open and still reads the same source. A replaced
+  document retires it at once (its run, work and Stop leave the node), so a node of
+  the new document that reuses the id never shows, stops or continues it; its
+  build is still cancelled, and one that refuses to stop, now or after an
+  earlier failed Stop, is cancelled again in the background (five attempts, two
+  seconds apart) and reported if it never stops.
+  Every outcome (completed, failed, stopped) re-reads the snapshot status and
+  raises the node-data epoch, since a failed Quote Input import can publish some
+  tables; only a completed, unstopped import re-previews the node. Its title
+  says when the input was last imported (`utils/importedTitle.ts`): the newest
+  generation, "Partly imported (k of n tables)" for a Quote Input missing some,
+  or "Not imported yet". A stop whose cancellation fails keeps the import
+  running, and Stop cancels it again. Refresh keeps its freshness rules; Import
+  is the one action that re-reads a source whose changes cannot be detected. A previewable active node without results gets an explicit empty
   preview frame so Refresh remains reachable. `NodePanelHeader` contains no
   Refresh action; `SchemaWarningBanner` keeps its refresh callback.
 - `PreviewPanelTabs` gives exactly one enabled tab `tabIndex=0`; Left/Right wrap across enabled

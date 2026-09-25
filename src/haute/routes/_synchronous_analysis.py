@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TypeVar, cast
 
 from fastapi import HTTPException, Request
@@ -106,23 +106,75 @@ async def run_until_disconnected(
     returns, so its admission is released before the request ends.
     """
     token = ExecutionCancellationToken()
-    task = asyncio.ensure_future(asyncio.to_thread(analysis, token))
+    return await await_until_disconnected(
+        request,
+        asyncio.to_thread(analysis, token),
+        cancel=token.cancel,
+        poll_seconds=poll_seconds,
+        detail="The client closed the request before the analysis finished.",
+    )
+
+
+async def await_until_disconnected(
+    request: Request,
+    work: Awaitable[ResultT],
+    *,
+    cancel: Callable[[], None],
+    started: Callable[[], bool] | None = None,
+    propagate: tuple[type[BaseException], ...] = (),
+    poll_seconds: float = CLIENT_DISCONNECT_POLL_SECONDS,
+    detail: str = "The client closed the request before it finished.",
+) -> ResultT:
+    """Await *work*; a disconnected client calls *cancel* and waits for it to stop.
+
+    *cancel* asks running work to stop through its own cancellation token
+    rather than cancelling the task, so it unwinds through its own cleanup and
+    releases its admission before this returns. Work that has not *started*
+    (still queued for a slot) holds nothing yet, so its task is cancelled
+    outright instead of waiting for a slot it no longer needs.
+
+    Abandoned work's outcome is discarded, except an error of a *propagate*
+    type: that is raised in place of the 499 or the cancellation, because the
+    caller must still act on it (a response timeout whose thread still runs
+    defers the caller's release of admission until that thread finishes).
+    """
+    task = asyncio.ensure_future(work)
     try:
         while True:
             done, _pending = await asyncio.wait({task}, timeout=poll_seconds)
             if done:
                 return task.result()
             if await request.is_disconnected():
-                token.cancel()
+                _abandon(task, cancel, started)
                 await _stopped(task)
-                raise HTTPException(
-                    status_code=CLIENT_CLOSED_REQUEST_STATUS,
-                    detail="The client closed the request before the analysis finished.",
-                )
+                _raise_propagated(task, propagate)
+                raise HTTPException(status_code=CLIENT_CLOSED_REQUEST_STATUS, detail=detail)
     except asyncio.CancelledError:
-        token.cancel()
+        _abandon(task, cancel, started)
         await _stopped(task)
+        _raise_propagated(task, propagate)
         raise
+
+
+def _raise_propagated(
+    task: asyncio.Future[ResultT], propagate: tuple[type[BaseException], ...]
+) -> None:
+    if not propagate or task.cancelled():
+        return
+    error = task.exception()
+    if isinstance(error, propagate):
+        raise error
+
+
+def _abandon(
+    task: asyncio.Future[ResultT],
+    cancel: Callable[[], None],
+    started: Callable[[], bool] | None,
+) -> None:
+    """Ask abandoned work to stop: running work through its token, queued work outright."""
+    cancel()
+    if started is not None and not started():
+        task.cancel()
 
 
 async def _stopped(task: asyncio.Future[ResultT]) -> None:
@@ -133,5 +185,9 @@ async def _stopped(task: asyncio.Future[ResultT]) -> None:
     here; the point of waiting is that nothing keeps running, holding admission
     and a lease, once the request is gone.
     """
-    with contextlib.suppress(asyncio.CancelledError, Exception):
-        await asyncio.shield(task)
+    # The request task may be cancelled again while it waits (a client that
+    # goes away is cancelled more than once); each time, it keeps waiting, so
+    # admission is never released under work that is still running.
+    while not task.done():
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await asyncio.shield(task)

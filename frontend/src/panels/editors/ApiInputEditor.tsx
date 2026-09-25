@@ -6,14 +6,12 @@ import { useSchemaFetch } from "../../hooks/useSchemaFetch"
 import { configField } from "../../utils/configField"
 import { withAlpha } from "../../utils/color"
 import {
-  apiInputHasEmittingTable,
   apiInputLabelIssue,
   apiInputLabelIssueMessage,
 } from "../../utils/apiInputPorts"
 import { FrameTableActions } from "./FrameTableActions"
 import PathPickerField from "./shared/PathPickerField"
 import { inferJsonCacheSchema } from "../../api/client"
-import InputSnapshotCacheButton from "./_InputSnapshotCacheButton"
 import {
   classifyConfig,
   emptyV2,
@@ -70,8 +68,6 @@ export default function ApiInputEditor({
 }) {
   const currentPath = configField<string | undefined>(config, "path", undefined)
   const { schema, loading: loadingSchema, error: schemaError, fetchForPath } = useSchemaFetch(currentPath)
-  const showCacheButton =
-    !!currentPath && /\.(?:json|jsonl|ndjson|xml)$/i.test(currentPath)
   const [inferring, setInferring] = useState(false)
   const [inferError, setInferError] = useState<string | null>(null)
   // Defect 2 — when a re-infer would overwrite tables the user has
@@ -632,37 +628,6 @@ export default function ApiInputEditor({
             fetchForPath(path)
           }}
         />
-
-        {/* Bundle 3b — cache button positioned ABOVE the Tables editor.
-            Contextual rationale: the cache action operates on the data
-            file selected just above; placing the affordance there
-            groups it with the data source and leaves the schema editor
-            (Tables) as the primary authoring surface below. */}
-        {showCacheButton && (() => {
-          // Cache eligibility shares the frontend mirror of backend
-          // `table_is_emitting`: emit=true AND at least one selected column.
-          const hasSchemaSource = v2.tables.length > 0
-          const hasEmitTrue = v2.tables.some((t) => t.emit)
-          const hasEmittingTable = apiInputHasEmittingTable({ tables: v2.tables })
-          const cacheDisabled = !hasSchemaSource || !hasEmittingTable
-          const cacheReason = !hasSchemaSource
-            ? "Add at least one table (Infer Tables / Add Table) before caching."
-            : !hasEmitTrue
-            ? "Toggle at least one table's emit so it produces a frame."
-            : !hasEmittingTable
-            ? "Select at least one column in an emitted table before caching."
-            : undefined
-          // The editor's in-memory schema, so the tables built and shown are
-          // the ones the user is looking at, saved or not.
-          return (
-            <InputSnapshotCacheButton
-              config={{ ...writeV2(v2), path: currentPath }}
-              nodeType="apiInput"
-              requiredReady={!cacheDisabled}
-              disabledReason={cacheReason}
-            />
-          )
-        })()}
 
         {/* Frames table — the surface cascade and inherit-attributes operate
             from. Hidden while there are no frames yet. Using an entry point

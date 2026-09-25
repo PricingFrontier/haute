@@ -20,7 +20,6 @@ import { BreakpointGrid } from "./banding/BreakpointGrid"
 import { BandingHistogram } from "./banding/BandingHistogram"
 import { equalWidthBins } from "./banding/bandingBins"
 import useBandingStats from "./banding/useBandingStats"
-import DataCacheStatus from "../../components/DataCacheStatus"
 import { useGraph } from "../useGraph"
 import { GenerateBandsDialog } from "./banding/GenerateBandsDialog"
 import { CategoricalValuePicker } from "./banding/CategoricalValuePicker"
@@ -63,7 +62,7 @@ export default function BandingEditor({
   // and distribution below are execution's rather than a sample's.
   const graph = useGraph()
   const node = nodeId ? graph.allNodes.find((candidate: SimpleNode) => candidate.id === nodeId) ?? null : null
-  const { cache, stats, loading: statsLoading, basis, error: statsError } = useBandingStats({
+  const { stats, loading: statsLoading, basis, error: statsError } = useBandingStats({
     node,
     allNodes: graph.allNodes,
     edges: graph.edges,
@@ -350,7 +349,6 @@ export default function BandingEditor({
                 ? `Counting the whole dataset failed: ${statsError}`
                 : basisLabel}
           </span>
-          <DataCacheStatus cache={cache} />
         </div>
       )}
 

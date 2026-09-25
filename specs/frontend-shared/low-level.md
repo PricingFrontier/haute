@@ -25,7 +25,6 @@
 | `frontend/src/hooks/useNodeDataProfile.ts` | The shared `profile` analysis of the data one consumer reads: asked for once per slot and data version while the point is `current`, fenced against a document that has moved on, stored per slot so every pane showing that data gets it, with `cancel` for the running job, and `error` plus `refresh` so a failed attempt is retried rather than left as an empty pane. Each request names the version it asks about, which the job it starts carries. |
 | `frontend/src/utils/operationToken.ts` | `nextOperationToken`: a process-unique token that tells one asynchronous operation apart from the operation that replaced it. |
 | `frontend/src/panels/dataPointIdentity.ts` | `buildNodeDataCacheIdentity`: the identity that gates a consumer's `point` request — its upstream subgraph plus the original of every instance in it, each node's data-affecting configuration, every edge with its handles, the submodels, and the preamble. |
-| `frontend/src/components/DataCacheStatus.tsx`, `frontend/src/components/dataCacheLabels.ts` | The shared data-cache state and its status and detail text: state label and colour, progress and cancel while a build runs, the snapshot's rows, size, and retention, and the statement that replaces the state for a point read straight from its file. Starting a build is not among them: the node's Refresh button does that. |
 | `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, the server's streaming chunk size (loaded from and written to `/api/execution-settings`), section open/closed state, the MLflow destinations inventory cache (fetched once with probing, re-fetched by `invalidateMlflow()`), data sources, file-listing cache. The pure destination helpers live in `frontend/src/utils/mlflowDestinations.ts`, and the shared per-node control is the destination selector component described under the MLflow destination surface below. |
 | `frontend/src/stores/useToastStore.ts` | Zustand store: toast queue with dedup, capped at 10 entries. |
 | `frontend/src/stores/useUIStore.ts` | Zustand store: modal/panel open flags (git/utility/imports/assistant, mutually exclusive by construction — each setter clears the others), sync banner, node panel width, per-node Explore/modelling selection memory (editor pane, preview pane, and the configured chart/pivot Configure-subview ids), hover highlight, node search open flag. |
@@ -47,7 +46,13 @@
 | `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
 | `frontend/src/components/Toolbar.tsx` | App top chrome: 56px 2-tier stacked column layout with package-derived browser version, source selector, undo/redo with visible text labels, integer-ms timing and memory breakdowns, Submodel/Instance selection actions, utility/imports buttons, assistant and a Help menu (external Documentation link, Hotkeys opening the keyboard-shortcuts modal, and Report a bug linking to a new GitHub issue; focus lands on the first item, arrows move, Escape closes and returns focus to Help), zoom in/out, centre/layout, and Save + Commit nested under `BranchIndicator`. Actions share the `.toolbar-btn` surface; selection actions carry `aria-disabled` rather than `disabled` so unavailable actions stay focusable with informative tooltips. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). The Source selector (on the shared `.toolbar-btn` surface and type) and a Pipeline button share a two-row grid column, so the Pipeline button is exactly as wide as the selector above it whatever the active source is named; the Pipeline button reads "Calculating" under automatic calculation and "Manual" under manual, and opens `PipelineSettingsModal` from the toolbar's own local state, unlike the MLflow modal's UI-store flag. The preview row limit and streaming chunk size live in that pane, not in the toolbar. |
 | `frontend/src/components/MlflowSettingsModal.tsx` | `ModalShell`-based MLflow destinations inventory editor: an MLflow server URL field, a Local folder field showing the resolved folder, a read-only Databricks block (selected profile, the dedicated MLflow host, or the missing configuration), one Test action per remote with its inline categorised result, and Save through `PUT /api/mlflow/settings` (`tracking_uri` and `folder` only) followed by `invalidateMlflow()`. Rendered by the toolbar while the UI store's MLflow-settings-open flag is set; opened from each node's MLflow gear or greyed light. |
-| `frontend/src/components/PipelineSettingsModal.tsx` | `ModalShell`-based Pipeline settings pane: a Calculation radio group (Automatic / Manual, session-only UI-store state); a Preview section with the preview row limit (0 = no limit, negatives clamp to 0) and streaming chunk size (clamped to the backend bounds, non-numeric input ignored) fields, both writing `useSettingsStore` and suppressing native spinners. The chunk size is loaded from the server when the pane opens (reopened while a save is in flight, it shows that save's outcome instead) and committed to it on blur or Enter, never per keystroke; saves reach the server in order, and a failed commit restores the server's value and reports the error in a toast; then the Cached data inventory: every node of the open pipeline with its state, size, cached-at time, build duration and per-entry clear control; a group for cached data belonging to no node of it; and a footnote for unattributed bytes. No budget cards, limit variables or generation counts. Reads `POST /api/cache/nodes` on open, explicit Refresh and successful clear. Rendered by the toolbar from its own local open state and opened by the toolbar's Pipeline button. |
+| `frontend/src/components/PipelineSettingsModal.tsx` | `ModalShell`-based Pipeline settings pane: a Calculation radio group (Automatic / Manual, session-only UI-store state); a Preview section with the preview row limit (0 = no limit, negatives clamp to 0) and streaming chunk size (clamped to the backend bounds, non-numeric input ignored) fields, both writing `useSettingsStore` and suppressing native spinners. The chunk size is loaded from the server when the pane opens (reopened while a save is in flight, it shows that save's outcome instead) and committed to it on blur or Enter, never per keystroke; saves reach the server in order, and a failed commit restores the server's value and reports the error in a toast; then the Cached data inventory: every node of the open pipeline with its state, size, cached-at time, build duration and per-entry clear control; a group for cached data belonging to no node of it; and a footnote for unattributed bytes. The whole store's size (`CacheStoreSize`) sits beside the Cached data heading. No budget cards, limit variables or generation counts. Reads `POST /api/cache/nodes` on open, explicit Refresh and successful clear. Rendered by the toolbar from its own local open state and opened by the toolbar's Pipeline button. |
+| `frontend/src/utils/inputSnapshotSource.ts`, `frontend/src/utils/instanceOriginal.ts`, `frontend/src/utils/importedTitle.ts` | The one derivation of whether a node reads a snapshot and the input-cache source naming it; the original whose config an input instance runs; and an Import's "last imported" wording. |
+| `frontend/src/hooks/previewProgressPoller.ts` | A preview request's id and the poller of its step progress; see [frontend-graph-canvas](../frontend-graph-canvas/low-level.md). |
+| `frontend/src/stores/useInputImportStore.ts` | Imports in flight by the node that started them, and `startInputImport`, which runs one: its node's work and Stop, every outcome raising the node-data epoch, and a re-preview only for a completed, unstopped import whose node still reads the same source. |
+| `frontend/src/components/InputImportButton.tsx` | The preview frame's Import action; see [frontend-preview-explore](../frontend-preview-explore/low-level.md). |
+| `frontend/src/stores/useNodeWorkStore.ts` | Work a consumer of a node started for it (a shared data-point build, an Import), keyed by the registering consumer: `useNodeWorkRunning(nodeId)` drives the frame's Stop, and `registerNodeStop`/`stopNodeWork(nodeId)` stop it. Only work this tab started is registered; a build joined from elsewhere is not. |
+| `frontend/src/components/CacheStoreSize.tsx` | The snapshot store's whole size beside Pipeline settings' Cached data heading, read from `GET /api/cache/usage` with each inventory read. |
 | `frontend/src/components/PreviewOutOfDateBadge.tsx` | "Out of date" marker in the data-preview header, shown only under manual calculation when the displayed stored preview's structural version or node-data epoch is behind the current one; isolated so its store subscriptions re-render only the badge. |
 | `frontend/src/components/BreakdownDropdown.tsx` | Sorted, accessible timing/memory breakdown disclosure used by the shared toolbar. |
 | `frontend/src/panels/ImportsPanel.tsx` | Active pipeline-imports right panel: `PanelShell` plus `CodeEditor`, explanatory always-included imports, and callback-only preamble mutation/close handling. `App.tsx` supplies the graph-store-backed preamble and selects it through `importsOpen`. |
@@ -258,10 +263,6 @@ cancels the job; a caller that owns the job decides that. The callers are:
 - `ensureInputSnapshots` waits for each build with the ensure pass's signal;
   `cancelInputSnapshotBuild` waits at most 48 seconds for the cancelled build
   to stop, then raises `CancellationFailedError`.
-- `InputSnapshotCacheButton` waits for its build with a signal aborted on
-  unmount and when its configuration changes; the server build continues. Its
-  `onStatus` reports each running status as `CacheFetchButton`'s progress, so
-  there is no second progress poll.
 - `useOptimiserAutoRange` waits with the active run's signal and retires the
   run from `onStatus` once it is no longer current.
 
@@ -440,9 +441,12 @@ and a change is sent to the server, which applies it to every execution started
 afterwards. Requests carry no chunk size. Below it, the "Cached data" section
 lists the current pipeline's node data and cached data
 outside it, with size, status, cached-at time, build duration and per-entry clear
-controls, under a bare "Cached data" heading with no explanatory copy. There are no budget cards, caps, quota variables
-or generation counts. Only `POST /api/cache/nodes` is read on open, explicit
-Refresh and successful clear. Closing abandons the latest read; a failed refresh
+controls, under a "Cached data" heading with no explanatory copy. Beside the heading,
+`CacheStoreSize` shows the whole snapshot store's size ("5.0 GB cached"), read from
+`GET /api/cache/usage` with each inventory read; its tooltip gives the automatic
+captures' share of their budget, and a failed read shows nothing. There are no budget
+cards, caps, quota variables or generation counts. `POST /api/cache/nodes` is read on
+open, explicit Refresh and successful clear. Closing abandons the latest read; a failed refresh
 keeps the last good inventory beside the error. Existing source-sharing and
 clear ownership rules remain. Unattributed-byte footnotes remain, but there is
 no claim that entries count against budgets. There are no backend cache byte
@@ -612,8 +616,7 @@ it (specified in the [server API](../server-api/low-level.md#node-data-builds)).
    holding the same response.
 4. Availability is per consumer: a fresh generation covering the consumer's demand is `current`,
    a fresh one that does not is `partial`, a superseded one is `stale`, and a point with no
-   answer yet is `checking` rather than `missing`. `DataCacheStatus` renders exactly that state,
-   with cancel and progress while any consumer's build runs, and no action to start one.
+   answer yet is `checking` rather than `missing`.
 
 ## Testing
 

@@ -267,11 +267,44 @@ reconciliation rather than dropping them or committing a second mutation.
   `data.nodeType || node.type || ""`).
 - **`PipelineAPIReturn`** (`usePipelineAPI.ts`) — the hook's full surface:
   `loading`, `previewData`/`setPreviewData`, `previewBusy`, `nodeStatuses`,
-  `fetchPreview`/`cancelPreview`/`refreshPreview`/`previewNodeFrame`, and
+  `fetchPreview`/`cancelPreview`/`stopPreview`/`refreshPreview`/`previewNodeFrame`, and
   `handleSave: () => Promise<boolean>` (resolves `true`/`false`, never
   rejects).
 - **`FetchPreviewOptions`** — `{ debounceMs? }`, the per-call override for
   the preview debounce (Optimiser click previews use a longer one).
+- **`stopPreview`** — the frame's Stop. It aborts the request in flight and
+  marks it stopped, so its abort settles as a stop rather than being ignored as
+  superseded: the panel shows the node's last stored preview for the current
+  source and row limit, or nothing (the empty frame offers Refresh), and
+  `previewBusy` clears. An abort during input preparation cancels only a
+  snapshot build this tab started; one it joined (`joined: true`) is left
+  running and only waited on no longer. If that cancellation fails
+  (`CancellationFailedError`, which carries the build's `jobId`), the preview
+  stays busy, a toast says so, and the next Stop cancels them again. The error
+  carries every build that may still be running (`jobIds`): `ensureInputSnapshots`
+  lets all of a pass's builds settle before failing, and `cancelInputSnapshotBuilds`
+  retries each and keeps only those that still did not stop. A stop while
+  upstream nodes are being previewed runs nothing further. With nothing sent yet
+  (a debounced preview) it settles at once. A new fetch or Refresh supersedes a
+  pending retry. Automatic calculation does not re-run the result a stop put
+  back on screen when the node-data epoch moved during the stopped run; Refresh
+  or another preview replaces it. Frame-selection previews (`previewNodeFrame`)
+  share this lifecycle and send a progress request id.
+- **`ensureInputSnapshots`** asks `POST /api/input-cache/build` once per
+  snapshot the pass needs, from `inputSnapshotSource` (the one derivation of
+  which inputs read a snapshot, `utils/inputSnapshotSource.ts`). A `blocked`
+  answer, or a joined build its owner stopped (`cancelled`/`superseded`), is
+  waited for without cancelling it and then asked again, at most three times.
+  `onBuildProgress` reports each running status (rows read, phase) of the
+  build it waits for.
+- **Step progress.** Every preview and recovery-preview request carries a fresh
+  `request_id` (`newPreviewRequestId`), and `pollPreviewProgress`
+  (`hooks/previewProgressPoller.ts`) asks `GET /api/pipeline/preview/progress/{id}`
+  every 250 ms while that request is in flight, writing each answer to the
+  loading `PreviewData.progress` of the node it is for. A 404 or failed poll is an
+  expected absence and polling continues; only the request's own settlement (or
+  its abort) stops it. A Refresh's upstream previews label the loading panel
+  "Previewing inputs (k of n)" before the target's own progress follows.
 - **`GraphDiff`** (`graphDiff.ts`) —
   `{ added, removed, changed, moved: Set<string> }` node ids, keyed by the
   comparison view's two graph versions.

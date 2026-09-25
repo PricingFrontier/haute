@@ -785,6 +785,9 @@ class PolarsStepsRenderResponse(BaseModel):
     message: str = ""
 
 
+PREVIEW_REQUEST_ID_PATTERN = r"^[A-Za-z0-9-]{1,64}$"
+
+
 class PreviewNodeRequest(BaseModel):
     graph: Graph
     node_id: str
@@ -794,6 +797,23 @@ class PreviewNodeRequest(BaseModel):
     # Frame label selected for a multi-frame target. Single-frame targets
     # ignore it. It is part of the preview cache identity.
     port_label: str | None = None
+    # Chosen by the client so it can poll this request's step progress. Not part
+    # of any cache or supersession identity.
+    request_id: str | None = Field(default=None, pattern=PREVIEW_REQUEST_ID_PATTERN)
+
+
+class PreviewProgressResponse(BaseModel):
+    """A running preview's step progress (``GET /api/pipeline/preview/progress/{id}``).
+
+    ``preparing`` until its execution plan is known; then ``running`` with the
+    planned heavy steps completed of the total, and the step now running.
+    """
+
+    request_id: str
+    phase: Literal["preparing", "running"]
+    done: int | None = None
+    total: int | None = None
+    label: str | None = None
 
 
 class RecoveryPreviewRequest(BaseModel):
@@ -808,6 +828,7 @@ class RecoveryPreviewRequest(BaseModel):
     source: str = "live"
     requested_preview_columns: list[str] | None = Field(default=None, min_length=1)
     port_label: str | None = None
+    request_id: str | None = Field(default=None, pattern=PREVIEW_REQUEST_ID_PATTERN)
 
 
 class NodeTimingInfo(BaseModel):
@@ -1119,8 +1140,13 @@ class InputCacheBuildResponse(_StrictInputCacheModel):
     schema_version: Literal[1] = 1
     job_id: str
     identity_digest: str
-    status: Literal["running"]
+    # ``blocked``: *job_id* is a build this request may not join (a build being
+    # cancelled, or an ordinary build for a forced request); wait for it to end
+    # without owning it, then ask again.
+    status: Literal["running", "blocked"]
     joined: bool
+    # Whether the build *job_id* names re-reads the source (``refresh``).
+    forced: bool
     # How the server builds it: ``bounded`` streams in a lazy sink,
     # ``admitted_eager`` reads eagerly inside a hard-capped worker.
     build_class: Literal["bounded", "admitted_eager"]

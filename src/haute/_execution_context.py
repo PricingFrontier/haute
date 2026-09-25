@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from haute._chunked_writes import ChunkedWrite
+    from haute._step_progress import StepProgressReporter
 
 EXECUTION_METRICS_SCHEMA_VERSION = 1
 EXECUTION_TELEMETRY_SCHEMA_VERSION = 1
@@ -1386,6 +1387,7 @@ class ExecutionContext:
         "projection_plan",
         "cancellation_token",
         "memory_pressure_callback",
+        "step_progress",  # where a preview walk reports its step progress, if anyone listens
         "budget",
         "lease",
         "metrics",
@@ -1419,10 +1421,9 @@ class ExecutionContext:
         self.profile = profile
         self.job_id = job_id
         self.projection_plan = projection_plan
-        self.cancellation_token = (
-            ExecutionCancellationToken() if cancellation_token is None else cancellation_token
-        )
+        self.cancellation_token = cancellation_token or ExecutionCancellationToken()
         self.memory_pressure_callback = memory_pressure_callback
+        self.step_progress: StepProgressReporter | None = None
         self.budget = ExecutionMemoryBudget(
             memory_limit_bytes=memory_limit_bytes,
             memory_baseline_bytes=memory_baseline_bytes,
