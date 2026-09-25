@@ -432,7 +432,7 @@ def test_banding_factor_dtypes_scoped_to_consumed_frame(
     factor dtypes from that frame only — not a dict-iteration-order merge of
     every emitted frame, where a column name recurring across frames with a
     different dtype wins by table order and drives the Float32-faithful
-    continuous-rule re-match in the wrong numeric domain."""
+    interval re-match in the wrong numeric domain."""
     # Rebuild the cache with the drivers frame's copy of the ancestor key
     # declared float — the policies frame keeps it int, and policies comes
     # FIRST in table (and so dict-iteration) order.

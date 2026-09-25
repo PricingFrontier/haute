@@ -1,4 +1,5 @@
-import type { BandingHistogramBin } from "../../../api/types"
+/** Test fixture: equal-width bins in the shape the banding statistics send, for histogram tests. */
+import type { BandingHistogramBin } from "../../../../api/types"
 
 /**
  * The lower edge of each bin, which is also what a count is measured against.

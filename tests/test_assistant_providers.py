@@ -1090,18 +1090,11 @@ class TestDatabricksProvider:
         assert "graph node name" in recipe_wire["properties"]["name"]["description"]
         rules_wire = recipe_wire["properties"]["rules"]
         assert rules_wire["type"] == "array"
-        assert "op1" in rules_wire["description"]
+        assert "categorical" in rules_wire["description"]
         assert "assignment" in rules_wire["description"]
         assert rules_wire["items"]["additionalProperties"] is False
-        assert set(rules_wire["items"]["properties"]) == {
-            "op1",
-            "val1",
-            "op2",
-            "val2",
-            "assignment",
-            "value",
-        }
-        assert rules_wire["items"]["required"] == ["assignment"]
+        assert set(rules_wire["items"]["properties"]) == {"assignment", "value"}
+        assert rules_wire["items"]["required"] == ["value", "assignment"]
 
         def objects(value):
             if isinstance(value, dict):

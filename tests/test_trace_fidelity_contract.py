@@ -7,10 +7,10 @@ import types
 import polars as pl
 import pytest
 
-from haute._rating import SUPPORTED_BANDING_OPERATORS, _apply_banding, _banding_condition
+from haute._rating import SUPPORTED_BANDING_OPERATORS, _banding_condition
 from haute._trace_correlation import SchemaDiff
 from haute._trace_enrichment import (
-    _match_continuous_rule,
+    _match_interval_rule,
     _sniff_operation_type,
     detect_row_lineage_type,
     enrich_model_score,
@@ -85,8 +85,6 @@ def test_rating_selection_uses_the_runtime_numeric_value_before_post_code() -> N
         ("<=", 5, 5),
         (">", 6, 5),
         (">=", 5, 5),
-        ("=", 5, 5),
-        ("==", 5, 5),
     ],
 )
 def test_runtime_and_trace_share_one_banding_operator_matrix(
@@ -101,17 +99,19 @@ def test_runtime_and_trace_share_one_banding_operator_matrix(
         .item()
     )
 
-    assert set(SUPPORTED_BANDING_OPERATORS) == {"<", "<=", ">", ">=", "=", "=="}
-    assert runtime_match is _match_continuous_rule(input_value, rule)
+    assert set(SUPPORTED_BANDING_OPERATORS) == {"<", "<=", ">", ">="}
+    assert runtime_match is _match_interval_rule(input_value, rule)
 
 
 def test_banding_operator_contract_is_immutable_and_rejects_unknowns() -> None:
     with pytest.raises(TypeError):
         SUPPORTED_BANDING_OPERATORS["!="] = lambda left, right: left != right  # type: ignore[index]
-    with pytest.raises(ValueError, match="unsupported operator"):
-        _banding_condition(pl.col("value"), {"op1": "!=", "val1": 5})
-    with pytest.raises(ValueError, match="unsupported operator"):
-        _match_continuous_rule(4, {"op1": "!=", "val1": 5})
+    # Equality is not an interval operator: no breakpoint produces it.
+    for unknown in ("!=", "=", "=="):
+        with pytest.raises(ValueError, match="unsupported operator"):
+            _banding_condition(pl.col("value"), {"op1": unknown, "val1": 5})
+        with pytest.raises(ValueError, match="unsupported operator"):
+            _match_interval_rule(4, {"op1": unknown, "val1": 5})
 
 
 @pytest.mark.parametrize("threshold", ["not-a-number", float("nan"), float("inf")])
@@ -121,21 +121,7 @@ def test_runtime_and_trace_reject_the_same_invalid_thresholds(threshold: object)
     with pytest.raises(ValueError):
         _banding_condition(pl.col("value"), rule)
     with pytest.raises(ValueError):
-        _match_continuous_rule(4, rule)
-
-
-def test_runtime_and_trace_both_reject_an_unusable_continuous_rule() -> None:
-    rule = {"op1": "!!", "val1": "", "assignment": "credited_by_old_trace"}
-
-    assert _match_continuous_rule(25, rule) is False
-    with pytest.raises(ValueError, match="no usable"):
-        _apply_banding(
-            pl.DataFrame({"value": [25]}).lazy(),
-            "value",
-            "band",
-            "continuous",
-            [rule],
-        )
+        _match_interval_rule(4, rule)
 
 
 def test_model_detail_never_guesses_identifier_columns_as_features(

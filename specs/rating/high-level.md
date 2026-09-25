@@ -17,8 +17,8 @@ what-if scoring path.
 
 In scope:
 
-- Continuous (operator/threshold), categorical (value remap), and breakpoints
-  (ordered boundary list) banding rule evaluation.
+- Breakpoints (ordered boundary list) and categorical (value remap) banding
+  rule evaluation. These are the only two banding types; a factor names one.
 - One-, two-, and three-factor rating-table lookups, including default-value
   fill and a loud/quiet miss policy.
 - Combining multiple rating-table outputs with a required fixed finite numeric
@@ -56,24 +56,37 @@ Out of scope (owned by neighbouring components):
 
 **Banding** (`apply_banding_from_config` / `_apply_banding_factors`):
 
-- Each banding "factor" reads one input column and writes one output column.
-- `continuous` rules define a range via up to two operator/value pairs
-  (`op1`/`val1`, `op2`/`val2` — one of `< <= > >= = ==`); rules are evaluated
-  in order and the first matching rule wins (`when/then` chain semantics), the
-  rest fall to an explicit `default`.
-  An unrecognised operator is rejected before a banding expression is
-  published. Runtime banding and trace enrichment consume the same rule
-  eligibility parser as well as the same immutable supported-operator
-  contract, so a trace cannot credit a rule the engine skipped.
+- Each banding "factor" reads one input column and writes one output column,
+  and its `banding` is `breakpoints` or `categorical`. Any other value, or none,
+  is rejected; there is no default type. (An operator/threshold `continuous`
+  type existed and is removed: the editor never offered it.)
+- `breakpoints` rules are an ordered list of boundaries with labels, closed on
+  the right by default (`(lower, upper]`) or on the left when `rightClosed:
+  false`. At most one boundary may be open-ended (empty), and it anchors the
+  final unbounded range. A boundary is a number, a date (`YYYY-MM-DD`), or a
+  date and time (`YYYY-MM-DD HH:MM`, optionally `:SS` and a fraction, `T` or a
+  space between; no UTC offset), and every bounded breakpoint of one factor is
+  the same kind. Numbers band a numeric column. Dates band a Date column, or a
+  Datetime column by its calendar date in the column's own time zone, so
+  "up to 2024-02-29" includes the whole of that day. Dates and times band a
+  Datetime column by its wall-clock time in the column's own time zone. Any
+  other pairing (numbers on a date column, times on a Date column, dates on a
+  number column) fails when the node runs, naming the output and the column;
+  an unreadable boundary or a factor mixing kinds fails validation. Internally each breakpoint becomes an
+  interval rule (up to two operator/value pairs, `< <= > >=`); intervals are
+  evaluated in order and the first matching one wins (`when/then` chain
+  semantics), the rest falling to an explicit `default`. Runtime banding and
+  trace enrichment consume the same interval-eligibility parser and the same
+  immutable supported-operator contract, so a trace cannot credit a band the
+  engine skipped.
 - `categorical` rules are an exact-match remap from input value to assignment.
-- `breakpoints` rules are converted internally into `continuous` rules: an
-  ordered list of numeric boundaries with labels, closed on the right by default
-  (`(lower, upper]`) or on the left when `rightClosed: false`. At most one
-  boundary may be open-ended (empty), and it anchors the final unbounded range.
 - Float columns have NaN/Infinity sanitised to null before rule matching, so
   they always fall to the default rather than matching an arbitrary rule.
 - A draft factor with no column, no output column, or no rules is a documented
-  no-op (the frame passes through unchanged for that factor). Once a non-empty
+  no-op (the frame passes through unchanged for that factor). The node's column
+  contract leaves a draft factor out too, so a factor that has its columns but no
+  rules yet previews as a pass-through rather than failing the output-column
+  check for a column it does not create. Once a non-empty
   rule list is authored, at least one rule must have a usable key/condition and
   assignment; an all-unusable rule set is rejected rather than silently
   omitting the configured output column.
@@ -169,7 +182,7 @@ Out of scope (owned by neighbouring components):
   out rows even if the config accidentally has two entries for the same
   factor combination.
 - **One banding node holds many factors, rather than one node per factor or
-  separate continuous/categorical node types.** A single pipeline step often
+  separate numeric/categorical node types.** A single pipeline step often
   bands several columns at once (age, vehicle age, property type, ...);
   one-node-per-factor and separate node types per banding kind were both
   rejected for the same graph-clutter reason as the rating-table case below.

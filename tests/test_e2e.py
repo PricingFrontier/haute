@@ -491,12 +491,12 @@ class TestAllNodeTypesRoundtrip:
                 {
                     "factors": [
                         {
-                            "banding": "continuous",
+                            "banding": "breakpoints",
                             "column": "x",
                             "outputColumn": "x_band",
                             "rules": [
-                                {"from": 0, "to": 1, "label": "low"},
-                                {"from": 1, "to": 100, "label": "high"},
+                                {"boundary": "1", "label": "low"},
+                                {"boundary": "100", "label": "high"},
                             ],
                         }
                     ],

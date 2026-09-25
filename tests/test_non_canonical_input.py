@@ -34,10 +34,12 @@ def test_recover_reports_a_retired_config_field_and_keeps_it_out_of_the_candidat
         NodeType.EDGE_JOIN, {"how": "left", "on": ["id"], "baseInput": "a", "stale": 1}
     )
 
-    assert result.config == {"how": "left", "on": ["id"]}
+    # ``suffix`` is absent from the saved config, so it takes the palette default.
+    assert result.config == {"how": "left", "on": ["id"], "suffix": "_right"}
     outcomes = {change.path: change.outcome for change in result.changes}
     assert outcomes["/baseInput"] == "needs_review"
     assert outcomes["/stale"] == "removed"
+    assert outcomes["/suffix"] == "defaulted"
     assert {(issue.path, issue.code, issue.severity) for issue in result.issues} == {
         ("/baseInput", "unknown_field", "warning"),
         ("/stale", "unknown_field", "warning"),

@@ -8,9 +8,11 @@
  * moved on.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import type { ReactElement } from "react"
 
+import { runNodeData } from "../../api/client"
+import { refreshNodeDataCache } from "../../hooks/useNodeDataCache"
 import BandingEditor from "../../panels/editors/BandingEditor"
 import { GraphProvider } from "../../panels/GraphContext"
 import useNodeDataStore from "../../stores/useNodeDataStore"
@@ -18,9 +20,18 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import type { BandingStatsResponse, NodeDataPointResponse } from "../../api/types"
 
 vi.mock("../../panels/editors/banding/BandingHistogram", () => ({
-  BandingHistogram: (props: Record<string, unknown>) => (
-    <div data-testid="banding-histogram" data-bins={JSON.stringify(props.bins)} />
-  ),
+  BandingHistogram: (props: Record<string, unknown>) => {
+    const bins = props.bins as { lower: number; upper: number }[]
+    const format = (props.formatValue as ((value: number) => string) | undefined) ?? String
+    return (
+      <div
+        data-testid="banding-histogram"
+        data-bins={JSON.stringify(props.bins)}
+        data-boundaries={JSON.stringify(props.boundaries)}
+        data-end-labels={JSON.stringify([format(bins[0].lower), format(bins[bins.length - 1].upper)])}
+      />
+    )
+  },
 }))
 
 vi.mock("../../panels/editors/banding/CategoricalValuePicker", () => ({
@@ -183,6 +194,7 @@ describe("BandingEditor statistics", () => {
     useSettingsStore.setState({ activeSource: "live" })
     mockGetBandingStats.mockReset()
     mockGetNodeDataPoint.mockReset()
+    vi.mocked(runNodeData).mockReset()
     mockGetNodeDataPoint.mockResolvedValue(point("current", DATA_VERSION))
     mockGetBandingStats.mockResolvedValue(stats())
   })
@@ -214,10 +226,45 @@ describe("BandingEditor statistics", () => {
         JSON.stringify([{ lower: 0, upper: 100, count: 1000 }]),
       ),
     )
+    // The open-ended band's "Up to" is blank, which is not a boundary at 0.
+    expect(screen.getByTestId("banding-histogram").getAttribute("data-boundaries")).toBe("[50]")
     const counts = Array.from(document.querySelectorAll("td"))
       .map((cell) => cell.textContent?.trim() ?? "")
       .filter((text) => /^\d+$/.test(text))
     expect(counts.slice(0, 2)).toEqual(["750", "250"])
+  })
+
+  it("offers Generate a Date column's whole-data range, measured in day numbers, as dates", async () => {
+    // 2024-01-01 to 18:00 on 2024-03-01, in days since 1970-01-01.
+    mockGetBandingStats.mockResolvedValue(
+      stats({ minimum: 19723, maximum: 19783.75, bins: [{ lower: 19723, upper: 19783.75, count: 1000 }] }),
+    )
+    const config = {
+      factors: [
+        {
+          banding: "breakpoints",
+          column: "start_date",
+          outputColumn: "start_band",
+          rules: [
+            { boundary: "2024-01-31", label: "January" },
+            { boundary: "", label: "Later" },
+          ],
+          rightClosed: true,
+        },
+      ],
+    }
+    renderEditor(
+      editor({ config, previewRows: [{ start_date: "2024-01-15" }], upstreamColumns: [{ name: "start_date", dtype: "Date" }] }),
+    )
+
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+    expect(await screen.findByText("All rows · 1,000")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }))
+    expect(screen.getByLabelText("Start")).toHaveValue("2024-01-01")
+    expect(screen.getByLabelText("End")).toHaveValue("2024-03-01")
   })
 
   it("lists the categorical values the data has, not the sample's", async () => {
@@ -294,7 +341,7 @@ describe("BandingEditor statistics", () => {
     expect(mockGetBandingStats.mock.calls[0][0].factor.rules[0]).toMatchObject({ boundary: "30" })
   })
 
-  it("works from the sample, and says so, when nothing is cached", async () => {
+  it("shows no numbers, and says to Refresh, when nothing is cached", async () => {
     mockGetNodeDataPoint.mockResolvedValue(point("missing", null))
 
     renderEditor(editor())
@@ -302,8 +349,56 @@ describe("BandingEditor statistics", () => {
       vi.advanceTimersByTime(300)
     })
 
-    expect(await screen.findByText("Sample · 3 rows")).toBeInTheDocument()
+    expect(await screen.findByText("Not cached · Refresh this node to count all rows")).toBeInTheDocument()
+    expect(screen.queryByText(/^Sample/)).toBeNull()
+    expect(screen.queryByTestId("banding-histogram")).toBeNull()
+    const cells = Array.from(document.querySelectorAll("td")).map((cell) => cell.textContent?.trim() ?? "")
+    expect(cells.filter((text) => /^\d+$/.test(text) || text === "…")).toEqual([])
     expect(mockGetBandingStats).not.toHaveBeenCalled()
+  })
+
+  it("says to Refresh, rather than counting on, when the server finds the data needs caching again", async () => {
+    // The point looked current, but its cache went (evicted, say) before the question arrived.
+    mockGetBandingStats.mockResolvedValue(stats({ status: "cache_required" }))
+
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+
+    await waitFor(() => expect(mockGetBandingStats).toHaveBeenCalled())
+    expect(await screen.findByText("Not cached · Refresh this node to count all rows")).toBeInTheDocument()
+    expect(screen.queryByText("Counting…")).toBeNull()
+    const cells = Array.from(document.querySelectorAll("td")).map((cell) => cell.textContent?.trim() ?? "")
+    expect(cells.filter((text) => /^\d+$/.test(text) || text === "…")).toEqual([])
+  })
+
+  it("re-reads its data point when the server finds the data gone, so Refresh caches it again", async () => {
+    // The snapshot went between reading the point and asking for counts.
+    mockGetBandingStats.mockImplementationOnce(async () => {
+      mockGetNodeDataPoint.mockResolvedValue(point("missing", null))
+      return stats({ status: "cache_required" })
+    })
+    vi.mocked(runNodeData).mockImplementation(async () => {
+      mockGetNodeDataPoint.mockResolvedValue(point("current", DATA_VERSION))
+      return { status: "completed", job_id: null, cached: false, message: "", point: point("current", DATA_VERSION) } as never
+    })
+
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+    expect(await screen.findByText("Not cached · Refresh this node to count all rows")).toBeInTheDocument()
+    await waitFor(() => expect(mockGetNodeDataPoint.mock.calls.length).toBeGreaterThan(1))
+
+    await act(async () => {
+      refreshNodeDataCache("banding_1")
+    })
+    expect(runNodeData).toHaveBeenCalledWith(expect.objectContaining({ node_id: "banding_1", refresh: false }))
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+    expect(await screen.findByText("All rows · 1,000")).toBeInTheDocument()
   })
 
   it("never shows full-data counts for data that has moved on", async () => {
@@ -314,8 +409,65 @@ describe("BandingEditor statistics", () => {
       vi.advanceTimersByTime(300)
     })
 
-    expect(await screen.findByText("Cached data is out of date")).toBeInTheDocument()
+    expect(
+      await screen.findByText("Cached data is out of date · Refresh this node to count all rows"),
+    ).toBeInTheDocument()
     expect(mockGetBandingStats).not.toHaveBeenCalled()
+  })
+
+  it("shows counts as pending, and no histogram or total, while the whole dataset is counted", async () => {
+    mockGetBandingStats.mockImplementation(() => new Promise(() => {}))
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+
+    await waitFor(() => expect(mockGetBandingStats).toHaveBeenCalled())
+    expect(screen.getByText("Counting…")).toBeInTheDocument()
+    const cells = Array.from(document.querySelectorAll("td")).map((cell) => cell.textContent?.trim() ?? "")
+    expect(cells.filter((text) => text === "…")).toHaveLength(2)
+    expect(cells.filter((text) => /^\d+$/.test(text))).toEqual([])
+    expect(screen.queryByTestId("banding-histogram")).toBeNull()
+    expect(document.body.textContent).not.toMatch(/of \d+ rows/)
+  })
+
+  it("draws a date column's whole-data distribution in dates", async () => {
+    // 2024-01-01 is day 19723 counted from 1970-01-01; 2024-03-01 is 60 days on.
+    mockGetBandingStats.mockResolvedValue(
+      stats({
+        minimum: 19723,
+        maximum: 19783,
+        bins: [
+          { lower: 19723, upper: 19753, count: 2 },
+          { lower: 19753, upper: 19783, count: 1 },
+        ],
+        rule_counts: [2, 1, 0],
+      }),
+    )
+    const dates = {
+      factors: [
+        {
+          banding: "breakpoints",
+          column: "start_date",
+          outputColumn: "start_band",
+          rules: [
+            { boundary: "2024-01-31", label: "January" },
+            { boundary: "2024-02-29", label: "February" },
+            { boundary: "", label: "Later" },
+          ],
+          rightClosed: true,
+        },
+      ],
+    }
+    renderEditor(editor({ config: dates, upstreamColumns: [{ name: "start_date", dtype: "Date" }] }))
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+
+    const histogram = await screen.findByTestId("banding-histogram")
+    expect(JSON.parse(histogram.getAttribute("data-end-labels")!)).toEqual(["2024-01-01", "2024-03-01"])
+    // "Up to 2024-01-31" holds all of the 31st, so its band ends where February starts.
+    expect(JSON.parse(histogram.getAttribute("data-boundaries")!)).toEqual([19754, 19783])
   })
 
   it("says why the whole dataset could not be counted, in the server's words", async () => {
@@ -323,7 +475,7 @@ describe("BandingEditor statistics", () => {
     // the user needs is the detail the server sent — for bad rules, the message
     // execution itself would give.
     const failure = new ApiError("HTTP 422", 422)
-    failure.detail = "Banding rule has unsupported operator '~' for op1"
+    failure.detail = "Breakpoint has non-numeric boundary 'ten'"
     mockGetBandingStats.mockRejectedValue(failure)
 
     renderEditor(editor())
@@ -333,7 +485,7 @@ describe("BandingEditor statistics", () => {
 
     await waitFor(() => expect(mockGetBandingStats).toHaveBeenCalled())
     expect(
-      await screen.findByText(/unsupported operator '~' for op1/),
+      await screen.findByText(/non-numeric boundary 'ten'/),
     ).toBeVisible()
     expect(screen.queryByText(/HTTP 422/)).toBeNull()
   })
@@ -377,6 +529,127 @@ describe("BandingEditor statistics", () => {
     expect(mockGetBandingStats).toHaveBeenCalledTimes(2)
   })
 
+  it("keeps the whole dataset on screen while a categorical edit is counted", async () => {
+    const categoricalStats = stats({
+      bins: [],
+      minimum: null,
+      maximum: null,
+      values: [
+        { value: "north", count: 900 },
+        { value: "south", count: 100 },
+      ],
+      distinct_count: 2,
+      other_count: 0,
+      rule_counts: [900],
+      unmatched_count: 100,
+    })
+    mockGetBandingStats.mockResolvedValue(categoricalStats)
+    const categorical = (rules: { value: string; assignment: string }[]) => ({
+      factors: [{ banding: "categorical", column: "premium", outputColumn: "premium_band", rules }],
+    })
+    const { rerender } = renderEditor(editor({ config: categorical([{ value: "north", assignment: "N" }]) }))
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+    expect(await screen.findByText("All rows · 1,000")).toBeInTheDocument()
+
+    // The answer to the edit is slow; until it comes, the editor must not drop
+    // back to the three-row sample.
+    mockGetBandingStats.mockImplementation(() => new Promise(() => {}))
+    rerender(
+      <GraphProvider allNodes={[sourceNode, bandingNode]} edges={edges} submodels={{}} preamble="">
+        {editor({
+          config: categorical([
+            { value: "north", assignment: "N" },
+            { value: "south", assignment: "S" },
+          ]),
+        })}
+      </GraphProvider>,
+    )
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+
+    await waitFor(() => expect(mockGetBandingStats).toHaveBeenCalledTimes(2))
+    expect(screen.getByText("All rows · 1,000")).toBeInTheDocument()
+    expect(screen.queryByText(/^Sample/)).toBeNull()
+    // Every value's count is known, so the new rule's is too: no waiting.
+    const counts = Array.from(document.querySelectorAll("td"))
+      .map((cell) => cell.textContent?.trim() ?? "")
+      .filter((text) => /^\d+$/.test(text))
+    expect(counts).toEqual(["900", "100"])
+    expect(screen.getByText("0 of 1000 rows")).toBeInTheDocument()
+  })
+
+  it("does not re-check the data it reads when only its rules change", async () => {
+    // In the app the edit lands in the graph as well as the editor's config.
+    const withRules = (boundary: string) => {
+      const config = {
+        factors: [
+          { ...CONFIG.factors[0], rules: [{ boundary, label: "low" }, { boundary: "", label: "high" }] },
+        ],
+      }
+      return { config, node: { ...bandingNode, data: { ...bandingNode.data, config } } }
+    }
+    const first = withRules("50")
+    const { rerender } = render(
+      <GraphProvider allNodes={[sourceNode, first.node]} edges={edges} submodels={{}} preamble="">
+        {editor({ config: first.config })}
+      </GraphProvider>,
+    )
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+    expect(await screen.findByText("All rows · 1,000")).toBeInTheDocument()
+    const pointChecks = mockGetNodeDataPoint.mock.calls.length
+
+    const edited = withRules("40")
+    mockGetBandingStats.mockImplementation(() => new Promise(() => {}))
+    rerender(
+      <GraphProvider allNodes={[sourceNode, edited.node]} edges={edges} submodels={{}} preamble="">
+        {editor({ config: edited.config })}
+      </GraphProvider>,
+    )
+    expect(screen.getByText("All rows · 1,000")).toBeInTheDocument()
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+    expect(screen.getByText("All rows · 1,000")).toBeInTheDocument()
+    expect(mockGetNodeDataPoint.mock.calls.length).toBe(pointChecks)
+  })
+
+  it("shows numeric counts as pending, never the sample's, while an edit is counted", async () => {
+    const { rerender } = renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+    expect(await screen.findByText("All rows · 1,000")).toBeInTheDocument()
+
+    mockGetBandingStats.mockImplementation(() => new Promise(() => {}))
+    const moved = {
+      factors: [
+        { ...CONFIG.factors[0], rules: [{ boundary: "40", label: "low" }, { boundary: "", label: "high" }] },
+      ],
+    }
+    rerender(
+      <GraphProvider allNodes={[sourceNode, bandingNode]} edges={edges} submodels={{}} preamble="">
+        {editor({ config: moved })}
+      </GraphProvider>,
+    )
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+
+    await waitFor(() => expect(mockGetBandingStats).toHaveBeenCalledTimes(2))
+    expect(screen.getByText("All rows · 1,000")).toBeInTheDocument()
+    expect(screen.getByTestId("banding-histogram").getAttribute("data-bins")).toBe(
+      JSON.stringify([{ lower: 0, upper: 100, count: 1000 }]),
+    )
+    const cells = Array.from(document.querySelectorAll("td")).map((cell) => cell.textContent?.trim())
+    expect(cells.filter((text) => text === "…")).toHaveLength(2)
+    expect(cells.filter((text) => /^\d+$/.test(text ?? ""))).toEqual([])
+  })
+
   it("stops showing whole-dataset counts once an upstream edit leaves them behind", async () => {
     renderEditor(editor())
     await act(async () => {
@@ -397,7 +670,9 @@ describe("BandingEditor statistics", () => {
       vi.advanceTimersByTime(300)
     })
 
-    expect(await screen.findByText("Cached data is out of date")).toBeInTheDocument()
+    expect(
+      await screen.findByText("Cached data is out of date · Refresh this node to count all rows"),
+    ).toBeInTheDocument()
     expect(screen.queryByText("All rows · 1,000")).toBeNull()
   })
 })

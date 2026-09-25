@@ -299,18 +299,10 @@ def _capstone_root_graph(
                 {
                     "factors": [
                         {
-                            "banding": "continuous",
+                            "banding": "breakpoints",
                             "column": "prediction (gross)",
                             "outputColumn": "score_band",
-                            "rules": [
-                                {
-                                    "op1": ">=",
-                                    "val1": "0",
-                                    "op2": "<",
-                                    "val2": "100",
-                                    "assignment": "{low}",
-                                }
-                            ],
+                            "rules": [{"boundary": "100", "label": "{low}"}],
                             "default": "other",
                         }
                     ]

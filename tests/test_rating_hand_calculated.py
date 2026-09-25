@@ -26,13 +26,14 @@ def _rating_graph(tmp_path: Path) -> PipelineGraph:
     ).write_parquet(data)
 
     factor = {
-        "banding": "continuous",
+        "banding": "breakpoints",
         "column": "age",
         "outputColumn": "age_band",
         "rules": [
-            {"op1": "<", "val1": 18, "assignment": "young"},
-            {"op1": "<", "val1": 60, "assignment": "adult"},
+            {"boundary": "18", "label": "young"},
+            {"boundary": "60", "label": "adult"},
         ],
+        "rightClosed": False,
         "default": "senior",
     }
     banding = GraphNode(

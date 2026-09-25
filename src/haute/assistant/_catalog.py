@@ -59,8 +59,9 @@ _USAGE_NOTES: dict[NodeType, str] = {
         "metadata; configure the feature contract and prediction output deliberately."
     ),
     NodeType.BANDING: (
-        "Turn continuous or discrete factor values into named bands; define an "
-        "output column and an explicit default for values outside the rules."
+        "Band numeric factor values at breakpoints or map categorical values to "
+        "named bands; define an output column and an explicit default for values "
+        "outside the rules."
     ),
     NodeType.RATING_STEP: (
         "Look up rating factors from one or more tables and combine their "
@@ -387,13 +388,13 @@ _MULTI_INPUT_NODE_TYPES = frozenset(
 _EXAMPLE_IDS: dict[NodeType, tuple[str, ...]] = {
     NodeType.API_INPUT: ("minimal_live_quote",),
     NodeType.DATA_INPUT: ("minimal_batch",),
-    NodeType.BANDING: ("continuous_banding",),
+    NodeType.BANDING: ("discrete_banding",),
     NodeType.EDGE_JOIN: ("reference_join",),
     NodeType.RATING_STEP: ("rating_step",),
 }
 _RECIPE_IDS: dict[NodeType, tuple[str, ...]] = {
     NodeType.DATA_INPUT: ("parquet_showcase",),
-    NodeType.BANDING: ("categorical_banding", "continuous_banding"),
+    NodeType.BANDING: ("categorical_banding",),
     NodeType.EDGE_JOIN: ("parquet_showcase", "reference_join"),
     NodeType.POLARS: ("parquet_showcase",),
     NodeType.OUTPUT: ("parquet_showcase", "response_output"),

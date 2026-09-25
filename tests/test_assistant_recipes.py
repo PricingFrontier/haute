@@ -18,7 +18,6 @@ from haute.assistant._ops import (
 
 EXPECTED_RECIPES = {
     "categorical_banding",
-    "continuous_banding",
     "parquet_showcase",
     "reference_join",
     "response_output",
@@ -34,9 +33,14 @@ DOWNSTREAM_OUTPUT_RECIPES = EXPECTED_RECIPES - {
     ("prompt", "expected"),
     [
         ("Band driver_age into an age band.", None),
-        ("Add continuous banding for driver_age.", "continuous_banding"),
-        ("Band driver_age as young when <= 25 and older when > 25.", "continuous_banding"),
-        ("Bucket vehicle values into ranges.", "continuous_banding"),
+        # Numeric banding has no recipe, so range, bucket, breakpoint, and
+        # comparison cues suggest none.
+        ("Add continuous banding for driver_age.", None),
+        ("Band driver_age as young when <= 25 and older when > 25.", None),
+        ("Bucket vehicle values into ranges.", None),
+        ("Band driver_age at breakpoints 25 and 40.", None),
+        ("Band driver_age into ranges, then add a left join.", None),
+        ("Band region into discrete ranges.", "categorical_banding"),
         ("Add a LEFT JOIN to the lookup.", "reference_join"),
         ("Build a rating-step node.", "rating_step"),
         ("Join the lookup and then band the result.", None),
@@ -95,7 +99,6 @@ def test_explanation_followed_by_explicit_authoring_still_routes_to_a_recipe() -
 @pytest.mark.parametrize(
     ("prompt", "expected"),
     [
-        ("Add continuous banding for driver_age.", "continuous_banding"),
         ("Add a LEFT JOIN to the lookup.", "reference_join"),
         ("Build a rating-step node.", "rating_step"),
         ("Add categorical banding for region.", "categorical_banding"),
@@ -139,18 +142,6 @@ def test_explanation_phrased_material_question_is_not_forced_to_clarify() -> Non
 
 
 def _arguments(recipe_id: str) -> dict[str, object]:
-    if recipe_id == "continuous_banding":
-        return {
-            "source": "quotes",
-            "name": "Age band",
-            "column": "driver_age",
-            "output_column": "driver_age_band",
-            "rules": [
-                {"op1": "<=", "val1": 25, "assignment": "young"},
-                {"op1": ">", "val1": 25, "assignment": "experienced"},
-            ],
-            "default": "unknown",
-        }
     if recipe_id == "categorical_banding":
         return {
             "source": "quotes",
@@ -241,10 +232,10 @@ class TestRecipeRegistry:
             assert descriptor["examples"]
             assert descriptor["errors"]
 
-    def test_continuous_rule_schema_is_closed_and_self_describing(self):
+    def test_categorical_rule_schema_is_closed_and_self_describing(self):
         from haute.assistant._recipes import recipe_descriptor
 
-        schema = recipe_descriptor("continuous_banding")["argument_schema"]
+        schema = recipe_descriptor("categorical_banding")["argument_schema"]
         properties = schema["properties"]
         rule = properties["rules"]["items"]
 
@@ -252,9 +243,15 @@ class TestRecipeRegistry:
         assert "output column" in properties["output_column"]["description"]
         assert properties["rules"]["description"]
         assert rule["additionalProperties"] is False
-        assert set(rule["required"]) == {"op1", "val1", "assignment"}
-        assert list(rule["properties"]["op1"]["enum"]) == ["<", "<=", ">", ">=", "=", "=="]
-        assert rule["properties"]["val1"]["type"] == "number"
+        assert set(rule["required"]) == {"value", "assignment"}
+        assert set(rule["properties"]) == {"value", "assignment"}
+
+    def test_there_is_no_numeric_banding_recipe(self):
+        from haute.assistant._recipes import RecipeError, recipe_descriptor
+
+        with pytest.raises(RecipeError) as exc:
+            recipe_descriptor("continuous_banding")
+        assert exc.value.code == "unknown_recipe"
 
     def test_manifest_is_deeply_immutable(self):
         from haute.assistant._recipes import recipe_manifest
@@ -295,29 +292,31 @@ class TestRecipePlanning:
     @pytest.mark.parametrize(
         "rules",
         [
-            [{"label": "young", "value": 25}],
-            [{"op1": "<=", "val1": 25, "assignment": "young", "op2": ">"}],
-            [{"op1": "approximately", "val1": 25, "assignment": "young"}],
-            [{"op1": "<=", "val1": float("inf"), "assignment": "young"}],
+            [{"label": "core", "value": "north"}],
+            [{"value": "north", "assignment": "core", "extra": 1}],
+            [{"value": None, "assignment": "core"}],
+            [{"value": float("inf"), "assignment": "core"}],
+            [{"value": "north", "assignment": " "}],
+            [{"value": "north", "assignment": "core"}, {"value": "north", "assignment": "x"}],
         ],
     )
-    def test_invalid_continuous_rules_fail_inside_the_deterministic_planner(self, rules):
+    def test_invalid_categorical_rules_fail_inside_the_deterministic_planner(self, rules):
         from haute.assistant._recipes import RecipeError, plan_recipe
 
-        arguments = _arguments("continuous_banding")
+        arguments = _arguments("categorical_banding")
         arguments["rules"] = rules
         with pytest.raises(RecipeError) as exc:
-            plan_recipe("continuous_banding", arguments)
+            plan_recipe("categorical_banding", arguments)
         assert exc.value.code == "recipe_argument_invalid"
         assert exc.value.context["argument"].startswith("rules[")
 
     def test_missing_material_decision_fails_by_stable_code(self):
         from haute.assistant._recipes import RecipeError, plan_recipe
 
-        arguments = _arguments("continuous_banding")
+        arguments = _arguments("categorical_banding")
         del arguments["rules"]
         with pytest.raises(RecipeError) as exc:
-            plan_recipe("continuous_banding", arguments)
+            plan_recipe("categorical_banding", arguments)
         assert exc.value.code == "recipe_argument_invalid"
         assert "rules" in str(exc.value)
 
@@ -568,7 +567,6 @@ def test_recipe_can_own_one_connected_response_output(recipe_id: str) -> None:
     arguments["output_name"] = "response"
     output_column = {
         "categorical_banding": "region_group",
-        "continuous_banding": "driver_age_band",
         "reference_join": "region",
         "rating_step": "technical_premium",
     }[recipe_id]
@@ -601,7 +599,6 @@ def test_recipe_can_own_one_connected_response_output(recipe_id: str) -> None:
     ]
     recipe_ref = {
         "categorical_banding": "categorical_banding",
-        "continuous_banding": "banding",
         "reference_join": "reference_join",
         "rating_step": "rating_step",
     }[recipe_id]

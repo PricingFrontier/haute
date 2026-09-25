@@ -59,7 +59,7 @@ def test_generated_data_output_writes_only_through_its_config() -> None:
         }
     )
 
-    code = _node_to_code(node, source_names=["scored"], derive_contract=False)
+    code = _node_to_code(node, source_names=["scored"], contract_source="declared")
 
     assert code.startswith(
         '@pipeline.data_output(config="config/data_output/Scored_Output.json")\n'

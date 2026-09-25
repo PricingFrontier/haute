@@ -46,9 +46,15 @@ carries as its remediation. The author rewrites it, or removes the node.
   span and resolvable incoming connections. It rebuilds the target's configuration with
   the pure recovery engine: authored fields that are valid under the current contract
   are retained exactly; an invalid present value is replaced with the matching branch's
-  audited default only where that default is structurally valid; absent fields stay
-  absent — recovery never inserts a palette value for a field the author omitted and
-  never fills a default from a different provider/format/mode branch. Unrecoverable
+  audited default only where that default is structurally valid; a top-level field the
+  saved configuration lacks (one added or renamed since it was written) takes its palette
+  default, reported as `defaulted`, so the node comes back as a new node would with the
+  unchanged fields kept. The palette is used only when it belongs to the configuration's
+  branch: the discriminant (`inputType`, `outputType`, `sourceType`, `algorithm`, `mode`)
+  is present and equals the palette's, and for Data Input/Output so do a present `format`
+  and `mode`; recovery never fills a default from a different provider/format/mode
+  branch. A stepped node's absent `steps` stays absent, because its absence means the
+  function body's code runs and an empty step list would discard that code. Unrecoverable
   collection entries are excluded from the candidate and reported with their original
   value, never emitted as null placeholders. Missing required values use the
   declared-incomplete form and surface as completeness, not as a blocked plan. Every
@@ -56,7 +62,12 @@ carries as its remediation. The author rewrites it, or removes the node.
   as a completeness entry on the target with the engine's own message, so nothing
   unresolved reads as fixed. Authored
   code bytes in declared code slots are retained; only recognised generated scaffolding
-  is regenerated. The applied node must load (available, or blocked only by an upstream
+  is regenerated. The `contract=` annotation is generated scaffolding: recover derives
+  it from the recovered settings exactly as the parse-time check does (never loading an
+  external model artifact), and a declared contract supplies only the sides that
+  derivation leaves opaque, so an annotation left stale by a settings edit is replaced
+  rather than carried forward. The recovered sidecar holds no `contract` key; the
+  annotation lives on the decorator. The applied node must load (available, or blocked only by an upstream
   failure) — completeness and execution-readiness are explicitly not plan gates.
   Identity, description, position, connections, and exclusively owned config references
   follow the Reset rules, except that recover never requires healthy upstream nodes: a
@@ -113,7 +124,9 @@ eligibility under the shared save lock, refuses a configuration key the node typ
 not declare with HTTP 400 (`node_config_undeclared_keys`, naming the node and listing the
 keys in `unrecognized_config_keys`) before any other check or write, requires the
 candidate to remain loadable (completeness gaps allowed), rewrites only that node's settings and code through the
-existing LibCST and staged-write boundaries, verifies conservation of every other node,
+existing LibCST and staged-write boundaries (regenerating the `contract=` annotation and
+omitting a sidecar `contract` copy exactly as Recover settings does, so a settings edit
+cannot leave a stale annotation), verifies conservation of every other node,
 edge, and artifact byte, rejects stale revisions with HTTP 409, and returns the
 authoritative document. Shared or ambiguous artifacts, and edits that would change
 unresolved structural bindings, fail with actionable diagnostics instead of widening the
@@ -136,5 +149,7 @@ port and stale Polars signature: both nodes and the connection remain visible; u
 preserves the child/config and exposes the consumer error; resetting that consumer uses
 its current connected input and returns a ready but deliberately incomplete Polars node.
 Also cover stale child/config revisions, shared/path-escaping artifacts, duplicate
-identities, rollback, strict transport parsing, and the UI's action-specific
-confirmation/apply and failure behaviour.
+identities, rollback, strict transport parsing, a banding node whose saved annotation
+promises an output its draft factor no longer creates (recover loads it with a
+regenerated annotation and a sidecar without the stale `contract` copy), and the UI's
+action-specific confirmation/apply and failure behaviour.

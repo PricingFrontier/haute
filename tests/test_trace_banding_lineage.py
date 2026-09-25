@@ -87,10 +87,10 @@ def test_banding_trace_shows_source_value_and_lineage(tmp_path):
                     {
                         "column": "driver_age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "rules": [
-                            {"op1": "<=", "val1": 25, "assignment": "young"},
-                            {"op1": ">", "val1": 25, "assignment": "adult"},
+                            {"boundary": "25", "label": "young"},
+                            {"boundary": "", "label": "adult"},
                         ],
                         "default": "unknown",
                     }
@@ -143,10 +143,10 @@ def test_banding_trace_continues_lineage_through_computed_input(tmp_path):
                     {
                         "column": "driver_age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "rules": [
-                            {"op1": "<=", "val1": 25, "assignment": "young"},
-                            {"op1": ">", "val1": 25, "assignment": "adult"},
+                            {"boundary": "25", "label": "young"},
+                            {"boundary": "", "label": "adult"},
                         ],
                         "default": "unknown",
                     }
@@ -192,10 +192,10 @@ def test_banding_trace_uses_latest_upstream_modifier_for_input_value(tmp_path):
                     {
                         "column": "driver_age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "rules": [
-                            {"op1": "<=", "val1": 21, "assignment": "younger"},
-                            {"op1": ">", "val1": 21, "assignment": "young"},
+                            {"boundary": "21", "label": "younger"},
+                            {"boundary": "", "label": "young"},
                         ],
                     }
                 ),
@@ -237,10 +237,10 @@ def test_banding_trace_continues_lineage_through_prior_banding(tmp_path):
                     {
                         "column": "driver_age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "rules": [
-                            {"op1": "<=", "val1": 25, "assignment": "young"},
-                            {"op1": ">", "val1": 25, "assignment": "adult"},
+                            {"boundary": "25", "label": "young"},
+                            {"boundary": "", "label": "adult"},
                         ],
                     },
                     node_id="age_banding",

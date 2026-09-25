@@ -178,6 +178,56 @@ def test_scoped_save_edits_blocked_node_downstream_of_broken_input(tmp_path):
     assert json.loads((tmp_path / "a.json").read_text()) == BROKEN_INPUT
 
 
+def test_scoped_save_regenerates_the_contract_annotation_from_the_saved_settings(tmp_path):
+    """Renaming a banding output changes the columns the node creates, so the
+    annotation carried back from the last parse is stale; the save regenerates
+    it rather than writing an annotation the reload's parse check rejects."""
+    from haute._pipeline_repair_actions import apply_scoped_node_save
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    main = tmp_path / "main.py"
+    main.write_text(
+        "from pathlib import Path as _HautePath\n\nimport polars as pl\nimport haute\n\n"
+        'pipeline = haute.Pipeline("demo")\n\n'
+        "_HAUTE_CONFIG_BASE = _HautePath(__file__).resolve().parent\n\n\n"
+        '@pipeline.data_input(config="a.json")\ndef source_a():\n    return None\n\n\n'
+        '@pipeline.banding(config="band.json", '
+        "contract={'inputs': ['age'], 'outputs': ['age_band']})\n"
+        "def band(source_a: pl.LazyFrame) -> pl.LazyFrame:\n"
+        '    """"""\n'
+        "    from haute.graph_utils import apply_banding_from_config\n"
+        "    base = _HAUTE_CONFIG_BASE\n"
+        '    df = apply_banding_from_config(source_a, "band.json", base_dir=base)\n'
+        "    return df\n\n\n"
+        'pipeline.connect("source_a", "band")\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (tmp_path / "a.json").write_text(json.dumps(BROKEN_INPUT))
+    factor = {
+        "banding": "breakpoints",
+        "column": "age",
+        "outputColumn": "age_band",
+        "rules": [{"boundary": "25", "label": "young"}],
+        "default": None,
+    }
+    (tmp_path / "band.json").write_text(json.dumps({"factors": [factor]}))
+    document = load_pipeline_editor_document(main, project_root=tmp_path)
+    band = next(node for node in document.nodes if node.authored_id == "band")
+    assert band.scoped_editable is True
+    assert (band.config or {})["contract"] == {"inputs": ["age"], "outputs": ["age_band"]}
+
+    renamed = {**(band.config or {}), "factors": [{**factor, "outputColumn": "age_group"}]}
+    saved = apply_scoped_node_save(
+        project_root=tmp_path, request=_save_request(tmp_path, "band", renamed)
+    )
+
+    node = next(item for item in saved.nodes if item.authored_id == "band")
+    assert node.availability == "blocked"
+    assert (node.config or {})["contract"] == {"inputs": ["age"], "outputs": ["age_group"]}
+    assert "contract" not in json.loads((tmp_path / "band.json").read_text())
+
+
 def test_scoped_save_route_saves_and_rejects_stale_revisions(client, monkeypatch, tmp_path):
     _two_inputs(tmp_path)
     _recover(tmp_path, "source_b")

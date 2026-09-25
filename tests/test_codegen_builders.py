@@ -198,7 +198,7 @@ class TestGenApiInput:
 class TestGenBanding:
     """Tests for banding code generation."""
 
-    def test_single_continuous_factor(self) -> None:
+    def test_single_breakpoints_factor(self) -> None:
         node = _make_codegen_node(
             "banding",
             {
@@ -206,16 +206,10 @@ class TestGenBanding:
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "rules": [
-                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 25, "assignment": "young"},
-                            {
-                                "op1": ">=",
-                                "val1": 25,
-                                "op2": "<=",
-                                "val2": 100,
-                                "assignment": "adult",
-                            },
+                            {"boundary": "25", "label": "young"},
+                            {"boundary": "", "label": "adult"},
                         ],
                     }
                 ],
@@ -242,11 +236,9 @@ class TestGenBanding:
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "default": "unknown",
-                        "rules": [
-                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 25, "assignment": "young"},
-                        ],
+                        "rules": [{"boundary": "25", "label": "young"}],
                     }
                 ],
             },
@@ -265,10 +257,8 @@ class TestGenBanding:
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
-                        "rules": [
-                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 50, "assignment": "u50"},
-                        ],
+                        "banding": "breakpoints",
+                        "rules": [{"boundary": "50", "label": "u50"}],
                     },
                     {
                         "column": "region",
@@ -325,10 +315,8 @@ class TestGenBanding:
                     {
                         "column": "x",
                         "outputColumn": "x_band",
-                        "banding": "continuous",
-                        "rules": [
-                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 10, "assignment": "low"},
-                        ],
+                        "banding": "breakpoints",
+                        "rules": [{"boundary": "10", "label": "low"}],
                     }
                 ],
             },
@@ -794,16 +782,8 @@ class TestGraphToCodeWithBuilders:
                                     {
                                         "column": "age",
                                         "outputColumn": "age_band",
-                                        "banding": "continuous",
-                                        "rules": [
-                                            {
-                                                "op1": ">=",
-                                                "val1": 0,
-                                                "op2": "<",
-                                                "val2": 50,
-                                                "assignment": "u50",
-                                            }
-                                        ],
+                                        "banding": "breakpoints",
+                                        "rules": [{"boundary": "50", "label": "u50"}],
                                     }
                                 ],
                             },
@@ -1023,16 +1003,8 @@ class TestGraphToCodeWithBuilders:
                                     {
                                         "column": "age",
                                         "outputColumn": "age_band",
-                                        "banding": "continuous",
-                                        "rules": [
-                                            {
-                                                "op1": ">=",
-                                                "val1": 0,
-                                                "op2": "<",
-                                                "val2": 50,
-                                                "assignment": "u50",
-                                            }
-                                        ],
+                                        "banding": "breakpoints",
+                                        "rules": [{"boundary": "50", "label": "u50"}],
                                     }
                                 ],
                             },
@@ -1414,10 +1386,8 @@ class TestCodegenExecValidation:
             {
                 "column": "age",
                 "outputColumn": "age_band",
-                "banding": "continuous",
-                "rules": [
-                    {"op1": ">=", "val1": 0, "op2": "<", "val2": 50, "assignment": "young"},
-                ],
+                "banding": "breakpoints",
+                "rules": [{"boundary": "50", "label": "young"}],
             }
         ]
         config_dir = tmp_path / "config" / "banding"

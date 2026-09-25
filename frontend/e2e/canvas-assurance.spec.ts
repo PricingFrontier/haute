@@ -152,21 +152,23 @@ test.describe("frontend canvas assurance", () => {
       page,
       "Banding node: browser_mixed_banding",
     )
-    const bandingTabs = bandingPanel.getByRole("tablist", {
+    const bandingColumns = bandingPanel.getByRole("group", {
       name: "Banding columns",
     })
-    const ageTab = bandingTabs.getByRole("tab", { name: /proposer_age_band/i })
-    const channelTab = bandingTabs.getByRole("tab", { name: /channel_band/i })
-    const vehicleTab = bandingTabs.getByRole("tab", { name: /vehicle_age_band/i })
-    await expect(ageTab).toBeVisible()
-    await expect(channelTab).toBeVisible()
-    await expect(vehicleTab).toBeVisible()
+    // A row's name is its output column then its state; anchored, so a
+    // row's own "Remove … column" button does not match too.
+    const ageRow = bandingColumns.getByRole("button", { name: /^proposer_age_band (complete|incomplete)$/ })
+    const channelRow = bandingColumns.getByRole("button", { name: /^channel_band (complete|incomplete)$/ })
+    const vehicleRow = bandingColumns.getByRole("button", { name: /^vehicle_age_band (complete|incomplete)$/ })
+    await expect(ageRow).toBeVisible()
+    await expect(channelRow).toBeVisible()
+    await expect(vehicleRow).toBeVisible()
 
-    await channelTab.click()
+    await channelRow.click()
     await expect(
       bandingPanel.getByRole("radio", { name: "Categorical", exact: true }),
     ).toBeChecked()
-    await vehicleTab.click()
+    await vehicleRow.click()
     await expect(
       bandingPanel.getByRole("radio", { name: "Numeric", exact: true }),
     ).toBeChecked()
@@ -174,6 +176,11 @@ test.describe("frontend canvas assurance", () => {
       "vehicle_age_band",
     )
     await expect(page.getByTitle("Unsaved changes", { exact: true })).toHaveCount(0)
+    // Banding shows numbers only for the whole dataset, so its data is cached
+    // first; until then it says so rather than counting the preview.
+    await expect(bandingPanel.getByText("Not cached · Refresh this node to count all rows")).toBeVisible()
+    await page.getByRole("button", { name: "Refresh", exact: true }).click()
+    await expect(bandingPanel.getByText(/^All rows · /)).toBeVisible({ timeout: 60_000 })
     await expect(bandingPanel.getByRole("img", { name: "Distribution histogram" })).toBeVisible()
     await expect(bandingPanel.getByRole("combobox", { name: "Input Column", exact: true })).toHaveValue("vehicle_age")
     await stabiliseCanvasScreenshot(page)

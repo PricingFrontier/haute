@@ -298,8 +298,8 @@ def _scoring_model_with_features(features: list[str]) -> ScoringModel:
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
-                        "rules": [{"max": 25, "value": "0"}],
+                        "banding": "breakpoints",
+                        "rules": [{"boundary": "25", "label": "0"}],
                     }
                 ]
             },
@@ -375,6 +375,34 @@ def test_format_contract_kwarg_keeps_declared_model_inputs_when_mlflow_is_unreac
 
     # Feature names need the model, so the declaration keeps supplying them;
     # the output column is local config and still matches the parse-time check.
+    assert contract_kwarg == "contract={'inputs': ['a', 'b'], 'outputs': ['competitor_premium']}"
+
+
+def test_offline_contract_derivation_never_loads_a_model() -> None:
+    """Recovery generation derives what the parse-time check derives: the
+    output column from config, the model's features from the declaration."""
+    node = _n(
+        {
+            "id": "score",
+            "data": {
+                "label": "score",
+                "nodeType": "modelScore",
+                "config": {
+                    "sourceType": "run",
+                    "run_id": "run123",
+                    "artifact_path": "model.cbm",
+                    "task": "regression",
+                    "output_column": "competitor_premium",
+                    "contract": {"inputs": ["a", "b"], "outputs": ["prediction"]},
+                },
+            },
+        }
+    )
+
+    with patch("haute._mlflow_io.load_mlflow_model") as load_model:
+        contract_kwarg = _format_contract_kwarg(node, contract_source="offline")
+
+    load_model.assert_not_called()
     assert contract_kwarg == "contract={'inputs': ['a', 'b'], 'outputs': ['competitor_premium']}"
 
 

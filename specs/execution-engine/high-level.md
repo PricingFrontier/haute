@@ -692,7 +692,9 @@ keep reporting the failing line so the editor can name the failing step.
 - **Lazy (sink/batch/deploy) execution never swallows node failures** — any exception
   during plan construction or the final streaming collect propagates to the caller.
 - **Contract mismatches are typed at the offending node.** Missing/extra columns raise
-  `ContractMismatchError`, carrying the column diff and node id. A simple inferred
+  `ContractMismatchError`, carrying the node id and the missing columns. The
+  boundary checks' messages name the node by its label and only the missing columns,
+  never the frame's other columns, so the preview can show them as they are. A simple inferred
   join whose parent key dtypes differ raises `SchemaMismatchError`; both errors
   propagate on lazy/fail-fast and swallow-mode eager execution. The preview HTTP
   boundary converts either into the same `NodeResult(status="error")` shape.

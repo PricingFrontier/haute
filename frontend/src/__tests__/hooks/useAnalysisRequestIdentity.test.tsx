@@ -71,7 +71,25 @@ describe("analysis request identity", () => {
     vi.useRealTimers()
   })
 
-  it("invalidates resolved banding results when factor rules change without a data-version change", async () => {
+  it("keeps resolved banding statistics, no longer current, when only the rules change", async () => {
+    mocks.stats.mockResolvedValue(stats)
+    const hook = renderHook(({ value }) => useBandingStats({ ...common, factor: value }), {
+      initialProps: { value: factor },
+    })
+    await advance(WHOLE_DATA_DEBOUNCE_MS + 1)
+    expect(hook.result.current.stats).toEqual(stats)
+    expect(hook.result.current.current).toBe(true)
+
+    // The column's total, values and histogram still describe the data; its
+    // rule counts answer the old rules, which `current` says.
+    hook.rerender({ value: { ...factor, rules: [{ boundary: "90", label: "low" }, factor.rules[1]] } })
+    expect(hook.result.current.stats).toEqual(stats)
+    expect(hook.result.current.current).toBe(false)
+    expect(hook.result.current.error).toBeNull()
+    expect(hook.result.current.loading).toBe(false)
+  })
+
+  it("invalidates resolved banding statistics when the column changes", async () => {
     mocks.stats.mockResolvedValue(stats)
     const hook = renderHook(({ value }) => useBandingStats({ ...common, factor: value }), {
       initialProps: { value: factor },
@@ -79,10 +97,9 @@ describe("analysis request identity", () => {
     await advance(WHOLE_DATA_DEBOUNCE_MS + 1)
     expect(hook.result.current.stats).toEqual(stats)
 
-    hook.rerender({ value: { ...factor, rules: [{ boundary: "90", label: "low" }, factor.rules[1]] } })
+    hook.rerender({ value: { ...factor, column: "another_column" } })
     expect(hook.result.current.stats).toBeNull()
-    expect(hook.result.current.error).toBeNull()
-    expect(hook.result.current.loading).toBe(false)
+    expect(hook.result.current.current).toBe(false)
   })
 
   it("does not repeat a banding request when only its output column changes", async () => {

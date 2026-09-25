@@ -338,7 +338,7 @@ def _graph(
                         "config": {
                             "factors": [
                                 {
-                                    "banding": "continuous",
+                                    "banding": "breakpoints",
                                     "column": "premium",
                                     "outputColumn": "band",
                                     "rules": [],

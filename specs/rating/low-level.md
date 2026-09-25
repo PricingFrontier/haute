@@ -6,24 +6,31 @@
 |---|---|
 | `src/haute/_binning.py` | Equal-width bins over a numeric column (`equal_width_bins`), the one definition of "the histogram of this column" every surface that shows one uses. |
 | `src/haute/routes/_banding_stats.py` | Whole-dataset statistics for the factor being edited, over the shared data point its node reads; owned by [server-api](../server-api/low-level.md#banding-statistics). |
-| `src/haute/_rating.py` | Pure-logic frame transforms: banding rule evaluation (`_apply_banding`, `_banding_condition`, `_breakpoints_to_rules`), the shared rule preparation both the output expression and the per-rule claim expression are built from (`banding_numeric_column_expr`, `banding_categorical_claims`, `banding_continuous_claims`, `banding_rule_claim_expr`) and the banding-factor loop (`_apply_banding_factors`), rating-table lookup (`_apply_rating_table`), combining (`_combine_rating_columns`, `_combine_rating_output`), exact dtype descriptor round-tripping plus the canonical factor-key form (`rating_dtype_descriptor`, `rating_dtype_from_descriptor`, `normalise_rating_key`, `_rating_key_expr`; a descriptor is the shared dtype codec's spec with rating's key names, restricted to the dtypes a rating factor supports), the rating-step loop (`_apply_rating_step_outputs`) and the two generated-code entry points (`apply_banding_from_config`, `apply_rating_step_from_config`). |
+| `src/haute/_rating.py` | Pure-logic frame transforms: banding rule evaluation (`_apply_banding`, `_banding_condition`, `_breakpoints_to_rules`), the shared rule preparation both the output expression and the per-rule claim expression are built from (`banding_comparison_expr`, `banding_temporal_ordinal_expr`, `parse_breakpoint_boundary`, `breakpoints_kind`, `banding_categorical_claims`, `banding_interval_claims`, `require_banding_type`, `banding_rule_claim_expr`) and the banding-factor loop (`_apply_banding_factors`), rating-table lookup (`_apply_rating_table`), combining (`_combine_rating_columns`, `_combine_rating_output`), exact dtype descriptor round-tripping plus the canonical factor-key form (`rating_dtype_descriptor`, `rating_dtype_from_descriptor`, `normalise_rating_key`, `_rating_key_expr`; a descriptor is the shared dtype codec's spec with rating's key names, restricted to the dtypes a rating factor supports), the rating-step loop (`_apply_rating_step_outputs`) and the two generated-code entry points (`apply_banding_from_config`, `apply_rating_step_from_config`). |
 | `src/haute/_rating_step_config.py` | Rating-table config normalisation: canonical ordered row-array validation and optional `factorDtypes` descriptor validation/preservation. |
 | `src/haute/_banding_config.py` | Banding config normalisation: compact key/value-map ⟷ canonical row-array conversion for `categorical`/`breakpoints` rules (`expand_banding_config_from_sidecar`, `compact_banding_config_for_sidecar`, `normalise_banding_rules`, `normalise_banding_factors`). |
 
 ## Key types and data structures
 
-- **Banding factor** (`dict`): `{"banding": "continuous"|"categorical"|"breakpoints", "column": str, "outputColumn": str, "rules": [...] | {...}, "default": str|null, "rightClosed"?: bool}`. `rules` is a list of row dicts in the canonical in-memory shape; `categorical`/`breakpoints` sidecars persist it as a `{key: value}` map instead.
-  - `continuous` rule row: `{"op1"?, "val1"?, "op2"?, "val2"?, "assignment": str}`.
+- **Banding factor** (`dict`): `{"banding": "breakpoints"|"categorical", "column": str, "outputColumn": str, "rules": [...] | {...}, "default": str|null, "rightClosed"?: bool}`. `rules` is a list of row dicts in the canonical in-memory shape; sidecars persist it as a `{key: value}` map instead.
   - `categorical` rule row: `{"value": str, "assignment": str}` (sidecar map: `{value: assignment}`).
-  - `breakpoints` rule row: `{"boundary": str, "label": str}` — empty `boundary` marks the open-ended tail (sidecar map: `{boundary: label}`).
-  A configured factor is strict: its type must be one of those three values;
-  `column`, `outputColumn`, and `rules` must be non-empty; and at least one rule
-  must be usable for that type. Unknown pseudo-types such as `"age"` and mixed rule vocabularies such as `{key, value}` are rejected by the shared config validator before save/codegen.
-  Runtime rejects unsupported operators, non-finite thresholds, blank
-  assignments, and invalid breakpoint sets, but treats an unrecognised
-  discriminant with list rules as continuous.
-  A factor containing only the editor's default `continuous` discriminant and
-  otherwise-empty fields is the one documented draft no-op.
+  - `breakpoints` rule row: `{"boundary": str, "label": str}` — empty `boundary` marks the open-ended tail (sidecar map: `{boundary: label}`). `parse_breakpoint_boundary` reads a boundary as a finite number, a `date` (`YYYY-MM-DD`) or a naive `datetime` (`YYYY-MM-DD[T ]HH:MM[:SS[.ffffff]]`), rejecting anything else, including a UTC offset; `breakpoints_kind` names the one kind (`"number"`, `"date"`, `"datetime"`) a factor's bounded breakpoints share and rejects a mix.
+  Every factor, draft or configured, names one of those two types; there is no
+  default type, and any other value (the removed `continuous`, a pseudo-type such
+  as `"age"`, or none) is rejected by `validate_banding_config`, by runtime
+  (`_apply_banding_factors` checks every factor, a draft included, before it skips
+  drafts, and `_apply_banding` checks again) and by the whole-data rule counts
+  (`banding_rule_claim_expr`), each through `require_banding_type`. A configured factor also needs a non-empty
+  `column`, `outputColumn`, and `rules`, and at least one rule usable for its type.
+  Mixed rule vocabularies such as `{key, value}` are rejected by the shared config
+  validator before save/codegen. Runtime rejects blank assignments and invalid
+  breakpoint sets. A factor with its type and otherwise-empty fields (the editor's
+  new factor is `breakpoints`) is the documented draft no-op.
+  Execution (`_apply_banding_factors`) and the node's column contract
+  (`_builders._banding_columns`) share one test, `banding_factor_is_active`: a
+  factor with an empty `column`, `outputColumn`, or `rules` is skipped, and the
+  contract neither reads its column nor declares its output, so the two cannot
+  disagree about a factor that is still being written.
 - **Rating table** (`dict`): `{"factors": list[str] (1-3 cols), "factorDtypes"?: dict[str, dtype-descriptor], "outputColumn": str, "entries": list[dict], "defaultValue"?: str|number, "onMissing"?: "error"|"neutral"}`. `entries` is an ordered row array with one JSON scalar per factor plus numeric `"value"`. Invariant: `len(factors) <= _MAX_RATING_FACTORS` (3), enforced in `_rating_step_config._validate_factors`.
 - **Combined output** (`dict`): `{"outputColumn": str, "operation": "multiply"|"add"|"min"|"max", "baseValue": float}`.
 - **`RatingTableMissError(HauteValidationError)`** (a `ValueError` subclass) — raised at frame materialisation, not at config-build time, by `_apply_rating_miss_guard`'s row-local Python scan transform.
@@ -50,7 +57,7 @@
    called at the save/codegen boundary (`src/haute/_config_validation.py`), while runtime enforces
    usable-rule checks inside `_apply_banding`.
 3. `_apply_banding_factors(lf, factors)` loops factors in order, calling `_apply_banding` per factor; each factor's output column is added via `lf.with_columns(...)`, so later factors can already see earlier factors' output columns.
-4. Inside `_apply_banding`: `breakpoints` rules are converted to `continuous` rules first (`_breakpoints_to_rules`); float input columns are NaN/Infinity-sanitised to null (`banding_numeric_column_expr` — a *local* expression, never aliased back onto the source column, so it cannot corrupt other nodes' view of that column); then a `pl.when/then` chain is built rule-by-rule (`_banding_condition` consumes the shared continuous-rule parser and turns each usable `op1/val1[,op2/val2]` pair into a boolean expression, ANDed together) and finished with `.otherwise(default)`. The categorical remap is `banding_categorical_claims` with its indices dropped.
+4. Inside `_apply_banding`: `breakpoints` rules are converted to interval rules first (`_breakpoints_to_rules`, each `{"op1", "val1", "op2"?, "val2"?, "assignment"}`, whose thresholds are the parsed boundaries: `float`, `date` or naive `datetime`); the column is read through `banding_comparison_expr(col, dtype, kind, output_column)`, which for numbers requires a numeric dtype and nulls NaN/Infinity, for dates takes a Date column as it is and a Datetime column's `.dt.date()`, and for dates and times takes a Datetime column's wall-clock time (`.dt.replace_time_zone(None)` when it has a zone), raising `ValueError` for any other pairing; float input columns are NaN/Infinity-sanitised to null (`banding_comparison_expr` — a *local* expression, never aliased back onto the source column, so it cannot corrupt other nodes' view of that column); then a `pl.when/then` chain is built rule-by-rule (`_banding_condition` consumes the shared interval-rule parser and turns each usable `op1/val1[,op2/val2]` pair into a boolean expression, ANDed together) and finished with `.otherwise(default)`. The categorical remap is `banding_categorical_claims` with its indices dropped.
 
 ### Which rule claimed a row — `banding_rule_claim_expr` (`_rating.py`)
 
@@ -65,14 +72,14 @@ and a null claim is exactly a defaulted row:
 
 - `normalise_banding_rules` runs first, so the index is the rule's position in the list the caller
   passed (the user's order), and a rule map is indexed in its iteration order.
-- `banding_continuous_claims` converts breakpoints through the same `_breakpoints_to_rules`, which
+- `banding_interval_claims` converts breakpoints through the same `_breakpoints_to_rules`, which
   now carries each interval's source breakpoint. Execution evaluates the intervals sorted by
   boundary with the open-ended one last, so a claim names the breakpoint the user wrote rather than
   its position in the chain.
 - `banding_categorical_claims` builds the same last-wins remap on the column cast to text, so a
   Float64 `1.0` is claimed by a `"1.0"` rule and never by a `"1"` rule, a repeated value is claimed
   by its last rule, and a rule missing either its value or its assignment claims nothing.
-- Continuous modes read the column through `banding_numeric_column_expr`, so NaN and infinity are
+- Breakpoints read the column through `banding_comparison_expr`, so NaN and infinity are
   unclaimed exactly as they are defaulted.
 - A rule with no assignment is skipped by both, so the row it would have covered is unclaimed
   rather than claimed by a rule whose output never appears.
@@ -84,8 +91,8 @@ and a null claim is exactly a defaulted row:
    `SUPPORTED_BANDING_OPERATORS` contract. An unknown operator raises before a
    `when` branch or output frame is published; trace enrichment imports the
    shared parser and therefore cannot interpret a broader rule set. A non-empty
-   authored rule list that produces no usable categorical mapping or continuous
-   branch raises `ValueError` rather than returning the input frame unchanged.
+   authored rule list that produces no usable categorical mapping or breakpoint
+   interval raises `ValueError` rather than returning the input frame unchanged.
 6. `categorical` bypasses the when/then chain entirely and uses `col.cast(Utf8).replace_strict(remap, default=...)`.
 
 **Rating** — `apply_rating_step_from_config(lf, config, base_dir=None)`:
@@ -190,12 +197,13 @@ and a null claim is exactly a defaulted row:
   names and exact descriptors before calling `_apply_rating_table`; it neither
   guesses for legacy artifacts nor coerces an apply column to the saved dtype.
 - **Duplicate breakpoint boundaries / multiple open-ended breakpoints / a sole open-ended breakpoint with no bounded anchor** all raise `ValueError` in `_breakpoints_to_rules` rather than silently producing an empty interval or dropping data (see high-level Failure model).
-- **Unknown continuous-band operators fail loudly:** `_banding_condition`
-  raises for any operator absent from `SUPPORTED_BANDING_OPERATORS`; neither
+- **Unknown interval operators fail loudly:** `_banding_condition`
+  raises for any operator absent from `SUPPORTED_BANDING_OPERATORS` (`<`, `<=`,
+  `>`, `>=`, the only ones breakpoints produce); neither
   eager/lazy execution nor trace enrichment may silently skip or reinterpret it.
 - **Authored banding rules must materialise a branch:** an empty rule list is a
-  representable draft/no-op, but a non-empty list whose continuous rules have no
-  usable operator/value pair or whose categorical rules have no usable
+  representable draft/no-op, but a non-empty list whose breakpoints yield no
+  usable labelled interval or whose categorical rules have no usable
   value/assignment pair raises `ValueError` naming the output column.
 - **Rating output columns are globally unique within one step.**
   `_rating_step_config` rejects duplicate `tables[].outputColumn` values before
@@ -252,7 +260,7 @@ Backend tests live under `tests/` (no dedicated subdirectory for this component)
   multiplicative combine over a base value, with the trace's rating detail naming the matched
   entries and agreeing with the preview premium row by row.
 - **`tests/test_rating.py`** (largest suite) — direct unit coverage of `_rating.py`: banding condition building, `_apply_rating_table` (incl. non-numeric defaults, duplicate entries, extra entry columns, schema-call-count/perf regression, large tables, all-null tables, boundary/negative/extreme float values, special-character factor names), `_combine_rating_columns` (incl. non-numeric columns, edge cases, multiply-with-zero, min/max mixed values), `_apply_banding` edge cases, sequential rating tables, dtype-preservation regressions (B1/B2), empty-string/int-typed factor values, null factor columns, and canonical row-array rating-step application end to end.
-- **`tests/test_banding.py`** — continuous/categorical `_apply_banding`, `_build_node_fn` integration, banding decorator parsing and codegen, standalone-execution parity with the executor path, multi-factor banding, hardening/adversarial inputs, and the full `breakpoints` mode (ordering, closures, open-ended boundary).
+- **`tests/test_banding.py`** — breakpoints/categorical `_apply_banding`, date and date-and-time breakpoints on Date and time-zoned Datetime columns (calendar-day inclusion, wall-clock time, both closures), unreadable and mixed boundaries, and every mismatched kind/column pairing, the rejection of any other or missing type (including the removed `continuous`), `_build_node_fn` integration, banding decorator parsing and codegen, standalone-execution parity with the executor path, multi-factor banding, hardening/adversarial inputs, and the full `breakpoints` mode (ordering, closures, open-ended boundary).
 - **`tests/test_banding_stats.py`** — `POST /api/banding/stats` through a cached point: the bin
   edges with the last closed, a constant column, values no bin can hold, a column with no finite
   value, the text each dtype casts to, categorical ordering, cap, `distinct_count` and

@@ -43,7 +43,7 @@ def _node(node_id: str, node_type: NodeType, config: dict[str, Any]) -> GraphNod
 def _banding(column: str = "premium") -> dict[str, Any]:
     return {
         "factors": [
-            {"banding": "continuous", "column": column, "outputColumn": "band", "rules": []}
+            {"banding": "breakpoints", "column": column, "outputColumn": "band", "rules": []}
         ]
     }
 

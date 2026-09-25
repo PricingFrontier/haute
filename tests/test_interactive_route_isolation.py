@@ -340,6 +340,25 @@ def test_remote_error_translation_covers_each_closed_public_identity() -> None:
             assert exc_info.value.detail == (payload if payload is not None else message)
 
 
+def test_a_trace_worker_s_missing_contract_columns_are_a_422() -> None:
+    """The node-boundary contract error is a subclass, but a worker names its class."""
+    import haute.routes.pipeline as pipeline_mod
+    from haute.errors import ContractColumnsMissingError
+
+    error = _remote_error(
+        remote_module=ContractColumnsMissingError.__module__,
+        remote_type=ContractColumnsMissingError.__name__,
+        public_payload=None,
+    )
+    error.remote_message = "'band' needs the column 'age'. (node_id=band)"
+
+    with pytest.raises(HTTPException) as exc_info:
+        pipeline_mod._raise_interactive_remote_http_error(error, operation="pipeline_trace")
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == error.remote_message
+
+
 def _isolated_budget():
     from haute._execution_admission import IsolatedExecutionBudget
     from haute._execution_context import ExecutionProfile

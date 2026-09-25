@@ -588,10 +588,12 @@ its public facade.
    `normalise_rating_key(value, dtype)`. A real rating table with entries cannot
    fall back to Python-scalar dtype inference: missing factor dtype resolution
    raises inside enrichment and is surfaced through the existing structured
-   node-enrichment error boundary. Continuous banding rules are filtered through
+   node-enrichment error boundary. Breakpoint banding's interval rules are filtered through
    rating's shared usable-condition parser before comparison, so a rule the
    runtime skipped for having no usable operator/value pair cannot be selected
-   by enrichment.
+   by enrichment. A traced value is compared in the kind its breakpoints share
+   (`_match_interval_rule` reads a date or date-and-time input as the runtime's
+   `banding_comparison_expr` does), so a date band the engine chose is credited.
 7. Classifies `step.row_lineage_type` via `detect_row_lineage_type()`, using the
    node type first (source nodes and constants → `"created"`, `liveSwitch` →
    `"selected"`, `edgeJoin` → `"joined"`, `scenarioExpander` → `"expanded"`,

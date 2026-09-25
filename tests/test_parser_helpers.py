@@ -891,10 +891,10 @@ class TestBuildNodeConfigExtended:
         config = _build_node_config(
             NodeType.BANDING,
             {
-                "banding": "continuous",
+                "banding": "breakpoints",
                 "column": "x",
                 "output_column": "x_factor",
-                "rules": [{"min": 0, "max": 1, "value": 1.0}],
+                "rules": [{"boundary": "1", "label": "1.0"}],
             },
             "",
             [],
@@ -1402,7 +1402,7 @@ class TestResolveNodeConfig:
         """
         from haute.errors import ConfigError
 
-        cfg = {"factors": [{"column": "age", "banding": "continuous"}]}
+        cfg = {"factors": [{"column": "age", "banding": "breakpoints"}]}
         cfg_dir = tmp_path / "config" / "banding"
         cfg_dir.mkdir(parents=True)
         cfg_file = cfg_dir / "age_band.json"

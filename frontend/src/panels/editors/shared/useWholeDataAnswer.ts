@@ -7,6 +7,7 @@ import {
   captureDocumentExecutionFence,
   isDocumentExecutionFenceCurrent,
 } from "../../../stores/useDocumentStatusStore"
+import useNodeDataStore from "../../../stores/useNodeDataStore"
 import useSettingsStore from "../../../stores/useSettingsStore"
 import { buildGraph } from "../../../utils/buildGraph"
 import type { SimpleEdge, SimpleNode } from "../_shared"
@@ -44,6 +45,13 @@ export interface UseWholeDataAnswerInput<TResponse extends WholeDataResponse> {
    * An edit that leaves it unchanged does not ask again.
    */
   askedFor: string | null
+  /**
+   * The part of `askedFor` the answer's question-independent facts depend on,
+   * or null. While a newer question with the same subject is outstanding, the
+   * last answer stays published with `answerIsCurrent` false, so an edit that
+   * refines the question does not drop the editor back to the sample.
+   */
+  subject?: string | null
   /** Sends the question; the latest render's function is used. */
   ask: (question: WholeDataQuestion) => Promise<TResponse>
   /** Shown when a failure carries no message of its own. */
@@ -56,8 +64,14 @@ export interface WholeDataAnswer<TResponse> {
   /** The answer, only while it describes the data this node reads now. */
   answer: TResponse | null
   /**
+   * Whether `answer` answers the question as it is now. False while a newer
+   * question with the same subject is outstanding and `answer` is the last one.
+   */
+  answerIsCurrent: boolean
+  /**
    * The server answered that the data is not cached for this question, even
    * though this editor's point looked current: the point needs caching again.
+   * The answer also has the point read again, which then reports its state.
    */
   cacheRequired: boolean
   loading: boolean
@@ -68,6 +82,11 @@ export interface WholeDataAnswer<TResponse> {
 interface Tagged<T> {
   identity: string
   value: T
+}
+
+interface TaggedAnswer<T> extends Tagged<T> {
+  /** The subject and point it was asked about, when the editor names one. */
+  subjectIdentity: string | null
 }
 
 interface InFlightQuestion {
@@ -92,12 +111,13 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
   submodels,
   preamble,
   askedFor,
+  subject = null,
   ask,
   failureMessage,
 }: UseWholeDataAnswerInput<TResponse>): WholeDataAnswer<TResponse> {
   const activeSource = useSettingsStore((s) => s.activeSource)
   const cache = useNodeDataCache({ node, allNodes, edges, submodels, preamble })
-  const [answer, setAnswer] = useState<Tagged<TResponse | null> | null>(null)
+  const [answer, setAnswer] = useState<TaggedAnswer<TResponse | null> | null>(null)
   const [loading, setLoading] = useState<Tagged<boolean> | null>(null)
   const [error, setError] = useState<Tagged<string | null> | null>(null)
   const inFlight = useRef<InFlightQuestion | null>(null)
@@ -111,6 +131,8 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
   const available = cache.availability
   const dataVersion = cache.dataVersion
   const requestIdentity = JSON.stringify({ nodeId, askedFor, activeSource, available, dataVersion })
+  const subjectIdentity =
+    subject === null ? null : JSON.stringify({ nodeId, subject, activeSource, available, dataVersion })
 
   useEffect(() => {
     if (!nodeId || !askedFor || available !== "current") {
@@ -136,8 +158,12 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
             inFlight.current !== question ||
             !isDocumentExecutionFenceCurrent(fence)
           ) return
-          setAnswer({ identity: requestIdentity, value: response })
+          setAnswer({ identity: requestIdentity, subjectIdentity, value: response })
           setError({ identity: requestIdentity, value: null })
+          // The point looked current, but its data has gone or changed since it
+          // was read. Every consumer re-reads its point, so this one's state,
+          // and what its node's Refresh does, catch up with the server's.
+          if (response.status === "cache_required") useNodeDataStore.getState().bumpEpoch()
         })
         .catch((err: unknown) => {
           if (
@@ -148,7 +174,7 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
           // The editor keeps working from the preview, and says why it had to:
           // the server's own message — which for bad rules is execution's —
           // rather than the bare "HTTP 422" the client builds as the message.
-          setAnswer({ identity: requestIdentity, value: null })
+          setAnswer({ identity: requestIdentity, subjectIdentity, value: null })
           setError({ identity: requestIdentity, value: apiErrorMessage(err, failureMessageRef.current) })
         })
         .finally(() => {
@@ -170,8 +196,11 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
 
   // A whole-data answer is shown only while the point it describes is the one
   // this node reads *now*: a stale point shows the sample instead, however
-  // recently its answer arrived.
-  const matching = answer?.identity === requestIdentity ? answer.value : null
+  // recently its answer arrived. The last answer about the same subject and
+  // point stands in while a refined question is outstanding.
+  const answered = answer?.identity === requestIdentity
+  const kept = !answered && subjectIdentity !== null && answer?.subjectIdentity === subjectIdentity
+  const matching = answered || kept ? (answer?.value ?? null) : null
   const current =
     available === "current" &&
     matching?.status === "ok" &&
@@ -179,7 +208,8 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
   return {
     cache,
     answer: current ? matching : null,
-    cacheRequired: available === "current" && matching?.status === "cache_required",
+    answerIsCurrent: current && answered,
+    cacheRequired: available === "current" && answered && matching?.status === "cache_required",
     loading: loading?.identity === requestIdentity ? loading.value : false,
     error: error?.identity === requestIdentity ? error.value : null,
     basis: current ? "all" : available === "stale" ? "stale" : "sample",

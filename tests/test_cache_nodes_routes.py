@@ -326,7 +326,7 @@ def test_a_node_reading_another_nodes_cache_reports_no_size(
                         "config": {
                             "factors": [
                                 {
-                                    "banding": "continuous",
+                                    "banding": "breakpoints",
                                     "column": "premium",
                                     "outputColumn": "band",
                                     "rules": [],
@@ -366,7 +366,7 @@ def test_an_unwired_node_is_a_row_not_a_failed_request(client: TestClient, proje
                         "config": {
                             "factors": [
                                 {
-                                    "banding": "continuous",
+                                    "banding": "breakpoints",
                                     "column": "premium",
                                     "outputColumn": "band",
                                     "rules": [],

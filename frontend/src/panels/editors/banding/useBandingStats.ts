@@ -11,10 +11,18 @@ import useWholeDataAnswer, { type WholeDataBasis } from "../shared/useWholeDataA
 export type BandingStatsBasis = WholeDataBasis
 
 export interface BandingStatsState {
-  /** The shared cache of the data this node reads, for the header control. */
+  /** The shared cache of the data this node reads, whose state the status line reports. */
   cache: NodeDataCache
-  /** The last statistics received, kept while a newer request is in flight. */
+  /**
+   * The last statistics received. A rule edit keeps them, since the column's
+   * total, values, histogram and range do not depend on the rules, while the
+   * counts for the edited rules are asked.
+   */
   stats: BandingStatsResponse | null
+  /** Whether `stats` counts the rules as they are now, not before the last edit. */
+  current: boolean
+  /** The server found the data is not cached after all: no count comes without a Refresh. */
+  cacheRequired: boolean
   loading: boolean
   basis: BandingStatsBasis
   error: string | null
@@ -64,14 +72,23 @@ export default function useBandingStats({
         : null,
     [factor, histogramBins],
   )
+  // What the answer's rule-independent facts describe.
+  const subject = useMemo(
+    () =>
+      factor && factor.column
+        ? JSON.stringify({ column: factor.column, banding: factor.banding, bins: histogramBins ?? null })
+        : null,
+    [factor, histogramBins],
+  )
   const outputColumn = factor?.outputColumn ?? ""
-  const { cache, answer, loading, basis, error } = useWholeDataAnswer<BandingStatsResponse>({
+  const { cache, answer, answerIsCurrent, cacheRequired, loading, basis, error } = useWholeDataAnswer<BandingStatsResponse>({
     node,
     allNodes,
     edges,
     submodels,
     preamble,
     askedFor,
+    subject,
     ask: ({ asked, graph, nodeId, source, signal }) => {
       const question = JSON.parse(asked) as AskedFactor
       return getBandingStats({
@@ -91,5 +108,5 @@ export default function useBandingStats({
     },
     failureMessage: "the data could not be counted",
   })
-  return { cache, stats: answer, loading, basis, error }
+  return { cache, stats: answer, current: answerIsCurrent, cacheRequired, loading, basis, error }
 }

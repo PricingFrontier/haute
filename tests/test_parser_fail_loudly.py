@@ -184,7 +184,7 @@ class TestItem18ConfigPathFailsLoudly:
         happen silently.  Either the recovery is removed entirely (→ raise
         ``ConfigError``) or it is gated behind an explicit opt-in kwarg."""
         # Write a valid config file for a banding node.
-        cfg = {"factors": [{"column": "age", "banding": "continuous"}]}
+        cfg = {"factors": [{"column": "age", "banding": "breakpoints"}]}
         cfg_dir = tmp_path / "config" / "banding"
         cfg_dir.mkdir(parents=True)
         cfg_file = cfg_dir / "age_band.json"

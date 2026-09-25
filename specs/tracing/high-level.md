@@ -199,8 +199,10 @@ Out of scope (owned elsewhere, linked where relevant):
 - **Enrichment observes; it never repairs rows.** Rating, banding, model-score,
   lineage, and schema-diff detail is derived from the complete rows selected by
   correlation and the same immutable runtime contracts the engine consumes.
-  Continuous banding enrichment uses the rating runtime's shared rule-eligibility
-  parser, so a rule with no usable operator/value pair cannot be credited.
+  Breakpoint banding enrichment uses the rating runtime's shared interval-eligibility
+  parser, so a rule with no usable operator/value pair cannot be credited, and
+  compares a date or date-and-time band the way the runtime does: by calendar date
+  or wall-clock time in the column's own time zone.
   Enrichment never patches an individual output cell or invents model features.
   A row that cannot be selected atomically remains unresolved.
 - **Relevant correlation gaps remain first-class evidence.** A node on the

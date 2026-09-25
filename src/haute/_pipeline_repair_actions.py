@@ -226,8 +226,14 @@ def _reset_node(
         ),
     )
     try:
+        # A node rebuilt from given settings (recovered, or a scoped save) has
+        # its annotation regenerated from them as the reload's parse check
+        # derives it; carrying the old one forward keeps a stale annotation
+        # that check rejects.
         generated = _node_to_code(
-            node, source_names=source_names, derive_contract=replacement_config is None
+            node,
+            source_names=source_names,
+            contract_source="builder" if replacement_config is None else "offline",
         )
     except (HauteError, ValueError) as exc:
         raise _unsupported(
@@ -301,9 +307,11 @@ def _reset_node(
                 "from pathlib import Path as _HauteResetPath\n"
                 f"_HAUTE_CONFIG_BASE = {base_expression}\n",
             )
+        # The annotation lives on the decorator; a sidecar copy is what goes stale.
+        sidecar_config = {key: value for key, value in config.items() if key != "contract"}
         after = (
             json.dumps(
-                _prepare_config_for_sidecar(node_type, config, node_label=target.label),
+                _prepare_config_for_sidecar(node_type, sidecar_config, node_label=target.label),
                 indent=2,
                 ensure_ascii=False,
             )

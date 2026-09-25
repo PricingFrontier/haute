@@ -480,7 +480,7 @@ class TestResourceExhaustionConfig:
     def test_large_banding_rules_list(self):
         from haute._types import GraphNode, NodeData
 
-        rules = [{"min": i, "max": i + 1, "label": f"band_{i}"} for i in range(10_000)]
+        rules = [{"boundary": str(i + 1), "label": f"band_{i}"} for i in range(10_000)]
         node = GraphNode(
             id="big_band",
             data=NodeData(
@@ -489,7 +489,7 @@ class TestResourceExhaustionConfig:
                 config={
                     "factors": [
                         {
-                            "banding": "continuous",
+                            "banding": "breakpoints",
                             "column": "x",
                             "outputColumn": "x_f",
                             "rules": rules,

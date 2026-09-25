@@ -143,7 +143,6 @@ class TestExecutableBundles:
         "linear_pricing",
         "minimal_batch",
         "minimal_live_quote",
-        "continuous_banding",
         "deployment_safety",
         "discrete_banding",
         "invalid_adversarial",
@@ -170,6 +169,8 @@ class TestExecutableBundles:
     def test_bundle_manifests_are_closed_complete_and_content_addressed(self):
         manifests = _assets.example_bundle_manifests()
         assert self.EXPECTED <= {manifest["id"] for manifest in manifests}
+        # Numeric banding is breakpoints only; there is no continuous example.
+        assert "continuous_banding" not in {manifest["id"] for manifest in manifests}
         required_roles = {
             "project_configuration",
             "pipeline_source",
@@ -357,13 +358,13 @@ class TestExecutableBundles:
         assert {node["type"] for node in graph["nodes"]} >= required_types
 
     def test_bundle_loader_returns_bounded_attribution_and_live_graph_shape(self):
-        result = load_example("continuous_banding")
+        result = load_example("discrete_banding")
         assert set(result) == {"name", "attribution", "narrative", "graph"}
-        assert result["name"] == "continuous_banding"
+        assert result["name"] == "discrete_banding"
         assert result["attribution"] == {
-            "id": "continuous_banding",
+            "id": "discrete_banding",
             "version": "1",
-            "summary": "Synthetic continuous banding teaching fixture.",
+            "summary": "Synthetic categorical banding teaching fixture.",
             "assertion_tier": "fast",
             "review_class": "engineering",
         }
