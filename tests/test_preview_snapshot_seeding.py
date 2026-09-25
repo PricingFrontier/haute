@@ -2281,3 +2281,56 @@ def test_a_preview_scores_a_capture_drained_model_score_in_batches(
         assert len(part_paths(generation)) == 4
     shown = preview.rows("shown")
     assert shown["pred"].to_list() == [0.5] * shown.height
+
+
+def test_a_preview_scores_only_the_rows_a_bounded_capture_reads(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    """``head`` between a scorer and a capture keeps the scorer row-local.
+
+    Polars pushes the bound into the scorer's scan, so the capture below it
+    scores only the rows it keeps; capturing the scorer would score them all.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from haute._mlflow_io import ScoringModel
+
+    scored_rows: list[int] = []
+
+    def predict(x: Any) -> Any:
+        scored_rows.append(len(x))
+        return np.full(len(x), 0.5)
+
+    raw = MagicMock()
+    raw.feature_names_ = ["a"]
+    raw.predict.side_effect = predict
+    raw.get_cat_feature_indices.return_value = []
+    del raw.predict_proba
+    scoring = ScoringModel(
+        model=raw, feature_names=["a"], cat_feature_names=frozenset(), flavor="catboost"
+    )
+    score_config = {
+        "sourceType": "run",
+        "run_id": "abc123",
+        "artifact_path": "model.cbm",
+        "task": "regression",
+        "output_column": "pred",
+    }
+    graph = _graph(
+        project,
+        [
+            ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            ("score", NodeType.MODEL_SCORE, score_config),
+            ("bounded", NodeType.POLARS, _code("df = score.head(10)")),
+            ("sorted", NodeType.POLARS, _code("df = bounded.sort('a', descending=True)")),
+            ("shown", NodeType.POLARS, _code("df = sorted.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("policies", "score"), ("score", "bounded"), ("bounded", "sorted"), ("sorted", "shown")],
+    )
+
+    with patch("haute._mlflow_io.load_mlflow_model", return_value=scoring):
+        preview = _preview(graph, store, "shown", source="batch")
+
+    assert set(preview.captures) == {"sorted"}
+    assert sum(scored_rows) == 10
+    assert preview.rows("shown")["a"].to_list() == [9, 8, 7]

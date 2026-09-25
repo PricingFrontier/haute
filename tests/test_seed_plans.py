@@ -2083,3 +2083,51 @@ def test_capture_set_is_settled_before_execution_and_claims(
             assert child.decision.skipped_captures == {"A": "cheap_segment"}
         finally:
             child.close()
+
+
+@pytest.mark.parametrize(
+    ("between", "captured"),
+    [
+        ("df = M.with_columns(pl.lit(1).alias('one'))", True),
+        ("df = M.filter(pl.col('a') > 0)", True),
+        ("df = M.head(10)", False),
+        ("df = M.slice(0, 10)", False),
+        ("df = my_helper(M)", False),
+    ],
+)
+def test_a_row_bounding_step_between_a_model_score_and_its_capture_drains_nothing(
+    project: Path, store: NodeSnapshotStore, between: str, captured: bool
+) -> None:
+    """Only a path that reads every row drains a scorer: a bound is pushed into its scan.
+
+    ``head`` (or code whose calls cannot be proven) below the scorer lets Polars
+    score only the rows it keeps, so capturing the scorer would score them all.
+    """
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("M", NodeType.MODEL_SCORE, {}),
+            ("B", NodeType.POLARS, _code(between)),
+            ("S", NodeType.POLARS, _code("df = B.sort('a')")),
+            ("Y", NodeType.POLARS, _code("df = S.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("src", "M"), ("M", "B"), ("B", "S"), ("S", "Y")],
+    )
+    kinds = _kinds(resolve_seed_plan(_preview(graph, "Y", source="batch"), store=store))
+    assert kinds.get("S") is CaptureKind.MATERIALISING
+    assert (kinds.get("M") is CaptureKind.MODEL_SCORE) is captured
+
+    # The same bound inside the capturing node's own code drains nothing either.
+    bounded_capture = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("M", NodeType.MODEL_SCORE, {}),
+            ("S", NodeType.POLARS, _code("df = M.head(10).sort('a')")),
+            ("Y", NodeType.POLARS, _code("df = S.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("src", "M"), ("M", "S"), ("S", "Y")],
+    )
+    kinds = _kinds(resolve_seed_plan(_preview(bounded_capture, "Y", source="batch"), store=store))
+    assert kinds == {"S": CaptureKind.MATERIALISING}

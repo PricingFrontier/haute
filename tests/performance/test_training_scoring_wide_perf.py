@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -163,7 +164,7 @@ def test_batch_scoring_prediction_prep_width_stays_feature_bounded(
     try:
         result = pl.read_parquet(out_path)
     finally:
-        os.unlink(out_path)
+        shutil.rmtree(out_path)
 
     assert prep_columns == [features, features, features]
     assert prep_shapes == [(4, len(features)), (4, len(features)), (2, len(features))]

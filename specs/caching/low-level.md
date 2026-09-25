@@ -357,8 +357,12 @@ resulting plan.
   distinct effective input; frame and expression `sort`, `unique`, `rank`, `group_by`, `join`,
   `over`, and `pivot` are captured, while `explode`, `shift`, `map_elements`, `pipe`, and a node
   whose only costly call is unresolved are not captured. A batch Model Score (scenario not
-  `live`) is captured as `model_score` when a capture below it (a descendant among the executed
-  nodes, through other such Model Scores) drains its whole output: its row-local scan would be
+  `live`) is captured as `model_score` when a capture below it drains its whole output: a node's
+  output is drained when it is captured, or when a child whose code reads every input row has its
+  output drained. Code reads every input row unless it calls a row-bounding frame method (`head`,
+  `tail`, `limit`, `slice`, `first`, `last`, `sample`, `gather_every`) or its recompute facts leave
+  a call unproven (`projection.code_bounds_rows`); a row bound below the scorer is pushed into its
+  scan, which then scores only the rows kept. Drained, its row-local scan would be
   pulled whole through Polars, which applies no backpressure to a Python source, so every scored
   batch would sit in memory until the capture below wrote it. Captured, it scores every row a
   batch at a time into its own parts whatever the row limit, and the capture below reads parquet

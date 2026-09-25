@@ -4,6 +4,7 @@ import argparse
 import gc
 import json
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -157,18 +158,22 @@ def timed(
 
 
 def parquet_stats(path: str | Path) -> dict[str, Any]:
+    """Size and row stats of a parquet file, or of a directory of scored parts."""
     p = Path(path)
+    files = sorted(p.glob("*.parquet")) if p.is_dir() else [p]
     stats: dict[str, Any] = {
         "path": str(p),
-        "size_mb": round(p.stat().st_size / 1024 / 1024, 3) if p.exists() else None,
+        "size_mb": (
+            round(sum(f.stat().st_size for f in files) / 1024 / 1024, 3) if p.exists() else None
+        ),
     }
     try:
         import pyarrow.parquet as pq
 
-        metadata = pq.ParquetFile(p).metadata
-        stats["rows"] = metadata.num_rows
-        stats["row_groups"] = metadata.num_row_groups
-        stats["columns"] = metadata.num_columns
+        metadata = [pq.ParquetFile(f).metadata for f in files]
+        stats["rows"] = sum(m.num_rows for m in metadata)
+        stats["row_groups"] = sum(m.num_row_groups for m in metadata)
+        stats["columns"] = metadata[0].num_columns if metadata else 0
     except Exception as exc:  # noqa: BLE001 - benchmark metadata only.
         stats["metadata_error"] = str(exc)
     return stats
@@ -232,8 +237,9 @@ def timing_hooks(
         scoring_model, input_path, features, output_col, task = args[:5]
         write_projection = kwargs.get("write_projection")
         projected_passthrough = None
-        fd, out_path = tempfile.mkstemp(suffix=".parquet", prefix="haute_score_out_")
-        os.close(fd)
+        # The scorer returns a directory of parts; this stand-in writes one part.
+        out_dir = tempfile.mkdtemp(prefix="haute_score_out_")
+        out_path = str(Path(out_dir) / "part-00000.parquet")
         totals = {
             "open_input": 0.0,
             "read_batch": 0.0,
@@ -357,8 +363,8 @@ def timing_hooks(
                 **parquet_stats(out_path),
             },
         )
-        temp_outputs.append(out_path)
-        return out_path
+        temp_outputs.append(out_dir)
+        return out_dir
 
     def timed_batch_score(*args: Any, **kwargs: Any) -> str:
         if detailed_batch:
@@ -524,6 +530,9 @@ def run_once(
             model_scorer._SCORE_BATCH_SIZE = old_batch_size
         store.delete_job(job_id)
         for path in temp_outputs:
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+                continue
             try:
                 os.unlink(path)
             except OSError:

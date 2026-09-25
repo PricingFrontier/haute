@@ -744,12 +744,18 @@ class _Resolver:
         frame in memory. Captured, the scorer writes its scored file a batch at
         a time and everything below reads parquet parts instead.
         """
+        # A node's output is read whole when it is captured, or when a child
+        # that reads every input row has its own output read whole. A child
+        # that may bound its rows (``head``, unproven code) drains nothing:
+        # Polars pushes its bound into the scan, which scores only those rows.
         drained: set[str] = set()
         for node_id in reversed(self.order):
             if node_id not in executed:
                 continue
             node_children = children.get(node_id, ())
-            if any(child in captures or child in drained for child in node_children):
+            if node_id in captures or any(
+                child in drained and self._reads_every_input_row(child) for child in node_children
+            ):
                 drained.add(node_id)
             if (
                 node_id in drained
@@ -759,6 +765,11 @@ class _Resolver:
                 and self.batch_model_score(node_id)
             ):
                 captures[node_id] = CaptureKind.MODEL_SCORE
+
+    def _reads_every_input_row(self, node_id: str) -> bool:
+        """Whether a node that is read whole reads every row of its inputs."""
+        code = self.effective_node_map[node_id].data.config.get("code")
+        return not projection_planner.code_bounds_rows(code, self.recompute.get(node_id))
 
     # ------------------------------------------------------------- rounds
 
