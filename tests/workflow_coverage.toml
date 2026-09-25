@@ -950,7 +950,7 @@ tests = [
   "tests/test_rating_dtype_contract.py::test_ratebook_rejects_exact_dtype_drift_before_neutral_miss",
   "tests/test_optimiser_ratebook_apply_agreement.py::TestMirrorAgreesWithEngine::test_duplicate_level_resolves_to_last_in_both",
   "tests/test_optimiser_routes.py::TestFrontierSelect::test_select_last_frontier_point",
-  "tests/test_optimiser_frontier_materialisation.py::test_save_selected_frontier_point_does_not_use_stale_solve_result",
+  "tests/test_optimiser_frontier_materialisation.py::test_save_without_point_saves_the_anchor_not_the_selected_point",
   "tests/test_optimiser_apply.py::TestExecutorRatebook::test_ratebook_apply_rejects_stale_configured_input",
   "tests/test_optimiser_contracts.py::test_real_solve_apply_totals_match_selected_rows",
   "tests/test_optimiser_frontier_materialisation.py::test_apply_explicit_frontier_point_artifact_matches_response_preview",

@@ -290,7 +290,9 @@ class TestOptimiserLogRoute:
                 "result": {
                     "lambdas": {},
                     "total_objective": 1.0,
+                    "baseline_objective": 1.0,
                     "constraints": {},
+                    "baseline_constraints": {},
                     "converged": True,
                 },
                 "publish_summary": {"params": {}, "metrics": {}, "artifacts": {}},
