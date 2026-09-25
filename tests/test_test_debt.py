@@ -36,11 +36,6 @@ _PLAYWRIGHT_CI_RETRY_BUDGET = 2
 # path, enclosing scope, debt kind, reason text, and normalized AST source. A new
 # skip/xfail/importorskip, or a changed reason, must be accepted deliberately.
 _EXPECTED_DEBT_IDS = {
-    # The CLI serve-check subprocess builds a container against the real
-    # price-contour install, and deploy refuses an editable or direct-URL
-    # install it cannot reproduce. CI installs the locked wheel, so the test
-    # runs there; it skips only in a developer checkout on an editable build.
-    "b992c4d6526be690",
     # Native Windows HighQoS requires the real Windows process API. The
     # strong-revision cache witness requires a filesystem exposing that proof;
     # unsupported filesystems are covered separately by cache-bypass tests.

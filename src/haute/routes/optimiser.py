@@ -835,13 +835,11 @@ def save_result(body: OptimiserSaveRequest) -> OptimiserSaveResponse:
         with _save_destination_lock(out):
             if not body.overwrite and out.exists():
                 # A structured detail: the save pane dispatches on the code.
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error_code": "optimiser_result_exists",
-                        "message": f"Optimiser result already exists: {apply_path}",
-                    },
-                )
+                result_exists = {
+                    "error_code": "optimiser_result_exists",
+                    "message": f"Optimiser result already exists: {apply_path}",
+                }
+                raise HTTPException(status_code=409, detail=result_exists)
             out.parent.mkdir(parents=True, exist_ok=True)
             # Atomic write (same posture as the schema-mapping save in
             # `_helpers.save_sidecar`): stage to a sibling temp then rename, so a

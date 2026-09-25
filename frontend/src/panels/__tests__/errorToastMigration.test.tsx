@@ -344,6 +344,8 @@ vi.mock("../../hooks/useDragResize", () => ({
 vi.mock("../../stores/useNodeResultsStore", () => ({
   default: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({
+      solveResults: {},
+      solveJobs: {},
       getOptimiserPreview: () => null,
       selectFrontierPoint: H.storeSelectPoint,
       updateFrontierAfterSelect: H.storeUpdateAfterSelect,
