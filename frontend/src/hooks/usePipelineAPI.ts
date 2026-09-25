@@ -627,12 +627,10 @@ export default function usePipelineAPI({
       addToast("error", `Stopping failed: ${String(failed.message)} Press Stop to try again.`)
       stopRetry.current = async () => {
         const { cancelInputSnapshotBuilds } = await import("./ensureInputSnapshots")
-        try {
-          await cancelInputSnapshotBuilds(pending)
-        } catch (retried) {
-          const still = (retried as { jobIds?: unknown }).jobIds
-          if (Array.isArray(still)) pending = still as string[]
-          addToast("error", `Stopping failed: ${apiErrorMessage(retried)} Press Stop to try again.`)
+        const stillRunning = await cancelInputSnapshotBuilds(pending)
+        if (stillRunning) {
+          pending = stillRunning.jobIds
+          addToast("error", `Stopping failed: ${stillRunning.message} Press Stop to try again.`)
           return
         }
         stopRetry.current = null

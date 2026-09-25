@@ -97,17 +97,10 @@ export function startInputImport(nodeId: string, input: Node, onImported: (nodeI
   }
   // Cancel builds that refused to stop again. Returns whether they all stopped.
   const cancelPending = async (): Promise<boolean> => {
-    if (pending === null) return true
     const { cancelInputSnapshotBuilds } = await snapshots
-    try {
-      await cancelInputSnapshotBuilds(pending)
-    } catch (retried) {
-      const still = (retried as { jobIds?: unknown }).jobIds
-      if (Array.isArray(still)) pending = still as string[]
-      return false
-    }
-    pending = null
-    return true
+    const stillRunning = await cancelInputSnapshotBuilds(pending ?? [])
+    pending = stillRunning?.jobIds ?? null
+    return stillRunning === null
   }
   // A retired import has no node left to press Stop on, so its builds are
   // cancelled again in the background until they stop, and a build that never

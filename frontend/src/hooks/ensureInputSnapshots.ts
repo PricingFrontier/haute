@@ -39,25 +39,23 @@ function isCancellationFailed(error: unknown): error is CancellationFailedError 
 }
 
 /**
- * Cancel each build again and wait for it to stop. Raises a
- * `CancellationFailedError` naming only the builds that still did not stop.
+ * Cancel each build again and wait for it to stop. Answers the builds that
+ * still did not stop, as one `CancellationFailedError`, or null when all did.
+ * (`cancelInputSnapshotBuild` fails only with that error.)
  */
-export async function cancelInputSnapshotBuilds(jobIds: string[]): Promise<void> {
+export async function cancelInputSnapshotBuilds(
+  jobIds: string[],
+): Promise<CancellationFailedError | null> {
   const outcomes = await Promise.allSettled(jobIds.map((jobId) => cancelInputSnapshotBuild(jobId)))
   const failures = outcomes.flatMap((outcome) =>
-    outcome.status === "rejected" && isCancellationFailed(outcome.reason) ? [outcome.reason] : [],
+    outcome.status === "rejected" ? [outcome.reason as CancellationFailedError] : [],
   )
-  const other = outcomes.find(
-    (outcome): outcome is PromiseRejectedResult =>
-      outcome.status === "rejected" && !isCancellationFailed(outcome.reason),
-  )
-  if (failures.length > 0) {
-    throw new CancellationFailedError(
-      failures.map((failure) => failure.message).join(" "),
-      failures.flatMap((failure) => failure.jobIds),
-    )
-  }
-  if (other) throw other.reason
+  return failures.length === 0
+    ? null
+    : new CancellationFailedError(
+        failures.map((failure) => failure.message).join(" "),
+        failures.flatMap((failure) => failure.jobIds),
+      )
 }
 
 export interface EnsureInputSnapshotsOptions {

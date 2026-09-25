@@ -196,3 +196,51 @@ def test_a_worker_killed_holding_the_progress_lock_settles_and_its_replacement_r
 
     assert result == "done"
     assert seen
+
+
+def test_an_empty_cell_reports_nothing() -> None:
+    assert _cell().try_read("job") is None
+
+
+def test_a_label_too_long_for_the_cell_keeps_its_counts() -> None:
+    cell = _cell()
+    cell.write("job", 1, StepProgress(done=2, total=5, label="☃" * 400))
+
+    reading = cell.try_read("job")
+
+    assert reading is not None
+    _, progress = reading
+    assert (progress.done, progress.total) == (2, 5)
+
+
+def test_a_bound_job_writes_its_progress_and_unbinds_after() -> None:
+    from haute._step_progress import bind_job_progress
+
+    cell = _cell()
+    with bind_job_progress(cell, "job-7"):
+        report = current_job_progress_reporter()
+        assert report is not None
+        report(StepProgress(done=1, total=2, label="Caching join"))
+        report(StepProgress(done=2, total=2, label="Computing target"))
+    assert current_job_progress_reporter() is None
+
+    assert cell.try_read("job-7") == (2, StepProgress(done=2, total=2, label="Computing target"))
+
+
+def test_a_worker_without_a_cell_reports_nothing() -> None:
+    from haute._step_progress import bind_job_progress
+
+    with bind_job_progress(None, "job"):
+        assert current_job_progress_reporter() is None
+
+
+def test_a_settled_request_is_forgotten_after_its_ttl() -> None:
+    now = [0.0]
+    registry = PreviewProgressRegistry(clock=lambda: now[0])
+    registry.open("r1")
+    registry.close("r1")
+
+    now[0] = 301.0
+    registry.open("r1")
+
+    assert registry.get("r1") is not None
