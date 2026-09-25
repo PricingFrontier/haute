@@ -2334,3 +2334,63 @@ def test_a_preview_scores_only_the_rows_a_bounded_capture_reads(
     assert set(preview.captures) == {"sorted"}
     assert sum(scored_rows) == 10
     assert preview.rows("shown")["a"].to_list() == [9, 8, 7]
+
+
+def test_a_bounded_post_code_scorer_still_drains_the_scorer_above_it(
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``s2`` is captured, so it scores its whole input before its ``head`` runs.
+
+    Its input is then ``s1``'s scored parts, not a Python scan drained whole.
+    """
+    from unittest.mock import MagicMock, patch
+
+    import haute._model_scorer as model_scorer
+    from haute._mlflow_io import ScoringModel
+
+    monkeypatch.setattr(model_scorer, "_SCORE_BATCH_SIZE", 30)
+    scored_rows: list[int] = []
+
+    def predict(x: Any) -> Any:
+        scored_rows.append(len(x))
+        return np.full(len(x), 0.5)
+
+    raw = MagicMock()
+    raw.feature_names_ = ["a"]
+    raw.predict.side_effect = predict
+    raw.get_cat_feature_indices.return_value = []
+    del raw.predict_proba
+    scoring = ScoringModel(
+        model=raw, feature_names=["a"], cat_feature_names=frozenset(), flavor="catboost"
+    )
+
+    def score(output: str, code: str = "") -> dict[str, Any]:
+        return {
+            "sourceType": "run",
+            "run_id": "abc123",
+            "artifact_path": "model.cbm",
+            "task": "regression",
+            "output_column": output,
+            "code": code,
+        }
+
+    graph = _graph(
+        project,
+        [
+            ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
+            ("s1", NodeType.MODEL_SCORE, score("p1")),
+            ("s2", NodeType.MODEL_SCORE, score("p2", "df = df.head(10)")),
+            ("sorted", NodeType.POLARS, _code("df = s2.sort('a', descending=True)")),
+            ("shown", NodeType.POLARS, _code("df = sorted.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("policies", "s1"), ("s1", "s2"), ("s2", "sorted"), ("sorted", "shown")],
+    )
+
+    with patch("haute._mlflow_io.load_mlflow_model", return_value=scoring):
+        preview = _preview(graph, store, "shown", source="batch")
+
+    assert preview.captures["s1"]["write_strategy"] == "prewritten"
+    assert preview.captures["s2"]["write_strategy"] == "sliced"
+    # Each scorer scored all 100 rows, 30 a batch; ``head`` bounds s2's output.
+    assert scored_rows == [30, 30, 30, 10] * 2
+    assert preview.rows("shown")["a"].to_list() == [9, 8, 7]

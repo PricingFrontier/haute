@@ -359,10 +359,14 @@ resulting plan.
   whose only costly call is unresolved are not captured. A batch Model Score (scenario not
   `live`) is captured as `model_score` when a capture below it drains its whole output: a node's
   output is drained when it is captured, or when a child whose code reads every input row has its
-  output drained. Code reads every input row unless it calls a row-bounding frame method (`head`,
-  `tail`, `limit`, `slice`, `first`, `last`, `sample`, `gather_every`) or its recompute facts leave
-  a call unproven (`projection.code_bounds_rows`); a row bound below the scorer is pushed into its
-  scan, which then scores only the rows kept. Drained, its row-local scan would be
+  output drained. A captured Model Score reads every input row (it scores its whole input before
+  its post-processing code runs); other code reads every input row unless it calls a row-bounding
+  method (`head`, `tail`, `limit`, `slice`, `first`, `last`, `sample`, `gather_every`) on any
+  receiver, slices with a subscript (`df[:10]`), or its recompute facts leave a call unproven
+  (`projection.code_bounds_rows`). The check is conservative: code that bounds rows only after
+  reading them all (`sort(...).head(10)`) still counts as bounding, and its scorer keeps the
+  row-local scan. A row bound below the scorer is pushed into its scan, which then scores only
+  the rows kept. Drained, its row-local scan would be
   pulled whole through Polars, which applies no backpressure to a Python source, so every scored
   batch would sit in memory until the capture below wrote it. Captured, it scores every row a
   batch at a time into its own parts whatever the row limit, and the capture below reads parquet

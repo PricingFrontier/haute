@@ -754,7 +754,8 @@ class _Resolver:
                 continue
             node_children = children.get(node_id, ())
             if node_id in captures or any(
-                child in drained and self._reads_every_input_row(child) for child in node_children
+                child in drained and self._reads_every_input_row(child, captures)
+                for child in node_children
             ):
                 drained.add(node_id)
             if (
@@ -766,8 +767,14 @@ class _Resolver:
             ):
                 captures[node_id] = CaptureKind.MODEL_SCORE
 
-    def _reads_every_input_row(self, node_id: str) -> bool:
-        """Whether a node that is read whole reads every row of its inputs."""
+    def _reads_every_input_row(self, node_id: str, captures: Mapping[str, CaptureKind]) -> bool:
+        """Whether a node that is read whole reads every row of its inputs.
+
+        A captured Model Score scores its whole input before its post-processing
+        code runs, so a bound in that code bounds nothing it reads.
+        """
+        if captures.get(node_id) is CaptureKind.MODEL_SCORE:
+            return True
         code = self.effective_node_map[node_id].data.config.get("code")
         return not projection_planner.code_bounds_rows(code, self.recompute.get(node_id))
 

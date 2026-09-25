@@ -2092,7 +2092,11 @@ def test_capture_set_is_settled_before_execution_and_claims(
         ("df = M.filter(pl.col('a') > 0)", True),
         ("df = M.head(10)", False),
         ("df = M.slice(0, 10)", False),
+        ("df = M[:10]", False),
         ("df = my_helper(M)", False),
+        # Reads every row, but a bounding call anywhere is answered
+        # conservatively: the scorer keeps the row-local scan it had before.
+        ("df = M.sort('a').head(10)", False),
     ],
 )
 def test_a_row_bounding_step_between_a_model_score_and_its_capture_drains_nothing(
@@ -2131,3 +2135,29 @@ def test_a_row_bounding_step_between_a_model_score_and_its_capture_drains_nothin
     )
     kinds = _kinds(resolve_seed_plan(_preview(bounded_capture, "Y", source="batch"), store=store))
     assert kinds == {"S": CaptureKind.MATERIALISING}
+
+
+def test_a_captured_scorer_below_drains_the_scorer_above_despite_its_post_code_bound(
+    project: Path, store: NodeSnapshotStore
+) -> None:
+    """A captured Model Score scores its whole input before its post-code runs.
+
+    ``M2``'s ``head`` bounds only its own output, so ``M1`` is drained through it:
+    left row-local, ``M1`` would be pulled whole into ``M2``'s batched scoring.
+    """
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("M1", NodeType.MODEL_SCORE, {}),
+            ("M2", NodeType.MODEL_SCORE, {"code": "df = df.head(10)"}),
+            ("S", NodeType.POLARS, _code("df = M2.sort('a')")),
+            ("Y", NodeType.POLARS, _code("df = S.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("src", "M1"), ("M1", "M2"), ("M2", "S"), ("S", "Y")],
+    )
+    assert _kinds(resolve_seed_plan(_preview(graph, "Y", source="batch"), store=store)) == {
+        "S": CaptureKind.MATERIALISING,
+        "M2": CaptureKind.MODEL_SCORE,
+        "M1": CaptureKind.MODEL_SCORE,
+    }

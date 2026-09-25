@@ -2595,10 +2595,12 @@ _UNPROVEN_RECOMPUTE_REASONS = (
 def code_bounds_rows(code: object, facts: NodeRecomputeFacts | None) -> bool:
     """Whether node code may read fewer than all of its input rows.
 
-    True when the code calls a row-bounding frame method (``head``, ``limit``,
-    ``slice``...), or when its recompute *facts* leave what it calls unproven:
-    an unresolved or unregistered call might bound rows too. Blank code reads
-    every row.
+    Conservative: True unless every row is provably read. The code may bound
+    rows when it calls a row-bounding method (``head``, ``limit``, ``slice``...)
+    on any receiver, slices with a subscript (``df[:10]``), or leaves a call
+    unproven in its recompute *facts* (an unresolved or unregistered call might
+    bound rows too). Some such code still reads every row (``sort().head()``);
+    it is answered True all the same. Blank code reads every row.
     """
     if not isinstance(code, str) or not code.strip():
         return False
@@ -2609,11 +2611,21 @@ def code_bounds_rows(code: object, facts: NodeRecomputeFacts | None) -> bool:
     except SyntaxError:
         return True
     return any(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in _ROW_BOUNDING_FRAME_METHODS
+        (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _ROW_BOUNDING_FRAME_METHODS
+        )
+        or (isinstance(node, ast.Subscript) and _subscript_slices(node.slice))
         for node in ast.walk(tree)
     )
+
+
+def _subscript_slices(index: ast.expr) -> bool:
+    """Whether a subscript index takes a slice of rows (``[:10]``, ``[0:10, "a"]``)."""
+    if isinstance(index, ast.Slice):
+        return True
+    return isinstance(index, ast.Tuple) and any(isinstance(e, ast.Slice) for e in index.elts)
 
 
 def code_recompute_facts(
