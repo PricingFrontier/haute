@@ -1764,7 +1764,7 @@ def test_recovery_preview_plans_only_the_ready_ancestor_closure(
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     captured: dict[str, object] = {}
 
-    async def execute(body: object) -> PreviewNodeResponse:
+    async def execute(body: object, _http_request: object) -> PreviewNodeResponse:
         captured["body"] = body
         return PreviewNodeResponse(node_id="clean", status="ok")
 
@@ -1828,7 +1828,7 @@ def test_recovery_preview_closure_shares_canonical_cache_identity(
     document = load_pipeline_editor_document(pipeline_file, project_root=tmp_path)
     captured: dict[str, object] = {}
 
-    async def execute(body: object) -> PreviewNodeResponse:
+    async def execute(body: object, _http_request: object) -> PreviewNodeResponse:
         captured["body"] = body
         return PreviewNodeResponse(node_id="clean", status="ok")
 

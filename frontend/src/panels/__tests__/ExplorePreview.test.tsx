@@ -256,7 +256,11 @@ function resetStores() {
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
 }
 
-function renderExplore(previewData?: PreviewData | null, node: SimpleNode = exploreNode) {
+function renderExplore(
+  previewData?: PreviewData | null,
+  node: SimpleNode = exploreNode,
+  onRefresh?: () => void,
+) {
   return render(
     <ExplorePreview
       node={node}
@@ -265,6 +269,7 @@ function renderExplore(previewData?: PreviewData | null, node: SimpleNode = expl
       submodels={{}}
       preamble="import polars as pl"
       previewData={previewData}
+      onRefresh={onRefresh}
     />,
   )
 }
@@ -781,7 +786,7 @@ describe("ExplorePreview", () => {
     expect(await screen.findByText("No cached data yet")).toBeInTheDocument()
   })
 
-  it("cancels the running profile job, whichever consumer started it", async () => {
+  it("stops the running profile job from the frame's Stop, whichever consumer started it", async () => {
     const currentPoint = point("current", DATA_VERSION)
     mockGetNodeDataPoint.mockResolvedValue(currentPoint)
     mockGetNodeDataProfile.mockResolvedValue({
@@ -792,14 +797,49 @@ describe("ExplorePreview", () => {
     })
     mockCancelNodeData.mockResolvedValue({ status: "cancelled", progress: 0.4, message: "Cancelled" })
 
-    renderExplore()
+    renderExplore(null, exploreNode, vi.fn())
 
-    const cancel = await screen.findByTestId("explore-profile-cancel")
+    // Refresh reads Stop while the profile runs.
+    const stop = await screen.findByTestId("preview-stop")
     await act(async () => {
-      fireEvent.click(cancel)
+      fireEvent.click(stop)
     })
 
     expect(mockCancelNodeData).toHaveBeenCalledWith("profile-1")
+  })
+
+  it("asks for a failed profile again when Refresh is pressed", async () => {
+    const currentPoint = point("current", DATA_VERSION)
+    mockGetNodeDataPoint.mockResolvedValue(currentPoint)
+    mockGetNodeDataProfile.mockResolvedValue({
+      status: "started",
+      job_id: "profile-1",
+      message: "Profiling data",
+      point: currentPoint,
+    })
+    const onRefresh = vi.fn()
+    renderExplore(null, exploreNodeWithConfig({ overview: { dataset_snapshot: true } }), onRefresh)
+    await waitFor(() =>
+      expect(useNodeDataStore.getState().profileJobs[SLOT_KEY]?.jobId).toBe("profile-1"),
+    )
+    act(() => {
+      useNodeDataStore.getState().finishProfileJob(SLOT_KEY, {
+        status: "cancelled",
+        progress: 0.5,
+        message: "Profile cancelled",
+      })
+    })
+    await screen.findByText(/Profiling failed: Profile cancelled/)
+    mockGetNodeDataProfile.mockClear()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Refresh" }))
+    })
+
+    expect(onRefresh).toHaveBeenCalledTimes(1)
+    expect(mockGetNodeDataProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ node_id: "explore_1" }),
+    )
   })
 
   it("offers a retry after a failed profile instead of empty panes", async () => {
@@ -947,10 +987,10 @@ describe("ExplorePreview", () => {
     })
     mockCancelNodeData.mockRejectedValue(new Error("cancel route unreachable"))
 
-    renderExplore()
-    const cancel = await screen.findByTestId("explore-profile-cancel")
+    renderExplore(null, exploreNode, vi.fn())
+    const stop = await screen.findByTestId("preview-stop")
     await act(async () => {
-      fireEvent.click(cancel)
+      fireEvent.click(stop)
     })
 
     expect(
@@ -961,7 +1001,7 @@ describe("ExplorePreview", () => {
     // The job is untouched by a refused cancellation: still running, still
     // cancellable, never silently forgotten.
     expect(useNodeDataStore.getState().profileJobs[SLOT_KEY]?.jobId).toBe("profile-1")
-    expect(screen.getByTestId("explore-profile-cancel")).toBeInTheDocument()
+    expect(screen.getByTestId("preview-stop")).toBeInTheDocument()
   })
 
   it("renders execution diagnostics from the profile job", async () => {

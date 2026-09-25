@@ -74,6 +74,13 @@ export interface PipelineAPIReturn {
   nodeStatuses: Record<string, NodeStatus>
   fetchPreview: (node: Node, options?: FetchPreviewOptions) => void
   cancelPreview: () => void
+  /**
+   * The Stop button: stop the running preview (and the input preparation it
+   * waits on) on the server, and show the node's last stored result again.
+   * A snapshot build that refuses to stop keeps the preview running, and
+   * pressing Stop again cancels it again.
+   */
+  stopPreview: () => void
   /** Refresh: lazily preview upstream nodes missing _columns, then preview the target node. */
   refreshPreview: (node: Node) => void
   /** Re-preview a multi-frame node showing a specific frame (the
@@ -417,6 +424,15 @@ export default function usePipelineAPI({
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, NodeStatus>>({})
   const previewAbort = useRef<AbortController | null>(null)
   const previewRequestSeq = useRef(0)
+  // Requests the user stopped, so their abort settles as a stop rather than
+  // being ignored like a superseded request.
+  const stoppedRequests = useRef(new Set<number>())
+  // Set while a stopped request's snapshot build refused to stop: Stop then
+  // cancels that build again instead of starting over.
+  const stopRetry = useRef<(() => Promise<void>) | null>(null)
+  // The node the latest preview request is for, so a stop can restore its
+  // last stored result.
+  const previewTarget = useRef<Node | null>(null)
   const saveRequestSeq = useRef(0)
   const appliedSaveSeq = useRef(0)
   const invalidatePreviewRequests = useCallback(() => {
@@ -565,8 +581,55 @@ export default function usePipelineAPI({
     }
   }, [adoptPipelineDocument, addToast])
 
+  // After a stop, show the node's last stored result for the current source
+  // and row limit, or nothing (the panel then offers Refresh).
+  const restoreAfterStop = useCallback((node: Node) => {
+    const stored = useNodeResultsStore.getState().getPreview(node.id)
+    setPreviewData(
+      stored && stored.source === activeSourceRef.current && stored.rowLimit === rowLimitRef.current
+        ? stored.data
+        : null,
+    )
+  }, [])
+
+  /**
+   * Settle a request the user stopped. Returns false when the request was not
+   * stopped, so the caller handles the outcome as before.
+   */
+  const settleStopped = useCallback((node: Node, requestId: number, err: unknown): boolean => {
+    if (!stoppedRequests.current.has(requestId)) return false
+    stoppedRequests.current.delete(requestId)
+    if (previewRequestSeq.current !== requestId) return true
+    const failed = err as { name?: unknown; jobId?: unknown; message?: unknown } | null
+    if (failed?.name === "CancellationFailed" && typeof failed.jobId === "string") {
+      // The snapshot build may still be running, so the preview stays running
+      // and Stop cancels that build again.
+      const jobId = failed.jobId
+      addToast("error", `Stopping failed: ${String(failed.message)} Press Stop to try again.`)
+      stopRetry.current = async () => {
+        const { cancelInputSnapshotBuild } = await import("./ensureInputSnapshots")
+        try {
+          await cancelInputSnapshotBuild(jobId)
+        } catch (retried) {
+          addToast("error", `Stopping failed: ${apiErrorMessage(retried)} Press Stop to try again.`)
+          return
+        }
+        stopRetry.current = null
+        if (previewRequestSeq.current !== requestId) return
+        restoreAfterStop(node)
+        setPreviewBusy(false)
+      }
+      return true
+    }
+    restoreAfterStop(node)
+    setPreviewBusy(false)
+    return true
+  }, [addToast, restoreAfterStop])
+
   const fetchPreviewImmediate = useCallback((node: Node, existingRequestId?: number, options?: ImmediatePreviewOptions) => {
     const requestId = existingRequestId ?? ++previewRequestSeq.current
+    previewTarget.current = node
+    if (existingRequestId === undefined) stopRetry.current = null
     // Abort any in-flight preview request
     previewAbort.current?.abort()
     previewAbort.current = null
@@ -768,6 +831,7 @@ export default function usePipelineAPI({
         }
       })
       .catch((err: unknown) => {
+        if (settleStopped(node, requestId, err)) return
         // Superseded by a newer preview request: that request owns the
         // panel surface.
         if (previewRequestSeq.current !== requestId) return
@@ -792,14 +856,15 @@ export default function usePipelineAPI({
         // Announced before the preview stops being busy, so the refetch of a
         // stale displayed preview never sees the entry before its re-stamp.
         if (rootCapturedIds.length > 0) announceOwnCaptures(rootCapturedIds)
-        if (previewRequestSeq.current === requestId) {
+        // A stop whose snapshot build refused to stop keeps the preview running.
+        if (previewRequestSeq.current === requestId && stopRetry.current === null) {
           setPreviewBusy(false)
         }
         if (previewAbort.current === controller) {
           previewAbort.current = null
         }
       })
-  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews])
+  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, sourceFileRef, sourceRevisionRef, setNodesRaw, addToast, ensureSnapshotsForPreviews, settleStopped])
 
   useEffect(() => {
     fetchPreviewImmediateRef.current = fetchPreviewImmediate
@@ -811,6 +876,8 @@ export default function usePipelineAPI({
 
   const fetchPreview = useCallback((node: Node, options: FetchPreviewOptions = {}) => {
     const requestId = ++previewRequestSeq.current
+    previewTarget.current = node
+    stopRetry.current = null
     // Cancel any previous node preview as soon as the user changes
     // selection. The next request is still debounced, but stale backend
     // work should not keep running during that debounce window.
@@ -866,9 +933,32 @@ export default function usePipelineAPI({
     previewDebounce.cancel()
   }, [previewDebounce])
 
+  const stopPreview = useCallback(() => {
+    const retry = stopRetry.current
+    if (retry) {
+      void retry()
+      return
+    }
+    previewDebounce.cancel()
+    const controller = previewAbort.current
+    if (controller) {
+      // The request's own abort path settles it (see settleStopped); an abort
+      // during input preparation cancels the snapshot build it started.
+      stoppedRequests.current.add(previewRequestSeq.current)
+      controller.abort()
+      return
+    }
+    // Nothing sent yet (a debounced preview): settle here.
+    ++previewRequestSeq.current
+    if (previewTarget.current) restoreAfterStop(previewTarget.current)
+    setPreviewBusy(false)
+  }, [previewDebounce, restoreAfterStop])
+
   /** Lazily preview upstream nodes that are missing _columns, then preview the target node. */
   const refreshPreview = useCallback((node: Node) => {
     const requestId = ++previewRequestSeq.current
+    previewTarget.current = node
+    stopRetry.current = null
     previewAbort.current?.abort()
     previewAbort.current = null
     const controller = new AbortController()
@@ -1016,6 +1106,11 @@ export default function usePipelineAPI({
     )
       .then(() => previewStaleUpstream())
       .then(() => {
+        // Stopped while previewing upstream nodes: nothing more runs.
+        if (controller.signal.aborted) {
+          settleStopped(node, requestId, null)
+          return
+        }
         if (!requestStillCurrent()) {
           if (previewRequestSeq.current === requestId) setPreviewBusy(false)
           return
@@ -1026,6 +1121,7 @@ export default function usePipelineAPI({
         })
       })
       .catch((err: unknown) => {
+        if (settleStopped(node, requestId, err)) return
         if (previewRequestSeq.current !== requestId || isAbortError(err)) return
         if (!documentStillCurrent()) return
         const detail = apiErrorMessage(err)
@@ -1339,6 +1435,6 @@ export default function usePipelineAPI({
     previewData, setPreviewData,
     previewBusy,
     nodeStatuses,
-    fetchPreview, cancelPreview, refreshPreview, previewNodeFrame, handleSave, adoptPipelineDocument,
+    fetchPreview, cancelPreview, stopPreview, refreshPreview, previewNodeFrame, handleSave, adoptPipelineDocument,
   }
 }

@@ -6,6 +6,7 @@ import useNodeDataStore from "../../stores/useNodeDataStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useDocumentStatusStore from "../../stores/useDocumentStatusStore"
 import useToastStore from "../../stores/useToastStore"
+import useNodeWorkStore, { stopNodeWork } from "../../stores/useNodeWorkStore"
 import useNodeDataCache, { deriveAvailability, refreshNodeDataCache } from "../useNodeDataCache"
 
 vi.mock("../../api/client", () => ({
@@ -97,6 +98,7 @@ function renderCache(nodeId: string) {
 
 describe("useNodeDataCache", () => {
   beforeEach(() => {
+    useNodeWorkStore.setState({ running: {} })
     useNodeDataStore.getState().reset()
     useSettingsStore.setState({ activeSource: "live", sources: ["live"] })
     useDocumentStatusStore.setState({
@@ -675,6 +677,86 @@ describe("useNodeDataCache", () => {
     })
 
     expect(mockCancel).toHaveBeenCalledWith("job-3")
+  })
+
+  it("stops a build whose job id had not arrived when Stop was pressed", async () => {
+    mockGetPoint.mockResolvedValue(point({ state: "missing", generation: null, data_version: null }))
+    let answer!: (value: Awaited<ReturnType<typeof runNodeData>>) => void
+    mockRun.mockImplementation(() => new Promise((resolve) => { answer = resolve }))
+    mockCancel.mockResolvedValue({ status: "cancelled", progress: 0, message: "Cache build cancelled" })
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.availability).toBe("missing"))
+
+    let building!: Promise<void>
+    act(() => {
+      building = result.current.run()
+    })
+    await waitFor(() => expect(mockRun).toHaveBeenCalled())
+    await act(async () => {
+      await result.current.cancel()
+    })
+    expect(mockCancel).not.toHaveBeenCalled()
+
+    await act(async () => {
+      answer({
+        status: "started",
+        job_id: "job-late",
+        cached: false,
+        message: "Caching started",
+        point: point({ state: "building", generation: null, data_version: null }),
+      })
+      await building
+    })
+
+    expect(mockCancel).toHaveBeenCalledWith("job-late")
+  })
+
+  it("leaves a build joined from elsewhere running when this node stops", async () => {
+    mockGetPoint.mockResolvedValue(point({ state: "missing", generation: null, data_version: null }))
+    mockRun.mockResolvedValue({
+      status: "joined",
+      job_id: "theirs",
+      cached: false,
+      message: "Caching",
+      point: point({ state: "building", generation: null, data_version: null }),
+    })
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.availability).toBe("missing"))
+    await act(async () => {
+      await result.current.run()
+    })
+
+    await act(async () => {
+      await result.current.cancel()
+    })
+
+    expect(mockCancel).not.toHaveBeenCalled()
+    // Not this node's work, so its frame does not offer to stop it.
+    expect(Object.values(useNodeWorkStore.getState().running)).not.toContain("explore")
+  })
+
+  it("shows the node's Stop while its own build runs, and the node's Stop cancels it", async () => {
+    mockGetPoint.mockResolvedValue(point({ state: "missing", generation: null, data_version: null }))
+    mockRun.mockResolvedValue({
+      status: "started",
+      job_id: "job-own",
+      cached: false,
+      message: "Caching started",
+      point: point({ state: "building", generation: null, data_version: null }),
+    })
+    mockCancel.mockResolvedValue({ status: "cancelled", progress: 0, message: "Cache build cancelled" })
+    const { result } = renderCache("explore")
+    await waitFor(() => expect(result.current.availability).toBe("missing"))
+    await act(async () => {
+      await result.current.run()
+    })
+    await waitFor(() => expect(Object.values(useNodeWorkStore.getState().running)).toContain("explore"))
+
+    await act(async () => {
+      stopNodeWork("explore")
+    })
+
+    await waitFor(() => expect(mockCancel).toHaveBeenCalledWith("job-own"))
   })
 
   it("stops showing the previous identity's answer the moment the identity changes", async () => {

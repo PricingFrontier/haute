@@ -267,11 +267,23 @@ reconciliation rather than dropping them or committing a second mutation.
   `data.nodeType || node.type || ""`).
 - **`PipelineAPIReturn`** (`usePipelineAPI.ts`) — the hook's full surface:
   `loading`, `previewData`/`setPreviewData`, `previewBusy`, `nodeStatuses`,
-  `fetchPreview`/`cancelPreview`/`refreshPreview`/`previewNodeFrame`, and
+  `fetchPreview`/`cancelPreview`/`stopPreview`/`refreshPreview`/`previewNodeFrame`, and
   `handleSave: () => Promise<boolean>` (resolves `true`/`false`, never
   rejects).
 - **`FetchPreviewOptions`** — `{ debounceMs? }`, the per-call override for
   the preview debounce (Optimiser click previews use a longer one).
+- **`stopPreview`** — the frame's Stop. It aborts the request in flight and
+  marks it stopped, so its abort settles as a stop rather than being ignored as
+  superseded: the panel shows the node's last stored preview for the current
+  source and row limit, or nothing (the empty frame offers Refresh), and
+  `previewBusy` clears. An abort during input preparation cancels only a
+  snapshot build this tab started; one it joined (`joined: true`) is left
+  running and only waited on no longer. If that cancellation fails
+  (`CancellationFailedError`, which carries the build's `jobId`), the preview
+  stays busy, a toast says so, and the next Stop cancels that build again. A
+  stop while upstream nodes are being previewed runs nothing further. With
+  nothing sent yet (a debounced preview) it settles at once. A new
+  fetch or Refresh supersedes a pending retry.
 - **`GraphDiff`** (`graphDiff.ts`) —
   `{ added, removed, changed, moved: Set<string> }` node ids, keyed by the
   comparison view's two graph versions.

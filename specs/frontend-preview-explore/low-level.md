@@ -21,7 +21,7 @@
 | File | Responsibility |
 | --- | --- |
 | `frontend/src/panels/DataPreview.tsx` | Virtualised preview table, frame selection, search, cell callbacks and value formatting. |
-| `frontend/src/panels/PreviewPanelFrame.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Resizable/collapsible frame and generic ARIA tab strip with optional visible/assistive per-tab indicators. |
+| `frontend/src/panels/PreviewPanelFrame.tsx`, `frontend/src/panels/previewRunContext.ts`, `frontend/src/panels/PreviewPanelTabs.tsx` | Resizable/collapsible frame and generic ARIA tab strip with optional visible/assistive per-tab indicators. |
 | `frontend/src/panels/previewPanelLayout.ts` | Shared preview-panel dimensions and header/action layout constants. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-diagnostic banner owned by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md) and consumed by Explore progress and cache reports. |
 | `frontend/src/components/ExecutionDiagnosticsIndicator.tsx` | Compact preview-header execution diagnostic indicator. |
@@ -340,7 +340,16 @@ and remediation without exposing raw bounded-collection JSON.
   renders the labelled Refresh button immediately before its size controls in
   both open and collapsed headers. All preview variants forward the active
   node's existing refresh callback; Explore retains its "Refresh Explore outputs"
-  tooltip. A previewable active node without results gets an explicit empty
+  tooltip. While the `PreviewRunContext` (`panels/previewRunContext.ts`) the App
+  provides around the active node's preview reports `running`, the same button
+  reads **Stop** (danger styling, `data-testid="preview-stop"`) and calls its
+  `onStop` instead; a frame without `onRefresh` shows neither. The App's run is
+  `previewBusy` or any registered node work (`useNodeWorkRunning`), and its Stop
+  calls `stopPreview` and `stopNodeWork(nodeId)`. Ctrl/Cmd+Enter only ever
+  presses Refresh, never Stop. Explore extends the context: its run also
+  covers the profile job, its Stop also cancels the profile, and its Refresh also
+  asks again for a profile that failed or was stopped; it has no separate
+  "Cancel profile" button, only "Retry profile" for a failed one. A previewable active node without results gets an explicit empty
   preview frame so Refresh remains reachable. `NodePanelHeader` contains no
   Refresh action; `SchemaWarningBanner` keeps its refresh callback.
 - `PreviewPanelTabs` gives exactly one enabled tab `tabIndex=0`; Left/Right wrap across enabled

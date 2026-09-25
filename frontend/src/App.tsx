@@ -64,6 +64,8 @@ import useGitStore from "./stores/useGitStore"
 import useToastStore from "./stores/useToastStore"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 import { refreshNodeDataCache } from "./hooks/useNodeDataCache"
+import { stopNodeWork, useNodeWorkRunning } from "./stores/useNodeWorkStore"
+import { PreviewRunContext, type PreviewRun } from "./panels/previewRunContext"
 import useDocumentStatusStore from "./stores/useDocumentStatusStore"
 import { HAUTE_SESSION_EXPIRED_EVENT } from "./api/client"
 
@@ -172,6 +174,8 @@ type ActiveNodePreviewProps = {
   tracedCell: { rowIndex: number; column: string } | null
   previewNodeFrame: (nodeId: string, portLabel: string) => unknown
   onRefresh: () => void
+  /** Whether the active node's work is running, and what stops it. */
+  run: PreviewRun
 }
 
 function ActiveNodePreview({
@@ -189,7 +193,46 @@ function ActiveNodePreview({
   tracedCell,
   previewNodeFrame,
   onRefresh,
+  run,
 }: ActiveNodePreviewProps) {
+  return (
+    <PreviewRunContext.Provider value={run}>
+      <ActiveNodePreviewBody
+        documentCanExecute={documentCanExecute}
+        activeNodeId={activeNodeId}
+        activeNode={activeNode}
+        panelNodes={panelNodes}
+        panelEdges={panelEdges}
+        submodels={submodels}
+        preamble={preamble}
+        previewData={previewData}
+        getModellingPreview={getModellingPreview}
+        getOptimiserPreview={getOptimiserPreview}
+        onCellClick={onCellClick}
+        tracedCell={tracedCell}
+        previewNodeFrame={previewNodeFrame}
+        onRefresh={onRefresh}
+      />
+    </PreviewRunContext.Provider>
+  )
+}
+
+function ActiveNodePreviewBody({
+  documentCanExecute,
+  activeNodeId,
+  activeNode,
+  panelNodes,
+  panelEdges,
+  submodels,
+  preamble,
+  previewData,
+  getModellingPreview,
+  getOptimiserPreview,
+  onCellClick,
+  tracedCell,
+  previewNodeFrame,
+  onRefresh,
+}: Omit<ActiveNodePreviewProps, "run">) {
   const activeNodeType = activeNode ? effectiveNodeType(activeNode) : undefined
   const canRefresh = activeNode
     && activeNodeType !== NODE_TYPES.SUBMODEL
@@ -806,7 +849,7 @@ function FlowEditor() {
     loading, loadError, previewData, setPreviewData,
     previewBusy,
     nodeStatuses,
-    fetchPreview, cancelPreview, refreshPreview, previewNodeFrame, handleSave, adoptPipelineDocument,
+    fetchPreview, cancelPreview, stopPreview, refreshPreview, previewNodeFrame, handleSave, adoptPipelineDocument,
   } = usePipelineAPI({
     selectedNode,
     graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef,
@@ -1401,6 +1444,19 @@ function FlowEditor() {
     refreshNodeDataCache(activePanelNodeId)
   }, [activePanelNodeId, refreshPreview])
 
+  // Stop covers the preview and any work a consumer of the node started for it
+  // (a shared data build, an Import). Training and optimiser runs keep their
+  // own cancel buttons and are never stopped here.
+  const nodeWorkRunning = useNodeWorkRunning(activePanelNodeId)
+  const handlePanelStop = useCallback(() => {
+    stopPreview()
+    if (activePanelNodeId) stopNodeWork(activePanelNodeId)
+  }, [activePanelNodeId, stopPreview])
+  const previewRun = useMemo<PreviewRun>(
+    () => ({ running: previewBusy || nodeWorkRunning, onStop: handlePanelStop }),
+    [handlePanelStop, nodeWorkRunning, previewBusy],
+  )
+
   // Ctrl/Cmd+Enter presses the open panel's Refresh — the way to calculate
   // when clicking a node no longer does (manual calculation).
   useEffect(() => {
@@ -1450,6 +1506,7 @@ function FlowEditor() {
       tracedCell={tracedCell}
       previewNodeFrame={previewNodeFrame}
       onRefresh={handlePanelPreviewRefresh}
+      run={previewRun}
     />
   )
   return (

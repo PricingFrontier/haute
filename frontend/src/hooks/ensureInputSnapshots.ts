@@ -22,6 +22,14 @@ const CANCELLATION_WAIT_MS = 60 * POLL_INTERVAL_MS
  */
 export class CancellationFailedError extends Error {
   override name = "CancellationFailed"
+
+  /** The build that may still be running, so the caller can cancel it again. */
+  readonly jobId: string
+
+  constructor(message: string, jobId: string) {
+    super(message)
+    this.jobId = jobId
+  }
 }
 
 export interface EnsureInputSnapshotsOptions {
@@ -38,8 +46,9 @@ export interface EnsureInputSnapshotsOptions {
    */
   force?: boolean
   /**
-   * The id of each input-snapshot build this pass started or joined, so a
-   * caller can cancel that build again itself if a cancellation fails.
+   * The id of each input-snapshot build this pass started, so a caller can
+   * cancel that build again itself if a cancellation fails. A build joined
+   * from elsewhere is not reported: aborting only stops waiting for it.
    */
   onJobStarted?: (jobId: string) => void
 }
@@ -81,7 +90,8 @@ function abortError(): DOMException {
 
 async function waitForBuild(
   jobId: string,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  owned: boolean,
 ): Promise<void> {
   try {
     const job = await waitForJob({
@@ -95,7 +105,9 @@ async function waitForBuild(
     }
   } catch (caught) {
     if (!signal?.aborted) throw caught
-    await cancelInputSnapshotBuild(jobId)
+    // A build joined from another tab or consumer is theirs: this pass only
+    // stops waiting for it.
+    if (owned) await cancelInputSnapshotBuild(jobId)
     throw abortError()
   }
 }
@@ -118,6 +130,7 @@ export async function cancelInputSnapshotBuild(jobId: string): Promise<void> {
       `The snapshot build could not be cancelled: ${
         caught instanceof Error ? caught.message : String(caught)
       }`,
+      jobId,
     )
   }
   if (TERMINAL_JOB_STATUSES.has(acknowledged.status as never)) return
@@ -132,6 +145,7 @@ export async function cancelInputSnapshotBuild(jobId: string): Promise<void> {
     if (caught instanceof JobWaitTimeoutError) {
       throw new CancellationFailedError(
         "The snapshot build did not stop after it was cancelled; it may still be running.",
+        jobId,
       )
     }
     // The build was asked to stop but its state is unknown, which is a
@@ -141,6 +155,7 @@ export async function cancelInputSnapshotBuild(jobId: string): Promise<void> {
       `The snapshot build could not be confirmed as stopped: ${
         caught instanceof Error ? caught.message : String(caught)
       }`,
+      jobId,
     )
   }
 }
@@ -168,8 +183,12 @@ function quoteInputSource(config: Record<string, unknown>): SnapshotSource {
  * abort that arrives meanwhile is handled by `waitForBuild`, which cancels the
  * job it was handed.
  */
-async function startBuild(source: SnapshotSource, refresh = false): Promise<string> {
-  return (await buildInputCache({ ...source, refresh })).job_id
+async function startBuild(
+  source: SnapshotSource,
+  refresh = false,
+): Promise<{ jobId: string; owned: boolean }> {
+  const started = await buildInputCache({ ...source, refresh })
+  return { jobId: started.job_id, owned: !started.joined }
 }
 
 /**
@@ -235,7 +254,7 @@ async function ensureSnapshot(
   // The build endpoint joins an existing job for "building". Corrupt and
   // failed snapshots are known-bad and are rebuilt before execution.
   notifyBuildStart()
-  const jobId = await startBuild(source, options.force === true)
-  options.onJobStarted?.(jobId)
-  await waitForBuild(jobId, options.signal)
+  const { jobId, owned } = await startBuild(source, options.force === true)
+  if (owned) options.onJobStarted?.(jobId)
+  await waitForBuild(jobId, options.signal, owned)
 }
