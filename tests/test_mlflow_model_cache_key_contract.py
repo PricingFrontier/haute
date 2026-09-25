@@ -42,7 +42,9 @@ def _clean_cache():
     _model_cache.clear()
 
 
-def _fake_load_local(path: str, task: str = "regression") -> ScoringModel:
+def _fake_load_local(
+    path: str, task: str = "regression", *, source: str | None = None
+) -> ScoringModel:
     """Loader stub whose model identity is the artifact file's bytes."""
     payload = Path(path).read_bytes().decode()
     return ScoringModel(

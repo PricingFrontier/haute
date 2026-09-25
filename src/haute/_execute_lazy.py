@@ -21,7 +21,6 @@ from haute._chunked_writes import (
     ChunkedWrite,
     JoinRecipe,
     WriteRecipe,
-    part_name,
     write_parts,
 )
 from haute._column_lineage import analyze_polars_lineage
@@ -1274,7 +1273,7 @@ class _PlannedCaptures:
         *,
         artifact: NodeSnapshotArtifact | None = None,
         prewritten: bool = False,
-        prewritten_digest: str | None = None,
+        prewritten_digests: Mapping[str, str] | None = None,
         join: JoinRecipe | None = None,
         recipe: WriteRecipe | None = None,
         unshaped_columns: Sequence[tuple[str, str]] | None = None,
@@ -1282,7 +1281,7 @@ class _PlannedCaptures:
         """Write one capture point through the chunked writer and continue from it.
 
         With ``prewritten``, *artifact* already holds the node's output — a
-        batch Model Score's scored file — and is published without a second
+        batch Model Score's scored parts — and is published without a second
         write. With ``join``, the recipe *frame* was built from, an edge join
         is written a driving chunk at a time. With ``recipe``, the write recipe
         *frame* was built from, a chunk-local single-input node is written a
@@ -1361,8 +1360,8 @@ class _PlannedCaptures:
                         node_id=node_id,
                     )
                 artifact.record_digests(written.digests)
-            elif prewritten_digest is not None:
-                artifact.record_digests({part_name(0): prewritten_digest})
+            elif prewritten_digests:
+                artifact.record_digests(prewritten_digests)
             _snapshot_fault_point("snapshot_capture_before_publish", node_id)
             if self._inputs_changed():
                 # The pre-run check exists to stop exactly this mix: seeds

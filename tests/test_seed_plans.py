@@ -1218,6 +1218,31 @@ def test_preview_never_captures_a_plain_fan_out_feeder_target_or_model_score(
     assert _kinds(resolve_seed_plan(_preview(scored, "Y", source="batch"), store=store)) == {}
 
 
+@pytest.mark.parametrize(("source", "captured"), [("batch", True), ("live", False)])
+def test_preview_captures_a_batch_model_score_a_capture_below_drains(
+    project: Path, store: NodeSnapshotStore, source: str, captured: bool
+) -> None:
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("other", NodeType.DATA_INPUT, _parquet(project / "claims.parquet")),
+            ("M", NodeType.MODEL_SCORE, {}),
+            ("J", NodeType.POLARS, _code("df = M.join(other, on='id', how='left')")),
+            ("Y", NodeType.POLARS, _code("df = J.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("src", "M"), ("M", "J"), ("other", "J"), ("J", "Y")],
+    )
+    # ``J`` writes every row of ``M``: a row-local scan drained whole would
+    # hold the scored frame in memory, so ``M`` writes its own scored parts.
+    expected = {"J": CaptureKind.MATERIALISING}
+    if captured:
+        expected["M"] = CaptureKind.MODEL_SCORE
+    assert _kinds(resolve_seed_plan(_preview(graph, "Y", source=source), store=store)) == expected
+    # Previewing the scorer itself drains nothing: it still scores row-locally.
+    assert _kinds(resolve_seed_plan(_preview(graph, "M", source=source), store=store)) == {}
+
+
 def test_preview_may_seed_its_target(project: Path, store: NodeSnapshotStore) -> None:
     graph = _joined(project)
     j1 = _publish(store, graph, "J")
@@ -2058,3 +2083,104 @@ def test_capture_set_is_settled_before_execution_and_claims(
             assert child.decision.skipped_captures == {"A": "cheap_segment"}
         finally:
             child.close()
+
+
+@pytest.mark.parametrize(
+    ("between", "captured"),
+    [
+        ("df = M.with_columns(pl.lit(1).alias('one'))", True),
+        ("df = M.filter(pl.col('a') > 0)", True),
+        ("df = M.head(10)", False),
+        ("df = M.slice(0, 10)", False),
+        ("df = M[:10]", False),
+        ("df = M[0:10, ['a']]", False),
+        ("df = my_helper(M)", False),
+        # A callback receives the whole frame and may return any of its rows.
+        ("df = M.pipe(lambda frame: frame)", False),
+        # Reads every row, but a bounding call anywhere is answered
+        # conservatively: the scorer keeps the row-local scan it had before.
+        ("df = M.sort('a').head(10)", False),
+    ],
+)
+def test_a_row_bounding_step_between_a_model_score_and_its_capture_drains_nothing(
+    project: Path, store: NodeSnapshotStore, between: str, captured: bool
+) -> None:
+    """Only a path that reads every row drains a scorer: a bound is pushed into its scan.
+
+    ``head`` (or code whose calls cannot be proven) below the scorer lets Polars
+    score only the rows it keeps, so capturing the scorer would score them all.
+    """
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("M", NodeType.MODEL_SCORE, {}),
+            ("B", NodeType.POLARS, _code(between)),
+            ("S", NodeType.POLARS, _code("df = B.sort('a')")),
+            ("Y", NodeType.POLARS, _code("df = S.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("src", "M"), ("M", "B"), ("B", "S"), ("S", "Y")],
+    )
+    kinds = _kinds(resolve_seed_plan(_preview(graph, "Y", source="batch"), store=store))
+    assert kinds.get("S") is CaptureKind.MATERIALISING
+    assert (kinds.get("M") is CaptureKind.MODEL_SCORE) is captured
+
+    # The same bound inside the capturing node's own code drains nothing either.
+    bounded_capture = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("M", NodeType.MODEL_SCORE, {}),
+            ("S", NodeType.POLARS, _code("df = M.head(10).sort('a')")),
+            ("Y", NodeType.POLARS, _code("df = S.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("src", "M"), ("M", "S"), ("S", "Y")],
+    )
+    kinds = _kinds(resolve_seed_plan(_preview(bounded_capture, "Y", source="batch"), store=store))
+    assert kinds == {"S": CaptureKind.MATERIALISING}
+
+
+@pytest.mark.parametrize(
+    ("post_code", "m2_kind"),
+    [
+        ("df = df.head(10)", CaptureKind.MODEL_SCORE),
+        # Its own sort already captures it as materialising: the kind does not matter.
+        ("df = df.head(10).sort('a')", CaptureKind.MATERIALISING),
+    ],
+)
+def test_a_captured_scorer_below_drains_the_scorer_above_despite_its_post_code_bound(
+    project: Path, store: NodeSnapshotStore, post_code: str, m2_kind: CaptureKind
+) -> None:
+    """A captured Model Score scores its whole input before its post-code runs.
+
+    ``M2``'s ``head`` bounds only its own output, so ``M1`` is drained through it:
+    left row-local, ``M1`` would be pulled whole into ``M2``'s batched scoring.
+    """
+    graph = _graph(
+        project,
+        [
+            ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
+            ("M1", NodeType.MODEL_SCORE, {}),
+            ("M2", NodeType.MODEL_SCORE, {"code": post_code}),
+            ("S", NodeType.POLARS, _code("df = M2.sort('a')")),
+            ("Y", NodeType.POLARS, _code("df = S.with_columns(pl.lit(1).alias('one'))")),
+        ],
+        [("src", "M1"), ("M1", "M2"), ("M2", "S"), ("S", "Y")],
+    )
+    assert _kinds(resolve_seed_plan(_preview(graph, "Y", source="batch"), store=store)) == {
+        "S": CaptureKind.MATERIALISING,
+        "M2": m2_kind,
+        "M1": CaptureKind.MODEL_SCORE,
+    }
+
+
+def test_code_without_recompute_facts_is_unproven() -> None:
+    """A node the planner holds no facts for cannot be proven to read every row."""
+    from haute.projection import code_bounds_rows, code_recompute_facts
+
+    code = "df = M.with_columns(pl.lit(1).alias('one'))"
+    assert code_bounds_rows(code, code_recompute_facts(code, frozenset({"M"}))) is False
+    assert code_bounds_rows(code, None) is True
+    assert code_bounds_rows("", None) is False
+    broken = "df = M.with_columns("
+    assert code_bounds_rows(broken, code_recompute_facts(broken, frozenset({"M"}))) is True

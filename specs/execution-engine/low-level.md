@@ -487,7 +487,11 @@ collection, so every capture holds the node's full output — the only builder t
 consumes the limit is Model Score, whose row-local scan scores every row a consumer pulls.
 A capture's `SourceCacheError` or `OSError` is the store's failure and propagates even
 when the walk records failures; any other failure while capturing is the node's own computation
-failing and is recorded at the node like any other.
+failing and is recorded at the node like any other. A bare `MemoryError` is never recorded: it
+is native code (CatBoost's `bad allocation`) failing an allocation the process's memory cap
+refused, which is the run exceeding its budget rather than a fault of the node that happened to
+allocate. Under a context with a memory limit and a working sampler it ends the walk as
+`ExecutionMemoryLimitExceededError` naming the budget; otherwise it propagates as it is.
 
 `selected_columns` has exactly one interpreter: this shared post-call filter, applied to
 every node's output in every execution profile. Source builders never push it into the
@@ -581,9 +585,9 @@ execution_context=None, node_id=None)` writes a node output that way as ordered
 checkpointing between parts; each part's
 xxh64 digest is computed while the part is written (a `HashingWriter` around the sink,
 and around `write_parquet` for an in-memory part), returned as `ChunkedWrite.digests`,
-and handed to the capture's artifact before publication; a prewritten scored file's digest
-comes from its `ScoreOutputDestination`; an explicit node-data build hands over its write's
-digests the same way:
+and handed to the capture's artifact before publication; a prewritten scored capture's
+digests, one per part, come from its `ScoreOutputDestination`; an explicit node-data build
+hands over its write's digests the same way:
 
 - **`sliceable(lf)`** walks Polars' optimised IR of `lf.slice(1, 1)` (`LazyFrame._ldf.visit()`,
   IR major version 14; another version answers False). It is True only for one chain of
@@ -797,20 +801,23 @@ Every capture point is written by `write_parts` (`fast_checkpoint=True`, in chun
 process streaming chunk size, `current_streaming_chunk_size()`) into a staging directory
 under the plan's token, and its capture record (`shared_snapshot_captures` evidence) carries
 the write's `write_strategy`, `write_parts`, `write_chunk_rows` (the rows-per-part bound the
-capture's write applied, null for a native write, a cross join, and a prewritten scored file),
-and `write_staged_inputs` (a batch Model Score's own scored file is `prewritten`): all columns
+capture's write applied, null for a native write, a cross join, and a prewritten scored capture),
+and `write_staged_inputs` (a batch Model Score's own scored parts are `prewritten`): all columns
 for an all-column demand, otherwise the negotiated columns present in the schema,
 carrier-preserving. Each part's xxh64 digest is
 computed while the part is written (a `HashingWriter` around the sink, and around
 `write_parquet` for an in-memory part), returned as `ChunkedWrite.digests`, and handed to the
-capture's artifact before publication; a prewritten scored file's digest comes from its
-`ScoreOutputDestination`; an explicit node-data build hands over its write's digests the same
-way. A batch Model Score
-(any scenario but `live`) whose output is exactly its scored file — no post-processing
+capture's artifact before publication; a prewritten scored capture's digests, one per part,
+come from its `ScoreOutputDestination`; an explicit node-data build hands over its write's
+digests the same way. A captured Model Score is built inside `model_score_whole_output`, so it
+scores every row through the batched scorer, a batch at a time, even under a display walk's
+row limit. A batch Model Score
+(any scenario but `live`) whose output is exactly its scored parts — no post-processing
 `code`, `selected_columns`, or `column_renames` — is not sunk at all: its capture is staged
-before the node is built, the node is built inside `model_score_output_destination`, and the
-scorer's file is published as the generation, holding the columns the scorer wrote. A
-Model Score with its own post-processing is sunk like any other capture. A negotiated column the
+before the node is built, the node is built inside `model_score_output_destination` with the
+artifact's directory, and the scorer's parts are published as the generation, holding the
+columns the scorer wrote. A Model Score with its own post-processing is sunk like any other
+capture, from a parquet scan of its scored parts, so its write is sliced. A negotiated column the
 node does not produce is logged (`snapshot_capture_column_unavailable`) and dropped; a
 missing column the run itself reads raises `ContractMismatchError`. After the
 `snapshot_capture_before_publish` fault point and a second runtime-input check, the capture
@@ -855,7 +862,10 @@ from the graph source using the same canonical project-root resolver as runtime 
 There is no uncontained direct-executor output mode or separate sink-path façade.
 
 **Admission (`_execution_admission.create_admitted_execution_context`).**
-`execution_budget_for_profile()` resolves an `ExecutionBudget`: checks profile-specific
+`execution_budget_for_profile()` resolves an `ExecutionBudget` for the run's profile, or for
+its `budget_profile` when one is given (admission and in-flight reservation still follow the
+run's own profile, so a preview budgeted as a cache build is still admitted, and never
+reserved, as a preview): checks profile-specific
 then global environment overrides first (`budget_policy="explicit_env"`), else — for
 profiles in `_ADAPTIVE_LOCAL_PROFILES` under the default `local_adaptive` memory
 policy — computes `usable = available_ram_bytes() - min(os_reserve, available/2)` then
@@ -2412,7 +2422,7 @@ present a structural or schema result as execution evidence.
   reason and blocking operator, and a captured two-input node gets no recipe and records no
   classifier reason.
 - `tests/test_node_snapshot_retention.py` (`test_publication_reads_no_part_in_full_after_writing_it`),
-  `tests/test_model_scorer.py` (`test_prewritten_scored_generation_carries_its_digest`), and
+  `tests/test_model_scorer.py` (`test_prewritten_scored_generation_carries_a_digest_per_part`), and
   `tests/test_node_data_routes.py` (`test_explicit_build_publishes_with_write_time_digests`) verify
   that captured node outputs, prewritten model scoring outputs, and explicit node-data builds publish
   with write-time xxh64 digests without re-reading parts in full.

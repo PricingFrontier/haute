@@ -741,8 +741,10 @@ def _wrap_catboost(model: CatBoostRegressor | CatBoostClassifier, *, source: str
     )
 
 
-def _load_rustystats_model(path: str) -> ScoringModel:
+def _load_rustystats_model(path: str, *, source: str | None = None) -> ScoringModel:
     """Load a RustyStats GLM from a ``.rsglm`` binary file.
+
+    *source* names the model in errors (an MLflow run); the file name otherwise.
 
     ``required_columns`` includes expression sources, offsets, and complement
     columns. RustyStats 0.9 reports named encoding keys there even though its
@@ -751,10 +753,21 @@ def _load_rustystats_model(path: str) -> ScoringModel:
     """
     import rustystats as rs
 
+    from haute.errors import ConfigError
     from haute.modelling._glm_terms import ENCODING_TERM_TYPES
 
     with open(path, "rb") as f:
-        model = rs.GLMModel.from_bytes(f.read())
+        data = f.read()
+    try:
+        model = rs.GLMModel.from_bytes(data)
+    except rs.exceptions.ValidationError as exc:
+        # RustyStats refuses files written under another serialization schema,
+        # e.g. a GLM trained before the RustyStats 0.9 upgrade.
+        raise ConfigError(
+            f"The RustyStats GLM from {source or repr(Path(path).name)} was saved by an "
+            f"older RustyStats and cannot be loaded by RustyStats {rs.__version__}. "
+            "Retrain it with this version of Haute."
+        ) from exc
     terms = model.terms_dict
     aliases = (
         {
@@ -777,7 +790,11 @@ def _load_rustystats_model(path: str) -> ScoringModel:
 
 
 def load_local_model(
-    path: str, task: str = "regression", *, contract_path: str | None = None
+    path: str,
+    task: str = "regression",
+    *,
+    contract_path: str | None = None,
+    source: str | None = None,
 ) -> ScoringModel:
     """Load a model from a local file path (e.g. bundled deploy artifact).
 
@@ -787,12 +804,14 @@ def load_local_model(
     - ``.ubj`` / ``.lgbm`` / ``.ebm`` → Haute's native wrappers; an EBM loads
       under *contract_path* when given, else the contract saved beside it
     - Otherwise → not yet supported (pyfunc local loading planned)
+
+    *source* names the model in errors (an MLflow run); the path otherwise.
     """
     if path.endswith(".cbm"):
         raw = _load_catboost_model(path, task)
-        return _wrap_catboost(raw, source=repr(path))
+        return _wrap_catboost(raw, source=source or repr(path))
     if path.endswith(".rsglm"):
-        return _load_rustystats_model(path)
+        return _load_rustystats_model(path, source=source)
     for suffix, wrapper_flavor in NATIVE_WRAPPER_SUFFIXES.items():
         if path.endswith(suffix):
             return _load_wrapper_model(path, task, wrapper_flavor, contract_path=contract_path)
@@ -1395,7 +1414,7 @@ def _load_with_bounded_retry(
                 return _load_wrapper_model(
                     local_path, task, cast(ModelFlavor, flavor), contract_path=contract_path
                 )
-            return _load_rustystats_model(local_path)
+            return _load_rustystats_model(local_path, source=f"MLflow run {run_id!r}")
         except (AttributeError, TypeError, KeyError, ConfigError, ArtifactVersionMismatchError):
             # Programmer error — a missing attribute, wrong type, or
             # unknown dict key is a bug in our dispatch code (or a
@@ -1596,11 +1615,15 @@ def load_mlflow_model(
                                 artifact_path=artifact_path,
                                 flavor=flavor,
                             )
+                            source = f"MLflow run {run_id!r}"
                             scoring_model = (
-                                load_local_model(str(local_path), task=task)
+                                load_local_model(str(local_path), task=task, source=source)
                                 if contract_local is None
                                 else load_local_model(
-                                    str(local_path), task=task, contract_path=str(contract_local)
+                                    str(local_path),
+                                    task=task,
+                                    contract_path=str(contract_local),
+                                    source=source,
                                 )
                             )
                             _model_cache.put(fast_key, scoring_model)

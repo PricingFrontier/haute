@@ -78,6 +78,7 @@ from haute._seed_plans import (
     ReadGeneration,
     SeedPlanHandoff,
     open_seed_plan,
+    preview_builds_snapshots,
     preview_input_node_ids,
 )
 from haute._source_cache import new_staging_token
@@ -1325,6 +1326,34 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
             trace_context.release_admission(preserve_primary_error=True)
 
 
+def _preview_budget_profile(
+    graph: PipelineGraph, body: PreviewNodeRequest
+) -> ExecutionProfile | None:
+    """The cache-build budget for a preview that builds node caches, else None.
+
+    A capture writes the node's whole output, so the preview is budgeted as
+    the cache build it runs. Planning only reads store metadata; a graph it
+    cannot plan keeps the preview budget, and the preview reports the error.
+    """
+    try:
+        with runtime_project_root_scope(graph.source_file):
+            builds = preview_builds_snapshots(
+                graph,
+                body.node_id,
+                source=body.source,
+                required_columns_by_node=_preview_required_columns_by_node(
+                    graph,
+                    body.node_id,
+                    body.requested_preview_columns,
+                )
+                or None,
+            )
+    except Exception as exc:  # noqa: BLE001 - the preview reports its own planning errors
+        logger.info("preview_budget_plan_unavailable", error=str(exc))
+        return None
+    return ExecutionProfile.NODE_SNAPSHOT if builds else None
+
+
 async def _preview_canonical_graph(
     body: PreviewNodeRequest, http_request: Request
 ) -> PreviewNodeResponse:
@@ -1365,9 +1394,24 @@ async def _preview_canonical_graph(
         async def _run_preview() -> PreviewNodeResponse:
             nonlocal preview_context, preview_started
             preview_started = True
+            # Planning can load a Model Score's model to learn its columns, as
+            # preview input resolution does just before; it is bounded the same
+            # way, and a plan that does not finish keeps the preview budget.
+            try:
+                budget_profile = await run_blocking_with_response_timeout(
+                    _preview_budget_profile,
+                    graph,
+                    body,
+                    timeout=_preview_timeout(),
+                    operation="pipeline_preview_budget",
+                )
+            except (BlockingWorkTimeoutError, TimeoutError):
+                logger.info("preview_budget_plan_timed_out", node_id=body.node_id)
+                budget_profile = None
             preview_context = create_admitted_execution_context(
                 operation="pipeline_preview",
                 profile=ExecutionProfile.PREVIEW_EAGER,
+                budget_profile=budget_profile,
                 cancellation_token=preview_token,
             )
             if resolve_interactive_execution_mode() == "process":

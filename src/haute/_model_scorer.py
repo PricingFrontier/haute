@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextvars
 import os
+import shutil
 import threading
 from collections.abc import Hashable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, closing, contextmanager, nullcontext, suppress
@@ -19,7 +20,7 @@ import numpy as np
 import polars as pl
 
 from haute._cache import CacheConsumer, checked_cache_input_values
-from haute._chunked_writes import _budgeted_rows, sliceable
+from haute._chunked_writes import _budgeted_rows, part_name, part_paths, scan_parts, sliceable
 from haute._execution_context import current_execution_context
 from haute._file_ops import ensure_disk_headroom
 from haute._hashing import content_hash_bytes
@@ -34,6 +35,8 @@ from haute.errors import ConfigError
 from haute.errors import FeatureMismatchError as FeatureMismatchError
 
 if TYPE_CHECKING:
+    from typing import IO
+
     # ``Task`` is the shared classification/regression literal already defined
     # for the feature contract; reuse it so the scorer surface does not invent
     # a second, drift-prone spelling of the task domain.
@@ -427,34 +430,42 @@ def _register_temp_cleanup(path: str) -> None:
                     paths = tuple(_temp_files_to_clean)
                     _temp_files_to_clean.clear()
                 for p in paths:
-                    with suppress(FileNotFoundError):
-                        os.unlink(p)
+                    _remove_scorer_temp(p)
 
             atexit.register(_cleanup_all)
             _atexit_registered = True
 
 
+def _remove_scorer_temp(path: str) -> None:
+    """Remove a scorer temp: an input file or a directory of scored parts."""
+    if os.path.isdir(path):
+        shutil.rmtree(path, ignore_errors=True)
+        return
+    with suppress(FileNotFoundError):
+        os.unlink(path)
+
+
 def _cleanup_registered_temp_files(paths: Iterable[str]) -> None:
-    """Unlink scorer temp files and remove them from the process-exit set."""
+    """Remove scorer temp files and directories and drop them from the process-exit set."""
     for path in dict.fromkeys(paths):
-        with suppress(FileNotFoundError):
-            os.unlink(path)
+        _remove_scorer_temp(path)
         with _temp_cleanup_lock:
             _temp_files_to_clean.discard(path)
 
 
 class ScoreOutputDestination:
-    """Where the next batch-scored output is written instead of a temporary file.
+    """Where the next batch-scored output is written instead of a temporary directory.
 
-    Single use: the first batch score in its scope writes to :attr:`path` and
-    sets :attr:`used`; the file then belongs to whoever set the destination,
-    so it is never registered for temporary-file cleanup.
+    Single use: the first batch score in its scope writes its part files into
+    :attr:`directory`, records each part's digest in :attr:`digests`, and sets
+    :attr:`used`; the parts then belong to whoever set the destination, so
+    they are never registered for temporary-file cleanup.
     """
 
-    def __init__(self, path: Path) -> None:
-        self.path = path
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory
         self.used = False
-        self.digest: str | None = None
+        self.digests: dict[str, str] = {}
 
 
 _score_output_destination: contextvars.ContextVar[ScoreOutputDestination | None] = (
@@ -463,14 +474,34 @@ _score_output_destination: contextvars.ContextVar[ScoreOutputDestination | None]
 
 
 @contextmanager
-def model_score_output_destination(path: Path) -> Iterator[ScoreOutputDestination]:
-    """Write the next batch-scored output within this scope to *path*."""
-    destination = ScoreOutputDestination(path)
+def model_score_output_destination(directory: Path) -> Iterator[ScoreOutputDestination]:
+    """Write the next batch-scored output within this scope into *directory*."""
+    destination = ScoreOutputDestination(directory)
     token = _score_output_destination.set(destination)
     try:
         yield destination
     finally:
         _score_output_destination.reset(token)
+
+
+_score_whole_output: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "haute_model_score_whole_output", default=False
+)
+
+
+@contextmanager
+def model_score_whole_output() -> Iterator[None]:
+    """Score every row within this scope, in batches, whatever the preview limit.
+
+    For a Model Score whose whole output a capture writes: a row-local scan
+    drained whole is pulled by Polars with no backpressure, so the entire
+    scored frame would sit in memory before it reached the capture's file.
+    """
+    token = _score_whole_output.set(True)
+    try:
+        yield
+    finally:
+        _score_whole_output.reset(token)
 
 
 def _claim_score_output_destination() -> ScoreOutputDestination | None:
@@ -1167,7 +1198,7 @@ def _score_batched_unified(
         )
         if scoped_temp_paths is not None:
             scoped_temp_paths.append(scored_path)
-    return pl.scan_parquet(scored_path)
+    return scan_parts(part_paths(Path(scored_path)))
 
 
 def score_frame(
@@ -1364,7 +1395,9 @@ def _run_score_pipeline(
             task=task,
         )
 
-    if row_limit:
+    # A captured scorer scores every row whatever the preview limit; the
+    # batched path keeps that to one batch in memory at a time.
+    if row_limit and not (source != "live" and _score_whole_output.get()):
         result_lf = _score_row_local_scan(
             scoring_model,
             lf,
@@ -1912,12 +1945,13 @@ def _batch_score_to_parquet(
     categorical_levels: _CategoricalLevels = None,
     destination: ScoreOutputDestination | None = None,
 ) -> str:
-    """Score a parquet file in batches, return path to scored output.
+    """Score a parquet input in batches; return the directory of scored part files.
 
-    The output goes to *destination.path* when a destination is given, else to a
-    new temporary file.
+    Each batch is written as its own part as soon as it is scored, so one
+    batch is in memory at a time; :func:`scan_parts` reads the parts back as
+    one frame. The parts go into *destination.directory*, each digest recorded,
+    when a destination is given, else into a new temporary directory.
     """
-    import os
     import tempfile
 
     import pyarrow.parquet as pq
@@ -1929,19 +1963,29 @@ def _batch_score_to_parquet(
     )
 
     if destination is not None:
-        out_path = str(destination.path)
+        out_dir = destination.directory
+        created_dir = not out_dir.exists()
+        out_dir.mkdir(parents=True, exist_ok=True)
     else:
-        fd, out_path = tempfile.mkstemp(
-            suffix=".parquet",
-            prefix="haute_score_out_",
-        )
-        os.close(fd)
+        out_dir = Path(tempfile.mkdtemp(prefix="haute_score_out_"))
+        created_dir = True
+    written: list[Path] = []
+    digests: dict[str, str] = {}
+    part_schema: pl.Schema | None = None
 
-    writer = None
+    def write_part(frame: pl.DataFrame) -> None:
+        path = out_dir / part_name(len(written))
+        written.append(path)
+        ensure_disk_headroom(out_dir, int(frame.estimated_size()))
+        if destination is None:
+            frame.write_parquet(path, compression="lz4")
+            return
+        with HashingWriter(open(path, "wb")) as sink:
+            frame.write_parquet(cast("IO[bytes]", sink), compression="lz4")
+        digests[path.name] = sink.hexdigest()
+
     reader = None
-    sink: HashingWriter | None = None
     wrote_any = False
-    success = False
     want_proba = task == "classification"
     can_predict_proba = want_proba and _raw_model_supports_predict_proba(scoring_model)
     normalised_levels = _normalise_runtime_categorical_levels(
@@ -1959,8 +2003,6 @@ def _batch_score_to_parquet(
     )
 
     try:
-        if destination is not None:
-            sink = HashingWriter(open(out_path, "wb"))
         # Closed in ``finally``: an open reader keeps the input file locked on
         # Windows, and the caller's cleanup would then mask a scoring refusal.
         if isinstance(input_path, str):
@@ -2026,22 +2068,19 @@ def _batch_score_to_parquet(
                     output_col=output_col,
                     can_predict_proba=can_predict_proba,
                 )
-                table = chunk.to_arrow()
                 if execution_context is not None:
                     execution_context.checkpoint(label="model_score_batch_write")
-                if writer is None:
-                    writer = pq.ParquetWriter(
-                        sink if sink is not None else out_path,
-                        table.schema,
+                # The parts scan back as one frame only if they agree on it.
+                if part_schema is None:
+                    part_schema = chunk.schema
+                elif chunk.schema != part_schema:
+                    raise ValueError(
+                        "Scored batch schema changed between batches: "
+                        f"{dict(chunk.schema)} after {dict(part_schema)}"
                     )
-                ensure_disk_headroom(Path(out_path).parent, table.nbytes)
-                writer.write_table(table)
+                write_part(chunk)
                 wrote_any = True
-                del chunk, x_data, table
-        if writer is not None:
-            active_writer = writer
-            writer = None
-            active_writer.close()
+                del chunk, x_data
         if not wrote_any:
             # Zero-row input: write an empty parquet that preserves the input
             # dtypes AND the prediction/proba dtypes the *non-empty* path would
@@ -2078,20 +2117,19 @@ def _batch_score_to_parquet(
                 output_col=output_col,
                 can_predict_proba=can_predict_proba,
             )
-            target = sink if sink is not None else out_path
-            pq.write_table(empty.to_arrow(), target)
-        if destination is not None and sink is not None:
-            sink.close()
-            destination.digest = sink.hexdigest()
-        success = True
+            write_part(empty)
+        if destination is not None:
+            destination.digests = digests
+    except BaseException:
+        # A failure leaves nothing: the parts written so far, and the
+        # directory too unless it was the caller's.
+        for path in written:
+            with suppress(FileNotFoundError):
+                path.unlink()
+        if created_dir:
+            shutil.rmtree(out_dir, ignore_errors=True)
+        raise
     finally:
         if reader is not None:
             reader.close()
-        if writer is not None:
-            writer.close()
-        if sink is not None:
-            sink.close()
-        if not success:
-            with suppress(FileNotFoundError):
-                os.unlink(out_path)
-    return out_path
+    return str(out_dir)

@@ -333,7 +333,7 @@ class TestArtifactLoadCorruptionRaises:
 
         call_count = 0
 
-        def _always_fails(path: str) -> Any:
+        def _always_fails(path: str, *, source: str | None = None) -> Any:
             nonlocal call_count
             call_count += 1
             raise RuntimeError(f"corrupt rustystats attempt {call_count}")

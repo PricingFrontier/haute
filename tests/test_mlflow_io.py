@@ -30,6 +30,7 @@ from haute._mlflow_io import (
     load_mlflow_model,
 )
 from haute._mlflow_utils import ResolvedBackend, resolve_backend
+from haute._model_scorer import _cleanup_registered_temp_files
 
 # The backend ``mock_mlflow_env`` pins, and the one the destination-free
 # helper tests below thread through explicitly.
@@ -898,7 +899,6 @@ class TestEagerBatchProbaAgreement:
     """
 
     def _batch_score(self, sm, score_df, tmp_path, output_col="pred"):
-        import os
 
         from haute._model_scorer import _batch_score_to_parquet
 
@@ -914,7 +914,7 @@ class TestEagerBatchProbaAgreement:
         try:
             return pl.read_parquet(out_path)
         finally:
-            os.unlink(out_path)
+            _cleanup_registered_temp_files([out_path])
 
     def test_binary_catboost_eager_and_batch_probas_identical(self, tmp_path):
         """Real binary CatBoost: eager and batch proba columns are bit-equal."""
@@ -1015,6 +1015,8 @@ def _patch_rustystats(mock_model):
     install the mocked ``rustystats`` module.
     """
     mock_rs = MagicMock()
+    # A real exception class: the loader catches RustyStats' schema refusal.
+    mock_rs.exceptions.ValidationError = type("ValidationError", (Exception,), {})
     mock_model.terms_dict = {}
     mock_rs.GLMModel.from_bytes.return_value = mock_model
     return mock_rs, patch.dict(sys.modules, {"rustystats": mock_rs})
@@ -1028,6 +1030,23 @@ def _write_rsglm(tmp_path, contents=b"fake_bytes"):
 
 
 class TestLoadRustystatsModel:
+    def test_model_from_an_older_schema_is_a_config_error(self, tmp_path):
+        """A GLM pickled before the RustyStats 0.9 schema asks to be retrained."""
+        import pickle
+
+        from haute.errors import ConfigError
+
+        path = _write_rsglm(tmp_path, pickle.dumps({"result_state": {}}))
+        with pytest.raises(ConfigError, match=r"from 'model.rsglm' was saved") as raised:
+            _load_rustystats_model(path)
+        # The file name alone, never the cache directory it sits in.
+        assert str(tmp_path) not in str(raised.value)
+        assert "Retrain it" in str(raised.value)
+
+        # Loaded from MLflow, the error names the run instead.
+        with pytest.raises(ConfigError, match=r"from MLflow run 'abc123' was saved"):
+            load_local_model(path, source="MLflow run 'abc123'")
+
     def test_encoding_aliases_resolve_to_unique_raw_columns(self, tmp_path):
         mock_model = MagicMock()
         mock_model.required_columns = ["region_fe", "region", "age", "offset", "complement"]
@@ -1151,6 +1170,7 @@ class TestLoadRustystatsModel:
         a swallowed error would silently produce a malformed ScoringModel.
         """
         mock_rs = MagicMock()
+        mock_rs.exceptions.ValidationError = type("ValidationError", (Exception,), {})
         mock_rs.GLMModel.from_bytes.side_effect = ValueError("corrupt artifact")
 
         with patch.dict(sys.modules, {"rustystats": mock_rs}):
@@ -1805,7 +1825,9 @@ class TestLoadMlflowModelFastCache:
             )
 
         assert result is fake_sm
-        load_local.assert_called_once_with(str(cached), task="regression")
+        load_local.assert_called_once_with(
+            str(cached), task="regression", source="MLflow run 'abc123'"
+        )
         resolve_source.assert_not_called()
 
         cache_key = _model_cache_key(
@@ -1919,7 +1941,7 @@ class TestLoadMlflowModelRetry:
 
         call_count = 0
 
-        def load_rs_side_effect(path):
+        def load_rs_side_effect(path, *, source=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
