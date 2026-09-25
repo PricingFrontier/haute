@@ -17,7 +17,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import shutil
 import threading
 import time
 from pathlib import Path
@@ -681,7 +680,7 @@ class TestBatchScoreToParquet:
             assert "pred" in result.columns
             assert len(result) == 3
         finally:
-            shutil.rmtree(out_path)
+            _cleanup_registered_temp_files([out_path])
 
     def test_classification_with_proba(self, tmp_path):
         """Classification with predict_proba produces both pred and pred_proba columns."""
@@ -709,7 +708,7 @@ class TestBatchScoreToParquet:
             assert "pred_proba" in result.columns
             assert len(result) == 2
         finally:
-            shutil.rmtree(out_path)
+            _cleanup_registered_temp_files([out_path])
 
     def test_classification_without_proba(self, tmp_path):
         """Classification model without predict_proba only produces pred column."""
@@ -736,7 +735,7 @@ class TestBatchScoreToParquet:
             assert "pred" in result.columns
             assert "pred_proba" not in result.columns
         finally:
-            shutil.rmtree(out_path)
+            _cleanup_registered_temp_files([out_path])
 
     def test_predict_failure_removes_partial_output_parquet(self, tmp_path, monkeypatch):
         """Batch parquet output must not survive when prediction fails mid-write."""
@@ -1504,7 +1503,7 @@ class TestBatchScoreToParquetMultiBatch:
             assert "pred" in result.columns
             # predict should have been called 3 times (2+2+1)
             assert sm._model.predict.call_count == 3
-            shutil.rmtree(out_path)
+            _cleanup_registered_temp_files([out_path])
         finally:
             mod._SCORE_BATCH_SIZE = original_batch_size
 
@@ -1547,7 +1546,7 @@ class TestBatchScoreToParquetSeriesConversion:
             assert "pred" in result.columns
             assert len(result) == 3
         finally:
-            shutil.rmtree(out_path)
+            _cleanup_registered_temp_files([out_path])
 
 
 class TestBatchScoreToParquetEmpty:
@@ -1578,7 +1577,7 @@ class TestBatchScoreToParquetEmpty:
             assert "pred" in result.columns
             assert "a" in result.columns
         finally:
-            shutil.rmtree(out_path)
+            _cleanup_registered_temp_files([out_path])
 
     def test_empty_input_classification_includes_proba_col(self, tmp_path):
         """Empty classification input produces empty parquet with proba column."""
@@ -1608,7 +1607,7 @@ class TestBatchScoreToParquetEmpty:
             assert "pred" in result.columns
             assert "pred_proba" in result.columns
         finally:
-            shutil.rmtree(out_path)
+            _cleanup_registered_temp_files([out_path])
 
 
 class TestBatchScoreToParquetEmptyDtype:
@@ -1631,7 +1630,7 @@ class TestBatchScoreToParquetEmptyDtype:
         try:
             ne_dtype = pl.read_parquet_schema(out_ne)["pred"]
         finally:
-            shutil.rmtree(out_ne)
+            _cleanup_registered_temp_files([out_ne])
 
         # Empty input, same model shape.
         e_path = str(tmp_path / "e.parquet")
@@ -1643,7 +1642,7 @@ class TestBatchScoreToParquetEmptyDtype:
         try:
             e_dtype = pl.read_parquet_schema(out_e)["pred"]
         finally:
-            shutil.rmtree(out_e)
+            _cleanup_registered_temp_files([out_e])
 
         assert ne_dtype == pl.Int64
         assert e_dtype == ne_dtype
@@ -1696,7 +1695,7 @@ class TestBatchScoreToParquetEmptyDtype:
         try:
             schema = pl.read_parquet_schema(out_path)
         finally:
-            shutil.rmtree(out_path)
+            _cleanup_registered_temp_files([out_path])
 
         assert {column: schema[column] for column in expected_columns} == expected_columns
 
@@ -1723,7 +1722,7 @@ class TestBatchScoreToParquetEmptyDtype:
         try:
             ne_schema = pl.read_parquet_schema(out_ne)
         finally:
-            shutil.rmtree(out_ne)
+            _cleanup_registered_temp_files([out_ne])
 
         # Empty input, same model shape.
         e_path = str(tmp_path / "e.parquet")
@@ -1739,7 +1738,7 @@ class TestBatchScoreToParquetEmptyDtype:
         try:
             e_schema = pl.read_parquet_schema(out_e)
         finally:
-            shutil.rmtree(out_e)
+            _cleanup_registered_temp_files([out_e])
 
         assert ne_schema["pred_proba"] == pl.Float64
         assert e_schema["pred_proba"] == ne_schema["pred_proba"]
@@ -1794,8 +1793,8 @@ class TestBatchScoreToParquetEmptyDtype:
             nonempty_dtype = pl.read_parquet_schema(nonempty_output)["pred"]
             empty_dtype = pl.read_parquet_schema(empty_output)["pred"]
         finally:
-            shutil.rmtree(nonempty_output)
-            shutil.rmtree(empty_output)
+            _cleanup_registered_temp_files([nonempty_output])
+            _cleanup_registered_temp_files([empty_output])
 
         assert nonempty_dtype == expected_dtype
         assert empty_dtype == nonempty_dtype

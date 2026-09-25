@@ -23,12 +23,13 @@ detectably wrong values rather than coincidentally right ones.
 
 from __future__ import annotations
 
-import shutil
 from typing import Any
 
 import numpy as np
 import polars as pl
 import pytest
+
+from haute._model_scorer import _cleanup_registered_temp_files
 
 # This module needs the real core MLflow package. Keep the import guard so
 # deliberately partial test environments skip cleanly instead of erroring.
@@ -165,7 +166,7 @@ class TestNamedColumnContract:
         try:
             result = pl.read_parquet(out_path)
         finally:
-            shutil.rmtree(out_path)
+            _cleanup_registered_temp_files([out_path])
         assert result["pred"].to_list() == [2.0, 0.0]
 
     def test_signatureless_pyfunc_still_scores_named_frame(self, signatureless_pyfunc):

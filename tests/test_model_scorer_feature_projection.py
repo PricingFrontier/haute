@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -12,6 +11,7 @@ from haute._mlflow_io import ScoringModel
 from haute._model_scorer import (
     ScoreWriteProjection,
     _batch_score_to_parquet,
+    _cleanup_registered_temp_files,
     _project_scored_output,
     score_frame,
 )
@@ -360,7 +360,7 @@ def test_batched_scoring_prepares_prediction_from_feature_projection_only(tmp_pa
     try:
         result = pl.read_parquet(out_path)
     finally:
-        shutil.rmtree(out_path)
+        _cleanup_registered_temp_files([out_path])
 
     prepare.assert_called_once()
     assert result.columns == ["feature_a", "unused_0", "feature_b", "unused_1", "prediction"]
@@ -399,7 +399,7 @@ def test_batched_scoring_projects_written_passthrough_columns(tmp_path) -> None:
     try:
         result = pl.read_parquet(out_path)
     finally:
-        shutil.rmtree(out_path)
+        _cleanup_registered_temp_files([out_path])
 
     assert result.columns == ["quote_id", "prediction"]
     assert result["quote_id"].to_list() == ["q1", "q2", "q3"]
@@ -434,7 +434,7 @@ def test_batched_scoring_projected_zero_row_schema_preserves_passthrough(tmp_pat
     try:
         result = pl.read_parquet(out_path)
     finally:
-        shutil.rmtree(out_path)
+        _cleanup_registered_temp_files([out_path])
 
     assert result.columns == ["quote_id", "prediction"]
     assert result.schema["quote_id"] == pl.String
@@ -613,7 +613,7 @@ def test_batched_scoring_preserves_passthrough_columns_across_multiple_batches(t
     finally:
         model_scorer._SCORE_BATCH_SIZE = original_batch_size
         if "out_path" in locals():
-            shutil.rmtree(out_path)
+            _cleanup_registered_temp_files([out_path])
 
     assert result.columns == ["feature", "passthrough", "prediction"]
     assert result["passthrough"].to_list() == ["a", "b", "c", "d", "e"]

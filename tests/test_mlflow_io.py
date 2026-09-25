@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -31,6 +30,7 @@ from haute._mlflow_io import (
     load_mlflow_model,
 )
 from haute._mlflow_utils import ResolvedBackend, resolve_backend
+from haute._model_scorer import _cleanup_registered_temp_files
 
 # The backend ``mock_mlflow_env`` pins, and the one the destination-free
 # helper tests below thread through explicitly.
@@ -914,7 +914,7 @@ class TestEagerBatchProbaAgreement:
         try:
             return pl.read_parquet(out_path)
         finally:
-            shutil.rmtree(out_path)
+            _cleanup_registered_temp_files([out_path])
 
     def test_binary_catboost_eager_and_batch_probas_identical(self, tmp_path):
         """Real binary CatBoost: eager and batch proba columns are bit-equal."""

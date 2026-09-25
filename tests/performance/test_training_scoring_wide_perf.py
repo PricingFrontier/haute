@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -13,6 +12,7 @@ import pytest
 import haute._model_scorer as model_scorer
 import haute.modelling._training_job as training_job
 from haute._mlflow_io import ScoringModel
+from haute._model_scorer import _cleanup_registered_temp_files
 from haute.modelling._split import PARTITION_TRAIN, PARTITION_VALIDATION
 from haute.modelling._training_job import TrainingJob, _PreparedData, _SplitResult
 
@@ -164,7 +164,7 @@ def test_batch_scoring_prediction_prep_width_stays_feature_bounded(
     try:
         result = pl.read_parquet(out_path)
     finally:
-        shutil.rmtree(out_path)
+        _cleanup_registered_temp_files([out_path])
 
     assert prep_columns == [features, features, features]
     assert prep_shapes == [(4, len(features)), (4, len(features)), (2, len(features))]

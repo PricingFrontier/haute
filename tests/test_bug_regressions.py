@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import polars as pl
 import pytest
+
+from haute._model_scorer import _cleanup_registered_temp_files
 
 # ---------------------------------------------------------------------------
 # B9: RustyStats scoring passes unfiltered DataFrame to predict
@@ -81,7 +82,7 @@ class TestBugB12ZeroRowBatchScoring:
         # Should produce a valid parquet file, not crash
         result = pl.read_parquet(out_path)
         assert len(result) == 0
-        shutil.rmtree(out_path)
+        _cleanup_registered_temp_files([out_path])
 
 
 # ---------------------------------------------------------------------------
