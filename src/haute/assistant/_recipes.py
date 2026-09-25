@@ -56,21 +56,6 @@ def _descriptor(
             "Simple JSON-field column name to map to the same response field name."
         ),
     }
-    continuous_rule = {
-        "type": "object",
-        "additionalProperties": False,
-        "description": (
-            "One continuous rule with a required first comparison and optional second bound."
-        ),
-        "properties": {
-            "op1": {"enum": ["<", "<=", ">", ">=", "=", "=="]},
-            "val1": {"type": "number"},
-            "op2": {"enum": ["<", "<=", ">", ">=", "=", "=="]},
-            "val2": {"type": "number"},
-            "assignment": string_schema("Band label assigned when the comparisons match."),
-        },
-        "required": ["op1", "val1", "assignment"],
-    }
     categorical_rule = {
         "type": "object",
         "additionalProperties": False,
@@ -170,25 +155,6 @@ def _descriptor(
             },
             "default": string_schema("Fallback band label when no rule matches."),
         },
-        "continuous_banding": {
-            "source": source,
-            "name": graph_name,
-            "column": string_schema("Existing numeric input column to band."),
-            "output_column": string_schema(
-                "New output column that receives the band label; not the graph node name."
-            ),
-            "rules": {
-                "type": "array",
-                "minItems": 1,
-                "description": (
-                    "Canonical continuous rules. Each object requires op1 (<, <=, >, >=, "
-                    "=, or ==), numeric val1, and non-empty assignment. A second bound "
-                    "requires both op2 and numeric val2."
-                ),
-                "items": continuous_rule,
-            },
-            "default": string_schema("Fallback band label when no rule matches."),
-        },
         "reference_join": {
             "base_source": string_schema("Existing main/base graph node id."),
             "reference_source": string_schema("Existing joining/reference graph node id."),
@@ -278,12 +244,6 @@ _RECIPES = tuple(
                 ["discrete_banding"],
             ),
             _descriptor(
-                "continuous_banding",
-                "Create a continuous banding factor.",
-                ["source", "name", "column", "output_column", "rules", "default"],
-                ["continuous_banding"],
-            ),
-            _descriptor(
                 "reference_join",
                 "Join a base flow to a reference source.",
                 ["base_source", "reference_source", "name", "how", "left_on", "right_on"],
@@ -335,19 +295,6 @@ _DATASET_DIRECTORY_PATTERNS = (
     ),
 )
 _JOIN_ROUTE_TERMS = frozenset({"join", "joins", "joined", "joining"})
-_CONTINUOUS_ROUTE_CUES = frozenset(
-    {
-        "continuous",
-        "range",
-        "continuously",
-        "ranges",
-        "breakpoint",
-        "breakpoints",
-        "bucket",
-        "bucketed",
-        "bucketing",
-    }
-)
 _DISCRETE_ROUTE_CUES = frozenset({"categorical", "categories", "category", "discrete"})
 _MATERIAL_RATING_INTENT = re.compile(r"\brating\b.{0,80}\bfactors?\b", re.IGNORECASE)
 _EXPLICITLY_WITHHELD_RATING_MATERIAL = re.compile(
@@ -408,9 +355,6 @@ def route_recipe_request(request: str) -> str | None:
     token_set = set(tokens)
     matches: list[str] = []
     has_banding_term = bool(token_set.intersection(_BANDING_ROUTE_TERMS))
-    has_continuous_cue = bool(token_set.intersection(_CONTINUOUS_ROUTE_CUES)) or bool(
-        re.search(r"(?:<=|>=|<|>)", request)
-    )
     has_discrete_cue = bool(token_set.intersection(_DISCRETE_ROUTE_CUES))
     has_showcase_cue = (
         "showcase" in token_set
@@ -423,10 +367,9 @@ def route_recipe_request(request: str) -> str | None:
         and bool(token_set.intersection(_SHOWCASE_AUTHORING_TERMS))
         and has_showcase_cue
     )
-    routes_continuous_banding = has_banding_term and has_continuous_cue and not has_discrete_cue
-    routes_categorical_banding = has_banding_term and has_discrete_cue and not has_continuous_cue
-    if routes_continuous_banding:
-        matches.append("continuous_banding")
+    # Only categorical banding has a recipe; a numeric (range, bucket, or
+    # breakpoint) banding request suggests none.
+    routes_categorical_banding = has_banding_term and has_discrete_cue
     if routes_categorical_banding:
         matches.append("categorical_banding")
     if token_set.intersection(_JOIN_ROUTE_TERMS):
@@ -440,12 +383,7 @@ def route_recipe_request(request: str) -> str | None:
     )
     if has_response_output and not matches:
         matches.append("response_output")
-    if (
-        has_banding_term
-        and not routes_continuous_banding
-        and not routes_categorical_banding
-        and matches
-    ):
+    if has_banding_term and not routes_categorical_banding and matches:
         return None
     return matches[0] if len(matches) == 1 else None
 
@@ -495,80 +433,6 @@ def _arguments(recipe_id: str, raw: object) -> dict[str, Any]:
                 "recipe_argument_invalid", f"Argument {key!r} must not be blank.", argument=key
             )
     return values
-
-
-_SUPPORTED_CONTINUOUS_OPERATORS = frozenset({"<", "<=", ">", ">=", "=", "=="})
-_CONTINUOUS_RULE_KEYS = frozenset({"op1", "val1", "op2", "val2", "assignment"})
-
-
-def _validate_continuous_rules(raw: object) -> None:
-    if not isinstance(raw, list) or not raw:
-        raise RecipeError(
-            "recipe_argument_invalid",
-            "Argument 'rules' must be a non-empty list.",
-            argument="rules",
-        )
-    for index, rule in enumerate(raw):
-        argument = f"rules[{index}]"
-        if not isinstance(rule, Mapping):
-            raise RecipeError(
-                "recipe_argument_invalid",
-                f"Argument {argument!r} must be an object.",
-                argument=argument,
-            )
-        unknown = set(rule).difference(_CONTINUOUS_RULE_KEYS)
-        required = {"op1", "val1", "assignment"}
-        if unknown or not required.issubset(rule):
-            raise RecipeError(
-                "recipe_argument_invalid",
-                f"Argument {argument!r} is not a closed continuous rule.",
-                argument=argument,
-            )
-        if rule["op1"] not in _SUPPORTED_CONTINUOUS_OPERATORS:
-            raise RecipeError(
-                "recipe_argument_invalid",
-                f"Argument {argument!r} has an unsupported op1.",
-                argument=argument,
-            )
-        val1 = rule["val1"]
-        if (
-            isinstance(val1, bool)
-            or not isinstance(val1, int | float)
-            or not math.isfinite(float(val1))
-        ):
-            raise RecipeError(
-                "recipe_argument_invalid",
-                f"Argument {argument!r} requires a finite numeric val1.",
-                argument=argument,
-            )
-        assignment = rule["assignment"]
-        if not isinstance(assignment, str) or not assignment.strip():
-            raise RecipeError(
-                "recipe_argument_invalid",
-                f"Argument {argument!r} requires a non-empty assignment.",
-                argument=argument,
-            )
-        has_op2 = "op2" in rule
-        has_val2 = "val2" in rule
-        if has_op2 != has_val2:
-            raise RecipeError(
-                "recipe_argument_invalid",
-                f"Argument {argument!r} requires op2 and val2 together.",
-                argument=argument,
-            )
-        if has_op2:
-            val2 = rule["val2"]
-            if (
-                rule["op2"] not in _SUPPORTED_CONTINUOUS_OPERATORS
-                or isinstance(val2, bool)
-                or not isinstance(val2, int | float)
-                or not math.isfinite(float(val2))
-            ):
-                raise RecipeError(
-                    "recipe_argument_invalid",
-                    f"Argument {argument!r} has an invalid second bound.",
-                    argument=argument,
-                )
 
 
 _CATEGORICAL_RULE_KEYS = frozenset({"value", "assignment"})
@@ -1013,29 +877,6 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
                 source_port=transform_name,
             )
         )
-    elif recipe_id == "continuous_banding":
-        _validate_continuous_rules(values["rules"])
-        ref = "recipe_banding"
-        operations = [
-            {
-                "op": "add_node",
-                "node_type": "banding",
-                "name": values["name"],
-                "ref": ref,
-                "config": {
-                    "factors": [
-                        {
-                            "banding": "continuous",
-                            "column": values["column"],
-                            "outputColumn": values["output_column"],
-                            "rules": values["rules"],
-                            "default": values["default"],
-                        }
-                    ]
-                },
-            },
-            {"op": "add_edge", "source": values["source"], "target": f"${ref}"},
-        ]
     elif recipe_id == "categorical_banding":
         _validate_categorical_rules(values["rules"])
         ref = "recipe_categorical_banding"

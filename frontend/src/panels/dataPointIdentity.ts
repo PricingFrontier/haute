@@ -35,6 +35,39 @@ function dataAffectingConfig(node: SimpleNode): Record<string, unknown> {
   return dataConfig
 }
 
+function sortedColumns(columns: unknown[]): string[] {
+  return Array.from(
+    new Set(columns.filter((column): column is string => typeof column === "string" && column !== "")),
+  ).sort()
+}
+
+function records(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+    : []
+}
+
+/**
+ * A Banding or Rating Step node reads its input rather than its own output, so
+ * its own configuration changes the point only through the columns it demands,
+ * as the backend derives them (`_data_points._banding_demand` and
+ * `_rating_step_demand`). Its rules and table entries do not, and editing them
+ * must not re-ask about the data it reads. Null for every other node.
+ */
+function consumerDemand(node: SimpleNode): Record<string, unknown> | null {
+  const config = node.data.config ?? {}
+  if (node.data.nodeType === "banding") {
+    return { demand: sortedColumns(records(config.factors).map((factor) => factor.column)) }
+  }
+  if (node.data.nodeType === "ratingStep") {
+    const factors = records(config.tables).flatMap((table) =>
+      Array.isArray(table.factors) ? (table.factors as unknown[]) : [],
+    )
+    return { demand: sortedColumns(factors) }
+  }
+  return null
+}
+
 function instanceOriginalId(node: SimpleNode | undefined): string | null {
   const reference = node?.data.config?.instanceOf
   return typeof reference === "string" && reference ? reference : null
@@ -77,7 +110,8 @@ function dataAffectingNodeIds(
 /**
  * The identity that decides when a consumer must re-ask the backend about the
  * data it reads: its upstream subgraph, its own data-affecting configuration
- * (which sets its column demand), the submodels, and the preamble.
+ * (which sets its column demand; for Banding and Rating Step, only that
+ * demand), the submodels, and the preamble.
  *
  * Presentation-only Explore configuration is excluded, so choosing a pivot or
  * chart never re-asks. The backend's `point` response stays authoritative: this
@@ -103,7 +137,8 @@ export function buildNodeDataCacheIdentity({
       type: graphNode.type ?? null,
       label: graphNode.data.label,
       nodeType: graphNode.data.nodeType,
-      config: dataAffectingConfig(graphNode),
+      config:
+        (graphNode.id === node.id ? consumerDemand(graphNode) : null) ?? dataAffectingConfig(graphNode),
     }))
     .sort((a, b) => a.id.localeCompare(b.id))
 

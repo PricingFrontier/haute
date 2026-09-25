@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import { BandingRulesGrid } from "../BandingRulesGrid"
-import type { BandingFactor, ContinuousRule, CategoricalRule } from "../../../../types/banding"
+import type { BandingFactor, CategoricalRule } from "../../../../types/banding"
 import { CHART_COLORS } from "../../../../theme/colors"
 import useToastStore from "../../../../stores/useToastStore"
 
@@ -17,9 +17,9 @@ function restoreClipboard(): void {
 
 function makeFactor(overrides: Partial<BandingFactor> = {}): BandingFactor {
   return {
-    banding: "continuous",
-    column: "age",
-    outputColumn: "age_band",
+    banding: "categorical",
+    column: "vehicle_type",
+    outputColumn: "vehicle_group",
     rules: [],
     default: null,
     ...overrides,
@@ -32,26 +32,9 @@ describe("BandingRulesGrid", () => {
     restoreClipboard()
   })
 
-  it("renders empty state for continuous banding with no rules", () => {
+  it("renders empty state for categorical banding with no rules", () => {
     render(<BandingRulesGrid factor={makeFactor()} onUpdateFactor={vi.fn()} />)
     expect(screen.getByText("No rules yet")).toBeInTheDocument()
-  })
-
-  it("renders empty state for categorical banding with no rules", () => {
-    render(<BandingRulesGrid factor={makeFactor({ banding: "categorical" })} onUpdateFactor={vi.fn()} />)
-    expect(screen.getByText("No rules yet")).toBeInTheDocument()
-  })
-
-  it("renders continuous rule rows with correct headers", () => {
-    const rules: ContinuousRule[] = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young" },
-      { op1: ">=", val1: "25", op2: "<", val2: "60", assignment: "mid" },
-    ]
-    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
-    expect(screen.getByText("From", { selector: "th" })).toBeInTheDocument()
-    expect(screen.getByText("Label", { selector: "th" })).toBeInTheDocument()
-    // "Value" appears twice (for lower and upper value columns)
-    expect(screen.getAllByText("Value", { selector: "th" })).toHaveLength(2)
   })
 
   it("renders categorical rule rows", () => {
@@ -59,27 +42,25 @@ describe("BandingRulesGrid", () => {
       { value: "Semi-detached", assignment: "House" },
       { value: "Terraced", assignment: "House" },
     ]
-    render(<BandingRulesGrid factor={makeFactor({ banding: "categorical", rules })} onUpdateFactor={vi.fn()} />)
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
     expect(screen.getByDisplayValue("Semi-detached")).toBeInTheDocument()
     expect(screen.getByDisplayValue("Terraced")).toBeInTheDocument()
     // Both map to "House" assignment
     expect(screen.getAllByDisplayValue("House")).toHaveLength(2)
   })
 
-  it("delete button removes a continuous rule", () => {
+  it("delete button removes a rule", () => {
     const onUpdate = vi.fn()
-    const rules: ContinuousRule[] = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young" },
-      { op1: ">=", val1: "60", op2: "", val2: "", assignment: "old" },
+    const rules: CategoricalRule[] = [
+      { value: "Car", assignment: "Vehicle" },
+      { value: "Bike", assignment: "Cycle" },
     ]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    // Click the first delete button
-    const deleteButtons = screen.getAllByRole("button")
-    fireEvent.click(deleteButtons[0])
+    fireEvent.click(screen.getByLabelText("Delete rule 1"))
     // Should have removed the first rule, keeping the second (with _id)
     const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
     expect(lastCall.rules).toHaveLength(1)
-    expect(lastCall.rules[0].assignment).toBe("old")
+    expect(lastCall.rules[0]).toMatchObject({ value: "Bike", assignment: "Cycle" })
   })
 
   it("updating a categorical rule field calls onUpdateFactor", () => {
@@ -87,7 +68,7 @@ describe("BandingRulesGrid", () => {
     const rules: CategoricalRule[] = [
       { value: "Car", assignment: "Vehicle" },
     ]
-    render(<BandingRulesGrid factor={makeFactor({ banding: "categorical", rules })} onUpdateFactor={onUpdate} />)
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
     const inputs = screen.getAllByRole("textbox")
     fireEvent.change(inputs[0], { target: { value: "Truck" } })
     const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
@@ -95,23 +76,34 @@ describe("BandingRulesGrid", () => {
     expect(lastCall.rules[0].assignment).toBe("Vehicle")
   })
 
+  it("updating the group name calls onUpdateFactor with new value", () => {
+    const onUpdate = vi.fn()
+    const rules = [
+      { value: "Car", assignment: "Vehicle", _id: "r5" },
+    ] as unknown as CategoricalRule[]
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
+    fireEvent.change(screen.getByLabelText("Rule 1 group name"), { target: { value: "Motor" } })
+    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+    expect(lastCall.rules[0]).toMatchObject({ value: "Car", assignment: "Motor" })
+  })
+
   it("keeps generated row keys local until a user edit", () => {
     const onUpdate = vi.fn()
-    const rules: ContinuousRule[] = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young" },
+    const rules: CategoricalRule[] = [
+      { value: "Car", assignment: "Vehicle" },
     ]
     const factor = makeFactor({ rules })
     const { rerender } = render(<BandingRulesGrid factor={factor} onUpdateFactor={onUpdate} />)
-    const textbox = screen.getByLabelText("Rule 1 lower value")
+    const textbox = screen.getByLabelText("Rule 1 match value")
     textbox.focus()
 
     expect(onUpdate).not.toHaveBeenCalled()
     rerender(<BandingRulesGrid factor={factor} onUpdateFactor={onUpdate} />)
     expect(onUpdate).not.toHaveBeenCalled()
-    expect(screen.getByLabelText("Rule 1 lower value")).toBe(textbox)
+    expect(screen.getByLabelText("Rule 1 match value")).toBe(textbox)
     expect(document.activeElement).toBe(textbox)
 
-    fireEvent.change(textbox, { target: { value: "30" } })
+    fireEvent.change(textbox, { target: { value: "Van" } })
     expect(onUpdate).toHaveBeenCalledOnce()
     const assignedRules = onUpdate.mock.calls[0][0].rules
     expect(assignedRules[0]._id).toBeDefined()
@@ -121,153 +113,80 @@ describe("BandingRulesGrid", () => {
 
   it("keeps row identity when the parent recreates an id-less rules array", () => {
     const onUpdate = vi.fn()
-    const rules: ContinuousRule[] = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young" },
-      { op1: ">=", val1: "25", op2: "", val2: "", assignment: "old" },
+    const rules: CategoricalRule[] = [
+      { value: "Car", assignment: "Vehicle" },
+      { value: "Bike", assignment: "Cycle" },
     ]
     const factor = makeFactor({ rules })
     const { rerender } = render(<BandingRulesGrid factor={factor} onUpdateFactor={onUpdate} />)
-    const textbox = screen.getByLabelText("Rule 1 lower value")
+    const textbox = screen.getByLabelText("Rule 1 match value")
     textbox.focus()
 
     rerender(<BandingRulesGrid factor={{ ...factor, rules: [...rules] }} onUpdateFactor={onUpdate} />)
 
     expect(onUpdate).not.toHaveBeenCalled()
-    expect(screen.getByLabelText("Rule 1 lower value")).toBe(textbox)
+    expect(screen.getByLabelText("Rule 1 match value")).toBe(textbox)
     expect(document.activeElement).toBe(textbox)
   })
 
   it("rules with existing _id are not reassigned", () => {
     const onUpdate = vi.fn()
     const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "existing_id" },
-    ] as unknown as ContinuousRule[]
+      { value: "Car", assignment: "Vehicle", _id: "existing_id" },
+    ] as unknown as CategoricalRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
     expect(onUpdate).not.toHaveBeenCalled()
-    fireEvent.change(screen.getByLabelText("Rule 1 lower value"), { target: { value: "30" } })
+    fireEvent.change(screen.getByLabelText("Rule 1 match value"), { target: { value: "Van" } })
     expect(onUpdate.mock.calls[0][0].rules[0]._id).toBe("existing_id")
   })
 
   it("each rule gets a unique _id", () => {
     const onUpdate = vi.fn()
-    const rules: ContinuousRule[] = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young" },
-      { op1: ">=", val1: "25", op2: "", val2: "", assignment: "old" },
+    const rules: CategoricalRule[] = [
+      { value: "Car", assignment: "Vehicle" },
+      { value: "Bike", assignment: "Cycle" },
     ]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    fireEvent.change(screen.getByLabelText("Rule 1 lower value"), { target: { value: "30" } })
+    fireEvent.change(screen.getByLabelText("Rule 1 match value"), { target: { value: "Van" } })
     expect(onUpdate).toHaveBeenCalledOnce()
     const assignedRules = onUpdate.mock.calls[0][0].rules
     expect(assignedRules[0]._id).not.toBe(assignedRules[1]._id)
   })
 
-  it("updating op1 select calls onUpdateFactor with new value", () => {
-    const onUpdate = vi.fn()
-    const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "r1" },
-    ] as unknown as ContinuousRule[]
-    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    onUpdate.mockClear()
-    const selects = screen.getAllByRole("combobox")
-    fireEvent.change(selects[0], { target: { value: ">=" } })
-    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
-    expect(lastCall.rules[0].op1).toBe(">=")
-    expect(lastCall.rules[0].val1).toBe("25")
-    expect(lastCall.rules[0].assignment).toBe("young")
-  })
-
-  it("updating val1 input calls onUpdateFactor with new value", () => {
-    const onUpdate = vi.fn()
-    const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "r2" },
-    ] as unknown as ContinuousRule[]
-    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    onUpdate.mockClear()
-    const inputs = screen.getAllByRole("textbox")
-    fireEvent.change(inputs[0], { target: { value: "30" } })
-    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
-    expect(lastCall.rules[0].val1).toBe("30")
-  })
-
-  it("updating op2 select calls onUpdateFactor with new value", () => {
-    const onUpdate = vi.fn()
-    const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "r3" },
-    ] as unknown as ContinuousRule[]
-    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    onUpdate.mockClear()
-    const selects = screen.getAllByRole("combobox")
-    fireEvent.change(selects[1], { target: { value: "<=" } })
-    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
-    expect(lastCall.rules[0].op2).toBe("<=")
-  })
-
-  it("updating val2 input calls onUpdateFactor with new value", () => {
-    const onUpdate = vi.fn()
-    const rules = [
-      { op1: "<", val1: "25", op2: "<", val2: "60", assignment: "young", _id: "r4" },
-    ] as unknown as ContinuousRule[]
-    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    onUpdate.mockClear()
-    const inputs = screen.getAllByRole("textbox")
-    fireEvent.change(inputs[1], { target: { value: "50" } })
-    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
-    expect(lastCall.rules[0].val2).toBe("50")
-  })
-
-  it("updating assignment input calls onUpdateFactor with new value", () => {
-    const onUpdate = vi.fn()
-    const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "r5" },
-    ] as unknown as ContinuousRule[]
-    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    onUpdate.mockClear()
-    const inputs = screen.getAllByRole("textbox")
-    const assignmentInput = inputs[inputs.length - 1]
-    fireEvent.change(assignmentInput, { target: { value: "youth" } })
-    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
-    expect(lastCall.rules[0].assignment).toBe("youth")
-  })
-
   it("delete button removes the correct rule from the middle", () => {
     const onUpdate = vi.fn()
     const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "a" },
-      { op1: ">=", val1: "25", op2: "<", val2: "60", assignment: "mid", _id: "b" },
-      { op1: ">=", val1: "60", op2: "", val2: "", assignment: "old", _id: "c" },
-    ] as unknown as ContinuousRule[]
+      { value: "Car", assignment: "Vehicle", _id: "a" },
+      { value: "Bike", assignment: "Cycle", _id: "b" },
+      { value: "Bus", assignment: "Coach", _id: "c" },
+    ] as unknown as CategoricalRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    onUpdate.mockClear()
-    const deleteButtons = screen.getAllByRole("button")
-    fireEvent.click(deleteButtons[1])
+    fireEvent.click(screen.getByLabelText("Delete rule 2"))
     const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
     expect(lastCall.rules).toHaveLength(2)
-    expect(lastCall.rules[0].assignment).toBe("young")
-    expect(lastCall.rules[1].assignment).toBe("old")
+    expect(lastCall.rules[0].assignment).toBe("Vehicle")
+    expect(lastCall.rules[1].assignment).toBe("Coach")
   })
 
   it("rules with _id are preserved across re-render", () => {
     const onUpdate = vi.fn()
     const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "stable1" },
-      { op1: ">=", val1: "60", op2: "", val2: "", assignment: "old", _id: "stable2" },
-    ] as unknown as ContinuousRule[]
+      { value: "Car", assignment: "Vehicle", _id: "stable1" },
+      { value: "Bike", assignment: "Cycle", _id: "stable2" },
+    ] as unknown as CategoricalRule[]
     const { rerender } = render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
     rerender(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    const calls = onUpdate.mock.calls
-    for (const call of calls) {
-      if (call[0].rules) {
-        expect(call[0].rules[0]._id).toBe("stable1")
-        expect(call[0].rules[1]._id).toBe("stable2")
-      }
-    }
+    fireEvent.change(screen.getByLabelText("Rule 2 group name"), { target: { value: "Pedal" } })
+    const edited = onUpdate.mock.calls[0][0].rules
+    expect(edited[0]._id).toBe("stable1")
+    expect(edited[1]._id).toBe("stable2")
   })
 
   // --- Scrollable container & sticky headers ---
 
   it("scrollable container has max-height style", () => {
-    const rules: ContinuousRule[] = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young" },
+    const rules: CategoricalRule[] = [
+      { value: "Car", assignment: "Vehicle" },
     ]
     const { container } = render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
     const scrollContainer = container.querySelector("[data-testid='banding-scroll-container']")
@@ -278,24 +197,24 @@ describe("BandingRulesGrid", () => {
 
   it("keeps boxed inputs but tightens cell spacing and removes row divider lines", () => {
     const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "compact-1" },
-    ] as unknown as ContinuousRule[]
+      { value: "Car", assignment: "Vehicle", _id: "compact-1" },
+    ] as unknown as CategoricalRule[]
     const { container } = render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
 
-    const firstEditableCell = screen.getByLabelText("Rule 1 lower value").closest("td")
+    const firstEditableCell = screen.getByLabelText("Rule 1 match value").closest("td")
     expect(firstEditableCell).toHaveClass("px-0.5")
     expect(firstEditableCell).toHaveClass("py-0.5")
-    expect(screen.getByLabelText("Rule 1 lower value")).toHaveClass("rounded")
-    expect(screen.getByLabelText("Rule 1 lower value")).not.toHaveClass("rounded-none")
-    expect(screen.getByLabelText("Rule 1 lower value").style.border).toBe("1px solid var(--border)")
+    expect(screen.getByLabelText("Rule 1 match value")).toHaveClass("rounded")
+    expect(screen.getByLabelText("Rule 1 match value")).not.toHaveClass("rounded-none")
+    expect(screen.getByLabelText("Rule 1 match value").style.border).toBe("1px solid var(--border)")
 
     const dataRow = container.querySelector("tbody tr") as HTMLTableRowElement
     expect(dataRow.style.borderBottom).toBe("")
   })
 
   it("thead has position sticky", () => {
-    const rules: ContinuousRule[] = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young" },
+    const rules: CategoricalRule[] = [
+      { value: "Car", assignment: "Vehicle" },
     ]
     const { container } = render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
     const thead = container.querySelector("thead")
@@ -307,32 +226,20 @@ describe("BandingRulesGrid", () => {
 
   // --- Accessibility: aria-labels ---
 
-  it("all inputs have aria-labels for continuous rules", () => {
-    const rules = [
-      { op1: "<", val1: "25", op2: "<=", val2: "60", assignment: "young", _id: "a1" },
-    ] as unknown as ContinuousRule[]
-    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
-    expect(screen.getByLabelText("Rule 1 lower operator")).toBeInTheDocument()
-    expect(screen.getByLabelText("Rule 1 lower value")).toBeInTheDocument()
-    expect(screen.getByLabelText("Rule 1 upper operator")).toBeInTheDocument()
-    expect(screen.getByLabelText("Rule 1 upper value")).toBeInTheDocument()
-    expect(screen.getByLabelText("Rule 1 label")).toBeInTheDocument()
-  })
-
   it("all inputs have aria-labels for categorical rules", () => {
     const rules = [
       { value: "Car", assignment: "Vehicle", _id: "c1" },
     ] as unknown as CategoricalRule[]
-    render(<BandingRulesGrid factor={makeFactor({ banding: "categorical", rules })} onUpdateFactor={vi.fn()} />)
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
     expect(screen.getByLabelText("Rule 1 match value")).toBeInTheDocument()
     expect(screen.getByLabelText("Rule 1 group name")).toBeInTheDocument()
   })
 
   it("delete buttons have aria-labels", () => {
     const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "d1" },
-      { op1: ">=", val1: "60", op2: "", val2: "", assignment: "old", _id: "d2" },
-    ] as unknown as ContinuousRule[]
+      { value: "Car", assignment: "Vehicle", _id: "d1" },
+      { value: "Bike", assignment: "Cycle", _id: "d2" },
+    ] as unknown as CategoricalRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
     expect(screen.getByLabelText("Delete rule 1")).toBeInTheDocument()
     expect(screen.getByLabelText("Delete rule 2")).toBeInTheDocument()
@@ -342,9 +249,9 @@ describe("BandingRulesGrid", () => {
 
   it("match counts column renders when provided", () => {
     const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "m1" },
-      { op1: ">=", val1: "60", op2: "", val2: "", assignment: "old", _id: "m2" },
-    ] as unknown as ContinuousRule[]
+      { value: "Car", assignment: "Vehicle", _id: "m1" },
+      { value: "Bike", assignment: "Cycle", _id: "m2" },
+    ] as unknown as CategoricalRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} matchCounts={[42, 7]} />)
     expect(screen.getByText("Matches", { selector: "th" })).toBeInTheDocument()
     expect(screen.getByText("42")).toBeInTheDocument()
@@ -353,8 +260,8 @@ describe("BandingRulesGrid", () => {
 
   it("match count of 0 shows warning style", () => {
     const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "w1" },
-    ] as unknown as ContinuousRule[]
+      { value: "Car", assignment: "Vehicle", _id: "w1" },
+    ] as unknown as CategoricalRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} matchCounts={[0]} />)
     const zeroCell = screen.getByText("0")
     // Should have warning color applied.
@@ -370,96 +277,54 @@ describe("BandingRulesGrid", () => {
 
   it("match counts column hidden when not provided", () => {
     const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "h1" },
-    ] as unknown as ContinuousRule[]
+      { value: "Car", assignment: "Vehicle", _id: "h1" },
+    ] as unknown as CategoricalRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
     expect(screen.queryByText("Matches", { selector: "th" })).toBeNull()
   })
 
   // --- Clipboard paste support ---
 
-  it("paste handler parses 2-column TSV for continuous", () => {
+  it("appends pasted rows after the existing rules", () => {
     const onUpdate = vi.fn()
     const rules = [
-      { op1: "<", val1: "10", op2: "", val2: "", assignment: "low", _id: "p1" },
-    ] as unknown as ContinuousRule[]
+      { value: "Car", assignment: "Vehicle", _id: "p1" },
+    ] as unknown as CategoricalRule[]
     const { container } = render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    onUpdate.mockClear()
 
     const pasteTarget = container.querySelector("[data-testid='banding-scroll-container']")!
-    const clipboardData = { getData: () => "25\tyoung\n60\told" }
-    fireEvent.paste(pasteTarget, { clipboardData })
+    fireEvent.paste(pasteTarget, { clipboardData: { getData: () => "Bike\tCycle\nBus\tCoach" } })
 
     const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
-    // Should append 2 parsed rules to existing 1
     expect(lastCall.rules).toHaveLength(3)
-    // First parsed rule: val1=25, op1=">=" (first pasted row)
-    expect(lastCall.rules[1].val1).toBe("25")
-    expect(lastCall.rules[1].op1).toBe(">=")
-    expect(lastCall.rules[1].assignment).toBe("young")
-    // Second parsed rule: val1=60, op1=">" (subsequent rows)
-    expect(lastCall.rules[2].val1).toBe("60")
-    expect(lastCall.rules[2].op1).toBe(">")
-    expect(lastCall.rules[2].assignment).toBe("old")
+    expect(lastCall.rules[0]).toMatchObject({ value: "Car", assignment: "Vehicle" })
+    expect(lastCall.rules[1]).toMatchObject({ value: "Bike", assignment: "Cycle" })
+    expect(lastCall.rules[2]).toMatchObject({ value: "Bus", assignment: "Coach" })
   })
 
-  it("pastes TSV into a continuous range starting at the focused cell and creates missing rows", () => {
+  it("pastes TSV into a range starting at the focused cell and creates missing rows", () => {
     const onUpdate = vi.fn()
     const rules = [
-      { op1: "<", val1: "20", op2: "", val2: "", assignment: "young", _id: "range-c1" },
-      { op1: ">=", val1: "60", op2: "", val2: "", assignment: "old", _id: "range-c2" },
-    ] as unknown as ContinuousRule[]
+      { value: "Car", assignment: "Vehicle", _id: "range-1" },
+      { value: "Bike", assignment: "Cycle", _id: "range-2" },
+    ] as unknown as CategoricalRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
-    onUpdate.mockClear()
 
-    fireEvent.paste(screen.getByLabelText("Rule 2 upper value"), {
-      clipboardData: { getData: () => "75\told\n100\toldest" },
+    fireEvent.paste(screen.getByLabelText("Rule 2 match value"), {
+      clipboardData: { getData: () => "Bus\tCoach\nTram\tRail" },
     })
 
     expect(onUpdate).toHaveBeenCalledTimes(1)
     const updated = onUpdate.mock.calls[0][0].rules
     expect(updated).toHaveLength(3)
-    expect(updated[0]).toMatchObject({ op1: "<", val1: "20", op2: "", val2: "", assignment: "young" })
-    expect(updated[1]).toMatchObject({ op1: ">=", val1: "60", op2: "", val2: "75", assignment: "old" })
-    expect(updated[2]).toMatchObject({ op1: "", val1: "", op2: "", val2: "100", assignment: "oldest" })
-  })
-
-  it("paste handler parses 5-column TSV for continuous", () => {
-    const onUpdate = vi.fn()
-    const { container } = render(<BandingRulesGrid factor={makeFactor()} onUpdateFactor={onUpdate} />)
-    onUpdate.mockClear()
-
-    const pasteTarget = container.querySelector("[data-testid='banding-scroll-container']")!
-    const clipboardData = { getData: () => ">=\t25\t<\t60\tmid" }
-    fireEvent.paste(pasteTarget, { clipboardData })
-
-    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
-    expect(lastCall.rules).toHaveLength(1)
-    expect(lastCall.rules[0].op1).toBe(">=")
-    expect(lastCall.rules[0].val1).toBe("25")
-    expect(lastCall.rules[0].op2).toBe("<")
-    expect(lastCall.rules[0].val2).toBe("60")
-    expect(lastCall.rules[0].assignment).toBe("mid")
-  })
-
-  it("round-trips copied continuous TSV with trailing blank cells through grid paste", () => {
-    const onUpdate = vi.fn()
-    const { container } = render(<BandingRulesGrid factor={makeFactor()} onUpdateFactor={onUpdate} />)
-    onUpdate.mockClear()
-
-    const pasteTarget = container.querySelector("[data-testid='banding-scroll-container']")!
-    fireEvent.paste(pasteTarget, {
-      clipboardData: { getData: () => "From\tValue\tTo\tValue\tLabel\n<\t25\t\t\t" },
-    })
-
-    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
-    expect(lastCall.rules).toHaveLength(1)
-    expect(lastCall.rules[0]).toMatchObject({ op1: "<", val1: "25", op2: "", val2: "", assignment: "" })
+    expect(updated[0]).toMatchObject({ value: "Car", assignment: "Vehicle" })
+    expect(updated[1]).toMatchObject({ value: "Bus", assignment: "Coach" })
+    expect(updated[2]).toMatchObject({ value: "Tram", assignment: "Rail" })
   })
 
   it("paste handler parses 2-column TSV for categorical", () => {
     const onUpdate = vi.fn()
-    const { container } = render(<BandingRulesGrid factor={makeFactor({ banding: "categorical" })} onUpdateFactor={onUpdate} />)
+    const { container } = render(<BandingRulesGrid factor={makeFactor()} onUpdateFactor={onUpdate} />)
     onUpdate.mockClear()
 
     const pasteTarget = container.querySelector("[data-testid='banding-scroll-container']")!
@@ -476,7 +341,7 @@ describe("BandingRulesGrid", () => {
 
   it("round-trips copied categorical TSV with a blank final cell through grid paste", () => {
     const onUpdate = vi.fn()
-    const { container } = render(<BandingRulesGrid factor={makeFactor({ banding: "categorical" })} onUpdateFactor={onUpdate} />)
+    const { container } = render(<BandingRulesGrid factor={makeFactor()} onUpdateFactor={onUpdate} />)
     onUpdate.mockClear()
 
     const pasteTarget = container.querySelector("[data-testid='banding-scroll-container']")!
@@ -496,7 +361,7 @@ describe("BandingRulesGrid", () => {
       { value: "Car", assignment: "Vehicle", _id: "range-cat-1" },
       { value: "Bike", assignment: "Cycle", _id: "range-cat-2" },
     ] as unknown as CategoricalRule[]
-    render(<BandingRulesGrid factor={makeFactor({ banding: "categorical", rules })} onUpdateFactor={onUpdate} />)
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
     onUpdate.mockClear()
 
     fireEvent.paste(screen.getByLabelText("Rule 1 group name"), {
@@ -511,23 +376,6 @@ describe("BandingRulesGrid", () => {
     expect(updated[2]).toMatchObject({ value: "", assignment: "Metro" })
   })
 
-  it("copies the whole continuous banding as TSV", () => {
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(navigator, "clipboard", {
-      value: { writeText },
-      configurable: true,
-    })
-    const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "copy-1" },
-      { op1: ">=", val1: "60", op2: "", val2: "", assignment: "old", _id: "copy-2" },
-    ] as unknown as ContinuousRule[]
-    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
-
-    fireEvent.click(screen.getByRole("button", { name: "Copy banding as TSV" }))
-
-    expect(writeText).toHaveBeenCalledWith("From\tValue\tTo\tValue\tLabel\n<\t25\t\t\tyoung\n>=\t60\t\t\told")
-  })
-
   it("copies the whole categorical banding as TSV", () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, "clipboard", {
@@ -538,7 +386,7 @@ describe("BandingRulesGrid", () => {
       { value: "London", assignment: "South", _id: "copy-cat-1" },
       { value: "Leeds", assignment: "North", _id: "copy-cat-2" },
     ] as unknown as CategoricalRule[]
-    render(<BandingRulesGrid factor={makeFactor({ banding: "categorical", rules })} onUpdateFactor={vi.fn()} />)
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
 
     fireEvent.click(screen.getByRole("button", { name: "Copy banding as TSV" }))
 
@@ -551,8 +399,8 @@ describe("BandingRulesGrid", () => {
       configurable: true,
     })
     const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "copy-missing" },
-    ] as unknown as ContinuousRule[]
+      { value: "Car", assignment: "Vehicle", _id: "copy-missing" },
+    ] as unknown as CategoricalRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
 
     fireEvent.click(screen.getByRole("button", { name: "Copy banding as TSV" }))
@@ -569,8 +417,8 @@ describe("BandingRulesGrid", () => {
 
   it("shows the copy banding action as an icon-only control below the grid", () => {
     const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "copy-ui-1" },
-    ] as unknown as ContinuousRule[]
+      { value: "Car", assignment: "Vehicle", _id: "copy-ui-1" },
+    ] as unknown as CategoricalRule[]
     const { container } = render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
 
     const button = screen.getByRole("button", { name: "Copy banding as TSV" })
@@ -581,52 +429,25 @@ describe("BandingRulesGrid", () => {
 
   // --- Keyboard: Enter to add row ---
 
-  it("Enter on last assignment input calls onAddRule", () => {
-    const onAddRule = vi.fn()
-    const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "e1" },
-      { op1: ">=", val1: "60", op2: "", val2: "", assignment: "old", _id: "e2" },
-    ] as unknown as ContinuousRule[]
-    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} onAddRule={onAddRule} />)
-    // Last assignment input is the last textbox
-    const lastInput = screen.getByLabelText("Rule 2 label")
-    fireEvent.keyDown(lastInput, { key: "Enter" })
-    expect(onAddRule).toHaveBeenCalledTimes(1)
-  })
-
   it("Enter on non-last assignment input does not call onAddRule", () => {
     const onAddRule = vi.fn()
     const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "e3" },
-      { op1: ">=", val1: "60", op2: "", val2: "", assignment: "old", _id: "e4" },
-    ] as unknown as ContinuousRule[]
+      { value: "Car", assignment: "Vehicle", _id: "e3" },
+      { value: "Bike", assignment: "Cycle", _id: "e4" },
+    ] as unknown as CategoricalRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} onAddRule={onAddRule} />)
-    const firstInput = screen.getByLabelText("Rule 1 label")
+    const firstInput = screen.getByLabelText("Rule 1 group name")
     fireEvent.keyDown(firstInput, { key: "Enter" })
     expect(onAddRule).not.toHaveBeenCalled()
   })
 
   // --- Header labels ---
 
-  it("header labels say 'From', 'To (opt.)', 'Label' for continuous", () => {
-    const rules: ContinuousRule[] = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young" },
-    ]
-    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
-    expect(screen.getByText("From", { selector: "th" })).toBeInTheDocument()
-    expect(screen.getByText("Label", { selector: "th" })).toBeInTheDocument()
-    // "To (opt.)" header
-    const toHeader = screen.getByText((_content, element) => {
-      return element?.tagName === "TH" && element.textContent === "To (opt.)"
-    })
-    expect(toHeader).toBeInTheDocument()
-  })
-
   it("header labels say 'Value', 'Maps To' for categorical", () => {
     const rules: CategoricalRule[] = [
       { value: "Car", assignment: "Vehicle" },
     ]
-    render(<BandingRulesGrid factor={makeFactor({ banding: "categorical", rules })} onUpdateFactor={vi.fn()} />)
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
     expect(screen.getByText("Value", { selector: "th" })).toBeInTheDocument()
     expect(screen.getByText("Maps To", { selector: "th" })).toBeInTheDocument()
   })
@@ -635,41 +456,21 @@ describe("BandingRulesGrid", () => {
 
   it("accentColor prop is applied to assignment inputs", () => {
     const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "ac1" },
-    ] as unknown as ContinuousRule[]
+      { value: "Car", assignment: "Vehicle", _id: "ac1" },
+    ] as unknown as CategoricalRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} accentColor="#ff0000" />)
-    const assignmentInput = screen.getByLabelText("Rule 1 label")
+    const assignmentInput = screen.getByLabelText("Rule 1 group name")
     // Browser may normalize to rgb()
     expect(assignmentInput.style.color === '#ff0000' || assignmentInput.style.color === 'rgb(255, 0, 0)').toBe(true)
   })
 
   it("accentColor defaults to the banding-accent token when not provided", () => {
     const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "ac2" },
-    ] as unknown as ContinuousRule[]
+      { value: "Car", assignment: "Vehicle", _id: "ac2" },
+    ] as unknown as CategoricalRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
-    const assignmentInput = screen.getByLabelText("Rule 1 label")
+    const assignmentInput = screen.getByLabelText("Rule 1 group name")
     expect(assignmentInput.style.color).toBe(CHART_COLORS.bandingAccent)
-  })
-
-  // --- Paste 3-column TSV for continuous ---
-
-  it("paste handler parses 3-column TSV for continuous", () => {
-    const onUpdate = vi.fn()
-    const { container } = render(<BandingRulesGrid factor={makeFactor()} onUpdateFactor={onUpdate} />)
-    onUpdate.mockClear()
-
-    const pasteTarget = container.querySelector("[data-testid='banding-scroll-container']")!
-    const clipboardData = { getData: () => "25\t60\tmid\n60\t100\thigh" }
-    fireEvent.paste(pasteTarget, { clipboardData })
-
-    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
-    expect(lastCall.rules).toHaveLength(2)
-    expect(lastCall.rules[0].op1).toBe(">")
-    expect(lastCall.rules[0].val1).toBe("25")
-    expect(lastCall.rules[0].op2).toBe("<=")
-    expect(lastCall.rules[0].val2).toBe("60")
-    expect(lastCall.rules[0].assignment).toBe("mid")
   })
 
   // --- Match counts for categorical ---
@@ -678,7 +479,7 @@ describe("BandingRulesGrid", () => {
     const rules = [
       { value: "London", assignment: "South", _id: "mc1" },
     ] as unknown as CategoricalRule[]
-    render(<BandingRulesGrid factor={makeFactor({ banding: "categorical", rules })} onUpdateFactor={vi.fn()} matchCounts={[15]} />)
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} matchCounts={[15]} />)
     expect(screen.getByText("Matches", { selector: "th" })).toBeInTheDocument()
     expect(screen.getByText("15")).toBeInTheDocument()
   })
@@ -690,7 +491,7 @@ describe("BandingRulesGrid", () => {
     const rules = [
       { value: "Car", assignment: "Vehicle", _id: "ce1" },
     ] as unknown as CategoricalRule[]
-    render(<BandingRulesGrid factor={makeFactor({ banding: "categorical", rules })} onUpdateFactor={vi.fn()} onAddRule={onAddRule} />)
+    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} onAddRule={onAddRule} />)
     const lastInput = screen.getByLabelText("Rule 1 group name")
     fireEvent.keyDown(lastInput, { key: "Enter" })
     expect(onAddRule).toHaveBeenCalledTimes(1)
@@ -700,7 +501,7 @@ describe("BandingRulesGrid", () => {
 
   it("paste with trailing newlines ignores empty lines", () => {
     const onUpdate = vi.fn()
-    const { container } = render(<BandingRulesGrid factor={makeFactor({ banding: "categorical" })} onUpdateFactor={onUpdate} />)
+    const { container } = render(<BandingRulesGrid factor={makeFactor()} onUpdateFactor={onUpdate} />)
     onUpdate.mockClear()
 
     const pasteTarget = container.querySelector("[data-testid='banding-scroll-container']")!
@@ -715,7 +516,7 @@ describe("BandingRulesGrid", () => {
 
   it("paste with tab-only lines ignores them", () => {
     const onUpdate = vi.fn()
-    const { container } = render(<BandingRulesGrid factor={makeFactor({ banding: "categorical" })} onUpdateFactor={onUpdate} />)
+    const { container } = render(<BandingRulesGrid factor={makeFactor()} onUpdateFactor={onUpdate} />)
     onUpdate.mockClear()
 
     const pasteTarget = container.querySelector("[data-testid='banding-scroll-container']")!
@@ -731,7 +532,7 @@ describe("BandingRulesGrid", () => {
     const rules = [
       { value: "Car", assignment: "Vehicle", _id: "nt1" },
     ] as unknown as CategoricalRule[]
-    const { container } = render(<BandingRulesGrid factor={makeFactor({ banding: "categorical", rules })} onUpdateFactor={onUpdate} />)
+    const { container } = render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={onUpdate} />)
     onUpdate.mockClear()
 
     const pasteTarget = container.querySelector("[data-testid='banding-scroll-container']")!
@@ -741,39 +542,38 @@ describe("BandingRulesGrid", () => {
     expect(onUpdate).not.toHaveBeenCalled()
   })
 
-  it("paste with 4-column continuous data (malformed) skips those lines", () => {
+  it("skips a pasted row that has a value but no label column", () => {
     const onUpdate = vi.fn()
     const { container } = render(<BandingRulesGrid factor={makeFactor()} onUpdateFactor={onUpdate} />)
-    onUpdate.mockClear()
 
     const pasteTarget = container.querySelector("[data-testid='banding-scroll-container']")!
-    // 4 columns doesn't match any parsing branch for continuous
-    const clipboardData = { getData: () => ">=\t25\t<\t60" }
-    fireEvent.paste(pasteTarget, { clipboardData })
+    fireEvent.paste(pasteTarget, { clipboardData: { getData: () => "London\tSouth\nLeeds\nManchester\tNorth" } })
 
-    // No rules parsed, so onUpdate should not be called
-    expect(onUpdate).not.toHaveBeenCalled()
+    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+    expect(lastCall.rules.map((rule: CategoricalRule) => rule.value)).toEqual(["London", "Manchester"])
   })
 
   it("matchCounts shorter than rules shows empty for missing indices", () => {
     const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "ms1" },
-      { op1: ">=", val1: "60", op2: "", val2: "", assignment: "old", _id: "ms2" },
-    ] as unknown as ContinuousRule[]
-    render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} matchCounts={[42]} />)
-    // First rule shows 42
-    expect(screen.getByText("42")).toBeInTheDocument()
-    // Second rule's match count should be empty (matchCounts[1] is undefined -> "" via nullish coalescing)
-    // The Matches header should still be present
+      { value: "Car", assignment: "Vehicle", _id: "ms1" },
+      { value: "Bike", assignment: "Cycle", _id: "ms2" },
+    ] as unknown as CategoricalRule[]
+    const { container } = render(
+      <BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} matchCounts={[42]} />,
+    )
+    const countCells = Array.from(container.querySelectorAll("tbody tr")).map(
+      (row) => row.querySelectorAll("td")[2]?.textContent,
+    )
+    expect(countCells).toEqual(["42", ""])
     expect(screen.getByText("Matches", { selector: "th" })).toBeInTheDocument()
   })
 
   it("Enter without onAddRule prop does not throw", () => {
     const rules = [
-      { op1: "<", val1: "25", op2: "", val2: "", assignment: "young", _id: "nr1" },
-    ] as unknown as ContinuousRule[]
+      { value: "Car", assignment: "Vehicle", _id: "nr1" },
+    ] as unknown as CategoricalRule[]
     render(<BandingRulesGrid factor={makeFactor({ rules })} onUpdateFactor={vi.fn()} />)
-    const lastInput = screen.getByLabelText("Rule 1 label")
+    const lastInput = screen.getByLabelText("Rule 1 group name")
     // Should not throw even without onAddRule
     expect(() => fireEvent.keyDown(lastInput, { key: "Enter" })).not.toThrow()
   })

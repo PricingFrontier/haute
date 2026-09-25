@@ -69,6 +69,10 @@ def _output_node(nid: str, fields: list[str] | None = None) -> GraphNode:
     return _node(nid, NodeType.OUTPUT, **make_output_config(fields or []))
 
 
+# One usable rule: a banding factor without rules is a draft that creates nothing.
+_RULE = [{"boundary": "25", "label": "low"}]
+
+
 def _banding_node(
     nid: str,
     factors: list[dict] | None = None,
@@ -138,8 +142,18 @@ class TestGetColumnContract:
             NodeType.BANDING,
             {
                 "factors": [
-                    {"column": "age", "outputColumn": "age_band"},
-                    {"column": "region", "outputColumn": "region_band"},
+                    {
+                        "banding": "breakpoints",
+                        "column": "age",
+                        "outputColumn": "age_band",
+                        "rules": _RULE,
+                    },
+                    {
+                        "banding": "breakpoints",
+                        "column": "region",
+                        "outputColumn": "region_band",
+                        "rules": _RULE,
+                    },
                 ]
             },
         )
@@ -154,10 +168,12 @@ class TestGetColumnContract:
     def test_banding_missing_output_column(self):
         produced, referenced = get_column_contract(
             NodeType.BANDING,
-            {"factors": [{"column": "age"}]},
+            {"factors": [{"banding": "breakpoints", "column": "age", "rules": _RULE}]},
         )
+        # Without an output column the factor is a draft execution skips, so
+        # the contract neither creates nor reads anything for it.
         assert produced == set()
-        assert referenced == {"age"}
+        assert referenced == set()
 
     def test_banding_none_factors(self):
         produced, referenced = get_column_contract(NodeType.BANDING, {"factors": None})
@@ -493,7 +509,17 @@ class TestComputeNeededColumns:
         """
         nodes = [
             _source_node("src"),
-            _banding_node("band", factors=[{"column": "age", "outputColumn": "age_band"}]),
+            _banding_node(
+                "band",
+                factors=[
+                    {
+                        "banding": "breakpoints",
+                        "column": "age",
+                        "outputColumn": "age_band",
+                        "rules": _RULE,
+                    }
+                ],
+            ),
             _output_node("out", fields=["age_band"]),
         ]
         node_map = {n.id: n for n in nodes}
@@ -551,8 +577,28 @@ class TestComputeNeededColumns:
         """
         nodes = [
             _source_node("src"),
-            _banding_node("ba", factors=[{"column": "a", "outputColumn": "a_band"}]),
-            _banding_node("bb", factors=[{"column": "b", "outputColumn": "b_band"}]),
+            _banding_node(
+                "ba",
+                factors=[
+                    {
+                        "banding": "breakpoints",
+                        "column": "a",
+                        "outputColumn": "a_band",
+                        "rules": _RULE,
+                    }
+                ],
+            ),
+            _banding_node(
+                "bb",
+                factors=[
+                    {
+                        "banding": "breakpoints",
+                        "column": "b",
+                        "outputColumn": "b_band",
+                        "rules": _RULE,
+                    }
+                ],
+            ),
             _output_node("o1", fields=["a_band", "x"]),
             _output_node("o2", fields=["b_band", "y"]),
         ]
@@ -1269,7 +1315,17 @@ class TestCaptureProjection:
     def test_projection_with_banding(self, tmp_path):
         """Banding creates a column; its capture holds that and what its consumers read."""
         graph = _fan_out_to_both(
-            _banding_node("band", factors=[{"column": "a", "outputColumn": "a_band"}]),
+            _banding_node(
+                "band",
+                factors=[
+                    {
+                        "banding": "breakpoints",
+                        "column": "a",
+                        "outputColumn": "a_band",
+                        "rules": _RULE,
+                    }
+                ],
+            ),
             _output_node("o1", fields=["a_band"]),
             _output_node("o2", fields=["a_band", "b"]),
             reads={"o1": ["a_band"], "o2": ["a_band", "b"]},
@@ -1439,7 +1495,14 @@ class TestCaptureProjection:
             _rating_step_node("costly_pre"),
             _banding_node(
                 "mid",
-                factors=[{"column": "a", "outputColumn": "band"}],
+                factors=[
+                    {
+                        "banding": "breakpoints",
+                        "column": "a",
+                        "outputColumn": "band",
+                        "rules": _RULE,
+                    }
+                ],
             ),
             _transform_node("left", code="df = mid.select(['band'])"),
             _transform_node("right", code="df = mid.select(['band'])"),

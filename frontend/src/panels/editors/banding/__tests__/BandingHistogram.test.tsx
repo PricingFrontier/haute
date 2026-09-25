@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest"
 import { render, cleanup } from "@testing-library/react"
 import { BandingHistogram } from "../BandingHistogram"
-import { equalWidthBins } from "../bandingBins"
+import { equalWidthBins } from "./histogramBins"
+import { dayNumberToDate } from "../bandingUtils"
 
 const ACCENT = "#f97316"
 
@@ -105,6 +106,21 @@ describe("BandingHistogram", () => {
     )
     const labels = Array.from(container.querySelectorAll("text")).map((text) => text.textContent)
     expect(labels).toEqual(["0", "12.3K"])
+  })
+
+  it("labels the ends with the formatter it is given, such as dates for day numbers", () => {
+    const { container } = render(
+      <BandingHistogram
+        // 2024-01-01 to midday on 2024-02-29, in days since 1970-01-01.
+        bins={[{ lower: 19723, upper: 19782.5, count: 3 }]}
+        boundaries={[]}
+        accentColor={ACCENT}
+        width={200}
+        formatValue={dayNumberToDate}
+      />,
+    )
+    const labels = Array.from(container.querySelectorAll("text")).map((text) => text.textContent)
+    expect(labels).toEqual(["2024-01-01", "2024-02-29"])
   })
 
   it("draws a constant column as one centred bar with its boundaries in the middle", () => {

@@ -74,8 +74,8 @@ class TestBandingConfig:
     def test_basic_factors(self) -> None:
         config = {
             "factors": [
-                {"column": "driver_age", "outputColumn": "age_band"},
-                {"column": "vehicle_value", "outputColumn": "value_band"},
+                {"banding": "breakpoints", "column": "driver_age", "outputColumn": "age_band"},
+                {"banding": "breakpoints", "column": "vehicle_value", "outputColumn": "value_band"},
             ]
         }
         refs = _extract_column_refs(config)
@@ -139,7 +139,7 @@ class TestOutputColumnExclusion:
 
     def test_outputColumn_camelCase_excluded(self) -> None:  # noqa: N802 - references camelCase config key `outputColumn`
         config = {
-            "factors": [{"column": "age", "outputColumn": "age_band"}],
+            "factors": [{"banding": "breakpoints", "column": "age", "outputColumn": "age_band"}],
             "outputColumn": "combined_rate",
         }
         refs = _extract_column_refs(config)

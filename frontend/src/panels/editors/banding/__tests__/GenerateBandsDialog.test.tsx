@@ -1,159 +1,121 @@
-import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+
 import { GenerateBandsDialog } from "../GenerateBandsDialog"
 
-const ACCENT = "#f97316"
+afterEach(cleanup)
 
 describe("GenerateBandsDialog", () => {
-  afterEach(cleanup)
-
-  it("renders all input fields (no label format field)", () => {
+  it("starts from the settings it is given rather than the data's range", () => {
+    const onGenerate = vi.fn()
     render(
       <GenerateBandsDialog
-        onGenerate={vi.fn()}
+        onGenerate={onGenerate}
         onClose={vi.fn()}
-        accentColor={ACCENT}
-      />,
-    )
-    expect(screen.getByLabelText("Start")).toBeInTheDocument()
-    expect(screen.getByLabelText("End")).toBeInTheDocument()
-    expect(screen.getByLabelText("Step")).toBeInTheDocument()
-    // Label format field should NOT exist
-    expect(screen.queryByLabelText("Label format")).not.toBeInTheDocument()
-  })
-
-  it("pre-fills from dataMin/dataMax when provided", () => {
-    render(
-      <GenerateBandsDialog
-        onGenerate={vi.fn()}
-        onClose={vi.fn()}
-        accentColor={ACCENT}
-        dataMin={10}
-        dataMax={100}
-      />,
-    )
-    expect(screen.getByLabelText("Start")).toHaveValue(10)
-    expect(screen.getByLabelText("End")).toHaveValue(100)
-  })
-
-  it("auto-suggests step for ~10 bands when data range is known", () => {
-    render(
-      <GenerateBandsDialog
-        onGenerate={vi.fn()}
-        onClose={vi.fn()}
-        accentColor={ACCENT}
+        accentColor="#22d3ee"
         dataMin={0}
         dataMax={100}
+        initial={{ start: 4000, end: 7000, step: 1200 }}
       />,
     )
-    // Math.ceil((100-0)/10) = 10
+    expect(screen.getByLabelText("Start")).toHaveValue(4000)
+    expect(screen.getByLabelText("End")).toHaveValue(7000)
+    expect(screen.getByLabelText("Step")).toHaveValue(1200)
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }))
+    expect(onGenerate).toHaveBeenCalledWith([
+      { boundary: "5200", label: "4000–5200" },
+      { boundary: "6400", label: "5201–6400" },
+      { boundary: "7000", label: "6401–7000" },
+    ])
+  })
+
+  it("starts from the data's range when there are no settings to start from", () => {
+    render(
+      <GenerateBandsDialog onGenerate={vi.fn()} onClose={vi.fn()} accentColor="#22d3ee" dataMin={0} dataMax={100} />,
+    )
+    expect(screen.getByLabelText("Start")).toHaveValue(0)
+    expect(screen.getByLabelText("End")).toHaveValue(100)
     expect(screen.getByLabelText("Step")).toHaveValue(10)
   })
 
-  it("generate button creates correct breakpoints with auto labels", () => {
-    const onGenerate = vi.fn()
-    render(
-      <GenerateBandsDialog
-        onGenerate={onGenerate}
-        onClose={vi.fn()}
-        accentColor={ACCENT}
-      />,
-    )
-    fireEvent.change(screen.getByLabelText("Start"), { target: { value: "0" } })
-    fireEvent.change(screen.getByLabelText("End"), { target: { value: "30" } })
-    fireEvent.change(screen.getByLabelText("Step"), { target: { value: "10" } })
-    fireEvent.click(screen.getByText("Generate"))
+  describe("on a date column", () => {
+    it("asks for Start and End dates and a Step of whole units, starting from the data's dates in months", () => {
+      render(
+        <GenerateBandsDialog
+          temporal
+          onGenerate={vi.fn()}
+          onClose={vi.fn()}
+          accentColor="#22d3ee"
+          dataMin="2024-01-05"
+          dataMax="2024-03-20"
+        />,
+      )
+      expect(screen.getByLabelText("Start")).toHaveAttribute("type", "date")
+      expect(screen.getByLabelText("Start")).toHaveValue("2024-01-05")
+      expect(screen.getByLabelText("End")).toHaveAttribute("type", "date")
+      expect(screen.getByLabelText("End")).toHaveValue("2024-03-20")
+      expect(screen.getByLabelText("Step")).toHaveValue(1)
+      expect(screen.getByLabelText("Step unit")).toHaveValue("months")
+      expect(
+        Array.from((screen.getByLabelText("Step unit") as HTMLSelectElement).options).map((option) => option.value),
+      ).toEqual(["days", "weeks", "months", "years"])
+    })
 
-    expect(onGenerate).toHaveBeenCalledTimes(1)
-    const breakpoints = onGenerate.mock.calls[0][0]
-    // Integer boundaries: first band starts at start, subsequent use prev+1
-    expect(breakpoints).toEqual([
-      { boundary: "10", label: "0–10" },
-      { boundary: "20", label: "11–20" },
-      { boundary: "30", label: "21–30" },
-    ])
-  })
+    it("generates bands stepping whole months, each up to the day before the next starts", () => {
+      const onGenerate = vi.fn()
+      render(<GenerateBandsDialog temporal onGenerate={onGenerate} onClose={vi.fn()} accentColor="#22d3ee" />)
+      fireEvent.change(screen.getByLabelText("Start"), { target: { value: "2024-01-01" } })
+      fireEvent.change(screen.getByLabelText("End"), { target: { value: "2024-03-15" } })
+      fireEvent.click(screen.getByRole("button", { name: "Generate" }))
+      expect(onGenerate).toHaveBeenCalledWith([
+        { boundary: "2024-01-31", label: "2024-01-01–2024-01-31" },
+        { boundary: "2024-02-29", label: "2024-02-01–2024-02-29" },
+        { boundary: "2024-03-15", label: "2024-03-01–2024-03-15" },
+      ])
+    })
 
-  it("validates step > 0", () => {
-    const onGenerate = vi.fn()
-    render(
-      <GenerateBandsDialog
-        onGenerate={onGenerate}
-        onClose={vi.fn()}
-        accentColor={ACCENT}
-      />,
-    )
-    fireEvent.change(screen.getByLabelText("Start"), { target: { value: "0" } })
-    fireEvent.change(screen.getByLabelText("End"), { target: { value: "10" } })
-    fireEvent.change(screen.getByLabelText("Step"), { target: { value: "0" } })
-    fireEvent.click(screen.getByText("Generate"))
+    it("starts from the settings it is given rather than the data's dates", () => {
+      const onGenerate = vi.fn()
+      render(
+        <GenerateBandsDialog
+          temporal
+          onGenerate={onGenerate}
+          onClose={vi.fn()}
+          accentColor="#22d3ee"
+          dataMin="2020-06-01"
+          dataMax="2025-06-01"
+          initial={{ start: "2024-01-01", end: "2024-01-28", step: 2, unit: "weeks" }}
+        />,
+      )
+      expect(screen.getByLabelText("Start")).toHaveValue("2024-01-01")
+      expect(screen.getByLabelText("End")).toHaveValue("2024-01-28")
+      expect(screen.getByLabelText("Step")).toHaveValue(2)
+      expect(screen.getByLabelText("Step unit")).toHaveValue("weeks")
+      fireEvent.change(screen.getByLabelText("Step unit"), { target: { value: "days" } })
+      fireEvent.change(screen.getByLabelText("Step"), { target: { value: "14" } })
+      fireEvent.click(screen.getByRole("button", { name: "Generate" }))
+      expect(onGenerate).toHaveBeenCalledWith([
+        { boundary: "2024-01-14", label: "2024-01-01–2024-01-14" },
+        { boundary: "2024-01-28", label: "2024-01-15–2024-01-28" },
+      ])
+    })
 
-    expect(onGenerate).not.toHaveBeenCalled()
-    expect(screen.getByText("Step must be greater than 0")).toBeInTheDocument()
-  })
-
-  it("validates end > start", () => {
-    const onGenerate = vi.fn()
-    render(
-      <GenerateBandsDialog
-        onGenerate={onGenerate}
-        onClose={vi.fn()}
-        accentColor={ACCENT}
-      />,
-    )
-    fireEvent.change(screen.getByLabelText("Start"), { target: { value: "20" } })
-    fireEvent.change(screen.getByLabelText("End"), { target: { value: "10" } })
-    fireEvent.change(screen.getByLabelText("Step"), { target: { value: "5" } })
-    fireEvent.click(screen.getByText("Generate"))
-
-    expect(onGenerate).not.toHaveBeenCalled()
-    expect(screen.getByText("End must be greater than start")).toBeInTheDocument()
-  })
-
-  it("cancel button calls onClose", () => {
-    const onClose = vi.fn()
-    render(
-      <GenerateBandsDialog
-        onGenerate={vi.fn()}
-        onClose={onClose}
-        accentColor={ACCENT}
-      />,
-    )
-    fireEvent.click(screen.getByText("Cancel"))
-    expect(onClose).toHaveBeenCalledTimes(1)
-  })
-
-  it("edge case: step larger than range produces single band", () => {
-    const onGenerate = vi.fn()
-    render(
-      <GenerateBandsDialog
-        onGenerate={onGenerate}
-        onClose={vi.fn()}
-        accentColor={ACCENT}
-      />,
-    )
-    fireEvent.change(screen.getByLabelText("Start"), { target: { value: "0" } })
-    fireEvent.change(screen.getByLabelText("End"), { target: { value: "5" } })
-    fireEvent.change(screen.getByLabelText("Step"), { target: { value: "100" } })
-    fireEvent.click(screen.getByText("Generate"))
-
-    expect(onGenerate).toHaveBeenCalledTimes(1)
-    const breakpoints = onGenerate.mock.calls[0][0]
-    // Step > range: end is included as the only boundary
-    expect(breakpoints).toEqual([
-      { boundary: "5", label: "0–5" },
-    ])
-  })
-
-  it("dialog renders with box shadow", () => {
-    const { container } = render(
-      <GenerateBandsDialog
-        onGenerate={vi.fn()}
-        onClose={vi.fn()}
-        accentColor={ACCENT}
-      />,
-    )
-    const dialog = container.querySelector("[role='dialog']") as HTMLElement
-    expect(dialog.style.boxShadow).toBeTruthy()
+    it("says why it cannot generate instead of generating", () => {
+      const onGenerate = vi.fn()
+      render(
+        <GenerateBandsDialog
+          temporal
+          onGenerate={onGenerate}
+          onClose={vi.fn()}
+          accentColor="#22d3ee"
+          initial={{ start: "2024-01-01", end: "2024-12-31", step: 1, unit: "months" }}
+        />,
+      )
+      fireEvent.change(screen.getByLabelText("Step"), { target: { value: "1.5" } })
+      fireEvent.click(screen.getByRole("button", { name: "Generate" }))
+      expect(screen.getByText("Step must be a whole number of at least 1")).toBeInTheDocument()
+      expect(onGenerate).not.toHaveBeenCalled()
+    })
   })
 })

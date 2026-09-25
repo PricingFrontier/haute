@@ -9,7 +9,7 @@
   "constant": {"values": [{"name": "constant_1", "value": "1.0"}]},
   "polars": {"steps": []},
   "edgeJoin": {"how": "left", "suffix": "_right"},
-  "banding": {"factors": [{"banding": "continuous", "column": "", "outputColumn": "", "rules": [], "default": null}]},
+  "banding": {"factors": [{"banding": "breakpoints", "column": "", "outputColumn": "", "rules": [], "default": null}]},
   "scenarioExpander": {"stepCount": 21, "steps": []},
   "ratingStep": {"tables": [{"factors": [], "outputColumn": "", "defaultValue": "1.0", "entries": []}], "combinedOutputs": [], "steps": []},
   "modelling": {},

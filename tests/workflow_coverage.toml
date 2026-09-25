@@ -749,7 +749,6 @@ tests = [
   "tests/test_rating_hand_calculated.py::test_rating_trace_matches_hand_calculated_premiums",
   "tests/test_rating_step_config_coverage.py::test_normalise_roundtrip_three_factors",
   "tests/test_rating.py::TestBandingBoundaryValues::test_boundary_value_inclusive_exclusive",
-  "tests/test_rating.py::TestOverlappingBandingRulesFirstMatchWins::test_first_matching_rule_wins",
   "tests/test_rating.py::TestApplyBandingEdgeCases::test_null_values_get_default",
   "tests/test_rating.py::TestExtremeFloatValues::test_inf_in_banding_sanitized_to_default",
   "tests/test_banding.py::TestBreakpointsMode::test_breakpoints_right_closed",
@@ -777,7 +776,7 @@ invariant = "A rating step previewed and traced through the real executor reprod
 [scenarios.evidence]
 commit = "dee8c285"
 command = 'uv run pytest tests/test_rating_hand_calculated.py tests/test_rating.py tests/test_banding.py tests/test_rating_step.py tests/test_rating_step_config_coverage.py tests/test_rating_key_agreement.py tests/test_rating_miss_fail_loud.py tests/test_rating_dtype_contract.py tests/test_expression_parser.py tests/test_expression_parity_properties.py -q -p no:warnings'
-result = "809 passed in 18.51s"
+result = "810 passed in 16.31s"
 
 [[scenarios]]
 id = "W08-S01"

@@ -2,6 +2,7 @@ import { AlertTriangle, Copy, Plus, Trash } from "lucide-react"
 import { withAlpha } from "../../../utils/color"
 import useToastStore from "../../../stores/useToastStore"
 import { buildTsv, parsePastedGrid, writeClipboardText } from "../shared/tableClipboard"
+import { boundaryDayNumber, boundaryKind } from "./bandingUtils"
 
 type Breakpoint = { boundary: string; label: string }
 
@@ -10,7 +11,13 @@ interface BreakpointGridProps {
   onUpdate: (breakpoints: Breakpoint[]) => void
   rightClosed?: boolean  // read-only, defaults to true
   accentColor: string
-  matchCounts?: number[]
+  /** Rows each breakpoint claims; null while a count is still being worked out. */
+  matchCounts?: (number | null)[]
+  /**
+   * The factor bands a Date or Datetime column (or its breakpoints are dates),
+   * so "Up to" takes a date or a date and time rather than a number.
+   */
+  temporal?: boolean
 }
 
 const BREAKPOINT_FIELDS = ["boundary", "label"] as const
@@ -99,16 +106,57 @@ function boundaryOrderWarnings(breakpoints: Breakpoint[]): Map<number, string> {
   return warnings
 }
 
+const DATE_KIND_NAMES = { date: "a date", datetime: "a date and time" } as const
+
+/**
+ * A date factor's boundary warnings: a boundary that is not a date, one whose
+ * kind differs from the first date's (a factor's breakpoints share one kind),
+ * and one out of order by when it is rather than how it is spelled.
+ */
+function dateBoundaryWarnings(breakpoints: Breakpoint[]): Map<number, string> {
+  const warnings = new Map<number, string>()
+  let first: { index: number; kind: keyof typeof DATE_KIND_NAMES } | null = null
+  let latest: { dayNumber: number; text: string } | null = null
+
+  for (let index = 0; index < breakpoints.length; index++) {
+    const text = (breakpoints[index].boundary ?? "").trim()
+    if (!text) continue
+    const kind = boundaryKind(text)
+    const dayNumber = boundaryDayNumber(text)
+    if ((kind !== "date" && kind !== "datetime") || dayNumber === null) {
+      warnings.set(index, `Breakpoint ${index + 1} is not a date; enter YYYY-MM-DD or YYYY-MM-DD HH:MM.`)
+      continue
+    }
+    if (first === null) {
+      first = { index, kind }
+    } else if (kind !== first.kind) {
+      warnings.set(
+        index,
+        `Breakpoint ${index + 1} is ${DATE_KIND_NAMES[kind]}, but breakpoint ${first.index + 1} is ${DATE_KIND_NAMES[first.kind]}; give every breakpoint the same kind.`,
+      )
+      continue
+    }
+    if (latest !== null && dayNumber <= latest.dayNumber) {
+      warnings.set(index, `Breakpoint ${index + 1} is out of order; enter a date after ${latest.text}.`)
+    } else {
+      latest = { dayNumber, text }
+    }
+  }
+
+  return warnings
+}
+
 export function BreakpointGrid({
   breakpoints,
   onUpdate,
   rightClosed = true,
   accentColor,
   matchCounts,
+  temporal = false,
 }: BreakpointGridProps) {
   const addToast = useToastStore(s => s.addToast)
   const showMatches = matchCounts != null
-  const orderWarnings = boundaryOrderWarnings(breakpoints)
+  const boundaryWarnings = temporal ? dateBoundaryWarnings(breakpoints) : boundaryOrderWarnings(breakpoints)
 
   const updateBreakpoint = (index: number, field: "boundary" | "label", value: string) => {
     const next = breakpoints.map((bp, i) =>
@@ -167,7 +215,7 @@ export function BreakpointGrid({
                   zIndex: 1,
                 }}
               >
-                <th className="text-left px-2 py-1.5 font-semibold" style={{ color: "var(--text-muted)", width: 70 }}>
+                <th className="text-left px-2 py-1.5 font-semibold" style={{ color: "var(--text-muted)", width: temporal ? 120 : 70 }}>
                   Up to <span style={{ fontWeight: "normal", opacity: 0.6 }}>{rightClosed ? "(incl.)" : "(excl.)"}</span>
                 </th>
                 <th className="text-left px-2 py-1.5 font-semibold" style={{ color: "var(--text-muted)" }}>
@@ -197,32 +245,33 @@ export function BreakpointGrid({
                 </tr>
               ) : (
                 breakpoints.map((bp, i) => {
-                  const orderWarning = orderWarnings.get(i)
-                  const orderWarningId = `breakpoint-${i + 1}-order-warning`
+                  const boundaryWarning = boundaryWarnings.get(i)
+                  const boundaryWarningId = `breakpoint-${i + 1}-boundary-warning`
 
                   return (
                     <tr key={i}>
                       <td className={CELL_CLASS}>
                         <div className="relative">
                           <input
-                            type="number"
+                            type={temporal ? "text" : "number"}
                             aria-label={`Breakpoint ${i + 1} boundary`}
-                            aria-invalid={orderWarning ? true : undefined}
-                            aria-describedby={orderWarning ? orderWarningId : undefined}
-                            title={orderWarning ?? undefined}
+                            aria-invalid={boundaryWarning ? true : undefined}
+                            aria-describedby={boundaryWarning ? boundaryWarningId : undefined}
+                            title={boundaryWarning ?? undefined}
                             value={bp.boundary}
                             onChange={(e) => updateBreakpoint(i, "boundary", e.target.value)}
                             onPaste={(e) => handleCellPaste(e, i, 0)}
-                            className={`${BOXED_INPUT_CLASS}${orderWarning ? " pr-5" : ""}`}
-                            style={orderWarning ? WARNING_BOUNDARY_STYLE : BOXED_CELL_STYLE}
-                            placeholder=""
+                            className={`${BOXED_INPUT_CLASS}${boundaryWarning ? " pr-5" : ""}`}
+                            style={boundaryWarning ? WARNING_BOUNDARY_STYLE : BOXED_CELL_STYLE}
+                            placeholder={temporal ? "YYYY-MM-DD" : ""}
+                            spellCheck={temporal ? false : undefined}
                           />
-                          {orderWarning && (
+                          {boundaryWarning && (
                             <span
-                              id={orderWarningId}
+                              id={boundaryWarningId}
                               role="img"
-                              aria-label={orderWarning}
-                              title={orderWarning}
+                              aria-label={boundaryWarning}
+                              title={boundaryWarning}
                               className="absolute right-1 top-1/2 -translate-y-1/2"
                               style={{ color: "var(--warning-strong)" }}
                             >
@@ -249,8 +298,12 @@ export function BreakpointGrid({
                     </td>
                     {showMatches && (
                       <td className={MATCH_CELL_CLASS}>
-                        <span className="text-[11px] font-mono" style={{ color: "var(--text-secondary)" }}>
-                          {matchCounts[i] ?? "-"}
+                        <span
+                          className="text-[11px] font-mono"
+                          title={matchCounts[i] === null ? "Counting…" : undefined}
+                          style={{ color: "var(--text-secondary)" }}
+                        >
+                          {matchCounts[i] === null ? "…" : (matchCounts[i] ?? "-")}
                         </span>
                       </td>
                     )}

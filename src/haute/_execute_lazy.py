@@ -7,6 +7,7 @@ holds the per-node pieces it composes.
 from __future__ import annotations
 
 import contextlib
+import difflib
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -322,18 +323,19 @@ def _assert_inputs_satisfy_contract(
     """
     if contract.inputs is None:
         return
-    missing = contract.inputs - upstream_columns
+    missing = sorted(contract.inputs - upstream_columns)
     if not missing:
         return
-    raise ContractMismatchError(
-        "Input columns required by the node's contract are missing from the upstream frame.",
-        node_id=node.id,
-        node_type=node.data.nodeType.value,
-        missing=sorted(missing),
-        extra=sorted(upstream_columns - contract.inputs),
-        declared_inputs=sorted(contract.inputs),
-        upstream_columns=sorted(upstream_columns),
-    )
+    subject = f"{_node_display_name(node)} needs {_name_columns(missing)}"
+    if not upstream_columns:
+        message = f"{subject}, but its input has no columns."
+    else:
+        message = f"{subject}, which {'is' if len(missing) == 1 else 'are'} not in its input."
+        similar = _similar_columns(missing, upstream_columns)
+        if similar:
+            noun = "a similar column" if len(similar) == 1 else "similar columns"
+            message += f" Its input has {noun}: {', '.join(map(repr, similar))}."
+    raise ContractMismatchError(message, node_id=node.id, missing=missing)
 
 
 def _assert_outputs_satisfy_contract(
@@ -353,18 +355,45 @@ def _assert_outputs_satisfy_contract(
     """
     if contract.outputs is None:
         return
-    missing = contract.outputs - output_columns
+    missing = sorted(contract.outputs - output_columns)
     if not missing:
         return
     raise ContractMismatchError(
-        "Output columns promised by the node's contract are missing from the node's result.",
+        f"{_node_display_name(node)} did not create {_name_columns(missing)}, "
+        "which its contract says it outputs.",
         node_id=node.id,
-        node_type=node.data.nodeType.value,
-        missing=sorted(missing),
-        extra=sorted(output_columns - contract.outputs),
-        declared_outputs=sorted(contract.outputs),
-        observed_columns=sorted(output_columns),
+        missing=missing,
     )
+
+
+# The preview shows a contract error's text as it is, so it names only the
+# missing columns (never the frame's other columns) and at most this many.
+_MESSAGE_COLUMN_LIMIT = 5
+
+
+def _node_display_name(node: GraphNode) -> str:
+    return repr(node.data.label or node.id)
+
+
+def _name_columns(columns: Sequence[str]) -> str:
+    """``the column 'a'`` / ``the columns 'a' and 'b'`` / ``… and N more``."""
+    shown = [repr(name) for name in columns[:_MESSAGE_COLUMN_LIMIT]]
+    if len(columns) == 1:
+        return f"the column {shown[0]}"
+    if len(columns) > len(shown):
+        return f"the columns {', '.join(shown)} and {len(columns) - len(shown)} more"
+    return f"the columns {', '.join(shown[:-1])} and {shown[-1]}"
+
+
+def _similar_columns(missing: Sequence[str], available: Iterable[str]) -> list[str]:
+    """The closest spelling in *available* to each missing column, if any is close."""
+    candidates = sorted(available)
+    similar: list[str] = []
+    for name in missing:
+        for match in difflib.get_close_matches(name, candidates, n=1, cutoff=0.8):
+            if match not in similar:
+                similar.append(match)
+    return similar
 
 
 def _should_check_contract(contract: Contract) -> bool:

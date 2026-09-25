@@ -56,7 +56,16 @@ def _graph(project: Path, *, preamble: str = "import polars as pl") -> PipelineG
             _node(
                 "banding",
                 NodeType.BANDING,
-                {"factors": [{"column": "premium", "outputColumn": "band", "rules": []}]},
+                {
+                    "factors": [
+                        {
+                            "banding": "breakpoints",
+                            "column": "premium",
+                            "outputColumn": "band",
+                            "rules": [],
+                        }
+                    ]
+                },
             ),
             _node(
                 "explore",
@@ -213,9 +222,10 @@ def test_downstream_edits_change_neither_slot_nor_signature(project: Path, chang
             "banding",
             factors=[
                 {
+                    "banding": "breakpoints",
                     "column": "premium",
                     "outputColumn": "band",
-                    "rules": [{"op1": ">", "val1": "1", "assignment": "high"}],
+                    "rules": [{"boundary": "1", "label": "high"}],
                 }
             ],
         )

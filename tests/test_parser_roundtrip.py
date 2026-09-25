@@ -282,17 +282,11 @@ def _banding_config() -> st.SearchStrategy[dict[str, Any]]:
             "factors": st.just(
                 [
                     {
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "column": "age",
                         "outputColumn": "age_band",
                         "rules": [
-                            {
-                                "op1": ">",
-                                "val1": "25",
-                                "op2": "<=",
-                                "val2": "35",
-                                "assignment": "young",
-                            },
+                            {"boundary": "35", "label": "young"},
                         ],
                         "default": None,
                     }
@@ -853,24 +847,12 @@ class TestEdgeCases:
                         config={
                             "factors": [
                                 {
-                                    "banding": "continuous",
+                                    "banding": "breakpoints",
                                     "column": "age",
                                     "outputColumn": "age_band",
                                     "rules": [
-                                        {
-                                            "op1": ">",
-                                            "val1": "18",
-                                            "op2": "<=",
-                                            "val2": "30",
-                                            "assignment": "young",
-                                        },
-                                        {
-                                            "op1": ">",
-                                            "val1": "30",
-                                            "op2": "<=",
-                                            "val2": "60",
-                                            "assignment": "middle",
-                                        },
+                                        {"boundary": "30", "label": "young"},
+                                        {"boundary": "60", "label": "middle"},
                                     ],
                                     "default": None,
                                 }
@@ -911,17 +893,11 @@ class TestEdgeCases:
                         config={
                             "factors": [
                                 {
-                                    "banding": "continuous",
+                                    "banding": "breakpoints",
                                     "column": "score",
                                     "outputColumn": "score_band",
                                     "rules": [
-                                        {
-                                            "op1": ">=",
-                                            "val1": "0",
-                                            "op2": "<",
-                                            "val2": "50",
-                                            "assignment": "low",
-                                        },
+                                        {"boundary": "50", "label": "low"},
                                     ],
                                     "default": "high",
                                 }
@@ -1051,18 +1027,10 @@ class TestEdgeCases:
                         config={
                             "factors": [
                                 {
-                                    "banding": "continuous",
+                                    "banding": "breakpoints",
                                     "column": "age",
                                     "outputColumn": "age_band",
-                                    "rules": [
-                                        {
-                                            "op1": ">",
-                                            "val1": "0",
-                                            "op2": "<=",
-                                            "val2": "99",
-                                            "assignment": "all",
-                                        }
-                                    ],
+                                    "rules": [{"boundary": "99", "label": "all"}],
                                     "default": None,
                                 }
                             ]

@@ -47,15 +47,61 @@ backend API modules own validation and persistence.
   action. Directory rows remain navigable when the server reports a null size; only numeric file
   sizes are rendered.
 - Banding exposes categorical/numeric rule editing, preview-derived suggestions and histogram
-  context. Rating supports one- and two-way factor tables, value-level matching, statistics,
+  context. The Numeric type is disabled, with the reason as its tooltip, while the selected
+  input column's dtype is known and neither numeric nor a date: numeric bands compare the column
+  against number or date boundaries, which a text or boolean column cannot satisfy. Banding lists its
+  factors the way Rating Step lists its tables, with the same shared list: a search over each
+  factor's output and input column names, an All/Issues filter (an issue is a factor without
+  its input column, output column or rules), an Add button, and a scrollable box of rows with
+  a health dot, the output name, a rule-count badge and, when there is more than one factor, a
+  remove control. Banding's rows can also be dragged, or moved with Alt+Up/Down, to reorder
+  the factors; list order is the order execution applies them in, so a factor that bands
+  another's output must stay after it. A new node, or one whose only factor is still empty,
+  shows the list with a placeholder "Column 1" row and the Type row as any other factor, so
+  choosing the first column does not move the layout. A new factor is Numeric; choosing an
+  input column whose dtype is not numeric switches it to Categorical. Numeric and Categorical
+  are the only banding types. Numeric's Generate opens its options
+  where it was pressed: under the Breakpoints heading and above the table, or in place of the
+  "No breakpoints yet" prompt when there are none. Generate keeps its Start, End and Step
+  options; on a factor with at least two "Up to" boundaries they start from what those
+  boundaries imply, so regenerating begins from the settings last used: End is the highest
+  boundary, Step spreads the lowest to the highest boundary over the bands (their count less
+  one), and Start is one step below the lowest. Boundaries that are evenly spaced but for a
+  shorter last band — Generate's output when the range is not a whole number of steps — give
+  back that exact step instead. With fewer boundaries the options start from the data's range.
+  Numeric also bands Date and Datetime columns, and is the type choosing one selects: its "Up
+  to" then takes a date (`YYYY-MM-DD`) or a date and time (`YYYY-MM-DD HH:MM`), compared as the
+  rating spec describes (a date by calendar day, so "up to 2024-02-29" includes that whole day;
+  a date and time by wall-clock time; both in the column's own time zone). The grid shows the
+  expected format, and warns on a boundary it cannot read, one out of order, or a mix of kinds;
+  the histogram and its end labels read as dates. On a date column Generate asks for a Start and
+  End date and a Step of so many days, weeks, months or years: each band starts where the last
+  ended, its "Up to" is the day before the next band starts (the last capped at End), and it is
+  labelled by its first and last day (`2024-01-01–2024-01-31`). Reopening it on date breakpoints
+  that step by a whole number of years, months, weeks or days (checked in that order, the last
+  band possibly shorter) starts from that step; other date breakpoints start from their lowest
+  and highest dates and the band count in days, and a factor with fewer than two starts from
+  the data's first and last dates in steps of one month.
+  Rating supports one- and two-way factor tables, value-level matching, statistics,
   paste/copy and downloadable table data.
-- Banding and Rating say whose rows their numbers describe. Both show the shared data-cache
-  control, and when the node's data point is cached both read the whole dataset: Banding its
+- Banding and Rating say whose rows their numbers describe. Rating also shows the shared
+  data-cache control; Banding shows only that basis label (the node's own Refresh caches its
+  data either way). When the node's data point is cached both read the whole dataset: Banding its
   distribution, values and per-rule counts, Rating the levels of the raw factor columns its
   tables rate on, so a level absent from the preview can still be given a rate. Without a
-  current point — or with one the node has moved on from — each says so and falls back to the
-  preview sample rather than presenting a sample's answer as the data's. A failure is shown in
-  place of that label, carrying the server's own message, and the preview basis continues.
+  current point — or with one the node has moved on from — Rating says so and falls back to the
+  preview sample rather than presenting a sample's answer as the data's, and a failure is shown
+  in place of its label, carrying the server's own message. Banding never shows a number from
+  the preview: its per-rule counts, its "x of N rows" and its histogram come only from the whole
+  dataset. Until that answer is there, its label says why — "Counting…", "Caching the data…",
+  "Not cached · Refresh this node to count all rows", "Cached data is out of date · Refresh this
+  node to count all rows", or the failure in the server's words — the counts show as pending
+  while they are being counted and are absent otherwise, and there is no histogram or "x of N
+  rows". Its categorical value list then offers the preview's values without counts, and
+  Generate may start from the preview's range. Editing Banding's rules does not drop the whole
+  dataset's answer while the new counts are asked: its total, values and distribution stay,
+  categorical counts follow the edit at once from the data's value counts, and a count not yet
+  known shows as pending.
 - The Rating Step editor says none of this when nothing in it reads the data: a table whose
   factors are all banded outputs takes its levels from the banding configuration, so it shows
   neither a basis nor the cache control.
@@ -209,15 +255,15 @@ backend API modules own validation and persistence.
   editor, resolves the actual destination, and keeps per-node write,
   collision-confirmation, and terminal state across panel remounts. Inactive
   discriminated-branch keys are removed rather than preserved invisibly.
-- Rating consumes healthy configured Banding outputs across continuous,
-  categorical, and breakpoint shapes. Recognised non-blank outputs with zero
+- Rating consumes healthy configured Banding outputs across categorical and
+  breakpoint shapes. Recognised non-blank outputs with zero
   valid levels produce one accessible warning and cannot be silently refilled
   from stale preview/table levels; healthy factors remain usable. Rebuilding
   several factors constructs their full Cartesian table, and edited
   relativities survive save/reload.
 - The maintained Banding-to-Rating configuration-shape matrix names one
   component owner, representative fixture, and smallest proving test tier for
-  continuous, categorical, breakpoint, mixed-factor, zero-level, malformed,
+  categorical, breakpoint, mixed-factor, zero-level, malformed,
   mixed-output, and persisted-table variants. Browser promotion is reserved
   for cross-editor persistence/keyboard journeys rather than duplicating every
   component shape.

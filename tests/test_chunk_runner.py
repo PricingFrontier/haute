@@ -95,23 +95,12 @@ def _chunk_safe_graph(path: Path, *, output_fields: list[str] | None = None):
                             {
                                 "column": "age",
                                 "outputColumn": "age_band",
-                                "banding": "continuous",
+                                "banding": "breakpoints",
                                 "rules": [
-                                    {
-                                        "op1": ">=",
-                                        "val1": 0,
-                                        "op2": "<",
-                                        "val2": 25,
-                                        "assignment": "young",
-                                    },
-                                    {
-                                        "op1": ">=",
-                                        "val1": 25,
-                                        "op2": "<",
-                                        "val2": 40,
-                                        "assignment": "adult",
-                                    },
+                                    {"boundary": "25", "label": "young"},
+                                    {"boundary": "40", "label": "adult"},
                                 ],
+                                "rightClosed": False,
                                 "default": "other",
                             },
                         ],
@@ -853,12 +842,28 @@ def test_chunk_local_polars_guard_accepts_row_local_and_rejects_global() -> None
                         _node(
                             "left",
                             "banding",
-                            {"factors": [{"column": "age", "outputColumn": "age_band"}]},
+                            {
+                                "factors": [
+                                    {
+                                        "banding": "breakpoints",
+                                        "column": "age",
+                                        "outputColumn": "age_band",
+                                    }
+                                ]
+                            },
                         ),
                         _node(
                             "right",
                             "banding",
-                            {"factors": [{"column": "premium", "outputColumn": "premium_band"}]},
+                            {
+                                "factors": [
+                                    {
+                                        "banding": "breakpoints",
+                                        "column": "premium",
+                                        "outputColumn": "premium_band",
+                                    }
+                                ]
+                            },
                         ),
                         _node("join", "polars", {"code": "df = left.join(right, on='id')"}),
                         _node("out", "output", make_output_config(["quote_id"])),

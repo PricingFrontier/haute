@@ -273,7 +273,7 @@ def test_projection_plan_is_stable_when_graph_order_changes() -> None:
                         {
                             "column": "age",
                             "outputColumn": "age_band",
-                            "banding": "continuous",
+                            "banding": "breakpoints",
                             "rules": [],
                             "default": "other",
                         }

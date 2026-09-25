@@ -1251,14 +1251,14 @@ class TestToolExecutorDispatch:
         recipe = await execute_tool(
             "plan_recipe",
             {
-                "recipe_id": "continuous_banding",
+                "recipe_id": "categorical_banding",
                 "source": "quotes",
                 "name": "year_band",
                 "column": "vehicle_year",
                 "output_column": "vehicle_year_band",
                 "rules": [
-                    {"op1": "<=", "val1": 2020, "assignment": "older"},
-                    {"op1": ">", "val1": 2020, "assignment": "newer"},
+                    {"value": 2019, "assignment": "older"},
+                    {"value": 2021, "assignment": "newer"},
                 ],
                 "output_name": "year_response",
                 "output_columns": ["vehicle_year_band"],
@@ -1297,7 +1297,7 @@ class TestToolExecutorDispatch:
         assert normalized[0]["node_type"] == "banding"
         assert normalized[2]["node_type"] == "output"
         assert normalized[2]["name"] == "year_response"
-        assert normalized[3]["source"] == "$recipe_banding"
+        assert normalized[3]["source"] == "$recipe_categorical_banding"
         assert normalized[3]["target"] == "$recipe_output"
 
     async def test_latest_recipe_handle_replaces_prior_and_rejects_provider_authored_extras(
@@ -1307,12 +1307,12 @@ class TestToolExecutorDispatch:
 
         execute_tool = build_tool_executor("main.py")
         arguments = {
-            "recipe_id": "continuous_banding",
+            "recipe_id": "categorical_banding",
             "source": "quotes",
             "name": "year_band",
             "column": "vehicle_year",
             "output_column": "vehicle_year_band",
-            "rules": [{"op1": "<=", "val1": 2020, "assignment": "older"}],
+            "rules": [{"value": 2019, "assignment": "older"}],
             "default": "unknown",
         }
         prior = await execute_tool("plan_recipe", arguments)
@@ -1342,14 +1342,14 @@ class TestToolExecutorDispatch:
                     },
                     {
                         "op": "add_edge",
-                        "source": "$recipe_banding",
+                        "source": "$recipe_categorical_banding",
                         "target": "$after_banding",
                     },
                 ],
                 "extra_postconditions": [
                     {
                         "kind": "edge_exists",
-                        "source": "$recipe_banding",
+                        "source": "$recipe_categorical_banding",
                         "target": "$after_banding",
                     }
                 ],
@@ -1410,16 +1410,16 @@ class TestToolExecutorDispatch:
         structured_name = await execute_tool(
             "plan_recipe",
             {
-                "recipe_id": "continuous_banding",
+                "recipe_id": "categorical_banding",
                 "source": "quotes",
-                "name": "age_banding",
-                "column": "driver_age",
-                "output_column": "driver_age_band",
-                "rules": [{"op1": "<=", "val1": 25, "assignment": "young"}],
+                "name": "year_banding",
+                "column": "vehicle_year",
+                "output_column": "vehicle_year_band",
+                "rules": [{"value": 2019, "assignment": "older"}],
                 "default": "unknown",
             },
         )
-        assert structured_name["recipe_id"] == "continuous_banding"
+        assert structured_name["recipe_id"] == "categorical_banding"
         assert "recipe_plan_hash" in structured_name
 
     async def test_complete_structured_plans_do_not_require_material_wording(
@@ -1645,12 +1645,12 @@ class TestToolExecutorDispatch:
         result = await build_tool_executor("main.py")(
             "plan_recipe",
             {
-                "recipe_id": "continuous_banding",
+                "recipe_id": "categorical_banding",
                 "source": "quotes",
                 "name": "year_band",
                 "column": "vehicle_year",
                 "output_column": "vehicle_year_band",
-                "rules": [{"op1": "<=", "val1": 2020, "assignment": "older"}],
+                "rules": [{"value": 2019, "assignment": "older"}],
                 "output_name": "year_response",
                 "output_columns": ["vehicle_year_band", "vehicle_year_band"],
                 "default": "unknown",

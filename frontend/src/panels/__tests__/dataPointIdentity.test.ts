@@ -93,6 +93,64 @@ describe("buildExploreCacheIdentity", () => {
   })
 })
 
+describe("buildNodeDataCacheIdentity for a consumer that reads its input", () => {
+  const withConfig = (node: SimpleNode, config: Record<string, unknown>): SimpleNode => ({
+    ...node,
+    data: { ...node.data, config },
+  })
+  const consumerIdentity = (node: SimpleNode) =>
+    buildNodeDataCacheIdentity({
+      node,
+      allNodes: [source, node],
+      edges: [{ id: "source-consumer", source: "source_1", target: node.id }],
+    })
+
+  const banding: SimpleNode = {
+    id: "banding_1", type: "banding",
+    data: { label: "Banding", description: "", nodeType: "banding", config: {} },
+  }
+  const factor = { banding: "categorical", column: "cover", outputColumn: "cover_band", default: null }
+
+  it("keeps a Banding node's identity through edits to its rules, but not its column", () => {
+    const base = consumerIdentity(withConfig(banding, { factors: [{ ...factor, rules: [] }] }))
+    const ruled = withConfig(banding, {
+      factors: [{ ...factor, outputColumn: "renamed", rules: [{ value: "comp", assignment: "C" }] }],
+    })
+    expect(consumerIdentity(ruled)).toEqual(base)
+
+    const otherColumn = withConfig(banding, { factors: [{ ...factor, column: "region", rules: [] }] })
+    expect(consumerIdentity(otherColumn)).not.toEqual(base)
+  })
+
+  it("keeps a Rating Step node's identity through edits to its entries, but not its factors", () => {
+    const rating: SimpleNode = {
+      id: "rating_1", type: "ratingStep",
+      data: { label: "Rating", description: "", nodeType: "ratingStep", config: {} },
+    }
+    const table = (factors: string[], value: string) => ({
+      factors, outputColumn: "rate", entries: [{ age: "young", value }],
+    })
+    const base = consumerIdentity(withConfig(rating, { tables: [table(["age"], "1.0")] }))
+    expect(consumerIdentity(withConfig(rating, { tables: [table(["age"], "1.2")] }))).toEqual(base)
+    expect(consumerIdentity(withConfig(rating, { tables: [table(["age", "region"], "1.0")] }))).not.toEqual(base)
+  })
+
+  it("still changes when an upstream Banding node's rules change", () => {
+    const upstream = withConfig(banding, { factors: [{ ...factor, rules: [{ value: "a", assignment: "A" }] }] })
+    const edited = withConfig(banding, { factors: [{ ...factor, rules: [{ value: "b", assignment: "B" }] }] })
+    const reader = (band: SimpleNode) =>
+      buildNodeDataCacheIdentity({
+        node: explore,
+        allNodes: [source, band, explore],
+        edges: [
+          { id: "source-banding", source: "source_1", target: "banding_1" },
+          { id: "banding-explore", source: "banding_1", target: "explore_1" },
+        ],
+      })
+    expect(reader(edited)).not.toEqual(reader(upstream))
+  })
+})
+
 describe("buildNodeDataCacheIdentity execution dependencies", () => {
   const original: SimpleNode = {
     id: "original_1", type: "polars",

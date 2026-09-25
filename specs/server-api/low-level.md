@@ -732,11 +732,15 @@ resolved: a refresh between the two makes those different, and the editor decide
 show whole-dataset counts by comparing this version with the one its point currently holds, so a
 result labelled with a version it was not computed from would be shown as current.
 
-For a numeric mode (`continuous`, `breakpoints`) the response carries `non_finite_count`, `minimum`
+For `breakpoints`, the numeric mode, on a numeric, Date or Datetime column (any other dtype answers 422), the response carries `non_finite_count`, `minimum`
 and `maximum` over the finite values, and `bins` from the shared `_binning.equal_width_bins`:
 equal-width `[lower, upper)` intervals with the last closed at the maximum, one bin for a constant
 column, and no bins at all for a column with no finite value. Every numeric dtype is measured as a
-float, including `Decimal`, which has no `is_finite` of its own and raises on the check. A value is
+float, including `Decimal`, which has no `is_finite` of its own and raises on the check. A Date or
+Datetime column is measured in days since 1970-01-01 of its wall-clock value in its own time zone
+(`banding_temporal_ordinal_expr`: a Date's day number, a Datetime's milliseconds divided by a
+day), so `minimum`, `maximum` and the bin edges are day numbers the editor turns back into dates;
+the rule counts still compare the column in its own type. A value is
 counted in the bin whose *published* edges contain it — `bin_edges` derives the edges and the count
 is placed against those numbers — because deriving an index by arithmetic instead is a second
 calculation that can round differently from the edge it should agree with: over 40 bins of `[0, 1]`

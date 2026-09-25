@@ -30,6 +30,7 @@ import dataclasses
 import math
 import re
 from collections.abc import Callable, Collection, Mapping, Sequence
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -300,12 +301,12 @@ def _coerce_pair_through_dtype(
         return left, right
 
 
-def _match_continuous_rule(
+def _match_interval_rule(
     input_value: Any,
     rule: dict[str, Any],
     input_dtype: pl.DataType | None = None,
 ) -> bool:
-    """Check if input_value satisfies a continuous banding rule.
+    """Check if input_value satisfies one interval rule of a breakpoint.
 
     *input_dtype* is the source factor column's original Polars dtype;
     when supplied, the observed value and each rule threshold are
@@ -315,20 +316,44 @@ def _match_continuous_rule(
     """
     if input_value is None:
         return False
-    try:
-        val = float(input_value)
-    except (ValueError, TypeError):
-        return False
-
     comparators = _banding_rule_comparators(rule)
     if not comparators:
         return False
-    for op, threshold_num in comparators:
+    for op, threshold in comparators:
         fn = SUPPORTED_BANDING_OPERATORS[op]
-        cmp_val, cmp_threshold = _coerce_pair_through_dtype(val, threshold_num, input_dtype)
+        if isinstance(threshold, date):
+            observed = _temporal_trace_value(input_value, threshold)
+            if observed is None or not fn(observed, threshold):
+                return False
+            continue
+        try:
+            val = float(input_value)
+        except (ValueError, TypeError):
+            return False
+        cmp_val, cmp_threshold = _coerce_pair_through_dtype(val, threshold, input_dtype)
         if not fn(cmp_val, cmp_threshold):
             return False
     return True
+
+
+def _temporal_trace_value(value: Any, threshold: date) -> date | None:
+    """*value* as a date or date-and-time boundary compares it, as the runtime does.
+
+    A date boundary compares the calendar date and a date-and-time boundary the
+    wall-clock time, both in the column's own time zone, which is the zone a
+    traced time-zoned value already carries. A value of the wrong kind (a plain
+    date against a time) is one the runtime refuses, so it matches nothing.
+    """
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if isinstance(threshold, datetime):
+        return value.replace(tzinfo=None) if isinstance(value, datetime) else None
+    if isinstance(value, datetime):
+        return value.date()
+    return value if isinstance(value, date) else None
 
 
 def _values_equivalent(left: Any, right: Any) -> bool:
@@ -351,8 +376,8 @@ def _categorical_rule_matches(
     return str(input_value) == str(rule_val) and str(selected_band) == str(rule_assignment)
 
 
-def _continuous_rule_bounds(rule: dict[str, Any]) -> dict[str, Any]:
-    """Extract range metadata from a continuous banding rule for trace display."""
+def _interval_rule_bounds(rule: dict[str, Any]) -> dict[str, Any]:
+    """Extract range metadata from a breakpoint's interval rule for trace display."""
     result: dict[str, Any] = {
         "lower_bound": None,
         "upper_bound": None,
@@ -510,8 +535,8 @@ def enrich_banding(
     ``outputColumn``, ``rules``, ``banding``, and ``default``.
 
     *factor_input_dtypes* maps a factor's input column name to its
-    original Polars dtype.  It makes continuous-rule re-matching
-    dtype-faithful (see :func:`_match_continuous_rule`) so a
+    original Polars dtype.  It makes interval re-matching
+    dtype-faithful (see :func:`_match_interval_rule`) so a
     ``Float32``-banded value the engine matched is not reported as
     ``no_match``. When absent, numeric comparisons use ``float64``.
     """
@@ -527,7 +552,7 @@ def enrich_banding(
                 out_col = factor_cfg.get("outputColumn", "")
                 raw_rules = factor_cfg.get("rules", []) or []
                 rules = raw_rules
-                banding_type = factor_cfg.get("banding", "continuous")
+                banding_type = factor_cfg.get("banding")
                 default = factor_cfg.get("default")
                 if banding_type == "breakpoints":
                     rules = _breakpoints_to_rules(
@@ -549,13 +574,13 @@ def enrich_banding(
                             rule_index = i
                             matched_rule = dict(rule)
                             break
-                else:
-                    # Continuous — evaluate each rule against input value,
-                    # comparing in the source column's own dtype so a
-                    # Float32-banded value is not reported as no_match.
+                elif banding_type == "breakpoints":
+                    # Evaluate each interval against the input value, comparing
+                    # in the source column's own dtype so a Float32-banded value
+                    # is not reported as no_match.
                     input_dtype = dtype_by_column.get(col)
                     for i, rule in enumerate(rules):
-                        if _match_continuous_rule(input_value, rule, input_dtype):
+                        if _match_interval_rule(input_value, rule, input_dtype):
                             assignment = rule.get("assignment", "")
                             if _values_equivalent(assignment, selected_band):
                                 rule_index = i
@@ -588,7 +613,7 @@ def enrich_banding(
                     if banding_type == "categorical":
                         factor_detail["matched_value"] = matched_rule.get("value")
                     else:
-                        factor_detail.update(_continuous_rule_bounds(matched_rule))
+                        factor_detail.update(_interval_rule_bounds(matched_rule))
                 factor_details.append(factor_detail)
 
             result: dict[str, Any] = {
@@ -1999,7 +2024,7 @@ def enrich_steps(
                     )
                 elif node_type == "banding":
                     # Resolve each factor's source column dtype from
-                    # the parent frames so continuous-rule re-matching
+                    # the parent frames so interval re-matching
                     # compares in the engine's own numeric domain
                     # (Float32-faithful), not widened float64.
                     factor_input_dtypes = _resolve_factor_input_dtypes(

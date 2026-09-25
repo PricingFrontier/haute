@@ -193,7 +193,7 @@ class TestSaveAndLoad:
                     "banding": "categorical",
                     "column": "category",
                     "outputColumn": "band",
-                    "_prevRules": {"continuous": []},
+                    "_prevRules": {"breakpoints": []},
                     "rules": {"_id": "identifier", "_prevRules": "previous", "ordinary": "normal"},
                 }
             ]
@@ -250,11 +250,12 @@ class TestSaveAndLoad:
         config = {
             "factors": [
                 {
-                    "banding": "continuous",
+                    "banding": "breakpoints",
                     "column": "DrivAge",
                     "outputColumn": "DrivAgeBand",
                     "rules": [
-                        {"op1": ">", "val1": "0", "op2": "<=", "val2": "20", "assignment": "0-20"},
+                        {"boundary": "20", "label": "0-20"},
+                        {"boundary": "", "label": "20+"},
                     ],
                 },
             ],
@@ -317,31 +318,6 @@ class TestSaveAndLoad:
             "": "senior",
         }
         assert load_node_config(rel, base_dir=tmp_path) == config
-
-    def test_banding_continuous_rules_stay_explicit_in_sidecar(self, tmp_path):
-        config = {
-            "factors": [
-                {
-                    "banding": "continuous",
-                    "column": "driver_age",
-                    "outputColumn": "age_band",
-                    "rules": [
-                        {
-                            "op1": ">=",
-                            "val1": "18",
-                            "op2": "<=",
-                            "val2": "25",
-                            "assignment": "18-25",
-                        },
-                    ],
-                },
-            ],
-        }
-
-        rel = _write_node_config_sidecar(NodeType.BANDING, "age_band", config, tmp_path)
-        saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
-
-        assert saved["factors"][0]["rules"] == config["factors"][0]["rules"]
 
     def test_banding_compact_save_rejects_duplicate_categorical_keys(self, tmp_path):
         config = {
@@ -1037,7 +1013,8 @@ class TestLoadNodeConfigEdgeCases:
         with pytest.raises(json.JSONDecodeError, match="BOM"):
             load_node_config(str(p))
 
-    def test_banding_continuous_rule_map_raises(self, tmp_path):
+    def test_banding_rule_map_under_an_unsupported_type_raises(self, tmp_path):
+        """Only breakpoints and categorical rules have a compact map form."""
         p = tmp_path / "config" / "banding" / "bad.json"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(

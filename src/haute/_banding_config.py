@@ -10,7 +10,7 @@ _COMPACT_RULE_TYPES = frozenset({"categorical", "breakpoints"})
 
 
 def _banding_type(factor: dict[str, Any]) -> str:
-    return str(factor.get("banding") or "continuous")
+    return str(factor.get("banding") or "")
 
 
 def _is_json_scalar(value: Any) -> bool:
@@ -58,7 +58,7 @@ def normalise_banding_rules(
     if rules is None:
         return []
     if isinstance(rules, dict):
-        return _expand_rule_map(str(banding_type or "continuous"), rules)
+        return _expand_rule_map(str(banding_type or ""), rules)
     if isinstance(rules, list):
         return deepcopy(rules)
     raise ValueError(f"{banding_type} banding rules must be a list")

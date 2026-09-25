@@ -151,9 +151,15 @@ fresh markers.
    sides from a declared `config["contract"]` (`Contract.fill_opaque_sides`),
    keeping the declaration's `inputs_by_parent`; with no declaration it
    emits the builder contract alone (`"opaque"` unless both sides are
-   concrete). Instance nodes, `derive_contract=False` recovery generation, and
-   a declared `"opaque"` (which declares no side, so cannot go stale) emit the
-   declaration unchanged. If present, `_inject_contract_kwarg` asks the structured
+   concrete). `_node_to_code`'s `contract_source` picks the derivation:
+   `"builder"` (the default, used by save) derives through
+   `_derive_contract_for_codegen`; `"offline"` (recovery generation) derives
+   what the parse-time check compares against (`resolve_parse_time_contract`),
+   so it never loads an external model artifact and the regenerated annotation
+   always passes that check; `"declared"` derives nothing. Instance nodes,
+   `"declared"` generation, and a declared `"opaque"` (which declares no side,
+   so cannot go stale) emit the declaration unchanged, and `"declared"` with no
+   declaration emits no kwarg. If present, `_inject_contract_kwarg` asks the structured
    syntax boundary to add it to the first authored decorator, with any
    `HauteError` enriched with `node_id`/`node_label`/
    `node_type` before re-raising.

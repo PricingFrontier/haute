@@ -84,9 +84,9 @@ def test_every_node_type_has_a_recovery_schema() -> None:
 def test_nested_factor_preserves_valid_sibling_when_one_leaf_is_bad() -> None:
     result = reconcile_config(
         NodeType.BANDING,
-        {"factors": [{"banding": "continuous", "column": "age", "rightClosed": "no"}]},
+        {"factors": [{"banding": "breakpoints", "column": "age", "rightClosed": "no"}]},
     )
-    assert result.config["factors"] == [{"banding": "continuous", "column": "age"}]
+    assert result.config["factors"] == [{"banding": "breakpoints", "column": "age"}]
     assert any(change.path == "/factors/0/rightClosed" for change in result.changes)
 
 
@@ -203,10 +203,10 @@ def test_structured_contract_is_accepted() -> None:
             {
                 "factors": [
                     {
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "column": "age",
                         "outputColumn": "age_band",
-                        "rules": [{"op1": "<", "val1": 10, "assignment": "young"}],
+                        "rules": [{"boundary": "10", "label": "young"}],
                     }
                 ]
             },
@@ -323,10 +323,53 @@ def test_recover_preserves_valid_absence_of_optional_fields() -> None:
     assert not [issue for issue in result.issues if issue.severity == "error"]
 
 
-def test_recover_does_not_backfill_absent_keys_from_palette() -> None:
+def test_recover_fills_absent_fields_from_the_palette_of_the_same_branch() -> None:
     raw = {"inputType": "file", "format": "parquet", "path": "quotes.parquet"}
     result = reconcile_config(NodeType.DATA_INPUT, dict(raw))
+    # The palette is a parquet file scan, this config's branch, so what the saved
+    # file lacks takes its default; an absent ``steps`` stays absent (code mode).
+    assert result.config == {**raw, "mode": "scan", "arguments": {}}
+    assert {change.path for change in result.changes if change.outcome == "defaulted"} == {
+        "/mode",
+        "/arguments",
+    }
+
+
+def test_recover_gives_a_field_added_since_the_save_its_palette_default() -> None:
+    """A Scenario Expander saved before ``stepCount`` existed comes back runnable."""
+    raw = {
+        "quote_id": "qid",
+        "column_name": "price",
+        "step_column": "scenario_index",
+        "min_value": 0.1,
+        "max_value": 0.3,
+    }
+    result = reconcile_config(NodeType.SCENARIO_EXPANDER, dict(raw))
+    assert result.config == {**raw, "stepCount": 21}
+    assert ("/stepCount", "defaulted") in {(c.path, c.outcome) for c in result.changes}
+    assert not [issue for issue in result.issues if issue.severity == "error"]
+
+
+@pytest.mark.parametrize(
+    ("node_type", "raw"),
+    [
+        pytest.param(NodeType.DATA_INPUT, {"path": "quotes.parquet"}, id="no-discriminant"),
+        pytest.param(
+            NodeType.DATA_INPUT,
+            {"inputType": "file", "format": "parquet", "mode": "read", "path": "q.parquet"},
+            id="other-mode",
+        ),
+        pytest.param(
+            NodeType.MODEL_SCORE, {"sourceType": "run", "run_id": "abc"}, id="other-provider"
+        ),
+    ],
+)
+def test_recover_never_fills_from_another_branch_palette(
+    node_type: NodeType, raw: dict[str, object]
+) -> None:
+    result = reconcile_config(node_type, dict(raw))
     assert result.config == raw
+    assert not [change for change in result.changes if change.outcome == "defaulted"]
 
 
 def test_recover_missing_required_locator_is_incomplete_not_an_error() -> None:
@@ -347,10 +390,10 @@ def test_reset_still_seeds_the_full_palette_default() -> None:
 
 def test_unrecoverable_list_entries_are_excluded_not_null() -> None:
     first = {
-        "banding": "continuous",
+        "banding": "breakpoints",
         "column": "age",
         "outputColumn": "age_band",
-        "rules": [{"lt": 30, "value": "young"}],
+        "rules": [{"boundary": "30", "label": "young"}],
         "default": "other",
         "rightClosed": True,
     }

@@ -1,262 +1,27 @@
 /**
- * Tests for banding validation utilities:
- * parseRuleInterval, detectOverlaps, detectGaps, validateRule,
- * detectDuplicateCategorical, suggestOutputColumn, breakpointsToRules
+ * Tests for banding utilities:
+ * inferBandingType and friends,
+ * detectDuplicateCategorical, categoricalRuleCounts, suggestOutputColumn, even breakpoints,
+ * date boundaries, day numbers and calendar-step breakpoints
  */
 import { describe, it, expect } from "vitest"
 import {
-  parseRuleInterval,
-  detectOverlaps,
-  detectGaps,
-  validateRule,
   detectDuplicateCategorical,
+  categoricalRuleCounts,
+  generateEvenBreakpoints,
+  generateSettingsFromBreakpoints,
   suggestOutputColumn,
-  breakpointsToRules,
-  matchesContinuousRule,
+  boundaryKind,
+  breakpointKinds,
+  boundaryDayNumber,
+  boundarySplitDayNumber,
+  previewValueDayNumber,
+  dayNumberToDate,
+  generateCalendarBreakpoints,
+  calendarSettingsFromBreakpoints,
+  type CalendarGenerateSettings,
 } from "../bandingUtils"
-import type { ContinuousRule, CategoricalRule, BreakpointRule } from "../../../../types/banding"
-
-// Helper to create a ContinuousRule with defaults
-function rule(
-  overrides: Partial<ContinuousRule> = {},
-): ContinuousRule {
-  return { op1: "", val1: "", op2: "", val2: "", assignment: "", ...overrides }
-}
-
-// ─── parseRuleInterval ────────────────────────────────────────────
-
-describe("parseRuleInterval", () => {
-  it("parses a single upper bound", () => {
-    const iv = parseRuleInterval(rule({ op1: "<=", val1: "10" }))
-    expect(iv).toEqual({ lower: null, upper: 10, lowerInclusive: false, upperInclusive: true })
-  })
-
-  it("parses a single lower bound", () => {
-    const iv = parseRuleInterval(rule({ op1: ">", val1: "5" }))
-    expect(iv).toEqual({ lower: 5, upper: null, lowerInclusive: false, upperInclusive: false })
-  })
-
-  it("parses inclusive lower bound", () => {
-    const iv = parseRuleInterval(rule({ op1: ">=", val1: "0" }))
-    expect(iv).toEqual({ lower: 0, upper: null, lowerInclusive: true, upperInclusive: false })
-  })
-
-  it("parses double bound (range)", () => {
-    const iv = parseRuleInterval(rule({ op1: ">", val1: "10", op2: "<=", val2: "20" }))
-    expect(iv).toEqual({ lower: 10, upper: 20, lowerInclusive: false, upperInclusive: true })
-  })
-
-  it("lets the second condition supply an inclusive lower bound", () => {
-    const iv = parseRuleInterval(rule({ op1: "<", val1: "20", op2: ">=", val2: "10" }))
-    expect(iv).toEqual({ lower: 10, upper: 20, lowerInclusive: true, upperInclusive: false })
-  })
-
-  it("lets the second condition supply an equality bound", () => {
-    const iv = parseRuleInterval(rule({ op2: "==", val2: "42" }))
-    expect(iv).toEqual({ lower: 42, upper: 42, lowerInclusive: true, upperInclusive: true })
-  })
-
-  it("parses equality operator", () => {
-    const iv = parseRuleInterval(rule({ op1: "=", val1: "42" }))
-    expect(iv).toEqual({ lower: 42, upper: 42, lowerInclusive: true, upperInclusive: true })
-  })
-
-  it("parses == operator", () => {
-    const iv = parseRuleInterval(rule({ op1: "==", val1: "7" }))
-    expect(iv).toEqual({ lower: 7, upper: 7, lowerInclusive: true, upperInclusive: true })
-  })
-
-  it("returns null for empty rule", () => {
-    expect(parseRuleInterval(rule())).toBeNull()
-  })
-
-  it("returns null when val is non-numeric", () => {
-    expect(parseRuleInterval(rule({ op1: "<=", val1: "abc" }))).toBeNull()
-  })
-
-  it("returns null when op is empty but val is present", () => {
-    expect(parseRuleInterval(rule({ val1: "10" }))).toBeNull()
-  })
-
-  it("handles negative numbers", () => {
-    const iv = parseRuleInterval(rule({ op1: ">=", val1: "-5", op2: "<", val2: "0" }))
-    expect(iv).toEqual({ lower: -5, upper: 0, lowerInclusive: true, upperInclusive: false })
-  })
-
-  it("handles decimal numbers", () => {
-    const iv = parseRuleInterval(rule({ op1: ">", val1: "1.5", op2: "<=", val2: "3.7" }))
-    expect(iv).toEqual({ lower: 1.5, upper: 3.7, lowerInclusive: false, upperInclusive: true })
-  })
-})
-
-// ─── detectOverlaps ──────────────────────────────────────────────
-
-describe("detectOverlaps", () => {
-  it("returns empty for non-overlapping ranges", () => {
-    const rules = [
-      rule({ op1: "<=", val1: "10", assignment: "A" }),
-      rule({ op1: ">", val1: "10", op2: "<=", val2: "20", assignment: "B" }),
-      rule({ op1: ">", val1: "20", assignment: "C" }),
-    ]
-    expect(detectOverlaps(rules)).toEqual([])
-  })
-
-  it("detects overlapping ranges", () => {
-    const rules = [
-      rule({ op1: "<=", val1: "15", assignment: "A" }),
-      rule({ op1: ">=", val1: "10", op2: "<=", val2: "20", assignment: "B" }),
-    ]
-    const overlaps = detectOverlaps(rules)
-    expect(overlaps).toHaveLength(1)
-    expect(overlaps[0].ruleA).toBe(0)
-    expect(overlaps[0].ruleB).toBe(1)
-  })
-
-  it("does not report adjacent exclusive ranges as overlapping", () => {
-    const rules = [
-      rule({ op1: "<", val1: "10", assignment: "A" }),
-      rule({ op1: ">", val1: "10", assignment: "B" }),
-    ]
-    expect(detectOverlaps(rules)).toEqual([])
-  })
-
-  it("reports adjacent inclusive ranges as overlapping", () => {
-    const rules = [
-      rule({ op1: "<=", val1: "10", assignment: "A" }),
-      rule({ op1: ">=", val1: "10", assignment: "B" }),
-    ]
-    const overlaps = detectOverlaps(rules)
-    expect(overlaps).toHaveLength(1)
-  })
-
-  it("detects fully contained range", () => {
-    const rules = [
-      rule({ op1: ">=", val1: "0", op2: "<=", val2: "100", assignment: "A" }),
-      rule({ op1: ">=", val1: "10", op2: "<=", val2: "20", assignment: "B" }),
-    ]
-    const overlaps = detectOverlaps(rules)
-    expect(overlaps).toHaveLength(1)
-  })
-
-  it("returns empty for single rule", () => {
-    expect(detectOverlaps([rule({ op1: "<=", val1: "10" })])).toEqual([])
-  })
-
-  it("returns empty for empty rules", () => {
-    expect(detectOverlaps([])).toEqual([])
-  })
-
-  it("skips rules with no parseable interval", () => {
-    const rules = [
-      rule({ op1: "<=", val1: "10", assignment: "A" }),
-      rule(), // empty rule
-      rule({ op1: ">", val1: "20", assignment: "C" }),
-    ]
-    expect(detectOverlaps(rules)).toEqual([])
-  })
-})
-
-// ─── detectGaps ──────────────────────────────────────────────────
-
-describe("detectGaps", () => {
-  it("returns empty when ranges are adjacent", () => {
-    const rules = [
-      rule({ op1: "<=", val1: "10", assignment: "A" }),
-      rule({ op1: ">", val1: "10", op2: "<=", val2: "20", assignment: "B" }),
-    ]
-    // No gap: first rule upper=10 inclusive, second rule lower=10 exclusive
-    // But actually there's no gap because 10 is covered by rule A (<=10)
-    // and >10 starts from the next value
-    expect(detectGaps(rules)).toEqual([])
-  })
-
-  it("detects a simple gap", () => {
-    const rules = [
-      rule({ op1: "<", val1: "10", assignment: "A" }),
-      rule({ op1: ">", val1: "20", assignment: "B" }),
-    ]
-    const gaps = detectGaps(rules)
-    expect(gaps).toHaveLength(1)
-    expect(gaps[0]).toContain("10")
-    expect(gaps[0]).toContain("20")
-  })
-
-  it("detects gap at a point (exclusive on both sides)", () => {
-    const rules = [
-      rule({ op1: "<", val1: "10", assignment: "A" }),
-      rule({ op1: ">", val1: "10", assignment: "B" }),
-    ]
-    const gaps = detectGaps(rules)
-    expect(gaps).toHaveLength(1)
-    expect(gaps[0]).toContain("10")
-  })
-
-  it("returns empty for single rule", () => {
-    expect(detectGaps([rule({ op1: "<=", val1: "10" })])).toEqual([])
-  })
-
-  it("returns empty for empty rules", () => {
-    expect(detectGaps([])).toEqual([])
-  })
-
-  it("detects multiple gaps", () => {
-    const rules = [
-      rule({ op1: "<", val1: "10", assignment: "A" }),
-      rule({ op1: ">", val1: "20", op2: "<", val2: "30", assignment: "B" }),
-      rule({ op1: ">", val1: "40", assignment: "C" }),
-    ]
-    const gaps = detectGaps(rules)
-    expect(gaps.length).toBeGreaterThanOrEqual(2)
-  })
-
-  it("no gap when open-ended upper bound present", () => {
-    const rules = [
-      rule({ op1: ">", val1: "0", assignment: "A" }), // open-ended upper
-      rule({ op1: ">", val1: "10", assignment: "B" }),
-    ]
-    // First rule has no upper bound, so no gap is reported
-    expect(detectGaps(rules)).toEqual([])
-  })
-})
-
-// ─── validateRule ────────────────────────────────────────────────
-
-describe("validateRule", () => {
-  it("returns null for valid single-bound rule", () => {
-    expect(validateRule(rule({ op1: "<=", val1: "10" }))).toBeNull()
-  })
-
-  it("returns null for valid range rule", () => {
-    expect(validateRule(rule({ op1: ">", val1: "10", op2: "<=", val2: "20" }))).toBeNull()
-  })
-
-  it("returns null for empty rule", () => {
-    expect(validateRule(rule())).toBeNull()
-  })
-
-  it("detects contradictory conditions (lower > upper)", () => {
-    const err = validateRule(rule({ op1: ">", val1: "50", op2: "<", val2: "30" }))
-    expect(err).not.toBeNull()
-    expect(err).toContain("Contradictory")
-  })
-
-  it("detects equal bounds with exclusive operators", () => {
-    const err = validateRule(rule({ op1: ">", val1: "10", op2: "<", val2: "10" }))
-    expect(err).not.toBeNull()
-    expect(err).toContain("Contradictory")
-  })
-
-  it("returns null for equal bounds with both inclusive", () => {
-    expect(validateRule(rule({ op1: ">=", val1: "10", op2: "<=", val2: "10" }))).toBeNull()
-  })
-
-  it("detects contradictory with inclusive lower, exclusive upper at same value", () => {
-    const err = validateRule(rule({ op1: ">=", val1: "10", op2: "<", val2: "10" }))
-    expect(err).not.toBeNull()
-  })
-})
-
-// ─── detectDuplicateCategorical ──────────────────────────────────
+import type { CategoricalRule } from "../../../../types/banding"
 
 describe("detectDuplicateCategorical", () => {
   it("returns empty when no duplicates", () => {
@@ -327,153 +92,262 @@ describe("suggestOutputColumn", () => {
   })
 })
 
-// ─── matchesContinuousRule ───────────────────────────────────────
+describe("categoricalRuleCounts", () => {
+  const counts = new Map([
+    ["north", 900],
+    ["south", 100],
+  ])
 
-describe("matchesContinuousRule", () => {
-  it("matches value within exclusive range", () => {
-    expect(matchesContinuousRule(15, rule({ op1: ">", val1: "10", op2: "<", val2: "20" }))).toBe(true)
+  it("gives a value named twice to the last rule, and nothing to a rule without an assignment", () => {
+    const rules = [
+      { value: "north", assignment: "N" },
+      { value: "south", assignment: "" },
+      { value: "north", assignment: "Top" },
+    ]
+    expect(categoricalRuleCounts(rules, counts, true)).toEqual([0, 0, 900])
   })
 
-  it("rejects value outside exclusive range", () => {
-    expect(matchesContinuousRule(10, rule({ op1: ">", val1: "10", op2: "<", val2: "20" }))).toBe(false)
-    expect(matchesContinuousRule(20, rule({ op1: ">", val1: "10", op2: "<", val2: "20" }))).toBe(false)
+  it("counts a value the data never holds as 0 when every value is known", () => {
+    expect(categoricalRuleCounts([{ value: "east", assignment: "E" }], counts, true)).toEqual([0])
   })
 
-  it("matches value at inclusive bounds", () => {
-    expect(matchesContinuousRule(10, rule({ op1: ">=", val1: "10", op2: "<=", val2: "20" }))).toBe(true)
-    expect(matchesContinuousRule(20, rule({ op1: ">=", val1: "10", op2: "<=", val2: "20" }))).toBe(true)
-  })
-
-  it("matches value with only lower bound", () => {
-    expect(matchesContinuousRule(100, rule({ op1: ">", val1: "10" }))).toBe(true)
-    expect(matchesContinuousRule(5, rule({ op1: ">", val1: "10" }))).toBe(false)
-  })
-
-  it("matches value with only upper bound", () => {
-    expect(matchesContinuousRule(5, rule({ op1: "<=", val1: "10" }))).toBe(true)
-    expect(matchesContinuousRule(15, rule({ op1: "<=", val1: "10" }))).toBe(false)
-  })
-
-  it("matches equality rule", () => {
-    expect(matchesContinuousRule(42, rule({ op1: "=", val1: "42" }))).toBe(true)
-    expect(matchesContinuousRule(43, rule({ op1: "=", val1: "42" }))).toBe(false)
-  })
-
-  it("returns false for empty rule", () => {
-    expect(matchesContinuousRule(10, rule())).toBe(false)
-  })
-
-  it("handles negative values and bounds", () => {
-    expect(matchesContinuousRule(-3, rule({ op1: ">=", val1: "-5", op2: "<", val2: "0" }))).toBe(true)
-    expect(matchesContinuousRule(-6, rule({ op1: ">=", val1: "-5", op2: "<", val2: "0" }))).toBe(false)
-  })
-
-  it("handles decimal values", () => {
-    expect(matchesContinuousRule(2.5, rule({ op1: ">", val1: "1.5", op2: "<=", val2: "3.7" }))).toBe(true)
-    expect(matchesContinuousRule(1.5, rule({ op1: ">", val1: "1.5", op2: "<=", val2: "3.7" }))).toBe(false)
-  })
-
-  it("returns false for NaN value", () => {
-    expect(matchesContinuousRule(NaN, rule({ op1: ">=", val1: "0", op2: "<=", val2: "100" }))).toBe(false)
-  })
-
-  it("returns false for Infinity value", () => {
-    expect(matchesContinuousRule(Infinity, rule({ op1: ">=", val1: "0", op2: "<=", val2: "100" }))).toBe(false)
-    expect(matchesContinuousRule(-Infinity, rule({ op1: ">=", val1: "0", op2: "<=", val2: "100" }))).toBe(false)
-  })
-
-  it("returns false for NaN with open-ended rule", () => {
-    expect(matchesContinuousRule(NaN, rule({ op1: ">", val1: "0" }))).toBe(false)
+  it("leaves a value outside a truncated list unknown", () => {
+    const rules = [
+      { value: "north", assignment: "N" },
+      { value: "east", assignment: "E" },
+    ]
+    expect(categoricalRuleCounts(rules, counts, false)).toEqual([900, null])
   })
 })
 
-// ─── breakpointsToRules ──────────────────────────────────────────
-
-describe("breakpointsToRules", () => {
-  it("converts basic breakpoints with right-closed", () => {
-    const bps: BreakpointRule[] = [
-      { boundary: "10", label: "A" },
-      { boundary: "20", label: "B" },
-      { boundary: "", label: "C" },
-    ]
-    const rules = breakpointsToRules(bps, true)
-    expect(rules).toHaveLength(3)
-    // First: <=10
-    expect(rules[0]).toEqual({ op1: "<=", val1: "10", op2: "", val2: "", assignment: "A" })
-    // Second: >10 and <=20
-    expect(rules[1]).toEqual({ op1: ">", val1: "10", op2: "<=", val2: "20", assignment: "B" })
-    // Third: >20
-    expect(rules[2]).toEqual({ op1: ">", val1: "20", op2: "", val2: "", assignment: "C" })
+describe("even breakpoints", () => {
+  it.each([
+    { start: 4000, end: 13600, step: 1200 },
+    { start: 0, end: 100, step: 10 },
+    { start: 0, end: 95, step: 10 }, // a shorter last band
+    { start: -5, end: 5, step: 2.5 },
+    { start: 0.1, end: 1.1, step: 0.2 },
+  ])("infers back the settings that generated them: %o", (settings) => {
+    const breakpoints = generateEvenBreakpoints(settings.start, settings.end, settings.step)
+    expect(generateSettingsFromBreakpoints(breakpoints)).toEqual(settings)
   })
 
-  it("converts basic breakpoints with left-closed", () => {
-    const bps: BreakpointRule[] = [
-      { boundary: "10", label: "A" },
-      { boundary: "20", label: "B" },
-      { boundary: "", label: "C" },
-    ]
-    const rules = breakpointsToRules(bps, false)
-    expect(rules).toHaveLength(3)
-    // First: <10
-    expect(rules[0]).toEqual({ op1: "<", val1: "10", op2: "", val2: "", assignment: "A" })
-    // Second: >=10 and <20
-    expect(rules[1]).toEqual({ op1: ">=", val1: "10", op2: "<", val2: "20", assignment: "B" })
-    // Third: >=20
-    expect(rules[2]).toEqual({ op1: ">=", val1: "20", op2: "", val2: "", assignment: "C" })
+  it("labels each band by its range", () => {
+    expect(generateEvenBreakpoints(0, 30, 10)).toEqual([
+      { boundary: "10", label: "0–10" },
+      { boundary: "20", label: "11–20" },
+      { boundary: "30", label: "21–30" },
+    ])
   })
 
-  it("returns empty for empty breakpoints", () => {
-    expect(breakpointsToRules([], true)).toEqual([])
+  it("spreads uneven boundaries' lowest to highest over their bands", () => {
+    const bp = (boundary: string) => ({ boundary, label: boundary })
+    // Typed by hand: 4 bands whose "Up to" values run from 10 to 70, so the
+    // step is (70 − 10) / 3 and the start one step below the lowest.
+    expect(generateSettingsFromBreakpoints([bp("10"), bp("25"), bp("35"), bp("70")])).toEqual({
+      start: -10,
+      end: 70,
+      step: 20,
+    })
   })
 
-  it("handles single breakpoint with open-ended", () => {
-    const bps: BreakpointRule[] = [
-      { boundary: "50", label: "Low" },
-      { boundary: "", label: "High" },
-    ]
-    const rules = breakpointsToRules(bps, true)
-    expect(rules).toHaveLength(2)
-    expect(rules[0]).toEqual({ op1: "<=", val1: "50", op2: "", val2: "", assignment: "Low" })
-    expect(rules[1]).toEqual({ op1: ">", val1: "50", op2: "", val2: "", assignment: "High" })
+  it("infers nothing from fewer than two boundaries", () => {
+    const bp = (boundary: string) => ({ boundary, label: boundary })
+    expect(generateSettingsFromBreakpoints([bp("10")])).toBeNull()
+    expect(generateSettingsFromBreakpoints([bp(""), bp("10")])).toBeNull()
+    expect(generateSettingsFromBreakpoints([])).toBeNull()
   })
 
-  it("handles single breakpoint without open-ended", () => {
-    const bps: BreakpointRule[] = [{ boundary: "50", label: "Low" }]
-    const rules = breakpointsToRules(bps, true)
-    expect(rules).toHaveLength(1)
-    expect(rules[0]).toEqual({ op1: "<=", val1: "50", op2: "", val2: "", assignment: "Low" })
+  it("reads the settings whatever order the breakpoints are in, ignoring an open-ended one", () => {
+    const bp = (boundary: string) => ({ boundary, label: boundary })
+    expect(generateSettingsFromBreakpoints([bp("30"), bp(""), bp("10"), bp("20")])).toEqual({
+      start: 0,
+      end: 30,
+      step: 10,
+    })
+  })
+})
+
+// ─── Date boundaries and day numbers ─────────────────────────────
+
+// 2024-01-01 is day 19723 counted from 1970-01-01.
+const JAN_1_2024 = 19723
+
+describe("boundaryKind", () => {
+  it.each([
+    ["10", "number"],
+    ["-2.5", "number"],
+    ["1e3", "number"],
+    [" 7 ", "number"],
+    ["2024-02-29", "date"],
+    ["2024-01-01 10:00", "datetime"],
+    ["2024-01-01T10:00:30", "datetime"],
+    ["2024-01-01 10:00:30.25", "datetime"],
+  ])("reads %s as a %s", (boundary, kind) => {
+    expect(boundaryKind(boundary)).toBe(kind)
   })
 
-  it("sorts breakpoints by boundary value", () => {
-    const bps: BreakpointRule[] = [
-      { boundary: "30", label: "B" },
-      { boundary: "10", label: "A" },
-      { boundary: "", label: "C" },
-    ]
-    const rules = breakpointsToRules(bps, true)
-    expect(rules[0].assignment).toBe("A")  // 10 first
-    expect(rules[1].assignment).toBe("B")  // 30 second
-    expect(rules[2].assignment).toBe("C")  // open-ended last
+  it.each([
+    "",
+    "abc",
+    "Infinity",
+    "2023-02-29",
+    "2024-13-01",
+    "0000-01-01",
+    "2024-1-1",
+    "01/02/2024",
+    "2024-01-01 10",
+    "2024-01-01 24:00",
+    "2024-01-01 10:60",
+    "2024-01-01 10:00+01:00",
+    "2024-01-01T10:00Z",
+  ])("cannot read %j", (boundary) => {
+    expect(boundaryKind(boundary)).toBeNull()
   })
 
-  it("ignores breakpoints with non-numeric boundary", () => {
-    const bps: BreakpointRule[] = [
-      { boundary: "abc", label: "Invalid" },
-      { boundary: "10", label: "Valid" },
-    ]
-    const rules = breakpointsToRules(bps, true)
-    expect(rules).toHaveLength(1)
-    expect(rules[0].assignment).toBe("Valid")
+  it("collects the kinds a factor's bounded breakpoints hold, leaving out blank and unreadable ones", () => {
+    const bp = (boundary: string) => ({ boundary, label: boundary })
+    expect(breakpointKinds([bp("2024-01-01"), bp(""), bp("2024-02-01 10:00"), bp("abc")])).toEqual(
+      new Set(["date", "datetime"]),
+    )
+    expect(breakpointKinds([bp("10"), bp("20")])).toEqual(new Set(["number"]))
+  })
+})
+
+describe("day numbers", () => {
+  it("counts a date's days from 1970-01-01", () => {
+    expect(boundaryDayNumber("1970-01-01")).toBe(0)
+    expect(boundaryDayNumber("1969-12-31")).toBe(-1)
+    expect(boundaryDayNumber("2024-01-01")).toBe(JAN_1_2024)
+    expect(boundaryDayNumber("2024-02-29")).toBe(JAN_1_2024 + 59)
   })
 
-  it("ignores breakpoints with Infinity boundary", () => {
-    const bps: BreakpointRule[] = [
-      { boundary: "Infinity", label: "Inf" },
-      { boundary: "-Infinity", label: "NegInf" },
-      { boundary: "10", label: "Valid" },
-    ]
-    const rules = breakpointsToRules(bps, true)
-    expect(rules).toHaveLength(1)
-    expect(rules[0].assignment).toBe("Valid")
+  it("adds a date and time's wall-clock time as a fraction of its day", () => {
+    expect(boundaryDayNumber("2024-01-01 06:00")).toBe(JAN_1_2024 + 0.25)
+    expect(boundaryDayNumber("2024-01-01T18:00:00")).toBe(JAN_1_2024 + 0.75)
+    expect(boundaryDayNumber("2024-01-01 12:00:00.5")).toBeCloseTo(JAN_1_2024 + 43200.5 / 86400, 9)
+  })
+
+  it("gives no day number for a number or an unreadable boundary", () => {
+    expect(boundaryDayNumber("19723")).toBeNull()
+    expect(boundaryDayNumber("")).toBeNull()
+    expect(boundaryDayNumber("2023-02-29")).toBeNull()
+  })
+
+  it("reads a preview value's wall clock, before any time zone offset", () => {
+    expect(previewValueDayNumber("2024-01-01")).toBe(JAN_1_2024)
+    expect(previewValueDayNumber("2024-01-01T10:00:00")).toBe(boundaryDayNumber("2024-01-01 10:00"))
+    // 10:00 in the column's own zone, not the 09:00 UTC it is.
+    expect(previewValueDayNumber("2024-01-01T10:00:00+01:00")).toBe(boundaryDayNumber("2024-01-01 10:00"))
+    // Late on New Year's Day in New York is still that day, though UTC has moved on.
+    expect(Math.floor(previewValueDayNumber("2024-01-01T23:30:00-05:00")!)).toBe(JAN_1_2024)
+    expect(previewValueDayNumber("2024-01-01T10:00:00.123456")).toBeCloseTo(
+      JAN_1_2024 + (36000 + 0.123456) / 86400,
+      9,
+    )
+  })
+
+  it("gives no day number for a preview value that is not a date", () => {
+    expect(previewValueDayNumber(JAN_1_2024)).toBeNull()
+    expect(previewValueDayNumber(null)).toBeNull()
+    expect(previewValueDayNumber(undefined)).toBeNull()
+    expect(previewValueDayNumber("not a date")).toBeNull()
+    expect(previewValueDayNumber("2024-02-30")).toBeNull()
+  })
+
+  it("shows a day number as the calendar date it falls on", () => {
+    expect(dayNumberToDate(0)).toBe("1970-01-01")
+    expect(dayNumberToDate(-0.5)).toBe("1969-12-31")
+    expect(dayNumberToDate(JAN_1_2024)).toBe("2024-01-01")
+    expect(dayNumberToDate(JAN_1_2024 + 0.99)).toBe("2024-01-01")
+  })
+
+  it("divides the axis after a date's whole day when right-closed, and at a time itself", () => {
+    const feb29 = JAN_1_2024 + 59
+    expect(boundarySplitDayNumber("2024-02-29", true)).toBe(feb29 + 1)
+    expect(boundarySplitDayNumber("2024-02-29", false)).toBe(feb29)
+    expect(boundarySplitDayNumber("2024-01-01 06:00", true)).toBe(JAN_1_2024 + 0.25)
+    expect(boundarySplitDayNumber("10", true)).toBeNull()
+  })
+})
+
+describe("calendar breakpoints", () => {
+  it("ends each band the day before the next starts, capping the last at End", () => {
+    expect(generateCalendarBreakpoints({ start: "2024-01-01", end: "2024-03-15", step: 1, unit: "months" })).toEqual([
+      { boundary: "2024-01-31", label: "2024-01-01–2024-01-31" },
+      { boundary: "2024-02-29", label: "2024-02-01–2024-02-29" },
+      { boundary: "2024-03-15", label: "2024-03-01–2024-03-15" },
+    ])
+  })
+
+  it("steps whole months from Start, clamping a band that starts past a shorter month's end", () => {
+    // Jan 31 + 1 month is Feb 29; + 2 months is Mar 31 again, not Mar 29.
+    expect(generateCalendarBreakpoints({ start: "2024-01-31", end: "2024-04-29", step: 1, unit: "months" })).toEqual([
+      { boundary: "2024-02-28", label: "2024-01-31–2024-02-28" },
+      { boundary: "2024-03-30", label: "2024-02-29–2024-03-30" },
+      { boundary: "2024-04-29", label: "2024-03-31–2024-04-29" },
+    ])
+  })
+
+  it.each<CalendarGenerateSettings>([
+    { start: "2024-01-01", end: "2024-01-31", step: 10, unit: "days" }, // a shorter last band
+    { start: "2024-01-01", end: "2024-03-24", step: 2, unit: "weeks" },
+    { start: "2024-01-01", end: "2024-12-31", step: 3, unit: "months" },
+    { start: "2024-01-01", end: "2024-12-15", step: 1, unit: "months" }, // a shorter last band
+    { start: "2024-01-01", end: "2024-02-29", step: 1, unit: "months" }, // two bands
+    { start: "2024-01-31", end: "2024-04-29", step: 1, unit: "months" }, // month-end clamping
+    { start: "2020-01-01", end: "2024-12-31", step: 1, unit: "years" },
+  ])("reads back the settings that generated them: %o", (settings) => {
+    expect(calendarSettingsFromBreakpoints(generateCalendarBreakpoints(settings))).toEqual(settings)
+  })
+
+  it("reads a whole number of years before months, and weeks before days", () => {
+    const twelveMonths = generateCalendarBreakpoints({ start: "2022-01-01", end: "2024-12-31", step: 12, unit: "months" })
+    expect(calendarSettingsFromBreakpoints(twelveMonths)).toEqual({
+      start: "2022-01-01",
+      end: "2024-12-31",
+      step: 1,
+      unit: "years",
+    })
+    const fourteenDays = generateCalendarBreakpoints({ start: "2024-01-01", end: "2024-03-24", step: 14, unit: "days" })
+    expect(calendarSettingsFromBreakpoints(fourteenDays)).toMatchObject({ step: 2, unit: "weeks" })
+  })
+
+  it("starts uneven date breakpoints from their lowest and highest dates and their band count in days", () => {
+    const bp = (boundary: string) => ({ boundary, label: boundary })
+    // 52 days from Jan 10 to Mar 1 inclusive, over 3 bands.
+    expect(calendarSettingsFromBreakpoints([bp("2024-03-01"), bp(""), bp("2024-01-10"), bp("2024-01-15")])).toEqual({
+      start: "2024-01-10",
+      end: "2024-03-01",
+      step: 17,
+      unit: "days",
+    })
+  })
+
+  it("reads date-and-time breakpoints by their calendar dates", () => {
+    const bp = (boundary: string) => ({ boundary, label: boundary })
+    expect(calendarSettingsFromBreakpoints([bp("2024-01-31 23:00"), bp("2024-02-29 12:00")])).toEqual({
+      start: "2024-01-01",
+      end: "2024-02-29",
+      step: 1,
+      unit: "months",
+    })
+  })
+
+  it("reads nothing from fewer than two date breakpoints", () => {
+    const bp = (boundary: string) => ({ boundary, label: boundary })
+    expect(calendarSettingsFromBreakpoints([bp("2024-01-31"), bp("")])).toBeNull()
+    expect(calendarSettingsFromBreakpoints([bp("10"), bp("20")])).toBeNull()
+    expect(calendarSettingsFromBreakpoints([])).toBeNull()
+  })
+
+  it.each([
+    [{ start: "2024-01-01", end: "2024-12-31", step: 0, unit: "months" }, "Step must be a whole number of at least 1"],
+    [{ start: "2024-01-01", end: "2024-12-31", step: 1.5, unit: "months" }, "Step must be a whole number of at least 1"],
+    [{ start: "2024-01-01", end: "2023-12-31", step: 1, unit: "months" }, "End must not be before Start"],
+    [{ start: "", end: "2024-12-31", step: 1, unit: "months" }, "Start and End must be dates"],
+    [{ start: "2000-01-01", end: "2040-01-01", step: 1, unit: "days" }, "more than 10000 bands"],
+  ] as [CalendarGenerateSettings, string][])("refuses %o", (settings, message) => {
+    expect(() => generateCalendarBreakpoints(settings)).toThrow(message)
   })
 })

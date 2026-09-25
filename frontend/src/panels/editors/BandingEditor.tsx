@@ -1,33 +1,36 @@
 import { useState } from "react"
-import { X, Plus, Copy, AlertTriangle } from "lucide-react"
+import { Plus, AlertTriangle } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import { CommittedTextField } from "../../components/form"
 import type { InputSource, OnUpdateConfig, SimpleNode } from "./_shared"
-import type { ContinuousRule, CategoricalRule, BandingFactor, BandingMode, BreakpointRule } from "../../types/banding"
+import type { CategoricalRule, BandingFactor, BandingMode, BreakpointRule } from "../../types/banding"
 import {
   normaliseBandingFactors,
   inferBandingType,
+  isNumericDtype,
   suggestOutputColumn,
-  detectOverlaps,
-  detectGaps,
-  validateRule,
   detectDuplicateCategorical,
-  matchesContinuousRule,
-  breakpointsToRules,
+  categoricalRuleCounts,
+  generateSettingsFromBreakpoints,
+  breakpointKinds,
+  boundarySplitDayNumber,
+  previewValueDayNumber,
+  dayNumberToDate,
+  calendarSettingsFromBreakpoints,
 } from "./banding/bandingUtils"
+import { isTemporalDtype } from "../../utils/polarsDtypes"
 import { BandingRulesGrid } from "./banding/BandingRulesGrid"
 import { BreakpointGrid } from "./banding/BreakpointGrid"
 import { BandingHistogram } from "./banding/BandingHistogram"
-import { equalWidthBins } from "./banding/bandingBins"
 import useBandingStats from "./banding/useBandingStats"
-import DataCacheStatus from "../../components/DataCacheStatus"
 import { useGraph } from "../useGraph"
 import { GenerateBandsDialog } from "./banding/GenerateBandsDialog"
 import { CategoricalValuePicker } from "./banding/CategoricalValuePicker"
 import { withAlpha } from "../../utils/color"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
+import SearchableItemList from "./shared/SearchableItemList"
+import { useSearchableList, type SearchableListItem } from "./shared/useSearchableList"
 
-const EMPTY_CONTINUOUS: ContinuousRule = { op1: ">", val1: "", op2: "", val2: "", assignment: "" }
 const EMPTY_CATEGORICAL: CategoricalRule = { value: "", assignment: "" }
 
 export default function BandingEditor({
@@ -63,7 +66,7 @@ export default function BandingEditor({
   // and distribution below are execution's rather than a sample's.
   const graph = useGraph()
   const node = nodeId ? graph.allNodes.find((candidate: SimpleNode) => candidate.id === nodeId) ?? null : null
-  const { cache, stats, loading: statsLoading, basis, error: statsError } = useBandingStats({
+  const { cache, stats, current: statsCurrent, error: statsError } = useBandingStats({
     node,
     allNodes: graph.allNodes,
     edges: graph.edges,
@@ -85,7 +88,7 @@ export default function BandingEditor({
     const patch: Partial<BandingFactor> = { column: colName }
     const detected = inferBandingType(colName, colMap)
     if (detected && detected !== factors[idx].banding) {
-      patch.banding = detected as BandingMode
+      patch.banding = detected
       patch.rules = []
     }
     // Auto-suggest output column
@@ -108,24 +111,14 @@ export default function BandingEditor({
     })
   }
 
+  // A new factor is Numeric; choosing a column that is not numeric makes it
+  // categorical.
   const addFactor = () => {
-    const next = [...factors, { banding: "continuous" as const, column: "", outputColumn: "", rules: [] as (ContinuousRule | CategoricalRule | BreakpointRule)[], default: null }]
+    const added: BandingFactor = { banding: "breakpoints", column: "", outputColumn: "", rules: [], default: null }
+    const next = [...factors, added]
     commitFactors(next)
     setActiveIdx(next.length - 1)
-  }
-
-  const duplicateFactor = (idx: number) => {
-    const src = factors[idx]
-    const dup: BandingFactor = {
-      banding: src.banding,
-      column: "",
-      outputColumn: "",
-      rules: src.rules.map(r => ({ ...r })),
-      default: src.default,
-    }
-    const next = [...factors, dup]
-    commitFactors(next)
-    setActiveIdx(next.length - 1)
+    factorList.reset()
   }
 
   const removeFactor = (idx: number) => {
@@ -135,140 +128,125 @@ export default function BandingEditor({
     if (safeIdx >= next.length) setActiveIdx(next.length - 1)
   }
 
-  const tabLabel = (f: BandingFactor, i: number) => {
-    if (f.outputColumn) return f.outputColumn
-    if (f.column) return f.column
-    return `Column ${i + 1}`
+  // List order is the order execution applies the factors in: a row dragged
+  // onto another, or moved with Alt+Up/Down, takes its place.
+  const moveFactor = (from: number, to: number) => {
+    if (from === to || to < 0 || to >= factors.length) return
+    const next = [...factors]
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved)
+    commitFactors(next)
+    const current = safeIdx
+    setActiveIdx(
+      current === from ? to
+        : from < current && current <= to ? current - 1
+          : to <= current && current < from ? current + 1
+            : current,
+    )
   }
 
-  const isFactorComplete = (f: BandingFactor) =>
-    !!(f.column && f.outputColumn && (f.rules || []).length > 0)
+  const factorItems: SearchableListItem[] = factors.map((f, i) => {
+    const ruleCount = (f.rules || []).length
+    const issues = [
+      ...(f.column ? [] : ["No input column"]),
+      ...(f.outputColumn ? [] : ["No output column"]),
+      ...(ruleCount > 0 ? [] : ["No rules yet"]),
+    ]
+    return {
+      index: i,
+      name: f.outputColumn || f.column || `Column ${i + 1}`,
+      searchTerms: f.column ? [f.column] : [],
+      healthy: issues.length === 0,
+      issues,
+      badges: [`${ruleCount} rule${ruleCount === 1 ? "" : "s"}`],
+    }
+  })
+  // A factor the search or filter hides is not the one being edited.
+  const factorList = useSearchableList(factorItems, safeIdx, setActiveIdx)
 
-  // ─── Determine if type toggle should be shown ─────────────────
-  // Hide when: single unconfigured factor (no column selected and no rules)
-  const shouldShowTypeToggle = factors.length > 1 || factor.column !== "" || (factor.rules || []).length > 0
+  // Numeric bands compare the column against number or date boundaries, so a
+  // column whose dtype is known and is neither cannot use them.
+  const columnDtype = factor.column ? colMap[factor.column] : undefined
+  const numericUnavailableReason =
+    columnDtype && !isNumericDtype(columnDtype) && !isTemporalDtype(columnDtype)
+      ? `${factor.column} is a ${columnDtype} column; numeric bands need a number or date column.`
+      : undefined
 
-  // ─── Determine if tabs should be shown ────────────────────────
-  // Hide tabs when there's only 1 factor and it's unconfigured
-  const singleUnconfigured = factors.length === 1 && !factors[0].column && !factors[0].outputColumn
-  const shouldShowTabs = factors.length > 1 || !singleUnconfigured
+  // A Numeric factor bands dates when its column is a Date or Datetime, or when
+  // its breakpoints are dates (as on a column whose dtype is not known). Its
+  // boundaries and values are then counted and drawn as wall-clock day numbers,
+  // the unit of the whole-dataset statistics.
+  const rightClosed = factor.rightClosed ?? true
+  const breakpointRules = factor.banding === "breakpoints" ? (factor.rules || []) as BreakpointRule[] : []
+  const boundaryKinds = breakpointKinds(breakpointRules)
+  const temporal =
+    factor.banding === "breakpoints" &&
+    ((columnDtype !== undefined && isTemporalDtype(columnDtype)) ||
+      boundaryKinds.has("date") ||
+      boundaryKinds.has("datetime"))
+  /** A preview value as a number (a day number for dates), for Generate's starting range. */
+  const previewNumber = (raw: unknown): number | null => {
+    if (temporal) return previewValueDayNumber(raw)
+    // A missing value is missing, not zero: `Number(null)` is 0.
+    if (raw === null || raw === undefined || raw === "") return null
+    const value = Number(raw)
+    return isNaN(value) ? null : value
+  }
 
   // ─── Match counts ─────────────────────────────────────────────
-  const previewMatchCounts = (() => {
-    if (!previewRows?.length || !factor.column) return undefined
-    const column = factor.column
+  // Every number here describes the whole dataset; none comes from the preview.
+  // While the answer to a rule edit is on its way, the last answer still
+  // describes the column, so it stays: categorical counts follow the edit from
+  // the data's value counts, and a count not yet known is pending (null).
+  const availability = cache.availability
+  // The whole dataset's answer is on its way (rather than needing a Refresh).
+  const counting =
+    node !== null &&
+    !stats &&
+    !statsError &&
+    (availability === "checking" || availability === "current" || availability === "building")
+  const wholeDataCounts = (() => {
     const rules = factor.rules || []
-    if (!rules.length) return undefined
-
+    if (!stats || !rules.length) return undefined
+    if (statsCurrent) return stats.rule_counts
     if (factor.banding === "categorical") {
-      // Execution builds one remap in rule order, so a value named by several
-      // rules is claimed by the *last* of them, and a rule missing either its
-      // value or its assignment claims nothing at all.
-      const counts = new Array<number>(rules.length).fill(0)
-      const claimant = new Map<string, number>()
-      rules.forEach((rule, index) => {
-        const { value, assignment } = rule as CategoricalRule
-        if (value && assignment) claimant.set(value, index)
-      })
-      for (const row of previewRows) {
-        const raw = row[column]
-        if (raw === null || raw === undefined) continue
-        const index = claimant.get(String(raw))
-        if (index !== undefined) counts[index] += 1
-      }
-      return counts
+      const complete = stats.distinct_count !== null && stats.values.length >= stats.distinct_count
+      const valueCounts = new Map(stats.values.map(({ value, count }) => [value, count]))
+      return categoricalRuleCounts(rules as CategoricalRule[], valueCounts, complete)
     }
-    // Breakpoints are evaluated as the intervals they become, but counted
-    // against the breakpoint the user wrote.
-    const sources =
-      factor.banding === "breakpoints"
-        ? breakpointsToRules(rules as BreakpointRule[], factor.rightClosed ?? true).map(
-            (rule, index) => ({ rule, index }),
-          )
-        : (rules as ContinuousRule[]).map((rule, index) => ({ rule, index }))
-    const counts = new Array<number>(rules.length).fill(0)
-    for (const row of previewRows) {
-      const raw = row[column]
-      if (raw === null || raw === undefined || raw === "") continue
-      const value = Number(raw)
-      if (isNaN(value)) continue
-      const claimed = sources.find(({ rule }) => matchesContinuousRule(value, rule))
-      // A converted interval keeps its position only when the conversion did
-      // not reorder; where it did, the count belongs to the interval shown.
-      if (claimed && claimed.index < counts.length) counts[claimed.index] += 1
-    }
-    return counts
+    return rules.map(() => null)
   })()
-
-  // Whole-dataset counts when the point is cached; the sample's otherwise.
-  const matchCounts = stats?.rule_counts.length ? stats.rule_counts : previewMatchCounts
-  const totalRows = stats ? stats.total_rows : previewRows?.length ?? 0
-  const matchedRows = matchCounts ? matchCounts.reduce((a, b) => a + b, 0) : 0
+  const pendingCounts = counting && (factor.rules || []).length ? (factor.rules || []).map(() => null) : undefined
+  const matchCounts = stats ? wholeDataCounts : pendingCounts
+  const totalRows = stats ? stats.total_rows : 0
+  const knownCounts = matchCounts?.every((count) => count !== null) ? (matchCounts as number[]) : null
   const unmatchedCount =
-    stats?.unmatched_count ?? Math.max(totalRows - matchedRows, 0)
+    (statsCurrent ? stats?.unmatched_count : null) ??
+    (knownCounts ? Math.max(totalRows - knownCounts.reduce((a, b) => a + b, 0), 0) : null)
 
   // ─── Validation warnings ──────────────────────────────────────
-  const warnings = (() => {
-    const rules = factor.rules || []
-    if (!rules.length) return []
-    const w: string[] = []
-
-    if (factor.banding === "categorical") {
-      const dupes = detectDuplicateCategorical(rules as CategoricalRule[])
-      for (const d of dupes) {
-        w.push(`Duplicate value "${d.value}" in rules ${d.indices.map(i => i + 1).join(", ")}`)
-      }
-    } else if (factor.banding === "continuous") {
-      const contRules = rules as ContinuousRule[]
-      // Individual rule validation
-      for (let i = 0; i < contRules.length; i++) {
-        const err = validateRule(contRules[i])
-        if (err) w.push(`Rule ${i + 1}: ${err}`)
-      }
-      // Overlaps
-      const overlaps = detectOverlaps(contRules)
-      for (const o of overlaps) {
-        w.push(o.desc)
-      }
-      // Gaps
-      const gaps = detectGaps(contRules)
-      for (const g of gaps) {
-        w.push(g)
-      }
-    }
-    return w
-  })()
+  const warnings =
+    factor.banding === "categorical"
+      ? detectDuplicateCategorical((factor.rules || []) as CategoricalRule[]).map(
+          (d) => `Duplicate value "${d.value}" in rules ${d.indices.map(i => i + 1).join(", ")}`,
+        )
+      : []
 
   // ─── Histogram data ───────────────────────────────────────────
   const histogramData = (() => {
-    if (factor.banding !== "continuous" && factor.banding !== "breakpoints") return null
+    if (factor.banding !== "breakpoints") return null
     if (!factor.column) return null
 
     const boundaries: number[] = []
-    for (const r of (factor.rules || [])) {
-      if (factor.banding === "breakpoints") {
-        const bp = r as BreakpointRule
-        const n = Number(bp.boundary)
-        if (!isNaN(n)) boundaries.push(n)
-      }
+    for (const bp of breakpointRules) {
+      // The open-ended band's boundary is blank, and Number("") is 0.
+      if ((bp.boundary ?? "").trim() === "") continue
+      // A date's band holds the whole of its day, so it is drawn ending there.
+      const position = temporal ? boundarySplitDayNumber(bp.boundary, rightClosed) : Number(bp.boundary)
+      if (position !== null && !isNaN(position)) boundaries.push(position)
     }
-    // The whole dataset's distribution when it is cached; the same shape built
-    // from preview rows otherwise, so the picture never mixes the two.
-    if (stats) {
-      return stats.bins.length ? { bins: stats.bins, boundaries } : null
-    }
-    if (!previewRows?.length) return null
-    const values: number[] = []
-    for (const row of previewRows) {
-      // A missing value is missing, not zero: `Number(null)` is 0, which would
-      // put an observation at the origin and stretch the extent to reach it.
-      const raw = row[factor.column]
-      if (raw === null || raw === undefined || raw === "") continue
-      const v = Number(raw)
-      if (!isNaN(v)) values.push(v)
-    }
-    const bins = equalWidthBins(values, 40)
-    return bins.length ? { bins, boundaries } : null
+    // Only the whole dataset's distribution is drawn, never the preview's.
+    return stats?.bins.length ? { bins: stats.bins, boundaries } : null
   })()
 
   // ─── Categorical available values ─────────────────────────────
@@ -277,20 +255,20 @@ export default function BandingEditor({
     // Every value in the data, as the text execution matches on, when the point
     // is cached: a rare category is missing from a sample by definition.
     if (stats) return stats.values.map(({ value, count }) => ({ value, count }))
+    // Until then the preview's values help write rules, but without counts.
     if (!previewRows?.length) return null
-    const counts = new Map<string, number>()
+    const values = new Set<string>()
     for (const row of previewRows) {
       const raw = row[factor.column]
       if (raw === null || raw === undefined) continue
-      const v = String(raw)
-      if (v) counts.set(v, (counts.get(v) || 0) + 1)
+      const value = String(raw)
+      if (value) values.add(value)
     }
-    return Array.from(counts.entries())
-      .map(([value, count]) => ({ value, count }))
-      .sort((a, b) => b.count - a.count)
+    return Array.from(values).sort().map((value) => ({ value }))
   })()
 
   // ─── Data min/max for generate dialog ─────────────────────────
+  // Day numbers on a date factor, which Generate is given as dates.
   const dataMinMax = (() => {
     if (stats && stats.minimum !== null && stats.minimum !== undefined) {
       return { dataMin: stats.minimum, dataMax: stats.maximum ?? undefined }
@@ -298,18 +276,16 @@ export default function BandingEditor({
     if (!factor.column || !previewRows?.length) return { dataMin: undefined, dataMax: undefined }
     let min = Infinity, max = -Infinity
     for (const row of previewRows) {
-      const raw = row[factor.column]
-      if (raw === null || raw === undefined || raw === "") continue
-      const v = Number(raw)
-      if (!isNaN(v)) { if (v < min) min = v; if (v > max) max = v }
+      const v = previewNumber(row[factor.column])
+      if (v !== null) { if (v < min) min = v; if (v > max) max = v }
     }
     return min <= max ? { dataMin: min, dataMax: max } : { dataMin: undefined, dataMax: undefined }
   })()
+  const asDate = (dayNumber: number | undefined) => (dayNumber === undefined ? undefined : dayNumberToDate(dayNumber))
 
+  // Breakpoints have their own add; this one is the categorical rules table's.
   const handleAddRule = () => {
-    if (factor.banding === "breakpoints") return // breakpoints have their own add
-    const empty = factor.banding === "continuous" ? { ...EMPTY_CONTINUOUS } : { ...EMPTY_CATEGORICAL }
-    updateFactor(safeIdx, { rules: [...(factor.rules || []), empty] })
+    updateFactor(safeIdx, { rules: [...(factor.rules || []), { ...EMPTY_CATEGORICAL }] })
   }
 
   const handleAddCategoricalValue = (value: string) => {
@@ -325,13 +301,48 @@ export default function BandingEditor({
   // Check if breakpoints are empty (for showing prominent Generate action)
   const breakpointsEmpty = factor.banding === "breakpoints" && (factor.rules || []).length === 0
 
+  // Generate's options open where it was pressed: above the breakpoints, or in
+  // place of the empty prompt. Regenerating starts from the settings the
+  // breakpoints were made with.
+  const generateOptions = temporal ? (
+    <GenerateBandsDialog
+      temporal
+      onGenerate={handleGenerateBands}
+      onClose={() => setShowGenerateDialog(false)}
+      accentColor={accentColor}
+      dataMin={asDate(dataMinMax.dataMin)}
+      dataMax={asDate(dataMinMax.dataMax)}
+      initial={calendarSettingsFromBreakpoints(breakpointRules)}
+    />
+  ) : (
+    <GenerateBandsDialog
+      onGenerate={handleGenerateBands}
+      onClose={() => setShowGenerateDialog(false)}
+      accentColor={accentColor}
+      dataMin={dataMinMax.dataMin}
+      dataMax={dataMinMax.dataMax}
+      initial={
+        factor.banding === "breakpoints"
+          ? generateSettingsFromBreakpoints((factor.rules || []) as BreakpointRule[])
+          : null
+      }
+    />
+  )
 
-  const basisLabel =
-    basis === "all"
+
+  // Whose rows the numbers describe, or why there are none yet.
+  const REFRESH = "Refresh this node to count all rows"
+  const statusLabel = statsError
+    ? `Counting the whole dataset failed: ${statsError}`
+    : stats
       ? `All rows · ${totalRows.toLocaleString()}`
-      : basis === "stale"
-        ? "Cached data is out of date"
-        : `Sample · ${(previewRows?.length ?? 0).toLocaleString()} rows`
+      : availability === "building"
+        ? "Caching the data…"
+        : availability === "stale"
+          ? `Cached data is out of date · ${REFRESH}`
+          : counting
+            ? "Counting…"
+            : `Not cached · ${REFRESH}`
 
   return (
     <div className="px-4 py-3 space-y-3 overflow-y-auto">
@@ -344,106 +355,58 @@ export default function BandingEditor({
             style={{ color: statsError ? "var(--danger)" : "var(--text-muted)" }}
             title={statsError ?? undefined}
           >
-            {statsLoading
-              ? "Counting…"
-              : statsError
-                ? `Counting the whole dataset failed: ${statsError}`
-                : basisLabel}
+            {statusLabel}
           </span>
-          <DataCacheStatus cache={cache} />
         </div>
       )}
 
-      {/* Factor tabs — hidden when single unconfigured factor */}
-      {shouldShowTabs && (
-        <div>
-          <div className="flex items-center gap-1 overflow-x-auto flex-nowrap whitespace-nowrap"
-            role="tablist" aria-label="Banding columns">
-            {factors.map((f, i) => (
-              <div
-                key={i}
-                role="tab"
-                id={`banding-tab-${i}`}
-                aria-selected={i === safeIdx}
-                tabIndex={i === safeIdx ? 0 : -1}
-                onClick={() => setActiveIdx(i)}
-                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setActiveIdx(i) } }}
-                className="relative flex items-center gap-1 px-2.5 py-1.5 rounded-t-lg text-[11px] font-medium transition-colors cursor-pointer shrink-0"
-                style={{
-                  background: i === safeIdx ? 'var(--bg-input)' : 'transparent',
-                  border: i === safeIdx ? '1px solid var(--border)' : '1px solid transparent',
-                  borderBottom: i === safeIdx ? '1px solid var(--bg-input)' : '1px solid var(--border)',
-                  color: i === safeIdx ? accentColor : 'var(--text-muted)',
-                }}
-              >
-                {/* Completeness dot */}
-                <span
-                  className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
-                  style={{ background: isFactorComplete(f) ? 'var(--success)' : 'var(--warning-strong)' }}
-                />
-                <span className="font-mono truncate max-w-[100px]">{tabLabel(f, i)}</span>
-                {/* Duplicate button (only if factor has rules) */}
-                {(f.rules || []).length > 0 && (
-                  <button
-                    type="button"
-                    aria-label="Duplicate column"
-                    onClick={(e) => { e.stopPropagation(); duplicateFactor(i) }}
-                    className="ml-0.5 p-0.5 rounded transition-colors cursor-pointer hover:bg-[rgba(0,0,0,0.1)] focus-visible:bg-[rgba(0,0,0,0.1)]"
-                    style={{ color: 'var(--text-muted)' }}
-                  >
-                    <Copy size={9} />
-                  </button>
-                )}
-                {factors.length > 1 && (
-                  <button
-                    type="button"
-                    aria-label="Remove column"
-                    onClick={(e) => { e.stopPropagation(); removeFactor(i) }}
-                    className="ml-0.5 p-0.5 rounded transition-colors cursor-pointer hover:text-[var(--danger)] focus-visible:text-[var(--danger)]"
-                    style={{ color: 'var(--text-muted)' }}
-                  >
-                    <X size={9} />
-                  </button>
-                )}
-              </div>
-            ))}
-            <button
-              onClick={addFactor}
-              aria-label="Add column"
-              className="flex items-center gap-0.5 px-2 py-1.5 rounded-lg text-[11px] font-medium transition-colors shrink-0 hover:bg-[rgba(0,0,0,0.05)]"
-              style={{ color: accentColor }}
-            >
-              <Plus size={11} />
-            </button>
-          </div>
-          <div style={{ borderTop: '1px solid var(--border)', marginTop: -1 }} />
-        </div>
-      )}
+      {/* Factors: always listed, so the first column does not move the layout */}
+      <SearchableItemList
+        list={factorList}
+        selectedIndex={safeIdx}
+        onSelect={setActiveIdx}
+        onAdd={addFactor}
+        onRemove={factors.length > 1 ? removeFactor : undefined}
+        onMove={moveFactor}
+        labels={{
+          list: "Banding columns",
+          search: "Search banding columns",
+          add: "Add column",
+          remove: (name) => `Remove ${name} column`,
+          status: (healthy) => (healthy ? "complete" : "incomplete"),
+          empty: "No matching columns",
+        }}
+        accentColor={accentColor}
+      />
 
+      {factorList.noneVisible ? (
+        <div className="px-2 py-4 text-center text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          Select a matching column to edit it
+        </div>
+      ) : (
+        <>
       {/* Active factor config */}
-      {shouldShowTypeToggle && (
-        <div role="tabpanel" id="banding-tabpanel" aria-labelledby={`banding-tab-${safeIdx}`}>
-          <div className="flex items-center gap-1.5">
-            <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>Type</label>
-          </div>
-          <div className="mt-1">
-            <ToggleButtonGroup
-              value={factor.banding}
-              onChange={switchBandingType}
-              options={[
-                { key: "breakpoints" as BandingMode, label: "Numeric" },
-                { key: "categorical" as BandingMode, label: "Categorical" },
-              ]}
-              accentColor={accentColor}
-            />
-          </div>
+      <div>
+        <div className="flex items-center gap-1.5">
+          <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>Type</label>
         </div>
-      )}
-
-      {/* Empty tabpanel for accessibility when type toggle is hidden but tabs exist */}
-      {!shouldShowTypeToggle && shouldShowTabs && (
-        <div role="tabpanel" id="banding-tabpanel" aria-labelledby={`banding-tab-${safeIdx}`} />
-      )}
+        <div className="mt-1">
+          <ToggleButtonGroup
+            value={factor.banding}
+            onChange={switchBandingType}
+            options={[
+              {
+                key: "breakpoints" as BandingMode,
+                label: "Numeric",
+                disabled: numericUnavailableReason !== undefined,
+                disabledReason: numericUnavailableReason,
+              },
+              { key: "categorical" as BandingMode, label: "Categorical" },
+            ]}
+            accentColor={accentColor}
+          />
+        </div>
+      </div>
 
       <div className="grid grid-cols-2 gap-2">
         <div>
@@ -494,6 +457,7 @@ export default function BandingEditor({
           bins={histogramData.bins}
           boundaries={histogramData.boundaries}
           accentColor={accentColor}
+          formatValue={temporal ? dayNumberToDate : undefined}
         />
       )}
 
@@ -511,6 +475,7 @@ export default function BandingEditor({
       {factor.banding === "breakpoints" ? (
         <div className="space-y-2">
           {breakpointsEmpty ? (
+            showGenerateDialog ? generateOptions : (
             /* Prominent empty state for breakpoints */
             <div
               className="rounded-lg px-4 py-5 text-center space-y-3"
@@ -545,6 +510,7 @@ export default function BandingEditor({
                 </button>
               </div>
             </div>
+            )
           ) : (
             <>
               <div className="flex items-center justify-between mb-1.5">
@@ -559,26 +525,16 @@ export default function BandingEditor({
                   Generate
                 </button>
               </div>
+              {showGenerateDialog && generateOptions}
               <BreakpointGrid
                 breakpoints={(factor.rules || []) as BreakpointRule[]}
                 onUpdate={(bps) => updateFactor(safeIdx, { rules: bps })}
-                rightClosed={factor.rightClosed ?? true}
+                rightClosed={rightClosed}
                 accentColor={accentColor}
                 matchCounts={matchCounts}
+                temporal={temporal}
               />
             </>
-          )}
-          {/* Generate dialog overlay */}
-          {showGenerateDialog && (
-            <div className="relative">
-              <GenerateBandsDialog
-                onGenerate={handleGenerateBands}
-                onClose={() => setShowGenerateDialog(false)}
-                accentColor={accentColor}
-                dataMin={dataMinMax.dataMin}
-                dataMax={dataMinMax.dataMax}
-              />
-            </div>
           )}
         </div>
       ) : (
@@ -628,9 +584,16 @@ export default function BandingEditor({
           {matchCounts && totalRows > 0 && (
             <span
               className="text-[10px] font-medium"
-              style={{ color: unmatchedCount === 0 ? 'var(--success)' : 'var(--warning-strong)' }}
+              style={{
+                color:
+                  unmatchedCount === null
+                    ? 'var(--text-muted)'
+                    : unmatchedCount === 0
+                      ? 'var(--success)'
+                      : 'var(--warning-strong)',
+              }}
             >
-              {unmatchedCount} of {totalRows} rows
+              {unmatchedCount ?? "…"} of {totalRows} rows
             </span>
           )}
         </div>
@@ -641,6 +604,8 @@ export default function BandingEditor({
           className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none focus:ring-2"
           style={INPUT_STYLE} />
       </div>
+        </>
+      )}
     </div>
   )
 }

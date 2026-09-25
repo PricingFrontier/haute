@@ -1,8 +1,10 @@
 import { useEffect, useState, type ReactNode } from "react"
-import { GitMerge, Plus, Search, Table2, X } from "lucide-react"
+import { GitMerge, Plus, Table2, X } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
+import SearchableItemList from "./shared/SearchableItemList"
+import { useSearchableList, type SearchableListItem } from "./shared/useSearchableList"
 import { withAlpha } from "../../utils/color"
 import { classifyBandingLevels } from "../../utils/banding"
 import type { RatingFactorColumn, RatingFactorDtype, RatingTable } from "./rating/ratingTableUtils"
@@ -201,8 +203,6 @@ export default function RatingStepEditor({
   const [activeSection, setActiveSectionState] = useState<RatingSection>(() => (
     rememberedSection ?? resolveInitialSection(config)
   ))
-  const [tableSearch, setTableSearch] = useState("")
-  const [tableFilter, setTableFilter] = useState<"all" | "problems">("all")
   const tables = normaliseRatingTables(config)
   const bandingClassification = classifyBandingLevels(allNodes)
   const bandingLevels = bandingClassification.levels
@@ -262,27 +262,29 @@ export default function RatingStepEditor({
   const tableStatuses = tables.map((candidate, idx) => ratingTableStatus(candidate, idx, tables))
   const activeTableStatus = tableStatuses[safeIdx] || { state: "problem" as const, issues: [] }
   const activeTableSummaryIssues = activeTableStatus.issues.filter(issue => !issue.startsWith("Output column"))
-  const problemTableCount = tableStatuses.filter(status => status.state === "problem").length
-  const visibleTableItems = tables
-    .map((candidate, idx) => ({
-      table: candidate,
-      idx,
-      status: tableStatuses[idx] || ratingTableStatus(candidate, idx, tables),
-      displayName: tableDisplayName(candidate, idx),
-      stats: tableStats(candidate.entries || []),
-    }))
-    .filter(item => {
-      if (tableFilter === "problems" && item.status.state !== "problem") return false
-      const query = tableSearch.trim().toLowerCase()
-      if (!query) return true
-      return item.displayName.toLowerCase().includes(query) ||
-        item.table.factors.some(factor => factor.toLowerCase().includes(query))
-    })
-  const activeTableVisible = visibleTableItems.some(item => item.idx === safeIdx)
-  const firstVisibleTableIdx = visibleTableItems[0]?.idx ?? null
-  const tableEditorUnavailable = firstVisibleTableIdx === null && (
-    tableSearch.trim().length > 0 || tableFilter === "problems"
+  const tableItems: SearchableListItem[] = tables.map((candidate, idx) => {
+    const status = tableStatuses[idx] || ratingTableStatus(candidate, idx, tables)
+    const stats = tableStats(candidate.entries || [])
+    return {
+      index: idx,
+      name: tableDisplayName(candidate, idx),
+      searchTerms: candidate.factors,
+      healthy: status.state === "healthy",
+      issues: status.issues,
+      badges: [`${candidate.factors.length}f`, ...(stats ? [String(stats.count)] : [])],
+    }
+  })
+  // A table the search or filter hides is not the one being edited.
+  const tableList = useSearchableList(
+    tableItems,
+    safeIdx,
+    (idx) => {
+      setActiveTab(idx)
+      setSliceLevel(null)
+    },
+    activeSection === "tables",
   )
+  const tableEditorUnavailable = tableList.noneVisible
   const outputColumnBlank = table.outputColumn.trim() === ""
   const outputColumnDuplicate = !outputColumnBlank && tables.some((candidate, idx) => (
     idx !== safeIdx && candidate.outputColumn.trim() === table.outputColumn.trim()
@@ -323,12 +325,6 @@ export default function RatingStepEditor({
     setActiveSectionState(rememberedSection ?? resolveInitialSection(config))
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reset the visible editor section only when switching rating nodes
   }, [nodeId])
-
-  useEffect(() => {
-    if (activeSection !== "tables" || activeTableVisible || firstVisibleTableIdx === null) return
-    setActiveTab(firstVisibleTableIdx)
-    setSliceLevel(null)
-  }, [activeSection, activeTableVisible, firstVisibleTableIdx])
 
   const commitTables = (next: RatingTable[]) => onUpdate("tables", next)
 
@@ -396,8 +392,7 @@ export default function RatingStepEditor({
 
   const addTable = () => {
     commitTables([...tables, { factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }])
-    setTableSearch("")
-    setTableFilter("all")
+    tableList.reset()
     selectTable(tables.length)
   }
 
@@ -525,141 +520,22 @@ export default function RatingStepEditor({
         <span>Rating Tables · {tables.length} table{tables.length !== 1 ? 's' : ''}</span>
       </div>
 
-      <div className="space-y-1.5">
-        <div className="flex items-center gap-1.5">
-          <div className="relative flex-1 min-w-0">
-            <Search
-              size={12}
-              className="absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none"
-              style={{ color: 'var(--text-muted)' }}
-            />
-            <input
-              type="search"
-              aria-label="Search rating tables"
-              value={tableSearch}
-              onChange={(e) => setTableSearch(e.target.value)}
-              className="w-full pl-7 pr-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"
-              style={INPUT_STYLE}
-            />
-          </div>
-          <div
-            className="flex items-center rounded-lg p-0.5 shrink-0"
-            style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}
-          >
-            {(["all", "problems"] as const).map(filter => (
-              <button
-                key={filter}
-                type="button"
-                onClick={() => setTableFilter(filter)}
-                aria-pressed={tableFilter === filter}
-                className="px-2 py-1 rounded-md text-[10px] font-medium transition-colors"
-                style={{
-                  background: tableFilter === filter ? withAlpha(accentColor, 0.14) : 'transparent',
-                  color: tableFilter === filter ? accentColor : 'var(--text-muted)',
-                }}
-              >
-                {filter === "all" ? "All" : `Issues${problemTableCount > 0 ? ` ${problemTableCount}` : ""}`}
-              </button>
-            ))}
-          </div>
-          <button
-            type="button"
-            onClick={addTable}
-            aria-label="Add table"
-            className="accent-hover-btn p-1.5 rounded-lg shrink-0"
-            style={{ color: 'var(--text-muted)', border: '1px dashed var(--border)', ['--node-accent' as string]: accentColor }}
-          >
-            <Plus size={12} />
-          </button>
-        </div>
-
-        <div
-          role="group"
-          aria-label="Rating tables"
-          className="max-h-44 overflow-y-auto rounded-lg"
-          style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)' }}
-        >
-          {visibleTableItems.map((item, position) => {
-            const selected = item.idx === safeIdx
-            const focusable = selected || (!activeTableVisible && position === 0)
-            const statusLabel = tableStatusLabel(item.status.state)
-            return (
-              <div
-                key={item.idx}
-                className="group flex items-center gap-1.5 px-1.5 py-1 text-[11px] transition-colors border-b last:border-b-0"
-                style={{
-                  background: selected ? withAlpha(accentColor, 0.1) : 'transparent',
-                  borderColor: 'var(--border-subtle)',
-                  color: selected ? 'var(--text-primary)' : 'var(--text-secondary)',
-                }}
-              >
-                <button
-                  type="button"
-                  aria-label={`${item.displayName} ${statusLabel}`}
-                  aria-pressed={selected}
-                  title={item.status.issues.length > 0 ? item.status.issues.join("; ") : "Healthy"}
-                  tabIndex={focusable ? 0 : -1}
-                  data-rating-table-option="true"
-                  onClick={() => selectTable(item.idx)}
-                  onKeyDown={(e) => {
-                    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                      e.preventDefault()
-                      const nextPosition = e.key === "ArrowDown"
-                        ? (position + 1) % visibleTableItems.length
-                        : (position - 1 + visibleTableItems.length) % visibleTableItems.length
-                      const next = visibleTableItems[nextPosition]
-                      if (!next) return
-                      selectTable(next.idx)
-                      const selector = e.currentTarget.closest('[aria-label="Rating tables"]')
-                      const options = selector?.querySelectorAll<HTMLElement>('[data-rating-table-option="true"]')
-                      window.requestAnimationFrame(() => options?.[nextPosition]?.focus())
-                    }
-                  }}
-                  className="min-w-0 flex flex-1 items-center gap-2 rounded-md px-1 py-0.5 text-left focus:outline-none focus:ring-1"
-                  style={{ color: 'inherit', background: 'transparent' }}
-                >
-                  <span
-                    aria-hidden="true"
-                    className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
-                    style={{ background: item.status.state === "healthy" ? 'var(--success)' : 'var(--warning-strong)' }}
-                  />
-                  <span className="min-w-0 flex-1 truncate font-mono">{item.displayName}</span>
-                  <span
-                    className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-mono"
-                    style={{ background: selected ? withAlpha(accentColor, 0.14) : 'var(--bg-elevated)', color: 'var(--text-muted)' }}
-                  >
-                    {item.table.factors.length}f
-                  </span>
-                  {item.stats && (
-                    <span
-                      className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-mono"
-                      style={{ background: selected ? withAlpha(accentColor, 0.14) : 'var(--bg-elevated)', color: 'var(--text-muted)' }}
-                    >
-                      {item.stats.count}
-                    </span>
-                  )}
-                </button>
-                {tables.length > 1 && (
-                  <button
-                    type="button"
-                    aria-label={`Remove ${item.displayName} table`}
-                    onClick={(e) => { e.stopPropagation(); removeTable(item.idx) }}
-                    className="p-0.5 rounded opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity cursor-pointer hover:text-[var(--danger)] focus-visible:text-[var(--danger)]"
-                    style={{ color: 'var(--text-muted)' }}
-                  >
-                    <X size={10} />
-                  </button>
-                )}
-              </div>
-            )
-          })}
-          {visibleTableItems.length === 0 && (
-            <div className="px-2.5 py-3 text-center text-[11px]" style={{ color: 'var(--text-muted)' }}>
-              No matching tables
-            </div>
-          )}
-        </div>
-      </div>
+      <SearchableItemList
+        list={tableList}
+        selectedIndex={safeIdx}
+        onSelect={selectTable}
+        onAdd={addTable}
+        onRemove={tables.length > 1 ? removeTable : undefined}
+        labels={{
+          list: "Rating tables",
+          search: "Search rating tables",
+          add: "Add table",
+          remove: (name) => `Remove ${name} table`,
+          status: (healthy) => tableStatusLabel(healthy ? "healthy" : "problem"),
+          empty: "No matching tables",
+        }}
+        accentColor={accentColor}
+      />
 
       {tableEditorUnavailable ? (
         <div

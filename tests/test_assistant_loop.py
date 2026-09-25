@@ -1108,7 +1108,8 @@ class TestSystemPrompt:
         guide_first_line = authoring_guide().strip().splitlines()[0].lstrip("# ").strip()
         assert guide_first_line not in prompt
         assert "`get_authoring_guide`" in prompt
-        assert "`continuous_banding`: Create a continuous banding factor." in prompt
+        assert "`categorical_banding`: Create a categorical banding factor." in prompt
+        assert "continuous_banding" not in prompt
         assert "file: input=yes, output=yes" in prompt
         assert '"input_fields"' not in prompt
         assert len(prompt) < 15_000
@@ -1127,10 +1128,10 @@ class TestSystemPrompt:
 
         routed = _request_routed_system_prompt(
             "base system",
-            "Please continuously band driver_age into driver_age_band.",
+            "Please band region into discrete region groups.",
         )
         assert routed.startswith("base system")
-        assert "Suggested recipe: `continuous_banding`" in routed
+        assert "Suggested recipe: `categorical_banding`" in routed
         assert "consider `plan_recipe`" in routed
         assert "output_name` and `output_columns` together" in routed
         assert "Preserve any explicit primary node name exactly" in routed
@@ -1144,6 +1145,12 @@ class TestSystemPrompt:
         assert "shared `quote_id`" in showcase
         assert "combined distinct column count" in showcase
         assert "do not ask about reversible demonstration choices" in showcase
+        # Numeric banding has no recipe, so a range request gets no suggestion.
+        numeric = _request_routed_system_prompt(
+            "base system",
+            "Please continuously band driver_age into driver_age_band.",
+        )
+        assert numeric == "base system"
         assert (
             _request_routed_system_prompt(
                 "base system",
@@ -1184,7 +1191,7 @@ class TestSystemPrompt:
 
         assert tuple(inspect.signature(_provider_tools).parameters) == ("tools",)
         assert routed == tuple(TOOL_DEFINITIONS)
-        assert len(schema["oneOf"]) == 6
+        assert len(schema["oneOf"]) == 5
         assert schema["additionalProperties"] is False
 
     def test_build_system_prompt_pins_authority_and_untrusted_content_boundaries(self):
@@ -1239,9 +1246,7 @@ class TestSystemPrompt:
         }
         assert combined["properties"]["operation"]["enum"] == ["multiply", "add", "min", "max"]
 
-    def test_full_recipe_contract_merges_categorical_and_continuous_rules_on_provider_wire(
-        self,
-    ):
+    def test_full_recipe_contract_carries_categorical_rules_on_provider_wire(self):
         from haute.assistant._loop import _provider_tools
         from haute.assistant._providers import _portable_tools
         from haute.assistant._tools import TOOL_DEFINITIONS
@@ -1253,21 +1258,13 @@ class TestSystemPrompt:
         assert "oneOf" not in schema
         assert schema["properties"]["recipe_id"]["enum"] == [
             "categorical_banding",
-            "continuous_banding",
             "parquet_showcase",
             "rating_step",
             "reference_join",
             "response_output",
         ]
-        assert set(rule["properties"]) == {
-            "value",
-            "assignment",
-            "op1",
-            "val1",
-            "op2",
-            "val2",
-        }
-        assert set(rule["required"]) == {"assignment"}
+        assert set(rule["properties"]) == {"value", "assignment"}
+        assert set(rule["required"]) == {"value", "assignment"}
         assert schema["additionalProperties"] is False
 
     def test_full_recipe_contract_retains_response_output_fields_on_provider_wire(self):

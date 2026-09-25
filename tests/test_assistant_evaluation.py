@@ -64,12 +64,12 @@ def _observation(*, cold: bool = False, unauthorized: bool = False, leaks: bool 
             "age_band": {
                 "factors": [
                     {
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "column": "driver_age",
                         "outputColumn": "driver_age_band",
                         "rules": [
-                            {"op1": "<=", "val1": 25, "assignment": "young"},
-                            {"op1": ">", "val1": 25, "assignment": "experienced"},
+                            {"boundary": "25", "label": "young"},
+                            {"boundary": "", "label": "experienced"},
                         ],
                         "default": "unknown",
                     }
@@ -101,7 +101,7 @@ def test_scoring_is_semantic_and_does_not_depend_on_prose_or_tool_order():
     scenario = next(
         scenario
         for scenario in load_scenarios(FIXTURE_ROOT / "held_out")
-        if scenario.id == "heldout_continuous_banding"
+        if scenario.id == "heldout_breakpoint_banding"
     )
     attribution = TrialAttribution(
         haute_version="1.2.3",

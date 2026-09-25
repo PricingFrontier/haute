@@ -283,7 +283,7 @@ class ModelScoreConfig(TypedDict, total=False):
 class BandingFactor(TypedDict, total=False):
     """A single factor in a banding node config."""
 
-    banding: Literal["continuous", "categorical", "breakpoints"]
+    banding: Literal["breakpoints", "categorical"]
     column: str
     outputColumn: str
     rules: list[dict[str, Any]] | dict[str, Any]

@@ -559,9 +559,8 @@ class ContractMismatchError(HauteError):
       check, Polars raises a cryptic ``ColumnNotFound`` deep in a lazy
       plan; with it, Haute names the exact missing column up-front.
     * **Executor (output side)** — a node's observed output is missing
-      columns its contract promised to produce, or contains columns
-      outside what its contract declared.
+      columns its contract promised to produce.
 
-    The error always names the offending node id and the symmetric
-    column diff so a user can fix a typo'd contract in one edit.
+    The error always names the offending node id and the columns at
+    fault, so a user can fix a typo'd contract in one edit.
     """

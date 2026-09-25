@@ -1,10 +1,11 @@
 /**
  * Render tests for BandingEditor.
  *
- * Tests: renders with default config, factor tabs, adding/removing factors,
+ * Tests: renders with default config, the factor list, adding/removing factors,
  * type toggle, column selection with auto-type detection, add rule button,
  * no cross-factor summary, breakpoints mode, stash-and-restore, accessibility,
- * match counts, validation warnings, histogram, categorical value picker.
+ * match counts, validation warnings, histogram, categorical value picker, and
+ * Numeric bands on Date and Datetime columns.
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
@@ -27,22 +28,46 @@ function renderEditor(ui: ReactElement) {
 
 afterEach(cleanup)
 
+/** How the histogram's formatter, if the editor gives it one, shows the data's ends. */
+function endLabels(props: Record<string, unknown>): string[] | null {
+  const bins = props.bins as { lower: number; upper: number }[]
+  const format = props.formatValue as ((value: number) => string) | undefined
+  if (!format || !bins.length) return null
+  return [format(bins[0].lower), format(bins[bins.length - 1].upper)]
+}
+
 // Mock child components that we don't need to test internals of
 vi.mock("../../panels/editors/banding/BreakpointGrid", () => ({
   BreakpointGrid: (props: Record<string, unknown>) => (
-    <div data-testid="breakpoint-grid" data-breakpoints={JSON.stringify(props.breakpoints)} />
+    <div
+      data-testid="breakpoint-grid"
+      data-breakpoints={JSON.stringify(props.breakpoints)}
+      data-match-counts={JSON.stringify(props.matchCounts ?? null)}
+      data-temporal={String(props.temporal ?? false)}
+    />
   ),
 }))
 
 vi.mock("../../panels/editors/banding/BandingHistogram", () => ({
   BandingHistogram: (props: Record<string, unknown>) => (
-    <div data-testid="banding-histogram" data-bins={JSON.stringify(props.bins)} />
+    <div
+      data-testid="banding-histogram"
+      data-bins={JSON.stringify(props.bins)}
+      data-boundaries={JSON.stringify(props.boundaries)}
+      data-end-labels={JSON.stringify(endLabels(props))}
+    />
   ),
 }))
 
 vi.mock("../../panels/editors/banding/GenerateBandsDialog", () => ({
   GenerateBandsDialog: (props: Record<string, unknown>) => (
-    <div data-testid="generate-bands-dialog">
+    <div
+      data-testid="generate-bands-dialog"
+      data-initial={JSON.stringify(props.initial ?? null)}
+      data-temporal={String(props.temporal ?? false)}
+      data-min={JSON.stringify(props.dataMin ?? null)}
+      data-max={JSON.stringify(props.dataMax ?? null)}
+    >
       <button onClick={props.onClose as () => void}>Cancel</button>
     </div>
   ),
@@ -54,10 +79,20 @@ vi.mock("../../panels/editors/banding/CategoricalValuePicker", () => ({
   ),
 }))
 
+/** The factor list: one row per factor, named by its output column. */
+function columnList() {
+  return screen.getByRole("group", { name: "Banding columns" })
+}
+
+/** A factor's row button: its name, then whether it is complete. */
+function rowOf(name: string) {
+  return within(columnList()).getByRole("button", { name: new RegExp(`^${name} (complete|incomplete)$`) })
+}
+
 describe("BandingEditor", () => {
   // ─── Existing tests (updated for terminology changes) ─────────
 
-  it("renders column tabs for multi-factor config", () => {
+  it("lists each factor by its output column", () => {
     const config = {
       factors: [
         { banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] },
@@ -67,64 +102,77 @@ describe("BandingEditor", () => {
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
-    const tablist = screen.getByRole("tablist")
-    expect(within(tablist).getByText("age_band")).toBeTruthy()
-    expect(within(tablist).getByText("region_group")).toBeTruthy()
+    expect(rowOf("age_band")).toHaveAttribute("aria-pressed", "true")
+    expect(rowOf("region_group")).toHaveAttribute("aria-pressed", "false")
   })
 
-  it("renders factor tab label from column when outputColumn is empty", () => {
+  it("names a factor by its input column while its output column is empty", () => {
     const config = {
       factors: [
-        { banding: "continuous", column: "driver_age", outputColumn: "", rules: [] },
+        { banding: "breakpoints", column: "driver_age", outputColumn: "", rules: [] },
       ],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
-    // Single factor with column set should show tabs (not unconfigured)
-    const tablist = screen.getByRole("tablist")
-    expect(within(tablist).getByText("driver_age")).toBeTruthy()
+    expect(rowOf("driver_age")).toBeInTheDocument()
   })
 
-  it("hides tabs when single factor is unconfigured (no 'Column 1' shown)", () => {
+  it("shows a placeholder 'Column 1' row on a new node, so the first column does not move the layout", () => {
     renderEditor(
       <BandingEditor config={{}} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
-    // Tabs should be hidden for single unconfigured factor
-    expect(screen.queryByRole("tablist")).toBeNull()
-    // "Column 1" label should not appear
-    expect(screen.queryByText("Column 1")).toBeNull()
+    expect(rowOf("Column 1")).toHaveAttribute("aria-pressed", "true")
+    expect(rowOf("Column 1")).toHaveAccessibleName("Column 1 incomplete")
   })
 
-  it("adding a factor creates new tab and switches to it", () => {
+  it("adding a factor appends one and selects it", () => {
     const onUpdate = vi.fn()
-    // Start with a configured factor so tabs are visible
     const config = {
-      factors: [{ banding: "continuous", column: "age", outputColumn: "age_band", rules: [] }],
+      factors: [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] }],
     }
-    renderEditor(
+    const { rerender } = renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
     )
-    const tablist = screen.getByRole("tablist")
-    const addBtn = within(tablist).getAllByRole("button").find(b => {
-      return b.querySelector("svg") && b.textContent === ""
-    })
-    expect(addBtn).toBeTruthy()
-    fireEvent.click(addBtn!)
+    fireEvent.click(screen.getByRole("button", { name: "Add column" }))
 
-    expect(onUpdate).toHaveBeenCalledWith("factors", expect.arrayContaining([
-      expect.objectContaining({ banding: "continuous" }),
-      expect.objectContaining({ banding: "continuous" }),
-    ]))
     const factors = onUpdate.mock.calls[0][1]
     expect(factors).toHaveLength(2)
+    expect(factors[1]).toMatchObject({ column: "", outputColumn: "" })
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]} submodels={{}} preamble="">
+        <BandingEditor config={{ factors }} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />
+      </GraphProvider>,
+    )
+    expect(rowOf("Column 2")).toHaveAttribute("aria-pressed", "true")
   })
 
-  it("removing a factor when >1 factors removes the tab", () => {
+  it("adds a new factor as Numeric, whatever type the others are", () => {
+    const onUpdate = vi.fn()
+    const config = {
+      factors: [{ banding: "categorical", column: "region", outputColumn: "region_group", rules: [] }],
+    }
+    const { rerender } = renderEditor(
+      <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Add column" }))
+
+    const factors = onUpdate.mock.calls[0][1]
+    expect(factors[1]).toEqual({ banding: "breakpoints", column: "", outputColumn: "", rules: [], default: null })
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]} submodels={{}} preamble="">
+        <BandingEditor config={{ factors }} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />
+      </GraphProvider>,
+    )
+    expect(screen.getByRole("radio", { name: "Numeric" })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByText("No breakpoints yet.")).toBeInTheDocument()
+  })
+
+  it("removing a factor when >1 factors removes its row", () => {
     const onUpdate = vi.fn()
     const config = {
       factors: [
-        { banding: "continuous", column: "age", outputColumn: "age_band", rules: [] },
+        { banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] },
         { banding: "categorical", column: "region", outputColumn: "region_group", rules: [] },
       ],
     }
@@ -132,11 +180,7 @@ describe("BandingEditor", () => {
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
     )
 
-    const tablist = screen.getByRole("tablist")
-    const ageBandTab = within(tablist).getByText("age_band").closest("[role='tab']")!
-    const removeBtn = ageBandTab.querySelector("button[aria-label='Remove column']")
-    expect(removeBtn).toBeTruthy()
-    fireEvent.click(removeBtn!)
+    fireEvent.click(within(columnList()).getByRole("button", { name: "Remove age_band column" }))
 
     expect(onUpdate).toHaveBeenCalledWith("factors", [
       expect.objectContaining({ column: "region", outputColumn: "region_group" }),
@@ -146,21 +190,19 @@ describe("BandingEditor", () => {
   it("cannot remove last factor (single factor)", () => {
     const config = {
       factors: [
-        { banding: "continuous", column: "age", outputColumn: "age_band", rules: [] },
+        { banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] },
       ],
     }
-    const { container } = renderEditor(
+    renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
-    const removeButtons = container.querySelectorAll("button[aria-label='Remove column']")
-    expect(removeButtons.length).toBe(0)
+    expect(within(columnList()).queryByRole("button", { name: /^Remove / })).toBeNull()
   })
 
-  it("type toggle between continuous and categorical calls updateFactor", () => {
+  it("type toggle from Numeric to Categorical calls updateFactor", () => {
     const onUpdate = vi.fn()
-    // Use a configured factor so type toggle is visible
     const config = {
-      factors: [{ banding: "continuous", column: "age", outputColumn: "age_band", rules: [] }],
+      factors: [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
@@ -173,14 +215,12 @@ describe("BandingEditor", () => {
     expect(call).toBeTruthy()
   })
 
-  it("type toggle hidden when single unconfigured factor", () => {
+  it("shows the Type row on a new node with Numeric chosen", () => {
     renderEditor(
       <BandingEditor config={{}} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
-    // Type toggle options should not be visible
-    expect(screen.queryByText("Numeric")).toBeNull()
-    // Advanced option removed from UI
-    expect(screen.queryByText("Categorical")).toBeNull()
+    expect(screen.getByRole("radio", { name: "Numeric" })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByRole("radio", { name: "Categorical" })).toHaveAttribute("aria-checked", "false")
   })
 
   it("column selection with upstream columns renders dropdown", () => {
@@ -236,14 +276,14 @@ describe("BandingEditor", () => {
     ]))
   })
 
-  it("column selection auto-detects type for string dtype", () => {
+  it("column selection switches a new Numeric factor to categorical for a string dtype", () => {
     const onUpdate = vi.fn()
     const columns = [
       { name: "age", dtype: "int64" },
       { name: "region", dtype: "Utf8" },
     ]
     const config = {
-      factors: [{ banding: "continuous", column: "", outputColumn: "", rules: [] }],
+      factors: [{ banding: "breakpoints", column: "", outputColumn: "", rules: [] }],
     }
     renderEditor(
       <BandingEditor
@@ -266,21 +306,22 @@ describe("BandingEditor", () => {
     ]))
   })
 
-  it("add rule button adds appropriate empty rule type for continuous", () => {
+  it("add rule button appends an empty rule after the existing categorical rules", () => {
     const onUpdate = vi.fn()
+    const existing = { value: "London", assignment: "South" }
     const config = {
-      factors: [{ banding: "continuous", column: "age", outputColumn: "age_band", rules: [] }],
+      factors: [{ banding: "categorical", column: "region", outputColumn: "region_group", rules: [existing] }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
     )
     fireEvent.click(screen.getByText("Add"))
-    expect(onUpdate).toHaveBeenCalledWith("factors", expect.arrayContaining([
+    expect(onUpdate).toHaveBeenCalledWith("factors", [
       expect.objectContaining({
-        banding: "continuous",
-        rules: [expect.objectContaining({ op1: ">", val1: "", assignment: "" })],
+        banding: "categorical",
+        rules: [existing, { value: "", assignment: "" }],
       }),
-    ]))
+    ])
   })
 
   it("add rule button adds appropriate empty rule type for categorical", () => {
@@ -303,7 +344,7 @@ describe("BandingEditor", () => {
   it("does not list every factor in a summary below the default when 2+ factors", () => {
     const config = {
       factors: [
-        { banding: "continuous", column: "age", outputColumn: "age_band", rules: [{ op1: ">", val1: "25", op2: "", val2: "", assignment: "young" }] },
+        { banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [{ boundary: "25", label: "young" }] },
         { banding: "categorical", column: "region", outputColumn: "region_group", rules: [{ value: "London", assignment: "South" }] },
       ],
     }
@@ -311,7 +352,11 @@ describe("BandingEditor", () => {
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
     expect(screen.queryByTestId("banding-summary")).toBeNull()
-    expect(document.body.textContent).not.toContain("1 rule")
+    // Each factor's rule count is a badge on its own row in the list, and
+    // appears nowhere else.
+    const counts = screen.getAllByText("1 rule")
+    expect(counts).toHaveLength(2)
+    expect(counts.every((badge) => columnList().contains(badge))).toBe(true)
   })
 
   it("renders text input for column when no upstreamColumns", () => {
@@ -330,30 +375,15 @@ describe("BandingEditor", () => {
     expect(screen.getByText(/Default/)).toBeTruthy()
   })
 
-  it("renders 'No rules yet' when continuous rules are empty", () => {
-    const config = {
-      factors: [{ banding: "continuous", column: "age", outputColumn: "age_band", rules: [] }],
-    }
+  it("offers a new node's breakpoints empty state rather than a rules table", () => {
     renderEditor(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
+      <BandingEditor config={{}} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
-    expect(screen.getByText("No rules yet")).toBeTruthy()
-  })
-
-  it("renders continuous rules grid headers when continuous rules exist", () => {
-    const config = {
-      factors: [{
-        banding: "continuous",
-        column: "age",
-        outputColumn: "age_band",
-        rules: [{ op1: ">", val1: "25", op2: "<=", val2: "35", assignment: "young" }],
-      }],
-    }
-    renderEditor(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
-    )
-    expect(screen.getByText("Label")).toBeTruthy()
-    expect(screen.getByText("Rules (1)")).toBeTruthy()
+    expect(screen.getByText("No breakpoints yet.")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Generate even bands" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Add manually" })).toBeInTheDocument()
+    expect(screen.queryByText("No rules yet")).toBeNull()
+    expect(screen.queryByRole("button", { name: /^Add$/ })).toBeNull()
   })
 
   it("renders categorical rules grid headers when categorical rules exist", () => {
@@ -371,22 +401,89 @@ describe("BandingEditor", () => {
     expect(screen.getByText("Maps To")).toBeTruthy()
   })
 
-  it("clicking a factor tab switches the active factor", () => {
+  it("clicking a factor row switches the active factor", () => {
     const config = {
       factors: [
-        { banding: "continuous", column: "age", outputColumn: "age_band", rules: [] },
+        { banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] },
         { banding: "categorical", column: "region", outputColumn: "region_group", rules: [] },
       ],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
-    const tablist = screen.getByRole("tablist")
-    const catTab = within(tablist).getByText("region_group").closest("[role='tab']")!
-    fireEvent.click(catTab)
-    const catTypeBtn = screen.getByText("Categorical").closest("button")!
-    expect(catTypeBtn.style.border).toBeTruthy()
-    expect(catTypeBtn.style.border).not.toBe("none")
+    expect(screen.getByRole("radio", { name: "Numeric" })).toHaveAttribute("aria-checked", "true")
+    fireEvent.click(rowOf("region_group"))
+    expect(screen.getByRole("radio", { name: "Categorical" })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByLabelText("Output Column")).toHaveValue("region_group")
+  })
+
+  describe("factor list", () => {
+    const factor = (column: string, outputColumn: string) => ({
+      banding: "categorical", column, outputColumn, rules: [{ value: "a", assignment: "A" }],
+    })
+    const THREE = {
+      factors: [factor("age", "first"), factor("region", "second"), factor("policy_cover_type", "cover_band")],
+    }
+    const outputs = (onUpdate: ReturnType<typeof vi.fn>) =>
+      (onUpdate.mock.lastCall![1] as { outputColumn: string }[]).map((f) => f.outputColumn)
+
+    it("searches by output or input column name, selecting what stays in view", () => {
+      renderEditor(<BandingEditor config={THREE} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />)
+      fireEvent.change(screen.getByRole("searchbox", { name: "Search banding columns" }), {
+        target: { value: "policy" },
+      })
+      const rows = within(columnList()).getAllByRole("button", { name: /complete$/ })
+      expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual(["cover_band complete"])
+      // The selected factor was filtered out, so the one in view is edited.
+      expect(rowOf("cover_band")).toHaveAttribute("aria-pressed", "true")
+      expect(screen.getByLabelText("Output Column")).toHaveValue("cover_band")
+    })
+
+    it("shows only incomplete factors under Issues", () => {
+      const config = { factors: [factor("age", "first"), { ...factor("region", "second"), rules: [] }] }
+      renderEditor(<BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />)
+      fireEvent.click(screen.getByRole("button", { name: "Issues 1" }))
+      const rows = within(columnList()).getAllByRole("button", { name: /complete$/ })
+      expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual(["second incomplete"])
+      expect(rows[0]).toHaveAttribute("title", "No rules yet")
+    })
+
+    it("reorders the factors when one is dragged onto another, keeping it selected", () => {
+      const onUpdate = vi.fn()
+      const { rerender } = renderEditor(
+        <BandingEditor config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
+      )
+      const row = (name: string) => rowOf(name).parentElement as HTMLElement
+      expect(row("first")).toHaveAttribute("draggable", "true")
+      expect(within(row("first")).getByTitle("Drag to reorder")).toBeInTheDocument()
+      const dataTransfer = { setData: vi.fn(), effectAllowed: "", dropEffect: "" }
+      fireEvent.dragStart(row("first"), { dataTransfer })
+      fireEvent.dragOver(row("cover_band"), { dataTransfer })
+      fireEvent.drop(row("cover_band"), { dataTransfer })
+
+      expect(outputs(onUpdate)).toEqual(["second", "cover_band", "first"])
+      rerender(
+        <GraphProvider allNodes={[]} edges={[]} submodels={{}} preamble="">
+          <BandingEditor
+            config={{ factors: onUpdate.mock.lastCall![1] }}
+            onUpdate={onUpdate}
+            inputSources={[]}
+            accentColor="#22d3ee"
+          />
+        </GraphProvider>,
+      )
+      expect(rowOf("first")).toHaveAttribute("aria-pressed", "true")
+    })
+
+    it("moves a factor with Alt+Up/Down from the keyboard", () => {
+      const onUpdate = vi.fn()
+      renderEditor(<BandingEditor config={THREE} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />)
+      fireEvent.keyDown(rowOf("second"), { key: "ArrowDown", altKey: true })
+      expect(outputs(onUpdate)).toEqual(["first", "cover_band", "second"])
+      fireEvent.keyDown(rowOf("first"), { key: "ArrowUp", altKey: true })
+      // Already first: nothing to move.
+      expect(onUpdate).toHaveBeenCalledTimes(1)
+    })
   })
 
   it("renders InputSourcesBar when inputs provided", () => {
@@ -416,17 +513,63 @@ describe("BandingEditor", () => {
     expect(screen.queryByText("(detected: text)")).toBeNull()
   })
 
-  // ─── Feature 2: Three-way banding type toggle ─────────────────
+  // ─── Feature 2: Numeric/Categorical type toggle ──────────────
 
   it("Numeric option appears in type toggle when factor is configured", () => {
     const config = {
-      factors: [{ banding: "continuous", column: "age", outputColumn: "age_band", rules: [] }],
+      factors: [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
     expect(screen.getByText("Numeric")).toBeTruthy()
     expect(screen.getByText("Categorical")).toBeTruthy()
+  })
+
+  it("greys out Numeric for a text column and says why", () => {
+    const config = {
+      factors: [
+        { banding: "categorical", column: "policy_cover_type", outputColumn: "cover_band", rules: [] },
+      ],
+    }
+    const onUpdate = vi.fn()
+    renderEditor(
+      <BandingEditor
+        config={config}
+        onUpdate={onUpdate}
+        inputSources={[]}
+        upstreamColumns={[{ name: "policy_cover_type", dtype: "String" }]}
+        accentColor="#22d3ee"
+      />,
+    )
+    const numeric = screen.getByText("Numeric").closest("button")!
+    expect(numeric).toBeDisabled()
+    expect(numeric).toHaveAttribute(
+      "title",
+      "policy_cover_type is a String column; numeric bands need a number or date column.",
+    )
+    fireEvent.click(numeric)
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(screen.getByText("Categorical").closest("button")).toBeEnabled()
+  })
+
+  it.each([
+    ["a numeric column", [{ name: "age", dtype: "Float64" }]],
+    ["a column whose dtype is unknown", undefined],
+  ])("keeps Numeric available for %s", (_case, upstreamColumns) => {
+    const config = {
+      factors: [{ banding: "categorical", column: "age", outputColumn: "age_band", rules: [] }],
+    }
+    renderEditor(
+      <BandingEditor
+        config={config}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        upstreamColumns={upstreamColumns}
+        accentColor="#22d3ee"
+      />,
+    )
+    expect(screen.getByText("Numeric").closest("button")).toBeEnabled()
   })
 
   it("auto-detect selects 'breakpoints' for numeric columns", () => {
@@ -453,23 +596,30 @@ describe("BandingEditor", () => {
 
   it("type toggle stash-and-restore preserves rules", () => {
     const onUpdate = vi.fn()
-    const existingRules = [{ op1: ">", val1: "10", op2: "<=", val2: "20", assignment: "band1" }]
+    const existingRules = [{ boundary: "20", label: "band1" }, { boundary: "", label: "band2" }]
     const config = {
-      factors: [{ banding: "continuous", column: "age", outputColumn: "age_band", rules: existingRules }],
+      factors: [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: existingRules }],
     }
-    renderEditor(
+    const { rerender } = renderEditor(
       <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
     )
-    // Switch to categorical — should stash continuous rules
+    // Switch to categorical — should stash the breakpoints
     fireEvent.click(screen.getByText("Categorical"))
-    const switchCall = onUpdate.mock.calls.find(
-      (c: unknown[]) => (c[1] as Record<string, unknown>[])?.[0]?.banding === "categorical"
+    const switched = (onUpdate.mock.lastCall![1] as Record<string, unknown>[])[0]
+    expect(switched.banding).toBe("categorical")
+    expect((switched._prevRules as Record<string, unknown>).breakpoints).toEqual(existingRules)
+    expect(switched.rules).toEqual([])
+
+    // Switching back restores them.
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]} submodels={{}} preamble="">
+        <BandingEditor config={{ factors: [switched] }} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />
+      </GraphProvider>,
     )
-    expect(switchCall).toBeTruthy()
-    const factor = (switchCall![1] as Record<string, unknown>[])[0]
-    expect(factor._prevRules).toBeDefined()
-    expect((factor._prevRules as Record<string, unknown>).continuous).toEqual(existingRules)
-    expect(factor.rules).toEqual([])
+    fireEvent.click(screen.getByText("Numeric"))
+    const restored = (onUpdate.mock.lastCall![1] as Record<string, unknown>[])[0]
+    expect(restored.banding).toBe("breakpoints")
+    expect(restored.rules).toEqual(existingRules)
   })
 
   // ─── Feature 4: Breakpoints mode rendering ────────────────────
@@ -511,238 +661,112 @@ describe("BandingEditor", () => {
     ]))
   })
 
-  // ─── Feature 6: Duplicate factor ──────────────────────────────
+  // ─── Feature 6: No duplicate action ───────────────────────────
 
-  it("duplicate factor button creates copy with cleared columns", () => {
-    const onUpdate = vi.fn()
-    const config = {
-      factors: [{
-        banding: "continuous",
-        column: "age",
-        outputColumn: "age_band",
-        rules: [{ op1: ">", val1: "10", op2: "", val2: "", assignment: "young" }],
-        default: "other",
-      }],
-    }
-    renderEditor(
-      <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
-    )
-    const dupBtn = screen.getByLabelText("Duplicate column")
-    fireEvent.click(dupBtn)
-    const dupCall = onUpdate.mock.calls.find(
-      (c: unknown[]) => Array.isArray(c[1]) && (c[1] as unknown[]).length === 2
-    )
-    expect(dupCall).toBeTruthy()
-    const factors = dupCall![1] as Record<string, unknown>[]
-    expect(factors).toHaveLength(2)
-    expect(factors[1].column).toBe("")
-    expect(factors[1].outputColumn).toBe("")
-    expect(factors[1].banding).toBe("continuous")
-    expect(factors[1].default).toBe("other")
-  })
-
-  // ─── Feature 7: Accessibility — ARIA tab roles ────────────────
-
-  it("tab container has role='tablist' when tabs are visible", () => {
-    const config = {
-      factors: [{ banding: "continuous", column: "age", outputColumn: "age_band", rules: [] }],
-    }
-    renderEditor(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
-    )
-    expect(screen.getByRole("tablist")).toBeTruthy()
-  })
-
-  it("tabs have role='tab' and aria-selected", () => {
+  it("offers no duplicate action on a factor row, only remove", () => {
+    const rules = [{ boundary: "10", label: "young" }]
     const config = {
       factors: [
-        { banding: "continuous", column: "age", outputColumn: "age_band", rules: [] },
-        { banding: "categorical", column: "region", outputColumn: "region_group", rules: [] },
+        { banding: "breakpoints", column: "age", outputColumn: "age_band", rules },
+        { banding: "breakpoints", column: "bonus", outputColumn: "bonus_band", rules },
       ],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
-    const tabs = screen.getAllByRole("tab")
-    expect(tabs.length).toBe(2)
-    expect(tabs[0].getAttribute("aria-selected")).toBe("true")
-    expect(tabs[1].getAttribute("aria-selected")).toBe("false")
+    const row = rowOf("age_band").parentElement as HTMLElement
+    expect(within(row).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual([
+      "age_band complete",
+      "Remove age_band column",
+    ])
+    // Removing is shown as a bin, not a cross.
+    const remove = within(row).getByRole("button", { name: "Remove age_band column" })
+    expect(remove.querySelector("svg[class*='trash']")).not.toBeNull()
+    expect(remove.querySelector("svg[class*='lucide-x']")).toBeNull()
   })
 
-  it("tabpanel has role='tabpanel' when factor is configured", () => {
+  // ─── Feature 7: Accessibility ─────────────────────────────────
+
+  it("roves focus through the factor rows with Up/Down, selecting as it goes", () => {
     const config = {
-      factors: [{ banding: "continuous", column: "age", outputColumn: "age_band", rules: [] }],
+      factors: [
+        { banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] },
+        { banding: "categorical", column: "region", outputColumn: "region_group", rules: [] },
+      ],
     }
+    const onUpdate = vi.fn()
     renderEditor(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
+      <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
     )
-    expect(screen.getByRole("tabpanel")).toBeTruthy()
-  })
-
-  it("no tabpanel when single unconfigured factor (no dangling ARIA refs)", () => {
-    renderEditor(
-      <BandingEditor config={{}} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
-    )
-    // No tabpanel should exist when there are no tabs
-    expect(screen.queryByRole("tabpanel")).toBeNull()
+    expect(rowOf("age_band")).toHaveAttribute("tabindex", "0")
+    expect(rowOf("region_group")).toHaveAttribute("tabindex", "-1")
+    fireEvent.keyDown(rowOf("age_band"), { key: "ArrowDown" })
+    expect(rowOf("region_group")).toHaveAttribute("aria-pressed", "true")
+    // Selecting is not an edit.
+    expect(onUpdate).not.toHaveBeenCalled()
   })
 
   // ─── Feature 8: Match counts + unmatched counter ──────────────
 
-  it("gives a repeated categorical value to the last rule, as the remap does", () => {
-    // Execution builds one remap in rule order, so the later rule for the same
-    // value is the one whose assignment is written; a rule with no assignment
-    // is not in the remap at all.
-    const config = {
-      factors: [{
-        banding: "categorical",
-        column: "region",
-        outputColumn: "region_group",
-        rules: [
-          { value: "London", assignment: "South" },
-          { value: "London", assignment: "Capital" },
-          { value: "Leeds", assignment: "" },
-        ],
-      }],
-    }
-    const previewRows = [{ region: "London" }, { region: "Leeds" }, { region: null }]
-    renderEditor(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" previewRows={previewRows} />,
-    )
-    const counts = Array.from(document.querySelectorAll("td"))
-      .map((cell) => cell.textContent?.trim() ?? "")
-      .filter((text) => /^\d+$/.test(text))
-    expect(counts.slice(0, 3)).toEqual(["0", "1", "0"])
-  })
-
-  it("counts a sampled row once however many rules would match it", () => {
-    // Execution's chain stops at the first match, so overlapping rules share
-    // the rows rather than each claiming them: counting per rule independently
-    // used to report more matches than there were rows, and drive the
-    // unmatched count negative.
-    const config = {
-      factors: [{
-        banding: "continuous",
-        column: "premium",
-        outputColumn: "premium_band",
-        rules: [
-          { op1: ">", val1: "0", assignment: "positive" },
-          { op1: ">", val1: "5", assignment: "big" },
-        ],
-      }],
-    }
-    const previewRows = [{ premium: 10 }, { premium: 20 }]
-    renderEditor(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" previewRows={previewRows} />,
-    )
-    // Both rows are claimed by the first rule; the second claims none, and
-    // nothing is left over — a row counted twice would have made this "-2".
-    const counts = Array.from(document.querySelectorAll("td"))
-      .map((cell) => cell.textContent?.trim() ?? "")
-      .filter((text) => /^\d+$/.test(text))
-    expect(counts.slice(0, 2)).toEqual(["2", "0"])
-    expect(document.body.textContent).toContain("0 of 2 rows")
-  })
-
-  it("match counts computed from previewRows for categorical", () => {
-    const config = {
-      factors: [{
-        banding: "categorical",
-        column: "region",
-        outputColumn: "region_group",
-        rules: [
-          { value: "London", assignment: "South" },
-          { value: "Manchester", assignment: "North" },
-        ],
-      }],
-    }
+  it.each([
+    ["categorical", {
+      banding: "categorical",
+      column: "region",
+      outputColumn: "region_group",
+      rules: [
+        { value: "London", assignment: "South" },
+        { value: "Manchester", assignment: "North" },
+      ],
+    }],
+    ["breakpoints", {
+      banding: "breakpoints",
+      column: "age",
+      outputColumn: "age_band",
+      rules: [
+        { boundary: "30", label: "young" },
+        { boundary: "", label: "older" },
+      ],
+    }],
+  ])("never shows counts, a total or a histogram from the preview rows (%s)", (_mode, factor) => {
     const previewRows = [
-      { region: "London" },
-      { region: "London" },
-      { region: "Manchester" },
-      { region: "Birmingham" },
+      { region: "London", age: 20 },
+      { region: "London", age: 40 },
+      { region: "Birmingham", age: 60 },
     ]
     renderEditor(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" previewRows={previewRows} />,
+      <BandingEditor config={{ factors: [factor] }} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" previewRows={previewRows} />,
     )
-    const allText = document.body.textContent || ""
-    expect(allText).toContain("1 of 4")
-  })
-
-  it("unmatched counter shows next to default", () => {
-    const config = {
-      factors: [{
-        banding: "categorical",
-        column: "region",
-        outputColumn: "region_group",
-        rules: [{ value: "London", assignment: "South" }],
-      }],
-    }
-    const previewRows = [
-      { region: "London" },
-      { region: "Manchester" },
-    ]
-    renderEditor(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" previewRows={previewRows} />,
+    expect(document.body.textContent).not.toMatch(/of 3 rows/)
+    expect(screen.queryByTestId("banding-histogram")).toBeNull()
+    const numericCells = Array.from(document.querySelectorAll("td")).filter((cell) =>
+      /^\d+$/.test(cell.textContent?.trim() ?? ""),
     )
-    const allText = document.body.textContent || ""
-    expect(allText).toContain("1 of 2")
+    expect(numericCells).toEqual([])
+    const grid = screen.queryByTestId("breakpoint-grid")
+    if (grid) expect(grid.getAttribute("data-match-counts")).toBe("null")
   })
 
   // ─── Feature 9: Validation warnings ───────────────────────────
 
-  it("validation warnings display for overlapping rules", () => {
+  it("warns about a categorical value named by more than one rule", () => {
     const config = {
       factors: [{
-        banding: "continuous",
-        column: "age",
-        outputColumn: "age_band",
+        banding: "categorical",
+        column: "region",
+        outputColumn: "region_group",
         rules: [
-          { op1: "<=", val1: "15", op2: "", val2: "", assignment: "A" },
-          { op1: ">=", val1: "10", op2: "<=", val2: "20", assignment: "B" },
+          { value: "London", assignment: "South" },
+          { value: "Leeds", assignment: "North" },
+          { value: "London", assignment: "Capital" },
         ],
       }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
-    const allText = document.body.textContent || ""
-    expect(allText).toContain("overlap")
+    expect(screen.getByText('Duplicate value "London" in rules 1, 3')).toBeInTheDocument()
   })
 
-  it("validation warnings display for gaps", () => {
-    const config = {
-      factors: [{
-        banding: "continuous",
-        column: "age",
-        outputColumn: "age_band",
-        rules: [
-          { op1: "<", val1: "10", op2: "", val2: "", assignment: "A" },
-          { op1: ">", val1: "20", op2: "", val2: "", assignment: "B" },
-        ],
-      }],
-    }
-    renderEditor(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
-    )
-    const allText = document.body.textContent || ""
-    expect(allText.toLowerCase()).toContain("gap")
-  })
-
-  // ─── Feature 13: Tab overflow -> horizontal scroll ─────────────
-
-  it("tab bar uses horizontal scroll not wrap", () => {
-    const config = {
-      factors: [{ banding: "continuous", column: "age", outputColumn: "age_band", rules: [] }],
-    }
-    renderEditor(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
-    )
-    const tablist = screen.getByRole("tablist")
-    expect(tablist.className).toContain("overflow-x-auto")
-    expect(tablist.className).toContain("flex-nowrap")
-    expect(tablist.className).not.toContain("flex-wrap")
-  })
 
   // ─── Feature 14: Generate bands — prominent empty state ───────
 
@@ -777,6 +801,10 @@ describe("BandingEditor", () => {
     )
     fireEvent.click(screen.getByText("Generate even bands"))
     expect(screen.getByTestId("generate-bands-dialog")).toBeTruthy()
+    // The options take the prompt's place rather than opening below it.
+    expect(screen.queryByText("No breakpoints yet.")).toBeNull()
+    fireEvent.click(screen.getByText("Cancel"))
+    expect(screen.getByText("No breakpoints yet.")).toBeInTheDocument()
   })
 
   it("generate bands dialog opens from button when breakpoints exist", () => {
@@ -794,12 +822,41 @@ describe("BandingEditor", () => {
     const genBtn = screen.getByText("Generate")
     expect(genBtn).toBeTruthy()
     fireEvent.click(genBtn)
-    expect(screen.getByTestId("generate-bands-dialog")).toBeTruthy()
+    const dialog = screen.getByTestId("generate-bands-dialog")
+    // The options open under the button, above the breakpoints table.
+    const following = (a: Node, b: Node) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(following(genBtn, dialog)).toBe(true)
+    expect(following(dialog, screen.getByTestId("breakpoint-grid"))).toBe(true)
+  })
+
+  it("starts Generate from the settings the field's breakpoints were generated with", () => {
+    const generated = {
+      factors: [{
+        banding: "breakpoints",
+        column: "premium",
+        outputColumn: "premium_band",
+        rules: [
+          { boundary: "5200", label: "4000–5200" },
+          { boundary: "6400", label: "5201–6400" },
+          { boundary: "7000", label: "6401–7000" },
+        ],
+      }],
+    }
+    renderEditor(
+      <BandingEditor config={generated} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
+    )
+    fireEvent.click(screen.getByText("Generate"))
+    expect(JSON.parse(screen.getByTestId("generate-bands-dialog").getAttribute("data-initial")!)).toEqual({
+      start: 4000,
+      end: 7000,
+      step: 1200,
+    })
   })
 
   // ─── Feature 11: CategoricalValuePicker ───────────────────────
 
-  it("CategoricalValuePicker shown when categorical with previewRows", () => {
+  it("offers the preview's values to pick from, without counts", () => {
     const config = {
       factors: [{
         banding: "categorical",
@@ -809,75 +866,31 @@ describe("BandingEditor", () => {
       }],
     }
     const previewRows = [
-      { region: "London" },
       { region: "Manchester" },
+      { region: "London" },
       { region: "London" },
     ]
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" previewRows={previewRows} />,
     )
-    expect(screen.getByTestId("categorical-value-picker")).toBeTruthy()
+    expect(JSON.parse(screen.getByTestId("categorical-value-picker").getAttribute("data-values")!)).toEqual([
+      { value: "London" },
+      { value: "Manchester" },
+    ])
   })
 
   // ─── Feature 10: Histogram ────────────────────────────────────
 
-  it("histogram shown for breakpoints mode with numeric data", () => {
-    const config = {
-      factors: [{
-        banding: "breakpoints",
-        column: "age",
-        outputColumn: "age_band",
-        rules: [{ boundary: "25", label: "young" }],
-      }],
-    }
-    const previewRows = [
-      { age: 20 },
-      { age: 30 },
-      { age: 40 },
-    ]
-    renderEditor(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" previewRows={previewRows} />,
-    )
-    expect(screen.getByTestId("banding-histogram")).toBeTruthy()
-  })
-
   // ─── Feature: breakpoints match counts ──────────────────────────
-
-  it("match counts computed from previewRows for breakpoints mode", () => {
-    const config = {
-      factors: [{
-        banding: "breakpoints",
-        column: "age",
-        outputColumn: "age_band",
-        rules: [
-          { boundary: "25", label: "young" },
-          { boundary: "65", label: "mid" },
-        ],
-        rightClosed: true,
-      }],
-    }
-    const previewRows = [
-      { age: 20 },  // <=25 -> young
-      { age: 25 },  // <=25 -> young
-      { age: 30 },  // >25 and <=65 -> mid
-      { age: 70 },  // >65 -> unmatched (no catch-all, goes to default)
-    ]
-    renderEditor(
-      <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" previewRows={previewRows} />,
-    )
-    // 3 matched (young: 2, mid: 1), 1 unmatched (age 70)
-    const allText = document.body.textContent || ""
-    expect(allText).toContain("1 of 4")
-  })
 
   // ─── Feature 15: onAddRule wiring ─────────────────────────────
 
-  it("passes onAddRule to BandingRulesGrid for continuous mode", () => {
+  it("passes onAddRule to BandingRulesGrid for categorical mode", () => {
     const config = {
       factors: [{
-        banding: "continuous",
-        column: "age",
-        outputColumn: "age_band",
+        banding: "categorical",
+        column: "region",
+        outputColumn: "region_group",
         rules: [],
       }],
     }
@@ -917,7 +930,7 @@ describe("BandingEditor", () => {
     const onUpdate = vi.fn()
     const config = {
       factors: [{
-        banding: "continuous",
+        banding: "breakpoints",
         column: "age",
         outputColumn: "age_band",
         rules: [],
@@ -942,7 +955,7 @@ describe("BandingEditor", () => {
 
   it("Input Column label is linked to its input via htmlFor", () => {
     const config = {
-      factors: [{ banding: "continuous", column: "age", outputColumn: "age_band", rules: [] }],
+      factors: [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
@@ -953,7 +966,7 @@ describe("BandingEditor", () => {
 
   it("Output Column label is linked to its input via htmlFor", () => {
     const config = {
-      factors: [{ banding: "continuous", column: "age", outputColumn: "age_band", rules: [] }],
+      factors: [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
@@ -964,7 +977,7 @@ describe("BandingEditor", () => {
 
   it("Add column button has aria-label", () => {
     const config = {
-      factors: [{ banding: "continuous", column: "age", outputColumn: "age_band", rules: [] }],
+      factors: [{ banding: "breakpoints", column: "age", outputColumn: "age_band", rules: [] }],
     }
     renderEditor(
       <BandingEditor config={config} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
@@ -972,48 +985,17 @@ describe("BandingEditor", () => {
     expect(screen.getByLabelText("Add column")).toBeTruthy()
   })
 
-  // ─── Feature 19: Broken ARIA ref when tabs hidden ─────────────────
+  // ─── Feature 19: No dangling ARIA references ─────────────────────
 
-  it("no broken tabpanel aria-labelledby when tabs are hidden", () => {
+  it("labels nothing by an element that does not exist", () => {
     renderEditor(
       <BandingEditor config={{}} onUpdate={vi.fn()} inputSources={[]} accentColor="#22d3ee" />,
     )
-    // When tabs are hidden (single unconfigured), no tabpanel with a dangling aria-labelledby should exist
-    const tabpanels = screen.queryAllByRole("tabpanel")
-    for (const tp of tabpanels) {
-      const labelledBy = tp.getAttribute("aria-labelledby")
-      if (labelledBy) {
-        expect(document.getElementById(labelledBy)).toBeTruthy()
-      }
+    for (const element of Array.from(document.querySelectorAll("[aria-labelledby]"))) {
+      expect(document.getElementById(element.getAttribute("aria-labelledby")!)).toBeTruthy()
     }
   })
 
-  // ─── Feature 20: Duplicate deep copies rules ─────────────────────
-
-  it("duplicate factor deep copies rules (not shared references)", () => {
-    const onUpdate = vi.fn()
-    const config = {
-      factors: [{
-        banding: "continuous",
-        column: "age",
-        outputColumn: "age_band",
-        rules: [{ op1: ">", val1: "10", op2: "", val2: "", assignment: "young" }],
-      }],
-    }
-    renderEditor(
-      <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} accentColor="#22d3ee" />,
-    )
-    fireEvent.click(screen.getByLabelText("Duplicate column"))
-    const dupCall = onUpdate.mock.calls.find(
-      (c: unknown[]) => Array.isArray(c[1]) && (c[1] as unknown[]).length === 2
-    )
-    const factors = dupCall![1] as Record<string, unknown>[]
-    // Rules should be deeply independent objects
-    expect(factors[0].rules).not.toBe(factors[1].rules)
-    const rules0 = factors[0].rules as Record<string, unknown>[]
-    const rules1 = factors[1].rules as Record<string, unknown>[]
-    expect(rules0[0]).not.toBe(rules1[0])
-  })
 
   // ─── Feature 21: Categorical value picker not shown when no previewRows ──
 
@@ -1066,5 +1048,108 @@ describe("BandingEditor", () => {
     )
     // The "N of M rows" counter should not appear when there are no previewRows
     expect(screen.queryByText(/\d+ of \d+ rows/)).toBeNull()
+  })
+})
+
+describe("BandingEditor on a date column", () => {
+  const DATE_RULES = [
+    { boundary: "2024-01-31", label: "January" },
+    { boundary: "2024-02-29", label: "February" },
+    { boundary: "", label: "Later" },
+  ]
+  const dateFactor = (column: string, rules: { boundary: string; label: string }[]) => ({
+    factors: [{ banding: "breakpoints", column, outputColumn: `${column}_band`, rules, rightClosed: true }],
+  })
+
+  it.each([
+    ["start_date", "Date"],
+    ["quoted_at", "Datetime(time_unit='us', time_zone='Europe/London')"],
+  ])("offers Numeric for a %s column and selects it when that column is chosen", (column, dtype) => {
+    const onUpdate = vi.fn()
+    const columns = [
+      { name: "region", dtype: "String" },
+      { name: column, dtype },
+    ]
+    const config = {
+      factors: [{ banding: "categorical", column: "region", outputColumn: "region_band", rules: [] }],
+    }
+    const { rerender } = renderEditor(
+      <BandingEditor config={config} onUpdate={onUpdate} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />,
+    )
+    expect(screen.getByText("Numeric").closest("button")).toBeDisabled()
+
+    fireEvent.change(screen.getByLabelText("Input Column"), { target: { value: column } })
+    const factors = onUpdate.mock.calls[0][1]
+    expect(factors[0]).toMatchObject({ column, banding: "breakpoints" })
+
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]} submodels={{}} preamble="">
+        <BandingEditor config={{ factors }} onUpdate={onUpdate} inputSources={[]} upstreamColumns={columns} accentColor="#22d3ee" />
+      </GraphProvider>,
+    )
+    const numeric = screen.getByText("Numeric").closest("button")!
+    expect(numeric).toBeEnabled()
+    expect(numeric).toHaveAttribute("aria-checked", "true")
+  })
+
+  it("reads a factor whose breakpoints are dates as dates when its column's dtype is unknown", () => {
+    renderEditor(
+      <BandingEditor
+        config={dateFactor("start_date", DATE_RULES)}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        accentColor="#22d3ee"
+        previewRows={[{ start_date: "2024-01-15" }, { start_date: "2024-02-15" }]}
+      />,
+    )
+    expect(screen.getByTestId("breakpoint-grid")).toHaveAttribute("data-temporal", "true")
+  })
+
+  it("starts Generate from the calendar step the date breakpoints were made with", () => {
+    renderEditor(
+      <BandingEditor
+        config={dateFactor("start_date", [
+          { boundary: "2024-01-31", label: "2024-01-01–2024-01-31" },
+          { boundary: "2024-02-29", label: "2024-02-01–2024-02-29" },
+          { boundary: "2024-03-31", label: "2024-03-01–2024-03-31" },
+        ])}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        upstreamColumns={[{ name: "start_date", dtype: "Date" }]}
+        accentColor="#22d3ee"
+      />,
+    )
+    fireEvent.click(screen.getByText("Generate"))
+    const dialog = screen.getByTestId("generate-bands-dialog")
+    expect(dialog).toHaveAttribute("data-temporal", "true")
+    expect(JSON.parse(dialog.getAttribute("data-initial")!)).toEqual({
+      start: "2024-01-01",
+      end: "2024-03-31",
+      step: 1,
+      unit: "months",
+    })
+  })
+
+  it("offers the data's first and last dates to Generate on a date column without breakpoints", () => {
+    renderEditor(
+      <BandingEditor
+        config={dateFactor("quoted_at", [])}
+        onUpdate={vi.fn()}
+        inputSources={[]}
+        upstreamColumns={[{ name: "quoted_at", dtype: "Datetime(time_unit='us', time_zone='Europe/Paris')" }]}
+        accentColor="#22d3ee"
+        previewRows={[
+          { quoted_at: "2024-03-20T23:30:00+01:00" },
+          { quoted_at: "2024-01-05T00:15:00+01:00" },
+          { quoted_at: null },
+        ]}
+      />,
+    )
+    fireEvent.click(screen.getByText("Generate even bands"))
+    const dialog = screen.getByTestId("generate-bands-dialog")
+    expect(dialog).toHaveAttribute("data-temporal", "true")
+    expect(JSON.parse(dialog.getAttribute("data-min")!)).toBe("2024-01-05")
+    expect(JSON.parse(dialog.getAttribute("data-max")!)).toBe("2024-03-20")
+    expect(JSON.parse(dialog.getAttribute("data-initial")!)).toBeNull()
   })
 })

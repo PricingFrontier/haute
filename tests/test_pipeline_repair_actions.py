@@ -425,10 +425,66 @@ def test_recover_retains_valid_settings_and_reports_outcomes(tmp_path):
     assert "code" not in written
 
 
+def test_recover_regenerates_a_stale_contract_annotation(tmp_path):
+    """A factor edited back to a draft leaves the saved annotation promising a
+    column the node no longer creates, so the node cannot load. Recover rebuilds
+    the node from its config file: the annotation is derived from the recovered
+    settings rather than carried forward, and no stale copy is left in the sidecar."""
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
+
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        "from pathlib import Path as _HautePath\n\nimport polars as pl\nimport haute\n\n"
+        'pipeline = haute.Pipeline("demo")\n\n'
+        "_HAUTE_CONFIG_BASE = _HautePath(__file__).resolve().parent\n\n\n"
+        '@pipeline.polars(contract="opaque")\n'
+        "def source() -> pl.LazyFrame:\n"
+        '    df = pl.LazyFrame({"cover": ["comp"]})\n    return df\n\n\n'
+        '@pipeline.banding(config="config/banding/band.json", '
+        "contract={'inputs': ['cover'], 'outputs': ['cover_band']})\n"
+        "def band(source: pl.LazyFrame) -> pl.LazyFrame:\n"
+        '    """"""\n'
+        "    from haute.graph_utils import apply_banding_from_config\n"
+        "    base = _HAUTE_CONFIG_BASE\n"
+        '    df = apply_banding_from_config(source, "config/banding/band.json", base_dir=base)\n'
+        "    return df\n\n\n"
+        'pipeline.connect("source", "band")\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    draft = {
+        "banding": "categorical",
+        "column": "cover",
+        "outputColumn": "cover_band",
+        "rules": {},
+        "default": None,
+    }
+    sidecar = tmp_path / "config" / "banding" / "band.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(
+        json.dumps({"factors": [draft], "contract": {"inputs": ["age"], "outputs": ["age_band"]}})
+    )
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    target = next(node for node in document.nodes if node.authored_id == "band")
+    assert target.availability == "unavailable"
+
+    request = _request(tmp_path, "band", "recover")
+    plan = build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
+    assert plan.response.repair_kind == "recover_node"
+    result = _apply(tmp_path, request)
+
+    assert result.document.load_status == "ready"
+    node = next(item for item in result.document.nodes if item.authored_id == "band")
+    assert (node.config or {})["contract"] == {"inputs": [], "outputs": []}
+    assert json.loads(sidecar.read_text()) == {"factors": [draft]}
+
+
 def test_recover_reports_what_it_could_not_fix_as_completeness(tmp_path):
     """The worked example: a Scenario Expander sidecar from before the stepCount rename
-    (`steps: 11`, no `stepCount`). The recover applies, and the engine's own issue
-    reaches the plan as completeness instead of being dropped."""
+    (`steps: 11`, no `stepCount`) that has also lost its `min_value`. The recover
+    applies: `stepCount` takes the palette default, and the engine's issue about the
+    range, which has no default, reaches the plan as completeness instead of being
+    dropped."""
     from haute._config_io import collect_node_configs
     from haute._pipeline_repair import build_recover_unavailable_node_plan
     from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
@@ -472,6 +528,7 @@ def test_recover_reports_what_it_could_not_fix_as_completeness(tmp_path):
     sidecar = tmp_path / "config/expander/grid.json"
     stale = json.loads(sidecar.read_text())
     del stale["stepCount"]
+    del stale["min_value"]
     stale["steps"] = 11
     sidecar.write_text(json.dumps(stale))
     document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
@@ -485,11 +542,15 @@ def test_recover_reports_what_it_could_not_fix_as_completeness(tmp_path):
         ("/", "incomplete_range", "Scenario range and stepCount are required.")
     ]
     assert all(entry.element_id == target.recovery_id for entry in plan.response.completeness)
+    outcomes = {(change.path, change.outcome) for change in plan.response.field_changes}
+    assert ("/stepCount", "defaulted") in outcomes
     result = _apply(tmp_path, request)
     assert [entry.code for entry in result.completeness] == ["incomplete_range"]
     applied = next(node for node in result.document.nodes if node.authored_id == "grid")
     assert applied.availability == "ready"
-    assert "stepCount" not in json.loads(sidecar.read_text())
+    written = json.loads(sidecar.read_text())
+    assert written["stepCount"] == 21
+    assert "min_value" not in written
 
 
 def test_recover_empty_locator_applies_as_incomplete(tmp_path):
@@ -608,7 +669,7 @@ def test_recover_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path):
             data=NodeData(label="sink", nodeType=NodeType.DATA_OUTPUT, config=sink_config),
         ),
         source_names=["source_a"],
-        derive_contract=False,
+        contract_source="declared",
     )
     (tmp_path / "main.py").write_text(
         'import haute\nimport polars as pl\npipeline=haute.Pipeline("demo")\n'

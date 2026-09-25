@@ -309,7 +309,7 @@ class TestBuildOutput:
 class TestBuildBanding:
     """Tests for the banding node builder."""
 
-    def test_continuous_single_factor(self) -> None:
+    def test_breakpoints_single_factor(self) -> None:
         _, fn, is_source = _build(
             "banding",
             {
@@ -317,24 +317,13 @@ class TestBuildBanding:
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "rules": [
-                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 25, "assignment": "young"},
-                            {
-                                "op1": ">=",
-                                "val1": 25,
-                                "op2": "<",
-                                "val2": 65,
-                                "assignment": "adult",
-                            },
-                            {
-                                "op1": ">=",
-                                "val1": 65,
-                                "op2": "<=",
-                                "val2": 200,
-                                "assignment": "senior",
-                            },
+                            {"boundary": "25", "label": "young"},
+                            {"boundary": "65", "label": "adult"},
+                            {"boundary": "", "label": "senior"},
                         ],
+                        "rightClosed": False,
                     }
                 ],
             },
@@ -377,23 +366,12 @@ class TestBuildBanding:
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "rules": [
-                            {
-                                "op1": ">=",
-                                "val1": 0,
-                                "op2": "<",
-                                "val2": 50,
-                                "assignment": "under50",
-                            },
-                            {
-                                "op1": ">=",
-                                "val1": 50,
-                                "op2": "<=",
-                                "val2": 200,
-                                "assignment": "50plus",
-                            },
+                            {"boundary": "50", "label": "under50"},
+                            {"boundary": "", "label": "50plus"},
                         ],
+                        "rightClosed": False,
                     },
                     {
                         "column": "region",
@@ -440,10 +418,8 @@ class TestBuildBanding:
                     {
                         "column": "",
                         "outputColumn": "out",
-                        "banding": "continuous",
-                        "rules": [
-                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 10, "assignment": "low"},
-                        ],
+                        "banding": "breakpoints",
+                        "rules": [{"boundary": "10", "label": "low"}],
                     }
                 ],
             },
@@ -462,7 +438,7 @@ class TestBuildBanding:
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "rules": [],
                     }
                 ],
@@ -473,7 +449,7 @@ class TestBuildBanding:
         result = fn(input_df).collect()
         assert "age_band" not in result.columns
 
-    def test_continuous_with_default(self) -> None:
+    def test_breakpoints_with_default(self) -> None:
         _, fn, _ = _build(
             "banding",
             {
@@ -481,11 +457,9 @@ class TestBuildBanding:
                     {
                         "column": "age",
                         "outputColumn": "age_band",
-                        "banding": "continuous",
+                        "banding": "breakpoints",
                         "default": "unknown",
-                        "rules": [
-                            {"op1": ">=", "val1": 0, "op2": "<", "val2": 25, "assignment": "young"},
-                        ],
+                        "rules": [{"boundary": "25", "label": "young"}],
                     }
                 ],
             },

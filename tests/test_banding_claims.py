@@ -105,24 +105,20 @@ def test_categorical_claims_match_the_text_each_dtype_casts_to(
     )
 
 
-def test_a_continuous_rule_with_no_assignment_claims_nothing() -> None:
+def test_a_breakpoint_with_no_label_claims_nothing() -> None:
     rules = [
-        {"op1": ">", "val1": "0", "op2": "<=", "val2": "10", "assignment": ""},
-        {"op1": ">", "val1": "5", "assignment": "GT5"},
+        {"boundary": "10", "label": ""},
+        {"boundary": "", "label": "GT10"},
     ]
-    # Execution never writes an empty assignment, so the row it would have
-    # covered is defaulted and unclaimed rather than claimed by that rule.
-    assert _claims([1, 7, 12], pl.Float64, "continuous", rules) == ([0, 2], 1)
+    # Execution never writes an empty label, so the rows its interval would
+    # have covered are defaulted and unclaimed rather than claimed by that rule.
+    assert _claims([1, 7, 12], pl.Float64, "breakpoints", rules) == ([0, 1], 2)
 
 
 def test_rules_execution_rejects_are_rejected_with_execution_s_message() -> None:
-    with pytest.raises(ValueError, match="unsupported operator"):
+    with pytest.raises(ValueError, match="unreadable boundary"):
         banding_rule_claim_expr(
-            pl.col("x"), pl.Float64, "continuous", [{"op1": "~", "val1": "1", "assignment": "A"}]
-        )
-    with pytest.raises(ValueError, match="non-numeric threshold"):
-        banding_rule_claim_expr(
-            pl.col("x"), pl.Float64, "continuous", [{"op1": ">", "val1": "x", "assignment": "A"}]
+            pl.col("x"), pl.Float64, "breakpoints", [{"boundary": "x", "label": "A"}]
         )
     with pytest.raises(ValueError, match="Duplicate breakpoint boundary"):
         banding_rule_claim_expr(
@@ -139,27 +135,35 @@ def test_rules_execution_rejects_are_rejected_with_execution_s_message() -> None
             [{"value": "", "assignment": ""}],
             output_column="band",
         )
-    with pytest.raises(ValueError, match="has no usable continuous rule"):
+    with pytest.raises(ValueError, match="has no usable breakpoints rule"):
         banding_rule_claim_expr(
             pl.col("x"),
             pl.Float64,
-            "continuous",
-            [{"op1": ">", "val1": "1", "assignment": ""}],
+            "breakpoints",
+            [{"boundary": "1", "label": ""}],
             output_column="band",
         )
-    with pytest.raises(ValueError, match="unsupported banding type"):
-        banding_rule_claim_expr(pl.col("x"), pl.Float64, "sideways", [{"value": "1"}])
+
+
+@pytest.mark.parametrize("mode", ["continuous", "", "sideways"])
+def test_a_claim_needs_one_of_the_two_banding_types(mode: str) -> None:
+    # There is no default type, so a missing type is refused like an unknown one.
+    with pytest.raises(
+        ValueError,
+        match=f"unsupported banding type {mode!r}; expected one of: breakpoints, categorical",
+    ):
+        banding_rule_claim_expr(pl.col("x"), pl.Float64, mode, [])
 
 
 def test_a_factor_with_no_rules_claims_nothing_rather_than_failing() -> None:
     # An unconfigured factor is a documented no-op in execution, so asking for
     # its claims answers "nothing claimed" instead of raising.
-    assert _claims([1, 2], pl.Float64, "continuous", []) == ([], 2)
+    assert _claims([1, 2], pl.Float64, "breakpoints", []) == ([], 2)
 
 
 # --------------------------------------------------------------- property
 
-_MODES = ("breakpoints", "categorical", "continuous")
+_MODES = ("breakpoints", "categorical")
 
 
 def _generated_case(seed: int) -> tuple[str, list[Any], list[dict[str, Any]], str | None, bool]:
@@ -187,23 +191,13 @@ def _generated_case(seed: int) -> tuple[str, list[Any], list[dict[str, Any]], st
                     "assignment": rng.choice(labels),
                 }
             )
-        elif mode == "breakpoints":
+        else:
             rules.append(
                 {
                     "boundary": rng.choice(["", "0", "5", "10", "20"]),
                     "label": rng.choice(labels),
                 }
             )
-        else:
-            rule: dict[str, Any] = {
-                "op1": rng.choice([">", ">=", "<", "<=", "="]),
-                "val1": str(rng.randint(-5, 25)),
-                "assignment": rng.choice(labels),
-            }
-            if rng.random() < 0.5:
-                rule["op2"] = rng.choice(["<", "<="])
-                rule["val2"] = str(rng.randint(-5, 25))
-            rules.append(rule)
     default = rng.choice([None, "D", "a"])
     return mode, values, rules, default, rng.random() < 0.5
 
@@ -283,3 +277,16 @@ def test_a_claim_is_the_rule_whose_assignment_execution_writes(seed: int) -> Non
         else:
             expected = normalised[index].get("assignment") or normalised[index].get("label")
             assert output == str(expected)
+
+
+def test_date_breakpoints_claim_the_rows_execution_bands() -> None:
+    from datetime import date
+
+    rules = [
+        {"boundary": "2024-03-31", "label": "Q1"},
+        {"boundary": "", "label": "later"},
+        {"boundary": "2024-01-31", "label": "Jan"},
+    ]
+    values = [date(2024, 1, 15), date(2024, 2, 1), date(2024, 5, 1), None]
+    # Counts line up with the rules as written, not with the sorted intervals.
+    assert _claims(values, pl.Date, "breakpoints", rules) == ([1, 1, 1], 1)

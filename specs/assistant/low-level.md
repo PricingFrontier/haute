@@ -231,10 +231,7 @@ planner adds one response `output` node, a canonical JSON `outputMapping` for ex
 columns, and an edge from the recipe node in the same canonical batch. The standalone
 `response_output` recipe requires `source`, `output_name`, and `output_columns` and
 creates the same canonical mapping directly after the saved source. A bare output name or
-column list is a material ambiguity and fails recipe planning. A continuous-banding rule is
-a closed object requiring `op1` from `<`, `<=`, `>`, `>=`, `=`, or `==`; finite
-numeric `val1`; and a non-empty string `assignment`. The optional second bound is valid
-only when `op2` and finite numeric `val2` are both present. A categorical-banding rule
+column list is a material ambiguity and fails recipe planning. A categorical-banding rule
 contains exactly a non-null finite JSON scalar `value` and non-empty `assignment`. The
 rating-step recipe's provider-facing table contract is closed and positional: each
 table requires one to three unique ordered `factors`, an `output_column`, a finite numeric
@@ -265,9 +262,8 @@ material. It rejects every additional property. A pending recipe makes primitive
 `dry_run_graph_edits` return `recipe_plan_requires_handle`; an unknown or replaced handle returns
 `recipe_plan_not_found`. The live handle clears only after a successful dedicated
 dry-run. Neither tool writes. A conservative current-request recognizer suggests a recipe id only
-when exactly one explicit domain pattern matches: a band/banding term with a continuous,
-range, breakpoint, bucket, or comparison-operator cue maps to `continuous_banding`;
-categorical/discrete banding maps to `categorical_banding`; join maps to `reference_join`;
+when exactly one explicit domain pattern matches: categorical/discrete banding maps to
+`categorical_banding`; join maps to `reference_join`;
 and the phrase rating step maps to `rating_step`. An explicit request to build, create,
 author, or make a Parquet pipeline as a showcase of multiple node types maps to
 `parquet_showcase`; its showcase cue is `showcase`, `node types`, or the closed pair
@@ -1034,7 +1030,7 @@ fixture for route tests). The implemented coverage is:
   repeated-trial attribution, aggregation, redacted reports, and fail-closed
   qualification decisions.
 - **`tests/test_assistant_self_test.py`** — closed prompt-case loading and
-  selection plus a synthetic portfolio covering continuous and categorical banding,
+  selection plus a synthetic portfolio covering categorical banding,
   exact join roles, positional rating steps, Polars transforms, explicit mapped response
   outputs, file input/output graph authoring without sink execution, broad parquet showcase
   construction, material clarification for joins/rating/output mappings, prompt injection,

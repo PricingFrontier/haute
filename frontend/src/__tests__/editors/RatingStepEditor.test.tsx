@@ -40,10 +40,10 @@ function makeBandingNode(outputColumn: string, assignments: string[]): SimpleNod
       nodeType: "banding",
       config: {
         factors: [{
-          banding: "continuous",
+          banding: "categorical",
           column: outputColumn,
           outputColumn,
-          rules: assignments.map(a => ({ op1: ">", val1: "0", op2: "", val2: "", assignment: a })),
+          rules: assignments.map(a => ({ value: a, assignment: a })),
         }],
       },
     },
@@ -103,7 +103,7 @@ describe("RatingStepEditor", () => {
         {
           id: "banding_empty", data: {
             label: "Banding", description: "", nodeType: "banding", config: { factors: [
-              { banding: "continuous", outputColumn: "empty_one", rules: [] },
+              { banding: "breakpoints", outputColumn: "empty_one", rules: [] },
               { banding: "categorical", outputColumn: "empty_two", rules: [{}] },
               { banding: "breakpoints", outputColumn: "healthy", rules: [{ label: "Known" }] },
             ] },

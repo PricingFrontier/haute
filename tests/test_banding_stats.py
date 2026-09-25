@@ -171,7 +171,7 @@ def _build(client: TestClient, graph: dict[str, Any], *, refresh: bool = False) 
 
 def _factor(**updates: Any) -> dict[str, Any]:
     factor: dict[str, Any] = {
-        "banding": "continuous",
+        "banding": "breakpoints",
         "column": "premium",
         "outputColumn": "band",
         "rules": [],
@@ -622,17 +622,65 @@ def test_a_numeric_mode_on_a_column_it_cannot_compare_is_unprocessable(
     assert "cannot compare" in response.json()["detail"]
 
 
+def test_a_date_column_is_measured_in_days_since_1970(client: TestClient, project: Path) -> None:
+    from datetime import date
+
+    _write_source(
+        project,
+        pl.DataFrame({"premium": [date(2024, 1, 1), date(2024, 1, 6), date(2024, 1, 11), None]}),
+    )
+    factor = _factor(
+        rules=[{"boundary": "2024-01-06", "label": "early"}, {"boundary": "", "label": "late"}]
+    )
+    graph = _graph(project, [factor])
+
+    stats = _stats(client, graph, factor, histogram_bins=2)
+
+    # 2024-01-01 is day 19723 since 1970-01-01.
+    assert (stats["minimum"], stats["maximum"]) == (19723.0, 19733.0)
+    assert [(b["lower"], b["upper"], b["count"]) for b in stats["bins"]] == [
+        (19723.0, 19728.0, 1),
+        (19728.0, 19733.0, 2),
+    ]
+    # The counts compare dates, and "up to 2024-01-06" includes that day.
+    assert stats["rule_counts"] == [2, 1]
+    assert stats["unmatched_count"] == 1
+
+
 def test_rules_execution_would_refuse_are_refused_with_its_message(
     client: TestClient, project: Path
 ) -> None:
     _write_source(project, pl.DataFrame({"premium": [1.0]}))
-    factor = _factor(rules=[{"op1": "~", "val1": "1", "assignment": "A"}])
+    factor = _factor(rules=[{"boundary": "x", "label": "A"}])
     graph = _graph(project, [factor])
 
     response = _stats_response(client, graph, factor)
 
     assert response.status_code == 422
-    assert "unsupported operator" in response.json()["detail"]
+    assert "unreadable boundary" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "factor",
+    [
+        _factor(banding="continuous", rules=[{"op1": "<=", "val1": "1", "assignment": "A"}]),
+        {key: value for key, value in _factor().items() if key != "banding"},
+    ],
+    ids=["continuous", "missing"],
+)
+def test_a_factor_without_a_supported_banding_type_is_unprocessable(
+    client: TestClient, project: Path, factor: dict[str, Any]
+) -> None:
+    _write_source(project, pl.DataFrame({"premium": [1.0]}))
+    graph = _graph(project, [_factor()])
+
+    response = _stats_response(client, graph, factor)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        f"Banding has unsupported banding type {factor.get('banding', '')!r}; "
+        "expected one of: breakpoints, categorical"
+    )
 
 
 def test_invalid_consumer_wiring_is_a_400(client: TestClient, project: Path) -> None:
