@@ -11,6 +11,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import type { ReactElement } from "react"
 
+import { runNodeData } from "../../api/client"
+import { refreshNodeDataCache } from "../../hooks/useNodeDataCache"
 import BandingEditor from "../../panels/editors/BandingEditor"
 import { GraphProvider } from "../../panels/GraphContext"
 import useNodeDataStore from "../../stores/useNodeDataStore"
@@ -192,6 +194,7 @@ describe("BandingEditor statistics", () => {
     useSettingsStore.setState({ activeSource: "live" })
     mockGetBandingStats.mockReset()
     mockGetNodeDataPoint.mockReset()
+    vi.mocked(runNodeData).mockReset()
     mockGetNodeDataPoint.mockResolvedValue(point("current", DATA_VERSION))
     mockGetBandingStats.mockResolvedValue(stats())
   })
@@ -368,6 +371,34 @@ describe("BandingEditor statistics", () => {
     expect(screen.queryByText("Counting…")).toBeNull()
     const cells = Array.from(document.querySelectorAll("td")).map((cell) => cell.textContent?.trim() ?? "")
     expect(cells.filter((text) => /^\d+$/.test(text) || text === "…")).toEqual([])
+  })
+
+  it("re-reads its data point when the server finds the data gone, so Refresh caches it again", async () => {
+    // The snapshot went between reading the point and asking for counts.
+    mockGetBandingStats.mockImplementationOnce(async () => {
+      mockGetNodeDataPoint.mockResolvedValue(point("missing", null))
+      return stats({ status: "cache_required" })
+    })
+    vi.mocked(runNodeData).mockImplementation(async () => {
+      mockGetNodeDataPoint.mockResolvedValue(point("current", DATA_VERSION))
+      return { status: "completed", job_id: null, cached: false, message: "", point: point("current", DATA_VERSION) } as never
+    })
+
+    renderEditor(editor())
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+    expect(await screen.findByText("Not cached · Refresh this node to count all rows")).toBeInTheDocument()
+    await waitFor(() => expect(mockGetNodeDataPoint.mock.calls.length).toBeGreaterThan(1))
+
+    await act(async () => {
+      refreshNodeDataCache("banding_1")
+    })
+    expect(runNodeData).toHaveBeenCalledWith(expect.objectContaining({ node_id: "banding_1", refresh: false }))
+    await act(async () => {
+      vi.advanceTimersByTime(300)
+    })
+    expect(await screen.findByText("All rows · 1,000")).toBeInTheDocument()
   })
 
   it("never shows full-data counts for data that has moved on", async () => {

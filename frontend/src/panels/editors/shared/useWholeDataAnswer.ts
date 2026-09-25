@@ -7,6 +7,7 @@ import {
   captureDocumentExecutionFence,
   isDocumentExecutionFenceCurrent,
 } from "../../../stores/useDocumentStatusStore"
+import useNodeDataStore from "../../../stores/useNodeDataStore"
 import useSettingsStore from "../../../stores/useSettingsStore"
 import { buildGraph } from "../../../utils/buildGraph"
 import type { SimpleEdge, SimpleNode } from "../_shared"
@@ -70,6 +71,7 @@ export interface WholeDataAnswer<TResponse> {
   /**
    * The server answered that the data is not cached for this question, even
    * though this editor's point looked current: the point needs caching again.
+   * The answer also has the point read again, which then reports its state.
    */
   cacheRequired: boolean
   loading: boolean
@@ -158,6 +160,10 @@ export default function useWholeDataAnswer<TResponse extends WholeDataResponse>(
           ) return
           setAnswer({ identity: requestIdentity, subjectIdentity, value: response })
           setError({ identity: requestIdentity, value: null })
+          // The point looked current, but its data has gone or changed since it
+          // was read. Every consumer re-reads its point, so this one's state,
+          // and what its node's Refresh does, catch up with the server's.
+          if (response.status === "cache_required") useNodeDataStore.getState().bumpEpoch()
         })
         .catch((err: unknown) => {
           if (
