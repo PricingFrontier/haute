@@ -2137,8 +2137,16 @@ def test_a_row_bounding_step_between_a_model_score_and_its_capture_drains_nothin
     assert kinds == {"S": CaptureKind.MATERIALISING}
 
 
+@pytest.mark.parametrize(
+    ("post_code", "m2_kind"),
+    [
+        ("df = df.head(10)", CaptureKind.MODEL_SCORE),
+        # Its own sort already captures it as materialising: the kind does not matter.
+        ("df = df.head(10).sort('a')", CaptureKind.MATERIALISING),
+    ],
+)
 def test_a_captured_scorer_below_drains_the_scorer_above_despite_its_post_code_bound(
-    project: Path, store: NodeSnapshotStore
+    project: Path, store: NodeSnapshotStore, post_code: str, m2_kind: CaptureKind
 ) -> None:
     """A captured Model Score scores its whole input before its post-code runs.
 
@@ -2150,7 +2158,7 @@ def test_a_captured_scorer_below_drains_the_scorer_above_despite_its_post_code_b
         [
             ("src", NodeType.DATA_INPUT, _parquet(project / "quotes.parquet")),
             ("M1", NodeType.MODEL_SCORE, {}),
-            ("M2", NodeType.MODEL_SCORE, {"code": "df = df.head(10)"}),
+            ("M2", NodeType.MODEL_SCORE, {"code": post_code}),
             ("S", NodeType.POLARS, _code("df = M2.sort('a')")),
             ("Y", NodeType.POLARS, _code("df = S.with_columns(pl.lit(1).alias('one'))")),
         ],
@@ -2158,6 +2166,6 @@ def test_a_captured_scorer_below_drains_the_scorer_above_despite_its_post_code_b
     )
     assert _kinds(resolve_seed_plan(_preview(graph, "Y", source="batch"), store=store)) == {
         "S": CaptureKind.MATERIALISING,
-        "M2": CaptureKind.MODEL_SCORE,
+        "M2": m2_kind,
         "M1": CaptureKind.MODEL_SCORE,
     }

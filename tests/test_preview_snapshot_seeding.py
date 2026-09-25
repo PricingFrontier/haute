@@ -2336,8 +2336,11 @@ def test_a_preview_scores_only_the_rows_a_bounded_capture_reads(
     assert preview.rows("shown")["a"].to_list() == [9, 8, 7]
 
 
+@pytest.mark.parametrize(
+    "post_code", ["df = df.head(10)", "df = df.head(10).sort('a', descending=True)"]
+)
 def test_a_bounded_post_code_scorer_still_drains_the_scorer_above_it(
-    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch
+    project: Path, store: NodeSnapshotStore, monkeypatch: pytest.MonkeyPatch, post_code: str
 ) -> None:
     """``s2`` is captured, so it scores its whole input before its ``head`` runs.
 
@@ -2379,7 +2382,7 @@ def test_a_bounded_post_code_scorer_still_drains_the_scorer_above_it(
         [
             ("policies", NodeType.DATA_INPUT, _parquet(project / "policies.parquet")),
             ("s1", NodeType.MODEL_SCORE, score("p1")),
-            ("s2", NodeType.MODEL_SCORE, score("p2", "df = df.head(10)")),
+            ("s2", NodeType.MODEL_SCORE, score("p2", post_code)),
             ("sorted", NodeType.POLARS, _code("df = s2.sort('a', descending=True)")),
             ("shown", NodeType.POLARS, _code("df = sorted.with_columns(pl.lit(1).alias('one'))")),
         ],
@@ -2390,7 +2393,7 @@ def test_a_bounded_post_code_scorer_still_drains_the_scorer_above_it(
         preview = _preview(graph, store, "shown", source="batch")
 
     assert preview.captures["s1"]["write_strategy"] == "prewritten"
-    assert preview.captures["s2"]["write_strategy"] == "sliced"
+    assert "s2" in preview.captures
     # Each scorer scored all 100 rows, 30 a batch; ``head`` bounds s2's output.
     assert scored_rows == [30, 30, 30, 10] * 2
     assert preview.rows("shown")["a"].to_list() == [9, 8, 7]

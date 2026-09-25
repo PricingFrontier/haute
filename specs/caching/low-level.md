@@ -359,8 +359,8 @@ resulting plan.
   whose only costly call is unresolved are not captured. A batch Model Score (scenario not
   `live`) is captured as `model_score` when a capture below it drains its whole output: a node's
   output is drained when it is captured, or when a child whose code reads every input row has its
-  output drained. A captured Model Score reads every input row (it scores its whole input before
-  its post-processing code runs); other code reads every input row unless it calls a row-bounding
+  output drained. A captured batch Model Score, whatever its capture kind, reads every input row (it
+  scores its whole input before its post-processing code runs); other code reads every input row unless it calls a row-bounding
   method (`head`, `tail`, `limit`, `slice`, `first`, `last`, `sample`, `gather_every`) on any
   receiver, slices with a subscript (`df[:10]`), or its recompute facts leave a call unproven
   (`projection.code_bounds_rows`). The check is conservative: code that bounds rows only after

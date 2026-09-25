@@ -770,10 +770,11 @@ class _Resolver:
     def _reads_every_input_row(self, node_id: str, captures: Mapping[str, CaptureKind]) -> bool:
         """Whether a node that is read whole reads every row of its inputs.
 
-        A captured Model Score scores its whole input before its post-processing
-        code runs, so a bound in that code bounds nothing it reads.
+        A captured batch Model Score, whatever its capture kind, scores its whole
+        input before its post-processing code runs, so a bound in that code
+        bounds nothing it reads.
         """
-        if captures.get(node_id) is CaptureKind.MODEL_SCORE:
+        if node_id in captures and self.batch_model_score(node_id):
             return True
         code = self.effective_node_map[node_id].data.config.get("code")
         return not projection_planner.code_bounds_rows(code, self.recompute.get(node_id))
