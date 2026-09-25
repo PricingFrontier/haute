@@ -28,9 +28,12 @@ from haute.routes._background_jobs import (
     CancellableJobRegistry,
 )
 from haute.routes._frontier_point_summary import (
+    CONSTRAINT_THRESHOLD_KINDS,
     NON_CONVERGED_WARNING,
+    ConstraintKind,
     FrontierPointDataError,
     apply_frontier_point_summary,
+    constraint_kinds,
     finite_frontier_value,
     frontier_point_summary,
 )
@@ -79,7 +82,7 @@ logger = get_logger(component="server.optimiser")
 
 _FRONTIER_APPLY_HANDLE_PREFIX = "frontier_apply_result:"
 _MAX_FRONTIER_APPLY_ARTIFACTS = 8
-_CONSTRAINT_THRESHOLD_KEYS = ("min", "max", "min_pct", "max_pct")
+_CONSTRAINT_THRESHOLD_KEYS = tuple(CONSTRAINT_THRESHOLD_KINDS)
 
 
 class _FrontierRecomputeRunningJob(RunningJobFields):
@@ -311,15 +314,27 @@ def _base_result_for_frontier_recompute(job: Mapping[str, Any]) -> dict[str, Any
     return result
 
 
+def _job_constraint_kinds(job: Mapping[str, Any]) -> dict[str, ConstraintKind]:
+    """Every configured constraint's kind; a malformed config is a 500."""
+    try:
+        return constraint_kinds(job.get("config", {}).get("constraints") or {})
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Job optimiser constraints are invalid: {exc}"
+        ) from exc
+
+
 def _frontier_point_result_dict(job: Mapping[str, Any], point_index: int) -> dict[str, Any]:
     point, frontier_data = _frontier_point_or_raise(job, point_index)
-    constraint_names = frontier_data.get("constraint_names", [])
-    if not isinstance(constraint_names, list) or not all(
-        isinstance(name, str) for name in constraint_names
-    ):
-        raise HTTPException(status_code=500, detail="Job frontier constraint names are invalid")
+    kinds = _job_constraint_kinds(job)
+    # The stored frontier summarised every configured constraint, swept or not.
+    if frontier_data.get("constraint_names") != list(kinds):
+        raise HTTPException(
+            status_code=500,
+            detail="Job frontier constraint names do not match the configured constraints",
+        )
     try:
-        summary = frontier_point_summary(point, constraint_names)
+        summary = frontier_point_summary(point, kinds)
     except FrontierPointDataError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
@@ -468,26 +483,6 @@ def _frontier_point_factor_tables_or_raise(
     if not isinstance(point_tables, dict):
         raise HTTPException(status_code=500, detail="Job frontier factor tables are invalid")
     return point_tables
-
-
-def _frontier_point_totals_for_all_constraints(
-    job: Mapping[str, Any],
-    point: Mapping[str, Any],
-) -> dict[str, float]:
-    """The row's ``total_<name>`` for every configured constraint, swept or not.
-
-    Point summaries list only the swept constraints, but a materialised point
-    is what save and MLflow publish, so it carries every configured total. The
-    library emits ``total_<name>`` for every constraint on every row.
-    """
-    names = list(job.get("config", {}).get("constraints", {}))
-    missing = [name for name in names if f"total_{name}" not in point]
-    if missing:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Frontier point is missing constraint totals for {missing}",
-        )
-    return {name: _as_finite_float(point[f"total_{name}"], field=f"total_{name}") for name in names}
 
 
 def _materialised_ratebook_result_dict(
@@ -653,6 +648,7 @@ class OptimiserFrontierService:
 
         base_result = _base_result_for_frontier_recompute(job)
         ranges = _frontier_ranges_for_request(body, job)
+        kinds = _job_constraint_kinds(job)
         try:
             enforce_frontier_compute_budget(
                 n_points_per_dim=body.n_points_per_dim,
@@ -699,6 +695,7 @@ class OptimiserFrontierService:
                 ratebook_factors=ratebook_factors,
                 factor_columns=factor_columns,
                 ranges=ranges,
+                constraint_kinds=kinds,
                 n_points_per_dim=body.n_points_per_dim,
                 initial_lambdas=base_result.get("lambdas"),
                 base_result=base_result,
@@ -939,8 +936,6 @@ class OptimiserFrontierService:
             return job, cached_result
 
         factor_tables = _frontier_point_factor_tables_or_raise(job, point_index)
-        point, _frontier_data = _frontier_point_or_raise(job, point_index)
-        result_dict["constraints"] = _frontier_point_totals_for_all_constraints(job, point)
         base_result = _base_result_for_frontier(job)
         factor_columns = job.get("factor_columns_valid")
         if not isinstance(factor_columns, list) or not all(
@@ -1215,6 +1210,7 @@ class OptimiserFrontierService:
         ratebook_factors: Any,
         factor_columns: Any,
         ranges: dict[str, tuple[float, float]],
+        constraint_kinds: dict[str, ConstraintKind],
         n_points_per_dim: int,
         initial_lambdas: Any,
         base_result: dict[str, Any],
@@ -1245,7 +1241,8 @@ class OptimiserFrontierService:
             response = OptimiserFrontierResponse(
                 **limited_frontier_payload(
                     frontier_result.points,
-                    constraint_names=list(ranges.keys()),
+                    constraint_kinds=constraint_kinds,
+                    swept_axes=list(ranges),
                 )
             )
             frontier_dict = response.model_dump(exclude={"job_id"})

@@ -1241,6 +1241,7 @@ export interface SaveModelRequest {
 // the shared parser.
 export type {
   OptimiserApplyResponse as ApplyOptimiserResponse,
+  OptimiserEffectiveBound,
   OptimiserEstimateResponse as OptimiserEstimate,
   OptimiserFrontierAutoRangeResponse as FrontierAutoRangeResponse,
   OptimiserFrontierAutoRangeStartResponse as FrontierAutoRangeStartResponse,

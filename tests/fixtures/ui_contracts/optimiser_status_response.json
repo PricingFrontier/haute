@@ -13,6 +13,12 @@
     "baseline_constraints": {
       "loss": 0.88
     },
+    "effective_bounds": {
+      "loss": {
+        "kind": "max",
+        "bound": 0.95
+      }
+    },
     "lambdas": {
       "loss": 0.3
     },
@@ -72,7 +78,9 @@
       "points": [
         {
           "total_objective": 123.0,
-          "lambda_loss": 0.2
+          "total_loss": 0.9,
+          "lambda_loss": 0.2,
+          "bound_loss": 0.9
         }
       ],
       "point_summaries": [
@@ -80,6 +88,12 @@
           "total_objective": 123.0,
           "constraints": {
             "loss": 0.9
+          },
+          "effective_bounds": {
+            "loss": {
+              "kind": "max",
+              "bound": 0.9
+            }
           },
           "lambdas": {
             "loss": 0.2
@@ -101,6 +115,9 @@
       "constraint_names": [
         "loss"
       ],
+      "swept_axes": [
+        "loss"
+      ],
       "points_limit": 2000,
       "points_truncated": false,
       "job_id": null
@@ -111,7 +128,9 @@
     "points": [
       {
         "total_objective": 123.0,
-        "lambda_loss": 0.2
+        "total_loss": 0.9,
+        "lambda_loss": 0.2,
+        "bound_loss": 0.9
       }
     ],
     "point_summaries": [
@@ -119,6 +138,12 @@
         "total_objective": 123.0,
         "constraints": {
           "loss": 0.9
+        },
+        "effective_bounds": {
+          "loss": {
+            "kind": "max",
+            "bound": 0.9
+          }
         },
         "lambdas": {
           "loss": 0.2
@@ -138,6 +163,9 @@
     "n_points": 1,
     "points_returned": 1,
     "constraint_names": [
+      "loss"
+    ],
+    "swept_axes": [
       "loss"
     ],
     "points_limit": 2000,

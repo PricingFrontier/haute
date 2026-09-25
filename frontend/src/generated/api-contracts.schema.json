@@ -8222,6 +8222,29 @@
       "title": "OptimiserCombinedFactorBounds",
       "type": "object"
     },
+    "OptimiserEffectiveBound": {
+      "description": "The absolute bound a result was solved at for one constraint.\n\n``bound`` is price-contour's (``constraint_bounds`` or a frontier row's\n``bound_<name>``); for a ``min_pct``/``max_pct`` constraint it is the\nfraction times the constraint's baseline total, never the fraction.",
+      "properties": {
+        "bound": {
+          "title": "Bound",
+          "type": "number"
+        },
+        "kind": {
+          "enum": [
+            "min",
+            "max"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "bound"
+      ],
+      "title": "OptimiserEffectiveBound",
+      "type": "object"
+    },
     "OptimiserEstimateResponse": {
       "description": "Result shape for ``POST /api/optimiser/estimate``.",
       "properties": {
@@ -8565,6 +8588,13 @@
           "title": "Converged",
           "type": "boolean"
         },
+        "effective_bounds": {
+          "additionalProperties": {
+            "$ref": "#/$defs/OptimiserEffectiveBound"
+          },
+          "title": "Effective Bounds",
+          "type": "object"
+        },
         "factor_tables": {
           "anyOf": [
             {
@@ -8665,6 +8695,7 @@
       "required": [
         "total_objective",
         "constraints",
+        "effective_bounds",
         "lambdas",
         "converged",
         "iterations",
@@ -8764,6 +8795,13 @@
         "status": {
           "title": "Status",
           "type": "string"
+        },
+        "swept_axes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Swept Axes",
+          "type": "array"
         }
       },
       "required": [
@@ -8773,6 +8811,7 @@
         "n_points",
         "points_returned",
         "constraint_names",
+        "swept_axes",
         "points_limit",
         "points_truncated",
         "job_id"
@@ -8840,6 +8879,13 @@
           "default": true,
           "title": "Converged",
           "type": "boolean"
+        },
+        "effective_bounds": {
+          "additionalProperties": {
+            "$ref": "#/$defs/OptimiserEffectiveBound"
+          },
+          "title": "Effective Bounds",
+          "type": "object"
         },
         "error": {
           "anyOf": [
@@ -8961,6 +9007,7 @@
         "constraints",
         "baseline_objective",
         "baseline_constraints",
+        "effective_bounds",
         "lambdas",
         "converged",
         "iterations",
@@ -9453,6 +9500,13 @@
           "title": "Converged",
           "type": "boolean"
         },
+        "effective_bounds": {
+          "additionalProperties": {
+            "$ref": "#/$defs/OptimiserEffectiveBound"
+          },
+          "title": "Effective Bounds",
+          "type": "object"
+        },
         "factor_tables": {
           "additionalProperties": {
             "items": {
@@ -9614,6 +9668,7 @@
         "baseline_objective",
         "constraints",
         "baseline_constraints",
+        "effective_bounds",
         "lambdas",
         "converged",
         "iterations",

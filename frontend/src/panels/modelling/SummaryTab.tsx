@@ -16,6 +16,7 @@ import {
 import type { EvaluationMetricSummary, GlmRegularization, TuningReport } from "../../api/types"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import { MODEL_COLORS } from "../../theme/colors"
+import { diagnosticsSetLabel } from "./diagnosticsSet"
 
 interface SummaryTabProps {
   result: TrainResult
@@ -224,9 +225,7 @@ function SelectionMetricsTable({ metrics }: { metrics: Record<string, Evaluation
 export function SummaryTab({ result, onUseBestParameters, elapsedSeconds }: SummaryTabProps) {
   const featuresCount = result.features?.length ?? result.feature_importance.length
   const catFeaturesCount = result.cat_features?.length ?? 0
-  const diagnosticsLabel = result.diagnostics_set === "final_test"
-    ? "Test"
-    : result.diagnostics_set === "validation" ? "Validation" : "Training"
+  const diagnosticsLabel = diagnosticsSetLabel(result.diagnostics_set)
   const diagnosticsErrors = result.diagnostics_errors ?? []
   const evaluation = result.evaluation
   const tuning = result.tuning

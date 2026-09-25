@@ -497,6 +497,7 @@ def _frontier_point_summary(
     """Build the stored frontier-point summary shape emitted by price-contour."""
     return {
         "threshold_volume": total_volume if threshold_volume is None else threshold_volume,
+        "bound_volume": total_volume if threshold_volume is None else threshold_volume,
         "total_objective": total_objective,
         "total_volume": total_volume,
         "lambda_volume": lambda_volume,
@@ -1239,6 +1240,7 @@ class TestStatusRoute:
             "capped_frontier_status",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "progress": 1.0,
                 "message": "Completed",
                 "elapsed_seconds": 0.2,
@@ -1249,6 +1251,7 @@ class TestStatusRoute:
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.9},
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.25},
                     "converged": True,
                     "frontier": frontier_data,
@@ -5293,6 +5296,7 @@ def _ratebook_solve_result_namespace(
     cd_iterations: int = 5,
     clamp_rate: float = 0.04,
     factor_tables: dict[str, dict[str, float]] | None = None,
+    constraint_bounds: dict[str, float] | None = None,
 ) -> SimpleNamespace:
     """Mock shaped like the REAL ``price_contour.RatebookResult``.
 
@@ -5313,6 +5317,7 @@ def _ratebook_solve_result_namespace(
             baseline_constraints if baseline_constraints is not None else {"volume": 0.88}
         ),
         lambdas=lambdas if lambdas is not None else {"volume": 0.7},
+        constraint_bounds=constraint_bounds if constraint_bounds is not None else {"volume": 0.9},
         converged=True,
         cd_iterations=cd_iterations,
         clamp_rate=clamp_rate,
@@ -5361,6 +5366,7 @@ def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
         "baseline_objective": 95.0,
         "constraints": {"volume": 0.92},
         "baseline_constraints": {"volume": 0.88},
+        "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
         "lambdas": {"volume": 0.5},
         "converged": True,
         "factor_tables": {"region": [{"__factor_group__": "Old", "optimal_scenario_value": 1.0}]},
@@ -5472,6 +5478,22 @@ class TestRatebookSolve:
         assert "factor_tables" in result
         assert "converged" in result
         assert "lambdas" in result
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_ratebook_solve_reports_the_solved_grid_shape(self, client, tmp_path):
+        """A real ratebook solve names the grid it scored, as an online solve
+        does: the result's provenance strip reads N quotes x M scenario steps."""
+        scored_path, banding_path = _make_ratebook_data(tmp_path, n_quotes=7, n_steps=4)
+        graph = _make_ratebook_graph(scored_path, banding_path)
+        resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+        assert resp.status_code == 200
+
+        status = _poll_until_done(client, resp.json()["job_id"])
+        assert status["status"] == "completed", status.get("message", "")
+        result = status["result"]
+        assert result["mode"] == "ratebook"
+        assert result["n_quotes"] == 7
+        assert result["n_steps"] == 4
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_ratebook_solve_preserves_intermediate_data_input_and_banding_source(
@@ -5857,6 +5879,7 @@ class TestFrontierRoute:
                     "total_objective": [100.0],
                     "volume": [0.9],
                     "lambda_volume": [0.25],
+                    "bound_volume": [0.9],
                     "converged": [True],
                 }
             )
@@ -5884,6 +5907,7 @@ class TestFrontierRoute:
                     "baseline_objective": 80.0,
                     "constraints": {"volume": 0.85},
                     "baseline_constraints": {"volume": 0.8},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.1},
                     "converged": True,
                 },
@@ -5959,6 +5983,7 @@ class TestFrontierRoute:
                     "baseline_objective": 80.0,
                     "constraints": {"volume": 0.85},
                     "baseline_constraints": {"volume": 0.8},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.1},
                     "converged": True,
                 },
@@ -6020,6 +6045,7 @@ class TestFrontierRoute:
                             "total_objective": [999.0],
                             "volume": [0.99],
                             "lambda_volume": [9.0],
+                            "bound_volume": [0.9],
                             "converged": [True],
                         }
                     )
@@ -6032,6 +6058,7 @@ class TestFrontierRoute:
             "baseline_objective": 80.0,
             "constraints": {"volume": 0.85},
             "baseline_constraints": {"volume": 0.8},
+            "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
             "lambdas": {"volume": 0.1},
             "converged": True,
             "frontier": original_frontier,
@@ -6139,6 +6166,7 @@ class TestFrontierRoute:
                             "total_objective": [999.0],
                             "volume": [0.99],
                             "lambda_volume": [9.0],
+                            "bound_volume": [0.9],
                             "converged": [True],
                         }
                     )
@@ -6150,6 +6178,7 @@ class TestFrontierRoute:
             "baseline_objective": 80.0,
             "constraints": {"volume": 0.85},
             "baseline_constraints": {"volume": 0.8},
+            "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
             "lambdas": {"volume": 0.1},
             "converged": True,
         }
@@ -6288,6 +6317,7 @@ class TestFrontierRoute:
                     "total_objective": [100.0],
                     "volume": [0.9],
                     "lambda_volume": [0.25],
+                    "bound_volume": [0.9],
                     "converged": [True],
                 }
             ),
@@ -6302,7 +6332,7 @@ class TestFrontierRoute:
                 "quote_grid": mock_grid,
                 "ratebook_factor_contexts": factor_contexts,
                 "factor_columns_valid": [["region"]],
-                "config": {"mode": "ratebook"},
+                "config": {"mode": "ratebook", "constraints": {"volume": {"min": 0.9}}},
                 "created_at": time.time(),
                 "completed_at": time.time(),
             },
@@ -6336,6 +6366,8 @@ class TestFrontierRoute:
                     "volume": [0.9],
                     "loss": [12.0],
                     "lambda_volume": [0.25],
+                    "bound_volume": [0.9],
+                    "bound_loss": [20.0],
                     "converged": [True],
                 }
             )
@@ -6410,6 +6442,7 @@ class TestFrontierRoute:
                             "total_objective": [100.0],
                             "loss_ratio": [0.9],
                             "lambda_loss_ratio": [0.25],
+                            "bound_loss_ratio": [0.9],
                             "converged": [True],
                         }
                     )
@@ -6422,6 +6455,7 @@ class TestFrontierRoute:
             "frontier_no_initial_lambdas",
             {
                 "status": "completed",
+                "config": {"constraints": {"loss_ratio": {"max": 0.9}}},
                 "solver": solver,
                 "quote_grid": quote_grid,
                 "created_at": time.time(),
@@ -6602,6 +6636,7 @@ class TestFrontierRoute:
                     "total_objective": [100.0],
                     "volume": [0.9],
                     "lambda_volume": [0.25],
+                    "bound_volume": [0.9],
                     "converged": [True],
                 }
             )
@@ -6728,6 +6763,7 @@ class TestBuildArtifactPayload:
             total_objective=1000.0,
             baseline_objective=950.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             converged=True,
             iterations=10,
@@ -6753,6 +6789,7 @@ class TestBuildArtifactPayload:
             total_objective=1000.0,
             baseline_objective=950.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             converged=True,
             iterations=10,
@@ -6778,6 +6815,7 @@ class TestBuildArtifactPayload:
             total_objective=1000.0,
             baseline_objective=950.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             converged=True,
             iterations=10,
@@ -6815,6 +6853,7 @@ class TestBuildArtifactPayload:
             total_objective=1000.0,
             baseline_objective=950.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             converged=True,
             iterations=10,
@@ -6844,6 +6883,7 @@ class TestBuildArtifactPayload:
             baseline_objective=0.0,
             baseline_constraints={},
             total_constraints={},
+            constraint_bounds={},
             converged=True,
             clamp_rate=0.05,
             combined_factor_bounds={"min": 0.9, "max": 1.1},
@@ -6866,6 +6906,7 @@ class TestBuildArtifactPayload:
             baseline_objective=0.0,
             baseline_constraints={},
             total_constraints={},
+            constraint_bounds={},
             converged=True,
         )
         payload = _build_artifact_payload(job, solve_result, version_override="v2.0")
@@ -6884,9 +6925,9 @@ class TestBuildArtifactPayload:
             "frontier_data": {
                 "status": "ok",
                 "points": [
-                    {"total_objective": 100.0, "threshold_volume": 0.85},
-                    {"total_objective": 110.0, "threshold_volume": 0.9},
-                    {"total_objective": 120.0, "threshold_volume": 0.95},
+                    {"total_objective": 100.0, "threshold_volume": 0.85, "bound_volume": 0.85},
+                    {"total_objective": 110.0, "threshold_volume": 0.9, "bound_volume": 0.9},
+                    {"total_objective": 120.0, "threshold_volume": 0.95, "bound_volume": 0.95},
                 ],
                 "n_points": 3,
                 "constraint_names": ["volume"],
@@ -6901,6 +6942,7 @@ class TestBuildArtifactPayload:
             total_objective=120.0,
             baseline_objective=100.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             converged=True,
             iterations=10,
@@ -6925,6 +6967,7 @@ class TestBuildArtifactPayload:
             baseline_objective=0.0,
             baseline_constraints={},
             total_constraints={"volume": 0.91},
+            constraint_bounds={"volume": 0.9},
             converged=True,
         )
         payload = _build_artifact_payload(job, solve_result)
@@ -6961,6 +7004,7 @@ class TestBuildArtifactPayload:
             baseline_objective=0.0,
             baseline_constraints={},
             total_constraints={"volume": 0.91},
+            constraint_bounds={"volume": 0.9},
             converged=True,
             factor_tables={},
             factor_dtypes={},
@@ -6996,6 +7040,7 @@ class TestBuildArtifactPayload:
             baseline_objective=0.0,
             baseline_constraints={},
             total_constraints={},
+            constraint_bounds={},
             converged=True,
         )
         payload = _build_artifact_payload(job, solve_result)
@@ -7019,6 +7064,7 @@ class TestBuildArtifactPayload:
             total_objective=100.0,
             baseline_objective=95.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             converged=True,
             iterations=10,
@@ -7097,7 +7143,13 @@ class TestOptimiserMlflowLog:
     def test_mlflow_log_import_error(self, client, clean_job_store):
         """If mlflow is not installed, return the shared 503 every MLflow route uses."""
         mock_solver = MagicMock()
-        mock_solve = MagicMock(lambdas={}, total_objective=0, total_constraints={}, converged=True)
+        mock_solve = MagicMock(
+            lambdas={},
+            total_objective=0,
+            total_constraints={},
+            constraint_bounds={},
+            converged=True,
+        )
         seed_job(
             clean_job_store,
             "import_err",
@@ -8938,6 +8990,7 @@ class TestFrontierSelect:
             "sel_oob",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": MagicMock(),
                 "quote_grid": MagicMock(),
                 "frontier_data": {
@@ -8971,6 +9024,7 @@ class TestFrontierSelect:
             "sel_capped",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": MagicMock(),
                 "quote_grid": MagicMock(),
                 "frontier_data": {
@@ -9015,6 +9069,7 @@ class TestFrontierSelect:
             total_objective=120.0,
             baseline_objective=95.0,
             total_constraints={"volume": 0.97},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             lambdas={"volume": 0.3},
             converged=True,
@@ -9024,7 +9079,11 @@ class TestFrontierSelect:
             "rb_select",
             {
                 "status": "completed",
-                "config": {"mode": "ratebook", "factor_columns": [["region"]]},
+                "config": {
+                    "mode": "ratebook",
+                    "factor_columns": [["region"]],
+                    "constraints": {"volume": {"min": 0.9}},
+                },
                 "solver": mock_solver,
                 "quote_grid": mock_grid,
                 "ratebook_factor_contexts": factor_contexts,
@@ -9035,6 +9094,7 @@ class TestFrontierSelect:
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.92},
                     "baseline_constraints": {"volume": 0.88},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.5},
                     "converged": True,
                 },
@@ -9116,6 +9176,7 @@ class TestFrontierSelect:
             "sel_nf",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": MagicMock(),
                 "quote_grid": MagicMock(),
                 "frontier_data": None,
@@ -9185,6 +9246,7 @@ class TestFrontierSelect:
             "sel_touch_ttl",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "created_at": 100.0,
                 "completed_at": 100.0,
                 "heavy_objects_expires_at": 1000.0,
@@ -9213,6 +9275,7 @@ class TestFrontierSelect:
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.85},
                     "baseline_constraints": {"volume": 0.8},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.2},
                     "converged": True,
                 },
@@ -9264,6 +9327,7 @@ class TestFrontierSelect:
             "sel_touch_before_work",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "created_at": 100.0,
                 "completed_at": 100.0,
                 "heavy_objects_expires_at": 1000.0,
@@ -9287,6 +9351,7 @@ class TestFrontierSelect:
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.85},
                     "baseline_constraints": {"volume": 0.8},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.2},
                     "converged": True,
                 },
@@ -9323,6 +9388,7 @@ class TestFrontierSelect:
             "sel_cleanup_primary",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": solver,
                 "solve_result": object(),
                 "quote_grid": MagicMock(),
@@ -9343,6 +9409,7 @@ class TestFrontierSelect:
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.85},
                     "baseline_constraints": {"volume": 0.8},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.2},
                     "converged": True,
                 },
@@ -9532,6 +9599,7 @@ class TestFinalizeSolveResult:
             total_objective=100.0,
             baseline_objective=95.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             lambdas={"volume": 0.5},
             converged=converged,
@@ -9542,7 +9610,9 @@ class TestFinalizeSolveResult:
         from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        job_id = store.create_job(
+            {"status": "running", "config": {"constraints": {"volume": {"min": 0.9}}}}
+        )
         solve_result = self._make_solve_result(converged=False)
         mock_solver = MagicMock()
         mock_grid = MagicMock()
@@ -9566,7 +9636,9 @@ class TestFinalizeSolveResult:
         from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        job_id = store.create_job(
+            {"status": "running", "config": {"constraints": {"volume": {"min": 0.9}}}}
+        )
         solve_result = self._make_solve_result(converged=True)
         mock_solver = MagicMock()
         mock_grid = MagicMock()
@@ -9589,7 +9661,9 @@ class TestFinalizeSolveResult:
         from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        job_id = store.create_job(
+            {"status": "running", "config": {"constraints": {"volume": {"min": 0.9}}}}
+        )
         solve_result = self._make_solve_result()
         mock_solver = MagicMock()
         mock_grid = MagicMock()
@@ -9734,6 +9808,7 @@ class TestFinalizeSolveResult:
             }
         )
         solve_result = self._make_solve_result()
+        solve_result.constraint_bounds = {name: 0.0 for name in constraints}
         mock_solver = MagicMock()
 
         _finalize_solve_result(
@@ -9772,8 +9847,20 @@ class TestFinalizeSolveResult:
         mock_solver = MagicMock()
         frontier_points = MagicMock()
         frontier_points.to_dicts.return_value = [
-            {"total_objective": 100, "total_volume": 0.9, "lambda_volume": 0.3, "converged": True},
-            {"total_objective": 110, "total_volume": 0.95, "lambda_volume": 0.5, "converged": True},
+            {
+                "total_objective": 100,
+                "total_volume": 0.9,
+                "lambda_volume": 0.3,
+                "bound_volume": 0.9,
+                "converged": True,
+            },
+            {
+                "total_objective": 110,
+                "total_volume": 0.95,
+                "lambda_volume": 0.5,
+                "bound_volume": 0.9,
+                "converged": True,
+            },
         ]
         frontier_points.__len__ = lambda self: 2
         mock_solver.frontier.return_value = SimpleNamespace(points=frontier_points)
@@ -9831,6 +9918,7 @@ class TestFinalizeSolveResult:
                         "total_objective": [100.0],
                         "volume": [0.9],
                         "lambda_volume": [0.3],
+                        "bound_volume": [0.9],
                     }
                 )
             )
@@ -9909,6 +9997,7 @@ class TestFinalizeSolveResult:
                 "total_objective": list(range(FRONTIER_POINT_LIMIT + 1)),
                 "total_volume": [0.9] * (FRONTIER_POINT_LIMIT + 1),
                 "lambda_volume": [0.3] * (FRONTIER_POINT_LIMIT + 1),
+                "bound_volume": [0.9] * (FRONTIER_POINT_LIMIT + 1),
                 "converged": [True] * (FRONTIER_POINT_LIMIT + 1),
             }
         )
@@ -9948,6 +10037,7 @@ class TestFinalizeSolveResult:
                         "total_objective": i,
                         "total_volume": 0.9,
                         "lambda_volume": 0.3,
+                        "bound_volume": 0.9,
                         "converged": True,
                     }
                     for i in range(self.size)
@@ -10064,8 +10154,20 @@ class TestFinalizeSolveResult:
         mock_solver = MagicMock()
         frontier_points = MagicMock()
         frontier_points.to_dicts.return_value = [
-            {"total_objective": 100, "total_volume": 0.9, "lambda_volume": 0.3, "converged": True},
-            {"total_objective": 110, "total_volume": 0.95, "lambda_volume": 0.5, "converged": True},
+            {
+                "total_objective": 100,
+                "total_volume": 0.9,
+                "lambda_volume": 0.3,
+                "bound_volume": 0.9,
+                "converged": True,
+            },
+            {
+                "total_objective": 110,
+                "total_volume": 0.95,
+                "lambda_volume": 0.5,
+                "bound_volume": 0.9,
+                "converged": True,
+            },
         ]
         frontier_points.__len__ = lambda self: 2
         mock_solver.frontier.return_value = SimpleNamespace(points=frontier_points)
@@ -10107,7 +10209,9 @@ class TestFinalizeSolveResult:
         mock_grid = MagicMock()
 
         with patch("haute.routes._job_store.time.time", return_value=100.0):
-            job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+            job_id = store.create_job(
+                {"status": "running", "config": {"constraints": {"volume": {"min": 0.9}}}}
+            )
             _finalize_solve_result(
                 solve_result,
                 mode="online",
@@ -10132,7 +10236,9 @@ class TestFinalizeSolveResult:
         from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        job_id = store.create_job(
+            {"status": "running", "config": {"constraints": {"volume": {"min": 0.9}}}}
+        )
         solve_result = self._make_solve_result()
         row_count = len(solve_result.dataframe)
 
@@ -10164,7 +10270,9 @@ class TestFinalizeSolveResult:
         from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        job_id = store.create_job(
+            {"status": "running", "config": {"constraints": {"volume": {"min": 0.9}}}}
+        )
         # 3b.9: real RatebookResult field set — no phantom ``dataframe``
         # (``_make_solve_result`` models the ONLINE shape, which does carry one).
         solve_result = _ratebook_solve_result_namespace()
@@ -10199,7 +10307,9 @@ class TestFinalizeSolveResult:
         from haute.routes._optimiser_solver import _finalize_solve_result
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        job_id = store.create_job(
+            {"status": "running", "config": {"constraints": {"volume": {"min": 0.9}}}}
+        )
         JobLifecycle(store).transition(
             job_id,
             to="error",
@@ -10267,6 +10377,7 @@ class TestSolveStatusEdgeCases:
             "done_frontier",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "progress": 1.0,
                 "message": "Completed",
                 "elapsed_seconds": 5.0,
@@ -10276,6 +10387,7 @@ class TestSolveStatusEdgeCases:
                     "baseline_objective": 180.0,
                     "constraints": {"volume": 0.92},
                     "baseline_constraints": {"volume": 0.88},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.4},
                     "converged": True,
                 },
@@ -10318,6 +10430,7 @@ class TestApplyLambdasUnit:
             baseline_objective=0.0,
             baseline_constraints={},
             total_constraints={"volume": 0.95},
+            constraint_bounds={"volume": 0.9},
         )
         seed_job(
             clean_job_store,
@@ -10357,6 +10470,7 @@ class TestApplyLambdasUnit:
             baseline_objective=0.0,
             baseline_constraints={},
             total_constraints={"volume": 0.95},
+            constraint_bounds={"volume": 0.9},
         )
         seed_job(
             clean_job_store,
@@ -10452,6 +10566,7 @@ class TestApplyLambdasUnit:
                     baseline_objective=0.0,
                     baseline_constraints={},
                     total_constraints={"volume": 0.95},
+                    constraint_bounds={"volume": 0.9},
                 ),
                 "result": {
                     "total_objective": 500.0,
@@ -10541,6 +10656,7 @@ class TestApplyLambdasUnit:
                     baseline_objective=0.0,
                     baseline_constraints={},
                     total_constraints={"volume": 1.0},
+                    constraint_bounds={"volume": 0.9},
                 ),
                 "result": {"total_objective": 42.0, "constraints": {"volume": 1.0}},
                 "created_at": time.time(),
@@ -10573,6 +10689,7 @@ class TestApplyLambdasUnit:
                     baseline_objective=0.0,
                     baseline_constraints={},
                     total_constraints={},
+                    constraint_bounds={},
                 ),
                 "result": {"total_objective": 100.0},
                 "created_at": time.time() - _DEFAULT_HEAVY_OBJECT_TTL_SECONDS - 1,
@@ -10721,9 +10838,27 @@ class TestRunFrontierUnit:
         mock_solver = MagicMock()
         frontier_points = MagicMock()
         frontier_points.to_dicts.return_value = [
-            {"total_objective": 100, "total_volume": 0.9, "lambda_volume": 0.3, "converged": True},
-            {"total_objective": 110, "total_volume": 0.92, "lambda_volume": 0.5, "converged": True},
-            {"total_objective": 120, "total_volume": 0.94, "lambda_volume": 0.7, "converged": True},
+            {
+                "total_objective": 100,
+                "total_volume": 0.9,
+                "lambda_volume": 0.3,
+                "bound_volume": 0.9,
+                "converged": True,
+            },
+            {
+                "total_objective": 110,
+                "total_volume": 0.92,
+                "lambda_volume": 0.5,
+                "bound_volume": 0.9,
+                "converged": True,
+            },
+            {
+                "total_objective": 120,
+                "total_volume": 0.94,
+                "lambda_volume": 0.7,
+                "bound_volume": 0.9,
+                "converged": True,
+            },
         ]
         frontier_points.__len__ = lambda self: 3
         mock_solver.frontier.return_value = SimpleNamespace(points=frontier_points)
@@ -10733,6 +10868,7 @@ class TestRunFrontierUnit:
             "frontier_unit",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
                 "created_at": time.time(),
@@ -10768,6 +10904,7 @@ class TestRunFrontierUnit:
                     "total_objective": [300.0],
                     "volume": [0.97],
                     "lambda_volume": [0.8],
+                    "bound_volume": [0.9],
                     "converged": [True],
                 }
             )
@@ -10778,6 +10915,7 @@ class TestRunFrontierUnit:
             "baseline_objective": 90.0,
             "constraints": {"volume": 0.9},
             "baseline_constraints": {"volume": 0.85},
+            "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
             "lambdas": {"volume": 0.3},
             "converged": True,
         }
@@ -10869,6 +11007,7 @@ class TestRunFrontierUnit:
                     "total_objective": [300.0],
                     "volume": [0.97],
                     "lambda_volume": [0.8],
+                    "bound_volume": [0.9],
                     "converged": [True],
                 }
             )
@@ -10879,6 +11018,7 @@ class TestRunFrontierUnit:
             "baseline_objective": 90.0,
             "constraints": {"volume": 0.9},
             "baseline_constraints": {"volume": 0.85},
+            "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
             "lambdas": {"volume": 0.3},
             "converged": True,
         }
@@ -10976,6 +11116,7 @@ class TestRunFrontierUnit:
             "baseline_objective": 90.0,
             "constraints": {"volume": 0.9},
             "baseline_constraints": {"volume": 0.85},
+            "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
             "lambdas": {"volume": 0.3},
             "converged": True,
         }
@@ -10999,6 +11140,7 @@ class TestRunFrontierUnit:
                         "total_objective": [300.0],
                         "volume": [0.97],
                         "lambda_volume": [0.8],
+                        "bound_volume": [0.9],
                         "converged": [True],
                     }
                 )
@@ -11062,6 +11204,7 @@ class TestRunFrontierUnit:
                 "total_objective": i,
                 "total_volume": 0.9,
                 "lambda_volume": i / 100 + 0.01,
+                "bound_volume": 0.9,
                 "converged": True,
             }
             for i in range(FRONTIER_POINT_LIMIT + 1)
@@ -11074,6 +11217,7 @@ class TestRunFrontierUnit:
             "frontier_capped",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
                 "created_at": time.time(),
@@ -11111,6 +11255,7 @@ class TestRunFrontierUnit:
                         "total_objective": i,
                         "total_volume": 0.9,
                         "lambda_volume": i / 100 + 0.01,
+                        "bound_volume": 0.9,
                         "converged": True,
                     }
                     for i in range(self.size)
@@ -11134,6 +11279,7 @@ class TestRunFrontierUnit:
             "frontier_serialise_budget",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
                 "created_at": time.time(),
@@ -11188,6 +11334,7 @@ def _anchor_result(**overrides: object) -> dict[str, object]:
         "constraints": {"volume": 0.92},
         "baseline_objective": 95.0,
         "baseline_constraints": {"volume": 0.88},
+        "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
         "converged": True,
         "iterations": 10,
         **overrides,
@@ -11323,12 +11470,14 @@ class TestSelectFrontierPointIdempotent:
             "idem",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "selected_frontier_point": 2,
                 "result": {
                     "total_objective": 150.0,
                     "constraints": {"volume": 0.93},
                     "baseline_objective": 140.0,
                     "baseline_constraints": {"volume": 0.87},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.6},
                     "converged": True,
                     "selected_frontier_point": 2,
@@ -11392,6 +11541,7 @@ class TestSelectFrontierPointIdempotent:
                     "constraints": {"volume": 0.93},
                     "baseline_objective": 140.0,
                     "baseline_constraints": {"volume": 0.87},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.6},
                     "converged": True,
                     "selected_frontier_point": 2,
@@ -11425,12 +11575,14 @@ class TestSelectFrontierPointIdempotent:
             "idem_stale",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "selected_frontier_point": 1,
                 "base_result": {
                     "total_objective": 100.0,
                     "constraints": {"volume": 0.9},
                     "baseline_objective": 90.0,
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.3},
                     "converged": True,
                 },
@@ -11439,6 +11591,7 @@ class TestSelectFrontierPointIdempotent:
                     "constraints": {"volume": 0.01},
                     "baseline_objective": 90.0,
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 9.0},
                     "converged": True,
                 },
@@ -11490,12 +11643,14 @@ class TestSelectFrontierPointIdempotent:
             "idem_stale_metrics",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "selected_frontier_point": 1,
                 "base_result": {
                     "total_objective": 100.0,
                     "constraints": {"volume": 0.9},
                     "baseline_objective": 90.0,
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.3},
                     "converged": True,
                 },
@@ -11504,6 +11659,7 @@ class TestSelectFrontierPointIdempotent:
                     "constraints": {"volume": 0.01},
                     "baseline_objective": 90.0,
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 9.0},
                     "converged": True,
                     "selected_frontier_point": 1,
@@ -11556,6 +11712,7 @@ class TestSelectFrontierPointResolve:
             "fsel",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
                 "frontier_data": {
@@ -11581,6 +11738,7 @@ class TestSelectFrontierPointResolve:
                     "baseline_objective": 90.0,
                     "constraints": {"volume": 0.9},
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.3},
                     "converged": True,
                 },
@@ -11970,6 +12128,7 @@ class TestSelectFrontierPointResolve:
             "no_lam",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": MagicMock(),
                 "quote_grid": MagicMock(),
                 "frontier_data": {
@@ -11999,6 +12158,7 @@ class TestSelectFrontierPointResolve:
             "no_slv",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": None,
                 "quote_grid": None,
                 "frontier_data": {
@@ -12016,6 +12176,7 @@ class TestSelectFrontierPointResolve:
                 "result": {
                     "baseline_objective": 90.0,
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                 },
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -12037,6 +12198,7 @@ class TestSelectFrontierPointResolve:
             "sel_err",
             {
                 "status": "completed",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
                 "solver": mock_solver,
                 "quote_grid": MagicMock(),
                 "frontier_data": {
@@ -12054,6 +12216,7 @@ class TestSelectFrontierPointResolve:
                 "result": {
                     "baseline_objective": 90.0,
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                 },
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -12089,6 +12252,7 @@ class TestBuildArtifactPayloadExtended:
             total_objective=1000.0,
             baseline_objective=950.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             converged=True,
             iterations=10,
@@ -12124,6 +12288,7 @@ class TestBuildArtifactPayloadExtended:
             baseline_objective=0.0,
             baseline_constraints={},
             total_constraints={},
+            constraint_bounds={},
             converged=True,
             clamp_rate=0.03,
             combined_factor_bounds={"min": 0.9, "max": 1.1},
@@ -12145,6 +12310,7 @@ class TestBuildArtifactPayloadExtended:
             baseline_objective=0.0,
             baseline_constraints={},
             total_constraints={},
+            constraint_bounds={},
             converged=True,
         )
         payload = _build_artifact_payload(job, solve_result, version_override="custom_v1")
@@ -12159,6 +12325,7 @@ class TestBuildArtifactPayloadExtended:
             baseline_objective=0.0,
             baseline_constraints={},
             total_constraints={},
+            constraint_bounds={},
             converged=True,
         )
         payload = _build_artifact_payload(job, solve_result, version_override="")
@@ -12179,6 +12346,7 @@ class TestBuildArtifactPayloadExtended:
             baseline_objective=0.0,
             baseline_constraints={},
             total_constraints={},
+            constraint_bounds={},
             converged=True,
         )
         # selected_idx is None so frontier_selection should not be added
@@ -12199,6 +12367,7 @@ class TestBuildArtifactPayloadExtended:
             baseline_objective=0.0,
             baseline_constraints={},
             total_constraints={},
+            constraint_bounds={},
             converged=True,
         )
         payload = _build_artifact_payload(job, solve_result)
@@ -12222,6 +12391,7 @@ class TestMlflowLogExtended:
             lambdas={"volume": 0.5},
             total_objective=100.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             baseline_objective=95.0,
             converged=True,
@@ -12243,6 +12413,7 @@ class TestMlflowLogExtended:
                 "baseline_objective": 95.0,
                 "constraints": {"volume": 0.92},
                 "baseline_constraints": {"volume": 0.88},
+                "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                 "lambdas": {"volume": 0.5},
                 "converged": True,
             },
@@ -12533,6 +12704,7 @@ class TestSolveStatusTimeout:
                         "baseline_objective": 95.0,
                         "constraints": {},
                         "baseline_constraints": {},
+                        "effective_bounds": {},
                         "lambdas": {},
                         "converged": True,
                     },
@@ -12658,6 +12830,7 @@ class TestSolveStatusTimeout:
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.91},
                     "baseline_constraints": {"volume": 0.88},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.5},
                     "converged": True,
                 },
@@ -12689,6 +12862,7 @@ class TestSolveStatusTimeout:
                     "baseline_objective": 95.0,
                     "constraints": {"volume": 0.91},
                     "baseline_constraints": {"volume": 0.88},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.5},
                     "converged": True,
                 },
@@ -12744,6 +12918,7 @@ class TestSolveOnlineUnit:
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             baseline_constraints={"volume": 0.88},
             lambdas={"volume": 0.5},
             converged=True,
@@ -12811,6 +12986,7 @@ class TestSolveOnlineUnit:
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={},
+            constraint_bounds={},
             baseline_constraints={},
             lambdas={},
             converged=True,
@@ -12961,7 +13137,7 @@ class TestSolveRatebookUnit:
         job_id = store.create_job(
             {
                 "status": "running",
-                "config": {"constraints": {}},
+                "config": {"constraints": {"volume": {"min": 0.9}}},
             }
         )
 
@@ -12983,6 +13159,7 @@ class TestSolveRatebookUnit:
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             lambdas={"volume": 0.5},
             cd_iterations=3,
             factor_tables={"region": {"North": 1.1, "East": 1.0}},
@@ -13043,7 +13220,9 @@ class TestSolveRatebookUnit:
         from haute.routes._optimiser_solver import _solve_ratebook
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        job_id = store.create_job(
+            {"status": "running", "config": {"constraints": {"volume": {"min": 0.9}}}}
+        )
 
         mock_grid = MagicMock()
         mock_grid.quote_ids = ["q1", "q2"]
@@ -13107,6 +13286,7 @@ class TestSolveRatebookUnit:
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={},
+            constraint_bounds={},
             baseline_constraints={},
             lambdas={},
             cd_iterations=2,
@@ -13437,7 +13617,9 @@ class TestSolveRatebookUnit:
         from haute.routes._optimiser_solver import _OptimiserSolveInputError, _solve_ratebook
 
         store = JobStore()
-        job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
+        job_id = store.create_job(
+            {"status": "running", "config": {"constraints": {"volume": {"min": 0.9}}}}
+        )
         mock_grid = MagicMock()
         mock_grid.quote_ids = ["q1", "q2", "q3"]
         mock_grid.scenario_values = [0.9, 1.0, 1.1]
@@ -13515,6 +13697,7 @@ class TestSolveRatebookUnit:
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={"volume": 0.92},
+            constraint_bounds={"volume": 0.9},
             lambdas={"volume": 0.5},
             cd_iterations=3,
             factor_tables={},
@@ -13524,6 +13707,7 @@ class TestSolveRatebookUnit:
                 "total_objective": [100.0],
                 "volume": [0.9],
                 "lambda_volume": [0.25],
+                "bound_volume": [0.9],
                 "converged": [True],
             }
         )
@@ -13604,6 +13788,7 @@ class TestSolveRatebookUnit:
             total_objective=100.0,
             baseline_objective=90.0,
             total_constraints={},
+            constraint_bounds={},
             baseline_constraints={},
             lambdas={},
             cd_iterations=2,
@@ -14876,6 +15061,7 @@ class TestLaunchBackground:
                 total_objective=100.0,
                 baseline_objective=95.0,
                 total_constraints={"volume": 0.91},
+                constraint_bounds={"volume": 0.9},
                 baseline_constraints={"volume": 0.88},
                 lambdas={"volume": 0.5},
                 converged=True,
@@ -15977,8 +16163,11 @@ class TestOptimiserHelperValidators:
         from haute.routes._optimiser_frontier import _frontier_point_result_dict
 
         job = {
+            "config": {"constraints": {"a": {"min": 0.9}}},
             "frontier_data": {
-                "points": [{"lambda_a": 1.0, "total_objective": 1.0, "total_a": 1.0}],
+                "points": [
+                    {"lambda_a": 1.0, "total_objective": 1.0, "total_a": 1.0, "bound_a": 0.9}
+                ],
                 "n_points": 1,
                 "constraint_names": ["a"],
             },
@@ -16131,11 +16320,13 @@ class TestOptimiserHelperValidators:
         from haute.routes._optimiser_frontier import _frontier_point_result_dict
 
         job = {
+            "config": {"constraints": {"a": {"min": 0.9}}},
             "frontier_data": {
                 "points": [
                     {
                         "converged": True,
                         "lambda_a": 0.5,
+                        "bound_a": 0.9,
                         "total_objective": 100.0,
                         "total_a": 0.9,
                         "iterations": 3.0,  # float that is actually an int
@@ -16157,11 +16348,13 @@ class TestOptimiserHelperValidators:
         from haute.routes._optimiser_frontier import _frontier_point_result_dict
 
         job = {
+            "config": {"constraints": {"a": {"min": 0.9}}},
             "frontier_data": {
                 "points": [
                     {
                         "converged": False,
                         "lambda_a": 0.5,
+                        "bound_a": 0.9,
                         "total_objective": 100.0,
                         "total_a": 0.9,
                     }
@@ -16178,11 +16371,13 @@ class TestOptimiserHelperValidators:
         from haute.routes._optimiser_frontier import _frontier_point_result_dict
 
         job = {
+            "config": {"constraints": {"a": {"min": 0.9}}},
             "frontier_data": {
                 "points": [
                     {
                         "converged": True,
                         "lambda_a": 0.5,
+                        "bound_a": 0.9,
                         "total_objective": 100.0,
                         "total_a": 0.9,
                     }
@@ -16541,6 +16736,7 @@ class TestOptimiserMutationBoundaries:
                     "total_objective": [42.0],
                     "volume": [0.9],
                     "lambda_volume": [0.0],
+                    "bound_volume": [0.9],
                     "converged": [True],
                 }
             )
@@ -16563,6 +16759,7 @@ class TestOptimiserMutationBoundaries:
                     "baseline_objective": 38.0,
                     "constraints": {"volume": 0.85},
                     "baseline_constraints": {"volume": 0.85},
+                    "effective_bounds": {"volume": {"kind": "min", "bound": 0.9}},
                     "lambdas": {"volume": 0.0},
                     "converged": True,
                 },
@@ -16610,6 +16807,7 @@ class TestOptimiserMutationBoundaries:
                     "total_objective": [42.0],
                     "volume": [0.9],
                     "lambda_volume": [0.0],
+                    "bound_volume": [0.9],
                     "converged": [True],
                 }
             )
@@ -16660,6 +16858,7 @@ class TestOptimiserMutationBoundaries:
                     "total_objective": [50.0, 60.0],
                     "volume": [0.8, 0.95],
                     "lambda_volume": [0.0, 0.7128],
+                    "bound_volume": [0.9, 0.9],
                     "converged": [True, True],
                 }
             )
@@ -17025,9 +17224,16 @@ class TestFrontierPointBaselinesAreRequired:
         from haute.routes._optimiser_frontier import _frontier_point_result_dict
 
         job = {
+            "config": {"constraints": {"a": {"min": 0.9}}},
             "frontier_data": {
                 "points": [
-                    {"converged": True, "lambda_a": 0.5, "total_objective": 100.0, "total_a": 0.9}
+                    {
+                        "converged": True,
+                        "lambda_a": 0.5,
+                        "total_objective": 100.0,
+                        "total_a": 0.9,
+                        "bound_a": 0.9,
+                    }
                 ],
                 "n_points": 1,
                 "constraint_names": ["a"],
@@ -17043,9 +17249,16 @@ class TestFrontierPointBaselinesAreRequired:
 
         bounds = {"min": 0.9, "max": 1.1}
         job = {
+            "config": {"constraints": {"a": {"min": 0.9}}},
             "frontier_data": {
                 "points": [
-                    {"converged": True, "lambda_a": 0.5, "total_objective": 100.0, "total_a": 0.9}
+                    {
+                        "converged": True,
+                        "lambda_a": 0.5,
+                        "total_objective": 100.0,
+                        "total_a": 0.9,
+                        "bound_a": 0.9,
+                    }
                 ],
                 "n_points": 1,
                 "constraint_names": ["a"],

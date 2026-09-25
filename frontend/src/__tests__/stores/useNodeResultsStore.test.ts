@@ -8,6 +8,7 @@ import useNodeResultsStore, {
   MAX_CACHED_SOLVE_RESULTS,
   MAX_CACHED_TRAIN_RESULTS,
   MAX_CACHED_EXPLORE_PIVOT_RESULTS,
+  effectiveConstraintBounds,
   explorePivotResultKey,
   hashConfig,
   resetNodeResultsDerivedCaches,
@@ -83,6 +84,7 @@ function pointSummary(overrides: Partial<FrontierPointSummary> = {}): FrontierPo
   return {
     total_objective: 150,
     constraints: {},
+    effective_bounds: {},
     lambdas: {},
     converged: true,
     iterations: null,
@@ -1377,6 +1379,64 @@ describe("useNodeResultsStore", () => {
       expect(cached.result.lambdas).toEqual(original.lambdas)
       // The original result is preserved in originalResult for the caller to use
       expect(cached.originalResult.total_objective).toBe(100)
+    })
+
+    it("effectiveConstraintBounds reads the displayed result's backend bounds, never the config", () => {
+      const s = useNodeResultsStore.getState()
+      // The node's configured bound (0.8) is not what either result was solved at.
+      s.startSolveJob("n1", "j1", "Node 1", { premium: { min: 0.8 } }, "h1", "live", 0)
+      s.completeSolveJob("n1", makeSolveResult({
+        constraints: { premium: 50, loss: 20 },
+        effective_bounds: {
+          premium: { kind: "min", bound: 48 },
+          loss: { kind: "max", bound: 25 },
+        },
+        lambdas: { premium: 0.1, loss: 0 },
+        frontier: makeFrontier({
+          points: [{ total_objective: 150, total_premium: 55, threshold_premium: 52, converged: true }],
+          point_summaries: [pointSummary({
+            constraints: { premium: 55, loss: 21 },
+            effective_bounds: {
+              premium: { kind: "min", bound: 52 },
+              loss: { kind: "max", bound: 25 },
+            },
+            lambdas: { premium: 0.3, loss: 0 },
+          })],
+          n_points: 1,
+          points_returned: 1,
+          constraint_names: ["premium", "loss"],
+          swept_axes: ["premium"],
+        }),
+      }))
+
+      // A completed frontier solve displays point 0.
+      const point = useNodeResultsStore.getState().getOptimiserPreview("n1")!
+      expect(effectiveConstraintBounds(point.result)).toEqual({
+        premium: { kind: "min", bound: 52 },
+        loss: { kind: "max", bound: 25 },
+      })
+
+      s.selectFrontierPoint("n1", null)
+      const solved = useNodeResultsStore.getState().getOptimiserPreview("n1")!
+      expect(effectiveConstraintBounds(solved.result)).toEqual({
+        premium: { kind: "min", bound: 48 },
+        loss: { kind: "max", bound: 25 },
+      })
+    })
+
+    it("effectiveConstraintBounds throws when a constraint has no backend bound", () => {
+      expect(() => effectiveConstraintBounds(makeSolveResult({
+        constraints: { premium: 50 },
+        effective_bounds: {},
+      }))).toThrow(/premium/)
+      expect(() => effectiveConstraintBounds(makeSolveResult({
+        constraints: { premium: 50 },
+        effective_bounds: { premium: { kind: "min", bound: Number.NaN } },
+      }))).toThrow(/premium/)
+      expect(() => effectiveConstraintBounds(makeSolveResult({
+        constraints: {},
+        effective_bounds: { premium: { kind: "min", bound: 1 } },
+      }))).toThrow(/premium/)
     })
 
     it("selectFrontierPoint noop for unknown node", () => {

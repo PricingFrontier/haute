@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import useOptimiserPublishStore from "../../stores/useOptimiserPublishStore"
 import OptimiserPreview from "../OptimiserPreview"
 import type { OptimiserPreviewData, FrontierData } from "../OptimiserPreview"
@@ -137,6 +137,8 @@ function makeSolveResult(
     baseline_objective: 1200000,
     constraints: { loss_ratio: 0.65 },
     baseline_constraints: { loss_ratio: 0.60 },
+    // The solve's own bound, the configured max below.
+    effective_bounds: { loss_ratio: { kind: "max", bound: 1.05 } },
     lambdas: { loss_ratio: 0.005 },
     converged: true,
     iterations: 15,
@@ -153,6 +155,7 @@ function makePointSummary(overrides: Partial<FrontierPointSummary> = {}): Fronti
   return {
     total_objective: 0,
     constraints: {},
+    effective_bounds: {},
     lambdas: {},
     converged: true,
     iterations: null,
@@ -169,9 +172,13 @@ function makePointSummary(overrides: Partial<FrontierPointSummary> = {}): Fronti
 }
 
 function makeFrontier(n = 5, overrides: Partial<FrontierData> = {}): FrontierData {
+  // Each point is solved at its own swept max, 0.58, 0.59, ...: point 4
+  // (0.63 against 0.62) breaches it, though it meets the configured 1.05.
   const points = Array.from({ length: n }, (_, i) => ({
     total_objective: 1200000 + i * 10000,
     total_loss_ratio: 0.55 + i * 0.02,
+    threshold_loss_ratio: 0.58 + i * 0.01,
+    bound_loss_ratio: 0.58 + i * 0.01,
     lambda_loss_ratio: 0.001 + i * 0.001,
     converged: true,
   }))
@@ -180,15 +187,34 @@ function makeFrontier(n = 5, overrides: Partial<FrontierData> = {}): FrontierDat
     point_summaries: points.map((point) => makePointSummary({
       total_objective: point.total_objective,
       constraints: { loss_ratio: point.total_loss_ratio },
+      effective_bounds: { loss_ratio: { kind: "max", bound: point.bound_loss_ratio } },
       lambdas: { loss_ratio: point.lambda_loss_ratio },
     })),
     n_points: n,
     points_returned: n,
     constraint_names: ["loss_ratio"],
+    swept_axes: ["loss_ratio"],
     points_limit: 2000,
     points_truncated: false,
     ...overrides,
   }
+}
+
+/** The displayed result for a selected point, as the results store builds it:
+ *  the point's server summary over the as-solved result. */
+function pointResult(frontier: FrontierData, index: number, base = makeSolveResult()): OptimiserSolveResult {
+  const summary = frontier.point_summaries[index]
+  const overlay: Record<string, unknown> = {}
+  for (const [field, value] of Object.entries(summary)) overlay[field] = value ?? undefined
+  return { ...base, ...overlay, selected_frontier_point: index }
+}
+
+/** The text of each cell in one constraint's attainment row. */
+function attainmentCells(name: string): (string | null)[] {
+  const table = screen.getByRole("table", { name: "Constraint attainment" })
+  const row = within(table).getByRole("rowheader", { name }).closest("tr")
+  if (!row) throw new Error(`No attainment row for ${name}`)
+  return within(row).getAllByRole("cell").map((cell) => cell.textContent)
 }
 
 function makeData(overrides: Partial<OptimiserPreviewData> = {}): OptimiserPreviewData {
@@ -317,7 +343,8 @@ describe("OptimiserPreview", () => {
     it("renders lambda values", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Summary"))
-      expect(screen.getByText("λ (shadow price)")).toBeInTheDocument()
+      expect(screen.getByRole("columnheader", { name: /λ \(multiplier\)/ })).toBeInTheDocument()
+      expect(screen.queryByText(/shadow price/)).not.toBeInTheDocument()
       expect(screen.getByText("0.005000")).toBeInTheDocument()
     })
 
@@ -824,6 +851,7 @@ describe("OptimiserPreview", () => {
             n_points: 0,
             points_returned: 0,
             constraint_names: [],
+            swept_axes: [],
             points_limit: 2000,
             points_truncated: false,
           },
@@ -888,15 +916,12 @@ describe("OptimiserPreview", () => {
       expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
     })
 
-    it("detail card shows constraint values with met/unmet indicators", () => {
+    it("detail card states the point's attainment against its own bound in text", () => {
+      const frontier = makeFrontier()
       renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
+        data: makeData({ frontier, selectedPointIndex: 0, result: pointResult(frontier, 0) }),
       })
-      // The constraint name should appear in the detail card
-      expect(screen.getByText("Constraints")).toBeInTheDocument()
+      expect(attainmentCells("loss_ratio")).toEqual(["max", "0.58", "0.55", "+0.03 (+5.17%)", "Met", "0.001000"])
     })
 
     it("detail card does not show baseline comparisons for selected frontier points", () => {
@@ -920,33 +945,12 @@ describe("OptimiserPreview", () => {
     })
 
     it("detail card shows lambda values", () => {
+      const frontier = makeFrontier()
       renderPreview({
-        data: makeData({
-          frontier: makeFrontier(),
-          selectedPointIndex: 0,
-        }),
+        data: makeData({ frontier, selectedPointIndex: 0, result: pointResult(frontier, 0) }),
       })
-      expect(screen.getByText("λ (shadow price)")).toBeInTheDocument()
-    })
-
-    it("detail card reads nested constraint and lambda maps from frontier rows", () => {
-      renderPreview({
-        data: makeData({
-          frontier: makeFrontier(1, {
-            points: [
-              {
-                total_objective: 1250000,
-                constraints: { loss_ratio: 0.72 },
-                lambdas: { loss_ratio: 0.012345 },
-              },
-            ],
-          }),
-          selectedPointIndex: 0,
-        }),
-      })
-
-      expect(screen.getByText("0.7200")).toBeInTheDocument()
-      expect(screen.getByText("0.012345")).toBeInTheDocument()
+      expect(screen.getByRole("columnheader", { name: /λ \(multiplier\)/ })).toBeInTheDocument()
+      expect(screen.queryByText(/shadow price/)).not.toBeInTheDocument()
     })
 
     it("constraint dropdown appears when multiple constraints exist", () => {
@@ -963,6 +967,7 @@ describe("OptimiserPreview", () => {
         n_points: 3,
         points_returned: 3,
         constraint_names: ["loss_ratio", "volume"],
+        swept_axes: ["loss_ratio", "volume"],
         points_limit: 2000,
         points_truncated: false,
       }
@@ -1126,33 +1131,49 @@ describe("OptimiserPreview", () => {
     })
   })
 
-  describe("Summary tab constraint indicators", () => {
-    it("renders met constraint with green indicator dot", () => {
+  describe("Summary tab constraint status", () => {
+    it("says a met constraint is Met in text", () => {
       const data = makeData({
         result: makeSolveResult({
           constraints: { loss_ratio: 0.60 },
           baseline_constraints: { loss_ratio: 0.60 },
         }),
-        constraints: { loss_ratio: { max: 1.05 } },
       })
-      const { container } = renderPreview({ data })
+      renderPreview({ data })
       fireEvent.click(screen.getByText("Summary"))
-      const dots = container.querySelectorAll('span[style*="background: var(--success)"]')
-      expect(dots.length).toBeGreaterThanOrEqual(1)
+      expect(attainmentCells("loss_ratio")[4]).toBe("Met")
     })
 
-    it("renders unmet constraint with red indicator dot", () => {
+    it("says a breached constraint is Breached, with its signed slack", () => {
       const data = makeData({
         result: makeSolveResult({
           constraints: { loss_ratio: 999 },
           baseline_constraints: { loss_ratio: 1 },
         }),
-        constraints: { loss_ratio: { max: 1.05 } },
       })
-      const { container } = renderPreview({ data })
+      renderPreview({ data })
       fireEvent.click(screen.getByText("Summary"))
-      const redDots = container.querySelectorAll('span[style*="background: var(--danger)"]')
-      expect(redDots.length).toBeGreaterThanOrEqual(1)
+      const cells = attainmentCells("loss_ratio")
+      expect(cells[4]).toBe("Breached")
+      expect(cells[3]).toBe("-997.95 (-95,042.86%)")
+    })
+  })
+
+  describe("constraint attainment across panes (G03)", () => {
+    it("prints the selected point's own bound and status on Summary and the detail card alike", () => {
+      const frontier = makeFrontier()
+      renderPreview({
+        data: makeData({ frontier, selectedPointIndex: 4, result: pointResult(frontier, 4) }),
+      })
+
+      const detail = attainmentCells("loss_ratio")
+      fireEvent.click(screen.getByText("Summary"))
+      const summary = attainmentCells("loss_ratio")
+
+      expect(summary).toEqual(detail)
+      // The point's swept 0.62 breaches; the configured and as-solved 1.05 would not.
+      expect(summary.slice(0, 3)).toEqual(["max", "0.62", "0.63"])
+      expect(summary[4]).toBe("Breached")
     })
   })
 
@@ -1163,12 +1184,11 @@ describe("OptimiserPreview", () => {
       expect(screen.getByText("0.005000")).toBeInTheDocument()
     })
 
-    it("renders lambda constraint name", () => {
+    it("renders the λ column beside its constraint", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Summary"))
-      const lambdaSection = screen.getByText("λ (shadow price)")
-      expect(lambdaSection).toBeInTheDocument()
-      expect(screen.getAllByText("loss_ratio").length).toBeGreaterThanOrEqual(1)
+      expect(screen.getByRole("columnheader", { name: /λ \(multiplier\)/ })).toBeInTheDocument()
+      expect(attainmentCells("loss_ratio")[5]).toBe("0.005000")
     })
   })
 
@@ -1214,12 +1234,13 @@ describe("OptimiserPreview", () => {
       expect(screen.queryByText(/\? CD iters/)).not.toBeInTheDocument()
     })
 
-    it("hides Lambdas section in ratebook mode", () => {
+    it("shows λ on Summary for a ratebook result, as the detail card does", () => {
       renderPreview({
         data: makeData({ result: makeSolveResult({ mode: "ratebook" }) }),
       })
       fireEvent.click(screen.getByText("Summary"))
-      expect(screen.queryByText("Lambdas")).not.toBeInTheDocument()
+      expect(screen.getByRole("columnheader", { name: /λ \(multiplier\)/ })).toBeInTheDocument()
+      expect(attainmentCells("loss_ratio")[5]).toBe("0.005000")
     })
 
     it("shows clamp rate in ratebook mode", () => {

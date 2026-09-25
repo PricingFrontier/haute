@@ -9,6 +9,8 @@ from haute.routes._frontier_point_summary import (
     NON_CONVERGED_WARNING,
     FrontierPointDataError,
     apply_frontier_point_summary,
+    constraint_kinds,
+    effective_bounds,
     frontier_point_summary,
 )
 from haute.routes._optimiser_limits import limited_frontier_payload
@@ -28,9 +30,13 @@ _SV = {
 }
 
 
+_KINDS = {"volume": "min"}
+
+
 def _row(**overrides: object) -> dict[str, object]:
     row: dict[str, object] = {
         "threshold_volume": 5.0,
+        "bound_volume": 5.0,
         "total_objective": 120.0,
         "total_volume": 5.2,
         "lambda_volume": 0.4,
@@ -43,11 +49,12 @@ def _row(**overrides: object) -> dict[str, object]:
 
 
 def test_summary_reads_every_point_specific_field_from_the_library_row() -> None:
-    summary = frontier_point_summary(_row(), ["volume"])
+    summary = frontier_point_summary(_row(), _KINDS)
 
     assert summary == {
         "total_objective": 120.0,
         "constraints": {"volume": 5.2},
+        "effective_bounds": {"volume": {"kind": "min", "bound": 5.0}},
         "lambdas": {"volume": 0.4},
         "converged": True,
         "iterations": 7,
@@ -75,7 +82,7 @@ def test_summary_reads_every_point_specific_field_from_the_library_row() -> None
 
 
 def test_a_non_converged_point_carries_the_warning() -> None:
-    summary = frontier_point_summary(_row(converged=False), ["volume"])
+    summary = frontier_point_summary(_row(converged=False), _KINDS)
 
     assert summary["converged"] is False
     assert summary["warning"] == NON_CONVERGED_WARNING
@@ -93,7 +100,7 @@ def test_applying_a_summary_replaces_point_fields_and_removes_absent_ones() -> N
         "warning": "stale",
     }
 
-    result = apply_frontier_point_summary(base, frontier_point_summary(_row(), ["volume"]))
+    result = apply_frontier_point_summary(base, frontier_point_summary(_row(), _KINDS))
 
     assert result["mode"] == "online"
     assert result["baseline_objective"] == 90.0
@@ -107,13 +114,13 @@ def test_applying_a_summary_replaces_point_fields_and_removes_absent_ones() -> N
 def test_the_frontier_payload_carries_one_summary_per_returned_point() -> None:
     points = pl.DataFrame([_row(total_objective=110.0), _row(total_objective=130.0)])
 
-    payload = limited_frontier_payload(points, constraint_names=["volume"])
+    payload = limited_frontier_payload(points, constraint_kinds=_KINDS, swept_axes=["volume"])
 
     assert [summary["total_objective"] for summary in payload["point_summaries"]] == [
         110.0,
         130.0,
     ]
-    assert payload["point_summaries"][0] == frontier_point_summary(payload["points"][0], ["volume"])
+    assert payload["point_summaries"][0] == frontier_point_summary(payload["points"][0], _KINDS)
 
 
 @pytest.mark.parametrize(
@@ -122,12 +129,137 @@ def test_the_frontier_payload_carries_one_summary_per_returned_point() -> None:
         (_row(converged=None), 400, "Frontier point field 'converged' is missing"),
         ({k: v for k, v in _row().items() if k != "lambda_volume"}, 400, "no lambda values"),
         (_row(total_volume=float("nan")), 500, "'total_volume' is not finite"),
+        (
+            {k: v for k, v in _row().items() if k != "bound_volume"},
+            500,
+            "'bound_volume' is missing",
+        ),
+        (_row(bound_volume=float("inf")), 500, "'bound_volume' is not finite"),
     ],
 )
 def test_a_point_that_cannot_be_summarised_fails_the_frontier(
     row: dict[str, object], status_code: int, message: str
 ) -> None:
     with pytest.raises(FrontierPointDataError, match=message) as exc:
-        limited_frontier_payload(pl.DataFrame([row]), constraint_names=["volume"])
+        limited_frontier_payload(
+            pl.DataFrame([row]), constraint_kinds=_KINDS, swept_axes=["volume"]
+        )
 
     assert exc.value.status_code == status_code
+
+
+# ---------------------------------------------------------------------------
+# OPT-V01: every configured constraint, swept or not, with its absolute bound
+# ---------------------------------------------------------------------------
+
+
+def _two_constraint_row(**overrides: object) -> dict[str, object]:
+    """A library row sweeping ``volume`` only: ``margin`` has no threshold but
+    still carries its total, λ and absolute bound, as price-contour 0.5 emits."""
+    return _row(total_margin=40.0, lambda_margin=0.0, bound_margin=45.0, **overrides)
+
+
+_TWO_KINDS = {"volume": "min", "margin": "max"}
+
+
+def test_a_summary_carries_every_configured_constraint_swept_or_not() -> None:
+    summary = frontier_point_summary(_two_constraint_row(), _TWO_KINDS)
+
+    assert summary["constraints"] == {"volume": 5.2, "margin": 40.0}
+    assert summary["lambdas"] == {"volume": 0.4, "margin": 0.0}
+    assert summary["effective_bounds"] == {
+        "volume": {"kind": "min", "bound": 5.0},
+        "margin": {"kind": "max", "bound": 45.0},
+    }
+    # Configured order, not the row's column order.
+    assert list(summary["effective_bounds"]) == ["volume", "margin"]
+
+
+def test_the_bound_is_the_library_absolute_bound_not_the_fractional_threshold() -> None:
+    """For a pct constraint ``threshold_<c>`` is the user's fraction; the
+    summary reports the library's absolute ``bound_<c>`` and never rescales."""
+    row = _row(threshold_volume=0.95, bound_volume=4.75)
+
+    summary = frontier_point_summary(row, {"volume": "min"})
+
+    assert summary["effective_bounds"] == {"volume": {"kind": "min", "bound": 4.75}}
+
+
+def test_the_frontier_payload_lists_every_constraint_and_the_swept_axes_apart() -> None:
+    payload = limited_frontier_payload(
+        pl.DataFrame([_two_constraint_row()]),
+        constraint_kinds=_TWO_KINDS,
+        swept_axes=["volume"],
+    )
+
+    assert payload["constraint_names"] == ["volume", "margin"]
+    assert payload["swept_axes"] == ["volume"]
+    assert set(payload["point_summaries"][0]["constraints"]) == {"volume", "margin"}
+
+
+def test_a_swept_axis_that_is_not_a_configured_constraint_is_rejected() -> None:
+    with pytest.raises(ValueError, match="not configured constraints: \\['conversion'\\]"):
+        limited_frontier_payload(
+            pl.DataFrame([_row()]),
+            constraint_kinds=_KINDS,
+            swept_axes=["conversion"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("spec", "kind"),
+    [
+        ({"min": 1.0}, "min"),
+        ({"min_pct": 0.95}, "min"),
+        ({"max": 2.0}, "max"),
+        ({"max_pct": 1.05}, "max"),
+    ],
+)
+def test_constraint_kinds_come_from_the_configured_threshold_key(
+    spec: dict[str, float], kind: str
+) -> None:
+    assert constraint_kinds({"volume": spec}) == {"volume": kind}
+
+
+@pytest.mark.parametrize(
+    "constraints",
+    [
+        {"volume": {}},
+        {"volume": {"min": 1.0, "max": 2.0}},
+        {"volume": {"target": 1.0}},
+        {"volume": 1.0},
+        [("volume", {"min": 1.0})],
+    ],
+)
+def test_constraint_kinds_reject_a_spec_without_exactly_one_threshold(constraints: object) -> None:
+    with pytest.raises(ValueError, match="constraint"):
+        constraint_kinds(constraints)
+
+
+def test_effective_bounds_pair_each_kind_with_the_library_bound_in_configured_order() -> None:
+    bounds = effective_bounds(
+        {"volume": "min", "margin": "max"},
+        {"margin": 45.0, "volume": 5.0},
+    )
+
+    assert bounds == {
+        "volume": {"kind": "min", "bound": 5.0},
+        "margin": {"kind": "max", "bound": 45.0},
+    }
+    assert list(bounds) == ["volume", "margin"]
+
+
+@pytest.mark.parametrize(
+    ("library_bounds", "message"),
+    [
+        ({"volume": 5.0}, "margin"),
+        ({"volume": 5.0, "margin": 45.0, "extra": 1.0}, "extra"),
+        ({"volume": 5.0, "margin": float("nan")}, "not finite"),
+        ({"volume": 5.0, "margin": None}, "margin"),
+    ],
+)
+def test_effective_bounds_fail_loudly_when_the_library_bounds_do_not_match(
+    library_bounds: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        effective_bounds({"volume": "min", "margin": "max"}, library_bounds)

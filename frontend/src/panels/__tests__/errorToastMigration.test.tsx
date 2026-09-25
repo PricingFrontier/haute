@@ -347,6 +347,8 @@ vi.mock("../../stores/useNodeResultsStore", () => ({
       getOptimiserPreview: () => null,
       selectFrontierPoint: H.storeSelectPoint,
       updateFrontierAfterSelect: H.storeUpdateAfterSelect,
+      solveResults: {},
+      solveJobs: {},
     }),
 }))
 /** A local-only inventory, so every node can log and nothing is probed. */
@@ -425,6 +427,7 @@ describe("OptimiserPreview frontier-point switching stays local", () => {
         baseline_objective: 1200000,
         constraints: { loss_ratio: 0.65 },
         baseline_constraints: { loss_ratio: 0.60 },
+        effective_bounds: { loss_ratio: { kind: "max", bound: 1.05 } },
         lambdas: { loss_ratio: 0.005 },
         converged: true,
         iterations: 15,
@@ -443,6 +446,7 @@ describe("OptimiserPreview frontier-point switching stays local", () => {
         point_summaries: Array.from({ length: 5 }, (_, i) => ({
           total_objective: 1200000 + i * 10000,
           constraints: { loss_ratio: 0.55 + i * 0.02 },
+          effective_bounds: { loss_ratio: { kind: "max" as const, bound: 0.58 + i * 0.01 } },
           lambdas: { loss_ratio: 0.001 + i * 0.001 },
           converged: true,
           iterations: null,
@@ -458,6 +462,7 @@ describe("OptimiserPreview frontier-point switching stays local", () => {
         n_points: 5,
         points_returned: 5,
         constraint_names: ["loss_ratio"],
+        swept_axes: ["loss_ratio"],
         points_limit: 2000,
         points_truncated: false,
       },

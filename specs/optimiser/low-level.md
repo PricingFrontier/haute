@@ -335,11 +335,13 @@ an execution-context stage — calls:
   `combined_factor_bounds = {"min": sv[0], "max": sv[-1]}` from the solved grid's
   `QuoteGrid.scenario_values` (the Float32 grid values widened to Python floats, exactly what
   the solver scored; `combined_factor_bounds_from_grid` in `src/haute/_ratebook_collar.py`),
-  and reads `clamp_rate` and `cd_iterations` directly off the library result. See Runtime
-  ratebook apply below.
+  and reads `clamp_rate` and `cd_iterations` directly off the library result. Like an online
+  result, a ratebook result reports the shape of the grid it scored: `n_quotes` and `n_steps`
+  come from the solved `QuoteGrid`, so the result preview's provenance strip and the artifact's
+  `input_summary` name them for both modes. See Runtime ratebook apply below.
 
 Both call the shared `_finalize_solve_result`, which builds the API-facing
-`result_dict`, optionally computes an efficient frontier inline (non-fatal on failure — a
+`result_dict` (including `effective_bounds`, see Constraint bounds below), optionally computes an efficient frontier inline (non-fatal on failure — a
 frontier failure is recorded but does not fail the solve), persists the online apply-result
 artifact (online mode only: `_persist_apply_result_artifact` requires a per-quote Polars
 frame and raises `TypeError` otherwise; it frees the in-memory result dataframe as a side
@@ -462,7 +464,10 @@ a background sweep phase, mirroring the solve submission pattern:
    capped via `haute.routes._optimiser_limits.limited_frontier_payload` (caps to
    `FRONTIER_POINT_LIMIT` while always reporting the true total and truncation flag, and attaches
    `point_summaries`, one `frontier_point_summary` per returned point in point order; a point that
-   cannot be summarised fails the frontier) and the
+   cannot be summarised fails the frontier). The payload's `constraint_names` is **every**
+   configured constraint and `swept_axes` is the constraints the sweep varied (the ranges'
+   keys); the solve-time frontier, the recompute sweep and frontier select all summarise every
+   configured constraint, never only the swept ones. The
    result stored as both the size-limited `result["frontier"]` and the raw `frontier_data` field
    on the *parent solve job* (via `_store.atomic_update(parent_job_id, ..., expected_status=
    "completed")` — 409-shaped as a `contract_error` on the frontier job if the solve job's state
@@ -517,14 +522,35 @@ concurrently). Missing or misaligned `frontier_factor_tables` is a `500`, never 
 ### Frontier point summaries
 
 A frontier point's summary holds every result field that differs from the solve it was swept
-from: total objective, constraint totals (from `total_<name>`, else a nested constraints map,
-else the bare name), lambdas (from the `lambda_<name>` columns), converged, iterations, CD
+from: total objective, constraint totals for every configured constraint, swept or not (from
+`total_<name>`, else a nested constraints map, else the bare name), `effective_bounds` (see
+Constraint bounds below, from the row's `bound_<name>`), lambdas (from the `lambda_<name>` columns), converged, iterations, CD
 iterations, clamp rate, history, scenario-value stats (from the `sv_*` columns), scenario-value
 histogram, factor tables, the non-converged warning and the frontier error. Every field is
 always present and `null` where the point has none; applying the summary to a base result
 removes a `null` field. A point with no lambdas or no `converged` is a 400 when selected, and a
-missing or non-finite number or conflicting lambdas a 500; while the frontier is being built
-either fails the frontier.
+missing or non-finite number (including a missing `bound_<name>`) or conflicting lambdas a 500;
+while the frontier is being built either fails the frontier. Select summarises the stored
+`frontier_data["constraint_names"]`, which must equal the job's configured constraints (a 500
+otherwise), so a selected ratebook point already carries every configured total when it is
+materialised.
+
+### Constraint bounds (`effective_bounds`)
+
+Every solve result, frontier point summary and select response carries
+`effective_bounds: {name: {"kind": "min" | "max", "bound": float}}` for every configured
+constraint, in configured order: the absolute bound that result was solved at. `kind` comes
+from the configured threshold key (`min`/`min_pct` → `min`, `max`/`max_pct` → `max`;
+`constraint_kinds` in `_frontier_point_summary.py`). `bound` is read from price-contour and
+never derived by haute: a solve result's `constraint_bounds[name]` (`OnlineResult` and
+`RatebookResult` alike) and a frontier row's `bound_<name>`. For a pct constraint the frontier
+`threshold_<name>` is a fraction, and the library's bound is that fraction times the
+constraint's baseline total at the grid's nearest-1.0 step; haute never multiplies a fraction
+by a baseline itself. A missing or non-finite bound, or a bound set that differs from the
+configured constraints, fails loudly. `effective_constraints` (the published artifact's
+constraint specs) still comes from `_frontier_point_constraints_override`. The results pane
+judges attainment only against `effective_bounds` (see the
+[frontend spec](../frontend-modelling-optimiser-ui/high-level.md)).
 
 ### Apply preview (`POST /apply`, `haute.routes.optimiser.apply_lambdas`)
 

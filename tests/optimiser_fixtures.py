@@ -53,6 +53,8 @@ def make_frontier_point(
     """
     point: dict[str, Any] = {
         "threshold_volume": threshold_volume,
+        # price-contour's absolute bound; equal to the threshold for a min/max constraint.
+        "bound_volume": threshold_volume,
         "total_objective": objective,
         "total_volume": volume,
         "lambda_volume": lambda_volume,
@@ -132,6 +134,7 @@ def make_solved_result(
     constraints: dict[str, float] | None = None,
     baseline_constraints: dict[str, float] | None = None,
     lambdas: dict[str, float] | None = None,
+    effective_bounds: dict[str, dict[str, Any]] | None = None,
     converged: bool = True,
     **extra: Any,
 ) -> dict[str, Any]:
@@ -143,6 +146,11 @@ def make_solved_result(
         "constraints": constraints if constraints is not None else {"volume": 0.85},
         "baseline_constraints": (
             baseline_constraints if baseline_constraints is not None else {"volume": 0.85}
+        ),
+        "effective_bounds": (
+            effective_bounds
+            if effective_bounds is not None
+            else {"volume": {"kind": "min", "bound": 0.9}}
         ),
         "lambdas": lambdas if lambdas is not None else {"volume": 0.0},
         "converged": converged,
@@ -163,6 +171,7 @@ def make_solve_result_namespace(
     total_constraints: dict[str, float] | None = None,
     baseline_constraints: dict[str, float] | None = None,
     lambdas: dict[str, float] | None = None,
+    constraint_bounds: dict[str, float] | None = None,
     converged: bool = True,
     dataframe: pl.DataFrame | None = None,
     **extra: Any,
@@ -182,6 +191,7 @@ def make_solve_result_namespace(
             baseline_constraints if baseline_constraints is not None else {"volume": 0.90}
         ),
         lambdas=lambdas if lambdas is not None else {"volume": 0.7},
+        constraint_bounds=(constraint_bounds if constraint_bounds is not None else {"volume": 0.9}),
         converged=converged,
         dataframe=dataframe
         if dataframe is not None

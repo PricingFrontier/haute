@@ -1314,6 +1314,7 @@ export interface OptimiserFrontierResponse {
   points_returned: number;
   points_truncated: boolean;
   status: string;
+  swept_axes: string[];
 }
 /**
  * Every result field of one frontier point that differs from its solve.
@@ -1328,6 +1329,9 @@ export interface OptimiserFrontierPointSummary {
     [k: string]: number;
   };
   converged: boolean;
+  effective_bounds: {
+    [k: string]: OptimiserEffectiveBound;
+  };
   factor_tables: {
     [k: string]: {
       [k: string]: unknown;
@@ -1343,6 +1347,17 @@ export interface OptimiserFrontierPointSummary {
   scenario_value_stats: OptimiserScenarioValueStats | null;
   total_objective: number;
   warning: string | null;
+}
+/**
+ * The absolute bound a result was solved at for one constraint.
+ *
+ * ``bound`` is price-contour's (``constraint_bounds`` or a frontier row's
+ * ``bound_<name>``); for a ``min_pct``/``max_pct`` constraint it is the
+ * fraction times the constraint's baseline total, never the fraction.
+ */
+export interface OptimiserEffectiveBound {
+  bound: number;
+  kind: 'min' | 'max';
 }
 export interface OptimiserHistoryEntry {
   all_constraints_satisfied: boolean | null;
@@ -1385,6 +1400,9 @@ export interface OptimiserSolveResult {
     [k: string]: number;
   };
   converged: boolean;
+  effective_bounds: {
+    [k: string]: OptimiserEffectiveBound;
+  };
   factor_tables: {
     [k: string]: {
       [k: string]: unknown;
@@ -1545,6 +1563,9 @@ export interface OptimiserFrontierSelectResponse {
     [k: string]: number;
   };
   converged: boolean;
+  effective_bounds: {
+    [k: string]: OptimiserEffectiveBound;
+  };
   error: string | null;
   factor_tables: {
     [k: string]: {

@@ -32,6 +32,7 @@ class _FakeSolveResult:
         total_constraints: dict[str, float] | None = None,
         baseline_constraints: dict[str, float] | None = None,
         lambdas: dict[str, float] | None = None,
+        constraint_bounds: dict[str, float] | None = None,
     ) -> None:
         self.converged = converged
         self.total_objective = total_objective
@@ -39,8 +40,14 @@ class _FakeSolveResult:
         self.total_constraints = total_constraints or {"loss": 1.0}
         self.baseline_constraints = baseline_constraints or {"loss": 0.9}
         self.lambdas = lambdas or {"loss": 0.5}
+        # The absolute bound of the configured ``{"loss": {"max": 1.05}}``.
+        self.constraint_bounds = {"loss": 1.05} if constraint_bounds is None else constraint_bounds
         # Every online result carries its per-quote frame.
         self.dataframe = pl.DataFrame({"optimal_scenario_value": [1.0]})
+
+
+# A running solve job; its config names the constraint the fake result reports.
+_RUNNING_JOB = {"status": "running", "config": {"constraints": {"loss": {"max": 1.05}}}}
 
 
 class TestFinalizeOnline:
@@ -51,7 +58,7 @@ class TestFinalizeOnline:
 
         result = _FakeSolveResult(converged=True)
         store = JobStore()
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(_RUNNING_JOB)
         _finalize_solve_result(
             result,
             mode="online",
@@ -77,7 +84,7 @@ class TestFinalizeOnline:
 
         result = _FakeSolveResult()
         store = JobStore()
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(_RUNNING_JOB)
         _finalize_solve_result(
             result,
             mode="online",
@@ -98,7 +105,7 @@ class TestFinalizeOnline:
 
         result = _FakeSolveResult(converged=False)
         store = JobStore()
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(_RUNNING_JOB)
         _finalize_solve_result(
             result,
             mode="ratebook",
@@ -119,7 +126,7 @@ class TestFinalizeOnline:
 
         result = _FakeSolveResult()
         store = JobStore()
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(_RUNNING_JOB)
         _finalize_solve_result(
             result,
             mode="online",
@@ -168,7 +175,7 @@ class TestFinalizeOnline:
 
         result = ResultWithDF()
         store = JobStore()
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(_RUNNING_JOB)
         _finalize_solve_result(
             result,
             mode="online",
@@ -189,7 +196,7 @@ class TestFinalizeOnline:
 
         result = _FakeSolveResult()
         store = JobStore()
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(_RUNNING_JOB)
         _finalize_solve_result(
             result,
             mode="online",
@@ -215,7 +222,7 @@ class TestFinalizeRatebook:
 
         result = _FakeSolveResult(converged=True)
         store = JobStore()
-        job_id = store.create_job({"status": "running"})
+        job_id = store.create_job(_RUNNING_JOB)
         _finalize_solve_result(
             result,
             mode="ratebook",
@@ -291,8 +298,20 @@ class TestFinalizeFrontier:
         mock_solver = MagicMock()
         mock_points = MagicMock()
         mock_points.to_dicts.return_value = [
-            {"total_objective": 100.0, "total_loss": 0.92, "lambda_loss": 0.01, "converged": True},
-            {"total_objective": 105.0, "total_loss": 0.95, "lambda_loss": 0.02, "converged": True},
+            {
+                "total_objective": 100.0,
+                "total_loss": 0.92,
+                "lambda_loss": 0.01,
+                "bound_loss": 1.05,
+                "converged": True,
+            },
+            {
+                "total_objective": 105.0,
+                "total_loss": 0.95,
+                "lambda_loss": 0.02,
+                "bound_loss": 1.05,
+                "converged": True,
+            },
         ]
         mock_points.__len__ = lambda self: 2
         mock_frontier_result = MagicMock()
@@ -343,8 +362,20 @@ class TestFinalizeFrontier:
         mock_solver = MagicMock()
         mock_points = MagicMock()
         mock_points.to_dicts.return_value = [
-            {"total_objective": 100.0, "total_loss": 0.92, "lambda_loss": 0.01, "converged": True},
-            {"total_objective": 105.0, "total_loss": 0.95, "lambda_loss": 0.02, "converged": True},
+            {
+                "total_objective": 100.0,
+                "total_loss": 0.92,
+                "lambda_loss": 0.01,
+                "bound_loss": 1.05,
+                "converged": True,
+            },
+            {
+                "total_objective": 105.0,
+                "total_loss": 0.95,
+                "lambda_loss": 0.02,
+                "bound_loss": 1.05,
+                "converged": True,
+            },
         ]
         mock_points.__len__ = lambda self: 2
         mock_frontier_result = MagicMock()
@@ -381,7 +412,7 @@ class TestFinalizeFrontier:
         """Online mode + empty constraints → frontier_data is None."""
         from haute.routes._optimiser_solver import _finalize_solve_result
 
-        result = _FakeSolveResult(converged=True)
+        result = _FakeSolveResult(converged=True, constraint_bounds={})
         store = JobStore()
         job_id = store.create_job(
             {
@@ -455,6 +486,7 @@ class TestFinalizeFrontier:
         result = _FakeSolveResult(
             converged=True,
             baseline_constraints={"loss": 0.9, "zero_cstr": 0.0},
+            constraint_bounds={"loss": 1.05, "zero_cstr": 1.0},
         )
         store = JobStore()
         job_id = store.create_job(
@@ -484,8 +516,10 @@ class TestFinalizeFrontier:
                 "total_objective": 100.0,
                 "total_loss": 0.92,
                 "lambda_loss": 0.01,
+                "bound_loss": 1.05,
                 "total_zero_cstr": 0.95,
                 "lambda_zero_cstr": 0.0,
+                "bound_zero_cstr": 1.0,
                 "converged": True,
             },
         ]

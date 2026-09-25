@@ -213,6 +213,7 @@ def _frontier_select_response(result: dict[str, Any]) -> OptimiserFrontierSelect
         constraints=result["constraints"],
         baseline_objective=result["baseline_objective"],
         baseline_constraints=result["baseline_constraints"],
+        effective_bounds=result["effective_bounds"],
         lambdas=result["lambdas"],
         converged=result["converged"],
         iterations=result.get("iterations"),

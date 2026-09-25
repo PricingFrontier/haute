@@ -3139,6 +3139,7 @@ describe("API response guards", () => {
       point_summaries: [{
         total_objective: 1,
         constraints: { loss: 1 },
+        effective_bounds: { loss: { kind: "max", bound: 1 } },
         lambdas: { loss: 0.1 },
         converged: true,
         iterations: null,
@@ -3154,6 +3155,7 @@ describe("API response guards", () => {
       n_points: 2001,
       points_returned: 1,
       constraint_names: ["loss"],
+      swept_axes: ["loss"],
       points_limit: 2000,
       points_truncated: true,
       job_id: null,
@@ -3166,6 +3168,7 @@ describe("API response guards", () => {
     const summary = {
       total_objective: 1,
       constraints: { loss: 1 },
+      effective_bounds: { loss: { kind: "max", bound: 1 } },
       lambdas: { loss: 0.1 },
       converged: true,
       iterations: null,
@@ -3186,6 +3189,7 @@ describe("API response guards", () => {
         n_points: 2,
         points_returned: 2,
         constraint_names: ["loss"],
+        swept_axes: ["loss"],
         points_limit: 2000,
         points_truncated: false,
         job_id: null,
@@ -3199,6 +3203,7 @@ describe("API response guards", () => {
     const summary = {
       total_objective: 1,
       constraints: { loss: 1 },
+      effective_bounds: { loss: { kind: "max", bound: 1 } },
       lambdas: { loss: 0.1 },
       converged: true,
       iterations: null,
@@ -3218,6 +3223,7 @@ describe("API response guards", () => {
       n_points: 1,
       points_returned: 1,
       constraint_names: ["loss"],
+      swept_axes: ["loss"],
       points_limit: 2000,
       points_truncated: false,
       job_id: null,
@@ -3227,6 +3233,14 @@ describe("API response guards", () => {
       "OptimiserFrontierStatusResponse: invalid contract at /result/point_summaries/0/warning: required",
     )
     expect(parseFrontierResponse(payload(summary)).point_summaries[0]?.warning).toBeNull()
+    const { effective_bounds: _bounds, ...withoutBounds } = summary; void _bounds
+    expect(() => parseFrontierResponse(payload(withoutBounds))).toThrow(
+      "OptimiserFrontierStatusResponse: invalid contract at /result/point_summaries/0/effective_bounds: required",
+    )
+    expect(() => parseFrontierResponse(payload({
+      ...summary,
+      effective_bounds: { loss: { kind: "min_pct", bound: 1 } },
+    }))).toThrow("OptimiserFrontierStatusResponse: invalid contract at /result/point_summaries/0/effective_bounds/loss/kind: enum")
   })
 
   it("parses every field of a fully populated frontier point summary", () => {
@@ -3237,6 +3251,7 @@ describe("API response guards", () => {
     const summary = {
       total_objective: 151,
       constraints: { loss: 0.93 },
+      effective_bounds: { loss: { kind: "max", bound: 1 } },
       lambdas: { loss: 0.4 },
       converged: false,
       iterations: 19,
@@ -3259,6 +3274,7 @@ describe("API response guards", () => {
       n_points: 1,
       points_returned: 1,
       constraint_names: ["loss"],
+      swept_axes: ["loss"],
       points_limit: 2000,
       points_truncated: false,
       job_id: null,
@@ -3273,6 +3289,7 @@ describe("API response guards", () => {
         n_points: 1,
         points_returned: 1,
         constraint_names: ["loss"],
+        swept_axes: ["loss"],
         points_limit: 2000,
         points_truncated: false,
         job_id: null,
@@ -3336,6 +3353,7 @@ describe("API response guards", () => {
       constraints: { loss: 1 },
       baseline_objective: 1,
       baseline_constraints: { loss: 1 },
+      effective_bounds: { loss: { kind: "max", bound: 1 } },
       lambdas: { loss: 0.1 },
       converged: true,
       iterations: null,

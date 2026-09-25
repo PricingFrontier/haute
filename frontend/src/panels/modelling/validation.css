@@ -13,9 +13,12 @@
   border-right: 1px solid var(--border);
   padding-right: 16px;
 }
+/* --results-accent and --results-accent-soft are set on the workspace body by
+   ResultsWorkspace: the model tokens for modelling, the optimiser pair for the
+   optimiser. */
 .validation-workspace .feature-browser-row--selected {
-  background: var(--model-accent-soft);
-  border-left-color: var(--model-accent);
+  background: var(--results-accent-soft);
+  border-left-color: var(--results-accent);
 }
 .validation-feature-list {
   max-height: 400px;
@@ -105,6 +108,21 @@
   gap: 12px;
   align-items: center;
 }
+/* Optimiser Frontier tab: the chart beside its point's detail card. */
+.optimiser-frontier-layout {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+.optimiser-frontier-chart {
+  flex: 55 1 0;
+  min-width: 0;
+}
+.optimiser-frontier-detail {
+  flex: 45 1 0;
+  min-width: 200px;
+  max-width: 320px;
+}
 @container (max-width: 640px) {
   .validation-coefficient-reference > span:first-child,
   .validation-coefficient-reference > span:last-child {
@@ -131,5 +149,15 @@
   .validation-feature-list > button {
     width: auto;
     max-width: 100%;
+  }
+  .optimiser-frontier-layout {
+    flex-direction: column;
+  }
+  .optimiser-frontier-chart,
+  .optimiser-frontier-detail {
+    flex: none;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
   }
 }

@@ -1,19 +1,17 @@
 /**
  * Summary tab for the optimiser preview.
  *
- * Renders objective, constraints, lambdas, and scenario-value histogram.
- * Extracted from OptimiserPreview
- * as part of the god-component split.
+ * Renders the objective, the constraint-attainment table (with λ, for online
+ * and ratebook results alike) and the scenario-value histogram.
  */
 
 import { Loader2 } from "lucide-react"
 import { formatNumber } from "../../utils/formatValue"
 import type { OptimiserSolveResult } from "../../api/types"
-import { isConstraintMet } from "./optimiserHelpers"
+import { effectiveConstraintBounds } from "../../stores/useNodeResultsStore"
 import RatebookImpactBeeswarm from "./RatebookImpactBeeswarm"
 import { hasFactorTables } from "./ratebookFactorTables"
-import Tooltip from "../../components/Tooltip"
-import { LAMBDA_HELP, LAMBDA_LABEL } from "./lambdaCopy"
+import ConstraintAttainmentTable from "./ConstraintAttainmentTable"
 
 type RatebookRatesLoadState =
   | { status: "idle" }
@@ -21,18 +19,18 @@ type RatebookRatesLoadState =
   | { status: "error"; error: string }
 
 interface SummaryTabProps {
+  /** The displayed result: the selected frontier point's, else the solve's. */
   result: OptimiserSolveResult
-  constraints: Record<string, Record<string, number>>
   canMaterialiseRatebookRates?: boolean
   ratebookRatesDetail?: RatebookRatesLoadState
 }
 
 export default function SummaryTab({
   result,
-  constraints,
   canMaterialiseRatebookRates = false,
   ratebookRatesDetail = { status: "idle" },
 }: SummaryTabProps) {
+  const bounds = effectiveConstraintBounds(result)
   const showRatebookImpactStatus = (
     result.mode === "ratebook"
     && canMaterialiseRatebookRates
@@ -53,45 +51,15 @@ export default function SummaryTab({
           </div>
         </div>
 
-        {/* Constraints with binding indicators */}
-        {Object.keys(result.constraints).length > 0 && (
+        {Object.keys(bounds).length > 0 && (
           <div>
             <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Constraints</label>
-            <div className="mt-1 space-y-0.5">
-              {Object.entries(result.constraints).map(([name, value]) => {
-                const spec = constraints[name] || {}
-                const thresholdType = Object.keys(spec)[0]
-                const thresholdVal = spec[thresholdType] ?? 0
-                const met = isConstraintMet(thresholdType, 0, value, thresholdVal)
-                return (
-                  <div key={name} className="flex items-center justify-between text-xs font-mono gap-4">
-                    <span className="flex items-center gap-1.5">
-                      <span className="inline-block w-1.5 h-1.5 rounded-full shrink-0" style={{ background: met ? "var(--success)" : "var(--danger)" }} />
-                      <span style={{ color: "var(--text-secondary)" }}>{name}</span>
-                    </span>
-                    <span>
-                      <span style={{ color: "var(--text-primary)" }}>{formatNumber(value)}</span>
-                    </span>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Lambdas (online) / Factor tables (ratebook) */}
-        {result.mode !== "ratebook" && Object.keys(result.lambdas).length > 0 && (
-          <div>
-            <Tooltip label={LAMBDA_HELP}>
-              <label className="text-[11px] font-bold uppercase tracking-[0.08em] cursor-help" style={{ color: "var(--text-muted)" }}>{LAMBDA_LABEL}</label>
-            </Tooltip>
-            <div className="mt-1 space-y-0.5">
-              {Object.entries(result.lambdas).map(([name, value]) => (
-                <div key={name} className="flex justify-between text-xs font-mono gap-4">
-                  <span style={{ color: "var(--text-secondary)" }}>{name}</span>
-                  <span style={{ color: "var(--text-primary)" }}>{value.toFixed(6)}</span>
-                </div>
-              ))}
+            <div className="mt-1">
+              <ConstraintAttainmentTable
+                bounds={bounds}
+                achieved={result.constraints}
+                lambdas={result.lambdas}
+              />
             </div>
           </div>
         )}

@@ -783,6 +783,158 @@ class TestFrontierPointSummaryContract:
                 assert selected.get(field) == expected, field
 
 
+_TWO_CONSTRAINTS = {"volume": {"min": 5.5}, "margin": {"max": 400.0}}
+
+
+def _assert_every_constraint_summarised(summary: dict, point: dict) -> None:
+    """A point summary carries the unswept ``margin`` like the swept ``volume``."""
+    assert summary["constraints"] == {
+        "volume": point["total_volume"],
+        "margin": point["total_margin"],
+    }
+    assert summary["lambdas"] == {
+        "volume": point["lambda_volume"],
+        "margin": point["lambda_margin"],
+    }
+    assert summary["effective_bounds"] == {
+        "volume": {"kind": "min", "bound": point["threshold_volume"]},
+        "margin": {"kind": "max", "bound": 400.0},
+    }
+
+
+@pytest.mark.usefixtures("_widen_sandbox_root")
+class TestEffectiveBoundsContract:
+    """OPT-V01: every constraint, swept or not, carries the absolute bound its
+    result was solved at, read from price-contour and never re-derived."""
+
+    def test_unswept_constraint_survives_the_solve_time_frontier_and_select(
+        self, client, tmp_path, monkeypatch
+    ):
+        """The solve-time frontier sweeps every configured range, so the only
+        way to leave a constraint unswept there is a narrower range set; the
+        patch makes the solve sweep ``volume`` alone."""
+        from haute.routes import _optimiser_solver
+
+        monkeypatch.setattr(
+            _optimiser_solver,
+            "_auto_frontier_ranges_from_config",
+            lambda _config: {"volume": (5.0, 6.0)},
+        )
+        path = tmp_path / "two_constraints.parquet"
+        _scored_frame(n_quotes=6, n_steps=5, extra_constraint_columns=True).write_parquet(path)
+        graph = _online_graph(
+            str(path),
+            {
+                "constraints": _TWO_CONSTRAINTS,
+                "frontier_enabled": True,
+                "frontier_steps": 3,
+                "frontier_ranges": {
+                    "volume": {"min": 5.0, "max": 6.0},
+                    "margin": {"min": 390.0, "max": 410.0},
+                },
+            },
+        )
+        job_id = _solve_completed(client, graph)
+        result = _poll_until_done(client, job_id)["result"]
+
+        assert result["effective_bounds"] == {
+            "volume": {"kind": "min", "bound": 5.5},
+            "margin": {"kind": "max", "bound": 400.0},
+        }
+        frontier = result["frontier"]
+        assert frontier["constraint_names"] == ["volume", "margin"]
+        assert frontier["swept_axes"] == ["volume"]
+        assert [point["threshold_volume"] for point in frontier["points"]] == [5.0, 5.5, 6.0]
+        for index, point in enumerate(frontier["points"]):
+            _assert_every_constraint_summarised(frontier["point_summaries"][index], point)
+            response = client.post(
+                "/api/optimiser/frontier/select",
+                json={"job_id": job_id, "point_index": index},
+            )
+            assert response.status_code == 200, response.text
+            _assert_every_constraint_summarised(response.json(), point)
+
+    def test_unswept_constraint_survives_the_recompute_and_select(self, client, tmp_path):
+        path = tmp_path / "two_constraints.parquet"
+        _scored_frame(n_quotes=6, n_steps=5, extra_constraint_columns=True).write_parquet(path)
+        job_id = _solve_completed(
+            client, _online_graph(str(path), {"constraints": _TWO_CONSTRAINTS})
+        )
+
+        status = run_frontier_and_wait(
+            client,
+            {
+                "job_id": job_id,
+                "threshold_ranges": {"volume": [5.0, 6.0]},
+                "n_points_per_dim": 3,
+            },
+        )
+        assert status["status"] == "completed", status.get("message", "")
+        frontier = status["result"]
+        assert frontier["constraint_names"] == ["volume", "margin"]
+        assert frontier["swept_axes"] == ["volume"]
+        for index, point in enumerate(frontier["points"]):
+            _assert_every_constraint_summarised(frontier["point_summaries"][index], point)
+            response = client.post(
+                "/api/optimiser/frontier/select",
+                json={"job_id": job_id, "point_index": index},
+            )
+            assert response.status_code == 200, response.text
+            _assert_every_constraint_summarised(response.json(), point)
+
+    def test_min_pct_bound_is_pct_times_baseline_on_the_solve_and_a_swept_point(
+        self, client, tmp_path
+    ):
+        """``threshold_<c>`` stays a fraction for a pct constraint; the bound
+        every pane judges against is the library's absolute one."""
+        path = tmp_path / "pct.parquet"
+        _scored_frame(n_quotes=6, n_steps=5).write_parquet(path)
+        job_id = _solve_completed(
+            client, _online_graph(str(path), {"constraints": {"volume": {"min_pct": 0.95}}})
+        )
+        result = _poll_until_done(client, job_id)["result"]
+        baseline = result["baseline_constraints"]["volume"]
+
+        assert result["effective_bounds"] == {
+            "volume": {"kind": "min", "bound": pytest.approx(0.95 * baseline, rel=1e-12)}
+        }
+
+        status = run_frontier_and_wait(
+            client,
+            {
+                "job_id": job_id,
+                "threshold_ranges": {"volume": [0.9, 1.0]},
+                "n_points_per_dim": 3,
+            },
+        )
+        assert status["status"] == "completed", status.get("message", "")
+        frontier = status["result"]
+        thresholds = [point["threshold_volume"] for point in frontier["points"]]
+        assert thresholds == pytest.approx([0.9, 0.95, 1.0])
+        for index, point in enumerate(frontier["points"]):
+            expected = {
+                "volume": {
+                    "kind": "min",
+                    "bound": pytest.approx(point["threshold_volume"] * baseline, rel=1e-12),
+                }
+            }
+            assert frontier["point_summaries"][index]["effective_bounds"] == expected
+            response = client.post(
+                "/api/optimiser/frontier/select",
+                json={"job_id": job_id, "point_index": index},
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()["effective_bounds"] == expected
+
+    def test_ratebook_solve_reads_its_bounds_from_the_ratebook_result(self, client, tmp_path):
+        scored_path, banding_path = _ratebook_fixture_paths(tmp_path)
+        job_id = _solve_completed(client, _ratebook_graph(scored_path, banding_path))
+
+        result = _poll_until_done(client, job_id)["result"]
+
+        assert result["effective_bounds"] == {"volume": {"kind": "min", "bound": 0.90}}
+
+
 # ---------------------------------------------------------------------------
 # 4. Frontier compute budget — RED (opaque 500) → GREEN (422, both numbers)
 # ---------------------------------------------------------------------------

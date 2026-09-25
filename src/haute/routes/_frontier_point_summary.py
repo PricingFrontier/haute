@@ -9,8 +9,9 @@ the summary it is sent and never derives one.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Any
+import math
+from collections.abc import Mapping
+from typing import Any, Literal
 
 NON_CONVERGED_WARNING = (
     "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
@@ -29,6 +30,68 @@ _SCENARIO_VALUE_STAT_COLUMNS = {
     "pct_increase": "sv_pct_increase",
     "pct_decrease": "sv_pct_decrease",
 }
+
+
+ConstraintKind = Literal["min", "max"]
+
+# The configured threshold key of a constraint and the direction it bounds.
+# A pct key's threshold is a fraction of the constraint's baseline total; the
+# absolute bound is price-contour's, never derived here.
+CONSTRAINT_THRESHOLD_KINDS: Mapping[str, ConstraintKind] = {
+    "min": "min",
+    "max": "max",
+    "min_pct": "min",
+    "max_pct": "max",
+}
+
+
+def constraint_kinds(constraints: Any) -> dict[str, ConstraintKind]:
+    """Each configured constraint's kind, in configured order.
+
+    Raises ``ValueError`` for a spec without exactly one threshold key.
+    """
+    if not isinstance(constraints, Mapping):
+        raise ValueError("Optimiser constraints must map each constraint name to its spec")
+    kinds: dict[str, ConstraintKind] = {}
+    for name, spec in constraints.items():
+        if not isinstance(name, str) or not name or not isinstance(spec, Mapping):
+            raise ValueError(f"Optimiser constraint {name!r} must map a name to a spec")
+        keys = [key for key in CONSTRAINT_THRESHOLD_KINDS if key in spec]
+        if len(keys) != 1:
+            raise ValueError(
+                f"Optimiser constraint {name!r} must set exactly one of "
+                f"{', '.join(CONSTRAINT_THRESHOLD_KINDS)}"
+            )
+        kinds[name] = CONSTRAINT_THRESHOLD_KINDS[keys[0]]
+    return kinds
+
+
+def effective_bounds(
+    kinds: Mapping[str, ConstraintKind],
+    bounds: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """``{name: {"kind", "bound"}}`` for every configured constraint.
+
+    ``bounds`` are price-contour's absolute bounds (a solve result's
+    ``constraint_bounds``, or a frontier row's ``bound_<name>`` values); they
+    must cover exactly the configured constraints.
+    """
+    missing = [name for name in kinds if name not in bounds]
+    unexpected = [name for name in bounds if name not in kinds]
+    if missing or unexpected:
+        raise ValueError(
+            "Constraint bounds do not match the configured constraints: "
+            f"missing {missing}, unexpected {unexpected}"
+        )
+    result: dict[str, dict[str, Any]] = {}
+    for name, kind in kinds.items():
+        bound = bounds[name]
+        if isinstance(bound, bool) or not isinstance(bound, int | float):
+            raise ValueError(f"Constraint bound for {name!r} is missing")
+        if not math.isfinite(bound):
+            raise ValueError(f"Constraint bound for {name!r} is not finite")
+        result[name] = {"kind": kind, "bound": float(bound)}
+    return result
 
 
 class FrontierPointDataError(ValueError):
@@ -108,11 +171,22 @@ def frontier_point_scenario_value_stats(point: Mapping[str, Any]) -> dict[str, f
 
 def frontier_point_summary(
     point: Mapping[str, Any],
-    constraint_names: Sequence[str],
+    kinds: Mapping[str, ConstraintKind],
 ) -> dict[str, Any]:
-    """Every point-specific result field, ``None`` where the point has none."""
+    """Every point-specific result field, ``None`` where the point has none.
+
+    ``kinds`` is every configured constraint, swept or not: price-contour
+    emits ``total_``, ``lambda_`` and ``bound_<name>`` for each of them.
+    """
     lambdas = frontier_point_lambdas(point)
-    constraints = {name: frontier_point_constraint_value(point, name) for name in constraint_names}
+    constraints = {name: frontier_point_constraint_value(point, name) for name in kinds}
+    bounds = effective_bounds(
+        kinds,
+        {
+            name: finite_frontier_value(point.get(f"bound_{name}"), field=f"bound_{name}")
+            for name in kinds
+        },
+    )
     converged = point.get("converged")
     if not isinstance(converged, bool):
         raise FrontierPointDataError(
@@ -138,6 +212,7 @@ def frontier_point_summary(
     return {
         "total_objective": total_objective,
         "constraints": constraints,
+        "effective_bounds": bounds,
         "lambdas": lambdas,
         "converged": converged,
         "iterations": iterations,

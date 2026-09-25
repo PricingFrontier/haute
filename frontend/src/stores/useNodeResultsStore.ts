@@ -29,6 +29,7 @@ import type {
   FrontierPointSummary,
   FrontierSelectResponse,
   JobStatus,
+  OptimiserEffectiveBound,
   OptimiserSolveResult,
   TrainResponse,
 } from "../api/types"
@@ -433,6 +434,7 @@ const FAILED_SOLVE_RESULT: OptimiserSolveResult = {
   baseline_objective: 0,
   constraints: {},
   baseline_constraints: {},
+  effective_bounds: {},
   lambdas: {},
   converged: false,
   iterations: null,
@@ -465,11 +467,39 @@ function resultForFrontierPoint(cached: CachedSolveResult, pointIndex: number): 
   return applyFrontierPointSummary(cached.originalResult, summary)
 }
 
+/**
+ * The constraint bounds a displayed optimiser result was solved at: its backend
+ * `effective_bounds` (the selected frontier point's, else the solve's). The
+ * optimiser Summary and the frontier detail card both read bounds only through
+ * here, never from the node's configured constraints. A result whose bounds do
+ * not cover exactly its constraints, or hold a non-finite bound, is a contract
+ * error and throws.
+ */
+export function effectiveConstraintBounds(result: OptimiserSolveResult): Record<string, OptimiserEffectiveBound> {
+  const bounds = result.effective_bounds
+  const constraintNames = Object.keys(result.constraints)
+  const missing = constraintNames.filter((name) => !(name in bounds))
+  const unexpected = Object.keys(bounds).filter((name) => !(name in result.constraints))
+  if (missing.length > 0 || unexpected.length > 0) {
+    throw new Error(
+      `Optimiser result bounds do not match its constraints: missing [${missing.join(", ")}], `
+      + `unexpected [${unexpected.join(", ")}]`,
+    )
+  }
+  for (const [name, { kind, bound }] of Object.entries(bounds)) {
+    if ((kind !== "min" && kind !== "max") || !Number.isFinite(bound)) {
+      throw new Error(`Optimiser result bound for ${name} is invalid: ${JSON.stringify({ kind, bound })}`)
+    }
+  }
+  return bounds
+}
+
 /** A select response is the server's complete result for its point. */
 function frontierPointSummaryFromSelect(selectResult: FrontierSelectResponse): FrontierPointSummary {
   return {
     total_objective: selectResult.total_objective,
     constraints: selectResult.constraints,
+    effective_bounds: selectResult.effective_bounds,
     lambdas: selectResult.lambdas,
     converged: selectResult.converged,
     iterations: selectResult.iterations ?? null,
@@ -805,6 +835,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
             n_points: rawFrontier.n_points,
             points_returned: rawFrontier.points_returned,
             constraint_names: rawFrontier.constraint_names,
+            swept_axes: rawFrontier.swept_axes,
             points_limit: rawFrontier.points_limit,
             points_truncated: rawFrontier.points_truncated,
           }

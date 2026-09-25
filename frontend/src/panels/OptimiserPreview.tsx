@@ -8,7 +8,7 @@
  * is the frontier point selected here.
  */
 
-import { useState, useMemo, useCallback, useEffect, useRef } from "react"
+import { useId, useState, useMemo, useCallback, useEffect, useRef } from "react"
 import { AlertCircle, ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react"
 import { selectFrontierPoint as selectFrontierPointApi } from "../api/client"
 import { apiErrorMessage } from "../api/errors"
@@ -16,6 +16,8 @@ import { formatNumber } from "../utils/formatValue"
 import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
+import useUIStore from "../stores/useUIStore"
+import { OPTIMISER_COLORS } from "../theme/colors"
 import { bandingLevelOrderForOptimiser } from "../utils/banding"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import type {
@@ -33,8 +35,13 @@ import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
 import QuotesTab from "./optimiser/QuotesTab"
 import { isSolveResultStale, startOptimiserSolve } from "./optimiser/solveActions"
 import { useOptimiserReadiness } from "./optimiser/useOptimiserReadiness"
-import PreviewPanelFrame from "./PreviewPanelFrame"
-import PreviewPanelTabs from "./PreviewPanelTabs"
+import { optimiserResultProvenance } from "./optimiser/resultProvenance"
+import {
+  OPTIMISER_VIEW_INTRODUCTIONS,
+  OPTIMISER_VIEW_LABELS,
+  type OptimiserResultView,
+} from "./optimiser/resultViews"
+import ResultsWorkspace from "./ResultsWorkspace"
 
 // ─── Types (shared with OptimiserConfig) ─────────────────────────
 export type { FrontierData }
@@ -59,7 +66,6 @@ interface OptimiserPreviewProps {
   submodels?: Record<string, unknown>
 }
 
-type TabKey = "frontier" | "summary" | "rates" | "quotes" | "convergence"
 type RatesDetailState =
   | { status: "idle" }
   | { status: "loading"; key: string }
@@ -69,6 +75,11 @@ const EMPTY_FRONTIER_POINTS: Record<string, unknown>[] = []
 const EMPTY_COLUMNS: { name: string; dtype: string }[] = []
 
 const REQUEST_FAILED = "The request failed."
+
+const OPTIMISER_ACCENT = {
+  color: OPTIMISER_COLORS.accent,
+  soft: OPTIMISER_COLORS.accentSoft,
+}
 
 function HeaderPointStepper({
   pointCount,
@@ -129,9 +140,12 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
   const { result, jobId, constraints } = displayData
 
   // Default tab: frontier when frontier data exists, otherwise summary
-  const [tab, setTab] = useState<TabKey>(() =>
+  const [tab, setTab] = useState<OptimiserResultView>(() =>
     displayData.frontier && displayData.frontier.points.length > 0 ? "frontier" : "summary",
   )
+
+  const height = useUIStore((s) => s.optimiserPreviewHeight)
+  const rememberHeight = useUIStore((s) => s.setOptimiserPreviewHeight)
 
   // X-axis constraint picker for multi-constraint frontiers
   const constraintNames = useMemo(() => Object.keys(constraints), [constraints])
@@ -287,129 +301,124 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
   const canMaterialiseSelectedRates = result.mode === "ratebook" && frontier != null && selectedIdx != null
   const headerPointCount = frontier?.points.length ?? 0
   const iterationSummary = formatOptimiserIterationSummary(result)
-  const availableTabs: TabKey[] = hasFrontier ? ["frontier", "summary"] : ["summary"]
+  const availableTabs: OptimiserResultView[] = hasFrontier ? ["frontier", "summary"] : ["summary"]
   if (hasRates || canMaterialiseSelectedRates) availableTabs.push("rates")
   if (result.mode !== "ratebook") availableTabs.push("quotes")
   if (result.history && result.history.length > 0) availableTabs.push("convergence")
   const activeTab = availableTabs.includes(tab) ? tab : availableTabs[0]
 
-  const TAB_LABELS: Record<TabKey, string> = {
-    frontier: "Frontier",
-    summary: "Summary",
-    rates: "Rates",
-    quotes: "Quotes",
-    convergence: "Convergence",
-  }
-
-  const tabs = availableTabs.map((key) => ({ key, label: TAB_LABELS[key] }))
+  const tabs = availableTabs.map((key) => ({ key, label: OPTIMISER_VIEW_LABELS[key] }))
   const statusSummary = [
     result.converged ? "Converged" : "Not converged",
     iterationSummary?.compact,
     result.n_quotes != null ? `${result.n_quotes.toLocaleString()} quotes` : null,
   ].filter(Boolean).join(" | ")
 
+  const provenance = optimiserResultProvenance(result, selectedIdx, headerPointCount)
   return (
-    <PreviewPanelFrame
+    <ResultsWorkspace
+      ariaLabel="Optimiser validation"
+      idPrefix="optimiser-preview"
+      tabsAriaLabel="Optimiser result panes"
+      tabs={tabs}
+      activeTab={activeTab}
+      onTabChange={setTab}
       nodeLabel={displayData.nodeLabel}
       nodeType={NODE_TYPES.OPTIMISER}
       onRefresh={onRefresh}
       subtitle={statusSummary}
-      actions={(
+      collapsedMeta={`${result.converged ? "Converged" : "Not converged"} | Objective: ${formatNumber(result.total_objective)}`}
+      data-testid="optimiser-preview-frame"
+      height={height}
+      onHeightChange={rememberHeight}
+      accent={OPTIMISER_ACCENT}
+      headerActions={(
         <HeaderPointStepper
           pointCount={headerPointCount}
           selectedIdx={selectedIdx}
           onStepPoint={handleStepPoint}
         />
       )}
-      collapsedMeta={`${result.converged ? "Converged" : "Not converged"} | Objective: ${formatNumber(result.total_objective)}`}
-      data-testid="optimiser-preview-frame"
+      notices={(
+        <>
+          {isStale && (
+            <div
+              role="status"
+              className="flex shrink-0 items-center gap-2 px-4 py-1.5 text-xs"
+              style={{ background: "var(--warning-soft)", borderBottom: "1px solid var(--warning-border)", color: "var(--warning)" }}
+            >
+              <RefreshCw size={12} className="shrink-0" style={{ color: "var(--warning-strong)" }} />
+              <span>
+                The configuration has changed since this result was solved.
+                {!rerunReadiness.canSolve && ` It cannot be re-run yet: ${rerunReadiness.issues[0].message}`}
+              </span>
+              <button
+                type="button"
+                onClick={() => void handleRerun()}
+                disabled={rerunning || solveRunning || !rerunReadiness.canSolve}
+                className="ml-auto px-2 py-0.5 rounded text-[11px] font-medium disabled:opacity-60"
+                style={{ background: "var(--warning-soft-emphasis)", color: "var(--warning-strong)" }}
+              >
+                {solveRunning ? "Re-running" : "Re-run"}
+              </button>
+            </div>
+          )}
+          {result.frontier_error && (
+            <div
+              className="flex shrink-0 items-start gap-2 px-4 py-2 text-xs"
+              style={{
+                color: "var(--warning-strong)",
+                background: "var(--warning-soft-emphasis)",
+                borderBottom: "1px solid var(--warning-border-strong)",
+              }}
+            >
+              <AlertCircle size={14} className="mt-0.5 shrink-0" />
+              <span>{result.frontier_error}</span>
+            </div>
+          )}
+        </>
+      )}
+      provenance={provenance && (
+        <p data-testid="optimiser-provenance" className="m-0">
+          {provenance.join(" · ")}
+        </p>
+      )}
+      intro={OPTIMISER_VIEW_INTRODUCTIONS[activeTab]}
     >
-      <PreviewPanelTabs
-        tabs={tabs}
-        activeTab={activeTab}
-        onChange={setTab}
-        ariaLabel="Optimiser result panes"
-        accentColor="var(--warning-strong)"
-      />
-      {isStale && (
-        <div
-          role="status"
-          className="flex items-center gap-2 px-4 py-1.5 text-xs"
-          style={{ background: "var(--warning-soft)", borderBottom: "1px solid var(--warning-border)", color: "var(--warning)" }}
-        >
-          <RefreshCw size={12} className="shrink-0" style={{ color: "var(--warning-strong)" }} />
-          <span>
-            The configuration has changed since this result was solved.
-            {!rerunReadiness.canSolve && ` It cannot be re-run yet: ${rerunReadiness.issues[0].message}`}
-          </span>
-          <button
-            type="button"
-            onClick={() => void handleRerun()}
-            disabled={rerunning || solveRunning || !rerunReadiness.canSolve}
-            className="ml-auto px-2 py-0.5 rounded text-[11px] font-medium disabled:opacity-60"
-            style={{ background: "var(--warning-soft-emphasis)", color: "var(--warning-strong)" }}
-          >
-            {solveRunning ? "Re-running" : "Re-run"}
-          </button>
-        </div>
-      )}
-      {result.frontier_error && (
-        <div
-          className="flex items-start gap-2 px-4 py-2 text-xs"
-          style={{
-            color: "var(--warning-strong)",
-            background: "var(--warning-soft-emphasis)",
-            borderBottom: "1px solid var(--warning-border-strong)",
-          }}
-        >
-          <AlertCircle size={14} className="mt-0.5 shrink-0" />
-          <span>{result.frontier_error}</span>
-        </div>
+      {activeTab === "frontier" && (
+        <FrontierTab
+          frontier={frontier}
+          result={result}
+          constraintNames={constraintNames}
+          selectedIdx={selectedIdx}
+          xConstraintIdx={xConstraintIdx}
+          onXConstraintChange={setXConstraintIdx}
+          onPointClick={handlePointClick}
+        />
       )}
 
-      {/* Content */}
-      <div className="flex-1 overflow-auto px-4 py-3">
-        {/* ── Frontier Tab ── */}
-        {activeTab === "frontier" && (
-          <FrontierTab
-            frontier={frontier}
-            result={result}
-            constraints={constraints}
-            constraintNames={constraintNames}
-            selectedIdx={selectedIdx}
-            xConstraintIdx={xConstraintIdx}
-            onXConstraintChange={setXConstraintIdx}
-            onPointClick={handlePointClick}
-          />
-        )}
+      {activeTab === "summary" && (
+        <SummaryTab
+          result={result}
+          canMaterialiseRatebookRates={selectedRatebookRatesMissing}
+          ratebookRatesDetail={ratesDetail}
+        />
+      )}
 
-        {/* ── Summary Tab ── */}
-        {activeTab === "summary" && (
-          <SummaryTab
-            result={result}
-            constraints={constraints}
-            canMaterialiseRatebookRates={selectedRatebookRatesMissing}
-            ratebookRatesDetail={ratesDetail}
-          />
-        )}
+      {activeTab === "rates" && (
+        ratebookFactorTables ? (
+          <RatebookRatesTab factorTables={ratebookFactorTables} factorLevelOrder={factorLevelOrder} />
+        ) : (
+          <RatebookRatesPending detail={ratesDetail} />
+        )
+      )}
 
-        {activeTab === "rates" && (
-          ratebookFactorTables ? (
-            <RatebookRatesTab factorTables={ratebookFactorTables} factorLevelOrder={factorLevelOrder} />
-          ) : (
-            <RatebookRatesPending detail={ratesDetail} />
-          )
-        )}
+      {activeTab === "convergence" && result.history && result.history.length > 0 && (
+        <ConvergenceChart result={result} />
+      )}
 
-        {/* ── Convergence Tab ── */}
-        {activeTab === "convergence" && result.history && result.history.length > 0 && (
-          <ConvergenceChart result={result} />
-        )}
-
-        {/* ── Quotes Tab ── */}
-        {activeTab === "quotes" && <QuotesTab jobId={jobId} pointIndex={selectedIdx} />}
-      </div>
-    </PreviewPanelFrame>
+      {activeTab === "quotes" && <QuotesTab jobId={jobId} pointIndex={selectedIdx} />}
+    </ResultsWorkspace>
   )
 }
 
@@ -418,7 +427,6 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
 interface FrontierTabProps {
   frontier: FrontierData | null
   result: OptimiserSolveResult
-  constraints: Record<string, Record<string, number>>
   constraintNames: string[]
   selectedIdx: number | null
   xConstraintIdx: number
@@ -444,13 +452,13 @@ function frontierConstraintPointValue(point: Record<string, unknown>, name: stri
 function FrontierTab({
   frontier,
   result,
-  constraints,
   constraintNames,
   selectedIdx,
   xConstraintIdx,
   onXConstraintChange,
   onPointClick,
 }: FrontierTabProps) {
+  const xPickerId = useId()
   const points = frontier?.points ?? EMPTY_FRONTIER_POINTS
   const xConstraintName = constraintNames[xConstraintIdx] ?? constraintNames[0]
   const xKey = xConstraintName ? `total_${xConstraintName}` : null
@@ -486,21 +494,16 @@ function FrontierTab({
   const currentY = result.total_objective
 
   return (
-    <div className="flex gap-4 h-full">
-      {/* LEFT: Chart area */}
-      <div className="flex-[55] min-w-0">
+    <div className="optimiser-frontier-layout">
+      <div className="optimiser-frontier-chart">
         {constraintNames.length > 1 && (
-          <div className="flex items-center gap-2 mb-2">
-            <label className="text-[10px] font-medium" style={{ color: "var(--text-muted)" }}>X axis:</label>
+          <div className="flex items-center gap-2 mb-3">
+            <label htmlFor={xPickerId} className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>X axis:</label>
             <select
+              id={xPickerId}
               value={xConstraintIdx}
               onChange={e => onXConstraintChange(Number(e.target.value))}
-              className="text-[11px] font-mono rounded px-1.5 py-0.5"
-              style={{
-                background: "var(--bg-input)",
-                border: "1px solid var(--border)",
-                color: "var(--text-primary)",
-              }}
+              className="validation-control"
             >
               {constraintNames.map((name, i) => (
                 <option key={name} value={i}>{name}</option>
@@ -526,7 +529,7 @@ function FrontierTab({
           </div>
         )}
 
-        <div className="text-[10px] mt-1" style={{ color: "var(--text-muted)" }}>
+        <p className="validation-chart-description mt-2">
           {frontier.points_truncated ? (
             <>
               Showing {shownPointCount.toLocaleString()} of {totalPointCount.toLocaleString()} frontier points;
@@ -537,18 +540,12 @@ function FrontierTab({
               {shownPointCount.toLocaleString()} frontier points. Click a point for details.
             </>
           )}
-        </div>
+        </p>
       </div>
 
-      {/* RIGHT: Detail card */}
       {selectedIdx != null && points[selectedIdx] && (
-        <div className="flex-[45] min-w-[200px] max-w-[320px]">
-          <DetailCard
-            points={points}
-            selectedIdx={selectedIdx}
-            constraints={constraints}
-            constraintNames={constraintNames}
-          />
+        <div className="optimiser-frontier-detail">
+          <DetailCard result={result} />
         </div>
       )}
     </div>

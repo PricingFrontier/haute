@@ -238,4 +238,19 @@ describe("ModellingPreview", () => {
     fireEvent.click(liftTab)
     expect(liftTab).toBeInTheDocument()
   })
+
+  it("fails loudly when validation diagnostics have no evaluation to count rows from", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {})
+    const result = makeTrainResult({ diagnostics_set: "validation", evaluation: undefined })
+    expect(() => render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)).toThrow(
+      /Validation diagnostics need the evaluation's selection fit/,
+    )
+  })
+
+  it("uses the model accent on the shared results workspace", () => {
+    render(<ModellingPreview data={makeData()} nodeId="n1" />)
+    const pane = screen.getByRole("tabpanel")
+    expect(pane.style.getPropertyValue("--results-accent")).toBe("var(--model-accent)")
+    expect(pane.style.getPropertyValue("--results-accent-soft")).toBe("var(--model-accent-soft)")
+  })
 })

@@ -96,6 +96,7 @@ const TARGET_FILES = [
   "OptimiserPreview.tsx",
   "OptimiserDataPreview.tsx",
   "ModellingPreview.tsx",
+  "ResultsWorkspace.tsx",
   "PreviewPanelFrame.tsx",
 ] as const
 type TargetFile = (typeof TARGET_FILES)[number]
@@ -260,7 +261,10 @@ describe("preview panels no longer mutate e.currentTarget.style.*", () => {
         const source = readSource(file)
         const frameSource = readSource("PreviewPanelFrame.tsx")
         const ownsHoverChrome = file === "PreviewPanelFrame.tsx"
+        // The results workspaces reach the frame through the shared shell.
         const delegatesToFrame = source.includes("PreviewPanelFrame")
+          || (source.includes("ResultsWorkspace")
+            && readSource("ResultsWorkspace.tsx").includes("PreviewPanelFrame"))
         const hoverSource = ownsHoverChrome ? source : frameSource
         const usesHoverChrome = /\bhover-chrome\b/.test(hoverSource)
         const usesTailwindHover = /\bhover:/.test(hoverSource)
@@ -344,6 +348,8 @@ vi.mock("../../stores/useNodeResultsStore", () => {
     trainJobs: {},
     previews: {},
     getOptimiserPreview: vi.fn(() => null),
+    solveResults: {},
+    solveJobs: {},
     selectFrontierPoint: vi.fn(),
     updateFrontierAfterSelect: vi.fn(),
   }
@@ -621,16 +627,16 @@ describe("OptimiserPreview hover chrome is class-driven", () => {
       container.querySelectorAll("button"),
     ) as HTMLButtonElement[]
     const summaryTab = buttons.find((b) => b.textContent?.trim() === "Summary")
-    const exportTab = buttons.find((b) => b.textContent?.trim() === "Export")
+    const quotesTab = buttons.find((b) => b.textContent?.trim() === "Quotes")
     expect(summaryTab, "Summary tab rendered").toBeTruthy()
-    expect(exportTab, "Export tab rendered").toBeTruthy()
+    expect(quotesTab, "Quotes tab rendered").toBeTruthy()
     // Default tab when frontier is null is Summary.  Summary should
-    // carry the accent styling, Export should carry the chrome styling.
+    // carry the accent styling, Quotes should carry the chrome styling.
     // We just assert the two active/inactive tabs have *different* inline
     // styles — the exact literals may evolve but the distinction must
     // survive the hover migration (because it's state-driven, not hover).
     expect(summaryTab!.getAttribute("style")).not.toEqual(
-      exportTab!.getAttribute("style"),
+      quotesTab!.getAttribute("style"),
     )
   })
 })

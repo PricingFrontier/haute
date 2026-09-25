@@ -308,6 +308,12 @@
   --model-accent: #a855f7;
   --model-accent-soft: rgba(168,85,247,.15);
   --model-accent-border: rgba(168,85,247,.30);
+  /* The optimiser results workspace accent (tabs, Focus view, selection).
+     Deliberately not a warning hue: the stale strip and breached statuses use
+     the warning palette, and a warning accent would make the whole pane read
+     as a warning. */
+  --optimiser-accent: #14b8a6;
+  --optimiser-accent-soft: rgba(20,184,166,.15);
   --model-log-action: var(--accent);
   --structure-action: #64748b;
   --structure-action-hover: #94a3b8;

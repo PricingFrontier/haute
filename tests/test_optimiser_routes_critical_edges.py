@@ -36,6 +36,7 @@ def _frontier_job(*, artifact_handles: object | None = None) -> dict:
     )
     job = {
         "status": "completed",
+        "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
         "solver": solver,
         "quote_grid": MagicMock(),
         "heavy_objects_expires_at": time.time() + 3600,
@@ -44,6 +45,7 @@ def _frontier_job(*, artifact_handles: object | None = None) -> dict:
             "points": [
                 {
                     "threshold_volume": 0.95,
+                    "bound_volume": 0.95,
                     "total_volume": 0.95,
                     "lambda_volume": 0.7,
                     "total_objective": 200.0,
@@ -355,11 +357,13 @@ def test_frontier_select_succeeds_when_runtime_is_absent(client, clean_job_store
         "select_runtime_race",
         {
             "status": "completed",
+            "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
             "frontier_data": {
                 "status": "ok",
                 "points": [
                     {
                         "threshold_volume": 0.95,
+                        "bound_volume": 0.95,
                         "total_volume": 0.95,
                         "lambda_volume": 0.7,
                         "total_objective": 200.0,
@@ -665,6 +669,7 @@ def test_run_frontier_returns_409_when_atomic_update_loses_race(
                 "total_objective": [100.0],
                 "volume": [0.9],
                 "lambda_volume": [0.25],
+                "bound_volume": [0.9],
                 "converged": [True],
             }
         )
@@ -739,6 +744,7 @@ def test_apply_reuses_cached_frontier_apply_artifact_for_online_mode(
         "total_volume": 0.93,
         "lambda_volume": 0.55,
         "threshold_volume": 0.93,
+        "bound_volume": 0.93,
         "converged": True,
     }
     seed_job(
@@ -814,6 +820,7 @@ def test_apply_returns_400_when_quote_grid_evicted_from_heavy_state(
                         "total_volume": 0.93,
                         "lambda_volume": 0.55,
                         "threshold_volume": 0.93,
+                        "bound_volume": 0.93,
                         "converged": True,
                     }
                 ],
@@ -869,6 +876,7 @@ def test_apply_returns_400_when_quote_grid_value_is_none_after_touch(
                         "total_volume": 0.93,
                         "lambda_volume": 0.55,
                         "threshold_volume": 0.93,
+                        "bound_volume": 0.93,
                         "converged": True,
                     }
                 ],
@@ -945,6 +953,7 @@ def test_apply_cleans_up_orphan_artifact_when_atomic_update_loses_race(
                         "total_volume": 0.93,
                         "lambda_volume": 0.55,
                         "threshold_volume": 0.93,
+                        "bound_volume": 0.93,
                         "converged": True,
                     }
                 ],
@@ -1096,6 +1105,7 @@ def _ratebook_materialise_job(**overrides: object) -> dict:
                     "total_volume": 0.93,
                     "lambda_volume": 0.55,
                     "threshold_volume": 0.93,
+                    "bound_volume": 0.93,
                     "iterations": 4,
                     "clamp_rate": 0.01,
                     "converged": True,
@@ -1150,6 +1160,7 @@ def test_ratebook_materialise_reads_totals_and_tables_from_one_frontier(
         "total_volume": 1.02,
         "lambda_volume": 0.3,
         "threshold_volume": 1.0,
+        "bound_volume": 1.0,
         "iterations": 6,
         "clamp_rate": 0.02,
         "converged": True,
@@ -1190,9 +1201,9 @@ def test_ratebook_materialise_reads_totals_and_tables_from_one_frontier(
 
 
 def test_ratebook_materialise_keeps_unswept_constraint_totals(client, clean_job_store):
-    """Point summaries list only the swept constraints; a materialised ratebook
-    point (which is what save and MLflow publish) carries the frontier row's
-    total for every configured constraint."""
+    """A materialised ratebook point (which is what save and MLflow publish)
+    carries the frontier row's total and bound for every configured constraint,
+    swept or not."""
     job = _ratebook_materialise_job(
         config={
             "mode": "ratebook",
@@ -1200,8 +1211,10 @@ def test_ratebook_materialise_keeps_unswept_constraint_totals(client, clean_job_
         }
     )
     job["frontier_data"]["points"][0].update(
-        {"total_loss": 20.0, "lambda_loss": 0.1, "threshold_loss": 25.0}
+        {"total_loss": 20.0, "lambda_loss": 0.1, "threshold_loss": 25.0, "bound_loss": 25.0}
     )
+    job["frontier_data"]["constraint_names"] = ["volume", "loss"]
+    job["frontier_data"]["swept_axes"] = ["volume"]
     job["result"]["constraints"] = {"volume": 0.85, "loss": 21.0}
     job["result"]["baseline_constraints"] = {"volume": 0.85, "loss": 21.0}
     seed_job(clean_job_store, "ratebook_unswept", job)
@@ -1210,6 +1223,10 @@ def test_ratebook_materialise_keeps_unswept_constraint_totals(client, clean_job_
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["constraints"] == {"volume": 0.93, "loss": 20.0}
+    assert resp.json()["effective_bounds"] == {
+        "volume": {"kind": "min", "bound": 0.93},
+        "loss": {"kind": "max", "bound": 25.0},
+    }
     stored = clean_job_store.require_job("ratebook_unswept")["result"]
     assert stored["constraints"] == {"volume": 0.93, "loss": 20.0}
 
@@ -1330,6 +1347,7 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
         "total_volume": 0.93,
         "lambda_volume": 0.55,
         "threshold_volume": 0.93,
+        "bound_volume": 0.93,
         "converged": True,
     }
     cached_result = {
@@ -1338,6 +1356,7 @@ def test_ratebook_materialise_returns_cached_when_lambdas_match_and_no_dataframe
         "baseline_objective": 90.0,
         "constraints": {"volume": 0.93},
         "baseline_constraints": {"volume": 0.85},
+        "effective_bounds": {"volume": {"kind": "min", "bound": 0.93}},
         "lambdas": {"volume": 0.55},
         "converged": True,
         "selected_frontier_point": 0,
@@ -1507,6 +1526,7 @@ def test_run_frontier_rejects_invalid_apply_handle_shape(
                 "total_objective": [100.0],
                 "volume": [0.9],
                 "lambda_volume": [0.25],
+                "bound_volume": [0.9],
                 "converged": [True],
             }
         )

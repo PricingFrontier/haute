@@ -433,18 +433,32 @@ disclosures. The Solve tab shows the accessible active indicator while a solve j
 modelling, a pane with a blocking Solve issue shows a compact warning indicator on its tab ("Data
 needs attention"), so the reason Optimise is disabled is visible from every pane.
 
-**Result preview.** The optimiser result preview offers Frontier (when the solve produced one),
+**Result preview.** The optimiser result preview uses the same results workspace as model
+validation: a Focus view that fills the viewport and keeps the active tab (Escape returns), a
+docked height remembered for the session, results-style tabs, a short introduction on every
+tab, and a provenance strip on every tab naming the mode, the grid solved (quotes × scenario
+steps), whether the figures are as solved or a frontier point (i of N), and that they are
+expected values from the scoring models, not observed outcomes. Its accent is its own colour,
+never the warning colour the stale strip uses. The Frontier chart and detail card sit side by
+side, stacking when the workspace is narrow. It offers Frontier (when the solve produced one),
 Summary, Rates (ratebook), Quotes (online) and Convergence (when history was recorded); it has no
 Export tab and no publish actions — publishing belongs only to the Export pane, and the frontier
 detail card says so. Clicking a frontier point selects it
 as the publish target; clicking the selected point again keeps it selected (the Export pane's
-target choice returns to the solved result). The detail card judges each constraint against the
-point's own swept threshold, not the solved result's bound. Quotes loads the per-quote detail of
+target choice returns to the solved result). Summary and the detail card show the same
+constraint-attainment table for the displayed result (the selected point, else the solve): every
+constraint, swept or not, as Constraint | Kind | Bound | Achieved | Slack | Status | λ, e.g.
+"min 1,000,000 · achieved 1,012,400 · slack +12,400 (+1.24%) · Met · λ 0.0031". The bound is
+the backend's `effective_bounds` for that result, the bound it was actually solved at, so the
+two panes cannot disagree. Status is text ("Met" or "Breached") with an icon, colour only a
+secondary cue, judged by a strict comparison with no tolerance; the signed slack percentage is
+always shown. There is no "binding" judgement. Quotes loads the per-quote detail of
 the publish target on demand (bounded rows, with the total and cap stated) and names columns in
 neutral scenario terms. When the node configuration has changed since the result was produced,
-the preview shows a strip saying so with a **Re-run** action that starts the solve directly. Re-run applies the Solve pane's blocking rules: while any issue blocks the solve it is disabled and the strip names the first issue. λ is
-labelled "λ (shadow price)", explained as the objective gained per unit the bound is relaxed, with
-0 meaning the constraint is not binding.
+the preview shows a strip saying so with a **Re-run** action that starts the solve directly. Re-run applies the Solve pane's blocking rules: while any issue blocks the solve it is disabled and the strip names the first issue. λ is shown
+for online and ratebook results alike, labelled "λ (multiplier)" and explained as the solver's
+Lagrange multiplier on the constraint's term; it is never read as a tightness claim, because in
+this discrete solve a positive λ can sit beside positive slack.
 
 ## Model family capabilities
 

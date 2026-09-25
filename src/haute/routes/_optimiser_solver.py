@@ -54,7 +54,11 @@ from haute.routes import _optimiser_artifacts
 from haute.routes._background_jobs import (
     BackgroundJobStoppedError,
 )
-from haute.routes._frontier_point_summary import NON_CONVERGED_WARNING
+from haute.routes._frontier_point_summary import (
+    NON_CONVERGED_WARNING,
+    constraint_kinds,
+    effective_bounds,
+)
 from haute.routes._job_lifecycle import (
     JobLifecycle,
 )
@@ -888,6 +892,9 @@ def _finalize_solve_result(
     job_snapshot: Mapping[str, Any] = store.get_job(job_id) or {}
     config = job_snapshot.get("config", {})
     constraints = config.get("constraints")
+    kinds = constraint_kinds(constraints or {})
+    # The absolute bounds the library solved at (pct constraints already scaled).
+    result_dict["effective_bounds"] = effective_bounds(kinds, solve_result.constraint_bounds)
     if constraints and config.get("frontier_enabled") is True:
         try:
             frontier_steps = config.get("frontier_steps", _DEFAULT_FRONTIER_STEPS)
@@ -927,7 +934,8 @@ def _finalize_solve_result(
                 )
                 frontier_data = limited_frontier_payload(
                     frontier_result.points,
-                    constraint_names=list(ranges.keys()),
+                    constraint_kinds=kinds,
+                    swept_axes=list(ranges),
                 )
                 frontier_factor_tables = frontier_point_factor_tables(
                     frontier_result,
@@ -1232,6 +1240,9 @@ def _solve_ratebook(
         elapsed=elapsed,
         extra_fields={
             "cd_iterations": solve_result.cd_iterations,
+            # The grid the solve scored, as an online result reports it.
+            "n_quotes": quote_grid.n_quotes,
+            "n_steps": quote_grid.n_steps,
             "factor_tables": factor_tables_serialised,
             "factor_dtypes": factor_dtypes,
             "clamp_rate": solve_result.clamp_rate,

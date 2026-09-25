@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Any
 
-from haute.routes._frontier_point_summary import frontier_point_summary
+from haute.routes._frontier_point_summary import ConstraintKind, frontier_point_summary
 
 APPLY_PREVIEW_ROW_LIMIT = 100
 FRONTIER_POINT_LIMIT = 2_000
@@ -83,9 +84,19 @@ def limited_apply_preview_payload(df: Any) -> dict[str, Any]:
 def limited_frontier_payload(
     points_df: Any,
     *,
-    constraint_names: list[str],
+    constraint_kinds: Mapping[str, ConstraintKind],
+    swept_axes: Sequence[str],
 ) -> dict[str, Any]:
-    """Return a capped frontier payload while preserving total point count."""
+    """Return a capped frontier payload while preserving total point count.
+
+    ``constraint_kinds`` is every configured constraint, swept or not, and
+    each point summary carries all of them; ``swept_axes`` is the constraints
+    the sweep varied.
+    """
+    constraint_names = list(constraint_kinds)
+    unknown_axes = [name for name in swept_axes if name not in constraint_kinds]
+    if unknown_axes:
+        raise ValueError(f"Frontier swept axes are not configured constraints: {unknown_axes}")
 
     total_points = len(points_df)
     is_truncated = total_points > FRONTIER_POINT_LIMIT
@@ -100,10 +111,11 @@ def limited_frontier_payload(
     return {
         "status": "ok",
         "points": points,
-        "point_summaries": [frontier_point_summary(point, constraint_names) for point in points],
+        "point_summaries": [frontier_point_summary(point, constraint_kinds) for point in points],
         "n_points": total_points,
         "points_returned": len(points),
         "constraint_names": constraint_names,
+        "swept_axes": list(swept_axes),
         "points_limit": FRONTIER_POINT_LIMIT,
         "points_truncated": total_points > len(points),
     }

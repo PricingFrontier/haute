@@ -9,6 +9,12 @@
   "baseline_constraints": {
     "loss": 1.0
   },
+  "effective_bounds": {
+    "loss": {
+      "kind": "max",
+      "bound": 0.95
+    }
+  },
   "lambdas": {
     "loss": 0.3
   },

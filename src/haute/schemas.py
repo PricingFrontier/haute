@@ -3127,6 +3127,9 @@ class OptimiserFrontierResponse(BaseModel):
     n_points: int = 0
     points_returned: int = 0
     constraint_names: list[str] = Field(default_factory=list)
+    """Every configured constraint, swept or not, in configured order."""
+    swept_axes: list[str] = Field(default_factory=list)
+    """The constraints the sweep varied (a subset of ``constraint_names``)."""
     points_limit: int | None = None
     points_truncated: bool = False
     job_id: str | None = None
@@ -3174,6 +3177,18 @@ class OptimiserScenarioValueHistogram(BaseModel):
     edges: list[float] = Field(default_factory=list)
 
 
+class OptimiserEffectiveBound(BaseModel):
+    """The absolute bound a result was solved at for one constraint.
+
+    ``bound`` is price-contour's (``constraint_bounds`` or a frontier row's
+    ``bound_<name>``); for a ``min_pct``/``max_pct`` constraint it is the
+    fraction times the constraint's baseline total, never the fraction.
+    """
+
+    kind: Literal["min", "max"]
+    bound: float
+
+
 class OptimiserFrontierPointSummary(BaseModel):
     """Every result field of one frontier point that differs from its solve.
 
@@ -3183,6 +3198,7 @@ class OptimiserFrontierPointSummary(BaseModel):
 
     total_objective: float
     constraints: dict[str, float]
+    effective_bounds: dict[str, OptimiserEffectiveBound]
     lambdas: dict[str, float]
     converged: bool
     iterations: int | None
@@ -3213,6 +3229,8 @@ class OptimiserSolveResult(BaseModel):
     baseline_objective: float
     constraints: dict[str, float] = Field(default_factory=dict)
     baseline_constraints: dict[str, float] = Field(default_factory=dict)
+    # Every configured constraint's absolute bound this result was solved at.
+    effective_bounds: dict[str, OptimiserEffectiveBound]
     lambdas: dict[str, float] = Field(default_factory=dict)
     converged: bool
     iterations: int | None = None
@@ -3274,6 +3292,8 @@ class OptimiserFrontierSelectResponse(BaseModel):
     constraints: dict[str, float] = Field(default_factory=dict)
     baseline_objective: float = 0.0
     baseline_constraints: dict[str, float] = Field(default_factory=dict)
+    # The selected point's (or, with no point, the solve's) absolute bounds.
+    effective_bounds: dict[str, OptimiserEffectiveBound]
     lambdas: dict[str, float] = Field(default_factory=dict)
     converged: bool = True
     iterations: int | None = None
