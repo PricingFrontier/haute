@@ -247,6 +247,53 @@ describe("InputImportButton", () => {
     expect(onImported).not.toHaveBeenCalled()
   })
 
+  it("keeps cancelling, after the document is replaced, a build an earlier Stop failed to stop", async () => {
+    vi.mocked(getInputCacheJob).mockResolvedValue(job("running", 5))
+    vi.mocked(cancelInputCacheJob)
+      .mockRejectedValueOnce(new Error("cancel route unreachable"))
+      .mockResolvedValue({ schema_version: 1, job_id: "import-1", cancellation_requested: true, status: "cancelled" })
+    const csv = node("csv", "dataInput", csvConfig)
+    onCanvas(csv)
+    renderImport(csv)
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId("input-import"))
+    })
+    await waitFor(() => expect(getInputCacheJob).toHaveBeenCalled())
+    await act(async () => stopNodeWork("csv"))
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.some((toast) => toast.text.includes("Stopping the import failed"))).toBe(true),
+    )
+
+    act(() => {
+      useDocumentStatusStore.setState((state) => ({ executionGeneration: state.executionGeneration + 1 }))
+    })
+
+    await waitFor(() => expect(cancelInputCacheJob).toHaveBeenCalledTimes(2))
+    expect(useInputImportStore.getState().runs.csv).toBeUndefined()
+  })
+
+  it("keeps cancelling a retired import's build whose cancellation fails", async () => {
+    vi.mocked(getInputCacheJob).mockResolvedValue(job("running", 5))
+    vi.mocked(cancelInputCacheJob)
+      .mockRejectedValueOnce(new Error("cancel route unreachable"))
+      .mockResolvedValue({ schema_version: 1, job_id: "import-1", cancellation_requested: true, status: "cancelled" })
+    const csv = node("csv", "dataInput", csvConfig)
+    onCanvas(csv)
+    renderImport(csv)
+    await act(async () => {
+      fireEvent.click(await screen.findByTestId("input-import"))
+    })
+    await waitFor(() => expect(getInputCacheJob).toHaveBeenCalled())
+
+    act(() => {
+      useDocumentStatusStore.setState((state) => ({ executionGeneration: state.executionGeneration + 1 }))
+    })
+
+    // The retirement's own cancellation fails; the retry in the background succeeds.
+    await waitFor(() => expect(cancelInputCacheJob).toHaveBeenCalledTimes(2), { timeout: 5_000 })
+    expect(useInputImportStore.getState().runs.csv).toBeUndefined()
+  })
+
   it("reports a failed import and still invalidates downstream results", async () => {
     vi.mocked(getInputCacheJob).mockResolvedValue(job("error"))
     const csv = node("csv", "dataInput", csvConfig)

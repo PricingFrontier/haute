@@ -352,8 +352,9 @@ and remediation without exposing raw bounded-collection JSON.
   when a later answer joins the same job; one joined from elsewhere is left
   running and does not show Stop), its Stop also stops the profile — a job id
   that arrives after Stop is cancelled at once, and nothing asks for that node's
-  profile on its own until the consumer resumes; the pause is kept by node, so
-  another node opened in the panel profiles as usual — and its Refresh resumes
+  profile on its own until the consumer resumes; the pause is kept per node (every
+  stopped node's late job is cancelled, whichever was stopped last), so another
+  node opened in the panel profiles as usual — and its Refresh resumes
   profiling (a state change, so an eligible profile is asked for at once), asking
   again at once for a profile that failed or was stopped. It has no separate "Cancel profile" button, only "Retry profile"
   for a failed one.
@@ -372,9 +373,11 @@ and remediation without exposing raw bounded-collection JSON.
   (`stores/useInputImportStore.ts`), not to the open panel: opening another node
   leaves it running, shown and stoppable on its own node, and its re-preview runs
   only if that node is still open and still reads the same source. A replaced
-  document retires it at once (its build is cancelled and its run, work and Stop
-  released), so a node of the new document that reuses the id never shows,
-  stops or continues it.
+  document retires it at once (its run, work and Stop leave the node), so a node of
+  the new document that reuses the id never shows, stops or continues it; its
+  build is still cancelled, and one that refuses to stop, now or after an
+  earlier failed Stop, is cancelled again in the background (five attempts, two
+  seconds apart) and reported if it never stops.
   Every outcome (completed, failed, stopped) re-reads the snapshot status and
   raises the node-data epoch, since a failed Quote Input import can publish some
   tables; only a completed, unstopped import re-previews the node. Its title

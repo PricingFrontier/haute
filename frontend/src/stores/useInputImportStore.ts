@@ -56,6 +56,11 @@ function setRun(nodeId: string, run: InputImportRun | null): void {
  * can publish part of the data. *onImported* runs only after a completed,
  * unstopped import whose node still reads the same source.
  */
+// A retired import's builds that refused to stop are cancelled again this many
+// times, this far apart, before the failure is left to the user.
+const RETIRED_CANCEL_ATTEMPTS = 5
+const RETIRED_CANCEL_INTERVAL_MS = 2_000
+
 export function startInputImport(nodeId: string, input: Node, onImported: (nodeId: string) => void): void {
   if (useInputImportStore.getState().runs[nodeId]) return
   const source = inputSnapshotSource(input)
@@ -64,12 +69,15 @@ export function startInputImport(nodeId: string, input: Node, onImported: (nodeI
   const fence = captureDocumentExecutionFence()
   const controller = new AbortController()
   const workKey = `import:${nodeId}`
-  // Set while builds refused to stop: Stop cancels them again.
-  let retry: (() => Promise<void>) | null = null
+  const snapshots = import("../hooks/ensureInputSnapshots")
+  // Builds that refused to stop: Stop (or, once retired, the background retry)
+  // cancels them again.
+  let pending: string[] | null = null
   let ended = false
+  let retired = false
   const addToast = useToastStore.getState().addToast
 
-  // Everything that ties this run to its node, released exactly once.
+  // Everything that shows this run on its node, released exactly once.
   const release = () => {
     if (ended) return false
     ended = true
@@ -87,25 +95,54 @@ export function startInputImport(nodeId: string, input: Node, onImported: (nodeI
       onImported(nodeId)
     }
   }
+  // Cancel builds that refused to stop again. Returns whether they all stopped.
+  const cancelPending = async (): Promise<boolean> => {
+    if (pending === null) return true
+    const { cancelInputSnapshotBuilds } = await snapshots
+    try {
+      await cancelInputSnapshotBuilds(pending)
+    } catch (retried) {
+      const still = (retried as { jobIds?: unknown }).jobIds
+      if (Array.isArray(still)) pending = still as string[]
+      return false
+    }
+    pending = null
+    return true
+  }
+  // A retired import has no node left to press Stop on, so its builds are
+  // cancelled again in the background until they stop, and a build that never
+  // does is reported.
+  const cancelRetired = async () => {
+    for (let attempt = 1; attempt <= RETIRED_CANCEL_ATTEMPTS; attempt += 1) {
+      if (await cancelPending()) return
+      await new Promise((resolve) => setTimeout(resolve, RETIRED_CANCEL_INTERVAL_MS))
+    }
+    addToast("error", "An import from the previous pipeline could not be stopped and may still be running.")
+  }
   const unregisterStop = registerNodeStop(nodeId, () => {
-    if (retry) {
-      void retry()
+    if (pending === null) {
+      controller.abort()
       return
     }
-    controller.abort()
+    void cancelPending().then((stopped) => {
+      if (stopped) settle(false)
+      else addToast("error", "Stopping the import failed. Press Stop to try again.")
+    })
   })
   // A replaced document is another pipeline, whose node may reuse this id: the
-  // run retires at once, stopping its build, so it is never shown, stopped, or
-  // continued as the new document's.
+  // run leaves its node at once, so it is never shown, stopped, or continued as
+  // the new document's, while its build is still stopped in the background.
   const unsubscribeDocument = useDocumentStatusStore.subscribe(() => {
-    if (isDocumentExecutionFenceCurrent(fence)) return
-    if (release()) controller.abort()
+    if (isDocumentExecutionFenceCurrent(fence) || !release()) return
+    retired = true
+    if (pending !== null) void cancelRetired()
+    else controller.abort()
   })
 
   setRun(nodeId, { rows: null })
   useNodeWorkStore.getState().setRunning(workKey, nodeId)
   void (async () => {
-    const { cancelInputSnapshotBuilds, ensureInputSnapshots } = await import("../hooks/ensureInputSnapshots")
+    const { ensureInputSnapshots } = await snapshots
     try {
       await ensureInputSnapshots([input], {
         force: true,
@@ -119,19 +156,12 @@ export function startInputImport(nodeId: string, input: Node, onImported: (nodeI
     } catch (err) {
       const failed = err as { name?: unknown; jobIds?: unknown } | null
       if (failed?.name === "CancellationFailed" && Array.isArray(failed.jobIds)) {
-        let pending = failed.jobIds as string[]
-        addToast("error", `Stopping the import failed: ${apiErrorMessage(err)} Press Stop to try again.`)
-        retry = async () => {
-          try {
-            await cancelInputSnapshotBuilds(pending)
-          } catch (retried) {
-            const still = (retried as { jobIds?: unknown }).jobIds
-            if (Array.isArray(still)) pending = still as string[]
-            addToast("error", `Stopping the import failed: ${apiErrorMessage(retried)} Press Stop to try again.`)
-            return
-          }
-          settle(false)
+        pending = failed.jobIds as string[]
+        if (retired) {
+          void cancelRetired()
+          return
         }
+        addToast("error", `Stopping the import failed: ${apiErrorMessage(err)} Press Stop to try again.`)
         return
       }
       if (failed?.name !== "AbortError") addToast("error", `Import failed: ${apiErrorMessage(err)}`)

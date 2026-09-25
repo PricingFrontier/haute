@@ -945,6 +945,47 @@ describe("ExplorePreview", () => {
     )
   })
 
+  it("cancels each stopped node's late profile, however many nodes were stopped", async () => {
+    const currentPoint = point("current", DATA_VERSION)
+    // Each node reads its own data, so each asks for its own profile.
+    const otherPoint = { ...currentPoint, consumer_node_id: "explore_2", slot_key: "source_2||pricing", point: { producer_node_id: "source_2", port_label: null } }
+    mockGetNodeDataPoint.mockImplementation(async (request: { node_id: string }) =>
+      request.node_id === "explore_2" ? otherPoint : currentPoint,
+    )
+    const answers: Record<string, (value: unknown) => void> = {}
+    mockGetNodeDataProfile.mockImplementation(
+      (request: { node_id: string }) => new Promise((resolve) => { answers[request.node_id] = resolve }),
+    )
+    mockCancelNodeData.mockResolvedValue({ status: "cancelled", progress: 0, message: "Cancelled" })
+    const other = makeNode("explore_2", "Explore Other", "explore")
+    const otherSource = makeNode("source_2", "Other Source", "dataInput")
+    const allNodes = [sourceNode, otherSource, exploreNode, other]
+    const bothEdges: SimpleEdge[] = [...edges, { id: "e2", source: "source_2", target: "explore_2" }]
+    const view = (target: SimpleNode) => (
+      <PreviewRunContext.Provider value={{ running: true, onStop: vi.fn() }}>
+        <ExplorePreview node={target} allNodes={allNodes} edges={bothEdges} submodels={{}} preamble="import polars as pl" previewData={null} onRefresh={vi.fn()} />
+      </PreviewRunContext.Provider>
+    )
+    const { rerender } = render(view(exploreNode))
+    await waitFor(() => expect(answers.explore_1).toBeDefined())
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("preview-stop"))
+    })
+    rerender(view(other))
+    await waitFor(() => expect(answers.explore_2).toBeDefined())
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("preview-stop"))
+    })
+
+    await act(async () => {
+      answers.explore_1({ status: "started", job_id: "profile-a", message: "Profiling", point: currentPoint })
+      answers.explore_2({ status: "started", job_id: "profile-b", message: "Profiling", point: otherPoint })
+    })
+
+    await waitFor(() => expect(mockCancelNodeData).toHaveBeenCalledWith("profile-a"))
+    expect(mockCancelNodeData).toHaveBeenCalledWith("profile-b")
+  })
+
   it("asks for a failed profile again when Refresh is pressed", async () => {
     const currentPoint = point("current", DATA_VERSION)
     mockGetNodeDataPoint.mockResolvedValue(currentPoint)
