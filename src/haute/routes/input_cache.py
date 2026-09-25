@@ -935,7 +935,17 @@ def _start_build(
     target_kwargs: dict[str, Any],
     table_digests: tuple[str, ...] = (),
 ) -> InputCacheBuildResponse:
-    """Join the running build of *key*, or admit and start a new one."""
+    """Join the running build of *key*, or admit and start a new one.
+
+    A running build is joinable only while it is not being cancelled, and a
+    forced (``refresh``) request joins only another forced build: an ordinary
+    build may have started before the source changed, which is what a forced
+    request exists to re-read. A request that may not join the build holding
+    *key* is answered at once as ``blocked`` with that build's id, never held
+    inside the request: the client waits for that build without owning it and
+    asks again. Cancellation takes the same lock, so a build cannot be joined
+    and cancelled out from under the joiner in one interleaving.
+    """
     global _active_builds
 
     with _start_lock:
@@ -943,11 +953,22 @@ def _start_build(
         if active is not None:
             job = _store.get_job(active.job_id)
             if job is not None and job.get("status") == "running":
+                forced = bool(job.get("refresh"))
+                if not _jobs.is_cancelled(active.job_id) and (forced or not refresh):
+                    return InputCacheBuildResponse(
+                        job_id=active.job_id,
+                        identity_digest=key,
+                        status="running",
+                        joined=True,
+                        forced=forced,
+                        build_class=job["build_class"],
+                    )
                 return InputCacheBuildResponse(
                     job_id=active.job_id,
                     identity_digest=key,
-                    status="running",
-                    joined=True,
+                    status="blocked",
+                    joined=False,
+                    forced=forced,
                     build_class=job["build_class"],
                 )
             _singleflight.release(key, job_id=active.job_id)
@@ -998,6 +1019,7 @@ def _start_build(
         identity_digest=key,
         status="running",
         joined=False,
+        forced=refresh,
         build_class=build_class,
     )
 
@@ -1064,7 +1086,10 @@ def get_input_cache_job(job_id: str) -> InputCacheJobStatusResponse:
 def cancel_input_cache_job(job_id: str) -> InputCacheCancelResponse:
     job = _store.require_job(job_id)
     job_status = require_job_status(job)
-    requested = job_status == "running" and _jobs.cancel(job_id)
+    # Under the start lock, so no request joins the build between this check
+    # and the cancellation (see ``_start_build``).
+    with _start_lock:
+        requested = job_status == "running" and _jobs.cancel(job_id)
     latest = _store.require_job(job_id)
     return InputCacheCancelResponse(
         job_id=job_id,

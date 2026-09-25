@@ -66,6 +66,7 @@ import useNodeResultsStore from "./stores/useNodeResultsStore"
 import { refreshNodeDataCache } from "./hooks/useNodeDataCache"
 import { stopNodeWork, useNodeWorkRunning } from "./stores/useNodeWorkStore"
 import { PreviewRunContext, type PreviewRun } from "./panels/previewRunContext"
+import InputImportButton from "./components/InputImportButton"
 import useDocumentStatusStore from "./stores/useDocumentStatusStore"
 import { HAUTE_SESSION_EXPIRED_EVENT } from "./api/client"
 
@@ -307,6 +308,11 @@ function ActiveNodePreviewBody({
       tracedCell={tracedCell}
       onSelectFrame={
         activeNodeId ? (portLabel) => previewNodeFrame(activeNodeId, portLabel) : undefined
+      }
+      inputAction={
+        documentCanExecute && canRefresh && activeNode ? (
+          <InputImportButton node={activeNode} allNodes={panelNodes} onImported={onRefresh} />
+        ) : undefined
       }
     />
   )

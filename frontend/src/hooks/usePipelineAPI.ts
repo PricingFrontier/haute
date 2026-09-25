@@ -41,6 +41,7 @@ import {
   type DrilledOccurrenceIdentity,
 } from "../utils/submodelRuntimeTarget"
 import { executionWarningNodeIds } from "../utils/executionDiagnostics"
+import { instanceOriginal } from "../utils/instanceOriginal"
 import { apiErrorMessage } from "../api/errors"
 import { useDebouncedCallback } from "./useDebouncedCallback"
 export { columnFingerprint } from "../utils/columnFingerprint"
@@ -225,18 +226,6 @@ function canPreviewNode(node: Node): boolean {
     !NON_EXECUTABLE_PREVIEW_TYPES.has(effectiveNodeType(node))
 }
 
-/** The node whose config an input instance runs: its original, else itself. */
-function instanceOriginal<T extends { id: string; data?: unknown }>(
-  graphNode: T,
-  byId: Map<string, T>,
-): T {
-  const config = (graphNode.data as { config?: unknown } | undefined)?.config
-  const reference =
-    config && typeof config === "object" && !Array.isArray(config)
-      ? (config as { instanceOf?: unknown }).instanceOf
-      : undefined
-  return (typeof reference === "string" && byId.get(reference)) || graphNode
-}
 
 /** One preview whose inputs are prepared before it runs. */
 interface PreviewInputTarget {

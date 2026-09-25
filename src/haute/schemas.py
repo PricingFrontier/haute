@@ -1119,8 +1119,13 @@ class InputCacheBuildResponse(_StrictInputCacheModel):
     schema_version: Literal[1] = 1
     job_id: str
     identity_digest: str
-    status: Literal["running"]
+    # ``blocked``: *job_id* is a build this request may not join (a build being
+    # cancelled, or an ordinary build for a forced request); wait for it to end
+    # without owning it, then ask again.
+    status: Literal["running", "blocked"]
     joined: bool
+    # Whether the build *job_id* names re-reads the source (``refresh``).
+    forced: bool
     # How the server builds it: ``bounded`` streams in a lazy sink,
     # ``admitted_eager`` reads eagerly inside a hard-capped worker.
     build_class: Literal["bounded", "admitted_eager"]

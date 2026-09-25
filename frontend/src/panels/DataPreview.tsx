@@ -1,4 +1,4 @@
-import { memo, useState, useCallback, useRef, useEffect, useMemo, type MouseEvent } from "react"
+import { memo, useState, useCallback, useRef, useEffect, useMemo, type MouseEvent, type ReactNode } from "react"
 import { X, AlertCircle, CheckCircle2, Table2, Search, Layers } from "lucide-react"
 import { getDtypeColor } from "../utils/dtypeColors"
 import { formatValue } from "../utils/formatValue"
@@ -60,6 +60,8 @@ interface DataPreviewProps {
    * provided AND the node carries 2+ frames, the top-bar shows a frame-select
    * dropdown. Omitted (or single-frame node) → no dropdown, unchanged UI. */
   onSelectFrame?: (portLabel: string) => void
+  /** An action shown beside Refresh (Import, for a snapshot-backed input). */
+  inputAction?: ReactNode
 }
 
 
@@ -192,7 +194,7 @@ const DataCell = memo(function DataCell({
   )
 })
 
-export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, tracedCell, embedded = false, nodeType, onSelectFrame }: DataPreviewProps) {
+export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, tracedCell, embedded = false, nodeType, onSelectFrame, inputAction }: DataPreviewProps) {
   const [columnSearch, setColumnSearch] = useState("")
 
   // Frame labels for a multi-frame producer (a multi-table apiInput). The
@@ -309,7 +311,7 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
   if (!data) {
     if (embedded || !nodeLabel) return null
     return (
-      <PreviewPanelFrame nodeLabel={nodeLabel} nodeType={nodeType} onRefresh={onRefresh}>
+      <PreviewPanelFrame nodeLabel={nodeLabel} nodeType={nodeType} onRefresh={onRefresh} actions={inputAction}>
         <div className="flex-1 flex items-center justify-center text-xs" style={{ color: "var(--text-muted)" }}>
           Refresh to preview this node.
         </div>
@@ -540,7 +542,16 @@ export default function DataPreview({ data, nodeLabel, onRefresh, onCellClick, t
       nodeLabel={data.nodeLabel}
       nodeType={nodeType}
       onRefresh={onRefresh}
-      actions={frameSelectControl}
+      actions={
+        inputAction ? (
+          <>
+            {inputAction}
+            {frameSelectControl}
+          </>
+        ) : (
+          frameSelectControl
+        )
+      }
       collapsedMeta={data.status === "ok" ? `${data.row_count.toLocaleString()} rows \u00b7 ${data.column_count || columns.length} cols` : undefined}
     >
       {previewSection}

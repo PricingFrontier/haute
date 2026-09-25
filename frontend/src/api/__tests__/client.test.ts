@@ -1689,7 +1689,7 @@ describe("no request carries streaming_chunk_size", () => {
 
   it("uses the exact input-cache V1 paths, methods, and request bodies", async () => {
     const source = { schema_version: 1 as const, config: { path: "data.csv" } }
-    mockFetch.mockReturnValueOnce(jsonResponse({ schema_version: 1, job_id: "job / 1", identity_digest: "digest", status: "running", joined: false, build_class: "admitted_eager" }))
+    mockFetch.mockReturnValueOnce(jsonResponse({ schema_version: 1, job_id: "job / 1", identity_digest: "digest", status: "running", joined: false, forced: false, build_class: "admitted_eager" }))
     const started = await buildInputCache({ ...source, refresh: true })
     expect(started.build_class).toBe("admitted_eager")
     expect(mockFetch.mock.calls[0][0]).toBe("/api/input-cache/build")

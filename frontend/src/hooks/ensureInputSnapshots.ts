@@ -5,15 +5,21 @@ import {
   getInputCacheJob,
   getInputCacheStatus,
 } from "../api/client"
-import { TERMINAL_JOB_STATUSES } from "../api/types"
-import { dataInputIsDirect } from "../utils/dataInputMode"
-import { NODE_TYPES } from "../utils/nodeTypes"
+import {
+  TERMINAL_JOB_STATUSES,
+  type InputCacheJobStatusResponse,
+  type InputCacheProgress,
+} from "../api/types"
+import { inputSnapshotSource, type SnapshotSource } from "../utils/inputSnapshotSource"
 import { JobWaitTimeoutError, waitForJob } from "./jobPollingController"
 
 const POLL_INTERVAL_MS = 800
 // A cancelled build is waited for, because a point reports itself as building
 // until its job is terminal and nothing else is polling it by then.
 const CANCELLATION_WAIT_MS = 60 * POLL_INTERVAL_MS
+// How many times one snapshot asks the server again after waiting for a build
+// it could not join, or after a joined build its owner stopped.
+const MAX_BUILD_ATTEMPTS = 3
 
 /**
  * A cancellation that the server did not accept, or whose build never reached a
@@ -51,58 +57,31 @@ export interface EnsureInputSnapshotsOptions {
    * from elsewhere is not reported: aborting only stops waiting for it.
    */
   onJobStarted?: (jobId: string) => void
-}
-
-function snapshotConfigs(nodes: Node[]): Record<string, unknown>[] {
-  return nodes.flatMap((node) => {
-    const data = node.data as {
-      nodeType?: unknown
-      config?: unknown
-    }
-    if (
-      data.nodeType !== NODE_TYPES.DATA_INPUT ||
-      typeof data.config !== "object" ||
-      data.config === null ||
-      Array.isArray(data.config)
-    ) {
-      return []
-    }
-    const config = data.config as Record<string, unknown>
-    if (dataInputIsDirect(config)) return []
-    return [config]
-  })
-}
-
-function quoteInputConfigs(nodes: Node[]): Record<string, unknown>[] {
-  return nodes.flatMap((node) => {
-    const { nodeType, config } = node.data
-    if (nodeType !== NODE_TYPES.API_INPUT || !config || typeof config !== "object" || Array.isArray(config)) return []
-    const value = config as Record<string, unknown>
-    return Object.prototype.hasOwnProperty.call(value, "tables") &&
-      typeof value.path === "string" && /\.(json|jsonl|ndjson|xml)$/i.test(value.path)
-      ? [value] : []
-  })
+  /** Each running status of a build this pass waits for (rows read so far, phase). */
+  onBuildProgress?: (progress: InputCacheProgress) => void
 }
 
 function abortError(): DOMException {
   return new DOMException("Input snapshot ensure was cancelled.", "AbortError")
 }
 
+/** Wait for a build to end, and return how it ended. */
 async function waitForBuild(
   jobId: string,
   signal: AbortSignal | undefined,
   owned: boolean,
-): Promise<void> {
+  onBuildProgress?: (progress: InputCacheProgress) => void,
+): Promise<InputCacheJobStatusResponse> {
   try {
-    const job = await waitForJob({
+    return await waitForJob({
       poll: (pollSignal) => getInputCacheJob(jobId, { signal: pollSignal }),
       isTerminal: (current) => TERMINAL_JOB_STATUSES.has(current.status),
       intervalMs: POLL_INTERVAL_MS,
       signal,
+      onStatus: (current) => {
+        if (current.status === "running") onBuildProgress?.(current.progress)
+      },
     })
-    if (job.status !== "completed") {
-      throw new Error(job.message || `Input snapshot build ${job.status}.`)
-    }
   } catch (caught) {
     if (!signal?.aborted) throw caught
     // A build joined from another tab or consumer is theirs: this pass only
@@ -160,36 +139,6 @@ export async function cancelInputSnapshotBuild(jobId: string): Promise<void> {
   }
 }
 
-type SnapshotSource = {
-  schema_version: 1
-  node_type?: "apiInput"
-  config: Record<string, unknown>
-}
-
-function dataInputSource(config: Record<string, unknown>): SnapshotSource {
-  return { schema_version: 1, config }
-}
-
-/** A structured Quote Input: every emitting table of the node, built together. */
-function quoteInputSource(config: Record<string, unknown>): SnapshotSource {
-  return { schema_version: 1, node_type: "apiInput", config }
-}
-
-/**
- * Start (or join) the server's choice of build and return its job id.
- *
- * The server chooses how the snapshot is built. The request itself is never
- * aborted: once the server has admitted a job, only its id can stop it, so an
- * abort that arrives meanwhile is handled by `waitForBuild`, which cancels the
- * job it was handed.
- */
-async function startBuild(
-  source: SnapshotSource,
-  refresh = false,
-): Promise<{ jobId: string; owned: boolean }> {
-  const started = await buildInputCache({ ...source, refresh })
-  return { jobId: started.job_id, owned: !started.joined }
-}
 
 /**
  * Build (or join the build of) every unavailable snapshot the graph needs.
@@ -200,9 +149,13 @@ export async function ensureInputSnapshots(
   nodes: Node[],
   options: EnsureInputSnapshotsOptions = {},
 ): Promise<void> {
-  const configs = snapshotConfigs(nodes)
-  const quotes = quoteInputConfigs(nodes)
-  if (configs.length === 0 && quotes.length === 0) return
+  const sources = nodes.flatMap((node) => {
+    const source = inputSnapshotSource(node)
+    return source ? [source] : []
+  })
+  const quotes = sources.filter((source) => source.node_type === "apiInput")
+  const dataInputs = sources.filter((source) => source.node_type !== "apiInput")
+  if (sources.length === 0) return
 
   let buildNotified = false
   const notifyBuildStart = () => {
@@ -216,10 +169,10 @@ export async function ensureInputSnapshots(
   }
   // Structured Quote Inputs build their tables from one shred of the source.
   // Keep these sequential so each node owns its progress message.
-  for (const config of quotes) {
+  for (const source of quotes) {
     report("Checking Quote Input cache…")
     try {
-      await ensureSnapshot(quoteInputSource(config), options, () => {
+      await ensureSnapshot(source, options, () => {
         notifyBuildStart()
         report("Caching Quote Input tables as Parquet…")
       })
@@ -229,7 +182,7 @@ export async function ensureInputSnapshots(
   }
 
   await Promise.all(
-    configs.map((config) => ensureSnapshot(dataInputSource(config), options, notifyBuildStart)),
+    dataInputs.map((source) => ensureSnapshot(source, options, notifyBuildStart)),
   )
 }
 
@@ -254,7 +207,29 @@ async function ensureSnapshot(
   // The build endpoint joins an existing job for "building". Corrupt and
   // failed snapshots are known-bad and are rebuilt before execution.
   notifyBuildStart()
-  const { jobId, owned } = await startBuild(source, options.force === true)
-  if (owned) options.onJobStarted?.(jobId)
-  await waitForBuild(jobId, options.signal, owned)
+  for (let attempt = 1; ; attempt += 1) {
+    // The request itself is never aborted: once the server has admitted a job,
+    // only its id can stop it, so an abort that arrives meanwhile is handled by
+    // `waitForBuild`, which cancels the job it was handed if it is this pass's.
+    const started = await buildInputCache({ ...source, refresh: options.force === true })
+    // Only a build this pass started is its to cancel. A `blocked` answer names
+    // a build this request may not join (one being cancelled, or an ordinary
+    // build for a forced request): it is waited for, never cancelled.
+    const owned = started.status === "running" && !started.joined
+    if (owned) options.onJobStarted?.(started.job_id)
+    const job = await waitForBuild(started.job_id, options.signal, owned, options.onBuildProgress)
+    if (started.status === "running" && job.status === "completed") return
+    // The build waited for did not build this request's snapshot: it was one
+    // this request could not join, or a joined build its owner stopped. Ask again.
+    const askAgain =
+      started.status === "blocked" ||
+      (!owned && (job.status === "cancelled" || job.status === "superseded"))
+    if (!askAgain || attempt >= MAX_BUILD_ATTEMPTS) {
+      throw new Error(
+        started.status === "blocked"
+          ? "Another build of this input kept running; try again when it has finished."
+          : job.message || `Input snapshot build ${job.status}.`,
+      )
+    }
+  }
 }

@@ -71,6 +71,7 @@ def test_build_job_publishes_snapshot_and_snapshot_status(
         "identity_digest": start_payload["identity_digest"],
         "status": "running",
         "joined": False,
+        "forced": False,
         "build_class": "bounded",
     }
     terminal = _wait_for_terminal(client, start_payload["job_id"])
@@ -867,6 +868,7 @@ def test_the_server_chooses_each_formats_build_profile(
             identity_digest=kwargs["key"],
             status="running",
             joined=False,
+            forced=kwargs["refresh"],
             build_class=kwargs["build_class"],
         )
 
@@ -1453,3 +1455,146 @@ def test_api_input_requests_validate_the_config(
         response = client.post(f"/api/input-cache/{route}", json=_api_input_body(config))
         assert response.status_code == status_code, (route, response.text)
         assert detail in response.json()["detail"]
+
+
+def _hold_builds(monkeypatch: pytest.MonkeyPatch) -> tuple[threading.Event, threading.Event]:
+    """Make every snapshot build wait, ignoring cancellation, until released."""
+    from haute.routes import input_cache
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def held_build(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        assert release.wait(timeout=5)
+        raise RuntimeError("released")
+
+    monkeypatch.setattr(input_cache, "build_input_snapshot", held_build)
+    return entered, release
+
+
+def test_a_forced_request_is_blocked_by_an_ordinary_build_and_never_cancels_it(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered, release = _hold_builds(monkeypatch)
+    ordinary = client.post(
+        "/api/input-cache/build", json={"schema_version": 1, "config": _file_config()}
+    )
+    assert entered.wait(timeout=5)
+
+    forced = client.post(
+        "/api/input-cache/build",
+        json={"schema_version": 1, "config": _file_config(), "refresh": True},
+    )
+
+    assert forced.status_code == 202
+    assert forced.json()["status"] == "blocked"
+    assert forced.json()["job_id"] == ordinary.json()["job_id"]
+    assert forced.json()["joined"] is False
+    assert forced.json()["forced"] is False
+    from haute.routes import input_cache
+
+    assert not input_cache._jobs.is_cancelled(ordinary.json()["job_id"])
+    release.set()
+    _wait_for_terminal(client, ordinary.json()["job_id"])
+
+    # Once the ordinary build has ended, the forced request starts its own.
+    entered.clear()
+    again = client.post(
+        "/api/input-cache/build",
+        json={"schema_version": 1, "config": _file_config(), "refresh": True},
+    )
+    assert again.json()["status"] == "running"
+    assert again.json()["joined"] is False
+    assert again.json()["forced"] is True
+    assert again.json()["job_id"] != ordinary.json()["job_id"]
+    _wait_for_terminal(client, again.json()["job_id"])
+
+
+def test_forced_requests_share_one_forced_build(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered, release = _hold_builds(monkeypatch)
+    body = {"schema_version": 1, "config": _file_config(), "refresh": True}
+    first = client.post("/api/input-cache/build", json=body)
+    assert entered.wait(timeout=5)
+
+    second = client.post("/api/input-cache/build", json=body)
+    ordinary = client.post(
+        "/api/input-cache/build", json={"schema_version": 1, "config": _file_config()}
+    )
+
+    assert second.json()["joined"] is True
+    assert second.json()["job_id"] == first.json()["job_id"]
+    # An ordinary request is satisfied by the forced build too.
+    assert ordinary.json()["joined"] is True
+    assert ordinary.json()["forced"] is True
+    release.set()
+    _wait_for_terminal(client, first.json()["job_id"])
+
+
+def test_a_build_being_cancelled_accepts_no_new_joiners(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered, release = _hold_builds(monkeypatch)
+    body = {"schema_version": 1, "config": _file_config()}
+    first = client.post("/api/input-cache/build", json=body)
+    assert entered.wait(timeout=5)
+    cancelled = client.delete(f"/api/input-cache/jobs/{first.json()['job_id']}")
+    assert cancelled.json()["cancellation_requested"] is True
+    # Held between the cancellation's acknowledgement and its terminal state.
+    assert (
+        client.get(f"/api/input-cache/jobs/{first.json()['job_id']}").json()["status"] == "running"
+    )
+
+    late = client.post("/api/input-cache/build", json=body)
+
+    assert late.json()["status"] == "blocked"
+    assert late.json()["job_id"] == first.json()["job_id"]
+    release.set()
+    _wait_for_terminal(client, first.json()["job_id"])
+
+    entered.clear()
+    fresh = client.post("/api/input-cache/build", json=body)
+    assert fresh.json()["status"] == "running"
+    assert fresh.json()["joined"] is False
+    assert fresh.json()["job_id"] != first.json()["job_id"]
+    _wait_for_terminal(client, fresh.json()["job_id"])
+
+
+def test_a_forced_build_re_reads_a_source_whose_changes_cannot_be_detected(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    import sqlite3
+
+    database = tmp_path / "data.sqlite"
+    connection = sqlite3.connect(database)
+    connection.execute("CREATE TABLE t (x INTEGER)")
+    connection.executemany("INSERT INTO t VALUES (?)", [(1,), (2,)])
+    connection.commit()
+    config = {
+        "inputType": "database",
+        "format": "database",
+        "uri": "sqlite:///data.sqlite",
+        "query": "SELECT x FROM t",
+    }
+    body = {"schema_version": 1, "config": config}
+    first = client.post("/api/input-cache/build", json=body)
+    assert _wait_for_terminal(client, first.json()["job_id"])["status"] == "completed"
+    before = client.post("/api/input-cache/status", json=body).json()
+    assert before["freshness"] == "unknown"
+    assert before["generation"]["row_count"] == 2
+
+    connection.execute("INSERT INTO t VALUES (3)")
+    connection.commit()
+    connection.close()
+    forced = client.post("/api/input-cache/build", json={**body, "refresh": True})
+    assert _wait_for_terminal(client, forced.json()["job_id"])["status"] == "completed"
+
+    after = client.post("/api/input-cache/status", json=body).json()
+    assert after["generation"]["row_count"] == 3
+    assert after["generation"]["generation_id"] != before["generation"]["generation_id"]

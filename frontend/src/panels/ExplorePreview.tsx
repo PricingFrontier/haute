@@ -202,7 +202,14 @@ export default function ExplorePreview({
           equalWidth
         />
 
-        <div className="flex-1 min-h-0 flex flex-col" data-testid="explore-preview-body">
+        {/* The shared data's state for this consumer, as an attribute rather
+            than a label: Refresh and Stop are the controls, and the browser
+            journeys read it to know when the data is cached. */}
+        <div
+          className="flex-1 min-h-0 flex flex-col"
+          data-testid="explore-preview-body"
+          data-availability={cache.availability}
+        >
           <div
             id={`explore-preview-${activePaneMeta.key}-pane`}
             role="tabpanel"

@@ -139,7 +139,7 @@ describe("delegated data-point builds", () => {
 
   it("rebuilds a stale snapshot the ensure pass would otherwise leave alone", async () => {
     answerPoint("stale")
-    mockBuildInputCache.mockResolvedValue({ job_id: "input-job-1" } as never)
+    mockBuildInputCache.mockResolvedValue({ job_id: "input-job-1", status: "running", joined: false } as never)
     mockInputCacheJob.mockResolvedValue({ status: "completed", message: "" } as never)
     const banding = renderConsumer("banding")
     await waitFor(() => expect(banding.result.current.availability).toBe("stale"))
@@ -171,7 +171,7 @@ describe("delegated data-point builds", () => {
       point: delegatedPoint(String(args.node_id), "building"),
     }))
     mockInputCacheStatus.mockResolvedValue({ state: "missing" } as never)
-    mockBuildInputCache.mockResolvedValue({ job_id: "input-job-2" } as never)
+    mockBuildInputCache.mockResolvedValue({ job_id: "input-job-2", status: "running", joined: false } as never)
     mockInputCacheJob.mockImplementation(async () => ({
       status: serverJobStatus,
       message: "Building",
@@ -214,7 +214,7 @@ describe("delegated data-point builds", () => {
   it("reports a cancellation the server refused instead of claiming the build stopped", async () => {
     answerPoint("missing")
     mockInputCacheStatus.mockResolvedValue({ state: "missing" } as never)
-    mockBuildInputCache.mockResolvedValue({ job_id: "input-job-3" } as never)
+    mockBuildInputCache.mockResolvedValue({ job_id: "input-job-3", status: "running", joined: false } as never)
     mockInputCacheJob.mockResolvedValue({ status: "running", message: "Building" } as never)
     mockCancelInputCacheJob.mockRejectedValue(new Error("the server is unreachable"))
     const banding = renderConsumer("banding")
@@ -262,7 +262,7 @@ describe("delegated data-point builds", () => {
     try {
       answerPoint("missing")
       mockInputCacheStatus.mockResolvedValue({ state: "missing" } as never)
-      mockBuildInputCache.mockResolvedValue({ job_id: "input-job-4" } as never)
+      mockBuildInputCache.mockResolvedValue({ job_id: "input-job-4", status: "running", joined: false } as never)
       // The job ignores its cancellation and keeps running for good.
       mockInputCacheJob.mockResolvedValue({ status: "running", message: "Building" } as never)
       mockCancelInputCacheJob.mockResolvedValue({
@@ -303,7 +303,7 @@ describe("delegated data-point builds", () => {
   it("keeps the control when a cancellation is accepted but its outcome cannot be read", async () => {
     answerPoint("missing")
     mockInputCacheStatus.mockResolvedValue({ state: "missing" } as never)
-    mockBuildInputCache.mockResolvedValue({ job_id: "input-job-5" } as never)
+    mockBuildInputCache.mockResolvedValue({ job_id: "input-job-5", status: "running", joined: false } as never)
     mockCancelInputCacheJob.mockResolvedValue({
       job_id: "input-job-5",
       cancellation_requested: true,
@@ -341,7 +341,7 @@ describe("delegated data-point builds", () => {
   it("never lets a late cancellation failure take over the build that replaced it", async () => {
     answerPoint("missing")
     mockInputCacheStatus.mockResolvedValue({ state: "missing" } as never)
-    mockBuildInputCache.mockResolvedValue({ job_id: "input-job-6" } as never)
+    mockBuildInputCache.mockResolvedValue({ job_id: "input-job-6", status: "running", joined: false } as never)
     mockInputCacheJob.mockResolvedValue({ status: "running", message: "Building" } as never)
     let refuseCancellation: (() => void) | null = null
     mockCancelInputCacheJob.mockImplementation(
@@ -428,7 +428,7 @@ describe("delegated data-point builds", () => {
       job_id: "job-1",
       identity_digest: "digest",
       status: "running",
-      joined: false, build_class: "bounded",
+      joined: false, forced: false, build_class: "bounded",
     })
     let releaseJob: (() => void) | null = null
     mockInputCacheJob.mockImplementation(

@@ -63,7 +63,7 @@ function buildResponse(joined = false): InputCacheBuildResponse {
     job_id: "job-1",
     identity_digest: "identity",
     status: "running",
-    joined, build_class: "bounded",
+    joined, forced: false, build_class: "bounded",
   }
 }
 
@@ -104,6 +104,89 @@ describe("ensureInputSnapshots", () => {
       data: { nodeType: NODE_TYPES.API_INPUT, config: { path, tables: [] } },
     }
   }
+
+  it("waits for a build it may not join without cancelling it, then starts its own", async () => {
+    vi.useFakeTimers()
+    vi.mocked(buildInputCache)
+      .mockResolvedValueOnce({ ...buildResponse(), job_id: "ordinary", status: "blocked" })
+      .mockResolvedValueOnce({ ...buildResponse(), job_id: "forced", forced: true })
+    vi.mocked(getInputCacheJob).mockImplementation(async (jobId: string) => ({
+      ...job("completed"),
+      job_id: jobId,
+    }))
+    const controller = new AbortController()
+
+    const pending = ensureInputSnapshots([dataInput("source")], { force: true, signal: controller.signal })
+    await vi.runAllTimersAsync()
+    await pending
+
+    expect(buildInputCache).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(buildInputCache).mock.calls.every(([body]) => body.refresh === true)).toBe(true)
+    expect(getInputCacheJob).toHaveBeenCalledWith("ordinary", expect.anything())
+    expect(getInputCacheJob).toHaveBeenCalledWith("forced", expect.anything())
+    expect(cancelInputCacheJob).not.toHaveBeenCalled()
+  })
+
+  it("stops waiting for a blocking build on abort without cancelling it", async () => {
+    vi.mocked(buildInputCache).mockResolvedValue({ ...buildResponse(), job_id: "ordinary", status: "blocked" })
+    vi.mocked(getInputCacheJob).mockImplementation(async () => job("running"))
+    const controller = new AbortController()
+
+    const pending = ensureInputSnapshots([dataInput("source")], { force: true, signal: controller.signal })
+    await vi.waitFor(() => expect(getInputCacheJob).toHaveBeenCalled())
+    controller.abort()
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" })
+    expect(cancelInputCacheJob).not.toHaveBeenCalled()
+  })
+
+  it("asks again when a build it joined is stopped by its owner", async () => {
+    vi.useFakeTimers()
+    vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("missing"))
+    vi.mocked(buildInputCache)
+      .mockResolvedValueOnce({ ...buildResponse(true), job_id: "theirs" })
+      .mockResolvedValueOnce({ ...buildResponse(), job_id: "mine" })
+    vi.mocked(getInputCacheJob).mockImplementation(async (jobId: string) =>
+      jobId === "theirs" ? { ...job("cancelled"), job_id: jobId } : { ...job("completed"), job_id: jobId },
+    )
+
+    const pending = ensureInputSnapshots([dataInput("source")])
+    await vi.runAllTimersAsync()
+    await pending
+
+    expect(buildInputCache).toHaveBeenCalledTimes(2)
+  })
+
+  it("fails a build it started that was cancelled rather than asking again", async () => {
+    vi.useFakeTimers()
+    vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("missing"))
+    vi.mocked(buildInputCache).mockResolvedValue(buildResponse())
+    vi.mocked(getInputCacheJob).mockResolvedValue(job("cancelled", "Build cancelled."))
+
+    const pending = ensureInputSnapshots([dataInput("source")])
+    const outcome = expect(pending).rejects.toThrow("Build cancelled.")
+    await vi.runAllTimersAsync()
+    await outcome
+
+    expect(buildInputCache).toHaveBeenCalledTimes(1)
+  })
+
+  it("reports each running status of the build it waits for", async () => {
+    vi.useFakeTimers()
+    vi.mocked(getInputCacheStatus).mockResolvedValue(snapshot("missing"))
+    vi.mocked(buildInputCache).mockResolvedValue(buildResponse())
+    const running = job("running")
+    vi.mocked(getInputCacheJob)
+      .mockResolvedValueOnce({ ...running, progress: { ...running.progress, rows: 1200 } })
+      .mockResolvedValueOnce(job("completed"))
+    const onBuildProgress = vi.fn()
+
+    const pending = ensureInputSnapshots([dataInput("source")], { onBuildProgress })
+    await vi.runAllTimersAsync()
+    await pending
+
+    expect(onBuildProgress).toHaveBeenCalledWith(expect.objectContaining({ rows: 1200 }))
+  })
 
   it("checks the live Quote Input status and awaits its full cache build", async () => {
     const node = quoteInput()

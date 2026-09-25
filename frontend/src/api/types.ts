@@ -580,8 +580,15 @@ export interface InputCacheBuildResponse {
   schema_version: 1
   job_id: string
   identity_digest: string
-  status: "running"
+  /**
+   * `blocked`: `job_id` is a build this request may not join (one being
+   * cancelled, or an ordinary build for a forced request). Wait for it to end
+   * without owning it, then ask again.
+   */
+  status: "running" | "blocked"
   joined: boolean
+  /** Whether the build `job_id` names re-reads the source (`refresh`). */
+  forced: boolean
   /** How the server builds it: a bounded lazy sink, or an eager read in a capped worker. */
   build_class: "bounded" | "admitted_eager"
 }

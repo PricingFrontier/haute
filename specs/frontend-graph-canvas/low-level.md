@@ -284,6 +284,13 @@ reconciliation rather than dropping them or committing a second mutation.
   stop while upstream nodes are being previewed runs nothing further. With
   nothing sent yet (a debounced preview) it settles at once. A new
   fetch or Refresh supersedes a pending retry.
+- **`ensureInputSnapshots`** asks `POST /api/input-cache/build` once per
+  snapshot the pass needs, from `inputSnapshotSource` (the one derivation of
+  which inputs read a snapshot, `utils/inputSnapshotSource.ts`). A `blocked`
+  answer, or a joined build its owner stopped (`cancelled`/`superseded`), is
+  waited for without cancelling it and then asked again, at most three times.
+  `onBuildProgress` reports each running status (rows read, phase) of the
+  build it waits for.
 - **`GraphDiff`** (`graphDiff.ts`) —
   `{ added, removed, changed, moved: Set<string> }` node ids, keyed by the
   comparison view's two graph versions.

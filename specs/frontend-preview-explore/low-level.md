@@ -43,6 +43,7 @@
 | `frontend/src/panels/explore/ExploreTableActions.tsx` | Read-only copy-as-TSV and download-as-CSV actions for supported Explore tables, built on the shared table serializers. |
 | `frontend/src/panels/explore/DistinctInfoButton.tsx`, `frontend/src/panels/explore/StatValueCell.tsx` | Distinct-count explanation and reusable optional-stat cell. |
 | `frontend/src/panels/explore/exploreTableStyles.ts`, `frontend/src/panels/explore/ExploreTableHead.tsx` | What the Explore report tables share: the cell padding, uppercase label style, text-colour styles and row border, and `ExploreTableHead`, the header row (column headers with `scope="col"`, a blank label rendered as an `aria-hidden` spacer, an optional dense variant for nested tables and a sticky variant for scrolling ones). |
+| `frontend/e2e/input-import.spec.ts` | Import browser journey: a CSV Data Input previews its rows, the file grows, and Import re-reads it and previews the new rows. |
 | `frontend/e2e/explore.spec.ts` | Explore browser journey: author/connect an Explore node, cache its data and reload, configure Pivots using the profile's schema, and observe fixed decimal formats in the calculated result. |
 
 ## Key types and data structures
@@ -349,7 +350,21 @@ and remediation without exposing raw bounded-collection JSON.
   presses Refresh, never Stop. Explore extends the context: its run also
   covers the profile job, its Stop also cancels the profile, and its Refresh also
   asks again for a profile that failed or was stopped; it has no separate
-  "Cancel profile" button, only "Retry profile" for a failed one. A previewable active node without results gets an explicit empty
+  "Cancel profile" button, only "Retry profile" for a failed one.
+- **Import** (`components/InputImportButton.tsx`) sits beside Refresh in the
+  data preview frame of a node that reads a snapshot (`inputSnapshotSource` of
+  the node, or of its original for an instance): a Data Input other than a
+  direct Parquet scan, or a structured Quote Input. It re-reads the source with
+  `ensureInputSnapshots([input], { force: true })`, showing "Importing · N rows"
+  while it runs, and registers as the node's work so the frame's Stop stops it.
+  Every outcome (completed, failed, stopped) re-reads the snapshot status and
+  raises the node-data epoch, since a failed Quote Input import can publish some
+  tables; only a completed, unstopped import re-previews the node. Its title
+  says when the input was last imported (`utils/importedTitle.ts`): the newest
+  generation, "Partly imported (k of n tables)" for a Quote Input missing some,
+  or "Not imported yet". A stop whose cancellation fails keeps the import
+  running, and Stop cancels it again. Refresh keeps its freshness rules; Import
+  is the one action that re-reads a source whose changes cannot be detected. A previewable active node without results gets an explicit empty
   preview frame so Refresh remains reachable. `NodePanelHeader` contains no
   Refresh action; `SchemaWarningBanner` keeps its refresh callback.
 - `PreviewPanelTabs` gives exactly one enabled tab `tabIndex=0`; Left/Right wrap across enabled
