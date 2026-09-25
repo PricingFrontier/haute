@@ -17,7 +17,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from itertools import product
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -88,6 +88,9 @@ _DEFAULT_MAX_CD_ITERATIONS = 10  # max coordinate-descent iterations (ratebook)
 
 
 _DEFAULT_CD_TOLERANCE = 1e-3  # coordinate-descent convergence tolerance (ratebook)
+
+
+_DEFAULT_FRONTIER_STEPS = 15  # frontier points per constraint dimension (inline frontier)
 
 
 class _OptimiserSolveInputError(Exception):
@@ -767,6 +770,45 @@ def _compute_ratebook_factor_level_order(
     return _ratebook_factor_level_order(graph, node_id, config)
 
 
+def _json_records(value: Any) -> Any:
+    """Replace every Polars frame nested in *value* with its row records."""
+    import polars as pl
+
+    if isinstance(value, pl.DataFrame):
+        return value.to_dicts()
+    if isinstance(value, dict):
+        return {key: _json_records(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_records(item) for item in value]
+    return value
+
+
+def _publish_summary(
+    solver: Any,
+    solve_result: SolveResultLike,
+    *,
+    job_id: str,
+) -> dict[str, Any] | None:
+    """The anchor's MLflow summary, holding no frame, or ``None`` if it cannot be built.
+
+    A failure here must not fail a finished solve: it is logged, and logging the
+    anchor to MLflow later asks the user to re-run the solve.
+    """
+    try:
+        summary = solver.summary(solve_result)
+    except Exception as exc:
+        logger.warning("publish_summary_failed", error=str(exc), job_id=job_id, exc_info=True)
+        return None
+    if not isinstance(summary, dict):
+        logger.warning(
+            "publish_summary_invalid",
+            summary_type=type(summary).__name__,
+            job_id=job_id,
+        )
+        return None
+    return cast(dict[str, Any], _json_records(summary))
+
+
 def _finalize_solve_result(
     solve_result: SolveResultLike,
     *,
@@ -837,7 +879,7 @@ def _finalize_solve_result(
     constraints = config.get("constraints")
     if constraints and config.get("frontier_enabled") is True:
         try:
-            frontier_steps = config.get("frontier_steps", 15)
+            frontier_steps = config.get("frontier_steps", _DEFAULT_FRONTIER_STEPS)
             ranges = _auto_frontier_ranges_from_config(config)
             if ranges:
                 enforce_frontier_compute_budget(
@@ -895,6 +937,9 @@ def _finalize_solve_result(
     result_dict["frontier"] = frontier_data
     if frontier_error is not None:
         result_dict["frontier_error"] = frontier_error
+    # Built before the publisher persists (and drops) the apply dataframe the
+    # online summary reads, so publishing never needs the solver again.
+    publish_summary = _publish_summary(solver, solve_result, job_id=job_id)
     completion_elapsed = _job_elapsed_seconds(
         store.get_job(job_id) or job_snapshot,
         elapsed,
@@ -942,6 +987,7 @@ def _finalize_solve_result(
             "factor_columns_valid": factor_columns,
             "result": result_dict,
             "base_result": dict(result_dict),
+            "publish_summary": publish_summary,
             "frontier_data": frontier_data,
             "artifact_handles": artifact_handles,
             **(extra_job_fields or {}),

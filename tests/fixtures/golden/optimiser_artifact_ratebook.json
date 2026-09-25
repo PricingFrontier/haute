@@ -44,5 +44,26 @@
       }
     ]
   },
-  "clamp_rate": 0.05
+  "clamp_rate": 0.05,
+  "solver_settings": {
+    "max_iter": 50,
+    "tolerance": 1e-06,
+    "chunk_size": 100000,
+    "max_cd_iterations": 6,
+    "cd_tolerance": 0.001
+  },
+  "effective_constraints": {
+    "volume": {
+      "min": 0.95
+    }
+  },
+  "input_summary": {
+    "n_quotes": null,
+    "n_steps": null,
+    "node_id": null,
+    "data_source": null,
+    "source_file": null,
+    "graph_fingerprint": null
+  },
+  "stale_at_publish": false
 }

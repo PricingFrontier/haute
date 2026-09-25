@@ -14,7 +14,6 @@ import contextlib
 import json
 import time
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import polars as pl
@@ -597,19 +596,18 @@ class TestOptimiserRoutesSafeDetail:
 
         set_project_root(tmp_path)
         store = clean_job_store
-        mock_solve_result = SimpleNamespace(
-            lambdas={"x": 1.0},
-            total_objective=100.0,
-            total_constraints={"vol": 0.5},
-            converged=True,
-        )
         seed_job(
             store,
             "test_save_err",
             {
                 "status": "completed",
-                "solve_result": mock_solve_result,
-                "solver": MagicMock(),
+                "result": {
+                    "lambdas": {"x": 1.0},
+                    "total_objective": 100.0,
+                    "constraints": {"vol": 0.5},
+                    "converged": True,
+                },
+                "publish_summary": {"params": {}, "metrics": {}, "artifacts": {}},
                 "config": {},
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -633,15 +631,18 @@ class TestOptimiserRoutesSafeDetail:
 
     def test_mlflow_log_500_no_leak(self, client: TestClient, clean_job_store) -> None:
         store = clean_job_store
-        mock_solver = MagicMock()
-        mock_solve_result = MagicMock()
         seed_job(
             store,
             "test_mlflow_err",
             {
                 "status": "completed",
-                "solver": mock_solver,
-                "solve_result": mock_solve_result,
+                "result": {
+                    "lambdas": {"x": 1.0},
+                    "total_objective": 100.0,
+                    "constraints": {"vol": 0.5},
+                    "converged": True,
+                },
+                "publish_summary": {"params": {}, "metrics": {}, "artifacts": {}},
                 "config": {},
                 "node_label": "opt",
                 "created_at": time.time(),
@@ -1293,8 +1294,13 @@ class TestSensitiveInfoLeakage:
                 "test_uri_leak",
                 {
                     "status": "completed",
-                    "solver": MagicMock(),
-                    "solve_result": MagicMock(),
+                    "result": {
+                        "lambdas": {"x": 1.0},
+                        "total_objective": 100.0,
+                        "constraints": {"vol": 0.5},
+                        "converged": True,
+                    },
+                    "publish_summary": {"params": {}, "metrics": {}, "artifacts": {}},
                     "config": {},
                     "node_label": "opt",
                     "created_at": time.time(),

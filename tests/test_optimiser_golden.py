@@ -92,9 +92,21 @@ def test_build_artifact_payload_matches_online_golden_snapshot(
             "scenario_index": "scenario_index",
             "scenario_value": "scenario_value",
             "chunk_size": 4096,
+            "record_history": True,
         },
-        "selected_frontier_point": 1,
-        "frontier_data": {"n_points": 4},
+        "selected_frontier_point": 0,
+        "frontier_data": {
+            "n_points": 4,
+            "constraint_names": ["loss"],
+            "points": [{"threshold_loss": 0.85}, {"threshold_loss": 0.92}],
+        },
+        "base_result": {"n_quotes": 250, "n_steps": 5},
+        "input_provenance": {
+            "node_id": "my_opt",
+            "data_source": "batch",
+            "source_file": "main.py",
+            "graph_fingerprint": "f00d",
+        },
     }
     solve_result = SimpleNamespace(
         lambdas={"loss": 0.3},
@@ -107,7 +119,13 @@ def test_build_artifact_payload_matches_online_golden_snapshot(
         cd_iterations=None,
     )
 
-    payload = _build_artifact_payload(job, solve_result, version_override="opt_v1")
+    payload = _build_artifact_payload(
+        job,
+        solve_result,
+        version_override="opt_v1",
+        point_index=1,
+        stale_at_publish=True,
+    )
 
     assert payload == _load_golden_fixture("optimiser_artifact_online")
 
@@ -126,6 +144,7 @@ def test_build_artifact_payload_matches_ratebook_golden_snapshot(
             "scenario_index": "scenario_idx",
             "scenario_value": "scenario_value",
             "chunk_size": 100000,
+            "max_cd_iterations": 6,
         },
         "result": {
             "factor_tables": {

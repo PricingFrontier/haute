@@ -3276,22 +3276,34 @@ class OptimiserFrontierSelectResponse(BaseModel):
 
 class OptimiserSaveRequest(BaseModel):
     job_id: str
+    # Relative to the project root; an absolute path must stay inside it.
     output_path: str
     version: str = ""  # optional user-specified version label; auto-generated if empty
+    # ``None`` publishes the job's own solve; a number publishes that frontier point.
     point_index: int | None = Field(default=None, ge=0)
+    # An existing file is replaced only when this is true; otherwise the save is a 409.
+    overwrite: bool = False
+    # Whether the node configuration changed since the solve; recorded as ``stale_at_publish``.
+    stale: bool = False
 
 
 class OptimiserSaveResponse(BaseModel):
     status: str
     path: str | None = None
+    # The written file relative to the project root, POSIX separators: an Optimiser
+    # Apply node's ``artifact_path``.
+    apply_path: str
     message: str = ""
 
 
 class OptimiserMlflowLogRequest(BaseModel):
     job_id: str
+    # ``None`` logs the job's own solve; a number logs that frontier point.
     point_index: int | None = Field(default=None, ge=0)
     experiment_name: str | None = None
     destination: Literal["", "databricks", "server", "local"] = ""
+    # Whether the node configuration changed since the solve; recorded as ``stale_at_publish``.
+    stale: bool = False
 
 
 class OptimiserMlflowLogResponse(MlflowLogResponse):

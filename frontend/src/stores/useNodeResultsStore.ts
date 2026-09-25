@@ -625,6 +625,12 @@ interface NodeResultsState {
   failSolveJob: (nodeId: string, error: string, terminalStatus?: SolveProgress) => void
   selectFrontierPoint: (nodeId: string, pointIndex: number | null) => void
   updateFrontierAfterSelect: (nodeId: string, pointIndex: number, selectResult: FrontierSelectResponse) => void
+  /**
+   * Store a materialised point summary for one job without changing the
+   * selection: a reply for a job the node has moved past is dropped, and the
+   * displayed result changes only if that point is (still) selected.
+   */
+  recordFrontierPointSummary: (nodeId: string, jobId: string, pointIndex: number, selectResult: FrontierSelectResponse) => void
 
   // ── Training actions ──
   startTrainJob: (nodeId: string, jobId: string, nodeLabel: string, configHash: string, source: string, structuralVersion: number, lineage?: string) => void
@@ -957,6 +963,32 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
           [nodeId]: nextCached,
         },
       }
+    })
+  },
+
+  recordFrontierPointSummary: (nodeId, jobId, pointIndex, selectResult) => {
+    if (selectResult.point_index != null && selectResult.point_index !== pointIndex) {
+      throw new Error(
+        `Frontier select response point_index (${selectResult.point_index}) does not match requested index (${pointIndex})`,
+      )
+    }
+    set((s) => {
+      const cached = s.solveResults[nodeId]
+      if (!cached || cached.jobId !== jobId || !cached.frontier?.point_summaries[pointIndex]) return s
+      touchCachedResult(solveResultRecency, nodeId)
+      const summary = frontierPointSummaryFromSelect(selectResult)
+      const nextCached = {
+        ...cached,
+        frontier: {
+          ...cached.frontier,
+          point_summaries: cached.frontier.point_summaries.map((stored, index) => (index === pointIndex ? summary : stored)),
+        },
+        result: cached.selectedPointIndex === pointIndex
+          ? applyFrontierPointSummary(cached.originalResult, summary)
+          : cached.result,
+      }
+      cacheOptimiserPreview(nodeId, nextCached)
+      return { solveResults: { ...s.solveResults, [nodeId]: nextCached } }
     })
   },
 

@@ -1565,6 +1565,20 @@ export function getOptimiserStatus(
     })
 }
 
+/** Cancel a running solve, including its efficient-frontier phase. */
+export function cancelOptimiserSolve(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<OptimiserStatusResponse> {
+  return post<unknown>(`/api/optimiser/solve/cancel/${encodeURIComponent(jobId)}`, undefined, options)
+    .then(async (data) => {
+      const { validateOptimiserStatusResponse } = await optimiserValidators()
+      return validateApiResponse("Could not read optimiser status", () => optimiserStatusFromContract(
+        expectGeneratedContract("OptimiserStatusResponse", validateOptimiserStatusResponse, data),
+      ))
+    })
+}
+
 export function applyOptimiser(
   payload: ApplyOptimiserRequest,
   options?: { signal?: AbortSignal },

@@ -1314,3 +1314,60 @@ def test_load_artifact_from_config_forwards_destination():
 
     assert result is artifact
     assert mock_load.call_args.kwargs["destination"] == "local"
+
+
+@pytest.mark.parametrize("recorded", [True, False])
+def test_online_trace_shows_the_published_effective_constraints(tmp_path, recorded):
+    from haute._trace_enrichment import enrich_optimiser_apply
+
+    artifact = _online_artifact()
+    if recorded:
+        artifact["effective_constraints"] = {"predicted_volume": {"min": 0.95}}
+    artifact_path = _write_json(tmp_path / "effective.json", artifact)
+
+    detail = enrich_optimiser_apply(
+        {"sourceType": "file", "artifact_path": artifact_path},
+        input_row={},
+        output_row={"quote_id": "q1", "optimal_scenario_value": 1.1},
+        input_frames=[_scored_online_df()],
+        source_names=["scored"],
+    )
+
+    assert detail["status"] == "ok"
+    # The configured specs stay as they are; the effective thresholds sit beside them.
+    assert detail["constraints"]["predicted_volume"]["spec"] == {"min": 0.9}
+    if recorded:
+        assert detail["effective_constraints"] == {"predicted_volume": {"min": 0.95}}
+    else:
+        assert "effective_constraints" not in detail
+
+
+def test_ratebook_trace_shows_the_published_effective_constraints(tmp_path):
+    from haute._trace_enrichment import enrich_optimiser_apply
+
+    artifact = _ratebook_artifact()
+    artifact["effective_constraints"] = {"predicted_volume": {"min": 0.97}}
+    artifact_path = _write_json(tmp_path / "ratebook_effective.json", artifact)
+    banded = pl.DataFrame({"quote_id": ["q1"], "region": ["London"], "age_band": ["old"]})
+
+    detail = enrich_optimiser_apply(
+        {
+            "sourceType": "file",
+            "artifact_path": artifact_path,
+            "ratebook_input": "banded",
+            "optimised_value_column": "selected_factor",
+        },
+        input_row={"quote_id": "q1", "region": "London", "age_band": "old"},
+        output_row={
+            "quote_id": "q1",
+            "region": "London",
+            "age_band": "old",
+            "selected_factor": 1.05 * 0.95,
+        },
+        input_frames=[banded],
+        source_names=["banded"],
+    )
+
+    assert detail["status"] == "ok"
+    assert detail["constraints"] == {"predicted_volume": {"min": 0.9}}
+    assert detail["effective_constraints"] == {"predicted_volume": {"min": 0.97}}

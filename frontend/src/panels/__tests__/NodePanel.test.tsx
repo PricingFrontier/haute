@@ -363,6 +363,7 @@ describe("NodePanel", () => {
       explorePanes: {},
       explorePreviewPanes: {},
       modellingPanes: {},
+      optimiserPanes: {},
     })
     useNodeDataStore.getState().reset()
     useDocumentStatusStore.getState().reset()
@@ -1185,6 +1186,112 @@ describe("NodePanel", () => {
   it("renders OptimiserConfig for optimiser nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "Opt", description: "", nodeType: "optimiser", config: {} } }) })
     expect(screen.getByTestId("OptimiserConfig")).toBeInTheDocument()
+  })
+
+  it("shows the optimiser panes for the node's mode and resolves a pane the mode lacks to Data", () => {
+    useUIStore.setState({ optimiserPanes: { opt_panes: "factors" } })
+    const optimiserNode = (mode: string) => makeNode({
+      id: "opt_panes",
+      data: { label: "Opt", description: "", nodeType: "optimiser", config: { mode } },
+    })
+    const paneKeys = () => within(screen.getByRole("tablist", { name: "Optimiser panes" }))
+      .getAllByRole("tab")
+      .map((tab) => tab.id.replace("optimiser-", "").replace("-tab", ""))
+
+    const rendered = renderPanel({ node: optimiserNode("ratebook") })
+    // No output frame, so no Config/Columns strip above the panes.
+    expect(screen.queryByRole("button", { name: "columns" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "config" })).toBeNull()
+    expect(paneKeys()).toEqual(["data", "factors", "constraints", "solve", "export"])
+    expect(screen.getByRole("tab", { name: "Factors" })).toHaveAttribute("aria-selected", "true")
+    expect(optimiserConfigProps.at(-1)?.activePane).toBe("factors")
+
+    rendered.unmount()
+    renderPanel({ node: optimiserNode("online") })
+    expect(paneKeys()).toEqual(["data", "constraints", "solve", "export"])
+    expect(screen.getByRole("tab", { name: "Data" })).toHaveAttribute("aria-selected", "true")
+    expect(optimiserConfigProps.at(-1)?.activePane).toBe("data")
+    // Resolution never forgets the ratebook choice.
+    expect(useUIStore.getState().optimiserPanes.opt_panes).toBe("factors")
+  })
+
+  it("remembers the active optimiser pane by node and marks Solve while a solve runs", () => {
+    renderPanel({
+      node: makeNode({
+        id: "opt_1",
+        data: { label: "Opt", description: "", nodeType: "optimiser", config: { mode: "online" } },
+      }),
+    })
+
+    fireEvent.click(screen.getByRole("tab", { name: "Constraints" }))
+    expect(useUIStore.getState().optimiserPanes.opt_1).toBe("constraints")
+    expect(optimiserConfigProps.at(-1)?.activePane).toBe("constraints")
+    expect(screen.getByRole("tab", { name: "Solve" })).not.toHaveAccessibleDescription()
+
+    act(() => {
+      useNodeResultsStore.setState({
+        solveJobs: {
+          opt_1: {
+            jobId: "solve_1",
+            nodeId: "opt_1",
+            nodeLabel: "Opt",
+            progress: null,
+            error: null,
+            constraints: {},
+            configHash: "hash",
+            source: "live",
+            structuralVersion: 0,
+          },
+        },
+      })
+    })
+    expect(screen.getByRole("tab", { name: "Solve" })).toHaveAccessibleDescription("Solve is running")
+    expect(screen.getByRole("tab", { name: "Constraints" })).toHaveAttribute("aria-selected", "true")
+  })
+
+  it("badges exactly the optimiser panes the editor reports for this node", () => {
+    renderPanel({
+      node: makeNode({
+        id: "opt_badges",
+        data: { label: "Opt", description: "", nodeType: "optimiser", config: { mode: "ratebook" } },
+      }),
+    })
+    const tablist = screen.getByRole("tablist", { name: "Optimiser panes" })
+    const report = optimiserConfigProps.at(-1)?.onPaneIssuesChange as
+      (nodeId: string, panes: readonly string[]) => void
+
+    act(() => report("opt_badges", ["data", "factors"]))
+    expect(within(tablist).getByRole("tab", { name: "Data" })).toHaveAccessibleDescription("Data needs attention")
+    expect(within(tablist).getByRole("tab", { name: "Factors" })).toHaveAccessibleDescription("Factors needs attention")
+    expect(within(tablist).getByRole("tab", { name: "Constraints" })).not.toHaveAccessibleDescription()
+
+    act(() => report("other_node", ["constraints"]))
+    expect(within(tablist).getByRole("tab", { name: "Constraints" })).not.toHaveAccessibleDescription()
+
+    act(() => report("opt_badges", []))
+    expect(within(tablist).getByRole("tab", { name: "Data" })).not.toHaveAccessibleDescription()
+  })
+
+  it("lets the optimiser editor point another node at a saved artifact", () => {
+    const onUpdateNode = vi.fn(() => ({ ok: true as const }))
+    const applyNode = makeNode({
+      id: "apply_1",
+      data: { label: "Apply", description: "", nodeType: "optimiserApply", config: { sourceType: "run", version_column: "v" } },
+    })
+    const optimiser = makeNode({
+      id: "opt_1",
+      data: { label: "Opt", description: "", nodeType: "optimiser", config: {} },
+    })
+    renderPanel({ node: optimiser, allNodes: [optimiser, applyNode], onUpdateNode })
+    const update = optimiserConfigProps.at(-1)?.onUpdateNodeConfig as
+      (nodeId: string, patch: Record<string, unknown>) => { ok: boolean }
+
+    expect(update("apply_1", { sourceType: "file", artifact_path: "output/q3.json" })).toEqual({ ok: true })
+    expect(onUpdateNode).toHaveBeenCalledWith("apply_1", expect.objectContaining({
+      label: "Apply",
+      config: { sourceType: "file", version_column: "v", artifact_path: "output/q3.json" },
+    }))
+    expect(update("missing", {})).toEqual({ ok: false, error: 'Cannot update missing node "missing".' })
   })
 
   it("asks OptimiserConfig to defer fallback column fetches while selected preview is loading", () => {

@@ -282,17 +282,18 @@ class TestModellingLogRoute:
 class TestOptimiserLogRoute:
     @staticmethod
     def _seed(store) -> None:
-        solver = MagicMock()
-        solver.summary.return_value = {"params": {}, "metrics": {}, "artifacts": {}}
         seed_job(
             store,
             "opt_job",
             {
                 "status": "completed",
-                "solver": solver,
-                "solve_result": SimpleNamespace(
-                    lambdas={}, total_objective=1.0, total_constraints={}, converged=True
-                ),
+                "result": {
+                    "lambdas": {},
+                    "total_objective": 1.0,
+                    "constraints": {},
+                    "converged": True,
+                },
+                "publish_summary": {"params": {}, "metrics": {}, "artifacts": {}},
                 "config": {"mode": "online", "mlflow_experiment": "/snapshot/at/solve"},
                 "node_label": "opt",
                 "created_at": time.time(),

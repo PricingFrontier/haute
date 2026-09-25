@@ -671,6 +671,9 @@ class OptimiserConfig(TypedDict, total=False):
     mlflow_experiment: str
     mlflow_destination: str  # "" | "databricks" | "server" | "local"; absent = auto
 
+    # Export pane save path, relative to the project root; not part of the solve.
+    result_export_path: str
+
 
 class OptimiserApplyConfig(TypedDict, total=False):
     """Config for optimiserApply nodes."""
@@ -844,6 +847,7 @@ OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (
     "banding_source",
     "mlflow_experiment",
     "mlflow_destination",
+    "result_export_path",
 )
 
 OPTIMISER_APPLY_CONFIG_KEYS: tuple[str, ...] = (

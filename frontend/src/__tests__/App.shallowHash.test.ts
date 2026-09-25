@@ -234,6 +234,30 @@ describe("shallowNodeDataHash - input-key sensitivity", () => {
     expect(shallowNodeDataHash(codeChanged)).not.toBe(shallowNodeDataHash(exploreBase))
   })
 
+  it("optimiser export settings are ignored but solve config still flips the hash", () => {
+    const optimiserBase = {
+      label: "Optimiser",
+      nodeType: "optimiser",
+      config: { objective: "profit", constraints: { volume: { min: 900 } } },
+    }
+    const exportChanged = {
+      ...optimiserBase,
+      config: {
+        ...optimiserBase.config,
+        mlflow_destination: "databricks",
+        mlflow_experiment: "/Shared/pricing",
+        result_export_path: "output/q3.json",
+      },
+    }
+    const objectiveChanged = {
+      ...optimiserBase,
+      config: { ...optimiserBase.config, objective: "premium" },
+    }
+
+    expect(shallowNodeDataHash(exportChanged)).toBe(shallowNodeDataHash(optimiserBase))
+    expect(shallowNodeDataHash(objectiveChanged)).not.toBe(shallowNodeDataHash(optimiserBase))
+  })
+
   it("config with nested-object change flips the hash", () => {
     const nestedBase = { ...base, config: { nested: { a: 1, b: 2 } } }
     const nestedChanged = { ...base, config: { nested: { a: 1, b: 3 } } }

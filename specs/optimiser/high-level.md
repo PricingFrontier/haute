@@ -113,7 +113,20 @@ ratebook) factor tables are available as a job summary. From there a user can:
 - Preview the online result as a capped table of per-quote selected scenarios (ratebook has no
   such per-quote view — see Failure model).
 - Save the result to a JSON artifact on disk, or log it to MLflow together with a frontier CSV
-  and the same artifact.
+  and the same artifact. Publishing names its target explicitly: no point index means the job's
+  own solve (the anchor), a point index means that frontier point, and the server's currently
+  selected frontier point is never an implicit target. Publishing never needs, holds or releases
+  the solve's heavy in-memory state: the anchor publishes from its lightweight result summary and
+  an MLflow summary computed once at solve completion, so Save, Log and Save again all succeed,
+  in any order, including after the heavy-state retention window has expired. (A ratebook
+  frontier point that was never materialised still needs the retained runtime to derive its
+  factor tables.) A relative save path resolves against the project root, an existing file is
+  only replaced when the request says so (otherwise a 409 conflict and nothing is written), and
+  the response gives the project-relative POSIX path an `OPTIMISER_APPLY` node's
+  `artifact_path` accepts. Every artifact records an audit trail: the solver settings the solve
+  used, the constraints in force for the published target (a frontier point's own thresholds),
+  cheap input provenance, and whether the node configuration had changed since the solve
+  (`stale_at_publish`, reported by the caller).
 
 A saved artifact is later loaded by an `OPTIMISER_APPLY` pipeline node to price new data:
 either a local file (content-hash cached so an on-disk edit is always picked up, even a

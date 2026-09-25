@@ -85,9 +85,15 @@ summary, used to reconstruct any frontier point without re-solving), `frontier_d
 unlimited frontier points — distinct from `result["frontier"]`, which is the size-limited
 frontend payload), `frontier_generation` (a non-negative integer initialised to `0` at solve
 completion and incremented by every explicit recompute), `selected_frontier_point`,
-`artifact_handles` (dict of named artifact handles, see below), and, only while heavy state is
-retained, `solver`, `quote_grid`, `solve_result`, `factor_level_counts`, `factor_level_order`,
-`setup_chunking`.
+`artifact_handles` (dict of named artifact handles, see below), `publish_summary` (the anchor's
+MLflow summary — `params`/`metrics`/`artifacts` from `solver.summary(solve_result)` — computed
+once in `_finalize_solve_result` before the apply dataframe is persisted, with every Polars
+frame inside it converted to JSON records; `null` if the summary could not be built),
+`input_provenance` (recorded when the solve job is created: `node_id`, the batch `data_source`
+the solve executes against, the graph's `source_file`, and the `graph_fingerprint` the setup
+single-flight key already computes), and, only while heavy state is retained, `solver`,
+`quote_grid`, `solve_result`, `factor_level_counts`, `factor_level_order`, `setup_chunking`.
+`publish_summary` and `input_provenance` are not heavy keys and survive every slimming.
 
 ### Artifact handle shape
 
@@ -442,10 +448,16 @@ either fails the frontier.
 
 Rejects ratebook jobs outright (`_reject_ratebook_apply_detail` — checked before any
 heavy-state lookup, since a ratebook `RatebookResult` has no per-quote dataframe). For online
-jobs, resolves either a specific frontier point (materialising its apply dataframe via
+jobs, `point_index` names the target explicitly: a number resolves that frontier point
+(materialising its apply dataframe via
 `OptimiserFrontierService.materialise_point_apply` — persisted once per point index and reused via
-handle lookup thereafter) or the base solve result — from the still-live in-memory
-`solve_result.dataframe` if present, or from the persisted apply-result artifact otherwise. The
+handle lookup thereafter), and `null` resolves the anchor solve — never the server-side
+`selected_frontier_point` — from the still-live in-memory
+`solve_result.dataframe` if present, or from the persisted apply-result artifact otherwise, with
+totals from the anchor summary (`base_result`, else `result`). After answering, a frontier-point
+request slims only `solve_result` (`_clear_result_data_after_user_action`), so `solver` and
+`quote_grid` stay available for other points; an anchor request on a job without frontier points
+clears all heavy state, and a later anchor preview reads the persisted apply artifact. The
 response is capped via `haute.routes._optimiser_limits.limited_apply_preview_payload` (first
 `APPLY_PREVIEW_ROW_LIMIT` rows plus explicit `row_count`/`preview_truncated` metadata).
 Handle insertion re-reads and merges the latest mapping while holding the parent's lock.
@@ -457,18 +469,48 @@ removed from the job before its owned parquet is deleted.
 
 ### Save and MLflow log (`src/haute/routes/optimiser.py`)
 
-Both `save_result` and `mlflow_log` resolve the applicable `SolveResultLike`
-(from a selected frontier point via `OptimiserFrontierService.solve_result_for_selected_point`, or directly from
-the job's retained `solve_result`), build a shared JSON payload via `_build_artifact_payload`
+Both `save_result` and `mlflow_log` take an explicit target: `point_index: null` is the anchor
+solve and a number is that frontier point; the server-side `selected_frontier_point` is never a
+fallback. Neither route reads, touches or clears heavy job state for the anchor, and neither
+clears any heavy state afterwards. The anchor resolves to
+`_summary_solve_result(_base_result_for_frontier(job))` — the lightweight completion summary,
+which carries lambdas, totals, baselines, `converged`, `iterations` (online), `cd_iterations`,
+`clamp_rate`, `factor_tables` and `factor_dtypes` (ratebook) — and its MLflow metrics, params and
+artifacts come from the job's `publish_summary` (a `400` telling the user to re-run the solve
+when it is missing). A frontier point resolves through
+`OptimiserFrontierService.solve_result_for_selected_point`: online points from their stored
+summaries, ratebook points from the cached materialised result or, when not cached, by
+materialising through the retained runtime (its existing "re-run the solve" `400` when the runtime
+is gone). The routes build a shared JSON payload via `_build_artifact_payload`
 (lambdas, objective/constraint totals, baseline totals, convergence/iteration counts,
-column-name config, frontier-selection provenance, and for ratebook the factor tables plus ordered
-dtype descriptors), validate it with `_validate_artifact_payload` (rejects a missing lambda
+column-name config, frontier-selection provenance for a point target only, and for ratebook the
+factor tables plus ordered dtype descriptors taken from the target's own result), plus the audit
+trail: `solver_settings` (from the solve-time config snapshot with the solver defaults applied:
+`max_iter`, `tolerance`, `chunk_size`, and `record_history` for online or `max_cd_iterations` and
+`cd_tolerance` for ratebook; `frontier_enabled`, `frontier_steps` and `frontier_ranges` when the
+solve requested a frontier), `effective_constraints` (a point's constraint specs with that point's
+thresholds via `_frontier_point_constraints_override`; the configured constraints for the
+anchor), `input_summary` (`n_quotes`/`n_steps` from the result plus the job's
+`input_provenance`), and `stale_at_publish` (the request's `stale` flag, which the UI sets when
+the node configuration changed since the solve). The existing `constraints` key stays the
+configured constraints, because `OPTIMISER_APPLY` reads it. The payload is validated with
+`_validate_artifact_payload` (rejects a missing lambda
 mapping, a missing total objective, missing or malformed ratebook factor-table/dtype metadata, or
 *any* non-finite float anywhere in the payload, naming up to 5 offending JSON paths), then either
 atomically write it to disk
 (`atomic_write_text`, with `allow_nan=False` as a defence-in-depth backstop behind the explicit
 validation) or attach it as an MLflow run artifact alongside metrics/params and (if present) a
-frontier-points CSV. `mlflow_log` logs through an `MlflowClient` bound to the destination
+frontier-points CSV. Save resolves `output_path` with `contained_path(_get_project_root(), ...)`
+— a relative path against the project root, the base `/pipeline/read-json` uses, and an absolute
+path only inside it. `OptimiserSaveRequest.overwrite` (default `false`) guards an existing
+destination: under a per-destination lock, an existing file without `overwrite` is a `409` with
+the structured detail `{"error_code": "optimiser_result_exists", "message": ...}` and nothing is
+written. `OptimiserSaveResponse` carries `path` (absolute), `apply_path` (the written file
+relative to the project root with POSIX separators — the value an `OPTIMISER_APPLY` node's
+`artifact_path` takes) and `message`. The MLflow run additionally logs every
+`solver_settings` entry as a `solver_settings.<name>` param and sets the tags
+`stale_at_publish` (`"true"`/`"false"`) and, for a frontier point, one
+`effective_constraint.<name>.<threshold key>` tag per constraint threshold. `mlflow_log` logs through an `MlflowClient` bound to the destination
 `resolve_tracking_backend(destination)` resolves (registry from `registry_uri_for_tracking`),
 selects the experiment with `ensure_experiment`, creates the run with `client.create_run`,
 logs parameters, metrics, tags and artifacts through the client, and terminates the run
@@ -491,7 +533,12 @@ modelling log route's outcomes (`routes/_mlflow_log_errors.py`): a missing MLflo
 shared `503` checked before any work, a classified remote failure is a `502` with an
 `mlflow_<category>` code and write-specific message, anything unclassified is the generic `500`,
 and only the category and error type are logged. The OPTIMISER node
-config gains the optional `mlflow_destination` field (absent = the local folder; `databricks`
+config gains the optional `result_export_path` string — the Export pane's save path,
+relative to the project root exactly as `/save` resolves it, with no default — declared on
+the `OptimiserConfig` TypedDict and `OPTIMISER_CONFIG_KEYS` so it round-trips through save,
+parse and codegen, and classified as node config for the execution cache like its MLflow
+siblings; the solve never reads it, so it is not part of the solve's identity. The OPTIMISER node
+config also gains the optional `mlflow_destination` field (absent = the local folder; `databricks`
 or `server` when chosen), declared on the
 `OptimiserConfig` TypedDict and `OPTIMISER_CONFIG_KEYS`, classified as node config for the
 execution cache, and rejected by `validate_node_config` for unknown values; solving never logs
@@ -625,6 +672,10 @@ source_names)` is the sole public entry point:
    ambiguous values fail. There is no first-connected-input default. Online artifacts use their
    primary frame and ignore `ratebook_input`.
 3. Dispatches to `_explain_online` or `_explain_ratebook`.
+
+Both detail payloads carry the artifact's `constraints` (the configured specs) and, when the
+artifact records them as a mapping, its `effective_constraints` (the thresholds in force for the
+published target, e.g. a frontier point's); an artifact without them omits the key.
 
 RAM cardinality estimation follows the same selector identity when `optimiser_mode` is known to
 be `ratebook`: `ratebook_input` must be present and match one exact executable incoming-edge name.

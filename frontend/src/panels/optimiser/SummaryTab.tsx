@@ -12,6 +12,8 @@ import type { OptimiserSolveResult } from "../../api/types"
 import { isConstraintMet } from "./optimiserHelpers"
 import RatebookImpactBeeswarm from "./RatebookImpactBeeswarm"
 import { hasFactorTables } from "./ratebookFactorTables"
+import Tooltip from "../../components/Tooltip"
+import { LAMBDA_HELP, LAMBDA_LABEL } from "./lambdaCopy"
 
 type RatebookRatesLoadState =
   | { status: "idle" }
@@ -80,7 +82,9 @@ export default function SummaryTab({
         {/* Lambdas (online) / Factor tables (ratebook) */}
         {result.mode !== "ratebook" && Object.keys(result.lambdas).length > 0 && (
           <div>
-            <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Lambdas</label>
+            <Tooltip label={LAMBDA_HELP}>
+              <label className="text-[11px] font-bold uppercase tracking-[0.08em] cursor-help" style={{ color: "var(--text-muted)" }}>{LAMBDA_LABEL}</label>
+            </Tooltip>
             <div className="mt-1 space-y-0.5">
               {Object.entries(result.lambdas).map(([name, value]) => (
                 <div key={name} className="flex justify-between text-xs font-mono gap-4">

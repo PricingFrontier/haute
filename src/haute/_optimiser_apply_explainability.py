@@ -239,7 +239,7 @@ def _explain_online(
             f"output={output_value!r}"
         )
 
-    return {
+    detail: dict[str, Any] = {
         "detail_type": "optimiser_apply",
         "mode": "online",
         "status": "ok",
@@ -272,6 +272,8 @@ def _explain_online(
         "selected": selected_row,
         "baseline": baseline[0],
     }
+    _add_effective_constraints(detail, artifact)
+    return detail
 
 
 def _online_candidate_payload(
@@ -477,7 +479,15 @@ def _explain_ratebook(
         "constraints": dict(artifact.get("constraints") or {}),
         "input_row": to_json_safe(matched_input),
     }
+    _add_effective_constraints(detail, artifact)
     return detail
+
+
+def _add_effective_constraints(detail: dict[str, Any], artifact: dict[str, Any]) -> None:
+    """Show the thresholds the published target was solved under, when recorded."""
+    effective = artifact.get("effective_constraints")
+    if isinstance(effective, dict):
+        detail["effective_constraints"] = to_json_safe(effective)
 
 
 def _required_artifact_column(

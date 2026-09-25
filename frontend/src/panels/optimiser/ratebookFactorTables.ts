@@ -1,3 +1,5 @@
+import { buildCsv } from "../editors/shared/tableClipboard"
+
 export type FactorTableRow = Record<string, unknown>
 export type FactorTables = Record<string, FactorTableRow[]>
 export type FactorLevelOrder = Record<string, readonly string[]>
@@ -81,4 +83,21 @@ export function orderedFactorTableEntries(
     }))
     .sort(byOrderIndex)
     .map(({ factorName, rows }) => [factorName, rows] as [string, FactorTableRow[]])
+}
+
+/** One CSV of every factor table: the table name, then each row's own columns. */
+export function factorTablesCsv(factorTables: FactorTables): string {
+  const columns: string[] = []
+  for (const rows of Object.values(factorTables)) {
+    for (const row of rows) {
+      for (const key of Object.keys(row)) if (!columns.includes(key)) columns.push(key)
+    }
+  }
+  const lines: string[][] = [["factor", ...columns]]
+  for (const [factor, rows] of Object.entries(factorTables)) {
+    for (const row of rows) {
+      lines.push([factor, ...columns.map((column) => (row[column] == null ? "" : String(row[column])))])
+    }
+  }
+  return buildCsv(lines)
 }

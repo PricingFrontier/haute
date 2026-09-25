@@ -1,17 +1,14 @@
 /**
  * Detail card for a selected frontier point.
  *
- * Shows the point's objective, constraints, and lambdas, and offers
- * Save / Log-to-MLflow actions for the currently selected frontier
- * trade-off.  Extracted from OptimiserPreview as part of the
- * god-component split.
+ * Shows the point's objective, constraints, and lambdas. Publishing the
+ * selected point happens in the node's Export pane, which this card names.
  */
 
-import { Loader2, Save, Upload } from "lucide-react"
-import { MODEL_COLORS } from "../../theme/colors"
 import { formatNumber } from "../../utils/formatValue"
-import type { MlflowLogAvailability } from "../../utils/mlflowDestinations"
 import { isConstraintMet } from "./optimiserHelpers"
+import { LAMBDA_HELP, LAMBDA_LABEL } from "./lambdaCopy"
+import Tooltip from "../../components/Tooltip"
 import { isPlainObject } from "../../types/guards"
 
 function optionalPointNumber(value: unknown, field: string): number | null {
@@ -82,15 +79,6 @@ interface DetailCardProps {
   selectedIdx: number
   constraints: Record<string, Record<string, number>>
   constraintNames: string[]
-  onSave: () => void
-  onLogMlflow: () => void
-  saving: boolean
-  logging: boolean
-  terminalActionsDisabled?: boolean
-  /** Whether *this node's* destination can accept a log, and why not. */
-  mlflowAvailability: MlflowLogAvailability
-  onConfigureMlflow: () => void
-  actionMsg: string | null
 }
 
 export default function DetailCard({
@@ -98,20 +86,11 @@ export default function DetailCard({
   selectedIdx,
   constraints,
   constraintNames,
-  onSave,
-  onLogMlflow,
-  saving,
-  logging,
-  terminalActionsDisabled = false,
-  mlflowAvailability,
-  onConfigureMlflow,
-  actionMsg,
 }: DetailCardProps) {
   const point = points[selectedIdx]
   if (!point) return null
 
   const objValue = frontierPointNumber(point, "total_objective")
-  const actionsDisabled = saving || logging || terminalActionsDisabled
 
   return (
     <div className="rounded-lg p-3 space-y-3" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
@@ -140,7 +119,9 @@ export default function DetailCard({
               const value = frontierPointNumber(point, totalKey, "constraints", name, name)
               const spec = constraints[name] || {}
               const thresholdType = Object.keys(spec)[0]
-              const thresholdVal = spec[thresholdType] ?? 0
+              // Each point was solved at its own swept bound, not the solved result's.
+              const pointThreshold = optionalPointNumber(point[`threshold_${name}`], `threshold_${name}`)
+              const thresholdVal = pointThreshold ?? spec[thresholdType] ?? 0
               const met = isConstraintMet(thresholdType, 0, value, thresholdVal)
               return (
                 <div key={name} className="flex items-center justify-between text-xs font-mono gap-2">
@@ -164,7 +145,9 @@ export default function DetailCard({
         if (lambdaEntries.length === 0) return null
         return (
           <div>
-            <label className="text-[10px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Lambdas</label>
+            <Tooltip label={LAMBDA_HELP}>
+              <label className="text-[10px] font-bold uppercase tracking-[0.08em] cursor-help" style={{ color: "var(--text-muted)" }}>{LAMBDA_LABEL}</label>
+            </Tooltip>
             <div className="mt-0.5 space-y-0.5">
               {lambdaEntries.map(([displayName, v]) => {
                 return (
@@ -179,61 +162,9 @@ export default function DetailCard({
         )
       })()}
 
-      {/* Action buttons */}
-      <div className="flex gap-2 pt-1" style={{ borderTop: "1px solid var(--border)" }}>
-        <button
-          onClick={onSave}
-          disabled={actionsDisabled}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors"
-          style={{
-            background: actionsDisabled ? "var(--chrome-hover)" : "var(--warning-soft-emphasis)",
-            color: actionsDisabled ? "var(--text-muted)" : "var(--warning-strong)",
-            border: "1px solid var(--warning-border-strong)",
-          }}
-        >
-          {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
-          Save Result
-        </button>
-        <button
-          onClick={onLogMlflow}
-          disabled={actionsDisabled || !mlflowAvailability.available}
-          title={mlflowAvailability.available ? undefined : mlflowAvailability.reason}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors disabled:opacity-60"
-          style={{
-            background: actionsDisabled || !mlflowAvailability.available ? "var(--chrome-hover)" : MODEL_COLORS.accentSoft,
-            color: actionsDisabled || !mlflowAvailability.available ? "var(--text-muted)" : MODEL_COLORS.accent,
-            border: `1px solid ${MODEL_COLORS.accentSoft}`,
-          }}
-        >
-          {logging ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
-          Log to MLflow
-        </button>
-      </div>
-
-      {/* Why this node cannot log, and the one place that fixes it. */}
-      {!mlflowAvailability.available && (
-        <p
-          data-testid="detail-card-mlflow-reason"
-          className="text-[10px]"
-          style={{ color: "var(--text-muted)" }}
-        >
-          {`${mlflowAvailability.reason} `}
-          <button
-            onClick={onConfigureMlflow}
-            className="underline"
-            style={{ color: "var(--text-accent)" }}
-          >
-            Configure
-          </button>
-        </p>
-      )}
-
-      {/* Action feedback */}
-      {actionMsg && (
-        <div className="text-[10px] font-mono px-1" style={{ color: "var(--text-muted)", wordBreak: "break-all" }}>
-          {actionMsg}
-        </div>
-      )}
+      <p className="text-[10px] pt-1" style={{ color: "var(--text-muted)", borderTop: "1px solid var(--border)" }}>
+        Save or log this point from the node's Export pane.
+      </p>
     </div>
   )
 }

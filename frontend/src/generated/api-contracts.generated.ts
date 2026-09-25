@@ -1422,6 +1422,7 @@ export interface OptimiserApplyResponse {
   total_objective: number;
 }
 export interface OptimiserSaveResponse {
+  apply_path: string;
   message: string;
   path: string | null;
   status: string;

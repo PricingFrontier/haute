@@ -9198,6 +9198,10 @@
     },
     "OptimiserSaveResponse": {
       "properties": {
+        "apply_path": {
+          "title": "Apply Path",
+          "type": "string"
+        },
         "message": {
           "default": "",
           "title": "Message",
@@ -9223,6 +9227,7 @@
       "required": [
         "status",
         "path",
+        "apply_path",
         "message"
       ],
       "title": "OptimiserSaveResponse",

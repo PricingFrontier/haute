@@ -476,38 +476,6 @@ def test_frontier_apply_cleans_new_artifact_after_unexpected_store_failure(
     assert log_error.call_args.kwargs["path"] == "/api/optimiser/apply"
 
 
-def test_save_rechecks_solve_result_after_touch(client, clean_job_store, tmp_path: Path):
-    from haute._sandbox import _get_project_root, set_project_root
-
-    original_root = _get_project_root()
-    seed_job(
-        clean_job_store,
-        "save_missing_after_touch",
-        {
-            "status": "completed",
-            "solve_result": None,
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
-    )
-
-    try:
-        set_project_root(tmp_path)
-        with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
-            resp = client.post(
-                "/api/optimiser/save",
-                json={
-                    "job_id": "save_missing_after_touch",
-                    "output_path": str(tmp_path / "out.json"),
-                },
-            )
-    finally:
-        set_project_root(original_root)
-
-    assert resp.status_code == 400
-    assert resp.json()["detail"] == "Job has no solve result"
-
-
 def test_save_reraises_http_exception_from_artifact_build(
     client,
     clean_job_store,
@@ -521,7 +489,12 @@ def test_save_reraises_http_exception_from_artifact_build(
         "save_artifact_http_error",
         {
             "status": "completed",
-            "solve_result": SimpleNamespace(),
+            "result": {
+                "lambdas": {},
+                "total_objective": 1.0,
+                "constraints": {},
+                "converged": True,
+            },
             "config": {"mode": "online"},
             "node_label": "opt",
             "created_at": time.time(),
@@ -547,52 +520,6 @@ def test_save_reraises_http_exception_from_artifact_build(
 
     assert resp.status_code == 418
     assert resp.json()["detail"] == "artifact rejected"
-
-
-def test_mlflow_log_rechecks_solve_result_after_touch(client, clean_job_store):
-    seed_job(
-        clean_job_store,
-        "mlflow_missing_after_touch",
-        {
-            "status": "completed",
-            "solver": MagicMock(),
-            "solve_result": None,
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
-    )
-
-    with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
-        resp = client.post(
-            "/api/optimiser/mlflow/log",
-            json={"job_id": "mlflow_missing_after_touch"},
-        )
-
-    assert resp.status_code == 400
-    assert resp.json()["detail"] == "Job has no solve result"
-
-
-def test_mlflow_log_rechecks_solver_after_touch(client, clean_job_store):
-    seed_job(
-        clean_job_store,
-        "mlflow_solver_missing_after_touch",
-        {
-            "status": "completed",
-            "solver": None,
-            "solve_result": SimpleNamespace(),
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
-    )
-
-    with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
-        resp = client.post(
-            "/api/optimiser/mlflow/log",
-            json={"job_id": "mlflow_solver_missing_after_touch"},
-        )
-
-    assert resp.status_code == 400
-    assert "re-run the solve" in resp.json()["detail"].lower()
 
 
 # ===========================================================================
@@ -1141,61 +1068,53 @@ def test_apply_cleans_up_orphan_artifact_when_atomic_update_loses_race(
 
 
 # ---------------------------------------------------------------------------
-# /mlflow/log — ratebook factor_tables fallback to solve_result
+# /mlflow/log — the ratebook anchor publishes its own factor tables
 # ---------------------------------------------------------------------------
 
 
-def test_mlflow_log_ratebook_falls_back_to_solve_result_factor_tables(
+def test_mlflow_log_ratebook_anchor_uses_its_own_factor_tables(
     client,
     clean_job_store,
     tmp_path,
     monkeypatch,
 ):
-    """The artifact payload prefers ``result.factor_tables`` but falls
-    back to ``solve_result.factor_tables`` when the result has been
-    slimmed.  This test pins the fallback path so a future cleanup of
-    ``result`` doesn't silently log empty factor tables to MLflow.
-    """
-    factor_tables = {"region": [{"__factor_group__": "North", "value": 1.0}]}
+    """With a materialised frontier point selected, ``result`` holds that
+    point's tables; logging the anchor must still log the anchor's own."""
+    anchor_tables = {"region": [{"__factor_group__": "North", "value": 1.0}]}
+    point_tables = {"region": [{"__factor_group__": "North", "value": 1.3}]}
     factor_dtypes = {"region": [{"column": "region", "dtype": {"kind": "String"}}]}
-    solve_result = SimpleNamespace(
-        total_objective=100.0,
-        baseline_objective=90.0,
-        total_constraints={"volume": 0.95},
-        baseline_constraints={"volume": 0.85},
-        lambdas={"volume": 0.1},
-        converged=True,
-        clamp_rate=0.02,
-        factor_tables=factor_tables,
-        factor_dtypes=factor_dtypes,
-        cd_iterations=3,
-        iterations=5,
-    )
-    solver = MagicMock()
-    solver.summary.return_value = {
-        "params": {"mode": "ratebook"},
-        "metrics": {"total_objective": 100.0},
-        "artifacts": {"factor_tables": factor_tables},
+    anchor = {
+        "mode": "ratebook",
+        "total_objective": 100.0,
+        "baseline_objective": 90.0,
+        "constraints": {"volume": 0.95},
+        "baseline_constraints": {"volume": 0.85},
+        "lambdas": {"volume": 0.1},
+        "converged": True,
+        "cd_iterations": 3,
+        "clamp_rate": 0.02,
+        "factor_tables": anchor_tables,
+        "factor_dtypes": factor_dtypes,
     }
-
     seed_job(
         clean_job_store,
-        "mlflow_fallback",
+        "mlflow_anchor_tables",
         {
             "status": "completed",
             "config": {"mode": "ratebook", "objective": "expected_margin"},
-            # Note: no factor_tables here — forces the fallback.
+            "base_result": anchor,
             "result": {
-                "mode": "ratebook",
-                "total_objective": 100.0,
-                "baseline_objective": 90.0,
-                "constraints": {"volume": 0.95},
-                "baseline_constraints": {"volume": 0.85},
-                "lambdas": {"volume": 0.1},
-                "converged": True,
+                **anchor,
+                "total_objective": 120.0,
+                "factor_tables": point_tables,
+                "selected_frontier_point": 0,
             },
-            "solver": solver,
-            "solve_result": solve_result,
+            "selected_frontier_point": 0,
+            "publish_summary": {
+                "params": {"mode": "ratebook"},
+                "metrics": {"total_objective": 100.0},
+                "artifacts": {"factor_tables": anchor_tables},
+            },
             "node_label": "opt",
             "created_at": time.time(),
             "completed_at": time.time(),
@@ -1204,20 +1123,22 @@ def test_mlflow_log_ratebook_falls_back_to_solve_result_factor_tables(
 
     store = use_local_mlflow_store(tmp_path, monkeypatch)
 
-    with patch.object(clean_job_store, "touch_heavy_objects", return_value=True):
-        resp = client.post(
-            "/api/optimiser/mlflow/log",
-            json={"job_id": "mlflow_fallback"},
-        )
+    resp = client.post(
+        "/api/optimiser/mlflow/log",
+        json={"job_id": "mlflow_anchor_tables"},
+    )
 
-    assert resp.status_code == 200
-    # The logged payload reflects the fallback: factor_tables came from
-    # solve_result, not the (slimmed) result dict.
+    assert resp.status_code == 200, resp.text
     logged = logged_json_artifacts(store, resp.json()["run_id"], tmp_path / "logged")
     payload = logged["optimiser_result.json"]
-    assert payload["factor_tables"] == factor_tables
+    assert payload["total_objective"] == 100.0
+    assert payload["factor_tables"] == anchor_tables
     assert payload["factor_dtypes"] == factor_dtypes
     assert payload["clamp_rate"] == 0.02
+    assert payload["cd_iterations"] == 3
+    assert payload["solver_settings"]["max_cd_iterations"] == 10
+    params = store.get_run(resp.json()["run_id"]).data.params
+    assert params["solver_settings.cd_tolerance"] == "0.001"
 
 
 # ---------------------------------------------------------------------------

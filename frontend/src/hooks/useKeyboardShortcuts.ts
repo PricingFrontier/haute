@@ -93,9 +93,16 @@ export default function useKeyboardShortcuts({
       if (el.closest?.('[role="dialog"][aria-modal="true"]') && !closesNodeSearch) return
       const isTyping = tag === "INPUT" || tag === "TEXTAREA" || el.closest?.(".cm-editor") != null
 
-      // Ctrl+S / Cmd+S → save
+      // Ctrl+S / Cmd+S → save. Editor fields commit on blur, so a focused field
+      // is blurred first and the save runs once React has rendered that commit;
+      // otherwise the value being typed would be left out of the save.
       if (mod && e.key === "s") {
         e.preventDefault()
+        if (tag === "INPUT" || tag === "TEXTAREA") {
+          el.blur()
+          window.setTimeout(handleSave, 0)
+          return
+        }
         handleSave()
         return
       }

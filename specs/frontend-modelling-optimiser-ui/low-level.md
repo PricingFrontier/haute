@@ -18,11 +18,18 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/ModellingConfig.tsx` | Modelling form orchestration, early training-job registration/cancellation, RAM estimate and GLM estimate wiring. |
 | `frontend/src/panels/ModellingPreview.tsx` | Result-backed modelling tab selection and tab reset. Loaded on demand by the app when the active node has model results, through the same Suspense boundary pattern as optimiser results. |
 | `frontend/src/panels/NodePanel.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Six-pane hosting owned by [frontend-node-editors](../frontend-node-editors/low-level.md) and the accessible tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md), both consumed by modelling. |
-| `frontend/src/panels/OptimiserConfig.tsx` | Optimiser form, solve submission, and source/constraint configuration. It delegates auto-range request identity and terminal presentation to `useOptimiserAutoRange`. |
-| `frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx` | Constraint-bound, efficient-frontier, range, and step controls. It composes `useOptimiserAutoRange` beside the fields whose current constraint scope it owns, keeping request state out of the parent form. |
+| `frontend/src/panels/OptimiserConfig.tsx` | Optimiser pane router, solve submission, source/factor derivation and the solve-blocking issue list. It receives the active pane from `NodePanel` and renders one pane at a time; auto-range request identity and terminal presentation stay in `useOptimiserAutoRange`. |
+| `frontend/src/panels/optimiser/optimiserPanes.ts` | The optimiser pane list per mode (Factors only in ratebook) and resolution of a remembered pane the mode lacks to Data. |
+| `frontend/src/panels/optimiser/OptimiserConstraintSettings.tsx` | The Constraints pane body: result-type choice, one card per constraint holding its column, remove action and either its bound or its frontier range, then auto range and steps. It composes `useOptimiserAutoRange` beside the fields whose current constraint scope it owns, keeping request state out of the parent form. |
 | `frontend/src/panels/optimiser/OptimiserSolveStatus.tsx` | Pure solve estimate, stale-result, progress, terminal diagnostics, action, and convergence-result presentation. It receives the parent-owned solve transition and owns no request lifecycle state. |
 | `frontend/src/panels/optimiser/useOptimiserAutoRange.ts` | The single state authority for auto-range lifecycle: reducer-owned pending/error/terminal diagnostics, monotonic restart generation, document/config fence, abort/cancel ownership, polling, response validation, and completed-range publication. |
-| `frontend/src/panels/OptimiserPreview.tsx` | Solve-result tab orchestration, point selection, exports and ratebook detail materialisation. |
+| `frontend/src/panels/OptimiserPreview.tsx` | Solve-result tab orchestration, point selection, the stale-result strip with Re-run and ratebook detail materialisation; it has no publish actions. |
+| `frontend/src/panels/optimiser/solveActions.ts` | The one solve entry point (`startOptimiserSolve`) used by the Solve pane, Ctrl+Enter and the preview's Re-run; `stopOptimiserSolve`; and the solve-identity hash and staleness check (`solveConfigHash`, `isSolveResultStale`) that exclude the export settings. |
+| `frontend/src/panels/optimiser/solveReadiness.ts` | The one set of solve-readiness rules: `resolveOptimiserInputs` (selectors against the connected inputs) and `optimiserSolveReadiness` (blocking issues, `canSolve`, `canAutoRange`), used by the Solve pane, Ctrl+Enter and the preview's Re-run. |
+| `frontend/src/panels/optimiser/useOptimiserReadiness.ts` | Wraps those rules with the one data-input column path (known single-input columns, else the source-aware column cache and preview fetch) so the editor and Re-run judge the same columns; the preview fetches only while its stale strip is shown. |
+| `frontend/src/panels/optimiser/OptimiserPublishSection.tsx` | The Export pane's Publish section: target choice bound to the result store's selected point, `result_export_path`, version label, Save/Log with the overwrite confirmation, receipts, Use in Apply node and the ratebook factor-table CSV. |
+| `frontend/src/stores/useOptimiserPublishStore.ts` | Per-node publish state keyed by solve job (busy flags, receipts, errors, overwrite prompt) owned by the Export pane. |
+| `frontend/src/panels/optimiser/QuotesTab.tsx`, `frontend/src/panels/optimiser/lambdaCopy.ts` | The online per-quote detail view for the publish target, and the shared λ label and explanation. |
 | `frontend/src/panels/OptimiserDataPreview.tsx` | Bounded pre-solve scenario table, quote navigation, multi-series chart and statistics. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-memory and rejected-strategy banner shared with modelling progress, optimiser actions, and Explore. |
 | `frontend/src/panels/optimiserScenarioStats.ts` | Strict finite-number parsing and per-scenario statistical aggregation used by the optimiser data preview. |
@@ -45,7 +52,7 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/modelling/useDiagnosticFeature.ts`, `frontend/src/panels/modelling/FeatureDiagnosticTab.tsx`, `frontend/src/panels/modelling/validation.css` | The feature selection a diagnostic pane owns standalone or shares with the result workspace; the per-feature tab layout AvE and PDP share (importance-ranked browser beside the selected feature's chart, with empty states for no rows and for a selection without a row); and the workspace's container-query layout styles, imported by `frontend/src/panels/ModellingPreview.tsx`. The axis and scale helpers live in [frontend-shared](../frontend-shared/low-level.md)'s `utils/chartHelpers.ts`. |
 | `frontend/src/panels/modelling/ExportPane.tsx`, `frontend/src/panels/modelling/MlflowExportSection.tsx`, `frontend/src/panels/modelling/ModelFileExportSection.tsx` | The Export pane: the MLflow logging fields, the manual MLflow log action (names the node's destination, disabled with the reason when that destination is unconfigured or no trained model is exportable, always sends `destination`), and the save-model-to-file action. |
 | `frontend/src/panels/modelling/exportReceipts.ts`, `frontend/src/panels/modelling/useTrainedJobRestore.ts` | `useExportReceipts(jobId)` (reads a completed job's export receipts from the status endpoint on mount and on `refresh`), `newOperationId()`, and `useTrainedJobRestore` (after a reload, reads a remembered job's status once to restore its result — current only when the editor's current payload has the same `trainingLineage` — or report it expired). |
-| `frontend/src/utils/trainedJobHandles.ts`, `frontend/src/utils/modellingExportConfig.ts` | Per-document browser handles to a node's last completed training job (`read`/`write`/`clearTrainedJobHandle`, each holding job ID, config hash, source and lineage) and `trainingLineage` (a digest of the graph payload a training request submitted, submodel graphs included); the modelling export-field keys (`MODELLING_EXPORT_CONFIG_KEYS`) and `trainingIdentityConfig`, which omits them. |
+| `frontend/src/utils/trainedJobHandles.ts`, `frontend/src/utils/modellingExportConfig.ts` | Per-document browser handles to a node's last completed training job (`read`/`write`/`clearTrainedJobHandle`, each holding job ID, config hash, source and lineage) and `trainingLineage` (a digest of the graph payload a training request submitted, submodel graphs included); the modelling and optimiser export-field keys (`MODELLING_EXPORT_CONFIG_KEYS`, `OPTIMISER_EXPORT_CONFIG_KEYS`, `exportConfigKeysFor`) and `trainingIdentityConfig` / `solveIdentityConfig`, which omit them. |
 | `frontend/src/panels/modelling/modelExport.ts`, `frontend/src/panels/modelling/FieldHelpIcon.tsx` | The model file extension per algorithm and the shared hover-only field help icon. |
 | `frontend/src/panels/modelling/SummaryTab.tsx` | Model info, diagnostics/errors, development/selection/final-test metrics, tuning baseline/winner evidence and warnings. |
 | `frontend/src/panels/modelling/GLMCoefficientsTab.tsx`, `frontend/src/panels/modelling/GLMRelativitiesTab.tsx` | GLM-specific coefficient and relativity result tables, including invalid-inference reasons and robust standard errors. |
@@ -195,7 +202,8 @@ Only a current, accepted save response may acknowledge this revision transition.
 
 ### Optimiser
 
-1. `frontend/src/panels/OptimiserConfig.tsx` finds direct inputs and candidate banding sources.
+1. `frontend/src/panels/OptimiserConfig.tsx` finds direct inputs and candidate banding sources
+   whatever pane is active, so ratebook defaults persist and the Solve issue list is current.
    It uses cached node columns, provided upstream columns, then `useDataInputColumns` as needed.
    Ratebook mode may set an unconfigured source and inferred factor columns from banding levels
    in one atomic update, while an explicitly configured empty factor list is preserved.
@@ -215,13 +223,18 @@ Only a current, accepted save response may acknowledge this revision transition.
    aborted or superseded request is silent; a cancelled or other terminal
    status returned by the server is shown in the reducer-owned auto-range
    error area.
-4. `frontend/src/panels/OptimiserPreview.tsx` picks the available result tabs and selected frontier
-   point. In ratebook mode a selected point without tables is materialised only on Rates/Summary;
+4. `frontend/src/panels/OptimiserPreview.tsx` picks the available result tabs and the selected
+   frontier point, which is also the publish target (`selectedPointIndex`, `null` = the solved
+   result). In ratebook mode a selected point without tables is materialised only on Rates/Summary;
    request sequence bookkeeping drops stale replies and persists accepted tables in the result
-   store. A point change aborts and clears materialised export detail before Save/MLflow actions
-   can be used for the new point. The MLflow log request carries the node's current
-   `mlflow_destination` (found through `allNodes` by `nodeId`; `""` for Auto) and the Export tab
-   and detail card derive availability from that destination alone.
+   store. Save and MLflow requests always send the target explicitly (`point_index` omitted for the
+   solved result) and never consume the server-side result, so they and the Quotes view may run
+   in any order. The MLflow log request carries the node's current `mlflow_destination` (found
+   through `allNodes` by `nodeId`; `""` for Auto) and the Export pane derives availability from
+   that destination alone. It publishes through `useOptimiserPublishStore`, whose state belongs to
+   one solve job. Export's factor-table load stores its
+   reply through `recordFrontierPointSummary`, which drops a reply for a job the node has moved past
+   and never changes the selection.
 5. `frontend/src/panels/OptimiserDataPreview.tsx` caps rows at 5,000 before grouping by quote,
    orders scenario rows, and calculates full-preview statistics only when its Statistics tab is open.
 
@@ -438,10 +451,9 @@ The behavioural contract is defined in
   registry field and the log request carries none. The section carries no always-visible instruction prose and no "Logging destination"
   line. The experiment datalist loads through `useMlflowBrowser({destination})` from the node's
   destination on focus, only when that destination can accept a log. The optimiser config's
-  collapsible MLflow section receives the same selector and the same explanatory experiment
+  Export pane receives the same selector and the same explanatory experiment
   tooltip, worded for an optimisation result. The Export pane's `MlflowExportSection` omits
-  the successful destination line under its button; the optimiser `ExportMlflowSection`
-  retains its destination line. Both use `mlflowLogAvailability` and render the button
+  the successful destination line under its button, as does the optimiser Publish section. Both use `mlflowLogAvailability` and render the button
   disabled with the reason and a "Configure MLflow" link (opens the settings modal) only when the
   node's *own* destination is unconfigured or the package is unavailable — never because some
   other remote is — (the modelling button is additionally disabled, without that link, while the
@@ -450,8 +462,7 @@ The behavioural contract is defined in
   choosing Local folder after a job completes sends `""` and the response names the local backend.
   A remote the node chose that cannot be reached or rejects its credentials fails the log with the
   classified error and its "Test connection in MLflow settings" action; nothing falls back to
-  local. The optimiser
-  `DetailCard` log button gets the same disabled-with-reason treatment plus a "Configure" link.
+  local.
   Both log requests also carry `experiment_name`, the node's current `mlflow_experiment` or
   `null` when blank. A failed modelling log renders `apiErrorMessage` in an alert (never
   `ApiError: HTTP <status>`), and when `apiErrorCode` is `mlflow_connectivity` or
@@ -571,3 +582,36 @@ Verification is deliberately assigned to the owning seams:
 
 Shared `NodePanel`, tab-control, API/parser, and store interactions are recorded in
 [ownership.toml](../ownership.toml).
+
+## Optimiser config panes
+
+The behavioural contract is defined in
+[the high-level specification](high-level.md#optimiser-config-panes).
+
+- `frontend/src/panels/optimiser/optimiserPanes.ts` exports `optimiserPanesFor(mode)` (Data,
+  Factors, Constraints, Solve, Export in ratebook mode; Factors omitted otherwise) and
+  `resolveOptimiserPane(mode, remembered)`, which returns the remembered pane when the mode has it
+  and Data otherwise. `NodePanel` and `OptimiserConfig` both resolve through it, so the selected
+  tab and the rendered body never disagree.
+- `OptimiserConfig.tsx` keeps every derivation and effect above the pane branch: input and
+  banding-source resolution, the atomic ratebook-default writes, the solve estimate and solve
+  submission. Switching panes therefore never skips a default write or drops a pending solve.
+  `solveIssues` is the single source of `canSolve`; each issue names the pane that resolves it,
+  and the Solve pane's alert lists every issue with a **Go to** link that calls
+  `setOptimiserPane`. The alert is hidden while a solve runs. Ctrl+Enter defers the solve to a
+  zero-delay timer that calls the latest solve-if-ready, so a field committing on the same
+  keystroke is solved with its committed value and re-judged for readiness. `stopOptimiserSolve`
+  applies the cancel reply only while the cancelled job is still the node's active job and the
+  document fence is current. The size estimate keys on its input fields and a structure key built
+  from every other node, the edges and submodels, so the node's own edits (which move the global
+  structural version) never re-request it.
+- `OptimiserSolveStatus.tsx` renders the issue alert directly beneath the Optimise button.
+- `useUIStore.ts` remembers `optimiserPanes` per node. `NodePanel.tsx` selects only the Boolean
+  presence of `solveJobs[node.id]` for the Solve tab's active indicator and derives no
+  configuration warning descriptors.
+
+Verification: `frontend/src/panels/__tests__/OptimiserConfig.test.tsx` covers each pane's
+content, Factors gating by mode, the constraint cards for both result types, the solve-blocking
+alert and its navigation; `frontend/src/panels/optimiser/__tests__/optimiserPanes.test.ts` covers
+the pane list and resolution; `NodePanel.test.tsx` and `useUIStore.test.ts` cover strip gating,
+per-node memory and the active-solve indicator.

@@ -414,17 +414,8 @@ def _summary_solve_result(result: dict[str, Any]) -> SolveResultLike:
         cd_iterations=result.get("cd_iterations"),
         clamp_rate=result.get("clamp_rate"),
         factor_tables=result.get("factor_tables"),
+        factor_dtypes=result.get("factor_dtypes"),
     )
-
-
-def _selected_or_requested_frontier_point(
-    job: Mapping[str, Any],
-    requested_point_index: int | None,
-) -> int | None:
-    if requested_point_index is not None:
-        return requested_point_index
-    selected = job.get("selected_frontier_point")
-    return selected if isinstance(selected, int) and not isinstance(selected, bool) else None
 
 
 def _frontier_point_result_for_job(job: Mapping[str, Any], point_index: int) -> dict[str, Any]:
