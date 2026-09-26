@@ -270,19 +270,20 @@ function expectGeneratedInputIdentity(
   // A coded consumer keeps the parameter names its code was authored with
   // (ENG-T08): a renamed frame is recorded on the decorator's inputMapping as
   // logical -> current edge name, and the connect lines carry the new name.
-  const parameterNames = signature[1]
+  // The signature may be broken over lines, as ruff lays out a long one.
+  const parameters = signature[1]
     .split(",")
-    .map((parameter) => parameter.trim().split(":", 1)[0])
+    .map((parameter) => parameter.trim())
+    .filter((parameter) => parameter.length > 0)
+  const parameterNames = parameters.map((parameter) => parameter.split(":", 1)[0])
   expect(
     parameterNames,
     "generated arguments keep the authored names one-to-one and in edge order",
   ).toEqual(["raw_rows", ...parameterLabels])
-  const expectedDefinition = `def enriched(${["raw_rows", ...parameterLabels]
-    .map((name) => `${name}: pl.LazyFrame`)
-    .join(", ")}) -> pl.LazyFrame:`
-  expect(source, "generated main.py exposes the exact executable signature").toContain(
-    expectedDefinition,
+  expect(parameters, "generated main.py exposes the exact executable signature").toEqual(
+    ["raw_rows", ...parameterLabels].map((name) => `${name}: pl.LazyFrame`),
   )
+  expect(source).toMatch(/def\s+enriched\s*\([\s\S]*?\)\s*-> pl\.LazyFrame:/)
   for (const [logical, current] of Object.entries(inputMapping)) {
     const binding = new RegExp(
       String.raw`inputMapping=\{[^}]*["']${logical}["']:\s*["']${current}["']`,

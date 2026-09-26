@@ -13,8 +13,8 @@ the current indent. Two sequence shapes cover what Haute emits.
 with a trailing comma. :func:`arguments` lays out call and signature arguments:
 flat, then on one indented line of their own, then one per line with a trailing
 comma; a lone parameter of a broken signature takes a trailing comma too, and a
-lone call argument never does. A trailing comma in a broken sequence is a magic trailing comma to ruff,
-which keeps that sequence broken.
+lone call argument never does. A trailing comma in a broken sequence is a magic
+trailing comma to ruff, which keeps that sequence broken.
 
 This is not a general formatter: it prints documents its callers build from
 values and names they control, never parsed source.
@@ -183,9 +183,7 @@ def bracketed(open_: str, entries: Sequence[Doc], close: str) -> Doc:
     return Group([open_, Indent([SOFT, body]), SOFT, close])
 
 
-def arguments(
-    open_: str, entries: Sequence[Doc], close: str, *, signature: bool = False
-) -> Doc:
+def arguments(open_: str, entries: Sequence[Doc], close: str, *, signature: bool = False) -> Doc:
     """Call or signature arguments, laid out as ruff lays them out.
 
     Flat when they fit; otherwise on one indented line of their own when that

@@ -564,7 +564,8 @@ def _code_makes_df_local(code: str) -> bool:
         table = symtable.symtable(wrapped, "<node>", "exec")
     except SyntaxError:
         return False
-    function = table.get_children()[0]
+    # Python 3.14 adds an ``__annotate__`` table beside the function's.
+    function = next(child for child in table.get_children() if child.get_name() == "_node")
     try:
         symbol = function.lookup("df")
     except KeyError:

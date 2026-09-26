@@ -755,7 +755,8 @@ class TestSaveSimpleGraph:
                 GraphEdge(id="lookup_input", source="lookup", target="result", targetHandle="join")
             )
         else:
-            config["code"] = "df = source"
+            # A transform names its input; Explore code sees its input as df.
+            config["code"] = "df = source" if node_type == "polars" else "df = df.select(pl.all())"
         # NodeData validates/copies config, so assign the completed settings.
         nodes[1].data.config = config
         graph = PipelineGraph(nodes=nodes, edges=edges)
