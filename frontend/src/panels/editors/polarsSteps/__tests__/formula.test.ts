@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { FormulaError, displayFormula, formulaText, parseFormula, withoutFormulaText } from "../formula"
+import { FormulaError, callAtCaret, displayFormula, formulaText, parseFormula, renameColumnInFormula, withoutFormulaText } from "../formula"
 import type { Expr, Operand } from "../types"
 
 const col = (name: string): Operand => ({ kind: "column", name })
@@ -110,7 +110,7 @@ describe("formula text", () => {
 
   it.each([
     ["", /Enter a formula/],
-    ["(premium + 1", /closing bracket/],
+    ["(premium + 1", /Expected "\)" after number 1/],
     ["premium +", /ends too early/],
     ["premium 2", /Unexpected number 2/],
     ["nope(premium)", /Unknown function "nope"/],
@@ -129,5 +129,57 @@ describe("formula text", () => {
     expect(formulaText({ type: "window", agg: "mean", column: "premium", over: ["region"] })).toBeNull()
     expect(formulaText(binary(col("premium"), "-", ex({ type: "window", agg: "mean", column: "premium", over: ["region"] })))).toBeNull()
     expect(formulaText({ type: "concat", parts: [col("a"), col("b")], separator: "-" })).toBeNull()
+  })
+
+  it.each([
+    ["(premium + 1", 12],
+    ["premium +", 9],
+    ["premium 2", 8],
+    ["nope(premium)", 0],
+    ["round(premium)", 13],
+    ["round(premium, 'x')", 15],
+    ["premium $ 2", 8],
+    ["'unclosed", 0],
+  ])("says where reading stopped in %s", (text, position) => {
+    try {
+      parseFormula(text)
+      throw new Error("expected a FormulaError")
+    } catch (error) {
+      expect(error).toBeInstanceOf(FormulaError)
+      expect((error as FormulaError).position).toBe(position)
+    }
+  })
+
+  it("reads function names in any case and keeps the catalogue's spelling in the text", () => {
+    expect(parseFormula("ROUND(premium, 2)")).toMatchObject({ type: "function", fn: "round", text: "round(premium, 2)" })
+    expect(parseFormula("Upper(region) + Lower(region)")).toMatchObject({ type: "binary", text: "upper(region) + lower(region)" })
+  })
+})
+
+describe("renameColumnInFormula", () => {
+  it("renames column references only, never quoted text, functions, keywords or variables", () => {
+    expect(renameColumnInFormula('replace(primium, "primium", "discount")', "primium", "premium")).toBe('replace(premium, "primium", "discount")')
+    expect(renameColumnInFormula("round(round, 2) + `round`", "round", "rnd")).toBe("round(rnd, 2) + rnd")
+    expect(renameColumnInFormula("rate * rate_x", "rate", "base", ["rate"])).toBe("rate * rate_x")
+    expect(renameColumnInFormula("a + b", "a", "sum insured")).toBe("`sum insured` + b")
+    expect(renameColumnInFormula("date + 1 + date('2024-01-01')", "date", "data")).toBe("data + 1 + date('2024-01-01')")
+  })
+
+  it("leaves a function's plain-value arguments alone, a type named like the column included", () => {
+    expect(renameColumnInFormula("cast(Float64, Float64)", "Float64", "Float32")).toBe("cast(Float32, Float64)")
+    expect(renameColumnInFormula("round(abs(x), 2) + clip(x, 0, 1)", "x", "y")).toBe("round(abs(y), 2) + clip(y, 0, 1)")
+    expect(renameColumnInFormula("(x + 1) * x", "x", "y")).toBe("(y + 1) * y")
+  })
+})
+
+describe("callAtCaret", () => {
+  it("names the catalogue function and argument the caret is in", () => {
+    expect(callAtCaret("round(premium, ", 15)).toEqual({ fn: "round", arg: 1 })
+    expect(callAtCaret("round(premium", 13)).toEqual({ fn: "round", arg: 0 })
+    expect(callAtCaret("ROUND(premium, 2)", 15)).toEqual({ fn: "round", arg: 1 })
+    expect(callAtCaret("replace(region, ',', ", 21)).toEqual({ fn: "replace", arg: 2 })
+    expect(callAtCaret("abs(premium) + ", 15)).toBeNull()
+    expect(callAtCaret("(premium + ", 11)).toBeNull()
+    expect(callAtCaret("nope(premium, ", 14)).toBeNull()
   })
 })

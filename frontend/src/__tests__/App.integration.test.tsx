@@ -920,8 +920,11 @@ describe("App integration - load a pipeline with nodes", () => {
     fireEvent.click(screen.getByRole("button", { name: "Step 1: Add column" }))
     const formula = await screen.findByRole("combobox", { name: "Formula" })
     fireEvent.change(formula, { target: { value: "pre" } })
-    const list = await screen.findByRole("listbox", { name: "Matching columns" })
-    expect(within(list).getAllByRole("option").map((option) => option.textContent)).toEqual(["premium", "premium_net"])
+    const list = await screen.findByRole("listbox", { name: "Matching columns and functions" })
+    // Each row is named by its column; the type beside it is a visual note.
+    expect(within(list).getAllByRole("option")).toHaveLength(2)
+    expect(within(list).getAllByRole("option")[0]).toHaveAccessibleName("premium")
+    expect(within(list).getAllByRole("option")[1]).toHaveAccessibleName("premium_net")
   })
 
   it("keeps an edge drawn into a stepped transform while its editor seeds the start step", async () => {

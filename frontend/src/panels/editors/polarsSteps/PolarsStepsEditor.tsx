@@ -1,5 +1,5 @@
-import { Code } from "lucide-react"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { AlertTriangle, Code } from "lucide-react"
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 
 import { NODE_GROUP_COLORS } from "../../../theme/colors"
 import type { StepStart } from "../../../utils/polarsStepInputs"
@@ -7,11 +7,13 @@ import { InputSourcesBar, INPUT_STYLE } from "../_shared"
 import type { InputSource, OnReplaceConfig, OnUpdateConfig } from "../_shared"
 import AddStepMenu from "./AddStepMenu"
 import { createStep, kindLabel, stepDisplayLabel, stepProblem, variablesBefore } from "./catalogue"
-import { columnsBeforeStep } from "./derivedColumns"
+import { columnChange, columnNames, columnsAtEachStep, unknownColumnsOf, type ColumnSource } from "./derivedColumns"
 import { StepForm } from "./forms"
 import GeneratedCodePanel from "./GeneratedCodePanel"
 import StepCard, { type StepBadge, type StepDrag } from "./StepCard"
-import { summarizeStep } from "./summary"
+import { STEP_ICONS } from "./stepIcons"
+import { schemaFor } from "./stepSchema"
+import { summaryParts, unfinishedPart } from "./summary"
 import { readSteps, type Step, type StepKind } from "./types"
 import { useRenderedSteps } from "./useRenderedSteps"
 
@@ -27,12 +29,34 @@ const SWITCH_CONFIRMATION =
 /** Join and concat need an input name to reference; withheld while none is eligible. */
 const INPUT_REFERENCING_KINDS: ReadonlySet<Exclude<StepKind, "source">> = new Set(["join", "concat"])
 
+/** Canvas shortcuts (with Ctrl/Cmd) that act on the graph and must not fire from the step editor. */
+const GRAPH_SHORTCUT_KEYS: ReadonlySet<string> = new Set(["a", "c", "g", "v"])
+
 /** Parse the backend's "Step k: message" text into a zero-based index. */
 function parseStepsError(text: unknown): { stepIndex: number | null; message: string } | null {
   if (typeof text !== "string" || text.length === 0) return null
   const match = /^Step (\d+): (.*)$/s.exec(text)
   if (!match) return { stepIndex: null, message: text }
   return { stepIndex: Number.parseInt(match[1], 10) - 1, message: match[2] }
+}
+
+function isTextEntry(element: HTMLElement): boolean {
+  return element.tagName === "INPUT" || element.tagName === "TEXTAREA" || element.isContentEditable || element.closest(".cm-editor") !== null
+}
+
+/**
+ * Keys the canvas would act on stop at the step editor: Delete and Backspace
+ * outside a text box, and the graph's copy, paste, select-all and group
+ * shortcuts. Save, undo and redo, search, fit view, help and Escape stay
+ * global.
+ */
+function keepGraphKeysInEditor(event: KeyboardEvent<HTMLDivElement>) {
+  const target = event.target as HTMLElement
+  if ((event.key === "Delete" || event.key === "Backspace") && !isTextEntry(target)) {
+    event.stopPropagation()
+  } else if ((event.ctrlKey || event.metaKey) && GRAPH_SHORTCUT_KEYS.has(event.key.toLowerCase())) {
+    event.stopPropagation()
+  }
 }
 
 function EmptyBox({ children }: { children: React.ReactNode }) {
@@ -43,6 +67,24 @@ function EmptyBox({ children }: { children: React.ReactNode }) {
     >
       {children}
     </div>
+  )
+}
+
+/** The note under a collapsed card whose step names columns that are not in the data there. */
+function UnknownColumnsNote({ names }: { names: string[] }) {
+  return (
+    <p role="status" className="m-0 flex items-start gap-1 text-[11px] leading-snug" style={{ color: "var(--warning)" }}>
+      <AlertTriangle size={11} aria-hidden="true" className="mt-0.5 shrink-0" />
+      <span>
+        Not in the data at this step:{" "}
+        {names.map((name, index) => (
+          <span key={name}>
+            {index > 0 && ", "}
+            <code className="font-mono">{name}</code>
+          </span>
+        ))}
+      </span>
+    </p>
   )
 }
 
@@ -69,7 +111,7 @@ export default function PolarsStepsEditor({
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   onReplaceConfig?: OnReplaceConfig
-  /** The input chips on display. */
+  /** The input chips on display, each with its columns as the last preview recorded them. */
   inputSources: InputSource[]
   /** The input names the steps may reference (the surface's eligibility, not the chips). */
   inputNames: string[]
@@ -77,16 +119,29 @@ export default function PolarsStepsEditor({
   errorLine?: number | null
   /** The last run's error message for this node; render errors stay quiet until a run has failed. */
   runError?: string | null
+  /** The frame a frame-mode surface starts from, as far as the preview knows it. */
   upstreamColumns?: { name: string; dtype: string }[]
   start: StepStart
 }) {
   const isFrame = start === "frame"
   const steps = useMemo(() => readSteps(config) ?? [], [config])
-  const upstream = useMemo(() => (upstreamColumns ?? []).map((c) => c.name), [upstreamColumns])
   const [openIndex, setOpenIndex] = useState<number | null>(null)
+  // The step whose generated lines are tinted: the card or code line under the pointer or focus.
+  const [pointedStep, setPointedStep] = useState<number | null>(null)
+  // A step just added, whose first field takes focus once its card has rendered.
+  const focusStepId = useRef<string | null>(null)
   // The start card's select and every step card's disclosure button, by schema index.
   const disclosures = useRef(new Map<number, HTMLElement>())
   const addButton = useRef<HTMLButtonElement | null>(null)
+
+  const source: ColumnSource = useMemo(
+    () => ({
+      inputs: Object.fromEntries(inputSources.flatMap((s) => (s.columns?.length ? [[s.name, s.columns]] : []))),
+      frame: isFrame ? (upstreamColumns ?? []) : [],
+    }),
+    [inputSources, isFrame, upstreamColumns],
+  )
+  const columnStates = useMemo(() => columnsAtEachStep(source, steps), [source, steps])
 
   const setSteps = useCallback((next: Step[]) => onUpdate("steps", next), [onUpdate])
 
@@ -95,10 +150,12 @@ export default function PolarsStepsEditor({
   })
   const initialError = useMemo(() => parseStepsError(config._steps_error), [config._steps_error])
   const renderError = rendered.error ?? (rendered.status === "ok" || rendered.status === "empty" ? null : initialError)
-  // A step being built is not an error yet: render problems are reported
-  // only once the pipeline has run and failed on this node.
+  // A step being built is not an error yet: render problems are reported as
+  // errors only once the pipeline has run and failed on this node; until then
+  // they are neutral notes of what a step still needs.
   const showErrors = runError != null || errorLine != null
   const shownError = showErrors ? renderError : null
+  const stale = rendered.status === "error"
 
   const startStep = !isFrame && steps[0]?.kind === "source" && stepProblem(steps[0]) === null ? steps[0] : null
   const startInput = startStep?.input ?? ""
@@ -114,8 +171,8 @@ export default function PolarsStepsEditor({
   }
 
   const setStart = (input: string) => {
-    const source: Step = { id: startStep?.id ?? newStepId(), kind: "source", input }
-    setSteps(steps[0]?.kind === "source" ? [source, ...steps.slice(1)] : [source, ...steps])
+    const sourceStep: Step = { id: startStep?.id ?? newStepId(), kind: "source", input }
+    setSteps(steps[0]?.kind === "source" ? [sourceStep, ...steps.slice(1)] : [sourceStep, ...steps])
     if (steps.length > 0 && steps[0]?.kind !== "source") {
       setOpenIndex((current) => current === null ? null : current + 1)
     }
@@ -130,15 +187,27 @@ export default function PolarsStepsEditor({
     }
   }, [isFrame, steps.length, effectiveStart, setSteps])
 
+  // A new card's first field takes focus once the card has rendered open.
+  useEffect(() => {
+    const id = focusStepId.current
+    if (id === null) return
+    const index = steps.findIndex((s) => s.id === id)
+    if (index < 0) return
+    focusStepId.current = null
+    ;(document.getElementById(`${id}-first`) ?? disclosures.current.get(index))?.focus()
+  })
+
   const addStep = (kind: Exclude<StepKind, "source">) => {
     if (!canAdd) return
     const base = isFrame || steps[0]?.kind === "source"
       ? steps
       : [{ id: newStepId(), kind: "source", input: effectiveStart } as Step, ...steps]
     const step = createStep(kind, newStepId())
-    if (step.kind === "join" && inputNames.length > 0) step.input = inputNames.find((name) => name !== effectiveStart) ?? effectiveStart
+    // With one input there is nothing to join; the card says to connect one.
+    if (step.kind === "join") step.input = inputNames.find((name) => name !== effectiveStart) ?? ""
     setSteps([...base, step])
     setOpenIndex(base.length)
+    focusStepId.current = step.id
   }
 
   const updateStep = (index: number, next: Step) => setSteps(steps.map((s, i) => (i === index ? next : s)))
@@ -146,6 +215,7 @@ export default function PolarsStepsEditor({
     const next = steps.filter((_, i) => i !== index)
     setSteps(next)
     setOpenIndex((current) => (current === index ? null : current !== null && current > index ? current - 1 : current))
+    setPointedStep(null)
     const nextIndex = index < next.length ? index : next.length > firstMovable ? next.length - 1 : null
     requestAnimationFrame(() => focusDisclosure(nextIndex))
   }
@@ -156,6 +226,7 @@ export default function PolarsStepsEditor({
     ;[next[index], next[target]] = [next[target], next[index]]
     setSteps(next)
     setOpenIndex((current) => (current === index ? target : current === target ? index : current))
+    setPointedStep(null)
   }
 
   // Drag a card by its header and drop it on another card to put it there.
@@ -224,18 +295,45 @@ export default function PolarsStepsEditor({
   const runtimeErrorLineFor = (index: number): number | null => {
     const range = currentStepLines[index]
     if (errorLine == null || range === undefined) return null
-    const [start, end] = range
-    return errorLine >= start && errorLine <= end ? errorLine - start + 1 : null
+    const [first, last] = range
+    return errorLine >= first && errorLine <= last ? errorLine - first + 1 : null
   }
+  const runMessage = typeof runError === "string" && runError.trim() ? runError.trim().split("\n")[0] : "Failed when the pipeline ran"
   const badgeFor = (index: number): StepBadge | null => {
     if (shownError?.stepIndex === index) return { tone: "danger", text: shownError.message }
-    if (runtimeErrorLineFor(index) != null) return { tone: "warning", text: "Failed when the pipeline ran" }
+    if (runtimeErrorLineFor(index) != null) return { tone: "warning", text: runMessage }
     return null
   }
+  // A run that failed on a step's lines names that step in the code panel, with Go to error.
+  const runtimeStep = errorLine == null ? -1 : currentStepLines.findIndex(([first, last]) => errorLine >= first && errorLine <= last)
+  const panelError = shownError ?? (runtimeStep >= 0 ? { stepIndex: runtimeStep, message: runMessage } : null)
+  /**
+   * What the step the render names still needs, while no run has failed: in
+   * plain words for the common half-built states ("Needs a formula"), else the
+   * renderer's own message.
+   */
+  const needFor = (index: number): string | null => {
+    if (showErrors || renderError?.stepIndex !== index) return null
+    const part = stepProblem(steps[index]) === null ? unfinishedPart(steps[index]) : null
+    return part ? `Needs ${part}.` : `Needs: ${renderError.message}`
+  }
+  const note = !showErrors && stale && renderError
+    ? renderError.stepIndex !== null && stepProblem(steps[renderError.stepIndex]) === null && unfinishedPart(steps[renderError.stepIndex])
+      ? { stepIndex: renderError.stepIndex, message: `it needs ${unfinishedPart(steps[renderError.stepIndex])}.` }
+      : renderError
+    : null
 
   const goToError = (index: number) => {
     const opens = !isFrame && index === 0 ? null : index
     setOpenIndex(opens)
+    requestAnimationFrame(() => focusDisclosure(index))
+  }
+  const openFromCode = (index: number) => {
+    if (!isFrame && index === 0) {
+      focusDisclosure(0)
+      return
+    }
+    setOpenIndex(index)
     requestAnimationFrame(() => focusDisclosure(index))
   }
 
@@ -258,10 +356,10 @@ export default function PolarsStepsEditor({
   )
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-y-auto px-3 py-2 gap-2" data-testid="polars-steps-editor">
+    <div className="flex-1 flex flex-col min-h-0 overflow-y-auto px-3 py-2 gap-2" data-testid="polars-steps-editor" onKeyDown={keepGraphKeysInEditor}>
       <InputSourcesBar inputSources={inputSources} onDeleteInput={onDeleteInput} />
 
-      <div className="text-[11px] font-bold uppercase tracking-[0.08em] shrink-0" style={{ color: "var(--text-secondary)" }}>
+      <div className="text-[11px] font-bold uppercase tracking-[0.08em] shrink-0" style={{ color: "var(--text-muted)" }}>
         Steps
       </div>
 
@@ -275,8 +373,8 @@ export default function PolarsStepsEditor({
           {/* In frame mode df is the node's own frame, so there is nothing to choose and no start card. */}
           {!isFrame && (
             <div
-              className="rounded-lg px-3 py-2 flex flex-wrap items-center gap-2"
-              style={{ background: "var(--bg-input)", border: "1px solid var(--border)", borderLeft: `3px dashed ${NODE_GROUP_COLORS.transform}` }}
+              className="rounded-lg pl-3 pr-2 py-2 flex flex-wrap items-center gap-2"
+              style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", borderLeft: `3px dashed ${NODE_GROUP_COLORS.transform}` }}
               role="group"
               aria-label="Start from"
             >
@@ -347,23 +445,42 @@ export default function PolarsStepsEditor({
                     </div>
                   )
                 }
+                const before = columnStates[index]
+                const unknown = open ? [] : unknownColumnsOf(step, before, source)
+                const need = needFor(index)
+                const notes = unknown.length > 0 || need ? (
+                  <>
+                    {unknown.length > 0 && <UnknownColumnsNote names={unknown} />}
+                    {need && (
+                      <p className="m-0 text-[11px] leading-snug" style={{ color: "var(--text-muted)" }}>
+                        {need}
+                      </p>
+                    )}
+                  </>
+                ) : undefined
                 return (
                   <div key={key} role="listitem">
                     <StepCard
                       label={kindLabel(step.kind)}
+                      icon={STEP_ICONS[step.kind]}
                       number={displayNumber}
-                      summary={summarizeStep(step)}
+                      summary={summaryParts(step)}
+                      change={columnChange(step, before, columnStates[index + 1])}
+                      notes={notes}
                       open={open}
                       onToggle={() => setOpenIndex(open ? null : index)}
                       onEscape={() => {
                         setOpenIndex(null)
                         focusDisclosure(index)
                       }}
+                      movable
                       onMoveUp={index > firstMovable ? () => move(index, -1) : undefined}
                       onMoveDown={index < steps.length - 1 ? () => move(index, 1) : undefined}
                       onDelete={() => deleteStep(index)}
                       drag={dragFor(index)}
                       badge={badgeFor(index)}
+                      highlighted={pointedStep === index}
+                      onHoverChange={(hovering) => setPointedStep(hovering ? index : null)}
                       disclosureRef={(el) => {
                         if (el) disclosures.current.set(index, el)
                         else disclosures.current.delete(index)
@@ -373,7 +490,9 @@ export default function PolarsStepsEditor({
                         step={step}
                         onChange={(next) => updateStep(index, next)}
                         ctx={{
-                          columns: columnsBeforeStep(upstream, steps, index),
+                          columns: columnNames(before),
+                          schema: schemaFor(before),
+                          inputColumns: source.inputs,
                           variables: variablesBefore(steps, index),
                           inputNames,
                           firstFieldId: `${step.id}-first`,
@@ -393,9 +512,15 @@ export default function PolarsStepsEditor({
             start={start}
             code={rendered.code}
             pending={rendered.status === "pending"}
-            error={shownError}
+            stale={stale}
+            note={note}
+            error={panelError}
             errorLine={currentStepLines.length > 0 ? errorLine : null}
             onGoToError={goToError}
+            stepLines={currentStepLines}
+            activeStep={pointedStep}
+            onPointStep={setPointedStep}
+            onOpenStep={openFromCode}
             switchEnabled={switchEnabled}
             switchDisabledReason={switchDisabledReason}
             onSwitchToCode={switchToCode}

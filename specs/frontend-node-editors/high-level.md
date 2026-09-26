@@ -283,44 +283,107 @@ its steps or code). A new Transform node starts in step mode: its default config
 carries an empty `steps` list, and the editor renders the step builder instead of the code
 box whenever `config.steps` is a list. The builder shows a fixed start-from input selector,
 numbered step cards ("Start from", then Step 1 onwards, the same numbering every message
-uses) that read as plain-English summaries while collapsed and open one at a time through a
-keyboard-operable disclosure (a new step opens itself; Escape collapses; deleting a card
-moves focus to the next disclosure or to `Add step`), each with delete, move up, and move
-down, and each draggable by its header (a hand cursor; dropping on another card puts the
-step there and the open card follows its step), an `Add step` button under the last card (under the start card while there are no
-steps) that opens, in place, a chooser of every step kind by name, sectioned as rows,
-columns, combine and values, with what the kind does as its tooltip (arrow keys move between kinds, Escape closes and returns focus), covering filter, derived
+uses) that open one at a time through a keyboard-operable disclosure (a new step opens
+itself and its first field takes focus; Escape collapses; deleting a card moves focus to
+the next disclosure or to `Add step`). A card's header, laid out like the trace panel's
+step card, carries the chevron, the step number in muted monospace, the kind's icon and
+its label, with the collapsed summary under the label in the same column: column names as
+chips, values in their code colours, operator words muted, an unset part as a dashed
+placeholder naming what is missing ("column", "name"), a step whose main column is not
+chosen yet as a prompt ("Choose a column…"), and, at the right, the change the step makes
+to the columns (`+gross`, `−3 columns`, `→ 2 columns` after a reshape) where the columns
+before and after it are known exactly. Every card keeps the same three action slots (move
+up, move down, delete; a move that does not apply is disabled) that show fully on hover or
+focus; Alt+Up and Alt+Down on a card's header move it and keep its focus; and each card is
+draggable by its header (a hand cursor and a grip; dropping on another card puts the step
+there and the open card follows its step). Keys the canvas acts on stop at the step editor
+whatever control has focus: Delete and Backspace outside a text box, and the graph's
+Ctrl+C, Ctrl+V, Ctrl+A and Ctrl+G; save, undo and redo, node search, fit view, help and
+Escape (once no open card has handled it) stay global. An `Add step` button under the last
+card (under the start card while there are no steps) opens, in place, a chooser of every
+step kind by icon and name, sectioned as rows, columns, combine, values and code, with a
+search box that takes focus and filters the kinds by label, description or Polars call
+(never SAS or Excel names; Enter adds the first match), a line at its foot giving the
+focused or hovered kind's description and Polars call, arrow keys that move between the
+search box and the kinds, and Escape that closes and returns focus; choosing a kind moves
+focus into the new card. The chooser covers filter, derived
 column, conditional column, window aggregate, select, drop, rename, cast, sort, unique,
-group by, join, concat, pivot, unpivot, fill null, limit, and variable, and per-step forms whose column
-pickers offer upstream columns (for an edge from a multi-output producer such as a submodel,
-the columns of that output handle as recorded by the last preview) plus columns derived by
-earlier steps while accepting free text: every column box lists the names starting with
-what is typed beneath it (all of them while the box is empty), Up/Down move through them,
-Tab or a click completes the name, Escape closes the list, and Enter or leaving the box
-keeps what was typed; the box keeps keyboard focus through a completion or a commit. A window expression offers the plain aggregates plus row number, running total,
+group by, join, concat, pivot, unpivot, fill null, limit, and variable. Short forms read as
+sentences (`Keep the first [100] rows`, `Sort by [column] [ascending]`, `Rename [column]
+to [name]`); other fields carry short sentence-case labels with any note beside them;
+options read in plain words with the Polars name where it helps (fill strategies such as
+"the previous row's value (forward)", the common cast types first with their meaning, such
+as "Int64 (whole number)"); secondary actions are quiet text buttons ("+ Add condition");
+and options the simple case never needs sit behind a "More options" disclosure that opens
+by itself when the saved step uses one (the type-wide selection on select and drop, the
+per-aggregation row filters, and a join's key check, row order and suffix, where "used"
+means differing from a new step's value, so a suffix other than `_right`). Column pickers
+offer the start input's columns (for an edge from a multi-output producer such as a
+submodel, the columns of that output handle as recorded by the last preview; in `frame`
+mode, the surface's upstream columns) plus columns derived by earlier steps, never another
+input's columns before a join brings them in, while accepting free text: every column box
+lists the names starting with what is typed beneath it (all of them while the box is empty,
+none active), typing makes the first match active (clearing the box again leaves none
+active), Up/Down move through them, Tab, Enter or
+a click takes the active name, text that already is a name is shown ticked as matched and
+kept, Escape closes the list, and with nothing active Tab moves on while Enter or leaving
+the box keeps what was typed; the box keeps keyboard focus through a completion or a
+commit. The active entry is tinted with an accent bar and the typed part is bold, and each
+name shows its type from the preview (or `new` for a column an earlier step made). A
+column's type follows the start input's own columns: a rename keeps it, a cast sets it, a
+group-by key keeps it, and a step that creates or replaces a column leaves that column
+untyped. Where the columns at a step are complete (the start input's columns have loaded
+and no Free code, Append inputs, type-wide aggregation or join whose input's columns are
+unknown comes earlier), a name that is not among them is drawn with a dashed amber border
+and a note ("`quot_id` isn't in the data at this step. Did you mean `quote_id`?") whose
+button replaces it with the closest name; a collapsed card lists such names too, so a
+reorder marks the affected card at once. A window expression offers the plain aggregates plus row number, running total,
 previous value, rank, dense rank and forward/backward fill, an optional in-group order
 (one direction, with a hint that ordering needs a group column), a rank direction, and a
 quantile; a text-join expression lists two or more parts and a separator; a group-by
-aggregation takes an optional quantile and an optional row filter and an empty key list
-summarises the whole frame; a join offers an optional key-cardinality check on inner, left
-and full joins (cleared when the kind changes to any other) and an output row order;
-unique can drop every duplicate. The forms accept the renderer's own shorthand for a
+aggregation reads as `[name] = [function] of [column]`, wrapping after the `=` when narrow,
+takes an optional quantile and an optional row filter, and an empty key list summarises the
+whole frame. An aggregation names itself `<column>_<function>` (`row_count` for a row count)
+while its name is empty or still the name suggested for its previous function and column,
+never replacing a typed name; a new aggregation starts from the previous row's column; the
+function list says what the two counts do ("count of values (skips missing values)", "row
+count (every row, missing values included)"). A join reads as `[kind] join [input]`, each
+kind giving its Polars name and the rows it keeps ("left: every row here, with matches
+added"); its keys are pairs, `[column here] = [column there]`, the right key completing
+from the joined input's own columns and filled in when a left key has the same name there;
+after the join the joined input's columns are suggested as Polars names them (inner and
+left joins drop the right keys, a right join drops this frame's keys, full and cross joins
+keep both, semi and anti joins add nothing, and any other clashing name takes the suffix);
+with one input connected a new join's input starts unset with the note "Connect the table
+to join on the canvas"; and it offers an optional key-cardinality check on inner, left
+and full joins (cleared when the kind changes to any other) and an output row order.
+Unique can drop every duplicate. The forms accept the renderer's own shorthand for a
 persisted step (a null literal without a value, a columnless window aggregate without
 a column, an order key without a direction, a text join without a separator) and
 canonicalise it before editing. A value in a
 condition or expression is a typed literal, a column, or a variable
-defined by an earlier variable step, and each field offers only the sources and literal
+defined by an earlier variable step, edited as one control: a marker at its start shows
+what the value is (number, text, date, true/false, missing, column, variable or
+expression) over a native select of the kinds allowed there, left out when only one kind
+is, and each field offers only the sources and literal
 types the step schema accepts there (string operators take text values only; a variable
 holds a number, text or true/false; a `null` literal is offered for expression operands
 but never in a membership list or a variable; function arguments are labelled and typed
-per function). "Computed as" offers Value first (a new column starts as a plain value), then
-Formula, Function, If-then, Window and Join text. A formula is edited as text
+per function). A fresh condition's value follows the chosen column's type (text for a
+text column, a date for a date column, true/false for a boolean column, and the number 0
+otherwise or when the type is unknown); a value already edited, or a text operator's
+value, is left alone. Conditions read under a lead that says what they do: a filter's as
+"Keep rows where [all] of these are true", an if-then's and an aggregation row filter's as
+"When [all] of these are true", the match select sitting in the sentence. "Computed as"
+offers Value, Formula, Function, If-then, Window and Join text; a new column starts in
+Formula, its name field taking focus first. A formula is edited as text
 (`(premium + tax) * 1.05 / 12`, `round(premium / sum_insured * 1000, 3)`: columns by name or
 in backticks, earlier variables by name, quoted text, `true`/`false`/`null`,
 `date('YYYY-MM-DD')`, Python operator precedence with `**` right-associative (power
 binds before a leading sign, while negative exponents are accepted: `-2 ** 2` is
 `-(2 ** 2)`, `(-2) ** 2` is distinct, and `2 ** -2` is valid), brackets,
-and the catalogue's functions with plain-value arguments); the text is parsed into the
+and the catalogue's functions with plain-value arguments, their names read in any case and
+kept in the catalogue's spelling); the text is parsed into the
 nested expression schema on commit and kept on the expression as typed, so brackets and
 spacing survive collapsing and reopening the card and the card summary shows the same
 text (text that no longer describes the expression is replaced by a fresh rendering);
@@ -332,13 +395,23 @@ the structured editor. Removing or reordering a variable definition must not
 turn its remaining references into columns when a formula is edited. Non-finite
 numeric literals are rejected before a formula
 can replace the last valid expression. A new formula box starts empty
-(a placeholder tree keeps the step renderable until something is typed) with an example
-formula as a tooltip on the box and on an info icon beside its label; as a name is typed the
-columns and earlier variables starting with it are listed under the box (Up/Down move, Tab
-or a click completes the name, backticked when it is not an identifier, Escape closes; while
-no upstream column names are known a note says to run the step above); text that cannot be read
-keeps the last good expression and explains why in a muted note (the note clears as soon as the box
-holds the committed formula again, and the box keeps focus after a commit), and an expression text cannot express (one
+(a placeholder tree keeps the step renderable until something is typed) showing an example
+formula as its placeholder, as a tooltip on the box and on an info icon beside its label, and
+grows onto more lines as the formula lengthens (Enter still commits); as a name is typed the
+columns (with their types) and earlier variables starting with it are listed under the box,
+then the catalogue's functions, marked `ƒ` with what they do (Up/Down move, Tab, Enter or a
+click takes the active entry, a column backticked when it is not an identifier, a function
+arriving as `name()` with the caret between the brackets; a word that already is a name is
+kept; Escape closes; while no upstream column names are known a note says to run the step
+above); with the caret inside a catalogue call, a line under the box names its arguments
+(`round(value, decimal places)`) with the current one bold; text that cannot be read
+keeps the last good expression and explains why in an amber note, marking under the box
+the character where reading stopped (the note clears as soon as the box
+holds the committed formula again, and the box keeps focus after a commit); a committed
+formula naming a column the step does not have (where its columns are complete) says so
+with the closest name offered, the offer renaming only that column's references (never
+matching quoted text, a function, a variable or a function's plain-value argument such
+as a type); and an expression text cannot express (one
 holding a window, conditional or text join) is edited in the structured
 left/operator/right form instead. An operand field also offers an "Expression" source that
 opens a nested editor (the same "Computed as" select and expression form, indented under
@@ -347,27 +420,51 @@ never builds a step it could not save. Formula commits obey the same cap, includ
 their enclosing expression depth: an over-depth draft stays editable with an inline
 error and leaves the last valid expression unchanged. Summaries print a value or
 formula in formula notation
-(quoted text, `date('...')`, brackets only where re-parsing needs them, `?` for a name not yet
-filled in) and describe windows, conditionals and text joins in words; a group-by
+(quoted text, `date('...')`, brackets only where re-parsing needs them, a placeholder naming
+what is missing for a part not yet filled in) and describe windows, conditionals and text
+joins in words; a group-by
 aggregation's row filter offers no nested expressions. The Combine group also offers
 "Pivot to columns" (index chips, the spread column, aggregate and values column, and
 one row per output column pairing a typed value with a name the value suggests, all
 rows sharing the first row's type) and "Unpivot to rows" (stacked columns, index
 chips that exclude them, name and value column fields, and a note that row order is
 not guaranteed). Select and drop take column types beside named columns, and an
-aggregation row can target "every column of a type" with a suffix instead of a name
-(row count and row filters are withheld there). Column suggestions treat a dtype
+aggregation row can target every column of a type through an `every <type> column` entry
+after the names in its column box, which turns the row into `*<suffix> = <function> of
+every <type> column` with the suffix `_<function>` to start (row count and row filters are
+withheld there; its "one column…" choice turns it back). Column suggestions treat a dtype
 selection as unresolved: a typed select keeps every upstream column suggested, a
 suffix is never suggested as a column, a pivot suggests its index and output names,
 and an unpivot its index plus the two new columns. Membership lists add every value
 type through an explicit Add action, so a select's default (true, today's date) can
 be added like any other. A locked generated-code panel shows the code the render endpoint returns for
-the current steps and carries the confirmed one-way `Switch to code` action. A step being
-built is not an error yet: while no run has failed on the node, a render problem is not
-shown at all (the switch to code simply stays disabled). Once the node's last run has failed (the panel receives the
-run's error message, or its error line), the panel names the failing step without opening
-it or collapsing the card being edited (a "Go to error" action opens it), badges that step,
-and tints the failing and the last execution-error line. Renders are tagged with
+the current steps, highlighted with the same Python parser and colours as code mode, and
+carries the confirmed one-way `Switch to code` action. Its lines are linked to their steps:
+pointing at or focusing a card tints that step's line range (every line of a step that
+spans several), pointing at a line highlights its card, and clicking a line opens that
+card (a line of the start step focuses the start selector). The code fades, with a
+"rendering…" note, only when a render is still pending after 400 ms, so typing does not
+flicker it. A step being built is not an error yet: while no run has failed on the node, a
+render problem is shown as a neutral note, never in the error colour, and the switch to
+code stays disabled. While the latest render fails, the panel keeps the last good code
+dimmed and labelled out of date; a failure that names a step reads "Step 3 isn't finished:
+<message>" and that card shows the same need as a muted "Needs: <message>" line, said in
+plain words for the common half-built states (a new column's name or formula, a condition's
+column, an aggregation's name or column, a sort, rename or change-type column, the columns
+to keep or drop, a join's input or keys: "Needs a formula.", "Step 2 isn't finished: it
+needs a formula."), while a
+failure that names no step (a list-level validation message, or a render request that
+could not reach the server) gives its message alone and marks no card. Once the node's last run has failed (the panel receives the
+run's error message, or its error line), the render problem shows as an error instead: the
+panel names the failing step without opening it or collapsing the card being edited (a
+"Go to error" action opens it), badges that step, and tints the failing and the last
+execution-error line. A run that failed on a step's lines names that step the same way,
+its card's badge giving the first line of the run's own error message in the warning
+tone. A Polars transform's lazy-plan failure (a missing column, a type mismatch) also
+arrives with an error line: the run reports the first line of the step whose plan failed,
+so that card is badged even though Polars raised the error after the code ran. A data-only
+error (a strict cast meeting a bad value), a transform with a Free code step, and the steps
+of a frame-mode surface still arrive without a line. Renders are tagged with
 the steps revision they were requested for, a response for an older revision never
 replaces a newer one, and a response after the editor unmounts never writes code
 back to the graph. Column and variable suggestions are computed only for the
@@ -415,7 +512,7 @@ nonblank line of code or a prompt to write code. The render response's inclusive
 line ranges map runtime errors to cards, including steps after multiline
 snippets, and the generated-code panel highlights the runtime error's exact
 line. Validation failures badge the offending card and show an error message;
-their generated code is unavailable. Pending or failed renders do not reuse
+their generated code is shown dimmed as out of date, never as current. Pending or failed renders do not reuse
 stale line ranges to blame a different current step.
 
 Nodes whose config has no `steps` list render the code box exactly as before.

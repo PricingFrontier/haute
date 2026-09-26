@@ -146,6 +146,7 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "frontend-shared",
     "optimiser-validation",
     "pipeline-config",
+    "polars-node-clarity",
     "sandbox-security",
     "server-api",
     "submodels",

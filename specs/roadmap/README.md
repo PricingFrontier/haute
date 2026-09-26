@@ -24,6 +24,7 @@ or maintenance issue; `P3` opportunistic work.
 | [Frontend shared](frontend-shared.md) | Results store | `FSH-R03` |
 | [Optimiser validation](optimiser-validation.md) | Deferred follow-up to the optimiser result workspace: an interruptible frontier-point apply in price_contour, plus the open robustness, CSV and inputs questions | — |
 | [Pipeline config](pipeline-config.md) | Project context, typed configs, editor state, node specification | `PCFG-R04` |
+| [Polars node clarity](polars-node-clarity.md) | Step card visual baseline, formula comparisons (deferred) | `PNC-13` |
 | [Sandbox security](sandbox-security.md) | Every containment comparison through the one check | `SBX-R01` |
 | [Server API](server-api.md) | Domain errors, generated browser contract | `API-R02` |
 | [Submodels](submodels.md) | One reuse mechanism | `SUB-R01` |

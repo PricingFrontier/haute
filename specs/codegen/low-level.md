@@ -267,7 +267,8 @@ assignment. User code must start from the input it means by name
 
 A stepped transform (`config["steps"]` is a list) has its body rendered by
 `_polars_steps.render_polars_steps` against the logical parameter names, one
-statement per line with a leading `df = <input>`, and its decorator carries
+statement per step (over several lines when it is longer than 88 columns) with a
+leading `df = <input>`, and its decorator carries
 `config="config/polars/<func>.json"` so the parser reloads the steps. A render
 failure emits the incomplete placeholder body (the save warns which step is
 incomplete); `steps` together with `inputMapping` on an original is a `ConfigError`.

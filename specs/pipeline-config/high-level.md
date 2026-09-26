@@ -240,6 +240,21 @@ carries a `steps` list, and the stale-file sweep removes the file when a node st
 carrying one. One renderer (`src/haute/_polars_steps.py`) validates the closed step
 schema and renders the steps into the function body, recording each step's inclusive
 line range and raising a step-indexed error for any malformed or incomplete step.
+Each structured step renders one statement in common Python style, as ruff and the
+Polars documentation write it: brackets only where operator precedence needs them,
+double quotes unless single ones need fewer escapes, group-by keys, aggregations and
+selected, dropped or filled columns passed as separate arguments rather than lists,
+and a sort or unique that uses Polars' defaults leaves them unsaid. A statement longer
+than 88 columns is laid out over several lines the way `ruff format` lays it out,
+except that a broken call always puts one argument per line with a trailing comma; a
+list that still does not fit is broken the same way. The body reads like a formatted
+pipeline file, and `ruff format` at its default line length and quote style leaves it
+unchanged; free-code steps keep their authored layout. A saved body is compared with
+the rendering of its steps as a program, not as text (the same syntax tree and the
+same comments), so a body saved in an earlier layout, quoting or call spelling of the
+same steps (lists where the renderer now passes separate arguments, Polars' sort and
+unique defaults spelled out), or reformatted by `ruff format`, keeps its steps, while
+any other edit discards them.
 Step-id uniqueness checks for valid lists run in linear time in the number of steps.
 The vocabulary covers filters
 (comparison, null, membership, text and regex operators), derived columns (formulas,

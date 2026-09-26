@@ -25,27 +25,32 @@ import type {
 } from "./types"
 import type { StepStart } from "../../../utils/polarsStepInputs"
 
-export type StepKindInfo = { kind: Exclude<StepKind, "source">; label: string; description: string }
+/**
+ * A kind the `Add step` menu offers: its plain-English label, what it does,
+ * and the Polars call it renders to (shown beside it and matched by the
+ * menu's search), or null when it renders to no Polars call.
+ */
+export type StepKindInfo = { kind: Exclude<StepKind, "source">; label: string; description: string; method: string | null }
 
 /** Kinds offered by `Add step`, in menu order. `source` is the fixed first step. */
 export const STEP_CATALOGUE: StepKindInfo[] = [
-  { kind: "filter", label: "Filter rows", description: "Keep rows that match conditions" },
-  { kind: "with_column", label: "Add column", description: "Compute a new or replaced column" },
-  { kind: "select", label: "Keep columns", description: "Keep only the listed columns" },
-  { kind: "drop", label: "Drop columns", description: "Remove the listed columns" },
-  { kind: "rename", label: "Rename columns", description: "Give columns new names" },
-  { kind: "cast", label: "Change types", description: "Cast columns to another data type" },
-  { kind: "sort", label: "Sort rows", description: "Order rows by one or more columns" },
-  { kind: "unique", label: "Remove duplicates", description: "Keep one row per key" },
-  { kind: "group_by", label: "Group and aggregate", description: "Summarise rows per group" },
-  { kind: "join", label: "Join another input", description: "Combine columns from another input" },
-  { kind: "concat", label: "Append inputs", description: "Stack rows from other inputs" },
-  { kind: "fill_null", label: "Fill missing values", description: "Replace nulls with a value or strategy" },
-  { kind: "limit", label: "Limit rows", description: "Keep the first N rows" },
-  { kind: "variable", label: "Define variable", description: "Name a value for later steps" },
-  { kind: "pivot", label: "Pivot to columns", description: "One column per value of a category" },
-  { kind: "unpivot", label: "Unpivot to rows", description: "Stack several columns into name/value rows" },
-  { kind: "free_code", label: "Free code", description: "Run Python statements against the current frame" },
+  { kind: "filter", label: "Filter rows", description: "Keep rows that match conditions", method: "filter" },
+  { kind: "with_column", label: "Add column", description: "Compute a new or replaced column", method: "with_columns" },
+  { kind: "select", label: "Keep columns", description: "Keep only the listed columns", method: "select" },
+  { kind: "drop", label: "Drop columns", description: "Remove the listed columns", method: "drop" },
+  { kind: "rename", label: "Rename columns", description: "Give columns new names", method: "rename" },
+  { kind: "cast", label: "Change types", description: "Cast columns to another data type", method: "cast" },
+  { kind: "sort", label: "Sort rows", description: "Order rows by one or more columns", method: "sort" },
+  { kind: "unique", label: "Remove duplicates", description: "Keep one row per key", method: "unique" },
+  { kind: "group_by", label: "Group and aggregate", description: "Summarise rows per group", method: "group_by().agg()" },
+  { kind: "join", label: "Join another input", description: "Combine columns from another input", method: "join" },
+  { kind: "concat", label: "Append inputs", description: "Stack rows from other inputs", method: "pl.concat" },
+  { kind: "fill_null", label: "Fill missing values", description: "Replace nulls with a value or strategy", method: "fill_null" },
+  { kind: "limit", label: "Limit rows", description: "Keep the first N rows", method: "head" },
+  { kind: "variable", label: "Define variable", description: "Name a value for later steps", method: null },
+  { kind: "pivot", label: "Pivot to columns", description: "One column per value of a category", method: "pivot" },
+  { kind: "unpivot", label: "Unpivot to rows", description: "Stack several columns into name/value rows", method: "unpivot" },
+  { kind: "free_code", label: "Free code", description: "Run Python statements against the current frame", method: null },
 ]
 
 export const CONDITION_OPERATORS: Array<{ value: ConditionOperator; label: string; takes: "value" | "none" | "values" }> = [
@@ -75,7 +80,8 @@ export const BINARY_OPERATORS: Array<{ value: BinaryOperator; label: string }> =
   { value: "**", label: "to the power of" },
 ]
 
-export const AGGREGATIONS: Array<{ value: Aggregation; label: string }> = [
+/** Plain aggregates; `hint` says what a label alone does not (shown in the function list). */
+export const AGGREGATIONS: Array<{ value: Aggregation; label: string; hint?: string }> = [
   { value: "sum", label: "sum" },
   { value: "mean", label: "mean" },
   { value: "min", label: "minimum" },
@@ -84,12 +90,14 @@ export const AGGREGATIONS: Array<{ value: Aggregation; label: string }> = [
   { value: "quantile", label: "quantile" },
   { value: "std", label: "standard deviation" },
   { value: "var", label: "variance" },
-  { value: "count", label: "count (non-null)" },
+  { value: "count", label: "count of values", hint: "skips missing values" },
   { value: "n_unique", label: "distinct count" },
   { value: "first", label: "first" },
   { value: "last", label: "last" },
-  { value: "len", label: "row count" },
+  { value: "len", label: "row count", hint: "every row, missing values included" },
 ]
+/** Aggregates as select options, each hint after its label. */
+export const AGGREGATION_OPTIONS = AGGREGATIONS.map((a) => ({ value: a.value, label: a.hint ? `${a.label} (${a.hint})` : a.label }))
 
 /** Window-only aggregates, offered after the plain ones in a window expression. */
 export const WINDOW_ONLY_AGGREGATIONS: Array<{ value: WindowOnlyAggregation; label: string }> = [
@@ -123,9 +131,34 @@ export const CAST_DTYPES: CastDtype[] = [
   "Float32", "Float64",
   "String", "Boolean", "Date", "Datetime", "Categorical",
 ]
-/** The cast types as select options, labelled by name. */
-export const DTYPE_OPTIONS: Array<{ value: CastDtype; label: string }> = CAST_DTYPES.map((dtype) => ({ value: dtype, label: dtype }))
+/** What each common cast type holds, in plain words. */
+const DTYPE_WORDS: Partial<Record<CastDtype, string>> = {
+  Int64: "whole number",
+  Float64: "decimal number",
+  String: "text",
+  Boolean: "true/false",
+  Date: "date",
+  Datetime: "date and time",
+  Categorical: "category",
+}
+/** The common cast types first, each with its plain meaning, then the other widths. */
+const COMMON_DTYPES: CastDtype[] = ["Int64", "Float64", "String", "Boolean", "Date", "Datetime", "Categorical"]
+/** The cast types as select options: the common types first, then the other widths. */
+export const DTYPE_OPTIONS: Array<{ value: CastDtype; label: string }> = [
+  ...COMMON_DTYPES.map((dtype) => ({ value: dtype, label: DTYPE_WORDS[dtype] ? `${dtype} (${DTYPE_WORDS[dtype]})` : dtype })),
+  ...CAST_DTYPES.filter((dtype) => !COMMON_DTYPES.includes(dtype)).map((dtype) => ({ value: dtype, label: dtype })),
+]
 export const JOIN_HOW: JoinHow[] = ["inner", "left", "right", "full", "semi", "anti", "cross"]
+/** Each join kind by its Polars name, with the rows it keeps. */
+export const JOIN_HOW_OPTIONS: Array<{ value: JoinHow; label: string }> = [
+  { value: "inner", label: "inner: only rows that match" },
+  { value: "left", label: "left: every row here, with matches added" },
+  { value: "right", label: "right: every row of the other input" },
+  { value: "full", label: "full: every row of both" },
+  { value: "semi", label: "semi: rows here that have a match" },
+  { value: "anti", label: "anti: rows here with no match" },
+  { value: "cross", label: "cross: every combination of rows" },
+]
 /** Join kinds Polars can validate; the renderer refuses `validate` on the others. */
 export const JOIN_VALIDATED_HOW: ReadonlySet<JoinHow> = new Set<JoinHow>(["inner", "left", "full"])
 export const JOIN_VALIDATE: Array<{ value: JoinValidate; label: string }> = [
@@ -142,6 +175,16 @@ export const JOIN_MAINTAIN_ORDER: Array<{ value: JoinMaintainOrder; label: strin
   { value: "right_left", label: "right, then left" },
 ]
 export const FILL_STRATEGIES: FillStrategy[] = ["forward", "backward", "min", "max", "mean", "zero", "one"]
+/** Fill strategies in plain words, each with its Polars name where it has one. */
+export const FILL_STRATEGY_OPTIONS: Array<{ value: FillStrategy; label: string }> = [
+  { value: "forward", label: "the previous row's value (forward)" },
+  { value: "backward", label: "the next row's value (backward)" },
+  { value: "min", label: "the column's minimum (min)" },
+  { value: "max", label: "the column's maximum (max)" },
+  { value: "mean", label: "the column's mean (mean)" },
+  { value: "zero", label: "zero" },
+  { value: "one", label: "one" },
+]
 export const LITERAL_TYPES: Array<{ value: LiteralType; label: string }> = [
   { value: "number", label: "number" },
   { value: "text", label: "text" },
@@ -246,13 +289,19 @@ export function defaultExpr(type: Expr["type"], column = ""): Expr {
   }
 }
 
+/** The name an aggregation takes from its function and column, until one is typed. */
+export function suggestedAggregationName(entry: { column: string; agg: Aggregation }): string {
+  if (entry.agg === "len") return "row_count"
+  return entry.column ? `${entry.column}_${entry.agg}` : ""
+}
+
 /** Build a fresh step of `kind` (never `source`, which the editor seeds itself). */
 export function createStep(kind: Exclude<StepKind, "source">, id: string): Step {
   switch (kind) {
     case "filter":
       return { id, kind, match: "all", conditions: [defaultCondition()] }
     case "with_column":
-      return { id, kind, name: "", expr: defaultExpr("operand") }
+      return { id, kind, name: "", expr: defaultExpr("binary") }
     case "select":
       return { id, kind, columns: [] }
     case "drop":

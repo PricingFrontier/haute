@@ -494,7 +494,15 @@ the original names an instance aliases) and builds the same incomplete function 
 code-less transform builds, carrying the step-indexed message, when validation or
 rendering fails; a stepped original carrying `inputMapping` is rejected. The rendered
 code executes through the same sandboxed path as hand-written code, and execution errors
-keep reporting the failing line so the editor can name the failing step.
+keep reporting the failing line so the editor can name the failing step. A lazy plan's
+error (a missing column, a type mismatch) is raised only when the plan's schema is
+resolved, after the code ran, so it brings no line. When a preview records such a failure
+for an input-mode transform whose steps contain no free code, the executor resolves the
+full plan's schema and, only if that also fails, the schema of each step prefix on the
+input frames the run already built, reading no rows; the first failing prefix names its
+step, the error line is that step's first line, and the message is unchanged. An error
+only data can raise, such as a strict cast meeting a bad value, keeps no line, and a
+successful run does no extra work.
 
 ## Design rationale
 

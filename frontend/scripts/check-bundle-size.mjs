@@ -72,7 +72,11 @@ const indexHtmlPath = path.join(staticDir, "index.html")
 // frontier point contracts (optimiser validators 21.6 -> 30.8 KiB) and the
 // shared ResultsWorkspace chunk (6.1 KiB, ModellingPreview 16.2 -> 14.2 KiB).
 // The complete production bundle is 1,536.4 KiB; 1,547 KiB restores about 10 KiB.
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1547
+// Polars node clarity grows the lazy step editor chunk (SteppedCodePane
+// 23.2 -> 32.9 KiB: column completion and model, the formula box, generated
+// code highlighting and the add-step menu) and the entry by 1.2 KiB. The
+// complete production bundle is 1,547.4 KiB; 1,558 KiB restores about 10 KiB.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1558
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
