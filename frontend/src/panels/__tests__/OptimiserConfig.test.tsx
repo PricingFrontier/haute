@@ -1923,10 +1923,12 @@ describe("OptimiserConfig", () => {
       expect(screen.queryByText("10,000,000")).not.toBeInTheDocument()
     })
 
-    it("shows non-convergence warning when solveResult.converged is false", () => {
+    it("shows non-convergence warning when the solve did not converge", () => {
+      const notConverged = { ...convergedResult.originalResult, converged: false }
       const nonConverged = {
         ...convergedResult,
-        result: { ...convergedResult.result, converged: false },
+        result: notConverged,
+        originalResult: notConverged,
       }
       useNodeResultsStore.setState({ solveResults: { opt_1: nonConverged } })
       renderConfig(makeProps({
@@ -1934,6 +1936,35 @@ describe("OptimiserConfig", () => {
           }))
       expect(screen.getByText(/Solver did not converge/)).toBeInTheDocument()
       expect(screen.getByText(/Did not converge/)).toBeInTheDocument()
+    })
+
+    it("describes the solve, not the frontier point the preview selected", () => {
+      // A frontier solve opens on point 1, whose own bisection converged; the
+      // solve itself ran out of iterations short of its bound.
+      useNodeResultsStore.setState({
+        solveResults: {
+          opt_1: {
+            ...convergedResult,
+            result: makeSolveResult({ ...convergedResult.result, converged: true, iterations: 33 }),
+            originalResult: makeSolveResult({
+              ...convergedResult.originalResult,
+              converged: false,
+              iterations: 20,
+              warning: "Solver did not converge. Consider increasing max_iter or relaxing tolerance.",
+            }),
+            selectedPointIndex: 0,
+          },
+        },
+      })
+      renderConfig(makeProps({
+        config: { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: { loss_ratio: { max: 1.05 } } },
+      }))
+
+      expect(screen.getByText("Solver did not converge")).toBeInTheDocument()
+      expect(screen.getByText("Solver did not converge. Consider increasing max_iter or relaxing tolerance."))
+        .toBeInTheDocument()
+      expect(screen.getByText(/Did not converge in 20 iterations/)).toBeInTheDocument()
+      expect(screen.queryByText(/Converged in 33 iterations/)).not.toBeInTheDocument()
     })
 
     it("shows error when solveError exists in job", () => {

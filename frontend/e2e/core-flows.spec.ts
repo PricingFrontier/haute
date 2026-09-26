@@ -159,6 +159,24 @@ test.describe("core browser flows", () => {
     const modelResultTabs = page.getByRole("tablist", { name: "Model result panes" })
     await expect(modelResultTabs.getByRole("tab", { name: "Summary", exact: true })).toBeVisible()
 
+    // Lift: the double lift chart over the validation rows, with its values.
+    await modelResultTabs.getByRole("tab", { name: "Lift", exact: true }).click()
+    const liftPane = page.getByRole("tabpanel", { name: "Lift" })
+    await expect(liftPane.getByRole("heading", { name: "Lift and discrimination" })).toBeVisible()
+    await expect(liftPane.getByRole("img", { name: "Double lift chart" })).toBeVisible()
+    const liftValues = liftPane.getByRole("table", { name: "Lift values", includeHidden: true })
+    await expect(liftValues).toHaveCount(1)
+    expect(await liftValues.locator("tbody tr").count()).toBeGreaterThan(0)
+
+    // AvE: actual against expected for a feature's groups, alongside exposure.
+    await modelResultTabs.getByRole("tab", { name: "AvE", exact: true }).click()
+    const avePane = page.getByRole("tabpanel", { name: "AvE" })
+    await expect(avePane.getByRole("heading", { name: "Actual vs expected" })).toBeVisible()
+    await expect(avePane.getByRole("img", { name: /^Actual vs expected for / })).toBeVisible()
+    await expect(avePane.getByRole("img", { name: /^Exposure for / })).toBeVisible()
+    await expect(avePane.getByRole("button", { name: /\. Actual: .+\. Expected: .+\. Exposure: / }).first())
+      .toBeVisible()
+
     await page.getByRole("button", { name: /enriched/i }).click()
     await modelNode.click()
 

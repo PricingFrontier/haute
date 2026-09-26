@@ -86,7 +86,9 @@ export default function OptimiserConfig({
   const solveError = solveJob ? solveJob.error : (cachedResult?.error ?? null)
   const solveTerminalStatus = solveJob?.progress ?? cachedResult?.terminalStatus ?? null
   const solveTerminalMetrics = solveTerminalStatus?.execution_metrics ?? null
-  const solveResult: OptimiserSolveResult | null = cachedResult?.error ? null : (cachedResult?.result ?? null)
+  // The Solve pane reports the solve itself: the as-solved result, never the
+  // frontier point the preview happens to show (a frontier solve opens on point 1).
+  const solveResult: OptimiserSolveResult | null = cachedResult?.error ? null : (cachedResult?.originalResult ?? null)
   const solveIterationSummary = solveResult ? formatOptimiserIterationSummary(solveResult) : null
   const setOptimiserPane = useUIStore((s) => s.setOptimiserPane)
 
