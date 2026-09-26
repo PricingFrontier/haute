@@ -367,7 +367,15 @@ Pane ownership:
 - **Data** — the Online/Ratebook mode choice, the Objectives & Constraints input selector with
   its missing/malformed-input alert, the objective ("Column to maximise"), and the Quote ID,
   Scenario Index and Scenario Value column mappings. The objective is chosen here because it
-  is a column of the input selected directly above it.
+  is a column of the input selected directly above it. Last comes **Analysis columns**, with
+  help text saying they are used only to break results down and never reach the solver: an
+  **Analysis input** select listing only the optimiser's connected inputs, whose first option
+  is the Objectives & Constraints input (stored as no `analysis_input`), then a multi-select of
+  that frame's columns from its schema (the quote-id column excluded), capped at twelve with
+  the remaining choices disabled at the cap. Switching the analysis input removes the chosen
+  columns the newly selected frame does not have, once its columns are known; a configured
+  column the frame does not have, or a configured analysis input that is no longer connected,
+  is flagged in the pane and blocks the solve.
 - **Factors** — the Rating Factor Source selector, its combined disconnected-source and
   zero-level warning, and the rating-factor toggles with their level counts.
 - **Constraints** — the constraint count heading with **Add**, then the **Individual point** /
@@ -385,8 +393,9 @@ Pane ownership:
   the field and the Solve issue list then flag as missing.
 - **Solve** — the stale-result banner, source-size estimate, **Optimise** action, progress with a
   **Stop** action, failure card and convergence result, followed by a **Solver settings** section
-  holding maximum iterations and tolerance, chunk size, record history and, in ratebook mode, the
-  coordinate-descent iterations and tolerance. **Stop** cancels the running solve job (including
+  holding maximum iterations and tolerance, chunk size and, in ratebook mode, the
+  coordinate-descent iterations and tolerance. There is no history toggle: every solve records
+  its convergence history. **Stop** cancels the running solve job (including
   its efficient-frontier phase) through the existing cancel route and records the returned
   terminal state the way modelling's Cancel does. The size estimate is requested only when an
   input that changes it changes (the Objectives & Constraints input, mode, the Quote ID / Scenario
@@ -396,7 +405,9 @@ Pane ownership:
   stays disabled and one alert beneath it lists every blocking issue, each with a **Go to** link
   that opens the pane that fixes it: no resolvable Objectives & Constraints input; no objective; a
   mapped Quote ID, Scenario Index or Scenario Value column that the input does not have (checked
-  once the input's columns are known); in ratebook mode no connected Rating Factor Source or no
+  once the input's columns are known); an Analysis input that is not connected, more than twelve
+  analysis columns, or an analysis column the analysis input does not have (checked once its
+  columns are known); in ratebook mode no connected Rating Factor Source or no
   selected factor; and for an efficient frontier a constraint whose range is missing an end or
   whose minimum is not below its maximum, or more than 10,000 frontier solves in total. Warnings
   that do not block — one scenario per quote, or quotes with differing scenario counts — appear
@@ -445,7 +456,7 @@ each one and why, in the same form as model validation. A failed solve with no e
 opens no result preview: there is nothing to show, and its error stays on the Solve pane. Its accent is its own colour,
 never the warning colour the stale strip uses. The Frontier chart and detail card sit side by
 side, stacking when the workspace is narrow. It offers Frontier (when the solve produced one),
-Summary, Rates (ratebook), Quotes (online) and Convergence (when history was recorded); it has no
+Summary, Rates (ratebook), Quotes (online) and Convergence; it has no
 Export tab and no publish actions — publishing belongs only to the Export pane, and the frontier
 detail card says so. Clicking a frontier point selects it
 as the publish target; clicking the selected point again keeps it selected (the Export pane's
@@ -460,12 +471,32 @@ always shown. There is no "binding" judgement. Quotes loads the per-quote detail
 the publish target on demand (bounded rows, with the total and cap stated) and names columns in
 neutral scenario terms; reopening Quotes for the same target shows the loaded detail again
 without a new request, and a new solve or a recomputed frontier loads it afresh. Quotes and Rates
-failures offer **Retry**. Selecting a frontier point never removes a view: Summary keeps the
+failures offer **Retry**. Rates lays out like AvE: factors ranked by rate spread (how far their rates move from 1.0, weighted by quotes) with search, beside the selected factor's rate bars in banding order with an aligned quote-count strip, a focusable detail line per level, and a values table of Level | Rate | vs neutral 1.0 (%) | Quotes | Share; the chosen factor survives tab switches. Summary's ratebook beeswarm fits the pane's width, says when it shows only the top 8 of N factors (with a Top 8 / All toggle), names categorical levels in words as well as colour, and has a values table. Selecting a frontier point never removes a view: Summary keeps the
 scenario-value statistics (labelled "As solved" or "Frontier point N"; a point reports statistics
-but no histogram), Convergence stays available whenever the solve recorded history and, for a
-selected point, says "History is recorded for the solved result; frontier point N: converged
+but no histogram), Convergence stays available and, for a selected point, says "History is recorded for the solved result; frontier point N: converged
 (or not converged), K iterations", and the frontier chart's as-solved marker stays at the solve's
-position. Stepping through points keeps the current tab; a new solve job, or switching to another
+position. The Frontier chart fits the pane, names its axes (the objective
+column and the x constraint) at 12 px, and has a legend. A multi-constraint sweep is shown one
+slice at a time ("Holding <other> at"), drawn as a line in bound order, so it reads as a frontier
+rather than a projected cloud; every point keeps its global number wherever it is selected,
+stepped or published, and selecting a point elsewhere brings its slice into view. The line joins
+only feasible points — converged and meeting every bound, judged by haute in both modes because
+a converged ratebook point can still breach a bound; a non-converged point is hollow and a
+converged-but-breached one a cross labelled "breached", both still selectable, with the reason in
+the detail card. The as-solved marker is hollow, labelled "As solved (different slice)", when the
+solve lies off the displayed slice. The detail card adds converged and iterations, each λ exactly
+as the solver reports it with its sign stated, and a discrete trade-off: the objective change per
+unit of the x bound relaxed to the next point in the slice, shown only between two feasible
+neighbours with different bounds and never presented as a check of λ. A values table lists the
+slice's points. Convergence draws the solve's history as small multiples, each on its own real
+axis with tick values: the objective; the largest λ change on a log axis (an iteration with no
+change, 0, is drawn at the axis floor and a note says how many); each constraint's total with
+its bound (the solve's `effective_bounds`) as a dashed line and a marker at the first iteration
+that met every constraint; and λ per constraint. A ratebook solve instead shows its
+coordinate-descent trace by CD pass, one line per factor: the objective and each constraint
+total against its dashed bound (λ per record is in the values table). A ratebook result without a trace says the trace is recorded
+by live solves only. The values behind the charts sit in a closed values table ("View iteration
+values", or "View coordinate-descent values" for a trace), and a truncated trace says so. Stepping through points keeps the current tab; a new solve job, or switching to another
 optimiser node, returns to the default tab. A displayed result's warning (such as the
 non-convergence reason) shows as an amber strip. When the node configuration has changed since the result was produced,
 the preview shows a strip saying so with a **Re-run** action that starts the solve directly. Re-run applies the Solve pane's blocking rules: while any issue blocks the solve it is disabled and the strip names the first issue. λ is shown

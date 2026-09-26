@@ -1341,6 +1341,7 @@ export interface OptimiserFrontierPointSummary {
   lambdas: {
     [k: string]: number;
   };
+  ratebook_cd_trace: OptimiserRatebookCdTrace | null;
   scenario_value_histogram: OptimiserScenarioValueHistogram | null;
   scenario_value_stats: OptimiserScenarioValueStats | null;
   total_objective: number;
@@ -1383,6 +1384,36 @@ export interface OptimiserHistoryEntry {
     [k: string]: number;
   };
   max_lambda_change: number;
+  total_constraints: {
+    [k: string]: number;
+  };
+  total_objective: number;
+}
+/**
+ * A ratebook solve's coordinate-descent trace, in (CD pass, factor) order.
+ *
+ * Holds the last ``HAUTE_OPTIMISER_CD_TRACE_LIMIT`` records; ``truncated``
+ * says earlier ones were dropped.
+ */
+export interface OptimiserRatebookCdTrace {
+  /**
+   * @minItems 1
+   */
+  records: OptimiserRatebookCdTraceRecord[];
+  truncated: boolean;
+}
+/**
+ * One inner grouped solve of a ratebook coordinate descent (price-contour's
+ * ``PerFactorRecord``): the totals and λ after updating ``factor`` in pass
+ * ``cd_iteration``, on the search's working multiplier.
+ */
+export interface OptimiserRatebookCdTraceRecord {
+  cd_iteration: number;
+  factor: string;
+  factor_index: number;
+  lambdas: {
+    [k: string]: number;
+  };
   total_constraints: {
     [k: string]: number;
   };
@@ -1496,6 +1527,11 @@ export interface OptimiserSolveResult {
   mode: 'online' | 'ratebook';
   n_quotes: number | null;
   n_steps: number | null;
+  ratebook_cd_trace: OptimiserRatebookCdTrace | null;
+  /**
+   * @minItems 1
+   */
+  scenario_grid: OptimiserScenarioGridStep[];
   scenario_value_histogram: OptimiserScenarioValueHistogram | null;
   scenario_value_stats: OptimiserScenarioValueStats | null;
   selected_frontier_point: number | null;
@@ -1535,8 +1571,14 @@ export interface OptimiserSolverSettings {
   frontier_steps?: number;
   max_cd_iterations?: number;
   max_iter: number;
-  record_history?: boolean;
   tolerance: number;
+}
+/**
+ * One step of the solve's scenario grid: its index and the value the solver scored.
+ */
+export interface OptimiserScenarioGridStep {
+  optimal_step: number;
+  scenario_value: number;
 }
 export interface OptimiserApplyResponse {
   constraints: {
@@ -1682,6 +1724,7 @@ export interface OptimiserFrontierSelectResponse {
     [k: string]: number;
   };
   point_index: number | null;
+  ratebook_cd_trace: OptimiserRatebookCdTrace | null;
   scenario_value_histogram: OptimiserScenarioValueHistogram | null;
   scenario_value_stats: OptimiserScenarioValueStats | null;
   status: string;

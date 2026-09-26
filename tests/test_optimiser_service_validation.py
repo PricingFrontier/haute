@@ -686,7 +686,9 @@ def test_multi_quote_real_solve_pins_result_shape(client, tmp_path, clean_job_st
     assert result["constraints"] == {"volume": pytest.approx(3.0)}
     assert result["baseline_constraints"] == {"volume": pytest.approx(3.0)}
     assert set(result["lambdas"]) == {"volume"}
-    assert result["history"] is None
+    # Every online solve records its history (Q5), one entry per iteration.
+    assert len(result["history"]) == result["iterations"]
+    assert result["ratebook_cd_trace"] is None
 
     stats = result["scenario_value_stats"]
     assert set(stats) == _SCENARIO_STAT_KEYS
@@ -766,6 +768,7 @@ def test_grid_reuses_plain_projected_parquet_without_removing_it(tmp_path, monke
     job = store.create_job({"status": "running"})
     service = service_module.OptimiserSolveService(store)
     observed = []
+    grid = SimpleNamespace(scenario_values=[1.0])
     monkeypatch.setattr(
         "haute.routes._optimiser_input.bounded_sink",
         lambda *_a, **_k: pytest.fail("rewrote borrowed input"),
@@ -773,11 +776,11 @@ def test_grid_reuses_plain_projected_parquet_without_removing_it(tmp_path, monke
     monkeypatch.setattr(
         price_contour,
         "build_grid_from_parquet_chunked",
-        lambda path, *_a, **_k: observed.append(Path(path)) or "grid",
+        lambda path, *_a, **_k: observed.append(Path(path)) or grid,
     )
     assert (
-        service._build_grid(frame, [], {"objective": "income", "chunk_size": 2}, "opt", job)
-        == "grid"
+        service._build_grid(frame, [], {"objective": "income", "chunk_size": 2}, "opt", job).grid
+        is grid
     )
     assert observed == [path]
     assert path.exists()
@@ -808,7 +811,7 @@ def test_grid_admission_precedes_library_and_keeps_borrowed_input(
     monkeypatch.setattr(
         price_contour,
         "build_grid_from_parquet_chunked",
-        lambda *_a, **_k: called.append(True) or "grid",
+        lambda *_a, **_k: called.append(True) or SimpleNamespace(scenario_values=[1.0]),
     )
     context = ExecutionContext(
         operation="grid_test",
@@ -818,17 +821,14 @@ def test_grid_admission_precedes_library_and_keeps_borrowed_input(
         memory_sampler=lambda: 100,
     )
     if accepted:
-        assert (
-            service._build_grid(
-                pl.scan_parquet(path),
-                [],
-                {"objective": "income", "chunk_size": 2},
-                "opt",
-                job,
-                execution_context=context,
-            )
-            == "grid"
-        )
+        assert service._build_grid(
+            pl.scan_parquet(path),
+            [],
+            {"objective": "income", "chunk_size": 2},
+            "opt",
+            job,
+            execution_context=context,
+        ).grid.scenario_values == [1.0]
         assert called == [True]
     else:
         with pytest.raises(ExecutionAdmissionError, match="resident optimiser grid"):

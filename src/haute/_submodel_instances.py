@@ -30,7 +30,7 @@ from haute.errors import ParseError
 
 _GLOBAL_NODE_REFERENCE_FIELDS: frozenset[str] = frozenset({"instanceOf"})
 _INPUT_SELECTOR_FIELDS: dict[NodeType, frozenset[str]] = {
-    NodeType.OPTIMISER: frozenset({"data_input", "banding_source"}),
+    NodeType.OPTIMISER: frozenset({"data_input", "banding_source", "analysis_input"}),
     NodeType.OPTIMISER_APPLY: frozenset({"ratebook_input"}),
 }
 

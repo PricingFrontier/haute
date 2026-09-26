@@ -63,6 +63,65 @@ export function orderedFactorTableEntries(
     .map(({ factorName, rows }) => [factorName, rows] as [string, FactorTableRow[]])
 }
 
+/** A level's rate as a log effect. A solved rate is a scenario value on the
+ *  solve's grid, which is positive; anything else is a broken contract. */
+export function logRate(factor: string, row: FactorTableRow): number {
+  const rate = row.optimal_scenario_value
+  if (!(rate > 0)) {
+    throw new Error(`Factor ${factor} level ${row.__factor_group__} has a non-positive rate ${rate}`)
+  }
+  return Math.log(rate)
+}
+
+function factorQuoteTotal(factor: string, rows: readonly FactorTableRow[]): number {
+  const total = rows.reduce((sum, row) => sum + row.quote_count, 0)
+  if (!(total > 0)) throw new Error(`Factor ${factor} has no quotes`)
+  return total
+}
+
+/**
+ * How far a factor's rates move from the neutral 1.0: the quote-weighted mean
+ * |ln rate|. It ranks factors in the Rates browser and the Summary beeswarm.
+ */
+export function factorRateSpread(factor: string, rows: readonly FactorTableRow[]): number {
+  const total = factorQuoteTotal(factor, rows)
+  return rows.reduce((sum, row) => sum + Math.abs(logRate(factor, row)) * row.quote_count, 0) / total
+}
+
+/**
+ * Each level's share of its factor's quotes, in percent to one decimal, in row
+ * order. Rounded by largest remainder (ties to the earlier level) so the
+ * shares shown always sum to exactly 100.0.
+ */
+export function levelQuoteShares(factor: string, rows: readonly FactorTableRow[]): number[] {
+  const total = factorQuoteTotal(factor, rows)
+  // Work in tenths of a percent: 1000 units in all.
+  const exact = rows.map((row) => (row.quote_count * 1000) / total)
+  const floors = exact.map(Math.floor)
+  let remaining = 1000 - floors.reduce((sum, value) => sum + value, 0)
+  const byRemainder = exact
+    .map((value, index) => ({ index, remainder: value - floors[index] }))
+    .sort((a, b) => b.remainder - a.remainder || a.index - b.index)
+  for (const { index } of byRemainder) {
+    if (remaining === 0) break
+    floors[index] += 1
+    remaining -= 1
+  }
+  return floors.map((units) => units / 10)
+}
+
+/** A rate against the neutral 1.0 (the unadjusted base price), e.g. "+5.0%". */
+export function formatVsNeutral(rate: number): string {
+  const pct = (rate - 1) * 100
+  const sign = pct > 0 ? "+" : ""
+  return `${sign}${pct.toFixed(1)}%`
+}
+
+/** A rate as the Rates tab and the beeswarm print it. */
+export function formatRate(rate: number): string {
+  return rate.toFixed(4)
+}
+
 /** The scenario range a ratebook solve scored; the deployed combined factor is clipped to it. */
 export type CombinedFactorCollar = { min: number; max: number }
 

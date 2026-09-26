@@ -3280,6 +3280,28 @@ class OptimiserParentDemandRule:
             existing = by_parent[banding_parent]
             by_parent[banding_parent] = None if existing is None else set(existing) | factor_columns
 
+        analysis_columns = config.get("analysis_columns") or []
+        analysis_input = config.get("analysis_input")
+        if analysis_columns and isinstance(analysis_input, str) and analysis_input:
+            analysis_matches = [edge for edge, name in named_edges if name == analysis_input]
+            if len(analysis_matches) != 1:
+                raise ContractMismatchError(
+                    "Configured optimiser analysis_input is not one exact connected input name.",
+                    node_id=node.id,
+                    node_type=node.data.nodeType.value,
+                    analysis_input=analysis_input,
+                    incoming_input_names=sorted(name for _edge, name in named_edges),
+                )
+            analysis_edge = analysis_matches[0]
+            if analysis_edge is not data_edge:
+                # A separate analysis frame owes only its key and the analysis columns.
+                analysis_parent = analysis_edge.source
+                analysis_demand = {str(config.get("quote_id", "quote_id")), *analysis_columns}
+                existing = by_parent[analysis_parent]
+                by_parent[analysis_parent] = (
+                    None if existing is None else set(existing) | analysis_demand
+                )
+
         # ParentDemandResult is keyed by source node, so it cannot express
         # different column sets for parallel frames from one multi-frame
         # source. Keep those physical edges full-width after validating their

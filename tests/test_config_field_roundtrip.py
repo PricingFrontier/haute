@@ -102,6 +102,8 @@ def _examples():
             "structure_mode": "explicit",
             "data_input": _sanitize_func_name(scenario.data.label),
             "banding_source": _sanitize_func_name(band.data.label),
+            "analysis_input": _sanitize_func_name(band.data.label),
+            "analysis_columns": ["region"],
             "mlflow_experiment": "Optimisation",
             "result_export_path": "rating/optimiser_result.json",
         }

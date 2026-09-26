@@ -24,10 +24,11 @@ type UseOptimiserReadinessArgs = {
 }
 
 /**
- * The optimiser's resolved inputs, data-input columns and solve readiness, for
- * every surface that can start a solve. Columns come from one path — the known
- * fallback, else the source-aware column cache and preview fetch — so the Solve
- * pane and the result preview's Re-run judge the same columns.
+ * The optimiser's resolved inputs, data-input and analysis-frame columns and
+ * solve readiness, for every surface that can start a solve. Columns come from
+ * one path — the known fallback, else the source-aware column cache and
+ * preview fetch — so the Solve pane and the result preview's Re-run judge the
+ * same columns.
  */
 export function useOptimiserReadiness({
   nodeId,
@@ -56,6 +57,20 @@ export function useOptimiserReadiness({
     { enabled: !hasFallbackColumns && fetchColumns, fallbackColumns: fallbackDataInputColumns },
   )
   const dataInputColumns = hasFallbackColumns ? fallbackDataInputColumns : fetchedDataInputColumns
-  const readiness = optimiserSolveReadiness(config, inputs, dataInputColumns)
-  return { inputs, dataInputColumns, ...readiness }
+  // A separate analysis input is previewed at its own source node; the data
+  // input's columns serve when the analysis columns come from it.
+  const analysisSourceNodeId = inputs.selectedAnalysisInput?.sourceNodeId ?? ""
+  const fetchedAnalysisColumns = useDataInputColumns(
+    analysisSourceNodeId,
+    allNodes,
+    edges,
+    submodels,
+    undefined,
+    { enabled: fetchColumns && !!analysisSourceNodeId, fallbackColumns: EMPTY_COLUMNS },
+  )
+  const analysisFrameColumns = inputs.selectedAnalysisInput
+    ? fetchedAnalysisColumns
+    : inputs.analysisUsesDataInput ? dataInputColumns : EMPTY_COLUMNS
+  const readiness = optimiserSolveReadiness(config, inputs, dataInputColumns, analysisFrameColumns)
+  return { inputs, dataInputColumns, analysisFrameColumns, ...readiness }
 }

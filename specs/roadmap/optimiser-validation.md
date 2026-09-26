@@ -84,6 +84,11 @@ Out of scope (see "Out of scope and not applicable" below):
   rating engine. A ratebook artifact without the bounds is invalid (no legacy
   reader). Inside the range the deployed factor is still the unsnapped
   product: snapping to the nearest step was not adopted.
+- **History is always recorded (Q5, decided 26 September 2026).** The
+  `record_history` flag is removed from the config, the solver settings and
+  the Solve pane: every online solve records its per-iteration history, which
+  `max_iter` bounds, and every live ratebook solve its coordinate-descent
+  trace (`OPT-V05`).
 - **Ratebook per-quote results take option (a) (Q8, decided 25 September
   2026).** price-contour 0.5.0 surfaces the per-quote frame the solver
   computes (`RatebookResult.quote_results`) and a public
@@ -357,10 +362,10 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
 
 - **Files.** `frontend/src/panels/modelling/LossTab.tsx`, `frontend/src/panels/modelling/LossChart.tsx`, `frontend/src/panels/IterationLinesChart.tsx` *(new, extracted)*, `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/OptimiserConfig.tsx`, `src/haute/routes/_optimiser_solver.py`, `src/haute/routes/_optimiser_frontier.py`, `src/haute/schemas.py`, `frontend/src/panels/optimiser/__tests__/ConvergenceChart.test.tsx`, `frontend/src/panels/modelling/__tests__/LossTab.test.tsx`, `frontend/src/panels/modelling/__tests__/LossChart.test.tsx`, `tests/test_optimiser_routes_real_library.py`.
 - **Backend changes.**
-  1. Map `RatebookResult.per_factor_results` into a typed `ratebook_cd_trace: [{cd_iteration, factor, total_objective, total_constraints, lambdas}]`, replacing the hard-coded `history=None` for ratebook (`_optimiser_solver.py` ~1224, `_optimiser_frontier.py` ~474).
-  2. The trace carries the objective, the constraint totals and λ per pass and factor (price-contour 0.5.0 records), so the ratebook view can draw constraint totals against their bounds like the online one. A result loaded from a format-1 save has no trace; label the view "live solves only".
-  3. Cap its length the way `loss_history` is capped.
-  4. Default for `record_history`: see Q5.
+  1. Map `RatebookResult.per_factor_results` into a typed `ratebook_cd_trace: {records: [{cd_iteration, factor, factor_index, total_objective, total_constraints, lambdas}], truncated}` on the ratebook solve result and the frontier-select response (`null` for online results and for frontier points, like `history`).
+  2. The trace carries the objective, the constraint totals and λ per pass and factor (price-contour 0.5.0 records), so the ratebook view can draw constraint totals against their bounds like the online one. Every record holds exactly the configured constraint names. A ratebook result without a trace (a frontier point's, or one loaded from a save) labels the view "live solves only".
+  3. Cap its length the way `loss_history` is capped: keep the last `HAUTE_OPTIMISER_CD_TRACE_LIMIT` records (default 1,000) and set `truncated`.
+  4. `record_history` is removed (Q5, decided): every online solve records its history, which `max_iter` bounds. The config key, the solver setting, the Solve pane toggle and the docs go; a config that still carries the key is refused as an undeclared key.
 - **Frontend changes.**
   1. Extract `LossTabChart` into a generic `IterationLinesChart`. It takes a series list, an optional vertical marker, optional horizontal reference lines, and a linear or log y-axis. It is built on ResponsiveChart, ChartValueGrid and ChartLegend. LossTab becomes an adapter.
   2. Convergence as small multiples, each on its own real axis:
@@ -368,10 +373,11 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
      - the maximum λ change (log scale, with 0 clamped and a note);
      - constraint totals, with dashed bound lines and a first-feasible marker from `all_constraints_satisfied`;
      - λ per constraint.
-  3. For ratebook: the objective by CD pass, coloured by factor.
+  3. For ratebook: the objective and each constraint total (with its dashed bound line) by CD pass, one line per factor; λ per record is in the values table.
   4. A `ChartValuesTable` replaces the ad-hoc iterations table.
-  5. Empty state: "History was not recorded; enable Record history in the Solve pane" (`OptimiserConfig.tsx:111, 696`).
+  5. Convergence is offered for every result. Empty state, for a ratebook result without a trace: "The coordinate-descent trace is recorded by live solves only; this result has none." An online solve without history is a contract error and fails loudly.
 - **Risks.** `per_factor_results` records name their factor and pass explicitly (`cd_iteration`, `factor`, `factor_index`, price-contour 0.5.0), so the trace never infers the factor from position; pin the record fields with a test against the installed version.
+- **Files (Q5).** Removing `record_history` also touches `src/haute/_types.py`, `src/haute/_cache.py`, `docs/building-models/nodes/optimiser.md`, the online example's `config/optimiser.json`, `scripts/run_frontend_e2e_server.py` and every test that set the key.
 
 **Acceptance:**
 
@@ -727,7 +733,7 @@ Agreement tests per quote and in aggregate for the objective and every constrain
   - the Adjustments bars and the base-price line;
   - a Segments level;
   - the Quotes "Highest adjustment" preset;
-  - Convergence axes, with `record_history` on in the fixture;
+  - Convergence axes (every online solve records its history);
   - the focus view closing on Escape;
   - a ratebook solve's Rates chart.
 
@@ -891,8 +897,9 @@ One-to-one with the gap analysis. Several are closed in re-scoped form after the
 - **Q4, Adjustments weighting default:** the plan uses quote count, with an
   optional non-negative objective or constraint column at the chosen
   scenario.
-- **Q5, `record_history` (`OPT-V05`):** default it to true, or remove the
-  flag and always record? It is bounded by `max_iter`.
+- **Q5 (resolved 26 September 2026):** `record_history` is removed and every
+  online solve records its history, bounded by `max_iter`. See Decisions and
+  `OPT-V05`.
 - **Q6, "Met" tolerance (`OPT-V01`):** the plan uses a strict comparison,
   with the signed slack % always shown and no "binding" label. Should a
   presentation tolerance apply? The solver's `tolerance` is a

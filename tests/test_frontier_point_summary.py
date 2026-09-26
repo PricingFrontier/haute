@@ -174,6 +174,7 @@ def test_summary_reads_every_point_specific_field_from_the_typed_point() -> None
         "cd_iterations": None,
         "clamp_rate": None,
         "history": None,
+        "ratebook_cd_trace": None,
         "scenario_value_stats": {
             "mean": 1.02,
             "std": 0.03,

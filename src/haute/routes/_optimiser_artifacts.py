@@ -1,12 +1,14 @@
 """Ownership-marked optimiser artifacts and setup-owned solver-input files.
 
-Two artifact families live under dedicated, marker-owned temp roots: the
-online apply result (``optimiser_apply_result``) and the ratebook factor table
-(``optimiser_ratebook_factors``). Their handle is the canonical persisted wire
+Three artifact families live under dedicated, marker-owned temp roots: the
+online apply result (``optimiser_apply_result``), the ratebook factor table
+(``optimiser_ratebook_factors``) and the per-quote analysis side table
+(``optimiser_quote_analysis``). Their handle is the canonical persisted wire
 schema. This module persists, validates, loads and removes them, registers the
 job store's cleaners for evicted jobs, and reaps stale directories at startup.
-Solve setup's solver-input parquet is created and removed here too, so the
-solve service owns no filesystem deletion.
+Solve setup's solver-input parquet and the directory a setup worker writes
+its quote-analysis table into are created and removed here too, so the solve
+service owns no filesystem deletion.
 """
 
 from __future__ import annotations
@@ -45,6 +47,12 @@ _RATEBOOK_FACTORS_ARTIFACT_DIR_PREFIX = "factors_"
 _RATEBOOK_FACTORS_FILENAME = "factors.parquet"
 _APPLY_ARTIFACT_OWNER = "optimiser_apply"
 _RATEBOOK_FACTORS_ARTIFACT_OWNER = "optimiser_ratebook_factors"
+_QUOTE_ANALYSIS_HANDLE_KEY = "quote_analysis"
+_QUOTE_ANALYSIS_HANDLE_KIND = "optimiser_quote_analysis"
+_QUOTE_ANALYSIS_ARTIFACT_ROOT_NAME = "haute/artifacts/v1/optimiser_quote_analysis"
+_QUOTE_ANALYSIS_ARTIFACT_DIR_PREFIX = "analysis_"
+_QUOTE_ANALYSIS_FILENAME = "quote_analysis.parquet"
+_QUOTE_ANALYSIS_ARTIFACT_OWNER = "optimiser_quote_analysis"
 _ARTIFACT_STALE_SECONDS_ENV = "HAUTE_ARTIFACT_STALE_SECONDS"
 _DEFAULT_ARTIFACT_STALE_SECONDS = 86_400
 
@@ -55,6 +63,10 @@ def _apply_artifact_root() -> Path:
 
 def _ratebook_factors_artifact_root() -> Path:
     return (Path(tempfile.gettempdir()) / _RATEBOOK_FACTORS_ARTIFACT_ROOT_NAME).resolve()
+
+
+def _quote_analysis_artifact_root() -> Path:
+    return (Path(tempfile.gettempdir()) / _QUOTE_ANALYSIS_ARTIFACT_ROOT_NAME).resolve()
 
 
 def _prepare_apply_artifact_root() -> Path:
@@ -90,6 +102,7 @@ def reap_stale_optimiser_artifacts(
     for name, root, owner in (
         ("apply", _apply_artifact_root(), _APPLY_ARTIFACT_OWNER),
         ("ratebook_factors", _ratebook_factors_artifact_root(), _RATEBOOK_FACTORS_ARTIFACT_OWNER),
+        ("quote_analysis", _quote_analysis_artifact_root(), _QUOTE_ANALYSIS_ARTIFACT_OWNER),
     ):
         if root.is_dir():
             reports[name] = reap_stale_artifact_directories(root, owner, stale_after_seconds)
@@ -164,6 +177,81 @@ def _validate_ratebook_factors_artifact_handle(handle: dict[str, Any]) -> tuple[
         filename=_RATEBOOK_FACTORS_FILENAME,
         description="Optimiser ratebook factors",
     )
+
+
+def _validate_quote_analysis_artifact_handle(handle: dict[str, Any]) -> tuple[Path, Path]:
+    """Return validated ``(path, directory)`` for a server-owned quote-analysis table."""
+    return _validate_server_owned_parquet_handle(
+        handle,
+        kind=_QUOTE_ANALYSIS_HANDLE_KIND,
+        root=_quote_analysis_artifact_root(),
+        directory_prefix=_QUOTE_ANALYSIS_ARTIFACT_DIR_PREFIX,
+        filename=_QUOTE_ANALYSIS_FILENAME,
+        description="Optimiser quote analysis",
+    )
+
+
+def _new_quote_analysis_directory() -> Path:
+    """Create the marked directory one solve's ``quote_analysis.parquet`` is written into."""
+    root = _quote_analysis_artifact_root()
+    root.mkdir(parents=True, exist_ok=True)
+    return create_owned_artifact_directory(
+        root, _QUOTE_ANALYSIS_ARTIFACT_DIR_PREFIX, _QUOTE_ANALYSIS_ARTIFACT_OWNER
+    )
+
+
+def _remove_quote_analysis_directory(directory: Path) -> None:
+    """Remove a parent-created analysis directory no job adopted; a failure is logged."""
+    try:
+        shutil.rmtree(directory)
+    except FileNotFoundError:
+        return
+    except OSError as cleanup_exc:
+        logger.warning(
+            "setup_orphan_quote_analysis_cleanup_failed",
+            path=str(directory),
+            error=str(cleanup_exc),
+        )
+
+
+def _quote_analysis_handle(directory: Path, **fields: Any) -> dict[str, Any]:
+    """The handle of the table written into *directory*, with its metadata *fields*."""
+    return {
+        "kind": _QUOTE_ANALYSIS_HANDLE_KIND,
+        "version": _ARTIFACT_HANDLE_VERSION,
+        "format": "parquet",
+        "path": str(directory / _QUOTE_ANALYSIS_FILENAME),
+        "directory": str(directory),
+        **fields,
+    }
+
+
+def _cleanup_quote_analysis_artifact(handle: dict[str, Any]) -> None:
+    """Remove a quote-analysis table whose owner (setup or job) has ended."""
+    _artifact_path, artifact_dir = _validate_quote_analysis_artifact_handle(handle)
+    if artifact_dir.exists():
+        shutil.rmtree(artifact_dir)
+
+
+def _quote_analysis_path(handle: dict[str, Any]) -> Path:
+    """The validated, present table file behind *handle*: a 410 when it is gone."""
+    try:
+        artifact_path, _artifact_dir = _validate_quote_analysis_artifact_handle(handle)
+    except ValueError as exc:
+        _log_artifact_load_failure("optimiser_quote_analysis_validation_failed", handle, exc)
+        raise HTTPException(
+            status_code=500,
+            detail="Optimiser quote analysis reference is invalid. Re-run the solve.",
+        ) from exc
+    if not artifact_path.is_file():
+        logger.warning("optimiser_quote_analysis_missing", path=str(artifact_path))
+        raise HTTPException(status_code=410, detail=QUOTE_ANALYSIS_UNAVAILABLE_DETAIL)
+    return artifact_path
+
+
+QUOTE_ANALYSIS_UNAVAILABLE_DETAIL = (
+    "Optimiser quote analysis is no longer available. Re-run the solve to regenerate it."
+)
 
 
 def _persist_apply_result_artifact(solve_result: SolveResultLike) -> dict[str, Any]:
@@ -436,6 +524,7 @@ def _scan_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
 
 register_artifact_cleaner(_APPLY_RESULT_HANDLE_KIND, _cleanup_apply_result_artifact)
 register_artifact_cleaner(_RATEBOOK_FACTORS_HANDLE_KIND, _cleanup_ratebook_factors_artifact)
+register_artifact_cleaner(_QUOTE_ANALYSIS_HANDLE_KIND, _cleanup_quote_analysis_artifact)
 
 
 def _cleanup_orphan_apply_result_artifact(
@@ -448,6 +537,8 @@ def _cleanup_orphan_apply_result_artifact(
     try:
         if handle.get("kind") == _RATEBOOK_FACTORS_HANDLE_KIND:
             _cleanup_ratebook_factors_artifact(handle)
+        elif handle.get("kind") == _QUOTE_ANALYSIS_HANDLE_KIND:
+            _cleanup_quote_analysis_artifact(handle)
         else:
             _cleanup_apply_result_artifact(handle)
     except Exception as cleanup_exc:

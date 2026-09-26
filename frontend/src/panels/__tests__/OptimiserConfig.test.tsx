@@ -1365,13 +1365,13 @@ describe("OptimiserConfig", () => {
       expect(screen.getByRole("heading", { name: "Solver settings" })).toBeInTheDocument()
       expect(screen.queryByText("Advanced")).not.toBeInTheDocument()
       expect(screen.getByText("Chunk size")).toBeInTheDocument()
-      expect(screen.getByText("Record history")).toBeInTheDocument()
     })
 
-    it("shows chunk_size and record_history values", () => {
+    it("offers no history toggle: every solve records its history", () => {
       renderConfig(makeProps())
       expect(screen.getByDisplayValue("500000")).toBeInTheDocument()
-      expect(screen.getByText("Off")).toBeInTheDocument()
+      expect(screen.queryByText("Record history")).not.toBeInTheDocument()
+      expect(screen.queryByRole("button", { name: /^(On|Off)$/ })).not.toBeInTheDocument()
     })
 
     it("ratebook mode shows CD iterations and CD tolerance", () => {
@@ -1677,13 +1677,6 @@ describe("OptimiserConfig", () => {
       expect(props.componentProps.onUpdate).not.toHaveBeenCalled()
       fireEvent.blur(input)
       expect(props.componentProps.onUpdate).toHaveBeenCalledWith("chunk_size", 100000)
-    })
-
-    it("toggling record_history calls onUpdate", () => {
-      const props = makeProps()
-      renderConfig(props)
-      fireEvent.click(screen.getByText("Off"))
-      expect(props.componentProps.onUpdate).toHaveBeenCalledWith("record_history", true)
     })
   })
 
@@ -3174,5 +3167,163 @@ describe("OptimiserConfig", () => {
       fireEvent.click(screen.getByRole("radio", { name: /MLflow server/ }))
       expect(props.onUpdate).toHaveBeenCalledWith("mlflow_destination", "server")
     })
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════
+// Analysis columns (OPT-V09A)
+// ═══════════════════════════════════════════════════════════════════
+
+describe("OptimiserConfig analysis columns", () => {
+  const DATA_COLUMNS = [
+    { name: "premium", dtype: "Float64" },
+    { name: "volume", dtype: "Float64" },
+    { name: "quote_id", dtype: "String" },
+    { name: "scenario_index", dtype: "Int64" },
+    { name: "scenario_value", dtype: "Float64" },
+    { name: "region", dtype: "String" },
+  ]
+  const REGION_COLUMNS = [
+    { name: "quote_id", dtype: "String" },
+    { name: "region", dtype: "String" },
+    { name: "channel", dtype: "String" },
+  ]
+  const NODES: SimpleNode[] = [
+    { id: "scored_node", data: { label: "scored", description: "", nodeType: "dataInput", config: {} } },
+    { id: "regions_node", data: { label: "regions", description: "", nodeType: "dataInput", config: {} } },
+    { id: "stray_node", data: { label: "stray", description: "", nodeType: "dataInput", config: {} } },
+  ]
+  const EDGES: SimpleEdge[] = [
+    { id: "e-scored", source: "scored_node", target: "opt_1" },
+    { id: "e-regions", source: "regions_node", target: "opt_1" },
+  ]
+
+  function analysisProps(config: Record<string, unknown> = {}) {
+    return makeProps({
+      config: {
+        _nodeId: "opt_1",
+        mode: "online",
+        objective: "premium",
+        constraints: {},
+        data_input: "scored",
+        ...config,
+      },
+      allNodes: NODES,
+      edges: EDGES,
+    })
+  }
+
+  function columnChoices(): string[] {
+    const group = screen.getByRole("group", { name: "Analysis columns" })
+    return within(group).getAllByRole("checkbox").map((box) => box.getAttribute("name") ?? "")
+  }
+
+  beforeEach(() => {
+    mockUseDataInputColumns.mockImplementation((nodeId: string) =>
+      nodeId === "regions_node" ? REGION_COLUMNS : DATA_COLUMNS,
+    )
+  })
+
+  it("lists only the connected inputs, the data input first", () => {
+    renderConfig(analysisProps())
+
+    const select = screen.getByRole("combobox", { name: "Analysis input" }) as HTMLSelectElement
+    expect(select).toHaveValue("")
+    expect(Array.from(select.options).map((option) => [option.value, option.text])).toEqual([
+      ["", "scored (Objectives & Constraints input)"],
+      ["regions", "regions"],
+    ])
+    expect(screen.getByText(/used only to break results down/i)).toBeInTheDocument()
+  })
+
+  it("offers the chosen frame's columns, never the quote id", () => {
+    const { unmount } = renderConfig(analysisProps())
+    expect(columnChoices()).toEqual(["premium", "volume", "scenario_index", "scenario_value", "region"])
+    unmount()
+
+    renderConfig(analysisProps({ analysis_input: "regions" }))
+    expect(columnChoices()).toEqual(["region", "channel"])
+    expect(mockUseDataInputColumns).toHaveBeenCalledWith(
+      "regions_node", expect.anything(), expect.anything(), undefined, undefined, expect.anything(),
+    )
+  })
+
+  it("toggles a column into and out of the configuration", () => {
+    const props = analysisProps({ analysis_columns: ["region"] })
+    renderConfig(props)
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "volume" }))
+    expect(props.componentProps.onUpdate).toHaveBeenCalledWith("analysis_columns", ["region", "volume"])
+    fireEvent.click(screen.getByRole("checkbox", { name: "region" }))
+    expect(props.componentProps.onUpdate).toHaveBeenCalledWith("analysis_columns", [])
+  })
+
+  it("switching the frame removes the columns the new frame does not have", async () => {
+    const onUpdate = vi.fn()
+    renderStatefulConfig(analysisProps({ analysis_columns: ["region", "premium"] }), onUpdate)
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Analysis input" }), {
+      target: { value: "regions" },
+    })
+
+    await waitFor(() => {
+      expect(onUpdate).toHaveBeenCalledWith("analysis_columns", ["region"])
+    })
+    expect(onUpdate).toHaveBeenCalledWith("analysis_input", "regions")
+    expect(screen.getByRole("checkbox", { name: "region" })).toBeChecked()
+  })
+
+  it("flags a configured column the frame lacks without rewriting the configuration", () => {
+    const props = analysisProps({ analysis_input: "regions", analysis_columns: ["region", "segment"] })
+    renderConfig(props)
+
+    expect(screen.getByText(/“segment” is not a column of the analysis input/)).toBeInTheDocument()
+    expect(props.componentProps.onUpdate).not.toHaveBeenCalledWith("analysis_columns", expect.anything())
+    showPane("solve")
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Analysis column “segment” is not a column of the analysis input.",
+    )
+  })
+
+  it("flags an analysis input that is no longer connected", () => {
+    renderConfig(analysisProps({ analysis_input: "stray", analysis_columns: ["region"] }))
+
+    expect(screen.getByRole("combobox", { name: "Analysis input" })).toHaveValue("stray")
+    expect(screen.getByText("The configured analysis input is not connected.")).toBeInTheDocument()
+    showPane("solve")
+    expect(screen.getByRole("alert")).toHaveTextContent("The selected analysis input is not connected.")
+  })
+
+  it("disables further choices at twelve columns", () => {
+    const many = Array.from({ length: 12 }, (_, index) => ({ name: `c${index}`, dtype: "String" }))
+    mockUseDataInputColumns.mockImplementation(() => [...many, { name: "c12", dtype: "String" }])
+    renderConfig(analysisProps({ analysis_columns: many.map((column) => column.name) }))
+
+    expect(screen.getByRole("checkbox", { name: "c12" })).toBeDisabled()
+    expect(screen.getByRole("checkbox", { name: "c0" })).toBeEnabled()
+    expect(screen.getByText("12 of 12 chosen")).toBeInTheDocument()
+  })
+
+  it("marks the solve stale when the analysis columns change", () => {
+    const config = { _nodeId: "opt_1", mode: "online", objective: "premium", constraints: {}, data_input: "scored" }
+    useNodeResultsStore.setState({
+      solveResults: {
+        opt_1: {
+          result: makeSolveResult(),
+          originalResult: makeSolveResult(),
+          jobId: "job_1",
+          configHash: hashConfig(config),
+          source: "live",
+          structuralVersion: useGraphStore.getState().structuralVersion,
+          constraints: {},
+          nodeLabel: "Opt",
+          frontier: null,
+          selectedPointIndex: null,
+        },
+      },
+    })
+    renderConfig(analysisProps({ analysis_columns: ["region"] }))
+    showPane("solve")
+    expect(screen.getByText("Config changed since last solve")).toBeInTheDocument()
   })
 })

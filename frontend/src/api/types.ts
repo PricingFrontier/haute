@@ -1245,6 +1245,8 @@ export type {
   OptimiserFactorTableRow,
   OptimiserInputSummary,
   OptimiserOnlineFrontierPoint,
+  OptimiserRatebookCdTrace,
+  OptimiserRatebookCdTraceRecord,
   OptimiserRatebookFrontierPoint,
   OptimiserEstimateResponse as OptimiserEstimate,
   OptimiserFrontierAutoRangeResponse as FrontierAutoRangeResponse,

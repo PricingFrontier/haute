@@ -287,7 +287,6 @@ _BROWSER_OPTIMISER_CONFIG = """{
   "scenario_value": "scenario_value",
   "max_iter": 20,
   "tolerance": 0.0001,
-  "record_history": true,
   "frontier_enabled": true,
   "frontier_steps": 5,
   "frontier_ranges": {

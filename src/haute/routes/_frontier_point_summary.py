@@ -227,6 +227,7 @@ def frontier_point_summary(
         "cd_iterations": None,
         "clamp_rate": point["clamp_rate"] if point["mode"] == "ratebook" else None,
         "history": None,
+        "ratebook_cd_trace": None,
         "scenario_value_stats": _scenario_value_stats(point),
         "scenario_value_histogram": None,
         "factor_tables": None,

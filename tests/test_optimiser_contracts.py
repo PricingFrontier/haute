@@ -529,7 +529,7 @@ def test_optimiser_receives_slim_quote_contiguous_expander_projection(
         captured["constraint_cols"] = constraint_cols
         captured["config"] = dict(config)
         grid_captured.set()
-        return MagicMock()
+        return setup_grid_stub(MagicMock())
 
     from haute.routes import optimiser as optimiser_routes
 
@@ -658,7 +658,11 @@ def test_ratebook_solve_preserves_non_source_banding_input_after_target_checkpoi
 
     with (
         patch.object(optimiser_routes._solve_service, "_launch_setup_background") as setup_launch,
-        patch.object(optimiser_routes._solve_service, "_build_grid", return_value=MagicMock()),
+        patch.object(
+            optimiser_routes._solve_service,
+            "_build_grid",
+            return_value=setup_grid_stub(MagicMock()),
+        ),
         patch.object(
             optimiser_routes._solve_service,
             "_launch_background",
@@ -1169,11 +1173,14 @@ from haute.schemas import (  # noqa: E402
     OptimiserSolveResult,
 )
 from tests.optimiser_fixtures import (  # noqa: E402
+    SOLVE_SCENARIO_GRID,
     make_completed_job,
     make_frontier_data,
     make_frontier_point,
     make_input_summary,
+    make_scenario_grid,
     make_solved_result,
+    setup_grid_stub,
 )
 
 _PROVENANCE = {
@@ -1321,6 +1328,40 @@ class TestSolveResultContract:
         result = OptimiserSolveResult.model_validate(make_solved_result())
         assert result.input_summary.data_source == "batch"
         assert result.diagnostics_errors == []
+        assert [step.optimal_step for step in result.scenario_grid] == [0, 1, 2]
+
+    @pytest.mark.parametrize(
+        ("grid", "message"),
+        [
+            ([], "at least 1"),
+            (
+                [
+                    {"optimal_step": 1, "scenario_value": 0.9},
+                    {"optimal_step": 0, "scenario_value": 1.0},
+                ],
+                "steps 0..n-1 in order",
+            ),
+            (
+                [
+                    {"optimal_step": 0, "scenario_value": 1.0},
+                    {"optimal_step": 1, "scenario_value": 1.0},
+                ],
+                "strictly increasing",
+            ),
+            ([{"optimal_step": 0, "scenario_value": 1.0, "x": 1}], "Extra inputs"),
+        ],
+    )
+    def test_a_malformed_scenario_grid_is_rejected(
+        self, grid: list[dict[str, Any]], message: str
+    ) -> None:
+        with pytest.raises(ValidationError, match=message):
+            OptimiserSolveResult.model_validate(make_solved_result(scenario_grid=grid))
+
+    def test_n_steps_must_match_the_scenario_grid(self) -> None:
+        with pytest.raises(ValidationError, match="n_steps"):
+            OptimiserSolveResult.model_validate(
+                make_solved_result(n_steps=5, scenario_grid=make_scenario_grid(3))
+            )
 
     @pytest.mark.parametrize(
         "field", ["constraints", "baseline_constraints", "lambdas", "effective_bounds"]
@@ -1331,7 +1372,9 @@ class TestSolveResultContract:
         with pytest.raises(ValidationError, match="constraint names"):
             OptimiserSolveResult.model_validate(result)
 
-    @pytest.mark.parametrize("missing", ["mode", "input_summary", "diagnostics_errors"])
+    @pytest.mark.parametrize(
+        "missing", ["mode", "input_summary", "diagnostics_errors", "scenario_grid"]
+    )
     def test_required_fields_have_no_silent_default(self, missing: str) -> None:
         result = make_solved_result()
         del result[missing]
@@ -1362,6 +1405,68 @@ class TestSolveResultContract:
     def test_a_malformed_diagnostics_error_is_rejected(self, entry: dict) -> None:
         with pytest.raises(ValidationError, match="diagnostics_errors"):
             OptimiserSolveResult.model_validate(make_solved_result(diagnostics_errors=[entry]))
+
+    @staticmethod
+    def _trace(**record_changes: Any) -> dict[str, Any]:
+        record = {
+            "cd_iteration": 1,
+            "factor": "region",
+            "factor_index": 0,
+            "total_objective": 95.0,
+            "total_constraints": {"volume": 0.85},
+            "lambdas": {"volume": 0.0},
+            **record_changes,
+        }
+        return {"records": [record], "truncated": False}
+
+    def test_a_ratebook_result_carries_its_cd_trace(self) -> None:
+        result = OptimiserSolveResult.model_validate(
+            make_solved_result(mode="ratebook", ratebook_cd_trace=self._trace())
+        )
+        assert result.ratebook_cd_trace is not None
+        assert result.ratebook_cd_trace.records[0].factor == "region"
+
+    def test_the_cd_trace_is_ratebook_only_and_history_online_only(self) -> None:
+        with pytest.raises(ValidationError, match="ratebook_cd_trace"):
+            OptimiserSolveResult.model_validate(
+                make_solved_result(mode="online", ratebook_cd_trace=self._trace())
+            )
+        entry = {"iteration": 0, "total_objective": 1.0, "max_lambda_change": 0.0}
+        with pytest.raises(ValidationError, match="history"):
+            OptimiserSolveResult.model_validate(
+                make_solved_result(mode="ratebook", history=[entry])
+            )
+
+    @pytest.mark.parametrize("field", ["total_constraints", "lambdas"])
+    def test_a_cd_trace_record_holds_exactly_the_results_constraints(self, field: str) -> None:
+        trace = self._trace(**{field: {"volume": 0.5, "margin": 0.1}})
+        with pytest.raises(ValidationError, match="constraint names"):
+            OptimiserSolveResult.model_validate(
+                make_solved_result(mode="ratebook", ratebook_cd_trace=trace)
+            )
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"cd_iteration": 0},
+            {"factor_index": -1},
+            {"total_objective": float("inf")},
+            {"clamp_rate": 0.1},
+        ],
+    )
+    def test_a_malformed_cd_trace_record_is_rejected(self, change: dict) -> None:
+        with pytest.raises(ValidationError, match="ratebook_cd_trace"):
+            OptimiserSolveResult.model_validate(
+                make_solved_result(mode="ratebook", ratebook_cd_trace=self._trace(**change))
+            )
+
+    def test_a_cd_trace_has_at_least_one_record(self) -> None:
+        with pytest.raises(ValidationError, match="at least 1"):
+            OptimiserSolveResult.model_validate(
+                make_solved_result(
+                    mode="ratebook", ratebook_cd_trace={"records": [], "truncated": False}
+                )
+            )
 
     def test_ratebook_factor_tables_are_typed_rows(self) -> None:
         tables = {"region": [{"__factor_group__": "N", "optimal_scenario_value": 1.0}]}
@@ -1419,6 +1524,7 @@ def _finalize(result: Any, *, mode: str = "online", config: dict | None = None, 
             if config is not None
             else {"mode": mode, "constraints": {"loss": {"max": 1.05}}, "max_iter": 12},
             "input_provenance": dict(_PROVENANCE),
+            "scenario_grid": SOLVE_SCENARIO_GRID,
             **job,
         }
     )
@@ -1488,6 +1594,7 @@ class TestResultDiagnostics:
                     "frontier_steps": 2,
                 },
                 "input_provenance": dict(_PROVENANCE),
+                "scenario_grid": SOLVE_SCENARIO_GRID,
             }
         )
         from haute.routes._optimiser_solver import solver_worker_context
@@ -1522,7 +1629,6 @@ class TestInputSummary:
                 "max_iter": 12,
                 "tolerance": 1e-6,
                 "chunk_size": None,
-                "record_history": False,
             },
         }
         OptimiserSolveResult.model_validate(job["result"])

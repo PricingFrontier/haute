@@ -583,6 +583,7 @@ function frontierPointSummaryFromSelect(selectResult: FrontierSelectResponse): F
     cd_iterations: selectResult.cd_iterations ?? null,
     clamp_rate: selectResult.clamp_rate ?? null,
     history: selectResult.history ?? null,
+    ratebook_cd_trace: selectResult.ratebook_cd_trace ?? null,
     scenario_value_stats: selectResult.scenario_value_stats ?? null,
     scenario_value_histogram: selectResult.scenario_value_histogram ?? null,
     factor_tables: selectResult.factor_tables ?? null,

@@ -18,6 +18,7 @@ import numpy as np
 import polars as pl
 import pytest
 from fastapi import HTTPException
+from price_contour import PerFactorRecord
 
 from haute._config_builder import _build_node_config
 from haute._execution_context import ExecutionProfile
@@ -46,12 +47,14 @@ from tests.conftest import build_test_input_snapshot, make_edge, make_graph
 from tests.job_store_support import replace_job, seed_job
 from tests.optimiser_fixtures import (
     SOLVE_PROVENANCE,
+    SOLVE_SCENARIO_GRID,
     library_frontier_frame,
     logged_json_artifacts,
     make_frontier_data,
     make_frontier_point,
     make_input_summary,
     make_solved_result,
+    setup_grid_stub,
     typed_frontier_point,
     use_local_mlflow_store,
     with_solve_summary,
@@ -788,7 +791,7 @@ class TestSolveRoute:
         launch_called = threading.Event()
         with (
             patch.object(_solve_service, "_execute_pipeline", return_value=lazy_outputs),
-            patch.object(_solve_service, "_build_grid", return_value=object()),
+            patch.object(_solve_service, "_build_grid", return_value=setup_grid_stub()),
             patch.object(
                 _solve_service,
                 "_launch_background",
@@ -832,7 +835,7 @@ class TestSolveRoute:
             patch.object(service, "_execute_pipeline", side_effect=slow_execute),
             patch.object(service, "_validate_and_project", return_value=(["volume"], scored_lf)),
             patch.object(service, "_extract_factors", return_value=None),
-            patch.object(service, "_build_grid", return_value=object()),
+            patch.object(service, "_build_grid", return_value=setup_grid_stub()),
             patch.object(service, "_launch_background", side_effect=mark_launched),
         ):
             response = service.start(body)
@@ -892,7 +895,13 @@ class TestSolveRoute:
         body = OptimiserSolveRequest(graph=graph, node_id="opt")
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
         failure = InputPreparationError(
             "Preparing this Data Input's snapshot failed.",
             node_id="source",
@@ -932,7 +941,13 @@ class TestSolveRoute:
         body = OptimiserSolveRequest(graph=graph, node_id="opt")
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
         failure = InputPreparationError(
             "Preparing this Data Input's snapshot failed.",
             node_id="source",
@@ -1087,7 +1102,13 @@ class TestSolveRoute:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
         context = ExecutionContext(
             operation="optimiser_solve",
             profile=ExecutionProfile.OPTIMISER_SETUP,
@@ -1215,7 +1236,7 @@ class TestSolveRoute:
                     }
                 ),
             ),
-            patch.object(_solve_service, "_build_grid", return_value=object()),
+            patch.object(_solve_service, "_build_grid", return_value=setup_grid_stub()),
             patch.object(
                 _solve_service,
                 "_launch_background",
@@ -1276,6 +1297,7 @@ class TestStatusRoute:
                     "frontier": frontier_data,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -2358,7 +2380,7 @@ class TestEstimateRoute:
 
         with (
             patch.object(service, "_execute_pipeline", return_value=lazy_outputs),
-            patch.object(service, "_build_grid", return_value=object()),
+            patch.object(service, "_build_grid", return_value=setup_grid_stub()),
             patch.object(service, "_launch_background", return_value=None),
         ):
             solve_started = service.start(solve_body)
@@ -5318,6 +5340,7 @@ def _ratebook_solve_result_namespace(
     clamp_rate: float = 0.04,
     factor_tables: dict[str, dict[str, float]] | None = None,
     constraint_bounds: dict[str, float] | None = None,
+    per_factor_results: list[PerFactorRecord] | None = None,
 ) -> SimpleNamespace:
     """Mock shaped like the REAL ``price_contour.RatebookResult``.
 
@@ -5327,17 +5350,20 @@ def _ratebook_solve_result_namespace(
     ratebook solve must use this shape: a phantom ``dataframe=`` would
     make ``_finalize_solve_result`` persist an apply artifact and
     scenario stats that real ratebook solves never produce (3b.9).
+
+    ``per_factor_results`` defaults to one pass over ``region`` ending on the
+    result's totals and λ, as a real solve's CD trace does.
     """
+    total_constraints = total_constraints if total_constraints is not None else {"volume": 0.97}
+    lambdas = lambdas if lambdas is not None else {"volume": 0.7}
     return SimpleNamespace(
         total_objective=total_objective,
         baseline_objective=baseline_objective,
-        total_constraints=(
-            total_constraints if total_constraints is not None else {"volume": 0.97}
-        ),
+        total_constraints=total_constraints,
         baseline_constraints=(
             baseline_constraints if baseline_constraints is not None else {"volume": 0.88}
         ),
-        lambdas=lambdas if lambdas is not None else {"volume": 0.7},
+        lambdas=lambdas,
         constraint_bounds=constraint_bounds if constraint_bounds is not None else {"volume": 0.9},
         converged=True,
         cd_iterations=cd_iterations,
@@ -5348,7 +5374,40 @@ def _ratebook_solve_result_namespace(
             if factor_tables is not None
             else {"region": {"North": 1.08, "South": 0.92}}
         ),
-        per_factor_results=[],
+        per_factor_results=(
+            per_factor_results
+            if per_factor_results is not None
+            else [
+                _per_factor_record(
+                    total_objective=total_objective,
+                    total_constraints=total_constraints,
+                    lambdas=lambdas,
+                )
+            ]
+        ),
+    )
+
+
+def _per_factor_record(
+    *,
+    cd_iteration: int = 1,
+    factor: str = "region",
+    factor_index: int = 0,
+    total_objective: float = 222.0,
+    total_constraints: dict[str, float] | None = None,
+    lambdas: dict[str, float] | None = None,
+) -> PerFactorRecord:
+    """One inner grouped solve of a ratebook coordinate descent, as price-contour records it."""
+    return PerFactorRecord(
+        cd_iteration=cd_iteration,
+        factor=factor,
+        factor_index=factor_index,
+        total_objective=total_objective,
+        total_constraints=total_constraints if total_constraints is not None else {"volume": 0.97},
+        lambdas=lambdas if lambdas is not None else {"volume": 0.7},
+        clamp_rate=0.04,
+        inner_iterations=4,
+        inner_converged=True,
     )
 
 
@@ -5395,6 +5454,7 @@ def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
         "scenario_value_histogram": {"counts": [1, 2], "edges": [0.9, 1.0, 1.1]},
         "diagnostics_errors": [],
         "input_summary": make_input_summary(),
+        "scenario_grid": SOLVE_SCENARIO_GRID,
     }
     seed_job(
         clean_job_store,
@@ -5566,7 +5626,7 @@ class TestRatebookSolve:
 class TestSolveWithHistory:
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_solve_with_history(self, client, scored_data):
-        graph = _make_optimiser_graph(scored_data, config={"record_history": True})
+        graph = _make_optimiser_graph(scored_data)
         resp = client.post(
             "/api/optimiser/solve",
             json={"graph": graph, "node_id": "opt"},
@@ -5938,6 +5998,7 @@ class TestFrontierRoute:
                     "converged": True,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "artifact_handles": {},
                 "created_at": time.time(),
@@ -6016,6 +6077,7 @@ class TestFrontierRoute:
                     "converged": True,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "artifact_handles": {},
                 "created_at": time.time(),
@@ -6097,6 +6159,7 @@ class TestFrontierRoute:
             "frontier": original_frontier,
             "diagnostics_errors": [],
             "input_summary": make_input_summary(),
+            "scenario_grid": SOLVE_SCENARIO_GRID,
         }
         seed_job(
             clean_job_store,
@@ -6221,6 +6284,7 @@ class TestFrontierRoute:
             "converged": True,
             "diagnostics_errors": [],
             "input_summary": make_input_summary(),
+            "scenario_grid": SOLVE_SCENARIO_GRID,
         }
         seed_job(
             clean_job_store,
@@ -7038,10 +7102,8 @@ class TestBuildArtifactPayload:
         }
         assert payload["stale_at_publish"] is True
 
-    def test_online_solver_settings_record_history_without_frontier(self):
-        job = with_solve_summary(
-            {"node_label": "o", "config": {"mode": "online", "record_history": True}}
-        )
+    def test_online_solver_settings_without_frontier(self):
+        job = with_solve_summary({"node_label": "o", "config": {"mode": "online"}})
         solve_result = SimpleNamespace(
             lambdas={},
             total_objective=1.0,
@@ -7056,7 +7118,6 @@ class TestBuildArtifactPayload:
             "max_iter": 50,
             "tolerance": 1e-6,
             "chunk_size": None,
-            "record_history": True,
         }
         assert payload["input_summary"]["n_quotes"] is None
 
@@ -7136,6 +7197,7 @@ class TestOptimiserMlflowLog:
                     "converged": True,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "publish_summary": None,
                 "created_at": time.time(),
@@ -7235,6 +7297,7 @@ class TestOptimiserMlflowLog:
                     "iterations": 10,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "publish_summary": {
                     "params": {"mode": "online"},
@@ -8211,7 +8274,7 @@ class TestExecutePipelineArgs:
                 "_execute_pipeline",
                 return_value={"source": scored_lf},
             ) as execute,
-            patch.object(service, "_build_grid", return_value=object()),
+            patch.object(service, "_build_grid", return_value=setup_grid_stub()),
             patch.object(
                 service,
                 "_launch_background",
@@ -8315,7 +8378,13 @@ class TestExecutePipelineArgs:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         # Capture the kwargs the lazy execution is called with.
         captured = {}
@@ -8364,7 +8433,13 @@ class TestExecutePipelineArgs:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         captured = {}
 
@@ -8493,7 +8568,13 @@ class TestExecutePipelineArgs:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         with (
             contextlib.ExitStack() as resources,
@@ -8564,7 +8645,13 @@ class TestExecutePipelineArgs:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         captured = {}
 
@@ -8596,7 +8683,13 @@ class TestExecutePipelineArgs:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         captured = {}
 
@@ -8630,7 +8723,13 @@ class TestBuildGridBoundedSink:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         # Build a real scored LazyFrame
         n_quotes, n_steps = 10, 3
@@ -8665,7 +8764,7 @@ class TestBuildGridBoundedSink:
             collected = lf.collect(engine="streaming")
             collected.write_parquet(path)
 
-        mock_grid = MagicMock()
+        mock_grid = MagicMock(scenario_values=[0.9, 1.1])
         with (
             patch(
                 "haute.routes._optimiser_input.bounded_sink",
@@ -8676,7 +8775,7 @@ class TestBuildGridBoundedSink:
                 return_value=mock_grid,
             ) as mock_build,
         ):
-            result = service._build_grid(scored_lf, ["volume"], config, "opt", job_id)
+            result = service._build_grid(scored_lf, ["volume"], config, "opt", job_id).grid
 
         assert mock_sink.call_count == 1
         # build_grid_from_parquet_chunked was called with correct chunking and column mappings
@@ -8704,7 +8803,13 @@ class TestExecutePipelineCleanup:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         captured = {}
 
@@ -8740,7 +8845,13 @@ class TestExecutePipelineCleanup:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         plans = []
 
@@ -8778,7 +8889,13 @@ class TestExecutePipelineCleanup:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         def failing_execute_lazy(*args, **kwargs):
             raise RuntimeError("boom")
@@ -9122,6 +9239,7 @@ class TestFrontierSelect:
                     "converged": True,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "frontier_data": {
                     "frontier_generation": 0,
@@ -9308,6 +9426,7 @@ class TestFrontierSelect:
                     "converged": True,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "artifact_handles": {},
             },
@@ -9388,6 +9507,7 @@ class TestFrontierSelect:
                     "converged": True,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "artifact_handles": {},
             },
@@ -9450,6 +9570,7 @@ class TestFrontierSelect:
                     "converged": True,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "artifact_handles": {},
                 "created_at": time.time(),
@@ -9650,6 +9771,7 @@ class TestFinalizeSolveResult:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {"constraints": {"volume": {"min": 0.9}}},
             }
@@ -9680,6 +9802,7 @@ class TestFinalizeSolveResult:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {"constraints": {"volume": {"min": 0.9}}},
             }
@@ -9709,6 +9832,7 @@ class TestFinalizeSolveResult:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {"constraints": {"volume": {"min": 0.9}}},
             }
@@ -9748,7 +9872,12 @@ class TestFinalizeSolveResult:
             if frontier_enabled is not None:
                 config["frontier_enabled"] = frontier_enabled
             job_id = store.create_job(
-                {"input_provenance": SOLVE_PROVENANCE, "status": "running", "config": config}
+                {
+                    "input_provenance": SOLVE_PROVENANCE,
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "status": "running",
+                    "config": config,
+                }
             )
             solve_result = self._make_solve_result()
             mock_solver = MagicMock()
@@ -9776,6 +9905,7 @@ class TestFinalizeSolveResult:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
@@ -9812,6 +9942,7 @@ class TestFinalizeSolveResult:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
@@ -9852,6 +9983,7 @@ class TestFinalizeSolveResult:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": constraints,
@@ -9889,6 +10021,7 @@ class TestFinalizeSolveResult:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
@@ -9949,6 +10082,7 @@ class TestFinalizeSolveResult:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "start_time": time.monotonic() - 5.0,
                 "config": {
@@ -10007,6 +10141,7 @@ class TestFinalizeSolveResult:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
@@ -10044,6 +10179,7 @@ class TestFinalizeSolveResult:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
@@ -10113,6 +10249,7 @@ class TestFinalizeSolveResult:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
@@ -10150,6 +10287,7 @@ class TestFinalizeSolveResult:
         job_id = clean_job_store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
@@ -10198,6 +10336,7 @@ class TestFinalizeSolveResult:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
@@ -10271,6 +10410,7 @@ class TestFinalizeSolveResult:
             job_id = store.create_job(
                 {
                     "input_provenance": SOLVE_PROVENANCE,
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                     "status": "running",
                     "config": {"constraints": {"volume": {"min": 0.9}}},
                 }
@@ -10302,6 +10442,7 @@ class TestFinalizeSolveResult:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {"constraints": {"volume": {"min": 0.9}}},
             }
@@ -10340,6 +10481,7 @@ class TestFinalizeSolveResult:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {"constraints": {"volume": {"min": 0.9}}},
             }
@@ -10381,6 +10523,7 @@ class TestFinalizeSolveResult:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {"constraints": {"volume": {"min": 0.9}}},
             }
@@ -10468,6 +10611,7 @@ class TestSolveStatusEdgeCases:
                     "converged": True,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "frontier_data": make_frontier_data([make_frontier_point()]),
                 "created_at": time.time(),
@@ -10873,6 +11017,7 @@ class TestApplyLambdasUnit:
                     },
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 }
             )
 
@@ -10999,6 +11144,7 @@ class TestRunFrontierUnit:
             "converged": True,
             "diagnostics_errors": [],
             "input_summary": make_input_summary(),
+            "scenario_grid": SOLVE_SCENARIO_GRID,
         }
         old_frontier = {
             "status": "ok",
@@ -11107,6 +11253,7 @@ class TestRunFrontierUnit:
             "converged": True,
             "diagnostics_errors": [],
             "input_summary": make_input_summary(),
+            "scenario_grid": SOLVE_SCENARIO_GRID,
         }
         seed_job(
             clean_job_store,
@@ -11207,6 +11354,7 @@ class TestRunFrontierUnit:
             "converged": True,
             "diagnostics_errors": [],
             "input_summary": make_input_summary(),
+            "scenario_grid": SOLVE_SCENARIO_GRID,
         }
         mock_solver = MagicMock()
 
@@ -11428,6 +11576,7 @@ def _anchor_result(**overrides: object) -> dict[str, object]:
         "iterations": 10,
         "frontier_generation": 0,
         "input_summary": make_input_summary(),
+        "scenario_grid": SOLVE_SCENARIO_GRID,
         "diagnostics_errors": [],
         **overrides,
     }
@@ -11576,6 +11725,7 @@ class TestSelectFrontierPointIdempotent:
                     "selected_frontier_point": 2,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "solver": MagicMock(),
                 "quote_grid": MagicMock(),
@@ -11644,6 +11794,7 @@ class TestSelectFrontierPointIdempotent:
                     "selected_frontier_point": 2,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -11687,6 +11838,7 @@ class TestSelectFrontierPointIdempotent:
                     "converged": True,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "result": {
                     "frontier_generation": 0,
@@ -11699,6 +11851,7 @@ class TestSelectFrontierPointIdempotent:
                     "converged": True,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "frontier_data": {
                     "frontier_generation": 0,
@@ -11762,6 +11915,7 @@ class TestSelectFrontierPointIdempotent:
                     "converged": True,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "result": {
                     "frontier_generation": 0,
@@ -11775,6 +11929,7 @@ class TestSelectFrontierPointIdempotent:
                     "selected_frontier_point": 1,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "frontier_data": {
                     "frontier_generation": 0,
@@ -11858,6 +12013,7 @@ class TestSelectFrontierPointResolve:
                     "converged": True,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "artifact_handles": {},
                 "created_at": time.time(),
@@ -12501,6 +12657,7 @@ class TestMlflowLogExtended:
                 "converged": True,
                 "diagnostics_errors": [],
                 "input_summary": make_input_summary(),
+                "scenario_grid": SOLVE_SCENARIO_GRID,
             },
             "publish_summary": mock_solver.summary.return_value,
             "node_label": "my_opt",
@@ -12808,6 +12965,7 @@ class TestSolveStatusTimeout:
                         "converged": True,
                         "diagnostics_errors": [],
                         "input_summary": make_input_summary(),
+                        "scenario_grid": SOLVE_SCENARIO_GRID,
                     },
                     "created_at": time.time(),
                     "completed_at": time.time(),
@@ -12937,6 +13095,7 @@ class TestSolveStatusTimeout:
                     "converged": True,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -12972,6 +13131,7 @@ class TestSolveStatusTimeout:
                     "converged": True,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "created_at": time.time(),
                 "completed_at": time.time(),
@@ -13005,7 +13165,7 @@ class TestSolveOnlineUnit:
     """Unit tests for _solve_online."""
 
     def test_solve_online_initializes_solver_and_records_history(self):
-        """_solve_online creates OnlineOptimiser and passes record_history."""
+        """_solve_online always asks OnlineOptimiser to record its history (Q5)."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_solver import SolveContext, _solve_online
 
@@ -13013,6 +13173,7 @@ class TestSolveOnlineUnit:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
@@ -13044,7 +13205,6 @@ class TestSolveOnlineUnit:
             "max_iter": 20,
             "chunk_size": 1000,
             "tolerance": 1e-4,
-            "record_history": True,
         }
 
         with patch("price_contour.OnlineOptimiser") as mock_solver:
@@ -13074,10 +13234,11 @@ class TestSolveOnlineUnit:
         job = store.require_job(job_id)
         assert job["status"] == "completed"
         assert job["result"]["iterations"] == 15
-        assert job["result"]["history"] is not None
+        assert job["result"]["history"] == [{"iteration": 0, "total_objective": 80.0}]
+        assert job["result"]["ratebook_cd_trace"] is None
 
-    def test_solve_online_no_history(self):
-        """When record_history is False, history is None in result."""
+    def test_solve_online_without_library_history_fails_loudly(self):
+        """History is always requested, so a result without one is a library defect."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_solver import SolveContext, _solve_online
 
@@ -13085,6 +13246,7 @@ class TestSolveOnlineUnit:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {"constraints": {}, "objective": "income"},
             }
@@ -13110,10 +13272,12 @@ class TestSolveOnlineUnit:
         config = {
             "objective": "income",
             "constraints": {},
-            "record_history": False,
         }
 
-        with patch("price_contour.OnlineOptimiser") as mock_solver:
+        with (
+            patch("price_contour.OnlineOptimiser") as mock_solver,
+            pytest.raises(RuntimeError, match="no history"),
+        ):
             mock_solver.return_value.solve.return_value = mock_result
             _solve_online(
                 SolveContext(
@@ -13127,8 +13291,7 @@ class TestSolveOnlineUnit:
                 config=config,
             )
 
-        job = store.require_job(job_id)
-        assert job["result"]["history"] is None
+        assert store.require_job(job_id).get("result") is None
 
     def test_solve_online_requires_worker_start_time(self):
         from haute.routes._job_store import JobStore
@@ -13136,7 +13299,12 @@ class TestSolveOnlineUnit:
 
         store = JobStore()
         job_id = store.create_job(
-            {"input_provenance": SOLVE_PROVENANCE, "status": "running", "config": {}}
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {},
+            }
         )
 
         with (
@@ -13168,7 +13336,12 @@ class TestSolveRatebookUnit:
 
         store = JobStore()
         job_id = store.create_job(
-            {"input_provenance": SOLVE_PROVENANCE, "status": "running", "config": {}}
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {},
+            }
         )
         mock_grid = MagicMock()
 
@@ -13192,7 +13365,12 @@ class TestSolveRatebookUnit:
 
         store = JobStore()
         job_id = store.create_job(
-            {"input_provenance": SOLVE_PROVENANCE, "status": "running", "config": {}}
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {},
+            }
         )
 
         with pytest.raises(RuntimeError, match="SolveContext.start_time"):
@@ -13215,7 +13393,12 @@ class TestSolveRatebookUnit:
 
         store = JobStore()
         job_id = store.create_job(
-            {"input_provenance": SOLVE_PROVENANCE, "status": "running", "config": {}}
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {},
+            }
         )
         mock_grid = MagicMock()
         factors_df = pl.DataFrame({"quote_id": ["q1"], "existing_col": ["A"]})
@@ -13254,6 +13437,7 @@ class TestSolveRatebookUnit:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {"constraints": {"volume": {"min": 0.9}}},
             }
@@ -13322,6 +13506,112 @@ class TestSolveRatebookUnit:
             # The collar is the grid's first and last scenario value (Q17).
             assert job["result"]["combined_factor_bounds"] == {"min": 0.9, "max": 1.1}
             assert job["result"]["clamp_rate"] == mock_result.clamp_rate
+            # The CD trace is the library's per-factor records, by name.
+            assert job["result"]["history"] is None
+            assert job["result"]["ratebook_cd_trace"] == {
+                "records": [
+                    {
+                        "cd_iteration": 1,
+                        "factor": "region",
+                        "factor_index": 0,
+                        "total_objective": 100.0,
+                        "total_constraints": {"volume": 0.92},
+                        "lambdas": {"volume": 0.5},
+                    }
+                ],
+                "truncated": False,
+            }
+
+    @staticmethod
+    def _solve_ratebook_with(mock_result: SimpleNamespace) -> dict[str, Any]:
+        """Run ``_solve_ratebook`` over a one-factor book with *mock_result*; the job."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._optimiser_solver import _solve_ratebook
+
+        store = JobStore()
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {"constraints": {"volume": {"min": 0.9}}},
+            }
+        )
+        mock_grid = MagicMock()
+        mock_grid.quote_ids = ["q1", "q2"]
+        mock_grid.scenario_values = [0.9, 1.0, 1.1]
+        mock_grid.n_quotes = 2
+        factors_df = pl.DataFrame({"quote_id": ["q1", "q2"], "region": ["North", "South"]})
+        config = {
+            "objective": "income",
+            "constraints": {"volume": {"min": 0.9}},
+            "factor_columns": [["region"]],
+            "quote_id": "quote_id",
+        }
+        with (
+            _persisted_ratebook_factors_handle(factors_df) as factors_handle,
+            patch("price_contour.RatebookOptimiser") as mock_solver,
+        ):
+            mock_solver.return_value.solve.return_value = mock_result
+            _solve_ratebook(
+                SolveContext(
+                    job_id=job_id,
+                    node_id="opt",
+                    mode="ratebook",
+                    store=store,
+                    start_time=time.monotonic(),
+                ),
+                quote_grid=mock_grid,
+                config=config,
+                ratebook_factors_handle=factors_handle,
+            )
+        return store.require_job(job_id)
+
+    def test_ratebook_cd_trace_keeps_the_last_records_past_its_cap(self, monkeypatch):
+        monkeypatch.setenv("HAUTE_OPTIMISER_CD_TRACE_LIMIT", "2")
+        records = [
+            _per_factor_record(cd_iteration=cd_pass, total_objective=float(cd_pass))
+            for cd_pass in (1, 2, 3)
+        ]
+
+        job = self._solve_ratebook_with(
+            _ratebook_solve_result_namespace(per_factor_results=records)
+        )
+
+        trace = job["result"]["ratebook_cd_trace"]
+        assert trace["truncated"] is True
+        assert [record["cd_iteration"] for record in trace["records"]] == [2, 3]
+
+    def test_ratebook_cd_trace_at_its_cap_is_not_truncated(self, monkeypatch):
+        monkeypatch.setenv("HAUTE_OPTIMISER_CD_TRACE_LIMIT", "2")
+        records = [_per_factor_record(cd_iteration=cd_pass) for cd_pass in (1, 2)]
+
+        job = self._solve_ratebook_with(
+            _ratebook_solve_result_namespace(per_factor_results=records)
+        )
+
+        assert job["result"]["ratebook_cd_trace"]["truncated"] is False
+        assert len(job["result"]["ratebook_cd_trace"]["records"]) == 2
+
+    @pytest.mark.parametrize(
+        ("records", "message"),
+        [
+            pytest.param([], "at least 1", id="no-records"),
+            pytest.param(
+                [_per_factor_record(total_constraints={"other": 1.0}, lambdas={"other": 0.1})],
+                "constraint names",
+                id="wrong-constraint-names",
+            ),
+            pytest.param(
+                [_per_factor_record(total_objective=float("nan"))],
+                "finite",
+                id="non-finite-objective",
+            ),
+        ],
+    )
+    def test_malformed_ratebook_cd_trace_fails_the_solve_loudly(self, records, message):
+        with pytest.raises(ValueError, match=message):
+            self._solve_ratebook_with(_ratebook_solve_result_namespace(per_factor_results=records))
 
     def test_solve_ratebook_real_shape_persists_no_apply_artifact_or_stats(self):
         """3b.9 characterization pin: the REAL ``RatebookResult`` has no
@@ -13341,6 +13631,7 @@ class TestSolveRatebookUnit:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {"constraints": {"volume": {"min": 0.9}}},
             }
@@ -13392,6 +13683,7 @@ class TestSolveRatebookUnit:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {"constraints": {}},
             }
@@ -13748,6 +14040,7 @@ class TestSolveRatebookUnit:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {"constraints": {"volume": {"min": 0.9}}},
             }
@@ -13805,6 +14098,7 @@ class TestSolveRatebookUnit:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {
                     "constraints": {"volume": {"min": 0.9}},
@@ -13904,6 +14198,7 @@ class TestSolveRatebookUnit:
         job_id = store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "config": {"constraints": {}},
             }
@@ -14135,7 +14430,13 @@ class TestExecutePipelineExtended:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         captured_chunk_sizes = []
 
@@ -14172,7 +14473,13 @@ class TestExecutePipelineExtended:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         with (
             contextlib.ExitStack() as resources,
@@ -14298,7 +14605,13 @@ class TestExecutePipelineExtended:
         body = OptimiserSolveRequest(graph=graph.model_dump(), node_id="opt")
 
         try:
-            job_id_1 = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+            job_id_1 = store.create_job(
+                {
+                    "input_provenance": SOLVE_PROVENANCE,
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "status": "running",
+                }
+            )
             with contextlib.ExitStack() as resources:
                 outputs = service._execute_pipeline(
                     body,
@@ -14317,7 +14630,13 @@ class TestExecutePipelineExtended:
             preview_res = execute_graph(graph, target_node_id="t")
             assert preview_res["t"].preview[0]["v"] == 200
 
-            job_id_2 = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+            job_id_2 = store.create_job(
+                {
+                    "input_provenance": SOLVE_PROVENANCE,
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "status": "running",
+                }
+            )
             with contextlib.ExitStack() as resources:
                 outputs_2 = service._execute_pipeline(
                     body,
@@ -14403,7 +14722,13 @@ class TestExecutePipelineExtended:
         initial_hits = _compile_preamble.cache_info().hits
 
         try:
-            job_id_1 = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+            job_id_1 = store.create_job(
+                {
+                    "input_provenance": SOLVE_PROVENANCE,
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "status": "running",
+                }
+            )
             with contextlib.ExitStack() as resources:
                 outputs_1 = service._execute_pipeline(
                     body,
@@ -14413,7 +14738,13 @@ class TestExecutePipelineExtended:
                 )
                 val_1 = outputs_1["t"].collect()["v"][0]
 
-            job_id_2 = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+            job_id_2 = store.create_job(
+                {
+                    "input_provenance": SOLVE_PROVENANCE,
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
+                    "status": "running",
+                }
+            )
             with contextlib.ExitStack() as resources:
                 outputs_2 = service._execute_pipeline(
                     body,
@@ -14441,7 +14772,13 @@ class TestValidateAndProject:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         # LazyFrame missing 'volume' column
         source_lf = pl.LazyFrame(
@@ -14473,7 +14810,13 @@ class TestValidateAndProject:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         # Include a null quote_id row
         source_lf = pl.LazyFrame(
@@ -14515,7 +14858,13 @@ class TestValidateAndProject:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         source_lf = pl.LazyFrame(
             {
@@ -14550,7 +14899,13 @@ class TestValidateAndProject:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         source_lf = pl.LazyFrame(
             {
@@ -14583,7 +14938,13 @@ class TestBuildGrid:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         scored_lf = pl.LazyFrame(
             {
@@ -14604,7 +14965,7 @@ class TestBuildGrid:
             "chunk_size": 1_024,
         }
 
-        mock_grid = MagicMock()
+        mock_grid = MagicMock(scenario_values=[0.9, 1.1])
         with (
             patch("haute.routes._optimiser_input.bounded_sink") as mock_sink,
             patch(
@@ -14618,7 +14979,7 @@ class TestBuildGrid:
 
             mock_sink.side_effect = do_sink
 
-            result = service._build_grid(scored_lf, ["vol"], config, "opt", job_id)
+            result = service._build_grid(scored_lf, ["vol"], config, "opt", job_id).grid
 
         assert result is mock_grid
         mock_build.assert_called_once()
@@ -14643,7 +15004,12 @@ class TestBuildGrid:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job(
-            {"input_provenance": SOLVE_PROVENANCE, "status": "running", "config": {}}
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {},
+            }
         )
 
         scored_lf = pl.LazyFrame(
@@ -14664,7 +15030,7 @@ class TestBuildGrid:
             "scenario_value": "price_factor",
         }
 
-        mock_grid = MagicMock()
+        mock_grid = MagicMock(scenario_values=[0.9, 1.1])
         expected_chunk_size = None
 
         def patched_bounded_sink(lf, path, **kw):
@@ -14691,7 +15057,7 @@ class TestBuildGrid:
         ):
             mock_sink.side_effect = patched_bounded_sink
 
-            result = service._build_grid(scored_lf, ["vol"], config, "opt", job_id)
+            result = service._build_grid(scored_lf, ["vol"], config, "opt", job_id).grid
 
         assert result is mock_grid
         mock_build.assert_called_once()
@@ -14715,7 +15081,12 @@ class TestBuildGrid:
         store = JobStore()
         service = OptimiserSolveService(store)
         job_id = store.create_job(
-            {"input_provenance": SOLVE_PROVENANCE, "status": "running", "config": {"chunk_size": 7}}
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+                "config": {"chunk_size": 7},
+            }
         )
         scored_lf = pl.LazyFrame(
             {
@@ -14739,7 +15110,7 @@ class TestBuildGrid:
             ),
             patch(
                 "price_contour.build_grid_from_parquet_chunked",
-                return_value=MagicMock(),
+                return_value=MagicMock(scenario_values=[1.0]),
             ) as mock_build,
         ):
             service._build_grid(scored_lf, ["volume"], config, "opt", job_id)
@@ -14826,7 +15197,13 @@ class TestBuildGrid:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
         scored_lf = pl.LazyFrame(
             {
                 "quote_id": pl.Series(["q1"], dtype=pl.Utf8),
@@ -14861,7 +15238,13 @@ class TestBuildGrid:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
         config = {
             "objective": "income",
             "constraints": {"vol": {"min": 0.9}},
@@ -14885,7 +15268,7 @@ class TestBuildGrid:
             }
         )
 
-        grid = service._build_grid(scored_lf, ["vol"], config, "opt", job_id)
+        grid = service._build_grid(scored_lf, ["vol"], config, "opt", job_id).grid
 
         assert grid.quote_ids == ["q1", "q2"]
         assert grid.n_quotes == 2
@@ -14901,7 +15284,13 @@ class TestBuildGrid:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         scored_lf = pl.LazyFrame(
             {
@@ -14951,7 +15340,13 @@ class TestBuildGrid:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
         scored_lf = pl.LazyFrame(
             {
                 "quote_id": pl.Series(["q1"], dtype=pl.Utf8),
@@ -14991,7 +15386,13 @@ class TestResolveDataInputFrame:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         mock_lf = MagicMock()
         lazy_outputs = {"data_node": mock_lf, "opt": MagicMock()}
@@ -15011,7 +15412,13 @@ class TestResolveDataInputFrame:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         mock_lf = MagicMock()
         lazy_outputs = {"opt": mock_lf}
@@ -15037,7 +15444,13 @@ class TestResolveDataInputFrame:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         lazy_outputs = {"opt": MagicMock()}
         config = {"data_input": "missing_data"}
@@ -15062,7 +15475,13 @@ class TestResolveDataInputFrame:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         lazy_outputs = {}
         config = {}
@@ -15112,7 +15531,11 @@ class TestLaunchBackground:
 
         service = OptimiserSolveService(clean_job_store)
         job_id = clean_job_store.create_job(
-            {"input_provenance": SOLVE_PROVENANCE, "status": "running"}
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
         )
 
         mock_grid = MagicMock()
@@ -15138,7 +15561,11 @@ class TestLaunchBackground:
 
         service = OptimiserSolveService(clean_job_store)
         job_id = clean_job_store.create_job(
-            {"input_provenance": SOLVE_PROVENANCE, "status": "running"}
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
         )
 
         with patch("haute.routes._optimiser_service._solve_online"):
@@ -15160,7 +15587,11 @@ class TestLaunchBackground:
 
         service = OptimiserSolveService(clean_job_store)
         job_id = clean_job_store.create_job(
-            {"input_provenance": SOLVE_PROVENANCE, "status": "running"}
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
         )
 
         with (
@@ -15192,6 +15623,7 @@ class TestLaunchBackground:
         job_id = clean_job_store.create_job(
             {
                 "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
                 "progress": 0.0,
                 "message": "Starting",
@@ -15897,7 +16329,13 @@ class TestExecutePipelineHTTPExceptionPassthrough:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         original_exc = HTTPException(status_code=403, detail="forbidden")
 
@@ -15928,7 +16366,13 @@ class TestBuildGridHTTPExceptionPassthrough:
 
         store = JobStore()
         service = OptimiserSolveService(store)
-        job_id = store.create_job({"input_provenance": SOLVE_PROVENANCE, "status": "running"})
+        job_id = store.create_job(
+            {
+                "input_provenance": SOLVE_PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
+                "status": "running",
+            }
+        )
 
         scored_lf = pl.LazyFrame(
             {
@@ -16550,6 +16994,7 @@ class TestOptimiserHelperValidators:
             "factor_tables": {"region": [{"value": 1.0}]},
             "diagnostics_errors": [],
             "input_summary": make_input_summary(),
+            "scenario_grid": SOLVE_SCENARIO_GRID,
         }
         ns = _summary_solve_result(result)
         assert ns.lambdas == {"a": 0.1}
@@ -16826,6 +17271,7 @@ class TestOptimiserMutationBoundaries:
                     "converged": True,
                     "diagnostics_errors": [],
                     "input_summary": make_input_summary(),
+                    "scenario_grid": SOLVE_SCENARIO_GRID,
                 },
                 "artifact_handles": {},
                 "created_at": time.time(),

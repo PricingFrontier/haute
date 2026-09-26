@@ -830,6 +830,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
         ),
         NodeType.OPTIMISER: _classify_config_fields(
             node_config=(
+                "analysis_columns",
                 "candidate_max",
                 "candidate_min",
                 "candidate_steps",
@@ -847,7 +848,6 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "mode",
                 "objective",
                 "quote_id",
-                "record_history",
                 "result_export_path",
                 "scenario_index",
                 "scenario_value",
@@ -855,6 +855,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "tolerance",
             ),
             source_selection=(
+                "analysis_input",
                 "banding_source",
                 "data_input",
             ),

@@ -7,7 +7,7 @@
  * `iterations`, `solver_path` and `sv_*`) with point summaries derived from
  * them as the backend's `frontier_point_summary` does (statistics from `sv_*`,
  * no histogram or history). The ratebook solve carries factor tables with
- * `quote_count`.
+ * `quote_count` and a coordinate-descent trace.
  * Tests override only what they are about, so selected-point views run on
  * real-shaped data rather than nulls.
  */
@@ -17,6 +17,7 @@ import type {
   FrontierPointSummary,
   OptimiserHistoryEntry,
   OptimiserOnlineFrontierPoint,
+  OptimiserRatebookCdTrace,
   OptimiserRatebookFrontierPoint,
   OptimiserScenarioValueHistogram,
   OptimiserScenarioValueStats,
@@ -171,6 +172,7 @@ export function makePointSummary(overrides: Partial<FrontierPointSummary> = {}):
     cd_iterations: null,
     clamp_rate: null,
     history: null,
+    ratebook_cd_trace: null,
     scenario_value_stats: makeScenarioValueStats(),
     scenario_value_histogram: null,
     factor_tables: null,
@@ -212,6 +214,26 @@ export function makeRatebookFactorTables(): FactorTables {
   }
 }
 
+/** The ratebook solve's coordinate-descent trace: four passes over `region`
+ *  then `vehicle_age`, the objective rising and `volume` settling above its
+ *  0.9 bound, ending on the solve's totals. */
+export function makeRatebookCdTrace(): OptimiserRatebookCdTrace {
+  const records = [1, 2, 3, 4].flatMap((cdPass) =>
+    ["region", "vehicle_age"].map((factor, factorIndex) => {
+      const step = (cdPass - 1) * 2 + factorIndex
+      return {
+        cd_iteration: cdPass,
+        factor,
+        factor_index: factorIndex,
+        total_objective: 93 + step,
+        total_constraints: { volume: 0.99 - step * 0.01 },
+        lambdas: { volume: 0.03 + step * 0.01 },
+      }
+    }),
+  )
+  return { records, truncated: false }
+}
+
 /** A ratebook solve with one `volume` min constraint, solved at 0.9. */
 export function makeRatebookSolveResult(
   overrides: Partial<OptimiserSolveResult> = {},
@@ -232,6 +254,7 @@ export function makeRatebookSolveResult(
     clamp_rate: 0.02,
     factor_tables: makeRatebookFactorTables(),
     combined_factor_bounds: { min: 0.8, max: 1.2 },
+    ratebook_cd_trace: makeRatebookCdTrace(),
     scenario_value_stats: makeScenarioValueStats(),
     scenario_value_histogram: makeScenarioValueHistogram(),
     ...overrides,

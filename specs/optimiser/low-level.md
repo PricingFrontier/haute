@@ -8,8 +8,9 @@
 | `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService`: job admission, pipeline execution, setup orchestration over the steps in `_optimiser_input.py`, solver launch over `_optimiser_solver.py`, and background frontier-auto-range estimation. Each setup step is one orchestration method over a free step in `_optimiser_input.py`: `_recorded_setup_failures` records an `OptimiserSetupError` on the job as its terminal state and answers the matching `HTTPException`; chunk provenance is recorded by `_record_setup_chunking`; a ratebook factor-extraction refusal is recorded by the setup failure mapping instead. It owns no filesystem deletion. |
 | `src/haute/routes/_optimiser_solver.py` | The solver layer: the worker-context guard (`solver_worker_context`, `require_solver_worker_context`), the heavy entry points (`_solve_online`, `_solve_ratebook`, `_compute_frontier`) with `SolveContext`, result finalisation (`_finalize_solve_result`, the inline frontier, scenario-value statistics), and ratebook factor-table canonicalisation, ordering and serialisation. |
 | `src/haute/routes/_optimiser_frontier.py` | The frontier domain: `OptimiserFrontierService` (sweep admission, `start_sweep`/`sweep_status`/`cancel_sweep`, background `_run_sweep` publication, `select_point`, `materialise_ratebook_point`, `materialise_point_apply`, `solve_result_for_selected_point`, and a `parent_lock` per parent solve) and the pure frontier range, point and artifact-handle helpers. |
-| `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`, `_solve_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the value-contract expressions and their failure details, solver-input chunk sizing (`_chunk_size_decision_for_parquet`), resident-grid admission (`_admit_resident_grid`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `write_solver_input`, `grid_chunk_decision` (returns the chunk size and its provenance) and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. The input estimate's pre-flight and single scan (`estimate_input_metrics`) and its typed answers (`ESTIMATE_MAPPED_ERRORS`, `estimate_failure_http_exception`) live here too, shared by the in-process count and the pool worker. |
-| `src/haute/routes/_optimiser_artifacts.py` | The owned artifact lifecycle: the two ownership-marked artifact families (apply result, ratebook factors) — their roots, handle validation, persistence, loading, job-store cleaners, orphan cleanup and stale-startup reaping (`reap_stale_optimiser_artifacts`) — and setup's temporary files (the solver-input parquet, a worker's ratebook factors directory, the range reducer's spill directory). |
+| `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`, `_solve_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the analysis-column plan (`resolve_analysis_plan`, `AnalysisPlan`), the value-contract expressions and their failure details, solver-input chunk sizing (`_chunk_size_decision_for_parquet`), resident-grid admission (`_admit_resident_grid`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `resolve_analysis_frame`, `write_solver_input`, `grid_chunk_decision` (returns the chunk size and its provenance) and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. The input estimate's pre-flight and single scan (`estimate_input_metrics`) and its typed answers (`ESTIMATE_MAPPED_ERRORS`, `estimate_failure_http_exception`) live here too, shared by the in-process count and the pool worker. |
+| `src/haute/routes/_optimiser_artifacts.py` | The owned artifact lifecycle: the three ownership-marked artifact families (apply result, ratebook factors, quote analysis) — their roots, handle validation, persistence, loading, job-store cleaners, orphan cleanup and stale-startup reaping (`reap_stale_optimiser_artifacts`) — and setup's temporary files (the solver-input parquet, a worker's ratebook factors and quote-analysis directories, the range reducer's spill directory). |
+| `src/haute/routes/_optimiser_outcomes.py` | The per-quote analysis side table (OPT-V09A): `write_quote_analysis` (the streamed constant-within-quote check, the one-row-per-quote reduction into `quote_analysis.parquet`, the missing-quote count and the cardinality metadata), `AnalysisColumnNotConstantError`, the table's row-count check against the grid (`require_one_row_per_solved_quote`), the scenario-grid record (`scenario_grid_from_values`, `require_scenario_grid`) and the lease-scoped reader `collect_quote_analysis`. See "Analysis-column side table and scenario grid" below. |
 | `src/haute/routes/_optimiser_worker.py` | The hard-capped spawn workers that materialise optimiser inputs in process mode: `materialise_solve_input_worker` (solve setup's execute/validate/project/factor-extraction and the solver-input parquet) and `frontier_auto_range_worker` (the auto-range totals), their plain-data requests and outcomes, `SolveInput`, and `OptimiserWorkerFailure`, the child's terminal failure record that the parent replays onto the real job (raised there as `OptimiserWorkerFailureError`). It also holds the warm-pool estimate entrypoint `optimiser_estimate_worker`, which returns an `OptimiserEstimateOutcome` (the counts, or a status and detail) and records nothing. |
 | `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT`, `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_apply_preview_payload`, `limited_frontier_payload`. |
 | `src/haute/routes/_frontier_point_summary.py` | The one derivation of a frontier point's solve summary: `frontier_point_summary` (from a `price-contour` frontier row), `apply_frontier_point_summary` (overlays it on a base result) and `FrontierPointDataError` (a malformed point, carrying the HTTP status the route reports). See Frontier point summaries below. |
@@ -99,15 +100,22 @@ frame inside it converted to JSON records; `null` if the summary could not be bu
 the solve executes against, the graph's `source_file`, and the `graph_fingerprint` the setup
 single-flight key already computes), and, only while heavy state is retained, `solver`,
 `quote_grid`, `solve_result`, `factor_level_counts`, `factor_level_order`, `setup_chunking`.
-`publish_summary` and `input_provenance` are not heavy keys and survive every slimming.
+`scenario_grid` (recorded by setup right after the grid build, in both modes: the solver
+input's complete grid as `[{optimal_step, scenario_value}]`, see "Analysis-column side table and
+scenario grid"), and `artifact_handles["quote_analysis"]` when analysis columns are configured.
+`publish_summary`, `input_provenance` and `scenario_grid` are not heavy keys and survive every
+slimming.
 `_result_finite_validated_for` (private, never in a response) records the
 `(frontier_generation, selected_frontier_point)` whose `result` and `frontier_data` the status
 route last walked clean for NaN and Infinity (see the solve result contract below).
 
 ### Artifact handle shape
 
-`{"kind": "optimiser_apply_result" | "optimiser_ratebook_factors", "version": 1, "format":
-"parquet", "path": str, "directory": str, "row_count": int, ["size_bytes", "columns"]}`. Handles
+`{"kind": "optimiser_apply_result" | "optimiser_ratebook_factors" | "optimiser_quote_analysis",
+"version": 1, "format": "parquet", "path": str, "directory": str, "row_count": int,
+["size_bytes", "columns"]}`. A quote-analysis handle also carries `analysis_source`
+(`"data_input"` or `"side_input"`), `missing_quote_count` and `column_stats` (see
+"Analysis-column side table and scenario grid"). Handles
 are validated structurally on every load/cleanup (`_validate_server_owned_parquet_handle` in
 `src/haute/routes/_optimiser_service.py`) — kind/version/format must match exactly,
 `directory`/`path` must
@@ -239,7 +247,10 @@ are held until the grid is built and released on every exit. No checkpoint direc
 3. Resolves the configured exact `data_input` name to one incoming edge and selects that edge's
    source frame via `_resolve_data_input_frame`; node-id matching is not accepted.
 4. Validates schema and value contracts and projects/casts to solver dtypes via
-   `_validate_and_project`.
+   `_validate_and_project`. On the data-input analysis path the configured analysis columns are
+   retained, uncast, beside the solver columns (and only those); on the side-input path the
+   analysis frame is resolved through the same exact edge-name contract and projected to
+   `quote_id` + the analysis columns (`resolve_analysis_frame`).
 5. For ratebook mode only, resolves `banding_source` through the same exact edge-name contract,
    then extracts and persists that edge's factor frame to a parquet artifact (`_extract_factors`).
 6. Explicitly drops the lazy-output references and runs `gc.collect()` before building the grid,
@@ -248,10 +259,17 @@ are held until the grid is built and released on every exit. No checkpoint direc
    snapshot under the plan's lease (`_write_solver_input`), and builds the solver's `QuoteGrid`
    from that file via `price_contour.build_grid_from_parquet_chunked`
    (`_build_grid_from_parquet`), choosing a chunk size from either explicit config or a
-   byte-budget policy against the parquet's own metadata. The temp parquet is removed on every
-   exit; a borrowed snapshot never is.
+   byte-budget policy against the parquet's own metadata. The builder decodes only the solver
+   columns, so retained analysis columns never reach it, and `_build_grid_from_parquet` records
+   the job's `scenario_grid` as soon as the grid exists. When analysis columns are configured,
+   `quote_analysis.parquet` is reduced from the written solver input (or the side-input frame)
+   before that file is removed (`_write_quote_analysis`): by the setup worker right after it
+   writes the solver input in process mode, and by `_build_grid` after the grid in the thread
+   mode; the parent then requires one table row per grid quote. The temp parquet is removed on
+   every exit; a borrowed snapshot never is.
 8. Launches the actual solver thread (`_launch_background`), passing the built
-   `QuoteGrid`, config, and (ratebook) the factors handle and factor-level order.
+   `QuoteGrid`, config, the quote-analysis handle (when one was written) and (ratebook) the
+   factors handle and factor-level order.
 
 Steps 2–7's pipeline work is materialisation, and it runs in a hard-capped spawn worker in
 production (`HAUTE_INTERACTIVE_EXECUTION_MODE=process`, the default), as training preparation
@@ -262,18 +280,21 @@ headroom (`isolated_execution_budget`) is both the child's execution budget and 
 and the job's cancellation reason is the worker's stop signal, so cancellation or supersession
 terminates the worker. The child adopts the plan (`SeedPlan.adopt`), runs
 `_materialise_solve_input` (`_prepare_solver_frame` — steps 2–6 — then `_write_solver_input`
-with borrowing off) against a private job record in the `optimiser_worker` job store,
+with borrowing off, then, with analysis columns, `_write_quote_analysis`) against a private job record in the `optimiser_worker` job store,
 deleted when the child finishes, and returns a `SolveInput` (the parent's
-parquet path, the constraint columns and the ratebook factors handle) or the private record's
+parquet path, the constraint columns, the ratebook factors handle and the quote-analysis
+handle) or the private record's
 terminal failure. The child never borrows a captured snapshot: a capture it made is released
 when its adopted plan closes, before the parent reads the file. Every location the child writes
 is created and removed by the parent, however the worker exits: the solver-input parquet, the
-marked ratebook factors directory (`_new_ratebook_factors_directory`, into which the child
+marked quote-analysis directory (`_new_quote_analysis_directory`, into which the child writes
+`quote_analysis.parquet`; removed when no job adopts its handle), the marked ratebook factors
+directory (`_new_ratebook_factors_directory`, into which the child
 persists; removed when the job never adopts its handle) and a scratch directory
 (`worker_scratch_directory`) that the child routes all of its Python temporary files into (range
 reducer bucket parts, staged batches, model-scoring temp files), so a stopped, timed-out or killed
-worker leaves nothing behind. The parent checks the returned input is its own file and the handle
-names its own factors directory. A `MemoryError` a native cap raised in the child, however
+worker leaves nothing behind. The parent checks the returned input is its own file and the
+factors and quote-analysis handles name its own directories. A `MemoryError` a native cap raised in the child, however
 translated, leaves the child as that error, so the parent classifies it as `memory_limited`
 rather than the child's generic mapping reporting a 500. A failure is classified in the
 child by `_record_solve_setup_failure`, the same mapping the setup thread uses, and the parent
@@ -295,8 +316,10 @@ and `snapshot_plan=` that plan, passing the required-column seed to the executio
 typed strategy result is attached to the admitted context. The plan's consumed nodes are what
 setup reads afterwards: an explicit target alone (the estimate's data input, the streaming
 auto-range base node); otherwise the execution target — the resolved `data_input` in online
-mode, or the Optimiser itself, which resolves along its selected `data_input` edge to its
-producer — and every banding side input from the Optimiser's own edges that the run executes,
+mode without a separate analysis input, or the Optimiser itself (ratebook mode, or any mode
+with a separate analysis input), which resolves along its selected `data_input` edge to its
+producer — and every banding or analysis side input from the Optimiser's own edges that the run
+executes,
 `apiInput` ports included. The plan applies capture eligibility itself: a node-output producer
 is seeded or captured, an `apiInput` is built and never captured (its tables have their own
 store), and the two-input Optimiser is a pass-through, so it is neither a join nor captured and
@@ -321,8 +344,9 @@ The spawned solver thread updates progress to "Solving", then — inside
 an execution-context stage — calls:
 
 - **Online** (`_solve_online`): constructs `price_contour.OnlineOptimiser(objective,
-  constraints, max_iter, tolerance, record_history)` and solves directly against the passed
-  `QuoteGrid`.
+  constraints, max_iter, tolerance, record_history=True)` and solves directly against the passed
+  `QuoteGrid`. Every online solve records its per-iteration `history` (bounded by `max_iter`);
+  there is no configuration flag for it.
 - **Ratebook** (`_solve_ratebook`): requires a persisted ratebook factors handle
   (raises `RuntimeError` otherwise — "Ratebook mode requires a banding source"); validates
   the configured factor columns and configured quote-id column against the artifact's own
@@ -340,7 +364,9 @@ an execution-context stage — calls:
   `combined_factor_bounds = {"min": sv[0], "max": sv[-1]}` from the solved grid's
   `QuoteGrid.scenario_values` (the Float32 grid values widened to Python floats, exactly what
   the solver scored; `combined_factor_bounds_from_grid` in `src/haute/_ratebook_collar.py`),
-  and reads `clamp_rate` and `cd_iterations` directly off the library result. Like an online
+  and reads `clamp_rate` and `cd_iterations` directly off the library result. It maps the
+  library's `per_factor_results` (one `PerFactorRecord` per inner grouped solve, in (CD pass,
+  factor) order) into `ratebook_cd_trace` (see the result contract below). Like an online
   result, a ratebook result reports the shape of the grid it scored: `n_quotes` and `n_steps`
   come from the solved `QuoteGrid`, so the result preview's provenance strip and the artifact's
   `input_summary` name them for both modes. See Runtime ratebook apply below.
@@ -358,8 +384,8 @@ names must all agree, see Constraint bounds) the result carries:
 
 - `input_summary` (`OptimiserInputSummary`, strict): the job's `input_provenance` (`node_id`,
   `data_source`, `source_file`, `graph_fingerprint`) plus `solver_settings`
-  (`OptimiserSolverSettings`: `max_iter`, `tolerance`, `chunk_size`, and `record_history` for
-  online or `max_cd_iterations`/`cd_tolerance` for ratebook; `frontier_enabled`,
+  (`OptimiserSolverSettings`: `max_iter`, `tolerance`, `chunk_size`, and
+  `max_cd_iterations`/`cd_tolerance` for ratebook; `frontier_enabled`,
   `frontier_steps` and `frontier_ranges` only when the solve requested a frontier). It is built
   once in `_finalize_solve_result` by `solve_input_summary(job)` from the solve-time config
   snapshot and `input_provenance`; a solve job without `input_provenance` fails loudly. The
@@ -374,6 +400,29 @@ names must all agree, see Constraint bounds) the result carries:
   solve reports no statistics by design and records nothing. A failed inline frontier keeps
   `frontier_error` ("Frontier unavailable: …") and records the same failure as the `"frontier"`
   entry. Every entry is also logged (`optimiser_diagnostic_skipped`).
+- `history: [OptimiserHistoryEntry]` (online): every online solve's per-iteration record
+  (`iteration`, `total_objective`, `max_lambda_change`, `all_constraints_satisfied`, `lambdas`,
+  `total_constraints`), always recorded and bounded by `max_iter`; `null` for ratebook results
+  and frontier points.
+- `ratebook_cd_trace: {records, truncated}` (`OptimiserRatebookCdTrace`, strict; ratebook): one
+  record per inner grouped solve of the coordinate descent, in (CD pass, factor) order, each
+  `{cd_iteration (1-based), factor, factor_index, total_objective, total_constraints, lambdas}`
+  taken from price-contour's `PerFactorRecord` (the factor is named by the library, never
+  inferred from position). Every record's `total_constraints` and `lambdas` hold exactly the
+  result's constraint names, and there is at least one record. The trace keeps the last
+  `HAUTE_OPTIMISER_CD_TRACE_LIMIT` records (default 1,000; a malformed value fails loudly) and
+  sets `truncated` when it dropped earlier ones, as `loss_history` does. A record's totals are
+  that inner solve's, on the search's working multiplier, so the last record's objective agrees
+  with the canonical `total_objective` only to about 1e-6 relative. `null` for online results
+  and for frontier points (a materialised ratebook point has no trace). The frontier-select
+  response carries `history` and `ratebook_cd_trace` of the result it returns (the solve's when
+  `point_index` is `null`).
+- `scenario_grid: [OptimiserScenarioGridStep]` (both modes, required): the job's immutable
+  scenario grid, `{optimal_step, scenario_value}` for every step in step order, copied from the
+  job record `_finalize_solve_result` reads (a job without one fails loudly, as a missing
+  `input_provenance` does). Steps are `0..n-1` and values strictly increasing; when `n_steps` is
+  present it equals the grid's length. Frontier-point results carry the solve's grid (they
+  share it).
 - `factor_tables: {table: [OptimiserFactorTableRow]}`: each row is strict, exactly
   `__factor_group__` (the canonical level key, `level` in Python), `optimal_scenario_value`
   (finite) and `quote_count` (a non-negative integer). Online results carry `{}`.
@@ -615,7 +664,8 @@ A frontier point's summary holds every result field that differs from the solve 
 from, read from the typed point: total objective, constraint totals for every configured
 constraint, swept or not (`totals`), `effective_bounds` (see Constraint bounds below, from the
 point's `bounds`), `lambdas`, converged, iterations, CD iterations (`null` on the row summary),
-clamp rate (a ratebook point's; `null` online), history, scenario-value stats (an online point's
+clamp rate (a ratebook point's; `null` online), history, CD trace (`ratebook_cd_trace`, always
+`null`), scenario-value stats (an online point's
 `sv_*` columns; `null` for ratebook), scenario-value histogram, factor tables, the non-converged
 warning, the frontier error and `diagnostics_errors` (always `[]`: a point's statistics come from
 its row, so the solve's degraded diagnostics do not describe it). Every field is always present
@@ -690,7 +740,7 @@ and the solve's `combined_factor_bounds` — a frontier point shares its solve's
 collar), plus the audit
 trail: `solver_settings` (the result's `input_summary.solver_settings`, built from the solve-time
 config snapshot with the solver defaults applied:
-`max_iter`, `tolerance`, `chunk_size`, and `record_history` for online or `max_cd_iterations` and
+`max_iter`, `tolerance` and `chunk_size`, plus `max_cd_iterations` and
 `cd_tolerance` for ratebook; `frontier_enabled`, `frontier_steps` and `frontier_ranges` when the
 solve requested a frontier), `effective_constraints` (a point's constraint specs with that point's
 thresholds via `_frontier_point_constraints_override`; the configured constraints for the
@@ -754,9 +804,11 @@ automatically.
 
 ### Artifact lifecycle (persist / validate / load / cleanup) (`src/haute/routes/_optimiser_artifacts.py`)
 
-Two artifact families, both rooted under the versioned marker-aware OS-temp hierarchy
+Three artifact families, all rooted under the versioned marker-aware OS-temp hierarchy
 (`<tempdir>/haute/artifacts/v1/optimiser_apply`,
-`<tempdir>/haute/artifacts/v1/optimiser_ratebook_factors`):
+`<tempdir>/haute/artifacts/v1/optimiser_ratebook_factors`,
+`<tempdir>/haute/artifacts/v1/optimiser_quote_analysis`; the third is described in
+"Analysis-column side table and scenario grid"):
 
 - **Persist** (`_persist_apply_result_artifact`, `_persist_ratebook_factors_artifact`,
   `_persist_ratebook_factors_lazy_artifact` — the lazy variant sinks a
@@ -796,7 +848,7 @@ Two artifact families, both rooted under the versioned marker-aware OS-temp hier
 - **Restart cleanup**: the server lifespan reads the strict non-negative
   `HAUTE_ARTIFACT_STALE_SECONDS` interval (default 86,400 seconds) after loading the project
   environment, then passes it to `reap_stale_optimiser_artifacts`. The reaper checks only valid
-  stale markers from the two dedicated roots and logs bounded
+  stale markers from the three dedicated roots and logs bounded
   inspected/removed/failed/reclaimed-byte counts. One tracked worker-thread reap is scheduled
   without delaying readiness; shutdown observes the task.
 
@@ -1159,6 +1211,16 @@ whose message already names every problem and the remedy.
   in `diagnostics_errors`, the artifact reading the result's input summary, and the status route's
   non-finite walk (a NaN or Infinity corrects the job to `error`; a clean walk is cached per
   generation and selection).
+- `tests/test_optimiser_outcomes.py` covers OPT-V09A end to end through the real input
+  preparation (thread and process mode): a non-solver `region` column configured as an analysis
+  column reaches `quote_analysis.parquet` one row per quote while the solver input and grid are
+  unchanged; a column varying within a quote is refused by name; the side-input path (a
+  separate connected frame joined by `quote_id`, a missing quote marked missing and counted, a
+  frame without `quote_id` refused, execution and preservation of a frame outside the data
+  input's lineage in online mode, the demand narrowed to `quote_id` + the analysis columns);
+  adoption at completion surviving `/apply`, cancellation and failure leaving no file, frontier
+  recompute and user-action slimming keeping it, startup reaping; the cardinality metadata; and
+  the scenario grid on every result. `tests/test_job_store.py` covers `JobStore.lease`.
 - `tests/test_frontier_point_summary.py` covers `frontier_point_rows` (the library frame to typed
   points, per mode, failing on any schema mismatch or malformed value), the write-back to the
   library row the MLflow CSV uses, and `frontier_point_summary` over typed points.
@@ -1371,3 +1433,153 @@ sample widths. Refuse an estimate exceeding the current execution context's
 remaining allowance with the existing typed admission error. The estimate is
 conservative and does not replace runtime limits. The existing solver/frontier
 work keeps sharing its prepared grid; this change adds no parallel grid copies.
+## Analysis-column side table and scenario grid
+
+The behaviour is defined in [the high-level specification](high-level.md#behaviour).
+
+**Configuration.** `OptimiserConfig` declares `analysis_input: str` (one exact connected
+incoming-edge name, resolved by `_resolve_optimiser_input_edge` like `data_input` and
+`banding_source`; absent or empty means the data input) and `analysis_columns: list[str]`
+(optional, at most `MAX_ANALYSIS_COLUMNS = 12`, unique, non-empty, never the configured
+`quote_id` and never a reserved `__haute_` name). Both are in `OPTIMISER_CONFIG_KEYS`; the
+execution cache classifies `analysis_columns` as node config and `analysis_input` as a source
+selection, so changing either makes the node's cached result stale. The shape rules are one
+function, `validate_optimiser_analysis_config` (`src/haute/_config_validation.py`), called by
+`validate_node_config` on save/parse and by `OptimiserSolveService._validate_config` at solve
+start (a `400`); `validate_optimiser_input_selectors` checks `analysis_input` as an optional
+exact selector at save and code generation, and submodel instances rewrite it like the other
+optimiser selectors. `analysis_input` without `analysis_columns` is inert.
+
+**The plan.** `resolve_analysis_plan(graph, node_id, config)` returns `None` without analysis
+columns, else an `AnalysisPlan(columns, path, source_node_id)`. The path is `"data_input"` when
+the resolved analysis edge is the data-input edge (including `analysis_input` unset or naming
+the data input) and `"side_input"` otherwise.
+
+- *Data-input path (carry-through).* `_optimiser_solve_required_columns_by_node` adds the
+  analysis columns to the data input's seed, and `validate_and_project(analysis_columns=...)`
+  requires them (a missing one is a `400` naming it) and keeps exactly them, uncast, after the
+  solver columns. The worker's solver-input parquet therefore carries them; `build_quote_grid`
+  and `_admit_resident_grid` read only solver columns.
+- *Side-input path.* The execution target becomes the Optimiser itself in online mode too
+  (`_setup_execution_target_node_id`), `_optimiser_side_input_ids` preserves the analysis source
+  in both modes, `_optimiser_solve_required_columns_by_node` seeds it with `quote_id` + the
+  analysis columns (unioned with a banding seed on the same node; skipped when the source also
+  feeds the data input through a parallel edge, which the Optimiser seed keeps full width), and
+  `OptimiserParentDemandRule` demands exactly those columns from the analysis parent.
+  `resolve_analysis_frame` selects the edge's frame, requires `quote_id` under the data input's
+  dtype rules (`_invalid_quote_id_dtype_detail`) and the analysis columns, drops null quote ids
+  (they match no solved quote) and projects to `quote_id` (as String) + the analysis columns.
+  The extraction reduces that lazy projection directly; nothing is staged.
+
+**Extraction** (`write_quote_analysis`, through `_write_quote_analysis`, which types a
+failure as a solver-input write failure is). In process mode the setup worker runs it right
+after writing the solver input, under the worker's native cap and into the directory its parent
+created, so an oversized reduction ends the job `memory_limited` and never grows the server
+process; the thread compatibility mode runs it in `_build_grid` after the grid is built
+(extracting first measured a higher peak in one process, because the grid build does not reuse
+memory the extraction has freed). Every step is a lazy plan; the only collections are one-row
+reductions.
+
+1. *One streamed reduction.* Over the source (the written solver input's `quote_id` +
+   analysis columns, or the side-input frame's projection), a single `group_by(quote_id)` — grouped on the key as
+   stored — gives each column's `first()` value and a varies flag, and is sunk to a per-quote
+   file (`per_quote.parquet`) in the table's own directory, never collected. The flag is
+   `n_unique > 1` computed without a per-group set: the group's smallest and largest 64-bit
+   value hash (`Expr.hash`, seed 0) differ exactly when two values differ, a null and a NaN
+   each hashing to one value as `n_unique` counts them. Measured against `n_unique` at 1M
+   quotes × 10 steps it holds about 300 MiB less; two different values of one quote colliding
+   (about 2^-64 per pair) is the only way a varying quote could pass.
+2. *Constant within a quote.* The flags are summed to one row per column and collected. A
+   non-zero count raises `AnalysisColumnNotConstantError` (an `OptimiserSetupError`, `400`)
+   naming each column, its varying-quote count and one example quote id (a bounded query of
+   the per-quote file, run only on failure).
+3. *Table.* From the per-quote file, `quote_id` is cast to String. On the side-input path the
+   solved quotes (`unique` over the solver input's `quote_id`) are left-joined to it, so the
+   table has exactly the solved quotes: a quote the frame lacks has null analysis values and
+   `__haute_analysis_row_present = false`, and frame quotes that were not solved are dropped.
+   The data-input path writes the flag as `true`. `bounded_sink` writes
+   `quote_analysis.parquet` into the fresh marked directory under the `optimiser_quote_analysis`
+   root (`analysis_` prefix) and the per-quote file is removed.
+4. *Metadata.* One streamed scan of the written file gives the row count,
+   `missing_quote_count` (rows with the flag false) and, per column,
+   `column_stats[c] = {dtype, approx_n_unique, max_string_bytes}` — `approx_n_unique` is Polars'
+   HyperLogLog estimate, and `max_string_bytes` the largest UTF-8 byte length of a String,
+   Categorical or Enum value (`null` for other dtypes). OPT-V11's cardinality gate reads them
+   from the handle. Once the grid exists, `require_one_row_per_solved_quote` requires the row
+   count to equal its `n_quotes` (a `RuntimeError` otherwise; setup removes the table).
+
+A failure removes what the extraction wrote before it propagates: its own files in a parent's
+directory (which the parent then removes), or the whole directory it created.
+
+With no analysis columns nothing is written and the job has no `quote_analysis` handle.
+
+**Ownership.** Setup owns the handle (and, in process mode, the directory it created for the
+worker) until completion: a setup failure, stop or worker failure removes it in setup's
+`finally`; `_launch_background` passes it to `_solve_online` /
+`_solve_ratebook`, whose `_finalize_solve_result` adopts it into
+`artifact_handles["quote_analysis"]` inside the completion publisher (and removes it if
+completion is lost). `_finalize_solve_result`, and so `_solve_online` / `_solve_ratebook`,
+returns whether it published the completion; the solve worker's `finally` removes the table
+only when that is false (cancel, supersession, timeout, solver failure). It never re-reads
+the job to decide: a job removed just after completion would look like one that never adopted
+the table, and deleting it directly would bypass a reader's lease. Once adopted, only job removal deletes it —
+TTL eviction 24 hours after creation, `delete_job` or `clear_all` — through the registered
+`optimiser_quote_analysis` cleaner; `JobStore.clear_result_data` (heavy-state and user-action
+slimming) never touches `artifact_handles`, and frontier recompute retains every handle that
+is not a `frontier_apply_result:*` handle. Startup reaping covers the root like the other two.
+
+**Leases.** `JobStore.lease(job_id, key)` ([background-jobs](../background-jobs/low-level.md))
+yields the handle while holding a read lease on it; `collect_quote_analysis(store, job_id,
+query)` validates the handle, scans the file and collects the caller's lazy query inside the
+lease, so a job expiring mid-read deletes the file only after the read. A job or handle that
+is gone raises `ArtifactHandleUnavailableError`, which `collect_quote_analysis` answers as the
+stable `410` "no longer available; re-run the solve".
+
+**Scenario grid.** Right after the grid build, setup records
+`scenario_grid = scenario_grid_from_values(quote_grid.scenario_values)` on the job: one
+`{optimal_step: i, scenario_value: v}` per step, `v` being the Float32 grid value widened to a
+Python float, exactly what the solver scored. `scenario_grid_from_values` fails loudly on an
+empty grid, a non-finite value or values that are not strictly increasing.
+`_finalize_solve_result` copies it into the result through `require_scenario_grid(job)`; it is
+never recomputed, and step membership is always by `optimal_step`, never by comparing floats.
+
+**Precision.** Analysis columns keep their source dtype. The solver ingests objective,
+constraint and scenario values as Float32 (`validate_and_project`'s casts); every total,
+reconciliation and breakdown accumulates those Float32 values in Float64.
+
+**Measured scaling.** See "Measured setup memory" below for the method, results and thresholds.
+## Measured setup memory
+
+Peak RSS (`ru_maxrss`) of solve setup's processes with and without the quote-analysis
+extraction, measured on 26 September 2026 (Polars 1.44.2, price-contour 0.5.0, 22 logical
+CPUs so a 22-thread Polars pool, WSL2 with 31 GiB). The input is quote-contiguous, 10 scenario
+steps per quote, one Float32 constraint, Categorical quote ids as the setup worker writes them,
+and two analysis columns (an 8-level String `region` and an Int32 `tier`); the side-input case
+reduces a separate one-row-per-quote frame of the same two columns. Each case ran in a fresh
+process: three runs at 1M quotes (range shown), one run at 5M quotes (50M rows).
+
+| Process, step | 1M quotes | 5M quotes |
+|---|---|---|
+| Server (parent): grid build, with or without analysis columns | 707–708 MiB | 1,783 MiB |
+| Setup worker: write the solver input, no analysis columns | 818–939 MiB | 2,555 MiB |
+| Setup worker: write the solver input, then the data-input table | 1,024–1,164 MiB | 3,295 MiB |
+| Setup worker: write the solver input, then the side-input table | 1,142–1,205 MiB | 3,494 MiB |
+| Thread mode (one process): grid, then the data-input table | 1,251–1,282 MiB | 4,726 MiB |
+| Thread mode (one process): grid, then the side-input table | 1,015–1,039 MiB | 2,998 MiB |
+
+The extraction runs in the setup worker because the same reduction in the server process added
+about 2.9 GiB at 5M quotes (the thread-mode rows). The design choices behind these numbers were
+measured at 1M quotes: one `group_by` pass instead of a separate check pass (−160 MiB), the
+hash comparison instead of `n_unique` (−300 MiB), and the grid built before, not after, the
+extraction when both share a process (−150 MiB).
+
+Thresholds, which a change to this path must re-measure against with the same method:
+
+- The server process's setup peak with analysis columns stays within 5% of its peak without
+  them: the extraction never runs in the server in process mode.
+- The setup worker's peak with the extraction stays within 1.5× its peak without it (measured,
+  median against median, 1.29× and 1.41× at 1M quotes and 1.29× and 1.37× at 5M quotes for the
+  data-input and side-input paths), and adds at most 250 bytes per quote at 5M quotes (measured
+  155 bytes per quote on the data-input path and 197 on the side-input path).
+- The thread compatibility mode, which runs everything in one process, stays within 3× the
+  grid-only peak (measured 2.65× at 5M quotes on the data-input path).

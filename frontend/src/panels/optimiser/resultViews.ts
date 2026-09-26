@@ -46,7 +46,8 @@ export const OPTIMISER_VIEW_INTRODUCTIONS: Record<OptimiserResultView, ResultsWo
   convergence: {
     title: "Convergence",
     description:
-      `How the objective and the ${LAMBDA_LABEL} adjustments settled over the solver's `
-      + "iterations.",
+      `How the objective, each constraint total against its bound and the ${LAMBDA_LABEL} `
+      + "settled over the solve's iterations, or over a ratebook solve's coordinate-descent "
+      + "passes, one line per factor (λ in the values table).",
   },
 }

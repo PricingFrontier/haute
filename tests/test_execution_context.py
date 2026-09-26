@@ -51,6 +51,7 @@ from tests.conftest import (
     make_output_config,
     make_source_node,
 )
+from tests.optimiser_fixtures import setup_grid_stub
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -5050,7 +5051,7 @@ def test_optimiser_start_creates_admitted_setup_context(
         patch.object(service, "_execute_pipeline", side_effect=fake_execute_pipeline),
         patch.object(service, "_validate_and_project", return_value=([], scored_lf)) as validate,
         patch.object(service, "_extract_factors", return_value=None) as extract,
-        patch.object(service, "_build_grid", return_value=object()) as build,
+        patch.object(service, "_build_grid", return_value=setup_grid_stub()) as build,
         patch.object(service, "_launch_background") as launch,
     ):
         response = service.start(body)

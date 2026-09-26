@@ -62,6 +62,7 @@ function onlineResult(overrides: Partial<OptimiserSolveResult> = {}): OptimiserS
     mode: "online",
     total_objective: 1_234_567,
     constraints: { loss_ratio: 0.65 },
+    effective_bounds: { loss_ratio: { kind: "max", bound: 0.7 } },
     lambdas: { loss_ratio: 0.005 },
     converged: true,
     iterations: 15,
@@ -324,10 +325,11 @@ describe("Optimiser workspace", () => {
 
   it("labels the frontier axis picker in the workspace type scale", () => {
     const base = makeFrontier()
-    // The picker offers the frontier's own constraints: every point names each one.
+    // The picker offers the frontier's swept constraints: every point names each one.
     const frontier: FrontierData = {
       ...base,
       constraint_names: ["loss_ratio", "volume"],
+      swept_axes: ["loss_ratio", "volume"],
       points: base.points.map((point) => ({
         ...point,
         thresholds: { ...point.thresholds, volume: 0.9 },
@@ -339,6 +341,14 @@ describe("Optimiser workspace", () => {
     renderPreview(
       makeData({
         frontier,
+        result: onlineResult({
+          constraints: { loss_ratio: 0.65, volume: 0.95 },
+          effective_bounds: {
+            loss_ratio: { kind: "max", bound: 0.7 },
+            volume: { kind: "min", bound: 0.9 },
+          },
+          lambdas: { loss_ratio: 0.005, volume: 0 },
+        }),
         constraints: { loss_ratio: { max: 0.7 }, volume: { min: 0.9 } },
       }),
     )

@@ -342,7 +342,10 @@ vi.mock("../../hooks/useDragResize", () => ({
     onDragStart: vi.fn(),
   }),
 }))
-vi.mock("../../stores/useNodeResultsStore", () => ({
+vi.mock("../../stores/useNodeResultsStore", async (importOriginal) => ({
+  // Keep the module's pure helpers (e.g. effectiveConstraintBounds); only the
+  // store hook is replaced.
+  ...(await importOriginal<typeof import("../../stores/useNodeResultsStore")>()),
   default: (selector: (s: Record<string, unknown>) => unknown) =>
     selector({
       solveResults: {},

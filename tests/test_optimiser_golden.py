@@ -94,7 +94,6 @@ def test_build_artifact_payload_matches_online_golden_snapshot(
             "scenario_index": "scenario_index",
             "scenario_value": "scenario_value",
             "chunk_size": 4096,
-            "record_history": True,
         },
         "selected_frontier_point": 0,
         "frontier_data": {

@@ -205,7 +205,7 @@ function applyConfigMapping(
   changes: MappingChanges,
   scope: RenameGraphScope,
   node: Node,
-  field: "input_scenario_map" | "inputMapping" | "data_input" | "banding_source" | "ratebook_input",
+  field: "input_scenario_map" | "inputMapping" | "data_input" | "banding_source" | "analysis_input" | "ratebook_input",
   pairs: readonly RenamePair[],
   keys: boolean,
 ): NodeUpdatePlanFailure | null {
@@ -412,7 +412,7 @@ function collectMappingChanges(
       if (bindingFailure) return bindingFailure
       const stepFailure = rewriteSteppedTransformInputs(changes, affected)
       if (stepFailure) return stepFailure
-      for (const field of ["data_input", "banding_source", "ratebook_input"] as const) {
+      for (const field of ["data_input", "banding_source", "analysis_input", "ratebook_input"] as const) {
         const scalarFailure = applyConfigMapping(changes, affected.scope, affected.target, field, affected.pairs, false)
         if (scalarFailure) return scalarFailure
       }

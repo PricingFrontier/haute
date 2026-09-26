@@ -7,6 +7,7 @@ with API-friendly aliases so that FastAPI endpoint signatures stay clean.
 
 from __future__ import annotations
 
+import itertools
 import keyword
 import math
 from collections.abc import Mapping
@@ -3312,8 +3313,6 @@ class OptimiserSolverSettings(BaseModel):
     max_iter: int
     tolerance: float
     chunk_size: int | None
-    # Online only.
-    record_history: bool | None = Field(default=None, exclude_if=lambda value: value is None)
     # Ratebook only.
     max_cd_iterations: int | None = Field(default=None, exclude_if=lambda value: value is None)
     cd_tolerance: float | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -3346,6 +3345,51 @@ class OptimiserHistoryEntry(BaseModel):
     all_constraints_satisfied: bool | None = None
     lambdas: dict[str, float] = Field(default_factory=dict)
     total_constraints: dict[str, float] = Field(default_factory=dict)
+
+
+class OptimiserRatebookCdTraceRecord(BaseModel):
+    """One inner grouped solve of a ratebook coordinate descent (price-contour's
+    ``PerFactorRecord``): the totals and λ after updating ``factor`` in pass
+    ``cd_iteration``, on the search's working multiplier."""
+
+    model_config = _STRICT_ROW
+
+    cd_iteration: int = Field(ge=1)
+    """The 1-based coordinate-descent pass."""
+    factor: str
+    factor_index: int = Field(ge=0)
+    total_objective: float
+    total_constraints: dict[str, float]
+    lambdas: dict[str, float]
+
+    @model_validator(mode="after")
+    def _maps_share_constraint_names(self) -> OptimiserRatebookCdTraceRecord:
+        _require_same_constraint_names(
+            {"total_constraints": self.total_constraints, "lambdas": self.lambdas}
+        )
+        return self
+
+
+class OptimiserRatebookCdTrace(BaseModel):
+    """A ratebook solve's coordinate-descent trace, in (CD pass, factor) order.
+
+    Holds the last ``HAUTE_OPTIMISER_CD_TRACE_LIMIT`` records; ``truncated``
+    says earlier ones were dropped.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    records: list[OptimiserRatebookCdTraceRecord] = Field(min_length=1)
+    truncated: bool
+
+    def constraint_names(self) -> list[str]:
+        """The constraint names every record holds (the first record's)."""
+        names = list(self.records[0].total_constraints)
+        for index, record in enumerate(self.records[1:], start=1):
+            _require_constraint_names(
+                record.total_constraints, names, field=f"ratebook_cd_trace record {index}"
+            )
+        return names
 
 
 class OptimiserScenarioValueStats(BaseModel):
@@ -3397,6 +3441,7 @@ class OptimiserFrontierPointSummary(BaseModel):
     cd_iterations: int | None
     clamp_rate: float | None
     history: list[OptimiserHistoryEntry] | None
+    ratebook_cd_trace: OptimiserRatebookCdTrace | None
     scenario_value_stats: OptimiserScenarioValueStats | None
     scenario_value_histogram: OptimiserScenarioValueHistogram | None
     factor_tables: dict[str, list[OptimiserFactorTableRow]] | None
@@ -3417,6 +3462,25 @@ class OptimiserFrontierPointSummary(BaseModel):
         return self
 
 
+def _require_convergence_record_of_its_mode(
+    mode: str,
+    history: list[OptimiserHistoryEntry] | None,
+    trace: OptimiserRatebookCdTrace | None,
+    constraint_names: list[str],
+) -> None:
+    """Fail unless only an online result has history and only a ratebook result a
+    CD trace, whose records hold exactly the result's constraint names."""
+    if history is not None and mode != "online":
+        raise ValueError(f"history is online-only; a {mode} result has none")
+    if trace is None:
+        return
+    if mode != "ratebook":
+        raise ValueError(f"ratebook_cd_trace is ratebook-only; a {mode} result has none")
+    _require_constraint_names(
+        dict.fromkeys(trace.constraint_names()), constraint_names, field="ratebook_cd_trace"
+    )
+
+
 class OptimiserCombinedFactorBounds(BaseModel):
     """The scenario range a ratebook solve scored: the deployed factor's collar.
 
@@ -3426,6 +3490,15 @@ class OptimiserCombinedFactorBounds(BaseModel):
 
     min: float
     max: float
+
+
+class OptimiserScenarioGridStep(BaseModel):
+    """One step of the solve's scenario grid: its index and the value the solver scored."""
+
+    model_config = _STRICT_ROW
+
+    optimal_step: int = Field(ge=0)
+    scenario_value: float
 
 
 class OptimiserSolveResult(BaseModel):
@@ -3443,7 +3516,10 @@ class OptimiserSolveResult(BaseModel):
     n_steps: int | None = None
     cd_iterations: int | None = None
     factor_tables: dict[str, list[OptimiserFactorTableRow]] = Field(default_factory=dict)
+    # Online only: every online solve records its per-iteration history.
     history: list[OptimiserHistoryEntry] | None = None
+    # Ratebook only: the live solve's coordinate-descent trace.
+    ratebook_cd_trace: OptimiserRatebookCdTrace | None = None
     warning: str | None = None
     scenario_value_stats: OptimiserScenarioValueStats | None = None
     scenario_value_histogram: OptimiserScenarioValueHistogram | None = None
@@ -3459,6 +3535,21 @@ class OptimiserSolveResult(BaseModel):
     input_summary: OptimiserInputSummary
     # Diagnostics that could not be produced (the frontier's failure among them).
     diagnostics_errors: list[OptimiserDiagnosticError]
+    # The solver input's complete grid, recorded at setup: the only source for
+    # which adjustments were possible (OPT-V09A).
+    scenario_grid: list[OptimiserScenarioGridStep] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _scenario_grid_is_complete_and_ordered(self) -> OptimiserSolveResult:
+        steps = [step.optimal_step for step in self.scenario_grid]
+        if steps != list(range(len(steps))):
+            raise ValueError(f"scenario_grid must list steps 0..n-1 in order, got {steps}")
+        values = [step.scenario_value for step in self.scenario_grid]
+        if any(later <= earlier for earlier, later in itertools.pairwise(values)):
+            raise ValueError(f"scenario_grid values must be strictly increasing, got {values}")
+        if self.n_steps is not None and self.n_steps != len(steps):
+            raise ValueError(f"n_steps is {self.n_steps} but scenario_grid has {len(steps)} steps")
+        return self
 
     @model_validator(mode="after")
     def _maps_share_constraint_names(self) -> OptimiserSolveResult:
@@ -3469,6 +3560,9 @@ class OptimiserSolveResult(BaseModel):
                 "effective_bounds": self.effective_bounds,
                 "lambdas": self.lambdas,
             }
+        )
+        _require_convergence_record_of_its_mode(
+            self.mode, self.history, self.ratebook_cd_trace, list(self.constraints)
         )
         return self
 
@@ -3523,6 +3617,7 @@ class OptimiserFrontierSelectResponse(BaseModel):
     cd_iterations: int | None = None
     factor_tables: dict[str, list[OptimiserFactorTableRow]] = Field(default_factory=dict)
     history: list[OptimiserHistoryEntry] | None = None
+    ratebook_cd_trace: OptimiserRatebookCdTrace | None = None
     warning: str | None = None
     scenario_value_stats: OptimiserScenarioValueStats | None = None
     scenario_value_histogram: OptimiserScenarioValueHistogram | None = None
@@ -3545,6 +3640,12 @@ class OptimiserFrontierSelectResponse(BaseModel):
                 "lambdas": self.lambdas,
             }
         )
+        if self.ratebook_cd_trace is not None:
+            _require_constraint_names(
+                dict.fromkeys(self.ratebook_cd_trace.constraint_names()),
+                list(self.constraints),
+                field="ratebook_cd_trace",
+            )
         return self
 
 

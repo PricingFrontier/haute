@@ -291,6 +291,16 @@ any `required_keys` heavy object is already absent, so a route committing a resu
 after the heavy-object timer has already fired sees a clean `None` rather than
 silently merging partial state onto a stripped job.
 
+**Artifact leases.** `lease(job_id, key)` is a context manager that, under the store lock
+(after TTL eviction), requires the job to exist and hold `artifact_handles[key]`, raising
+`ArtifactHandleUnavailableError(LookupError)` otherwise, and yields a detached copy of that
+handle while counting one lease on it (leases are counted per handle identity, the handle's
+`kind` and `path`). While any lease on a handle is held, a cleanup of that handle — from TTL
+eviction, `delete_job`, `detach_artifact_handle` or `clear_all` — still detaches it from the job
+at once, but its cleaner is deferred; the release of the last lease runs it, outside the lock.
+A new lease can never be taken on a handle already detached, because taking one requires the
+handle to be attached. Cleanup of an unleased handle runs as before.
+
 `has_job_with_status` validates its status and runs TTL eviction before querying.
 `has_job_matching` supplies immutable snapshots to its predicate while the namespace
 is stable. `clear_all` removes every record through normal store cleanup, then
@@ -515,6 +525,7 @@ is only warranted for a concrete thread callable that can honour such a signal.
 | `ValueError` | `JobStore.__init__` (negative TTLs); `create_job` (unknown/non-running status, terminal metadata, or invalid timestamp); generic updates (lifecycle-owned fields or unknown expected status); terminal/publication operations (unknown or invalid transition; `compare_and_publish_completion` publisher returned non-mapping); `get_job_store` (unknown prefix); `require_job_status` (invalid/missing status) | Construction/mutation/lookup call sites; propagates to caller, not converted to HTTP by this component. Validation happens before record mutation. |
 | `KeyError` | `JobStore.update_job` / `atomic_update` / `atomic_update_if_heavy_present` / terminal and publication operations (unknown job id) | Propagates; callers generally only reach these with ids they created themselves. |
 | `RuntimeError` | `register_artifact_cleaner` (duplicate distinct cleaner for a kind); `_schedule_heavy_object_cleanup_if_needed` (schedule requested without a numeric expiry); `JobStore.compare_and_publish_completion` (publisher mutated its own job record) | Treated as internal-bug-level failures; not caught anywhere in this component. |
+| `ArtifactHandleUnavailableError(LookupError)` | `JobStore.lease` (job gone, or no handle under the key) | The owning component maps it to its own "no longer available" answer (the optimiser's `410`). |
 | `HTTPException(404)` | `JobStore.require_job` | Standard FastAPI error response for missing/expired job ids. |
 | `HTTPException(400)` | `JobStore.require_completed_job` | When the job exists but isn't `completed`; message includes the actual status. |
 | `SingleFlightConflictError(RuntimeError)` | `SingleFlightCoordinator.acquire` | Not caught inside this component; optimiser route code (`_optimiser_service.py`) converts the equivalent caller-side conflict into `HTTPException(409)`. |
@@ -543,7 +554,9 @@ is only warranted for a concrete thread callable that can honour such a signal.
   shorter than metadata TTL, zero-retention edge case, value-equality status checks
   for dynamically-built `"completed"` strings, active-timer scheduling/cancellation
   across every status transition, `touch_heavy_objects` window extension and
-  timer replacement), including namespace reset of orphaned auxiliary state.
+  timer replacement), including namespace reset of orphaned auxiliary state, and
+  artifact leases (a lease defers the cleaner across eviction, `delete_job` and
+  `detach_artifact_handle` until the last release; an unavailable handle raises).
   Concurrency is exercised with real `threading.Barrier`-
   synchronised threads, not mocks, for the highest-risk races (concurrent creates,
   concurrent updates to the same/different jobs, the heavy-object-eviction-vs-update

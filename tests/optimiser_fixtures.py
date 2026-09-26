@@ -219,6 +219,18 @@ SOLVE_PROVENANCE: dict[str, str | None] = {
 }
 
 
+def make_scenario_grid(n_steps: int = 3) -> list[dict[str, Any]]:
+    """A strictly increasing ``scenario_grid`` of *n_steps* steps from 0.9 by 0.1."""
+    return [
+        {"optimal_step": step, "scenario_value": round(0.9 + 0.1 * step, 10)}
+        for step in range(n_steps)
+    ]
+
+
+# The ``scenario_grid`` a solve's setup records on the job before the solve.
+SOLVE_SCENARIO_GRID: list[dict[str, Any]] = make_scenario_grid()
+
+
 def make_input_summary(**overrides: Any) -> dict[str, Any]:
     """A solve result's ``input_summary``: the job's provenance and solver settings."""
     summary: dict[str, Any] = {
@@ -230,7 +242,6 @@ def make_input_summary(**overrides: Any) -> dict[str, Any]:
             "max_iter": 50,
             "tolerance": 1e-6,
             "chunk_size": None,
-            "record_history": False,
         },
     }
     summary.update(overrides)
@@ -296,6 +307,7 @@ def make_solved_result(
         "frontier_generation": 0,
         "input_summary": make_input_summary(),
         "diagnostics_errors": [],
+        "scenario_grid": make_scenario_grid(extra.get("n_steps") or 3),
     }
     result.update(extra)
     return result
@@ -623,3 +635,10 @@ def logged_json_artifacts(store: Any, run_id: str, destination: Any) -> dict[str
         for artifact in store.list_artifacts(run_id)
         if artifact.path.endswith(".json")
     }
+
+
+def setup_grid_stub(grid: object | None = None) -> Any:
+    """What a stubbed ``_build_grid`` returns: *grid* and no analysis table."""
+    from haute.routes._optimiser_service import SetupGrid
+
+    return SetupGrid(grid=object() if grid is None else grid, quote_analysis_handle=None)

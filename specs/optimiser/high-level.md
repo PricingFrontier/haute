@@ -128,6 +128,18 @@ ratebook) factor tables are available as a job summary. From there a user can:
   cheap input provenance, and whether the node configuration had changed since the solve
   (`stale_at_publish`, reported by the caller).
 
+A solve can also keep **analysis columns**: up to twelve per-quote columns, such as a region
+or a channel, that exist only to break the result down by segment. The user picks the connected
+frame they come from (`analysis_input`: any frame connected to the optimiser node, the data
+input when unset) and the columns (`analysis_columns`). The solver never sees them. Setup
+reduces them to one row per solved quote and keeps that side table, `quote_analysis.parquet`,
+for the job's whole 24-hour lifetime; a quote the chosen frame has no row for is marked as
+missing rather than dropped. Every solve, with or without analysis columns, also records its
+complete **scenario grid** — each step index with the scenario value the solver scored there —
+from the solver input at setup, and returns it on the solve result. The grid is the only source
+for which adjustments were possible, whether the grid contains 1.0 and where its edges are;
+nothing is inferred from the scenarios the quotes happened to choose.
+
 A saved artifact is later loaded by an `OPTIMISER_APPLY` pipeline node to price new data:
 either a local file (content-hash cached so an on-disk edit is always picked up, even a
 same-second overwrite) or an MLflow run/registered-model artifact (cached by resolved
@@ -177,9 +189,28 @@ Invariants:
   ninth point evicts and deletes the oldest point artifact; returning to that point recomputes it.
   Concurrent point materialisations merge handles under the frontier-state lock, so one handle
   cannot overwrite and orphan another.
-- Crash-surviving apply-result and ratebook-factor directories carry distinct versioned Haute
-  ownership markers. Startup cleanup can remove only stale marked direct children of those two
-  dedicated roots; unmarked or foreign temporary data is never swept.
+- Crash-surviving apply-result, ratebook-factor and quote-analysis directories carry distinct
+  versioned Haute ownership markers. Startup cleanup can remove only stale marked direct
+  children of those three dedicated roots; unmarked or foreign temporary data is never swept.
+- Analysis columns never reach the solver. The quote grid is built from the solver columns
+  only, so a solve with analysis columns has exactly the grid, totals and choices of the same
+  solve without them.
+- Each analysis column holds one value per quote. A quote with two different values of an
+  analysis column (in the data input across its scenario rows, or across its rows in a separate
+  analysis frame) fails setup with a named error; the first value is never picked silently.
+- The quote-analysis side table is owned by solve setup until the completed job adopts it, and
+  then by the job. It is deleted when setup or the solve fails, is cancelled, superseded or
+  times out, when the job expires (24 hours after creation), or by startup reaping. Heavy-state
+  slimming, the slimming after a user action, and frontier recompute never touch it. A reader
+  holding a lease on it defers its deletion until the lease is released.
+- The scenario grid recorded at setup is immutable for the job's lifetime and is never
+  re-derived from chosen rows. Two grids such as `[0.8, 1.0, 1.2, 1.4]` and
+  `[0.8, 0.95, 1.2, 1.4]` can produce identical per-quote choices, so the chosen rows cannot
+  recover it.
+- Precision: the solver ingests objective, constraint and scenario values as Float32; every
+  total, reconciliation and breakdown haute reports accumulates those Float32 values in
+  Float64, as price-contour does, so per-quote values summed over a breakdown equal the solved
+  totals.
 - Trace reconciliation either matches the real output exactly (within floating-point tolerance)
   or the trace request fails with a specific error — it never returns an approximate or
   partially-reconstructed explanation.
@@ -217,6 +248,17 @@ without Parquet's column-level compression, whereas Parquet is already the stand
 format used elsewhere. The upstream lazy plan also projects down to only solver-relevant columns
 before the sink, so the temporary Parquet file stays narrow regardless of how many columns the
 pipeline produces upstream.
+
+Analysis columns live in a haute-owned side table rather than travelling with the solve,
+because price-contour's solve and `apply_from_grid` outputs carry no passthrough columns: the
+solver's inputs stay exactly the solver columns, and a breakdown joins the side table to the
+per-quote result on `quote_id`. The side table is written by streaming — a projected scan
+reduced per quote and sunk to Parquet, never collected — in the same hard-capped setup worker
+that writes the solver input, so the reduction's memory is bounded, typed as `memory_limited`
+when it does not fit, and never added to the server process that holds the grid. Its
+lifetime is the job's (24 hours), not the heavy state's (15 minutes idle), because a breakdown must still be possible after the solver
+objects have been released. Readers take a lease instead of copying the file, so a job expiring
+under a reader cannot delete the file mid-read.
 
 Frontier auto-range and frontier compute share the same schema validation and column-projection
 logic as the main solve. One auto-range job produces the estimate. When the upstream pipeline
@@ -305,8 +347,14 @@ missing objective/mode/ratebook `factor_columns`, missing required columns in th
 a non-string/categorical quote-id column, null quote ids, non-finite (NaN/Infinity) values in
 any numeric solver column, a null value in any objective/constraint/scenario column (any dtype,
 not just numeric — the solver's external aggregation has undefined behaviour on a null input), an
-unresolvable or disconnected `data_input`, or (ratebook) an empty or missing banding source. A
-second solve is rejected whenever the process-wide solve slot is occupied. For one graph/node,
+unresolvable or disconnected `data_input`, or (ratebook) an empty or missing banding source.
+Analysis-column problems are 400s of the same kind: more than twelve analysis columns, a
+duplicate or blank name, the quote-id column or a reserved `__haute_` name used as an analysis
+column, an `analysis_input` that is not one exact connected input name, an analysis frame
+without the configured quote-id column (or with one of an unsupported dtype), an analysis
+column the chosen frame does not have, and an analysis column that varies within a quote
+(`AnalysisColumnNotConstantError`, naming each column, how many quotes vary and one example
+quote). A second solve is rejected whenever the process-wide solve slot is occupied. For one graph/node,
 solve setup conflicts with a running background auto-range setup; a repeated background
 auto-range start for the same graph fingerprint/node returns the existing job id instead of
 creating, queuing, or superseding work.

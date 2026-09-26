@@ -14,7 +14,7 @@ import polars as pl
 import pytest
 
 from haute.routes._job_store import JobStore
-from tests.optimiser_fixtures import library_frontier_frame
+from tests.optimiser_fixtures import SOLVE_SCENARIO_GRID, library_frontier_frame
 
 # ──────────────────────────────────────────────────────────────────────
 # D6: _finalize_solve_result
@@ -59,6 +59,7 @@ _RUNNING_JOB = {
     "status": "running",
     "config": {"constraints": {"loss": {"max": 1.05}}},
     "input_provenance": _PROVENANCE,
+    "scenario_grid": SOLVE_SCENARIO_GRID,
 }
 
 
@@ -297,6 +298,7 @@ class TestFinalizeFrontier:
             {
                 "status": "running",
                 "input_provenance": _PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "config": {
                     "mode": "online",
                     "constraints": {"loss": {"max": 1.05}},
@@ -364,6 +366,7 @@ class TestFinalizeFrontier:
             {
                 "status": "running",
                 "input_provenance": _PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "config": {
                     "mode": "ratebook",
                     "constraints": {"loss": {"max": 1.05}},
@@ -435,6 +438,7 @@ class TestFinalizeFrontier:
             {
                 "status": "running",
                 "input_provenance": _PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "config": {
                     "mode": "online",
                     "constraints": {},
@@ -470,6 +474,7 @@ class TestFinalizeFrontier:
             {
                 "status": "running",
                 "input_provenance": _PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "config": {
                     "mode": "online",
                     "constraints": {"loss": {"max": 1.05}},
@@ -512,6 +517,7 @@ class TestFinalizeFrontier:
             {
                 "status": "running",
                 "input_provenance": _PROVENANCE,
+                "scenario_grid": SOLVE_SCENARIO_GRID,
                 "config": {
                     "mode": "online",
                     "constraints": {

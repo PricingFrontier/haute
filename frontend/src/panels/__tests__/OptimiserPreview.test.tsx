@@ -359,19 +359,45 @@ describe("OptimiserPreview", () => {
 
       fireEvent.click(screen.getByText("Rates"))
 
-      expect(screen.getByText("age_band")).toBeInTheDocument()
-      expect(screen.getByText("17-24")).toBeInTheDocument()
+      expect(screen.getByRole("heading", { name: "age_band" })).toBeInTheDocument()
+      expect(screen.getAllByText("17-24").length).toBeGreaterThan(0)
       expect(screen.getAllByText("0.8750").length).toBeGreaterThan(0)
-      expect(screen.getByText("25-39")).toBeInTheDocument()
+      expect(screen.getAllByText("25-39").length).toBeGreaterThan(0)
       expect(screen.getAllByText("1.1250").length).toBeGreaterThan(0)
       expect(screen.queryByText("North")).not.toBeInTheDocument()
 
-      fireEvent.change(screen.getByLabelText("Rate factor"), { target: { value: "region" } })
+      fireEvent.click(screen.getByRole("button", { name: "region" }))
 
-      expect(screen.getByText("region")).toBeInTheDocument()
-      expect(screen.getByText("North")).toBeInTheDocument()
+      expect(screen.getByRole("heading", { name: "region" })).toBeInTheDocument()
+      expect(screen.getAllByText("North").length).toBeGreaterThan(0)
       expect(screen.getAllByText("1.0500").length).toBeGreaterThan(0)
       expect(screen.queryByText("17-24")).not.toBeInTheDocument()
+    })
+
+    it("keeps the chosen Rates factor across tab switches", () => {
+      renderPreview({
+        data: makeData({
+          result: makeSolveResult({
+            mode: "ratebook",
+            factor_tables: {
+              age_band: [
+                { __factor_group__: "17-24", optimal_scenario_value: 0.875, quote_count: 10 },
+                { __factor_group__: "25-39", optimal_scenario_value: 1.125, quote_count: 10 },
+              ],
+              region: [
+                { __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 },
+              ],
+            },
+          }),
+        }),
+      })
+
+      fireEvent.click(screen.getByText("Rates"))
+      fireEvent.click(screen.getByRole("button", { name: "region" }))
+      fireEvent.click(screen.getByText("Summary"))
+      fireEvent.click(screen.getByText("Rates"))
+
+      expect(screen.getByRole("heading", { name: "region" })).toBeInTheDocument()
     })
 
     it("orders Rates tab factors and levels by the configured banding source", () => {
@@ -463,17 +489,9 @@ describe("OptimiserPreview", () => {
 
       fireEvent.click(screen.getByText("Rates"))
 
-      const factorSelect = screen.getByLabelText("Rate factor") as HTMLSelectElement
-      expect(Array.from(factorSelect.options).map(option => option.value)).toEqual([
-        "proposer_age_band",
-        "vehicle_age_band",
-        "channel_band",
-      ])
-
-      fireEvent.change(factorSelect, { target: { value: "vehicle_age_band" } })
-      const levelCells = Array.from(document.querySelectorAll("tbody tr td:first-child"))
-        .map(cell => cell.textContent)
-      expect(levelCells).toEqual(["1-3", "4-5", "10-11", "missing"])
+      fireEvent.click(screen.getByRole("button", { name: "vehicle_age_band" }))
+      const levels = screen.getAllByTestId("relativity-row").map(row => row.getAttribute("data-key"))
+      expect(levels).toEqual(["1-3", "4-5", "10-11", "missing"])
     })
 
     it("keeps factor tables out of Summary once the Rates tab exists", () => {
@@ -493,22 +511,19 @@ describe("OptimiserPreview", () => {
       fireEvent.click(screen.getByText("Summary"))
 
       expect(screen.queryByText("Factor Tables")).not.toBeInTheDocument()
-      expect(screen.queryByText("17-24")).not.toBeInTheDocument()
+      // A level appears on Summary only in the beeswarm's own values table.
+      const levelCells = screen.queryAllByText("17-24")
+      expect(levelCells).toHaveLength(1)
+      expect(levelCells[0].closest("table")).toHaveAttribute("aria-label", "Mechanical price effect values")
     })
 
+    // The beeswarm's own behaviour is pinned in optimiser/__tests__/RatebookImpactBeeswarm.test.tsx.
     it("shows a ratebook mechanical price effect beeswarm on Summary", () => {
       renderPreview({
         data: makeData({
           result: makeSolveResult({
             mode: "ratebook",
             factor_tables: {
-              age_band: [
-                { __factor_group__: "17-24", optimal_scenario_value: 0.75, quote_count: 10 },
-                { __factor_group__: "25-39", optimal_scenario_value: 1.40, quote_count: 10 },
-                { __factor_group__: "40-49", optimal_scenario_value: 1.41, quote_count: 10 },
-                { __factor_group__: "50-59", optimal_scenario_value: 1.42, quote_count: 10 },
-                { __factor_group__: "60-69", optimal_scenario_value: 1.43, quote_count: 10 },
-              ],
               region: [
                 { __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 },
                 { __factor_group__: "South", optimal_scenario_value: 0.98, quote_count: 10 },
@@ -520,150 +535,8 @@ describe("OptimiserPreview", () => {
 
       fireEvent.click(screen.getByText("Summary"))
 
-      expect(screen.getByText("Mechanical Price Effect")).toBeInTheDocument()
       expect(screen.getByTestId("ratebook-impact-beeswarm")).toBeInTheDocument()
-      const factorLabels = screen.getAllByTestId("ratebook-impact-factor")
-      expect(factorLabels.map((label) => label.textContent)).toEqual(["age_band", "region"])
-      expect(screen.getByLabelText("age_band 17-24: -25.0%")).toBeInTheDocument()
-      expect(screen.getByLabelText("age_band 25-39: +40.0%")).toBeInTheDocument()
-      expect(screen.getByText("Log rate effect")).toBeInTheDocument()
-      expect(screen.getByText("Factor value")).toBeInTheDocument()
-      expect(screen.getByText("Low")).toBeInTheDocument()
-      expect(screen.getByText("High")).toBeInTheDocument()
-
-      const decreasingDot = screen.getByLabelText("age_band 17-24: -25.0%")
-      const increasingDots = [
-        screen.getByLabelText("age_band 25-39: +40.0%"),
-        screen.getByLabelText("age_band 40-49: +41.0%"),
-        screen.getByLabelText("age_band 50-59: +42.0%"),
-        screen.getByLabelText("age_band 60-69: +43.0%"),
-      ]
-      expect(decreasingDot).toHaveAttribute("data-impact-direction", "decreasing")
-      expect(increasingDots[0]).toHaveAttribute("data-impact-direction", "increasing")
-      expect(decreasingDot).toHaveAttribute("data-factor-value-position", "0.00")
-      expect(increasingDots[3]).toHaveAttribute("data-factor-value-position", "1.00")
-      expect(decreasingDot).toHaveAttribute(
-        "fill",
-        "color-mix(in srgb, var(--chart-impact-value-low) 100%, var(--chart-impact-value-high) 0%)",
-      )
-      expect(increasingDots[3]).toHaveAttribute(
-        "fill",
-        "color-mix(in srgb, var(--chart-impact-value-low) 0%, var(--chart-impact-value-high) 100%)",
-      )
-      expect(new Set(increasingDots.map((dot) => dot.getAttribute("cy"))).size).toBeGreaterThan(1)
-    })
-
-    it("orders mechanical price effect factors by quote-count weighted impact", () => {
-      renderPreview({
-        data: makeData({
-          result: makeSolveResult({
-            mode: "ratebook",
-            factor_tables: {
-              sparse_extreme: [
-                { __factor_group__: "Rare", optimal_scenario_value: 2.50, quote_count: 1 },
-                { __factor_group__: "Common", optimal_scenario_value: 1.00, quote_count: 999 },
-              ],
-              common_moderate: [
-                { __factor_group__: "Low", optimal_scenario_value: 0.90, quote_count: 500 },
-                { __factor_group__: "High", optimal_scenario_value: 1.10, quote_count: 500 },
-              ],
-            },
-          }),
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Summary"))
-
-      const factorLabels = screen.getAllByTestId("ratebook-impact-factor")
-      expect(factorLabels.map((label) => label.textContent)).toEqual([
-        "common_moderate",
-        "sparse_extreme",
-      ])
-    })
-
-    it("colours dash-separated numeric bands across unicode dash variants", () => {
-      renderPreview({
-        data: makeData({
-          result: makeSolveResult({
-            mode: "ratebook",
-            factor_tables: {
-              age_band: [
-                { __factor_group__: "18–19", optimal_scenario_value: 0.95, quote_count: 10 },
-                { __factor_group__: "20-29", optimal_scenario_value: 1.00, quote_count: 10 },
-                { __factor_group__: "30 − 39", optimal_scenario_value: 1.05, quote_count: 10 },
-                { __factor_group__: "40 - 49", optimal_scenario_value: 1.10, quote_count: 10 },
-              ],
-            },
-          }),
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Summary"))
-
-      expect(screen.getByLabelText("age_band 18–19: -5.0%")).toHaveAttribute(
-        "data-factor-value-position",
-        "0.00",
-      )
-      expect(screen.getByLabelText("age_band 20-29: 0.0%")).not.toHaveAttribute(
-        "data-factor-value-position",
-        "unknown",
-      )
-      expect(screen.getByLabelText("age_band 30 − 39: +5.0%")).not.toHaveAttribute(
-        "data-factor-value-position",
-        "unknown",
-      )
-      expect(screen.getByLabelText("age_band 40 - 49: +10.0%")).toHaveAttribute(
-        "data-factor-value-position",
-        "1.00",
-      )
-    })
-
-    it("colours ratebook impact dots by factor value rather than impact direction", () => {
-      renderPreview({
-        data: makeData({
-          result: makeSolveResult({
-            mode: "ratebook",
-            factor_tables: {
-              net_premium: [
-                {
-                  __factor_group__: "<200",
-                  optimal_scenario_value: 1.25,
-                  quote_count: 10,
-                },
-                {
-                  __factor_group__: ">=400",
-                  optimal_scenario_value: 0.80,
-                  quote_count: 10,
-                },
-              ],
-              region: [
-                { __factor_group__: "North", optimal_scenario_value: 1.05, quote_count: 10 },
-              ],
-            },
-          }),
-        }),
-      })
-
-      fireEvent.click(screen.getByText("Summary"))
-
-      const lowValueIncreasingDot = screen.getByLabelText("net_premium <200: +25.0%")
-      const highValueDecreasingDot = screen.getByLabelText("net_premium >=400: -20.0%")
-      const unorderedCategoryDot = screen.getByLabelText("region North: +5.0%")
-
-      expect(lowValueIncreasingDot).toHaveAttribute("data-impact-direction", "increasing")
-      expect(lowValueIncreasingDot).toHaveAttribute("data-factor-value-position", "0.00")
-      expect(lowValueIncreasingDot).toHaveAttribute(
-        "fill",
-        "color-mix(in srgb, var(--chart-impact-value-low) 100%, var(--chart-impact-value-high) 0%)",
-      )
-      expect(highValueDecreasingDot).toHaveAttribute("data-impact-direction", "decreasing")
-      expect(highValueDecreasingDot).toHaveAttribute("data-factor-value-position", "1.00")
-      expect(highValueDecreasingDot).toHaveAttribute(
-        "fill",
-        "color-mix(in srgb, var(--chart-impact-value-low) 0%, var(--chart-impact-value-high) 100%)",
-      )
-      expect(unorderedCategoryDot).toHaveAttribute("data-factor-value-position", "unknown")
-      expect(unorderedCategoryDot).toHaveAttribute("fill", "var(--chart-impact-value-neutral)")
+      expect(screen.getByLabelText("region North: +5.0%")).toBeInTheDocument()
     })
 
     it("does not show the mechanical price effect chart for online results", () => {
@@ -742,12 +615,17 @@ describe("OptimiserPreview", () => {
     it("switches to Convergence tab on click", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Convergence"))
-      expect(screen.getByText("Iterations")).toBeInTheDocument()
+      expect(screen.getByRole("img", { name: "Objective by iteration" })).toBeInTheDocument()
     })
 
-    it("hides Convergence tab when no history data", () => {
-      renderPreview({ data: makeData({ result: makeSolveResult({ history: null }) }) })
-      expect(screen.queryByText("Convergence")).not.toBeInTheDocument()
+    it("offers Convergence for a ratebook result without a trace and says why it is empty", () => {
+      renderPreview({
+        data: makeData({ result: makeSolveResult({ mode: "ratebook", history: null, ratebook_cd_trace: null }) }),
+      })
+      fireEvent.click(screen.getByRole("tab", { name: "Convergence" }))
+      expect(screen.getByText(
+        "The coordinate-descent trace is recorded by live solves only; this result has none.",
+      )).toBeInTheDocument()
     })
 
     it("defaults to Frontier tab when frontier data exists", () => {
@@ -929,6 +807,14 @@ describe("OptimiserPreview", () => {
       renderPreview({
         data: makeData({
           frontier,
+          result: makeSolveResult({
+            constraints: { loss_ratio: 0.65, volume: 100 },
+            effective_bounds: {
+              loss_ratio: { kind: "max", bound: 1.05 },
+              volume: { kind: "min", bound: 95 },
+            },
+            lambdas: { loss_ratio: 0.005, volume: 0 },
+          }),
           constraints: { loss_ratio: { max: 1.05 }, volume: { min: 95 } },
         }),
       })
@@ -949,29 +835,244 @@ describe("OptimiserPreview", () => {
     })
   })
 
+  describe("frontier slices (OPT-V06)", () => {
+    /** A 2×3 sweep: volume (min) at 5, 5.5, 6 against margin (max) at 400 and
+     *  450, margin varying fastest, so each slice's global indices interleave. */
+    const GRID = [
+      // [volume bound, margin bound, objective, volume total, margin total]
+      [5, 400, 130, 5.2, 390],
+      [5, 450, 140, 5.1, 440],
+      [5.5, 400, 120, 5.6, 395],
+      [5.5, 450, 128, 5.7, 445],
+      [6, 400, 105, 6.1, 398],
+      [6, 450, 110, 6.2, 449],
+    ]
+
+    function gridFrontier(): FrontierData {
+      const points = GRID.map(([volume, margin, objective, volumeTotal, marginTotal], i) => makeOnlineFrontierPoint(i, {
+        total_objective: objective,
+        thresholds: { volume, margin },
+        bounds: { volume, margin },
+        totals: { volume: volumeTotal, margin: marginTotal },
+        lambdas: { volume: 0.5, margin: 0.01 },
+      }))
+      return makeOnlineFrontier(6, {
+        points,
+        point_summaries: points.map((point) => makePointSummary({
+          total_objective: point.total_objective,
+          constraints: point.totals,
+          effective_bounds: {
+            volume: { kind: "min", bound: point.bounds.volume },
+            margin: { kind: "max", bound: point.bounds.margin },
+          },
+          lambdas: point.lambdas,
+          iterations: point.iterations,
+        })),
+        constraint_names: ["volume", "margin"],
+        swept_axes: ["volume", "margin"],
+      })
+    }
+
+    /** The as-solved result, solved at volume ≥ 5.5 and margin ≤ `margin`. */
+    function gridSolve(margin = 400): OptimiserSolveResult {
+      return makeSolveResult({
+        total_objective: 121,
+        constraints: { volume: 5.6, margin: 396 },
+        effective_bounds: {
+          volume: { kind: "min", bound: 5.5 },
+          margin: { kind: "max", bound: margin },
+        },
+        lambdas: { volume: 0.5, margin: 0.01 },
+      })
+    }
+
+    function gridData(overrides: Partial<OptimiserPreviewData> = {}): OptimiserPreviewData {
+      const frontier = gridFrontier()
+      const index = overrides.selectedPointIndex ?? null
+      const solved = overrides.solvedResult ?? gridSolve()
+      return makeData({
+        frontier,
+        solvedResult: solved,
+        result: index == null ? solved : pointResult(frontier, index, solved),
+        constraints: { volume: { min: 5.5 }, margin: { max: 400 } },
+        ...overrides,
+      })
+    }
+
+    function shownPoints(): (string | null)[] {
+      return screen.getAllByRole("button", { name: /^Select frontier point/ })
+        .map((button) => button.getAttribute("aria-label"))
+    }
+
+    it("shows point 1's slice by default, one line in bound order, and names the slice", () => {
+      renderPreview({ data: gridData() })
+
+      expect(shownPoints()).toEqual([
+        "Select frontier point 1",
+        "Select frontier point 3",
+        "Select frontier point 5",
+      ])
+      const holding = screen.getByLabelText("Holding margin at")
+      expect(within(holding).getAllByRole("option").map((option) => option.textContent)).toEqual(["400", "450"])
+      expect(screen.getByText(/This slice holds 3 of the 6 frontier points\./)).toBeInTheDocument()
+    })
+
+    it("offers only the swept constraints on the X axis and re-slices when it changes", () => {
+      renderPreview({ data: gridData() })
+
+      fireEvent.change(screen.getByLabelText("X axis:"), { target: { value: "1" } })
+
+      expect(shownPoints()).toEqual(["Select frontier point 1", "Select frontier point 2"])
+      expect(screen.getByLabelText("Holding volume at")).toBeInTheDocument()
+    })
+
+    it("picks another slice from the Holding select", () => {
+      renderPreview({ data: gridData() })
+
+      fireEvent.change(screen.getByLabelText("Holding margin at"), { target: { value: "1" } })
+
+      expect(shownPoints()).toEqual([
+        "Select frontier point 2",
+        "Select frontier point 4",
+        "Select frontier point 6",
+      ])
+    })
+
+    it("selects the global point index from a slice, never its place in the slice", () => {
+      renderPreview({ data: gridData() })
+      fireEvent.change(screen.getByLabelText("Holding margin at"), { target: { value: "1" } })
+
+      // Point 4 is the second of its slice: global index 3, slice-local 1.
+      fireEvent.click(screen.getByRole("button", { name: "Select frontier point 4" }))
+
+      expect(mockStoreSelectPoint).toHaveBeenCalledWith("opt_1", 3)
+      expect(mockSelectFrontierPointAPI).not.toHaveBeenCalled()
+    })
+
+    it("switches to the slice of a point selected from outside the displayed slice", () => {
+      const { rerender, props } = renderPreview({ data: gridData() })
+      expect(shownPoints()).toContain("Select frontier point 1")
+
+      // Summary or the stepper selects point 4, which lies in the other slice.
+      rerender(<OptimiserPreview {...props} data={gridData({ selectedPointIndex: 3 })} />)
+
+      expect(shownPoints()).toEqual([
+        "Select frontier point 2",
+        "Select frontier point 4",
+        "Select frontier point 6",
+      ])
+      expect(screen.getByLabelText("Holding margin at")).toHaveValue("1")
+    })
+
+    it("keeps a slice the user picks while the selection stays put", () => {
+      renderPreview({ data: gridData({ selectedPointIndex: 3 }) })
+
+      fireEvent.change(screen.getByLabelText("Holding margin at"), { target: { value: "0" } })
+
+      expect(shownPoints()).toEqual([
+        "Select frontier point 1",
+        "Select frontier point 3",
+        "Select frontier point 5",
+      ])
+    })
+
+    it("steps within the selected point's slice and stops at its ends", () => {
+      const { rerender, props } = renderPreview({ data: gridData({ selectedPointIndex: 2 }) })
+
+      expect(screen.getByText("Point 3 of 6")).toBeInTheDocument()
+      fireEvent.click(screen.getByRole("button", { name: "Next frontier point" }))
+      expect(mockStoreSelectPoint).toHaveBeenLastCalledWith("opt_1", 4)
+      fireEvent.click(screen.getByRole("button", { name: "Previous frontier point" }))
+      expect(mockStoreSelectPoint).toHaveBeenLastCalledWith("opt_1", 0)
+
+      rerender(<OptimiserPreview {...props} data={gridData({ selectedPointIndex: 4 })} />)
+      // Point 6 (index 5) follows globally but lies in the other slice.
+      expect(screen.getByRole("button", { name: "Next frontier point" })).toBeDisabled()
+    })
+
+    it("always draws the as-solved anchor, hollow with a note when it lies off the slice", () => {
+      renderPreview({ data: gridData() })
+      const marker = () => screen.getByTestId("frontier-as-solved-marker")
+      // Solved at margin ≤ 400: the default slice's held bound.
+      expect(marker()).toHaveAttribute("data-on-slice", "true")
+      expect(screen.getByText("As solved")).toBeInTheDocument()
+
+      fireEvent.change(screen.getByLabelText("Holding margin at"), { target: { value: "1" } })
+
+      expect(marker()).toHaveAttribute("data-on-slice", "false")
+      expect(screen.getByText("As solved (different slice)")).toBeInTheDocument()
+    })
+
+    it("names the y axis by the objective column the result was solved for", () => {
+      renderPreview({
+        data: gridData(),
+        allNodes: [optimiserNode({ objective: "expected_income" })],
+      })
+      expect(screen.getByRole("group", { name: "Efficient frontier: expected_income against volume" }))
+        .toBeInTheDocument()
+    })
+
+    it("names the y axis Objective when the config no longer matches the result", () => {
+      mockSolveState.results = { opt_1: { configHash: "an-older-config", source: "live", structuralVersion: 0 } }
+      renderPreview({
+        data: gridData(),
+        allNodes: [optimiserNode({ objective: "expected_income" })],
+      })
+      expect(screen.getByRole("group", { name: "Efficient frontier: Objective against volume" }))
+        .toBeInTheDocument()
+    })
+
+    it("shows the selected point's trade-off to its slice neighbour in the detail card", () => {
+      renderPreview({ data: gridData({ selectedPointIndex: 2 }) })
+      const term = screen.getByText(
+        "Objective change per unit of volume bound relaxed, to the next point in this slice",
+        { selector: "dt" },
+      )
+      // (130 − 120) / (5.5 − 5) to point 1, in point 3's slice.
+      expect(term.nextElementSibling).toHaveTextContent("+20 (to point 1)")
+    })
+
+    it("lists the slice's points in a values table", () => {
+      renderPreview({ data: gridData() })
+      fireEvent.click(screen.getByText("View slice values"))
+      const table = screen.getByRole("table", { name: "Frontier slice values" })
+      const rows = within(table).getAllByRole("row").slice(1)
+      expect(rows.map((row) => within(row).getByRole("rowheader").textContent)).toEqual([
+        "Point 1",
+        "Point 3",
+        "Point 5",
+      ])
+      expect(within(rows[1]).getAllByRole("cell").map((cell) => cell.textContent)).toEqual([
+        "5.5",
+        "5.6",
+        "120",
+        "Yes",
+        "12",
+        "Feasible",
+      ])
+    })
+  })
+
   describe("Convergence tab", () => {
-    it("renders convergence chart and iteration table", () => {
+    it("draws the solve's history as small multiples on real axes", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Convergence"))
-      expect(screen.getByText("Iterations")).toBeInTheDocument()
-      // Check iteration numbers are rendered
-      expect(screen.getByText("1")).toBeInTheDocument()
-      expect(screen.getByText("2")).toBeInTheDocument()
+      for (const name of [
+        "Objective by iteration",
+        "Largest λ change by iteration",
+        "loss_ratio total by iteration",
+        "λ by iteration",
+      ]) {
+        expect(screen.getByRole("img", { name })).toBeInTheDocument()
+      }
     })
 
-    it("renders objective and lambda change columns", () => {
+    it("lists each iteration, and whether it met every constraint, in the values table", () => {
       renderPreview()
       fireEvent.click(screen.getByText("Convergence"))
-      // "Objective" appears in convergence legend
-      expect(screen.getByText("Max dLambda")).toBeInTheDocument()
-    })
-
-    it("renders constraints-satisfied column", () => {
-      renderPreview()
-      fireEvent.click(screen.getByText("Convergence"))
-      // First iteration: N, Second: Y
-      expect(screen.getByText("N")).toBeInTheDocument()
-      expect(screen.getByText("Y")).toBeInTheDocument()
+      const table = screen.getByRole("table", { name: "Iteration values" })
+      const met = within(table).getAllByRole("row").slice(1).map((row) => within(row).getAllByRole("cell").at(-1)?.textContent)
+      expect(met).toEqual(["No", "Yes"])
     })
   })
 
@@ -1032,8 +1133,7 @@ describe("OptimiserPreview", () => {
         "History is recorded for the solved result; frontier point 2: converged, 11 iterations",
       )).toBeInTheDocument()
       // The solve's two recorded iterations.
-      expect(screen.getByText("N")).toBeInTheDocument()
-      expect(screen.getByText("Y")).toBeInTheDocument()
+      expect(within(screen.getByRole("table", { name: "Iteration values" })).getAllByRole("row")).toHaveLength(3)
     })
 
     it("says when the selected point did not converge", () => {
@@ -1048,12 +1148,6 @@ describe("OptimiserPreview", () => {
       )).toBeInTheDocument()
     })
 
-    it("offers no Convergence when the solve recorded no history", () => {
-      const frontier = makeFrontier()
-      renderPreview({ data: selectedData(frontier, 1, { solvedResult: makeSolveResult({ history: null }) }) })
-
-      expect(screen.queryByRole("tab", { name: "Convergence" })).not.toBeInTheDocument()
-    })
 
     it("keeps the tab when the stepper selects another point", () => {
       const frontier = makeFrontier()
@@ -1316,8 +1410,8 @@ describe("OptimiserPreview", () => {
         }),
       })
       fireEvent.click(screen.getByText("Rates"))
-      expect(screen.getByText("age_band")).toBeInTheDocument()
-      expect(screen.getByText("18-25")).toBeInTheDocument()
+      expect(screen.getByRole("heading", { name: "age_band" })).toBeInTheDocument()
+      expect(screen.getAllByText("18-25").length).toBeGreaterThan(0)
       expect(screen.getAllByText("1.1500").length).toBeGreaterThan(0)
     })
   })

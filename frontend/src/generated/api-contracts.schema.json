@@ -8718,6 +8718,16 @@
           "title": "Lambdas",
           "type": "object"
         },
+        "ratebook_cd_trace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserRatebookCdTrace"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "scenario_value_histogram": {
           "anyOf": [
             {
@@ -8764,6 +8774,7 @@
         "cd_iterations",
         "clamp_rate",
         "history",
+        "ratebook_cd_trace",
         "scenario_value_stats",
         "scenario_value_histogram",
         "factor_tables",
@@ -9048,6 +9059,17 @@
           "default": null,
           "title": "Point Index"
         },
+        "ratebook_cd_trace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserRatebookCdTrace"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "scenario_value_histogram": {
           "anyOf": [
             {
@@ -9105,6 +9127,7 @@
         "cd_iterations",
         "factor_tables",
         "history",
+        "ratebook_cd_trace",
         "warning",
         "scenario_value_stats",
         "scenario_value_histogram",
@@ -9553,6 +9576,78 @@
       "title": "OptimiserOnlineFrontierPoint",
       "type": "object"
     },
+    "OptimiserRatebookCdTrace": {
+      "additionalProperties": false,
+      "description": "A ratebook solve's coordinate-descent trace, in (CD pass, factor) order.\n\nHolds the last ``HAUTE_OPTIMISER_CD_TRACE_LIMIT`` records; ``truncated``\nsays earlier ones were dropped.",
+      "properties": {
+        "records": {
+          "items": {
+            "$ref": "#/$defs/OptimiserRatebookCdTraceRecord"
+          },
+          "minItems": 1,
+          "title": "Records",
+          "type": "array"
+        },
+        "truncated": {
+          "title": "Truncated",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "records",
+        "truncated"
+      ],
+      "title": "OptimiserRatebookCdTrace",
+      "type": "object"
+    },
+    "OptimiserRatebookCdTraceRecord": {
+      "additionalProperties": false,
+      "description": "One inner grouped solve of a ratebook coordinate descent (price-contour's\n``PerFactorRecord``): the totals and λ after updating ``factor`` in pass\n``cd_iteration``, on the search's working multiplier.",
+      "properties": {
+        "cd_iteration": {
+          "minimum": 1,
+          "title": "Cd Iteration",
+          "type": "integer"
+        },
+        "factor": {
+          "title": "Factor",
+          "type": "string"
+        },
+        "factor_index": {
+          "minimum": 0,
+          "title": "Factor Index",
+          "type": "integer"
+        },
+        "lambdas": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Lambdas",
+          "type": "object"
+        },
+        "total_constraints": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Total Constraints",
+          "type": "object"
+        },
+        "total_objective": {
+          "title": "Total Objective",
+          "type": "number"
+        }
+      },
+      "required": [
+        "cd_iteration",
+        "factor",
+        "factor_index",
+        "total_objective",
+        "total_constraints",
+        "lambdas"
+      ],
+      "title": "OptimiserRatebookCdTraceRecord",
+      "type": "object"
+    },
     "OptimiserRatebookFrontierPoint": {
       "additionalProperties": false,
       "description": "A ratebook frontier row (``frontier_points_schema(\"ratebook\", ...)``).\n\n``iterations`` is the point's coordinate-descent pass count.",
@@ -9669,6 +9764,27 @@
         "message"
       ],
       "title": "OptimiserSaveResponse",
+      "type": "object"
+    },
+    "OptimiserScenarioGridStep": {
+      "additionalProperties": false,
+      "description": "One step of the solve's scenario grid: its index and the value the solver scored.",
+      "properties": {
+        "optimal_step": {
+          "minimum": 0,
+          "title": "Optimal Step",
+          "type": "integer"
+        },
+        "scenario_value": {
+          "title": "Scenario Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "optimal_step",
+        "scenario_value"
+      ],
+      "title": "OptimiserScenarioGridStep",
       "type": "object"
     },
     "OptimiserScenarioValueHistogram": {
@@ -9981,6 +10097,25 @@
           "default": null,
           "title": "N Steps"
         },
+        "ratebook_cd_trace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OptimiserRatebookCdTrace"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "scenario_grid": {
+          "items": {
+            "$ref": "#/$defs/OptimiserScenarioGridStep"
+          },
+          "minItems": 1,
+          "title": "Scenario Grid",
+          "type": "array"
+        },
         "scenario_value_histogram": {
           "anyOf": [
             {
@@ -10047,6 +10182,7 @@
         "cd_iterations",
         "factor_tables",
         "history",
+        "ratebook_cd_trace",
         "warning",
         "scenario_value_stats",
         "scenario_value_histogram",
@@ -10057,7 +10193,8 @@
         "selected_frontier_point",
         "frontier_generation",
         "input_summary",
-        "diagnostics_errors"
+        "diagnostics_errors",
+        "scenario_grid"
       ],
       "title": "OptimiserSolveResult",
       "type": "object"
@@ -10101,10 +10238,6 @@
         "max_iter": {
           "title": "Max Iter",
           "type": "integer"
-        },
-        "record_history": {
-          "title": "Record History",
-          "type": "boolean"
         },
         "tolerance": {
           "title": "Tolerance",

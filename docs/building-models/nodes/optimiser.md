@@ -22,8 +22,9 @@ You've generated candidate prices with the Scenario Expander. Now you want to fi
 | `max_iter` | Maximum solver iterations |
 | `tolerance` | How close to optimal the solution needs to be before stopping. Smaller values give more precise results but take longer. Typical values: 0.001 to 0.01. |
 | `chunk_size` | Optional row slice size for chunked Parquet-to-grid ingestion. Use only when scored rows are already grouped by quote and ordered by scenario index. |
-| `record_history` | Whether to save iteration-by-iteration convergence history |
 | `mlflow_experiment` | MLflow experiment name for logging results |
+| `analysis_input` | The exact input name of the connected edge to take analysis columns from. Any connected input; leave it unset to use `data_input`. |
+| `analysis_columns` | Up to 12 columns (for example a region or channel) kept per quote only to break the result down by segment. They are never given to the solver. Each must hold one value per quote, and the chosen input must contain the `quote_id` column. |
 
 A typical constraint configuration:
 

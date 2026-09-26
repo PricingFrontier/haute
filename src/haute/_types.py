@@ -8,7 +8,7 @@ FastAPI endpoint validation.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from enum import StrEnum
 from functools import cached_property
@@ -647,7 +647,6 @@ class OptimiserConfig(TypedDict, total=False):
     max_iter: int
     tolerance: float
     chunk_size: int
-    record_history: bool
 
     # Frontier
     frontier_enabled: bool
@@ -666,6 +665,11 @@ class OptimiserConfig(TypedDict, total=False):
     # Executable incoming-edge frame name selected for optimisation.
     data_input: str
     banding_source: str
+
+    # Result breakdowns only (never given to the solver): the connected frame the
+    # analysis columns come from (absent = data_input) and up to 12 of its columns.
+    analysis_input: str
+    analysis_columns: list[str]
 
     # MLflow
     mlflow_experiment: str
@@ -770,6 +774,25 @@ class OnlineSolveResultLike(SolveResultLike, Protocol):
 
 
 @runtime_checkable
+class PerFactorRecordLike(Protocol):
+    """Structural interface for ``price_contour.PerFactorRecord``: one inner
+    grouped solve of a ratebook coordinate descent."""
+
+    @property
+    def cd_iteration(self) -> int: ...
+    @property
+    def factor(self) -> str: ...
+    @property
+    def factor_index(self) -> int: ...
+    @property
+    def total_objective(self) -> float: ...
+    @property
+    def total_constraints(self) -> dict[str, float]: ...
+    @property
+    def lambdas(self) -> dict[str, float]: ...
+
+
+@runtime_checkable
 class RatebookSolveResultLike(SolveResultLike, Protocol):
     """Structural interface for ``price_contour.RatebookResult`` (ratebook mode).
 
@@ -788,6 +811,8 @@ class RatebookSolveResultLike(SolveResultLike, Protocol):
     def cd_iterations(self) -> int: ...
     @property
     def clamp_rate(self) -> float: ...
+    @property
+    def per_factor_results(self) -> Sequence[PerFactorRecordLike]: ...
 
 
 MODEL_SCORE_CONFIG_KEYS: tuple[str, ...] = (
@@ -834,7 +859,6 @@ OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (
     "max_iter",
     "tolerance",
     "chunk_size",
-    "record_history",
     "frontier_enabled",
     "frontier_ranges",
     "frontier_steps",
@@ -847,6 +871,8 @@ OPTIMISER_CONFIG_KEYS: tuple[str, ...] = (
     "structure_mode",
     "data_input",
     "banding_source",
+    "analysis_input",
+    "analysis_columns",
     "mlflow_experiment",
     "mlflow_destination",
     "result_export_path",

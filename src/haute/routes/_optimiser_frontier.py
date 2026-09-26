@@ -495,6 +495,8 @@ def _materialised_ratebook_result_dict(
             ),
             "factor_dtypes": factor_dtypes,
             "history": None,
+            # The trace is the solve's coordinate descent, not this point's.
+            "ratebook_cd_trace": None,
         }
     )
     if materialised["converged"]:

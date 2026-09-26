@@ -311,6 +311,18 @@ class TestRealLibraryShapeContracts:
         assert result.constraint_bounds == {"volume": 0.90}
         assert isinstance(result.n_quotes_clamped_low, int)
         assert isinstance(result.per_factor_results[0], pc.PerFactorRecord)
+        # The ratebook CD trace maps these fields by name, never by position.
+        assert [f.name for f in fields(pc.PerFactorRecord)] == [
+            "cd_iteration",
+            "factor",
+            "factor_index",
+            "total_objective",
+            "total_constraints",
+            "lambdas",
+            "clamp_rate",
+            "inner_iterations",
+            "inner_converged",
+        ]
         assert set(result.factor_tables["region"]) == {"N", "S"}
         assert isinstance(result.cd_iterations, int)
         assert isinstance(result.clamp_rate, float)
@@ -508,6 +520,16 @@ class TestRatebookApplyDetailContract:
             assert row["quote_count"] == 3
         assert isinstance(select_resp.json()["cd_iterations"], int)
         assert isinstance(select_resp.json()["clamp_rate"], float)
+        # A frontier point has no CD trace; the solve's own selection returns the solve's.
+        assert selected["ratebook_cd_trace"] is None
+        solve_select = client.post(
+            "/api/optimiser/frontier/select",
+            json={"job_id": job_id, "point_index": None},
+        )
+        assert solve_select.status_code == 200, solve_select.text
+        solved_trace = _poll_until_done(client, job_id)["result"]["ratebook_cd_trace"]
+        assert solve_select.json()["ratebook_cd_trace"] == solved_trace
+        assert solved_trace["records"]
         # A frontier point shares its solve's grid, so its collar is the solve's.
         assert selected["combined_factor_bounds"] == _DEFAULT_GRID_BOUNDS
 
@@ -852,10 +874,77 @@ class TestSolveResultContract:
             "max_iter": 20,
             "tolerance": 1e-4,
             "chunk_size": None,
-            "record_history": False,
         }
         assert result["diagnostics_errors"] == []
         assert result["scenario_value_stats"] is not None
+
+    def test_every_online_solve_records_its_history(self, client, tmp_path):
+        """Q5: there is no flag; the history is always recorded, bounded by max_iter."""
+        path = tmp_path / "online_history.parquet"
+        _scored_frame(n_quotes=5, n_steps=3).write_parquet(path)
+        job_id = _solve_completed(client, _online_graph(str(path)))
+
+        result = _poll_until_done(client, job_id)["result"]
+
+        history = result["history"]
+        assert 1 <= len(history) <= 20
+        assert history[-1]["iteration"] == history[0]["iteration"] + len(history) - 1
+        assert all(set(entry["total_constraints"]) == {"volume"} for entry in history)
+        assert result["ratebook_cd_trace"] is None
+
+    def test_ratebook_solve_carries_its_coordinate_descent_trace(self, client, tmp_path):
+        """One record per (CD pass, factor), named by the library, finite, and
+        ending on the solve's objective to 1e-6 relative: each record is an inner
+        solve on the search's working multiplier, while ``total_objective`` is the
+        canonical evaluation of the final tables, so they agree closely, not exactly."""
+        scored_path, banding_path = _ratebook_fixture_paths(tmp_path, with_age=True)
+        job_id = _solve_completed(
+            client, _ratebook_graph(scored_path, banding_path, [["region"], ["age"]])
+        )
+
+        result = _poll_until_done(client, job_id)["result"]
+
+        assert result["history"] is None
+        trace = result["ratebook_cd_trace"]
+        assert trace["truncated"] is False
+        records = trace["records"]
+        assert [(r["cd_iteration"], r["factor"], r["factor_index"]) for r in records] == [
+            (cd_pass, factor, index)
+            for cd_pass in range(1, result["cd_iterations"] + 1)
+            for index, factor in enumerate(["region", "age"])
+        ]
+        for record in records:
+            assert set(record) == {
+                "cd_iteration",
+                "factor",
+                "factor_index",
+                "total_objective",
+                "total_constraints",
+                "lambdas",
+            }
+            assert set(record["total_constraints"]) == set(record["lambdas"]) == {"volume"}
+            values = [
+                record["total_objective"],
+                *record["total_constraints"].values(),
+                *record["lambdas"].values(),
+            ]
+            assert all(np.isfinite(values))
+        assert records[-1]["total_objective"] == pytest.approx(result["total_objective"], rel=1e-6)
+
+    def test_ratebook_trace_keeps_its_last_records_when_capped(self, client, tmp_path, monkeypatch):
+        monkeypatch.setenv("HAUTE_OPTIMISER_CD_TRACE_LIMIT", "1")
+        scored_path, banding_path = _ratebook_fixture_paths(tmp_path, with_age=True)
+        job_id = _solve_completed(
+            client, _ratebook_graph(scored_path, banding_path, [["region"], ["age"]])
+        )
+
+        result = _poll_until_done(client, job_id)["result"]
+
+        trace = result["ratebook_cd_trace"]
+        assert trace["truncated"] is True
+        assert [(r["cd_iteration"], r["factor"]) for r in trace["records"]] == [
+            (result["cd_iterations"], "age")
+        ]
 
     def test_ratebook_frontier_points_are_typed_ratebook_rows(self, client, tmp_path):
         scored_path, banding_path = _ratebook_fixture_paths(tmp_path)

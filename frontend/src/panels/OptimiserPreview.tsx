@@ -25,10 +25,23 @@ import type {
   OptimiserSolveResult,
 } from "../api/types"
 import type { SimpleEdge, SimpleNode } from "./editors"
-import FrontierChart from "./optimiser/FrontierChart"
+import FrontierChart, { type FrontierChartPoint } from "./optimiser/FrontierChart"
 import ConvergenceChart from "./optimiser/ConvergenceChart"
 import SummaryTab from "./optimiser/SummaryTab"
 import DetailCard from "./optimiser/DetailCard"
+import {
+  assessFrontierPoint,
+  asSolvedOnSlice,
+  discreteTradeOff,
+  displayedSlicePosition,
+  frontierConstraintKinds,
+  sliceFrontier,
+  sliceNeighbours,
+  type FrontierSliceChoice,
+  type FrontierSlicing,
+} from "./optimiser/frontierSlices"
+import { effectiveConstraintBounds } from "../stores/useNodeResultsStore"
+import { ChartValuesTable } from "./modelling/ChartScaffold"
 import RatebookRatesTab from "./optimiser/RatebookRatesTab"
 import { hasFactorTables } from "./optimiser/ratebookFactorTables"
 import { formatOptimiserIterationSummary } from "./optimiser/iterationSummary"
@@ -74,6 +87,18 @@ type RatesDetailState =
   | { status: "loading"; key: string }
   | { status: "error"; key: string; error: string }
 
+/** What one review of one node's solve job remembers across tabs and point steps. */
+type OptimiserReview = {
+  key: string
+  tab: OptimiserResultView
+  /** The x constraint, as an index into the frontier's `swept_axes`. */
+  xConstraintIdx: number
+  /** The frontier slice the user picked, which holds while the selection stays put. */
+  sliceChoice: FrontierSliceChoice | null
+  ratesFactor: string | null
+  ratesSearch: string
+}
+
 const EMPTY_COLUMNS: { name: string; dtype: string }[] = []
 
 const REQUEST_FAILED = "The request failed."
@@ -83,18 +108,26 @@ const OPTIMISER_ACCENT = {
   soft: OPTIMISER_COLORS.accentSoft,
 }
 
+/**
+ * Steps the publish target through the selected point's slice in bound order
+ * (global numbering), disabled at the slice's ends.
+ */
 function HeaderPointStepper({
   pointCount,
   selectedIdx,
-  onStepPoint,
+  previous,
+  next,
+  onSelect,
 }: {
   pointCount: number
   selectedIdx: number | null
-  onStepPoint: (delta: number) => void
+  previous: number | null
+  next: number | null
+  onSelect: (index: number) => void
 }) {
-  if (selectedIdx == null || selectedIdx < 0 || selectedIdx >= pointCount) return null
-  const atStart = selectedIdx <= 0
-  const atEnd = selectedIdx >= pointCount - 1
+  if (selectedIdx == null) return null
+  const atStart = previous === null
+  const atEnd = next === null
 
   return (
     <div
@@ -103,10 +136,10 @@ function HeaderPointStepper({
     >
       <button
         type="button"
-        onClick={() => onStepPoint(-1)}
+        onClick={() => { if (previous !== null) onSelect(previous) }}
         disabled={atStart}
         aria-label="Previous frontier point"
-        title="Previous frontier point"
+        title="Previous frontier point in this slice"
         className="w-5 h-5 inline-flex items-center justify-center rounded transition-colors"
         style={{
           color: atStart ? "var(--text-muted)" : "var(--text-secondary)",
@@ -120,10 +153,10 @@ function HeaderPointStepper({
       </span>
       <button
         type="button"
-        onClick={() => onStepPoint(1)}
+        onClick={() => { if (next !== null) onSelect(next) }}
         disabled={atEnd}
         aria-label="Next frontier point"
-        title="Next frontier point"
+        title="Next frontier point in this slice"
         className="w-5 h-5 inline-flex items-center justify-center rounded transition-colors"
         style={{
           color: atEnd ? "var(--text-muted)" : "var(--text-secondary)",
@@ -149,24 +182,39 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
   const defaultTab: OptimiserResultView = (
     displayData.frontier && displayData.frontier.points.length > 0 ? "frontier" : "summary"
   )
-  const [review, setReview] = useState<{ key: string; tab: OptimiserResultView; xConstraintIdx: number }>(
-    { key: reviewKey, tab: defaultTab, xConstraintIdx: 0 },
-  )
-  if (review.key !== reviewKey) {
-    setReview({ key: reviewKey, tab: defaultTab, xConstraintIdx: 0 })
+  // The Rates factor and its search belong to the review too, so they survive
+  // tab switches and point steps.
+  const freshReview: OptimiserReview = {
+    key: reviewKey,
+    tab: defaultTab,
+    xConstraintIdx: 0,
+    sliceChoice: null,
+    ratesFactor: null,
+    ratesSearch: "",
   }
-  const { tab, xConstraintIdx } = review.key === reviewKey ? review : { tab: defaultTab, xConstraintIdx: 0 }
+  const [review, setReview] = useState(freshReview)
+  if (review.key !== reviewKey) {
+    setReview(freshReview)
+  }
+  const { tab, xConstraintIdx, sliceChoice, ratesFactor, ratesSearch } = review.key === reviewKey ? review : freshReview
   const setTab = useCallback((next: OptimiserResultView) => {
     setReview((current) => ({ ...current, tab: next }))
   }, [])
   const setXConstraintIdx = useCallback((next: number) => {
     setReview((current) => ({ ...current, xConstraintIdx: next }))
   }, [])
+  const setSliceChoice = useCallback((next: FrontierSliceChoice) => {
+    setReview((current) => ({ ...current, sliceChoice: next }))
+  }, [])
+  const setRatesFactor = useCallback((next: string) => {
+    setReview((current) => ({ ...current, ratesFactor: next }))
+  }, [])
+  const setRatesSearch = useCallback((next: string) => {
+    setReview((current) => ({ ...current, ratesSearch: next }))
+  }, [])
 
   const height = useUIStore((s) => s.optimiserPreviewHeight)
   const rememberHeight = useUIStore((s) => s.setOptimiserPreviewHeight)
-
-  // X-axis constraint picker for multi-constraint frontiers
 
   // Store actions
   const storeSelectPoint = useNodeResultsStore((s) => s.selectFrontierPoint)
@@ -305,18 +353,49 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
     [selectedIdx, nodeId, storeSelectPoint],
   )
 
-  const handleStepPoint = useCallback(
-    (delta: number) => {
-      if (!frontier) return
-      const next = (selectedIdx ?? 0) + delta
-      if (next < 0 || next >= frontier.points.length) return
-      handlePointClick(next)
-    },
-    [frontier, selectedIdx, handlePointClick],
-  )
-
   // Tabs available
   const frontierWithPoints = frontier && frontier.points.length > 0 ? frontier : null
+
+  // The frontier is shown one slice at a time along a swept x constraint; the
+  // stepper and the chart share the slicing. Every index is global.
+  const xConstraintName = frontierWithPoints ? frontierWithPoints.swept_axes[xConstraintIdx] : null
+  if (frontierWithPoints && xConstraintName === undefined) {
+    throw new Error(
+      `Frontier x constraint ${xConstraintIdx} is not one of its swept constraints `
+      + `[${frontierWithPoints.swept_axes.join(", ")}]`,
+    )
+  }
+  const slicing = useMemo(
+    () => (frontierWithPoints && xConstraintName
+      ? sliceFrontier(
+        frontierWithPoints.points,
+        frontierWithPoints.constraint_names,
+        frontierWithPoints.swept_axes,
+        xConstraintName,
+      )
+      : null),
+    [frontierWithPoints, xConstraintName],
+  )
+  const stepNeighbours = slicing && selectedIdx != null
+    ? sliceNeighbours(slicing, selectedIdx)
+    : { previous: null, next: null }
+  const handleSliceChange = useCallback(
+    (key: string) => {
+      if (!slicing || !frontierWithPoints) return
+      setSliceChoice({
+        xName: slicing.xName,
+        generation: frontierWithPoints.frontier_generation,
+        key,
+        selection: selectedIdx,
+      })
+    },
+    [slicing, frontierWithPoints, selectedIdx, setSliceChoice],
+  )
+  // The y axis names the objective column only while the node's config is the
+  // one the result was solved with; a stale result's column is not known.
+  const objectiveName = !isStale && typeof nodeConfig.objective === "string" && nodeConfig.objective !== ""
+    ? nodeConfig.objective
+    : "Objective"
   const ratebookFactorTables = result.mode === "ratebook" && hasFactorTables(result.factor_tables)
     ? result.factor_tables
     : null
@@ -327,9 +406,8 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
   const availableTabs: OptimiserResultView[] = frontierWithPoints ? ["frontier", "summary"] : ["summary"]
   if (hasRates || canMaterialiseSelectedRates) availableTabs.push("rates")
   if (result.mode !== "ratebook") availableTabs.push("quotes")
-  // Only the solve records a history, so a selected point keeps Convergence.
-  const solvedHistoryRecorded = solvedResult.history != null && solvedResult.history.length > 0
-  if (solvedHistoryRecorded) availableTabs.push("convergence")
+  // Convergence draws the solve's history or CD trace, so every result offers it.
+  availableTabs.push("convergence")
   const activeTab = availableTabs.includes(tab) ? tab : availableTabs[0]
 
   const tabs = availableTabs.map((key) => ({ key, label: OPTIMISER_VIEW_LABELS[key] }))
@@ -361,7 +439,9 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
         <HeaderPointStepper
           pointCount={headerPointCount}
           selectedIdx={selectedIdx}
-          onStepPoint={handleStepPoint}
+          previous={stepNeighbours.previous}
+          next={stepNeighbours.next}
+          onSelect={handlePointClick}
         />
       )}
       notices={(
@@ -421,7 +501,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
       )}
       intro={OPTIMISER_VIEW_INTRODUCTIONS[activeTab]}
     >
-      {activeTab === "frontier" && frontierWithPoints && (
+      {activeTab === "frontier" && frontierWithPoints && slicing && (
         <FrontierTab
           frontier={frontierWithPoints}
           result={result}
@@ -429,6 +509,15 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
           selectedIdx={selectedIdx}
           xConstraintIdx={xConstraintIdx}
           onXConstraintChange={setXConstraintIdx}
+          slicing={slicing}
+          slicePosition={displayedSlicePosition(
+            slicing,
+            selectedIdx,
+            sliceChoice,
+            frontierWithPoints.frontier_generation,
+          )}
+          onSliceChange={handleSliceChange}
+          objectiveName={objectiveName}
           onPointClick={handlePointClick}
         />
       )}
@@ -444,7 +533,16 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
 
       {activeTab === "rates" && (
         ratebookFactorTables ? (
-          <RatebookRatesTab factorTables={ratebookFactorTables} factorLevelOrder={factorLevelOrder} />
+          <RatebookRatesTab
+            factorTables={ratebookFactorTables}
+            factorLevelOrder={factorLevelOrder}
+            selection={{
+              selected: ratesFactor,
+              onSelect: setRatesFactor,
+              search: ratesSearch,
+              onSearch: setRatesSearch,
+            }}
+          />
         ) : (
           <RatebookRatesPending detail={ratesDetail} onRetry={retryRates} />
         )
@@ -478,9 +576,26 @@ interface FrontierTabProps {
   /** The as-solved result, which anchors the chart's as-solved marker. */
   solvedResult: OptimiserSolveResult
   selectedIdx: number | null
+  /** The x constraint, as an index into `frontier.swept_axes`. */
   xConstraintIdx: number
   onXConstraintChange: (idx: number) => void
+  slicing: FrontierSlicing
+  /** The displayed slice's position in `slicing.slices`. */
+  slicePosition: number
+  onSliceChange: (key: string) => void
+  /** The y axis name: the objective column, or "Objective" when it is not known. */
+  objectiveName: string
   onPointClick: (index: number) => void
+}
+
+const STATUS_LABELS = {
+  feasible: "Feasible",
+  not_converged: "Not converged",
+  breached: "Breached",
+} as const
+
+function formatFrontierValue(value: number): string {
+  return value.toLocaleString("en-US", { maximumFractionDigits: 6 })
 }
 
 function FrontierTab({
@@ -490,83 +605,147 @@ function FrontierTab({
   selectedIdx,
   xConstraintIdx,
   onXConstraintChange,
+  slicing,
+  slicePosition,
+  onSliceChange,
+  objectiveName,
   onPointClick,
 }: FrontierTabProps) {
   const xPickerId = useId()
-  const points = frontier.points
-  // The frontier's own constraints: the guard checked every point names each one.
-  const constraintNames = frontier.constraint_names
-  const xConstraintName = constraintNames[xConstraintIdx] ?? constraintNames[0]
-  // Each typed point holds every constraint's total, so the x value is read by name.
-  const chartPoints = useMemo(
-    () => (xConstraintName
-      ? points.map((point) => ({ x: point.totals[xConstraintName], y: point.total_objective }))
-      : []),
-    [points, xConstraintName],
+  const slicePickerId = useId()
+  const { points, constraint_names: constraintNames, swept_axes: sweptAxes } = frontier
+  const xName = slicing.xName
+
+  // Kinds come from the solve's bounds; feasibility is judged on each point's own.
+  const kinds = useMemo(() => frontierConstraintKinds(constraintNames, solvedResult), [constraintNames, solvedResult])
+  const assessments = useMemo(
+    () => points.map((point, index) => assessFrontierPoint(point, constraintNames, kinds, index)),
+    [points, constraintNames, kinds],
   )
+  const slice = slicing.slices[slicePosition]
+  const chartPoints: FrontierChartPoint[] = slice.indices.map((index) => ({
+    index,
+    x: points[index].totals[xName],
+    y: points[index].total_objective,
+    status: assessments[index].status,
+  }))
+  const solvedBounds = Object.fromEntries(
+    Object.entries(effectiveConstraintBounds(solvedResult)).map(([name, { bound }]) => [name, bound]),
+  )
+  const asSolved = {
+    x: solvedResult.constraints[xName],
+    y: solvedResult.total_objective,
+    onSlice: asSolvedOnSlice(points, slicing, slice, solvedBounds),
+  }
 
   const shownPointCount = frontier.points_returned || points.length
   const totalPointCount = frontier.n_points || points.length
+  const iterationsLabel = points[0].mode === "ratebook" ? "CD passes" : "Iterations"
 
-  const hasChartData = chartPoints.length >= 2
-
-  // The as-solved marker stays where the solve is whichever point is selected.
-  const currentX = xConstraintName ? solvedResult.constraints[xConstraintName] : null
-  const currentY = solvedResult.total_objective
+  const selectedPoint = selectedIdx != null ? points[selectedIdx] : undefined
 
   return (
     <div className="optimiser-frontier-layout">
       <div className="optimiser-frontier-chart">
-        {constraintNames.length > 1 && (
-          <div className="flex items-center gap-2 mb-3">
-            <label htmlFor={xPickerId} className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>X axis:</label>
-            <select
-              id={xPickerId}
-              value={xConstraintIdx}
-              onChange={e => onXConstraintChange(Number(e.target.value))}
-              className="validation-control"
-            >
-              {constraintNames.map((name, i) => (
-                <option key={name} value={i}>{name}</option>
-              ))}
-            </select>
+        {(sweptAxes.length > 1 || slicing.slices.length > 1) && (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-3">
+            {sweptAxes.length > 1 && (
+              <div className="flex items-center gap-2">
+                <label htmlFor={xPickerId} className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>X axis:</label>
+                <select
+                  id={xPickerId}
+                  value={xConstraintIdx}
+                  onChange={(e) => onXConstraintChange(Number(e.target.value))}
+                  className="validation-control"
+                >
+                  {sweptAxes.map((name, i) => (
+                    <option key={name} value={i}>{name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {slicing.slices.length > 1 && (
+              <div className="flex items-center gap-2">
+                <label htmlFor={slicePickerId} className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>
+                  Holding {slicing.heldNames.join(" and ")} at
+                </label>
+                <select
+                  id={slicePickerId}
+                  value={slicePosition}
+                  onChange={(e) => onSliceChange(slicing.slices[Number(e.target.value)].key)}
+                  className="validation-control"
+                >
+                  {slicing.slices.map((option, i) => (
+                    <option key={option.key} value={i}>
+                      {slicing.heldNames.map((name) => formatFrontierValue(option.held[name])).join(", ")}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
         )}
 
-        {hasChartData ? (
-          <FrontierChart
-            points={chartPoints}
-            xKey="x"
-            yKey="y"
-            xLabel={xConstraintName ?? "constraint"}
-            selectedIdx={selectedIdx}
-            currentX={currentX}
-            currentY={currentY}
-            onPointClick={onPointClick}
-          />
-        ) : (
-          <div className="text-xs py-4" style={{ color: "var(--text-muted)" }}>
-            Insufficient data to plot frontier chart.
-          </div>
-        )}
+        <FrontierChart
+          points={chartPoints}
+          xLabel={xName}
+          yLabel={objectiveName}
+          selectedIdx={selectedIdx}
+          asSolved={asSolved}
+          onPointClick={onPointClick}
+        />
 
         <p className="validation-chart-description mt-2">
+          {slicing.slices.length > 1 && (
+            <>This slice holds {slice.indices.length.toLocaleString()} of the {shownPointCount.toLocaleString()} frontier points. </>
+          )}
           {frontier.points_truncated ? (
             <>
               Showing {shownPointCount.toLocaleString()} of {totalPointCount.toLocaleString()} frontier points;
-              response cap is {(frontier.points_limit ?? shownPointCount).toLocaleString()}. Click a point for details.
+              response cap is {(frontier.points_limit ?? shownPointCount).toLocaleString()}
+              {slicing.slices.length > 1 ? ", so a slice may be incomplete" : ""}. Click a point for details.
             </>
+          ) : slicing.slices.length > 1 ? (
+            <>Click a point for details.</>
           ) : (
             <>
               {shownPointCount.toLocaleString()} frontier points. Click a point for details.
             </>
           )}
         </p>
+
+        <ChartValuesTable
+          summary="View slice values"
+          ariaLabel="Frontier slice values"
+          headers={["Point", `${xName} bound`, `${xName} achieved`, objectiveName, "Converged", iterationsLabel, "Status"]}
+          rows={slice.indices.map((index) => {
+            const point = points[index]
+            return [
+              `Point ${index + 1}`,
+              formatFrontierValue(point.bounds[xName]),
+              formatFrontierValue(point.totals[xName]),
+              formatFrontierValue(point.total_objective),
+              point.converged ? "Yes" : "No",
+              point.iterations.toLocaleString(),
+              STATUS_LABELS[assessments[index].status],
+            ]
+          })}
+        />
       </div>
 
-      {selectedIdx != null && points[selectedIdx] && (
+      {selectedIdx != null && selectedPoint && (
         <div className="optimiser-frontier-detail">
-          <DetailCard result={result} />
+          <DetailCard
+            result={result}
+            frontierPoint={{
+              index: selectedIdx,
+              point: selectedPoint,
+              kinds,
+              xName,
+              assessment: assessments[selectedIdx],
+              tradeOff: discreteTradeOff({ points, slicing, assessments, kinds, index: selectedIdx }),
+            }}
+          />
         </div>
       )}
     </div>

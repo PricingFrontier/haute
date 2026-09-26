@@ -775,7 +775,7 @@ class TestJobStoreTTL:
         )
 
         with patch("haute.routes._job_store.logger.warning") as log_warning:
-            JobStore._cleanup_artifact_handles("job-id", handles)  # noqa: SLF001
+            JobStore()._cleanup_artifact_handles("job-id", handles)  # noqa: SLF001
 
         log_warning.assert_called_once()
         assert cleaned == ["later-result"]
@@ -4010,3 +4010,129 @@ class TestScheduleHeavyObjectCleanupRaces:
 
         assert len(timers) == 1
         assert timers[0].started is True
+
+
+# ---------------------------------------------------------------------------
+# Artifact leases
+# ---------------------------------------------------------------------------
+
+
+class TestArtifactLease:
+    """A reader's lease defers an attached artifact's cleanup until it is released."""
+
+    @staticmethod
+    def _leased_job(
+        store: JobStore, tmp_path: Path, kind: str, *, created_at: float | None = None
+    ) -> tuple[str, list[str], Path]:
+        artifact_dir = tmp_path / kind
+        artifact_dir.mkdir()
+        (artifact_dir / "table.parquet").write_bytes(b"table")
+        cleaned: list[str] = []
+
+        def cleaner(handle: dict) -> None:
+            cleaned.append(handle["path"])
+            shutil.rmtree(handle["directory"])
+
+        register_artifact_cleaner(kind, cleaner)
+        job_id = _create_job(
+            store,
+            {
+                "status": "completed",
+                "created_at": time.time() if created_at is None else created_at,
+                "artifact_handles": {
+                    "table": {
+                        "kind": kind,
+                        "version": 1,
+                        "format": "parquet",
+                        "path": str(artifact_dir / "table.parquet"),
+                        "directory": str(artifact_dir),
+                    },
+                    "other": {
+                        "kind": kind,
+                        "version": 1,
+                        "format": "parquet",
+                        "path": str(tmp_path / "other.parquet"),
+                        "directory": str(tmp_path / "other_dir"),
+                    },
+                },
+            },
+        )
+        return job_id, cleaned, artifact_dir
+
+    def test_a_lease_defers_cleanup_across_ttl_expiry(self, tmp_path: Path) -> None:
+        store = JobStore(ttl_seconds=5)
+        job_id, cleaned, artifact_dir = self._leased_job(
+            store, tmp_path, "test_lease_expiry_artifact"
+        )
+
+        with store.lease(job_id, "table") as handle:
+            assert handle["directory"] == str(artifact_dir)
+            with patch("haute.routes._job_store.time.time", return_value=time.time() + 60):
+                assert store.get_job(job_id) is None
+            # Expired and detached, but the file stays until the reader is done.
+            assert artifact_dir.exists()
+            assert cleaned == [str(tmp_path / "other.parquet")]
+        assert not artifact_dir.exists()
+        assert str(artifact_dir / "table.parquet") in cleaned
+
+    def test_cleanup_waits_for_the_last_of_several_leases(self, tmp_path: Path) -> None:
+        store = JobStore()
+        job_id, _cleaned, artifact_dir = self._leased_job(
+            store, tmp_path, "test_lease_nested_artifact"
+        )
+
+        with store.lease(job_id, "table"):
+            with store.lease(job_id, "table"):
+                store.delete_job(job_id)
+            assert artifact_dir.exists()
+        assert not artifact_dir.exists()
+
+    def test_detach_is_deferred_while_leased(self, tmp_path: Path) -> None:
+        store = JobStore()
+        job_id, _cleaned, artifact_dir = self._leased_job(
+            store, tmp_path, "test_lease_detach_artifact"
+        )
+
+        with store.lease(job_id, "table"):
+            assert store.detach_artifact_handle(job_id, "table") is True
+            assert "table" not in store.require_job(job_id)["artifact_handles"]
+            assert artifact_dir.exists()
+        assert not artifact_dir.exists()
+
+    def test_an_unleased_handle_is_cleaned_at_once(self, tmp_path: Path) -> None:
+        store = JobStore()
+        job_id, _cleaned, artifact_dir = self._leased_job(
+            store, tmp_path, "test_lease_unleased_artifact"
+        )
+
+        with store.lease(job_id, "other"):
+            store.delete_job(job_id)
+            assert not artifact_dir.exists()
+
+    def test_a_lease_on_a_gone_job_or_handle_raises(self, tmp_path: Path) -> None:
+        from haute.routes._job_store import ArtifactHandleUnavailableError
+
+        store = JobStore()
+        job_id, _cleaned, _artifact_dir = self._leased_job(
+            store, tmp_path, "test_lease_unavailable_artifact"
+        )
+
+        with pytest.raises(ArtifactHandleUnavailableError, match="no 'missing' artifact"):
+            with store.lease(job_id, "missing"):
+                pass
+        store.delete_job(job_id)
+        with pytest.raises(ArtifactHandleUnavailableError, match="no longer exists"):
+            with store.lease(job_id, "table"):
+                pass
+
+    def test_a_lease_is_released_when_the_reader_raises(self, tmp_path: Path) -> None:
+        store = JobStore()
+        job_id, _cleaned, artifact_dir = self._leased_job(
+            store, tmp_path, "test_lease_raising_artifact"
+        )
+
+        with pytest.raises(ValueError, match="reader failed"):
+            with store.lease(job_id, "table"):
+                store.delete_job(job_id)
+                raise ValueError("reader failed")
+        assert not artifact_dir.exists()

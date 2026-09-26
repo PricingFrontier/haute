@@ -145,7 +145,7 @@ describe("OptimiserPreview store integration", () => {
     fireEvent.click(screen.getByText("Rates"))
     expect(screen.getByText("Materialising selected point rates...")).toBeInTheDocument()
 
-    expect(await screen.findByText("North")).toBeInTheDocument()
+    expect(await screen.findAllByText("North")).not.toHaveLength(0)
     expect(screen.getAllByText("1.0800").length).toBeGreaterThan(0)
     expect(mockSelectFrontierPoint).toHaveBeenCalledWith(
       {
@@ -260,7 +260,7 @@ describe("OptimiserPreview store integration", () => {
     fireEvent.click(screen.getByText("Frontier"))
     fireEvent.click(screen.getByText("Rates"))
 
-    expect(await screen.findByText("North")).toBeInTheDocument()
+    expect(await screen.findAllByText("North")).not.toHaveLength(0)
     expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(2)
   })
 
@@ -646,7 +646,7 @@ describe("OptimiserPreview store integration", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }))
 
-    expect(await screen.findByText("North")).toBeInTheDocument()
+    expect(await screen.findAllByText("North")).not.toHaveLength(0)
     expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(2)
   })
 })

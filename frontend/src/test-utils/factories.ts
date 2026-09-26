@@ -392,7 +392,7 @@ export function makeInputSummary(overrides: Partial<OptimiserInputSummary> = {})
     data_source: "batch",
     source_file: "main.py",
     graph_fingerprint: "3f9a1c",
-    solver_settings: { max_iter: 50, tolerance: 1e-6, chunk_size: null, record_history: false },
+    solver_settings: { max_iter: 50, tolerance: 1e-6, chunk_size: null },
     ...overrides,
   }
 }
@@ -413,6 +413,7 @@ export function makeSolveResult(overrides: Partial<OptimiserSolveResult> = {}): 
     cd_iterations: null,
     factor_tables: {},
     history: null,
+    ratebook_cd_trace: null,
     warning: null,
     scenario_value_stats: null,
     scenario_value_histogram: null,
@@ -424,6 +425,11 @@ export function makeSolveResult(overrides: Partial<OptimiserSolveResult> = {}): 
     frontier_generation: 0,
     input_summary: makeInputSummary(),
     diagnostics_errors: [],
+    scenario_grid: [
+      { optimal_step: 0, scenario_value: 0.9 },
+      { optimal_step: 1, scenario_value: 1.0 },
+      { optimal_step: 2, scenario_value: 1.1 },
+    ],
     ...overrides,
   }
 }
@@ -491,6 +497,7 @@ export function makeFrontierSelect(
     cd_iterations: null,
     factor_tables: {},
     history: null,
+    ratebook_cd_trace: null,
     warning: null,
     scenario_value_stats: null,
     scenario_value_histogram: null,

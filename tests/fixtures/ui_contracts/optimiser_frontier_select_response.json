@@ -23,6 +23,7 @@
   "cd_iterations": null,
   "factor_tables": {},
   "history": null,
+  "ratebook_cd_trace": null,
   "warning": null,
   "scenario_value_stats": null,
   "scenario_value_histogram": null,

@@ -382,8 +382,9 @@ def _optimiser_side_input_ids(graph: PipelineGraph, node_id: str) -> frozenset[s
     The optimiser node may pass its input frame through, but solve/estimate
     setup resolves the configured ``data_input`` from the output map after the
     lazy executor has finished.  Treat that configured node as a retained
-    setup input, just like ratebook's factor source, so checkpoint cleanup does
-    not discard an intermediate parent once the optimiser node has consumed it.
+    setup input, just like ratebook's factor source and a separate analysis
+    input (in both modes), so checkpoint cleanup does not discard an
+    intermediate parent once the optimiser node has consumed it.
     """
     node = _find_optimiser_node(graph, node_id)
     config = node.data.config
@@ -397,6 +398,9 @@ def _optimiser_side_input_ids(graph: PipelineGraph, node_id: str) -> frozenset[s
     )
     if data_edge is not None:
         preserved.add(data_edge.source)
+    analysis_plan = resolve_analysis_plan(graph, node_id, config)
+    if analysis_plan is not None and analysis_plan.path == "side_input":
+        preserved.add(analysis_plan.source_node_id)
     if config.get("mode", "online") != "ratebook":
         return frozenset(preserved)
     banding_edge = _resolve_optimiser_input_edge(
@@ -411,11 +415,18 @@ def _optimiser_side_input_ids(graph: PipelineGraph, node_id: str) -> frozenset[s
 
 
 def _setup_execution_target_node_id(graph: PipelineGraph, node_id: str) -> str:
-    """The node setup executes to: an online Optimiser's configured data input, else itself."""
+    """The node setup executes to: an online Optimiser's configured data input, else itself.
+
+    A separate analysis input sits outside the data input's lineage, so setup
+    then executes the Optimiser itself in online mode too, which runs every
+    branch it consumes.
+    """
     optimiser_node = _find_optimiser_node(graph, node_id)
     configured_data_input = optimiser_node.data.config.get("data_input")
+    analysis_plan = resolve_analysis_plan(graph, node_id, optimiser_node.data.config)
     if (
         optimiser_node.data.config.get("mode", "online") == "online"
+        and (analysis_plan is None or analysis_plan.path == "data_input")
         and isinstance(configured_data_input, str)
         and configured_data_input
     ):
@@ -459,6 +470,49 @@ def _solve_columns_by_node(
     }
 
 
+def _quote_id_column(config: Mapping[str, Any]) -> str:
+    return str(config.get("quote_id", "quote_id"))
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisPlan:
+    """Where a solve's analysis columns come from (OPT-V09A).
+
+    ``path`` is ``"data_input"`` when they are carried through the data input's
+    solver frame, and ``"side_input"`` when a separate connected frame
+    (``source_node_id``, through ``edge``) supplies them.
+    """
+
+    columns: tuple[str, ...]
+    path: str
+    source_node_id: str
+    edge: GraphEdge
+
+
+def resolve_analysis_plan(
+    graph: PipelineGraph,
+    node_id: str,
+    config: Mapping[str, Any],
+) -> AnalysisPlan | None:
+    """The optimiser's analysis-column plan, or ``None`` when it keeps no analysis columns.
+
+    ``None`` too when no data input resolves: the solve cannot run, and the
+    data input's own resolution reports why.
+    """
+    columns = config.get("analysis_columns") or []
+    if not columns:
+        return None
+    data_edge = _resolve_optimiser_input_edge(
+        graph, node_id, config, field="data_input", infer_single=True
+    )
+    if data_edge is None:
+        return None
+    analysis_edge = _resolve_optimiser_input_edge(graph, node_id, config, field="analysis_input")
+    if analysis_edge is None or analysis_edge == data_edge:
+        return AnalysisPlan(tuple(columns), "data_input", data_edge.source, data_edge)
+    return AnalysisPlan(tuple(columns), "side_input", analysis_edge.source, analysis_edge)
+
+
 def _optimiser_input_required_columns(config: dict[str, Any]) -> frozenset[str]:
     """Return the columns needed to validate and consume optimiser input."""
     objective = str(config["objective"])
@@ -487,11 +541,18 @@ def _optimiser_solve_required_columns_by_node(
     """
     required = _optimiser_input_required_columns(config)
     data_input_id = _resolve_optimiser_data_input_id(graph, node_id, config)
-    if isinstance(data_input_id, str) and data_input_id:
-        if _data_source_feeds_optimiser_through_parallel_edges(graph, node_id, data_input_id):
-            return {node_id: required}
+    if not isinstance(data_input_id, str) or not data_input_id:
+        return {}
+    if _data_source_feeds_optimiser_through_parallel_edges(graph, node_id, data_input_id):
+        return {node_id: required}
+    analysis_plan = resolve_analysis_plan(graph, node_id, config)
+    if analysis_plan is None:
         return {data_input_id: required}
-    return {}
+    if analysis_plan.path == "data_input":
+        return {data_input_id: required | frozenset(analysis_plan.columns)}
+    # A separate analysis frame is asked for its key and analysis columns only.
+    analysis_demand = frozenset({_quote_id_column(config), *analysis_plan.columns})
+    return {data_input_id: required, analysis_plan.source_node_id: analysis_demand}
 
 
 def _resolve_optimiser_input_edge(
@@ -706,11 +767,14 @@ def validate_and_project(
     source_lf: Any,
     config: dict[str, Any],
     *,
+    analysis_columns: Iterable[str] = (),
     validate_quote_id_nulls: bool = True,
     execution_context: ExecutionContext | None = None,
 ) -> tuple[list[str], Any]:
     """Validate the solver columns and project the solver input.
 
+    *analysis_columns* (the data-input analysis path) are required and kept,
+    uncast, after the solver columns; the grid build never reads them.
     Returns ``(constraint_cols, projected_lazy_frame)``.
     """
     import polars as pl
@@ -729,6 +793,14 @@ def validate_and_project(
     detail = _missing_columns_detail(required_cols, available_cols)
     if detail is not None:
         raise OptimiserSetupError(400, detail)
+    kept_analysis_columns = list(analysis_columns)
+    missing_analysis = [column for column in kept_analysis_columns if column not in available_cols]
+    if missing_analysis:
+        raise OptimiserSetupError(
+            400,
+            f"Missing analysis columns in the data input: {missing_analysis}. "
+            f"Available: {sorted(available_cols)}",
+        )
 
     constraint_cols = list(constraints.keys()) if isinstance(constraints, dict) else []
     qid_dtype = schema[qid_col]
@@ -769,7 +841,61 @@ def validate_and_project(
     if qid_dtype == pl.String:
         cast_exprs.append(pl.col(qid_col).cast(pl.Categorical))
 
-    return constraint_cols, source_lf.select(solver_cols).with_columns(cast_exprs)
+    return constraint_cols, source_lf.select([*solver_cols, *kept_analysis_columns]).with_columns(
+        cast_exprs
+    )
+
+
+def resolve_analysis_frame(
+    lazy_outputs: dict[str, Any],
+    config: Mapping[str, Any],
+    plan: AnalysisPlan,
+) -> Any:
+    """The side-input analysis frame, projected to ``quote_id`` + the analysis columns.
+
+    The frame must carry the configured quote-id column under the data input's
+    dtype rules and every analysis column. Rows with a null quote id match no
+    solved quote and are dropped; the quote id is cast to String, the side
+    table's key dtype.
+    """
+    import polars as pl
+
+    configured_name = config.get("analysis_input")
+    if plan.source_node_id not in lazy_outputs:
+        raise OptimiserSetupError(
+            400,
+            f"Configured optimiser analysis_input {configured_name!r} did not produce data. "
+            "Make sure it is connected to the optimiser node and produces a dataframe.",
+        )
+    try:
+        source = select_edge_source_output(lazy_outputs[plan.source_node_id], plan.edge)
+    except (KeyError, RuntimeError, ValueError) as exc:
+        raise OptimiserSetupError(
+            400, f"Configured optimiser analysis_input could not resolve its frame: {exc}"
+        ) from exc
+    frame = source.lazy() if isinstance(source, pl.DataFrame) else source
+    schema = frame.collect_schema()
+    qid_col = _quote_id_column(config)
+    if qid_col not in schema:
+        raise OptimiserSetupError(
+            400,
+            f"The optimiser analysis_input {configured_name!r} has no {qid_col!r} column, so "
+            "its rows cannot be matched to quotes. Add the quote-id column to that frame, or "
+            f"choose another analysis input. Available: {sorted(schema.names())}",
+        )
+    detail = _invalid_quote_id_dtype_detail(schema, qid_col)
+    if detail is not None:
+        raise OptimiserSetupError(400, f"Optimiser analysis_input {configured_name!r}: {detail}")
+    missing = [column for column in plan.columns if column not in schema]
+    if missing:
+        raise OptimiserSetupError(
+            400,
+            f"Missing analysis columns in the analysis input {configured_name!r}: {missing}. "
+            f"Available: {sorted(schema.names())}",
+        )
+    return frame.filter(pl.col(qid_col).is_not_null()).select(
+        pl.col(qid_col).cast(pl.String), *[pl.col(column) for column in plan.columns]
+    )
 
 
 def validate_and_project_auto_range(

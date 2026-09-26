@@ -214,6 +214,7 @@ def _frontier_select_response(result: dict[str, Any]) -> OptimiserFrontierSelect
         cd_iterations=result.get("cd_iterations"),
         factor_tables=result.get("factor_tables", {}),
         history=result.get("history"),
+        ratebook_cd_trace=result.get("ratebook_cd_trace"),
         warning=result.get("warning"),
         scenario_value_stats=result.get("scenario_value_stats"),
         scenario_value_histogram=result.get("scenario_value_histogram"),

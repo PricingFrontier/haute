@@ -42,6 +42,7 @@
         }
       }
     ],
+    "ratebook_cd_trace": null,
     "warning": null,
     "scenario_value_stats": {
       "mean": 1.01,
@@ -126,6 +127,7 @@
           "cd_iterations": null,
           "clamp_rate": null,
           "history": null,
+          "ratebook_cd_trace": null,
           "scenario_value_stats": {
             "mean": 1.02,
             "std": 0.03,
@@ -170,11 +172,24 @@
       "solver_settings": {
         "max_iter": 50,
         "tolerance": 1e-06,
-        "chunk_size": null,
-        "record_history": true
+        "chunk_size": null
       }
     },
-    "diagnostics_errors": []
+    "diagnostics_errors": [],
+    "scenario_grid": [
+      {
+        "optimal_step": 0,
+        "scenario_value": 0.8
+      },
+      {
+        "optimal_step": 1,
+        "scenario_value": 1.0
+      },
+      {
+        "optimal_step": 2,
+        "scenario_value": 1.2
+      }
+    ]
   },
   "frontier": {
     "status": "ok",
@@ -231,6 +246,7 @@
         "cd_iterations": null,
         "clamp_rate": null,
         "history": null,
+        "ratebook_cd_trace": null,
         "scenario_value_stats": {
           "mean": 1.02,
           "std": 0.03,
