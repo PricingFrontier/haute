@@ -488,7 +488,9 @@ export function renameColumnInFormula(text: string, from: string, to: string, va
     if (token.kind !== "name" || token.value !== from) return
     const inCall = calls[calls.length - 1]
     if (inCall?.fn && inCall.arg > 0) return
-    if (!token.quoted && (KEYWORDS.has(token.value) || known.has(token.value) || opensCall)) return
+    // `date` is the date constructor only when a call follows; bare, it is a column.
+    const keyword = KEYWORDS.has(token.value) && token.value !== "date"
+    if (!token.quoted && (keyword || known.has(token.value) || opensCall)) return
     spans.push({ start: token.start, end: token.end })
   })
   let renamed = text

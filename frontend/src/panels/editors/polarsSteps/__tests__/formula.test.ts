@@ -162,6 +162,7 @@ describe("renameColumnInFormula", () => {
     expect(renameColumnInFormula("round(round, 2) + `round`", "round", "rnd")).toBe("round(rnd, 2) + rnd")
     expect(renameColumnInFormula("rate * rate_x", "rate", "base", ["rate"])).toBe("rate * rate_x")
     expect(renameColumnInFormula("a + b", "a", "sum insured")).toBe("`sum insured` + b")
+    expect(renameColumnInFormula("date + 1 + date('2024-01-01')", "date", "data")).toBe("data + 1 + date('2024-01-01')")
   })
 
   it("leaves a function's plain-value arguments alone, a type named like the column included", () => {
