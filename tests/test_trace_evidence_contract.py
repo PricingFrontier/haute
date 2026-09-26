@@ -75,7 +75,7 @@ def test_correlation_telemetry_is_emitted_when_correlation_fails(
     assert events[0]["duration_ms"] >= 0
 
 
-def test_ambiguous_relevant_parent_is_preserved_as_an_omission(tmp_path) -> None:
+def test_an_aggregated_relevant_parent_is_preserved_as_an_omission(tmp_path) -> None:
     source_path = tmp_path / "source.parquet"
     pl.DataFrame(
         {
@@ -110,7 +110,7 @@ def test_ambiguous_relevant_parent_is_preserved_as_an_omission(tmp_path) -> None
     omission = result.omissions[0]
     assert omission.node_id == "source"
     assert omission.topological_rank == 0
-    assert omission.reason == "duplicate_exact_match"
+    assert omission.reason == "aggregated_rows"
     assert result.correlation_diagnostics[omission.diagnostic_index]["node_id"] == "source"
     assert result.nodes_in_trace == len(result.steps) + len(result.omissions) == 2
 
@@ -121,7 +121,7 @@ def test_ambiguous_relevant_parent_is_preserved_as_an_omission(tmp_path) -> None
             "node_name": "source",
             "node_type": "dataInput",
             "topological_rank": 0,
-            "reason": "duplicate_exact_match",
+            "reason": "aggregated_rows",
             "diagnostic_index": omission.diagnostic_index,
         }
     ]

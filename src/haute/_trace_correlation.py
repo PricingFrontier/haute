@@ -1882,6 +1882,30 @@ def _join_no_match_diagnostic(
     }
 
 
+def _aggregated_rows_diagnostic(
+    parent_id: str, child_id: str, keys: Mapping[str, Any], count: int
+) -> dict[str, Any]:
+    """Report that the traced row aggregates the parent rows sharing its group keys."""
+    columns = sorted(keys)
+    return {
+        "code": "aggregated_rows",
+        "severity": "info",
+        "reason": "aggregated_rows",
+        "message": (
+            f"The row of {child_id!r} aggregates rows of node {parent_id!r} grouped by "
+            f"{columns}: {count} of its rows share these key values."
+        ),
+        "node_id": parent_id,
+        "child_node_id": child_id,
+        "match_strategy": "row_scope",
+        "match_columns": columns,
+        "ignored_columns": [],
+        "matched_row_count": count,
+        "matched_row_indices": [],
+        "candidate_count": count,
+    }
+
+
 class _CarriedValues(NamedTuple):
     """The values a child carried from one parent row, keyed by the parent's columns.
 
@@ -1891,6 +1915,8 @@ class _CarriedValues(NamedTuple):
 
     values: dict[str, Any]
     casts: dict[str, pl.DataType]
+    aggregated: bool = False
+    """The child's row summarises every parent row sharing ``values`` (a group)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -2171,15 +2197,53 @@ class RowScopeResolver:
             casts=casts,
         )
 
+    def count_rows(
+        self,
+        node_id: str,
+        source_handle: str | None,
+        values: Mapping[str, Any],
+    ) -> int | None:
+        """Count the uncapped plan's rows matching *values*, or ``None`` when unreadable."""
+        from haute._polars_utils import streaming_collect
+
+        plan = self.plan_for(node_id, source_handle)
+        schema = self.schema_for(node_id, source_handle)
+        if plan is None or schema is None:
+            return None
+        expressions: list[pl.Expr] = []
+        for column, value in values.items():
+            expression, _reason = (
+                _typed_value_match_expr(column, value, schema[column])
+                if column in schema
+                else (None, None)
+            )
+            if expression is None:
+                return None
+            expressions.append(expression)
+        counted = streaming_collect(
+            plan.filter(pl.all_horizontal(expressions)).select(pl.len()),
+            execution_context=self.execution_context,
+        )
+        return int(counted.item())
+
     def schema_for(self, node_id: str, source_handle: str | None) -> pl.Schema | None:
-        """Return a lineage plan's schema, read at most once per request."""
+        """Return a lineage plan's schema, read at most once per request.
+
+        A frame this click already holds for the node (its head frame, or rows
+        read from its plan) has the plan's schema, so a trace resolved from head
+        frames never builds the uncapped plans for it.
+        """
         key = (node_id, source_handle)
         schema = self._schemas.get(key)
         if schema is None:
-            plan = self.plan_for(node_id, source_handle)
-            if plan is None:
-                return None
-            schema = plan.collect_schema()
+            frame = self._head_frame(node_id, source_handle)
+            if frame is not None:
+                schema = frame.schema
+            else:
+                plan = self.plan_for(node_id, source_handle)
+                if plan is None:
+                    return None
+                schema = plan.collect_schema()
             self._schemas[key] = schema
         return schema
 
@@ -2339,14 +2403,13 @@ class RowScopeResolver:
             )
             if chosen is not None:
                 return chosen
-        values = self._shared_carried_values(
+        return self._shared_carried_values(
             parent_id=parent_id,
             child_id=child_id,
             source_handle=source_handle,
             target_role=target_role,
             child_row=child_row,
         )
-        return None if values is None else _CarriedValues(values, {})
 
     def _online_apply_chosen_row(
         self,
@@ -2425,7 +2488,7 @@ class RowScopeResolver:
         source_handle: str | None,
         target_role: str | None,
         child_row: Mapping[str, Any],
-    ) -> dict[str, Any] | None:
+    ) -> _CarriedValues | None:
         child = self.node_map[child_id]
         node_type = child.data.nodeType
         code = _node_code(child)
@@ -2436,26 +2499,29 @@ class RowScopeResolver:
         shared = {name: value for name, value in child_row.items() if name in parent_columns}
         if node_type is NodeType.EDGE_JOIN:
             if target_role == "base":
-                return shared
+                return _CarriedValues(shared, {})
             if target_role != "join":
                 return None
             base = edge_join_role_edges(child, self.edge_metadata).base
             base_schema = self.schema_for(base.source_id, base.source_handle)
             if base_schema is None:
                 return None
-            return _edge_join_right_match_row(
-                dict(child_row),
-                parent_columns,
-                set(base_schema.names()),
-                child.data.config,
+            return _CarriedValues(
+                _edge_join_right_match_row(
+                    dict(child_row),
+                    parent_columns,
+                    set(base_schema.names()),
+                    child.data.config,
+                ),
+                {},
             )
         if node_type in _PASS_THROUGH_TRACE_TYPES or node_type in (
             NodeType.OPTIMISER,
             NodeType.OUTPUT,
         ):
-            return shared
+            return _CarriedValues(shared, {})
         if node_type in _CODE_FREE_PASS_THROUGH_TYPES and not code:
-            return shared
+            return _CarriedValues(shared, {})
         carried = shared
         if node_type in _ROW_PRESERVING_BUILDER_TYPES or node_type is NodeType.OPTIMISER_APPLY:
             from haute.projection import projection_contract
@@ -2475,7 +2541,7 @@ class RowScopeResolver:
         elif node_type not in (NodeType.POLARS, NodeType.EXPLORE, NodeType.EXTERNAL_FILE):
             return None
         if not code:
-            return carried
+            return _CarriedValues(carried, {})
         from haute._column_lineage import carried_column_proof
 
         input_names = self.child_input_names.get(child_id, ())
@@ -2517,7 +2583,8 @@ class RowScopeResolver:
                 for name, value in carried.items()
                 if value is not None and (name not in other_columns or name in input_join_keys)
             }
-        return carried
+        # A program ending in ``group_by().agg()`` summarises every row sharing its keys.
+        return _CarriedValues(carried, {}, aggregated=proof.carried_only is not None)
 
     def _code_input_schemas(
         self,
@@ -2592,10 +2659,26 @@ class RowScopeResolver:
                 frame = self._head_frame(parent_id, source_handle)
                 if frame is None or frame.height == 0:
                     continue
+                # Match on the values the child provably carried, so a column its
+                # code rewrote is left out rather than relaxed around. Code the
+                # proof cannot read keeps name-based matching, whose relaxed
+                # match is reported as low confidence.
+                carried = self._carried_values(
+                    parent_id=parent_id,
+                    child_id=child_id,
+                    source_handle=source_handle,
+                    target_role=target_role,
+                    child_row=child_row,
+                )
+                match_row = (
+                    dict(carried.values)
+                    if carried is not None and not carried.casts
+                    else dict(child_row)
+                )
                 row, index, width = _match_parent_row(
                     frame,
                     parent_id=parent_id,
-                    child_row=dict(child_row),
+                    child_row=match_row,
                     child_row_idx=child_row_idx,
                     child_len=child_len,
                     child_id=child_id,
@@ -2666,10 +2749,13 @@ class RowScopeResolver:
                         _join_no_match_diagnostic(parent_id, child_id, unmatched_keys)
                     )
                 continue
+            match_diagnostics: list[dict[str, Any]] | None = (
+                [] if port_diagnostics is not None else None
+            )
             row, index = _find_matching_row(
                 lookup,
                 dict(carried.values),
-                diagnostics=port_diagnostics,
+                diagnostics=match_diagnostics,
                 node_id=parent_id,
                 child_node_id=child_id,
                 allow_relaxed=False,
@@ -2685,6 +2771,16 @@ class RowScopeResolver:
                 ),
                 casts=carried.casts,
             )
+            if row is None and carried.aggregated and lookup.height > 1:
+                # A group's row has several source rows by design: say so rather
+                # than calling the match ambiguous.
+                count = self.count_rows(parent_id, source_handle, carried.values)
+                if count is not None:
+                    match_diagnostics = [
+                        _aggregated_rows_diagnostic(parent_id, child_id, carried.values, count)
+                    ]
+            if port_diagnostics is not None and match_diagnostics:
+                port_diagnostics.extend(match_diagnostics)
             if row is not None:
                 matches.append(
                     (

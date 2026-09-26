@@ -63,9 +63,10 @@
    identity, finds the last applicable producer for the traced column,
    calculates dependency-preservation/default-expansion sets, and chooses a
    focused or full sequence. It interleaves typed omissions by topological
-   rank: a `join_no_match` omission (the join found no row, a fact about the data)
-   is a neutral `role="note"` card labelled "no match"; every other omission is a
-   warning "trace gap" alert. With no traced column, it leaves the steps uncollapsed.
+   rank: an omission that is a fact about the data is a neutral `role="note"` card —
+   `join_no_match` (the join found no row) labelled "no match", and `aggregated_rows`
+   (the row aggregates several input rows) labelled "aggregated" with its diagnostic's
+   group keys and row count; every other omission is a warning "trace gap" alert. With no traced column, it leaves the steps uncollapsed.
 3. `collapsePassthroughs` groups hidden runs. If a focused target exists the UI removes the
    collapsed markers until the user asks for the full trace; otherwise the marker is a button that
    reveals the full trace.
@@ -117,7 +118,7 @@
 ## Error handling
 
 Missing calculation data for an expression that should explain a value, backend waterfall errors,
-typed omissions other than `join_no_match`, request failures, and
+typed omissions other than the `join_no_match` and `aggregated_rows` notes, request failures, and
 banding/model-score/optimiser/scenario/live-switch errors render persistent `role="alert"` UI. When the document lacks execution capability or the graph is
 unsynchronised, trace requests do not start; a mid-flight document identity change silently resets
 trace state to `idle` without raising an alert. A banding or model-score root `error`

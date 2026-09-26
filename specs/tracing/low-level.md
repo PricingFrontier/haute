@@ -279,7 +279,13 @@ the limited preview shows rather than independent source samples.
    separately. A port is matched in the parent's head frame, with `_match_parent_row`'s
    positional and value matching, when its edge is aligned, the parent is head-framed, and
    the child's row came from the child's own head frame; the clicked target row starts
-   head-resolved. Every other port correlates in a row-scoped frame (`lookup`): the
+   head-resolved. A head-frame match compares the child's carried values (item 4) when
+   they carry no cast, so a column the child's code rewrote is left out rather than
+   relaxed around; a child whose code the proof cannot read keeps name-based matching,
+   whose relaxed match is reported low-confidence. `schema_for` reads a node's schema from
+   the frame this click already holds for it (its head frame or looked-up rows, both read
+   from its plan) before building the uncapped plans, so head-frame matching never builds
+   them. Every other port correlates in a row-scoped frame (`lookup`): the
    parent's uncapped plan filtered by typed equality on the resolved child row's carried
    columns and limited to two rows, matched strictly with relaxed matching disabled; two
    surviving rows are ambiguous. Lookups are memoised per request by node, port, and
@@ -331,6 +337,12 @@ the limited preview shows rather than independent source samples.
    `join_no_match` diagnostic (severity `info`, reason `join_no_match`, the key columns
    in `match_columns`) instead of `row_match_not_found`, so the omission is informational.
    A key that matched a row whose other carried values differ remains an ordinary miss.
+   A child whose proof carries only group keys (its program ends in `group_by().agg()`,
+   `_CarriedValues.aggregated`) and whose lookup found several rows records an
+   `aggregated_rows` diagnostic (severity `info`, the keys in `match_columns`, and in
+   `candidate_count` and `matched_row_count` the plan's rows sharing them, counted by
+   `count_rows`) instead of the ambiguity; identical candidates keep the
+   `identical_row_match` rule. A group of one row resolves to that row.
    `_correlate_rows_posthoc` does not correlate a parent through a child that reads none of
    its ports.
 4. **Carried columns (`_carried_values`).** Join-role parents use the edge-join
@@ -379,7 +391,9 @@ the limited preview shows rather than independent source samples.
      assigned) with `how` of `inner`, `left`, `semi`, `anti`, or `cross` records its literal
      `on` keys as the same-name keys of that joined input; a non-root input joined twice
      fails the proof;
-   - a literal `group_by(...).agg(...)` carries only its keys;
+   - a literal `group_by(...).agg(...)` carries only its keys; a literal boolean
+     `maintain_order` keyword is allowed, and any other keyword (a named computed key)
+     fails the proof;
    - an output whose name the syntax cannot fix — a regex or wildcard column outside a
      selector computation, a non-literal selector, `.name` or `.struct` rewrites, `pipe`,
      or an unaliased `when`/`then` — and every other method or statement fail the proof.
@@ -860,7 +874,9 @@ integration/regression suites:
   `row_limit`, including the shared-cache-fingerprint requirement between preview
   and trace calls. `TestLimitedPreviewTrace` traces rows of a target-only limited
   preview: a joined value to its lookup row with and without `maintainOrder`, a filtered
-  row past the source prefix, a grouped row's source rows reported ambiguous, order-
+  row past the source prefix, a grouped row's source rows reported as `aggregated_rows`
+  with their count (a group of one resolved to its row), a head-frame parent matched on
+  its child's carried values with no relaxed match, order-
   preserving lineage from head frames with no lookup, code below an unordered join through
   its carried columns (and `row_scope_unproven` when the carried key is rewritten), a later
   join key never identifying an earlier joined input, an order-dependent expression never

@@ -2898,6 +2898,13 @@ def test_cardinality_rejects_a_computed_column_selector() -> None:
             {},
             {"region"},
         ),
+        (
+            "df = src.group_by(['region'], maintain_order=True).agg([pl.len().alias('n')])",
+            ("src",),
+            set(),
+            {},
+            {"region"},
+        ),
     ],
 )
 def test_carried_column_proof_names_every_rewritten_column(
@@ -2957,7 +2964,8 @@ def test_carried_column_proof_names_every_rewritten_column(
         "df = src.join(prices, on=['id', 1])",
         "df = src.group_by('region')",
         "df = src.group_by(keys).agg(pl.col('x').sum())",
-        "df = src.group_by('region', maintain_order=True).agg(pl.len())",
+        "df = src.group_by('region', maintain_order=keep).agg(pl.len())",
+        "df = src.group_by(band=pl.col('x') // 10).agg(pl.len())",
     ],
 )
 def test_carried_column_proof_refuses_programs_whose_rewrites_it_cannot_name(code: str) -> None:

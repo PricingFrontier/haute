@@ -3612,7 +3612,12 @@ def carried_column_proof(
                     if literal is None:
                         return None
                     group_keys.extend(literal)
-                if call.keywords or not group_keys:
+                # ``maintain_order`` only orders the groups; any other keyword
+                # names a computed key.
+                if not group_keys or any(
+                    keyword.arg != "maintain_order" or _literal_bool(keyword.value) is None
+                    for keyword in call.keywords
+                ):
                     return None
                 carried_only = (
                     set(group_keys) if carried_only is None else carried_only & set(group_keys)

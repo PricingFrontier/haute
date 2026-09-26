@@ -353,7 +353,7 @@ class TestTraceJsonSafeRowMatching:
         )
         assert "2 relaxed matches" in message
 
-    def test_relaxed_parent_row_ambiguity_is_serialized_on_trace_result(self, tmp_path):
+    def test_parent_row_ambiguity_is_serialized_on_trace_result(self, tmp_path):
         p = tmp_path / "data.parquet"
         pl.DataFrame(
             {
@@ -367,31 +367,30 @@ class TestTraceJsonSafeRowMatching:
                 "nodes": [
                     _source_node("source", str(p)),
                     _transform_node(
-                        "aggregate",
-                        "df = source.group_by('region').agg(pl.col('premium').sum())",
+                        "regions",
+                        "df = source.select('region').unique(maintain_order=True)",
                     ),
                 ],
-                "edges": [_edge("source", "aggregate")],
+                "edges": [_edge("source", "regions")],
             }
         )
 
         result = execute_trace(
             graph,
             row_index=0,
-            target_node_id="aggregate",
-            column="premium",
-            row_values={"region": "north", "premium": 30},
+            target_node_id="regions",
+            row_values={"region": "north"},
         )
 
-        assert {step.node_id for step in result.steps} == {"aggregate"}
+        assert {step.node_id for step in result.steps} == {"regions"}
         assert len(result.correlation_diagnostics) == 1
         diagnostic = result.correlation_diagnostics[0]
-        # The grouping carries only its key, so the strict lineage lookup finds
-        # both north source rows and reports the ambiguity.
+        # The program carries only the region, so the strict lineage lookup finds
+        # both north source rows, which differ, and reports the ambiguity.
         assert diagnostic["code"] == "ambiguous_row_match"
         assert diagnostic["reason"] == "duplicate_exact_match"
         assert diagnostic["node_id"] == "source"
-        assert diagnostic["child_node_id"] == "aggregate"
+        assert diagnostic["child_node_id"] == "regions"
         assert diagnostic["match_strategy"] == "exact"
         assert diagnostic["match_columns"] == ["region"]
         assert diagnostic["ignored_columns"] == []

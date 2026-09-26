@@ -731,7 +731,7 @@ class TestLimitedPreviewTrace:
         assert row == {"x": 51}
         assert _step_by_id(result, "src").output_values == {"x": 51}
 
-    def test_grouped_row_reports_its_source_rows_as_ambiguous(self, tmp_path):
+    def test_grouped_and_sorted_row_reports_the_rows_it_aggregates(self, tmp_path):
         path = tmp_path / "data.parquet"
         pl.DataFrame(
             {"region": ["north", "south", "north", "south"], "premium": [1, 2, 3, 4]}
@@ -752,7 +752,9 @@ class TestLimitedPreviewTrace:
         _row, result = self._trace(graph, "grouped", 0, row_limit=1, column="premium")
 
         assert [omission.node_id for omission in result.omissions] == ["src"]
-        assert result.omissions[0].reason == "duplicate_exact_match"
+        assert result.omissions[0].reason == "aggregated_rows"
+        diagnostic = result.correlation_diagnostics[result.omissions[0].diagnostic_index]
+        assert diagnostic["candidate_count"] == 2
 
     def test_order_preserving_lineage_uses_head_frames_only(self, tmp_path, monkeypatch):
         from haute._trace_correlation import RowScopeResolver
@@ -1269,6 +1271,59 @@ class TestLimitedPreviewTrace:
 
         assert result.omissions == []
         assert _step_by_id(result, "src").output_values == {"id": row["id"], "v": row["v"]}
+
+    def test_a_head_frame_parent_is_matched_on_the_values_its_child_carried(
+        self, tmp_path, monkeypatch
+    ):
+        path = tmp_path / "data.parquet"
+        pl.DataFrame({"id": [1, 2, 3], "flag": [None, 1, None]}).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(path)),
+                    _transform_node(
+                        "filled", "df = src.with_columns(pl.col(['flag']).fill_null(0))"
+                    ),
+                ],
+                "edges": [_edge("src", "filled")],
+            }
+        )
+        looked_up = self._recorded_lookups(monkeypatch)
+
+        row, result = self._trace(graph, "filled", 2, row_limit=5, column=None)
+
+        assert row == {"id": 3, "flag": 0}
+        assert _step_by_id(result, "src").output_values == {"id": 3, "flag": None}
+        assert result.correlation_diagnostics == []
+        # The rewritten value is left out of the match, not relaxed around.
+        assert looked_up == []
+
+    def test_a_grouped_row_reports_the_rows_it_aggregates(self, tmp_path):
+        path = tmp_path / "claims.parquet"
+        pl.DataFrame({"quote_id": ["a", "a", "b"], "amount": [1.0, 2.0, 5.0]}).write_parquet(path)
+        code = (
+            "df = src.group_by(['quote_id'], maintain_order=True)"
+            ".agg([pl.col('amount').sum().alias('total')])"
+        )
+        graph = _g(
+            {
+                "nodes": [_source_node("src", str(path)), _transform_node("claims", code)],
+                "edges": [_edge("src", "claims")],
+            }
+        )
+
+        _row, grouped = self._trace(graph, "claims", 0, row_limit=5, column=None)
+
+        assert [(omission.node_id, omission.reason) for omission in grouped.omissions] == [
+            ("src", "aggregated_rows")
+        ]
+        diagnostic = grouped.correlation_diagnostics[grouped.omissions[0].diagnostic_index]
+        assert (diagnostic["severity"], diagnostic["candidate_count"]) == ("info", 2)
+        assert diagnostic["match_columns"] == ["quote_id"]
+
+        _row, single = self._trace(graph, "claims", 1, row_limit=5, column=None)
+        assert single.omissions == []
+        assert _step_by_id(single, "src").output_values == {"quote_id": "b", "amount": 5.0}
 
     def test_a_join_that_found_no_row_is_reported_as_no_match(self, tmp_path):
         from haute._types import GraphNode, NodeData, NodeType

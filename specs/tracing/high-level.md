@@ -142,6 +142,15 @@ Out of scope (owned elsewhere, linked where relevant):
   row — no join-side row has the base row's key values, or a key is null — the join
   side is reported as an informational `join_no_match` omission (an unsold quote's
   policy, a quote with no claims) rather than as a correlation failure.
+- **A grouped row is an aggregate, not a gap.** Code that ends in
+  `group_by(...).agg(...)` summarises every input row sharing its keys. When
+  several input rows share the traced row's keys, the input is reported as an
+  informational `aggregated_rows` omission naming the keys and how many input rows
+  share them; a group of one input row resolves to that row.
+- **Head frames are matched on carried values too.** A parent matched in its head
+  frame is matched on the values its child provably carried through unchanged, as a
+  lookup is, so a column the child's code rewrote (`fill_null`) is left out of the
+  match instead of being relaxed around.
 - **Multi-frame sources correlate per edge, not per node pair.** A multi-frame
   source (e.g. a ≥2-table `apiInput`) stores `dict[label, DataFrame]`; each edge
   out of it carries a `sourceHandle` naming the frame that edge consumes, and the
@@ -285,7 +294,8 @@ Out of scope (owned elsewhere, linked where relevant):
   whenever the rows carried a unique key. Ambiguity arose only in two shapes:
   keyless rows whose matched columns are exact duplicates after a step that
   moves rows (sort, filter, `unique()` without a subset), and a traced node
-  above an aggregate, where a summary row has no single source row by design.
+  above an aggregate, where a summary row has no single source row by design
+  (now an informational `aggregated_rows` omission rather than an ambiguity).
   In the duplicate case every candidate is value-identical, so the omission
   is conservative, never wrong. An injected identity cannot be invisible to
   all-column selectors, `unique()` or schema-reading user code, so its cost

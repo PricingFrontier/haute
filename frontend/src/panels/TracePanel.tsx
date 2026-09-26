@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react"
 import { AlertTriangle, Copy, Download, Info, Printer, X, Scan } from "lucide-react"
 import type { TraceRequestState } from "../hooks/useTracing"
-import type { TraceOmission, TraceResult } from "../types/trace"
+import type { TraceCorrelationDiagnostic, TraceOmission, TraceResult } from "../types/trace"
 import PanelShell from "./PanelShell"
 import { StepCard } from "../trace/StepCard"
 import { formatTraceValue, traceValuePresentation } from "../trace/traceFormatting"
@@ -37,14 +37,22 @@ function loadTraceExport() {
   return import("../trace/traceExport")
 }
 
-/** An omission that is a fact about the data (the join found no row), not a correlation gap. */
-function isJoinNoMatch(omission: TraceOmission): boolean {
-  return omission.reason === "join_no_match"
+/** Card labels of omissions that are facts about the data, not correlation gaps. */
+const NOTE_LABELS: Readonly<Record<string, string>> = {
+  join_no_match: "no match",
+  aggregated_rows: "aggregated",
 }
 
-function omissionSummary(reason: string): string {
+function omissionSummary(reason: string, diagnostic: TraceCorrelationDiagnostic | undefined): string {
   if (reason === "join_no_match") {
     return "No row from this input joined the traced row: the join found no match."
+  }
+  if (reason === "aggregated_rows") {
+    const count = diagnostic?.matched_row_count
+    const keys = diagnostic?.match_columns.join(", ")
+    return count != null && keys
+      ? `This row aggregates rows of this input grouped by ${keys}: ${count} of them share its key values.`
+      : "This row aggregates several rows of this input."
   }
   if (reason.includes("ambiguous") || reason.includes("duplicate")) {
     return "One upstream row could not be identified unambiguously."
@@ -362,17 +370,17 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
         {evidenceEntries.map((entry, entryIndex) => {
           if (isTraceOmission(entry)) {
             const diagnostic = trace.correlation_diagnostics[entry.diagnostic_index]
-            const noMatch = isJoinNoMatch(entry)
-            const Icon = noMatch ? Info : AlertTriangle
-            const labelColor = noMatch ? "var(--text-muted)" : "var(--warning-strong)"
+            const noteLabel = NOTE_LABELS[entry.reason]
+            const Icon = noteLabel ? Info : AlertTriangle
+            const labelColor = noteLabel ? "var(--text-muted)" : "var(--warning-strong)"
             return (
               <div
                 key={`omission-${entry.node_id}-${entry.topological_rank}`}
-                role={noMatch ? "note" : "alert"}
+                role={noteLabel ? "note" : "alert"}
                 data-testid={`trace-omission-${entry.node_id}`}
                 className="rounded-lg px-3 py-2 text-[11px]"
                 style={
-                  noMatch
+                  noteLabel
                     ? { border: "1px dashed var(--border)", color: "var(--text-secondary)" }
                     : {
                         border: "1px dashed var(--warning-border-strong)",
@@ -390,10 +398,10 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
                     {entry.node_name}
                   </span>
                   <span className="text-[9px] uppercase tracking-wide" style={{ color: labelColor }}>
-                    {noMatch ? "no match" : "trace gap"}
+                    {noteLabel ?? "trace gap"}
                   </span>
                 </div>
-                <div className="mt-1">{omissionSummary(entry.reason)}</div>
+                <div className="mt-1">{omissionSummary(entry.reason, diagnostic)}</div>
                 {diagnostic && (
                   <details className="mt-1">
                     <summary>Technical details</summary>

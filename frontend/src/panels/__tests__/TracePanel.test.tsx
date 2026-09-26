@@ -266,29 +266,43 @@ describe("TracePanel", () => {
     expect(screen.queryByTestId("trace-correlation-diagnostics")).not.toBeInTheDocument()
   })
 
-  it("shows a join that found no row as a note rather than a trace gap", () => {
+  it.each([
+    {
+      reason: "join_no_match",
+      matchedRowCount: 0,
+      label: "no match",
+      summary: "No row from this input joined the traced row",
+    },
+    {
+      reason: "aggregated_rows",
+      matchedRowCount: 3,
+      label: "aggregated",
+      summary: "This row aggregates rows of this input grouped by quote_id: 3 of them share its key values.",
+    },
+  ])("shows a $reason omission as a note rather than a trace gap", ({ reason, matchedRowCount, label, summary }) => {
     render(
       <TracePanel
         trace={makeTrace({
           column: null,
           steps: [makeStep({ node_id: "target", node_name: "Target", topological_rank: 1 })],
           omissions: [{
-            node_id: "policies",
-            node_name: "policies",
+            node_id: "upstream",
+            node_name: "upstream",
             node_type: "dataInput",
             topological_rank: 0,
-            reason: "join_no_match",
+            reason,
             diagnostic_index: 0,
           }],
           correlation_diagnostics: [{
-            code: "join_no_match",
+            code: reason,
             severity: "info",
-            reason: "join_no_match",
-            message: "No row of node 'policies' joined the traced row of 'target'.",
-            node_id: "policies",
+            reason,
+            message: "Backend detail.",
+            node_id: "upstream",
             child_node_id: "target",
             match_columns: ["quote_id"],
             ignored_columns: [],
+            matched_row_count: matchedRowCount,
             matched_row_indices: [],
             seed_node_ids: [],
           }],
@@ -298,11 +312,11 @@ describe("TracePanel", () => {
       />,
     )
 
-    const note = screen.getByTestId("trace-omission-policies")
+    const note = screen.getByTestId("trace-omission-upstream")
     expect(note).toHaveAttribute("role", "note")
-    expect(note).toHaveTextContent("no match")
+    expect(note).toHaveTextContent(label)
     expect(note).not.toHaveTextContent("trace gap")
-    expect(note).toHaveTextContent("No row from this input joined the traced row")
+    expect(note).toHaveTextContent(summary)
   })
 
   it.each([
