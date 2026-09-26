@@ -7,6 +7,7 @@ import json
 import pickle
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from haute._code_extraction import (
     INCOMPLETE_TRANSFORM_MESSAGE,
     _extract_user_code,
 )
+from haute._config_builder import _same_program
 from haute._config_io import collect_node_configs, node_emits_sidecar
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
@@ -3285,6 +3287,94 @@ def test_parse_keeps_steps_whose_body_is_the_same_program_in_an_older_style(
     assert node.data.config["steps"] == steps
     assert "_steps_discarded" not in node.data.config
     assert node.data.config["code"] == render_polars_steps(steps, start="input").code
+
+
+#: The golden steps as the renderer wrote them before its current layout and
+#: style: one line per step, ``repr`` quotes, lists for keys and aggregations.
+EARLIER_GOLDEN_CODE = "\n".join(
+    [
+        "df = quotes",
+        "ipt_rate = 0.12",
+        "df = df.filter((pl.col('premium') > 100) & (pl.col('region').is_in(['north', 'south'])))",
+        "df = df.with_columns((pl.col('premium') * ipt_rate).alias('gross'))",
+        "df = df.with_columns((pl.when((pl.col('gross') >= 500)).then(pl.lit('high'))"
+        ".otherwise(pl.lit('low'))).alias('band'))",
+        "df = df.join(rates, left_on=['region'], right_on=['region'], how='left', suffix='_rate')",
+        "df = df.group_by(['band'], maintain_order=True).agg([pl.col('gross').sum()"
+        ".alias('gross_total'), pl.len().alias('rows')])",
+    ]
+)
+
+
+def test_parse_keeps_steps_saved_by_an_earlier_renderer(tmp_path: Path) -> None:
+    quotes, rates = _frames(tmp_path)
+    graph = PipelineGraph(
+        nodes=[quotes, rates, _stepped("t", GOLDEN_STEPS)],
+        edges=[make_edge("quotes", "t"), make_edge("rates", "t")],
+    )
+    code = graph_to_code(graph, pipeline_name="main")
+    _write_sidecars(tmp_path, graph)
+    current = textwrap.indent(GOLDEN_CODE, "    ")
+    assert current in code
+    earlier = code.replace(current, textwrap.indent(EARLIER_GOLDEN_CODE, "    "))
+
+    parsed = parse_pipeline_source(earlier, _base_dir=tmp_path)
+    node = next(n for n in parsed.nodes if n.id == "t")
+    assert node.data.config["steps"] == GOLDEN_STEPS
+    assert "_steps_discarded" not in node.data.config
+    assert node.data.config["code"] == GOLDEN_CODE
+
+
+@pytest.mark.parametrize(
+    ("current", "earlier", "same"),
+    [
+        ('df = df.select("a", "b")', "df = df.select(['a', 'b'])", True),
+        ('df = df.drop("a", pl.col(pl.String))', "df = df.drop(['a'], pl.col(pl.String))", True),
+        (
+            'df = df.with_columns(pl.col("a").fill_null(0))',
+            "df = df.with_columns(pl.col(['a']).fill_null(0))",
+            True,
+        ),
+        ('df = df.sort("a")', "df = df.sort(['a'], descending=[False], nulls_last=False)", True),
+        (
+            'df = df.sort("a", descending=True, nulls_last=True)',
+            "df = df.sort(['a'], descending=[True], nulls_last=True)",
+            True,
+        ),
+        (
+            'df = df.sort("a", "b", descending=[False, True])',
+            "df = df.sort(['a', 'b'], descending=[False, True], nulls_last=False)",
+            True,
+        ),
+        (
+            'df = df.sort("a", "b")',
+            "df = df.sort(['a', 'b'], descending=[False, False], nulls_last=False)",
+            True,
+        ),
+        (
+            'df = df.unique(keep="any", maintain_order=True)',
+            "df = df.unique(subset=None, keep='any', maintain_order=True)",
+            True,
+        ),
+        # Real edits stay edits.
+        ('df = df.select("a", "b")', "df = df.select(['a'])", False),
+        ('df = df.sort("a")', "df = df.sort(['a'], descending=[True], nulls_last=False)", False),
+        (
+            'df = df.unique(keep="any", maintain_order=True)',
+            "df = df.unique(subset=['a'], keep='any', maintain_order=True)",
+            False,
+        ),
+        (
+            'df = df.filter(pl.col("a").is_in([1, 2]))',
+            "df = df.filter(pl.col('a').is_in(1, 2))",
+            False,
+        ),
+    ],
+)
+def test_earlier_call_spellings_are_the_same_program(
+    current: str, earlier: str, same: bool
+) -> None:
+    assert _same_program(current, earlier) is same
 
 
 def test_parse_discards_steps_when_only_a_free_code_comment_was_edited(tmp_path: Path) -> None:

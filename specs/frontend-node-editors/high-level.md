@@ -323,7 +323,8 @@ submodel, the columns of that output handle as recorded by the last preview; in 
 mode, the surface's upstream columns) plus columns derived by earlier steps, never another
 input's columns before a join brings them in, while accepting free text: every column box
 lists the names starting with what is typed beneath it (all of them while the box is empty,
-none active), typing makes the first match active, Up/Down move through them, Tab, Enter or
+none active), typing makes the first match active (clearing the box again leaves none
+active), Up/Down move through them, Tab, Enter or
 a click takes the active name, text that already is a name is shown ticked as matched and
 kept, Escape closes the list, and with nothing active Tab moves on while Enter or leaving
 the box keeps what was typed; the box keeps keyboard focus through a completion or a
@@ -408,7 +409,8 @@ keeps the last good expression and explains why in an amber note, marking under 
 the character where reading stopped (the note clears as soon as the box
 holds the committed formula again, and the box keeps focus after a commit); a committed
 formula naming a column the step does not have (where its columns are complete) says so
-with the closest name offered, the offer rewriting the formula; and an expression text cannot express (one
+with the closest name offered, the offer renaming only that column's references (never
+matching quoted text, a function or a variable); and an expression text cannot express (one
 holding a window, conditional or text join) is edited in the structured
 left/operator/right form instead. An operand field also offers an "Expression" source that
 opens a nested editor (the same "Computed as" select and expression form, indented under

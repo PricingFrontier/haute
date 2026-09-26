@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { FormulaError, callAtCaret, displayFormula, formulaText, parseFormula, withoutFormulaText } from "../formula"
+import { FormulaError, callAtCaret, displayFormula, formulaText, parseFormula, renameColumnInFormula, withoutFormulaText } from "../formula"
 import type { Expr, Operand } from "../types"
 
 const col = (name: string): Operand => ({ kind: "column", name })
@@ -153,6 +153,15 @@ describe("formula text", () => {
   it("reads function names in any case and keeps the catalogue's spelling in the text", () => {
     expect(parseFormula("ROUND(premium, 2)")).toMatchObject({ type: "function", fn: "round", text: "round(premium, 2)" })
     expect(parseFormula("Upper(region) + Lower(region)")).toMatchObject({ type: "binary", text: "upper(region) + lower(region)" })
+  })
+})
+
+describe("renameColumnInFormula", () => {
+  it("renames column references only, never quoted text, functions, keywords or variables", () => {
+    expect(renameColumnInFormula('replace(primium, "primium", "discount")', "primium", "premium")).toBe('replace(premium, "primium", "discount")')
+    expect(renameColumnInFormula("round(round, 2) + `round`", "round", "rnd")).toBe("round(rnd, 2) + rnd")
+    expect(renameColumnInFormula("rate * rate_x", "rate", "base", ["rate"])).toBe("rate * rate_x")
+    expect(renameColumnInFormula("a + b", "a", "sum insured")).toBe("`sum insured` + b")
   })
 })
 

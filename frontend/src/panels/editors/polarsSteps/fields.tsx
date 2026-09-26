@@ -566,7 +566,9 @@ function CompletingInput({
         {...completion.inputProps}
         onChange={(event) => {
           onDraftChange(event.target.value)
-          completion.typed()
+          // A cleared box is back to nothing chosen: no suggestion is active.
+          if (event.target.value.trim()) completion.typed()
+          else completion.show()
         }}
         onFocus={completion.show}
         onBlur={() => {

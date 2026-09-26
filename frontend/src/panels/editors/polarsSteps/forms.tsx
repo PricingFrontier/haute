@@ -14,7 +14,7 @@ import { CodeEditor } from "../CodeEditor"
 import { INPUT_STYLE } from "../_shared"
 import { completionMatches } from "./completion"
 import { exprColumns, type ColumnInfo } from "./derivedColumns"
-import { FormulaError, callAtCaret, displayFormula, formulaText, functionNamed, parseFormula, typedAsFormula } from "./formula"
+import { FormulaError, callAtCaret, displayFormula, formulaText, functionNamed, parseFormula, renameColumnInFormula, typedAsFormula } from "./formula"
 import {
   AGGREGATION_OPTIONS,
   BINARY_OPERATORS,
@@ -283,10 +283,6 @@ function ArgumentTip({ fn, arg }: { fn: string; arg: number }) {
   )
 }
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-}
-
 /**
  * The formula text box. It starts with a muted example and grows onto more
  * lines as the formula lengthens. As a word is typed, the columns, earlier
@@ -375,11 +371,7 @@ function FormulaField({ text, onCommit, variables, columns, depth }: { text: str
       return []
     }
   }, [schema, text, variables])
-  const replaceName = (from: string, to: string) => {
-    const insert = completionText(to, columns, variables) ?? to
-    const pattern = new RegExp(`(^|[^A-Za-z0-9_\`])(?:${escapeRegExp(from)}|\`${escapeRegExp(from)}\`)(?=$|[^A-Za-z0-9_\`])`, "g")
-    commitText(text.replace(pattern, (_match, lead: string) => `${lead}${insert}`))
-  }
+  const replaceName = (from: string, to: string) => commitText(renameColumnInFormula(text, from, to, variables))
 
   return (
     <Field

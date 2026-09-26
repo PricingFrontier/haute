@@ -769,6 +769,13 @@ describe("PolarsStepsEditor notes and linked code", () => {
     expect(cardOf("Step 4: Filter rows")).toHaveTextContent("Choose a column…")
   })
 
+  it("shows a columnless window saved without its column once the columns are known", () => {
+    const rowCount = { id: "n", kind: "with_column", name: "n", expr: { type: "window", agg: "len", over: [] } } as unknown as Step
+    render(<Harness initial={{ steps: [source, rowCount] }} inputSources={[quotesTyped]} />)
+    expect(cardOf("Step 1: Add column")).toHaveTextContent("n = row count over all rows")
+    expect(cardOf("Step 1: Add column")).not.toHaveTextContent("Not in the data")
+  })
+
   it("states no column change where the columns are not exactly known", () => {
     const keepByType: Step = { id: "k", kind: "select", columns: ["premium"], dtypes: ["String"] }
     render(<Harness initial={{ steps: [source, freeCode, { ...addGross, id: "w1" }, keepByType, { ...addGross, id: "w2", name: "net" }] }} inputSources={[quotesTyped]} />)

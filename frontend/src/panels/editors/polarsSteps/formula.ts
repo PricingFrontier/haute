@@ -460,6 +460,28 @@ function exprText(expr: Expr, variables: ReadonlySet<string>): string | null {
 }
 
 /**
+ * `text` with every reference to the column `from` renamed to `to`. Only
+ * column references change: quoted text, function names, keywords and
+ * earlier variables that happen to share the name are left alone.
+ */
+export function renameColumnInFormula(text: string, from: string, to: string, variables: readonly string[] = []): string {
+  const tokens = tokenize(text)
+  const known = new Set(variables)
+  const insert = nameText(to, known, false) ?? to
+  let renamed = text
+  for (let index = tokens.length - 1; index >= 0; index -= 1) {
+    const token = tokens[index]
+    if (token.kind !== "name" || token.value !== from) continue
+    if (!token.quoted) {
+      const next = tokens[index + 1]
+      if (KEYWORDS.has(token.value) || known.has(token.value) || (next?.kind === "punct" && next.value === "(")) continue
+    }
+    renamed = `${renamed.slice(0, token.start)}${insert}${renamed.slice(token.end)}`
+  }
+  return renamed
+}
+
+/**
  * The formula text for an expression, or null when it contains something
  * text cannot express (a window, conditional or text join).
  */

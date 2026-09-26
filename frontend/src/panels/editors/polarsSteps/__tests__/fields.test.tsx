@@ -246,6 +246,18 @@ describe("a column name the step does not have", () => {
     expect(onCommit).toHaveBeenCalledWith("amount_paid")
   })
 
+  it("a draft typed and then cleared leaves nothing active, so Tab adds nothing", () => {
+    const onChange = vi.fn()
+    render(<ColumnListField columns={[]} onChange={onChange} suggestions={COLUMNS} ariaLabel="Group by" />)
+    const input = screen.getByRole("combobox", { name: "Group by: add" })
+    fireEvent.change(input, { target: { value: "p" } })
+    fireEvent.change(input, { target: { value: "" } })
+    expect(within(screen.getByRole("listbox")).queryAllByRole("option", { selected: true })).toHaveLength(0)
+    expect(fireEvent.keyDown(input, { key: "Tab" })).toBe(true)
+    fireEvent.blur(input)
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it("is not judged while the columns at the step are not complete", () => {
     render(
       <StepSchemaContext.Provider value={schema([["quote_id", "Int64"]], false)}>

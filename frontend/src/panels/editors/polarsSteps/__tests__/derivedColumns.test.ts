@@ -192,6 +192,14 @@ describe("unknown columns", () => {
     expect(unknownColumnsOf(join, columnsBeforeStep(inputs, [source("quotes"), join], 1), inputs)).toEqual(["region"])
   })
 
+  it("reads no column for a columnless window saved without one", () => {
+    const rowCount = { id: "n", kind: "with_column", name: "n", expr: { type: "window", agg: "len", over: [] } } as unknown as Step
+    const rowNumber = { id: "r", kind: "with_column", name: "r", expr: { type: "window", agg: "row_number", over: ["k"] } } as unknown as Step
+    expect(columnsReadBy(rowCount)).toEqual([])
+    expect(columnsReadBy(rowNumber)).toEqual(["k"])
+    expect(unknownColumnsOf(rowCount, columnsBeforeStep(SOURCE, [source("quotes"), rowCount], 1), SOURCE)).toEqual([])
+  })
+
   it("reads the columns a step names, leaving out blanks", () => {
     expect(columnsReadBy({ id: "g", kind: "group_by", keys: ["region", ""], aggregations: [{ column: "premium", agg: "sum", name: "t" }, { column: "", agg: "len", name: "n" }] })).toEqual(["region", "premium"])
   })

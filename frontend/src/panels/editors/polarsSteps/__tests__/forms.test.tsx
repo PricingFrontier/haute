@@ -906,6 +906,19 @@ describe("the formula box shows what it can do", () => {
     expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>).expr).toMatchObject({ text: "premium" })
   })
 
+  it("renames only the column when the offer is taken, not matching quoted text", () => {
+    const spy = vi.fn()
+    const step: Step = { id: "w", kind: "with_column", name: "x", expr: parseFormula('replace(primium, "primium", "discount")') }
+    const schema = schemaFor({ columns: [{ name: "premium", dtype: "String", made: false }], complete: true, exact: true })
+    render(<StatefulIn initial={step} spy={spy} context={{ ...ctx, columns: ["premium"], schema }} />)
+    fireEvent.click(screen.getByRole("button", { name: "Use premium" }))
+    expect((spy.mock.calls.at(-1)?.[0] as Extract<Step, { kind: "with_column" }>).expr).toMatchObject({
+      type: "function",
+      fn: "replace",
+      text: 'replace(premium, "primium", "discount")',
+    })
+  })
+
   it("names a column the step does not have, and the offer rewrites the formula", () => {
     const spy = vi.fn()
     const step: Step = { id: "w", kind: "with_column", name: "x", expr: parseFormula("premum * 2") }
