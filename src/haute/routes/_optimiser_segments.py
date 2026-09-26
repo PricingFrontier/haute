@@ -722,8 +722,13 @@ def cache_segment_index(
 # ---------------------------------------------------------------------------
 
 
+def _refusal_detail(error_code: str, message: str) -> dict[str, str]:
+    """A named refusal the client can tell apart, as the frontier's point refusals are."""
+    return {"error_code": error_code, "message": message}
+
+
 def _unprocessable(error_code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=422, detail={"error_code": error_code, "message": message})
+    return HTTPException(status_code=422, detail=_refusal_detail(error_code, message))
 
 
 def _catalogue(job: Mapping[str, Any]) -> list[OptimiserSegmentKey]:

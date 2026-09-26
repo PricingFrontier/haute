@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import gc
-import time
 import weakref
 from collections.abc import Callable
 from pathlib import Path
@@ -9,21 +8,27 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
+import polars as pl
 import pytest
 
 from haute.routes._job_lifecycle import JobLifecycle
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_limits import FRONTIER_POINT_LIMIT
 from tests.job_store_support import seed_job
-from tests.optimiser_fixtures import poll_frontier_until_done
+from tests.optimiser_fixtures import (
+    library_frontier_frame,
+    make_online_frontier_job,
+    poll_frontier_until_done,
+)
 
 pytestmark = pytest.mark.perf
 
 _LARGE_FRONTIER_POINT_COUNT = FRONTIER_POINT_LIMIT * 25
-# Each returned point carries its library row and the server's summary of it
-# (about 450 bytes for these rows), so the capped response grows with the
-# returned points only, never with the full frontier.
-_MAX_CAPPED_FRONTIER_RESPONSE_BYTES = FRONTIER_POINT_LIMIT * 500
+# Each returned point is a strict typed point (thresholds, bounds, totals and
+# lambdas per constraint, the sv_* statistics and the solver path): about 850
+# bytes for these rows. The capped response grows with the returned points
+# only, never with the full frontier, which is 25 times larger.
+_MAX_CAPPED_FRONTIER_RESPONSE_BYTES = FRONTIER_POINT_LIMIT * 1_000
 
 
 @pytest.fixture()
@@ -36,45 +41,40 @@ def clean_optimiser_job_store() -> Any:
 
 
 class _FullFrontierFrame:
+    """A library frontier frame too large to serialise: only its capped head may be read.
+
+    ``head`` answers with a real ``library_frontier_frame`` in price-contour's
+    exact points schema, so the route's strict point contract runs on it.
+    """
+
     def __init__(self, total_rows: int) -> None:
         self.total_rows = total_rows
         self.head_limits: list[int] = []
         self.full_to_dicts_calls = 0
-        self.slice_to_dicts_calls = 0
         self.serialized_rows = 0
 
     def __len__(self) -> int:
         return self.total_rows
 
-    def head(self, limit: int) -> _FrontierFrameSlice:
+    def head(self, limit: int) -> pl.DataFrame:
         self.head_limits.append(limit)
-        return _FrontierFrameSlice(parent=self, row_count=min(limit, self.total_rows))
+        row_count = min(limit, self.total_rows)
+        self.serialized_rows += row_count
+        return library_frontier_frame(
+            [
+                {
+                    "lambda_loss_ratio": float(idx) / 10_000.0,
+                    "total_loss_ratio": 0.8 + float(idx % 50) / 1_000.0,
+                    "total_objective": 100_000.0 + float(idx),
+                }
+                for idx in range(row_count)
+            ],
+            constraint_names=["loss_ratio"],
+        )
 
     def to_dicts(self) -> list[dict[str, float]]:
         self.full_to_dicts_calls += 1
         raise AssertionError("large frontier frame must be sliced before serialization")
-
-
-class _FrontierFrameSlice:
-    def __init__(self, *, parent: _FullFrontierFrame, row_count: int) -> None:
-        self._parent = parent
-        self._row_count = row_count
-
-    def __len__(self) -> int:
-        return self._row_count
-
-    def to_dicts(self) -> list[dict[str, float | bool]]:
-        self._parent.slice_to_dicts_calls += 1
-        self._parent.serialized_rows += self._row_count
-        return [
-            {
-                "lambda_loss_ratio": float(idx) / 10_000.0,
-                "loss_ratio": 0.8 + float(idx % 50) / 1_000.0,
-                "total_objective": 100_000.0 + float(idx),
-                "converged": True,
-            }
-            for idx in range(self._row_count)
-        ]
 
 
 class _FrontierSolver:
@@ -88,6 +88,7 @@ class _FrontierSolver:
         *,
         threshold_ranges: dict[str, tuple[float, float]],
         n_points_per_dim: int,
+        initial_lambdas: dict[str, float],
     ) -> SimpleNamespace:
         self.calls.append(
             {
@@ -145,13 +146,18 @@ def test_frontier_route_caps_response_before_serialising_large_point_frame(
     seed_job(
         clean_optimiser_job_store,
         "large-frontier",
-        {
-            "status": "completed",
-            "solver": solver,
-            "quote_grid": quote_grid,
-            "created_at": time.time(),
-            "completed_at": time.time(),
-        },
+        make_online_frontier_job(
+            solver=solver,
+            quote_grid=quote_grid,
+            config={
+                "mode": "online",
+                "objective": "income",
+                "constraints": {"loss_ratio": {"max": 0.95}},
+                "quote_id": "quote_id",
+                "scenario_index": "scenario_index",
+                "scenario_value": "scenario_value",
+            },
+        ),
     )
 
     start = client.post(
@@ -186,7 +192,6 @@ def test_frontier_route_caps_response_before_serialising_large_point_frame(
     ]
     assert points.head_limits == [FRONTIER_POINT_LIMIT]
     assert points.full_to_dicts_calls == 0
-    assert points.slice_to_dicts_calls == 1
     assert points.serialized_rows == FRONTIER_POINT_LIMIT
 
 

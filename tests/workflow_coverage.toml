@@ -956,8 +956,8 @@ tests = [
   "tests/test_optimiser_frontier_materialisation.py::test_apply_explicit_frontier_point_artifact_matches_response_preview",
   "tests/test_optimiser_ratebook_apply_agreement.py::TestRealSolverEndToEnd::test_factor_values_land_on_the_right_rows",
   "tests/test_optimiser_routes.py::TestSolverWorkerContextGuard::test_heavy_entrypoints_fail_loud_outside_worker_context",
-  "tests/test_optimiser_routes.py::TestApplyLambdasUnit::test_apply_preview_payload_is_capped_with_truncation_metadata",
-  "tests/test_optimiser_frontier_materialisation.py::test_apply_explicit_ratebook_frontier_point_is_contract_error",
+  "tests/test_optimiser_routes.py::TestApplyLambdasUnit::test_apply_preview_payload_is_capped_with_the_counts",
+  "tests/test_optimiser_ratebook_choices.py::TestRatebookFrontierPointChoices::test_apply_serves_a_ratebook_points_detail_and_selects_it_with_its_tables",
   "tests/test_optimiser_frontier_materialisation.py::test_frontier_point_artifact_handles_are_capped_oldest_first",
   "tests/test_optimiser_apply_trace_enrichment.py::test_online_enrichment_surfaces_reconciliation_error",
 ]
