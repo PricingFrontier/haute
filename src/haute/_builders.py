@@ -51,6 +51,7 @@ from haute._logging import get_logger
 from haute._node_apply import (
     apply_optimiser_apply_from_config,
     assemble_output_from_config,
+    constant_frame,
     expand_scenarios_bounded,
     expand_scenarios_from_config,
     load_external_object_from_config,
@@ -595,23 +596,10 @@ def _constant_columns(config: dict[str, Any]) -> _ColumnContract:
 
 @_register(NodeType.CONSTANT, recompute_cost="source", columns=_constant_columns)
 def _build_constant(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
-    config = ctx.config
-    raw_values = config.get("values", []) or []
+    raw_values = ctx.config.get("values", []) or []
 
     def constant_fn() -> _Frame:
-        data: dict[str, list] = {}
-        for v in raw_values:
-            name = v.get("name", "")
-            if not name:
-                continue
-            val = v.get("value", "")
-            try:
-                data[name] = [float(val)]
-            except (ValueError, TypeError):
-                data[name] = [val]
-        if not data:
-            data = {"constant": [0]}
-        return pl.LazyFrame(data)
+        return constant_frame(raw_values)
 
     return ctx.func_name, constant_fn, True
 
@@ -661,22 +649,16 @@ def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     if not code:
         return ctx.func_name, _explore_fn, False
 
-    _src_names = list(ctx.source_names)
-    _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
-    _in_map = dict(ctx.config.get("inputMapping", {})) or None
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
     def explore_with_code(df: _Frame) -> _Frame:
-        # Explore's code box operates on the single implicit frame ``df``;
-        # keep that binding explicitly now that _exec_user_code no longer
-        # seeds it for named-input node kinds.
+        # Explore's code runs on its input as ``df`` and sees nothing else by
+        # name, exactly as the saved file's hook does.
         return _exec_user_code(
             code,
-            _src_names,
+            ["df"],
             (df,),
             extra_ns=_preamble,
-            orig_source_names=_orig_src,
-            input_mapping=_in_map,
             alias_first_input_as_df=True,
         )
 

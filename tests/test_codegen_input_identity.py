@@ -11,7 +11,7 @@ import ast
 import pytest
 
 import haute._codegen_builders as codegen_builders
-from haute._codegen_builders import _build_params
+from haute._codegen_builders import Param, _params
 from haute._graph_utils import incoming_edge_bindings
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code, graph_to_code_multi
@@ -349,15 +349,20 @@ def test_dedup_param_helper_is_removed() -> None:
     assert not hasattr(codegen_builders, "_dedup_param_names")
 
 
-def test_build_params_preserves_supplied_names_one_to_one() -> None:
-    params = _build_params(["quotes", "drivers"])
+def test_params_preserve_supplied_names_one_to_one() -> None:
+    # A declaration's parameters are unannotated; a hook's and a transform's
+    # carry the frame annotation. Either way each supplied name is one
+    # parameter, in order, with no suffixing.
+    assert _params(["quotes", "drivers"]) == (Param("quotes"), Param("drivers"))
+    assert _params(["quotes", "drivers"], "pl.LazyFrame") == (
+        Param("quotes", "pl.LazyFrame"),
+        Param("drivers", "pl.LazyFrame"),
+    )
 
-    assert params == "quotes: pl.LazyFrame, drivers: pl.LazyFrame"
 
-
-def test_build_params_rejects_duplicate_supplied_names_loudly() -> None:
+def test_params_reject_duplicate_supplied_names_loudly() -> None:
     with pytest.raises(AssertionError) as exc_info:
-        _build_params(["quotes", "quotes"])
+        _params(["quotes", "quotes"])
 
     message = str(exc_info.value)
     assert "duplicate" in message

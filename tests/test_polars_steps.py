@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import pickle
+import re
 import subprocess
 import sys
 import textwrap
@@ -19,7 +20,7 @@ from haute._builders import _build_node_fn
 from haute._code_extraction import (
     INCOMPLETE_STEPS_MESSAGE,
     INCOMPLETE_TRANSFORM_MESSAGE,
-    _extract_user_code,
+    extract_user_code,
 )
 from haute._config_io import collect_node_configs, node_emits_sidecar
 from haute._execution_admission import create_admitted_execution_context
@@ -160,7 +161,9 @@ GOLDEN_CODE = "\n".join(
     [
         "df = quotes",
         "ipt_rate = 0.12",
-        'df = df.filter((pl.col("premium") > 100) & pl.col("region").is_in(["north", "south"]))',
+        "df = df.filter(",
+        '    (pl.col("premium") > 100) & pl.col("region").is_in(["north", "south"])',
+        ")",
         'df = df.with_columns((pl.col("premium") * ipt_rate).alias("gross"))',
         "df = df.with_columns(",
         '    pl.when(pl.col("gross") >= 500)',
@@ -168,16 +171,23 @@ GOLDEN_CODE = "\n".join(
         '    .otherwise(pl.lit("low"))',
         '    .alias("band")',
         ")",
-        'df = df.join(rates, left_on=["region"], right_on=["region"], how="left", suffix="_rate")',
+        "df = df.join(",
+        "    rates,",
+        '    left_on=["region"],',
+        '    right_on=["region"],',
+        '    how="left",',
+        '    suffix="_rate",',
+        ")",
         'df = df.group_by("band", maintain_order=True).agg(',
         '    pl.col("gross").sum().alias("gross_total"),',
         '    pl.len().alias("rows"),',
         ")",
     ]
 )
-#: Each golden step's inclusive line range: a statement longer than 88
-#: columns is laid out over several lines, as ``ruff format`` lays it out.
-GOLDEN_STEP_LINES = ((1, 1), (2, 2), (3, 3), (4, 4), (5, 10), (11, 11), (12, 15))
+#: Each golden step's inclusive line range: a statement that would pass 88
+#: columns in the node body (84 at column 0) is laid out over several lines,
+#: as ``ruff format`` lays it out there.
+GOLDEN_STEP_LINES = ((1, 1), (2, 2), (3, 5), (6, 6), (7, 12), (13, 19), (20, 23))
 
 
 def step_text(rendered: RenderedSteps, index: int) -> str:
@@ -200,14 +210,16 @@ def test_golden_payload_renders_exactly() -> None:
 def test_rendered_code_is_a_fixpoint_of_user_code_extraction() -> None:
     code = render_polars_steps(GOLDEN_STEPS, ["quotes", "rates"], start="input").code
     body = "\n".join(f"    {line}" for line in code.splitlines()) + "\n    return df"
-    extracted = _extract_user_code(
-        '    """doc"""\n    df: pl.LazyFrame\n' + body, ["quotes", "rates"]
+    extracted = extract_user_code(
+        '    """doc"""\n    df: pl.LazyFrame\n' + body,
+        kind="polars",
+        param_names=["quotes", "rates"],
     )
     assert extracted == code
 
 
-#: Steps whose statements run past 88 columns: a select, a two-aggregation
-#: group-by and a join one column wider than the golden join, which fits.
+#: Steps whose statements would run past 88 columns in the node body: a
+#: select, a two-aggregation group-by and a join.
 LONG_STEPS: list[dict[str, Any]] = [
     source(),
     step(
@@ -278,12 +290,17 @@ def test_long_statements_break_one_argument_per_line() -> None:
     rendered = render_polars_steps(LONG_STEPS, ["quotes", "rates"], start="input")
     assert rendered.code == LONG_CODE
     assert rendered.step_lines == ((1, 1), (2, 11), (12, 15), (16, 22), (23, 23))
-    # The golden join is exactly 88 columns and stays on one line.
-    assert step_text(render_polars_steps(GOLDEN_STEPS, ["quotes", "rates"], start="input"), 5) == (
-        'df = df.join(rates, left_on=["region"], right_on=["region"], how="left", suffix="_rate")'
-    )
+    # The node body holds 88 columns four columns in: 84 at column 0 still fits,
+    # 85 breaks.
+    fits = f'df = df.filter(pl.col("{"a" * 54}") > 1)'
+    assert len(fits) == 84
+    assert layout_statement(fits) == fits
+    breaks = f'df = df.filter(pl.col("{"a" * 55}") > 1)'
+    assert layout_statement(breaks) == f'df = df.filter(\n    pl.col("{"a" * 55}") > 1\n)'
     body = "\n".join(f"    {line}" for line in rendered.code.splitlines()) + "\n    return df"
-    assert _extract_user_code(body, ["quotes", "rates"]) == rendered.code
+    assert extract_user_code(body, kind="polars", param_names=["quotes", "rates"]) == (
+        rendered.code
+    )
 
 
 #: Text variables past 88 columns: the first fits once parenthesised, the second never does.
@@ -353,7 +370,16 @@ def test_rendered_code_is_a_fixed_point_of_ruff_format() -> None:
     codes = [render_polars_steps(steps, start="input").code for steps in programs]
     # Not vacuous: many of these statements are laid out over several lines.
     assert sum(code.count("\n)") for code in codes) > 20
-    module = "\n".join(codes) + "\n"
+    # A rendering lands in a node function's body, four columns in; that is
+    # where ruff must leave it unchanged.
+    module = (
+        "\n\n\n".join(
+            "def node():\n"
+            + "\n".join(f"    {line}" if line.strip() else "" for line in code.splitlines())
+            for code in codes
+        )
+        + "\n"
+    )
     formatted = subprocess.run(
         RUFF_FORMAT, input=module, capture_output=True, text=True, encoding="utf-8", check=True
     ).stdout
@@ -379,7 +405,7 @@ def test_free_code_renders_multiline_statements_and_tracks_following_steps() -> 
     assert rendered.step_lines == ((1, 1), (2, 8), (9, 9))
     assert steps[1]["code"] == snippet
     body = "\n".join(f"    {line}" for line in rendered.code.splitlines()) + "\n    return df"
-    assert _extract_user_code(body, ["quotes"]) == rendered.code
+    assert extract_user_code(body, kind="polars", param_names=["quotes"]) == rendered.code
 
 
 @pytest.mark.parametrize(
@@ -514,8 +540,9 @@ def test_free_code_validation_never_executes_the_snippet(tmp_path: Path) -> None
                     )
                 ],
             ),
-            'df = df.filter(pl.col("d").is_in(pl.Series(["2026-01-01", "2026-02-01"])'
-            ".str.to_date()))",
+            "df = df.filter(\n"
+            '    pl.col("d").is_in(pl.Series(["2026-01-01", "2026-02-01"]).str.to_date())\n'
+            ")",
         ),
         (
             step("x", "with_column", name="n", expr={"type": "operand", "operand": num(2)}),
@@ -884,8 +911,10 @@ def window(
         (
             window("rk", "dense_rank", "premium", ["region"], descending=True),
             "df = df.with_columns(\n"
-            '    pl.col("premium").rank(method="dense", descending=True).over(["region"])'
-            '.alias("rk")\n'
+            '    pl.col("premium")\n'
+            '    .rank(method="dense", descending=True)\n'
+            '    .over(["region"])\n'
+            '    .alias("rk")\n'
             ")",
         ),
         (
@@ -1660,8 +1689,9 @@ def fn(name: str, operand: dict[str, Any], *args: dict[str, Any]) -> dict[str, A
                 ),
             ),
             "df = df.with_columns(\n"
-            '    (pl.lit(1000) * pl.col("premium") / pl.col("sum_insured")).round(3)'
-            '.alias("rate")\n'
+            '    (pl.lit(1000) * pl.col("premium") / pl.col("sum_insured"))\n'
+            "    .round(3)\n"
+            '    .alias("rate")\n'
             ")",
         ),
         (
@@ -1913,7 +1943,9 @@ def test_nested_formulas_are_bracketed_only_where_evaluation_needs_it(
     rendered = render_polars_steps(
         [source(), step("x", "with_column", name="v", expr=expr)], ["quotes"], start="input"
     )
-    assert rendered.code.splitlines()[1] == f'df = df.with_columns(({expected}).alias("v"))'
+    # Line breaks are layout; where the brackets fall is what this test is about.
+    statement = step_text(rendered, 1).replace("\n    ", "").replace("\n", "")
+    assert statement == f'df = df.with_columns(({expected}).alias("v"))'
 
 
 def test_bracketing_preserves_values_on_execution(tmp_path: Path) -> None:
@@ -3068,7 +3100,7 @@ def test_a_plan_error_is_located_on_the_step_that_caused_it(
     quotes, _rates = _frames(tmp_path)
     rendered = render_polars_steps(MISSING_COLUMN_STEPS, ["quotes"], start="input")
     first, last = rendered.step_lines[2]
-    assert (first, last) == (7, 9)
+    assert (first, last) == (7, 10)
     graph = PipelineGraph(
         nodes=[quotes, _stepped("t", MISSING_COLUMN_STEPS)], edges=[make_edge("quotes", "t")]
     )
@@ -4328,7 +4360,11 @@ def test_external_file_steps_reach_the_other_inputs_and_obj(tmp_path: Path) -> N
     assert len(result.preview) == 2
 
     code, node = _reparsed(tmp_path, graph, "ext")
-    assert "\n    df = quotes\n    df = df.join(rates" in code
+    assert (
+        "def ext(quotes: pl.LazyFrame, rates: pl.LazyFrame, *, obj) -> pl.LazyFrame:\n"
+        "    df = quotes\n"
+        "    df = df.join(\n"
+    ) in code
     assert node.data.config["steps"] == steps
     assert (
         node.data.config["code"]
@@ -4485,7 +4521,7 @@ def test_rating_step_steps_execute_and_round_trip(tmp_path: Path) -> None:
     assert len(result.preview) == 2
 
     code, node = _reparsed(tmp_path, graph, "rated")
-    assert "apply_rating_step_from_config(" in code
+    assert "def rated(df: pl.LazyFrame) -> pl.LazyFrame:" in code
     assert "\n    df = df.head(2)\n    return df\n" in code
     assert node.data.config["steps"] == steps
     assert node.data.config["code"] == "df = df.head(2)"
@@ -4519,7 +4555,7 @@ def test_scenario_expander_steps_execute_and_round_trip(tmp_path: Path) -> None:
     assert len(result.preview) == 4  # 4 rows x 3 grid values, then the Limit
 
     code, node = _reparsed(tmp_path, graph, "grid")
-    assert "expand_scenarios_from_config(" in code
+    assert "def grid(df: pl.LazyFrame) -> pl.LazyFrame:" in code
     assert "\n    df = df.head(4)\n    return df\n" in code
     assert node.data.config["steps"] == steps
     assert node.data.config["stepCount"] == 3
@@ -4554,7 +4590,7 @@ def test_model_score_steps_round_trip_and_fail_before_any_model_loads(
         nodes=[quotes, _model_score(steps)], edges=[make_edge("quotes", "scored")]
     )
     code, node = _reparsed(tmp_path, graph, "scored")
-    assert "score_from_config(" in code
+    assert "def scored(df: pl.LazyFrame) -> pl.LazyFrame:" in code
     assert "\n    df = df.head(2)\n    return df\n" in code
     assert node.data.config["steps"] == steps
     assert node.data.config["code"] == "df = df.head(2)"
@@ -4786,7 +4822,7 @@ def test_explore_steps_execute_and_round_trip_through_the_decorator(tmp_path: Pa
 
     code = graph_to_code(graph, pipeline_name="main")
     assert "@pipeline.explore(steps=[" in code
-    assert "\n    df = quotes\n    df = df.head(2)\n    return df\n" in code
+    assert "(df: pl.LazyFrame) -> pl.LazyFrame:\n    df = df.head(2)\n    return df\n" in code
     # No sidecar is written for an Explore node.
     assert "config/explore" not in code
     assert not [rel for rel in collect_node_configs(graph) if "report" in rel]
@@ -4866,9 +4902,7 @@ def _recovered_settings(root: Path, authored_id: str) -> tuple[dict[str, Any], l
 
     document = load_pipeline_editor_document(root / "main.py", project_root=root)
     target = next(node for node in document.nodes if node.authored_id == authored_id)
-    _node_type, raw, changes, _function, _params, _reference = read_raw_node_settings(
-        root, document, target
-    )
+    _node_type, raw, changes = read_raw_node_settings(root, document, target)
     return raw, changes
 
 
@@ -4929,6 +4963,63 @@ def test_recovery_keeps_steps_when_the_body_still_matches(project_root: Path, su
     assert "_steps_discarded" not in raw, surface
 
 
+@pytest.mark.parametrize("surface", ("explore", "dataInput"))
+def test_recovery_keeps_steps_when_it_drops_a_body_the_decorator_never_calls(
+    project_root: Path, surface: str
+) -> None:
+    """A function that is not a hook loses its body, never its steps.
+
+    Every generated body before node declarations took this form. The steps
+    are the node's settings, so the regenerated hook still performs them.
+    """
+    from haute._pipeline_recovery import load_pipeline_editor_document
+    from haute._pipeline_repair import build_recover_unavailable_node_plan
+    from haute.schemas import PipelineRepairRecoverRequest
+
+    quotes, _rates = _frames(project_root)
+    steps = [step("l", "limit", n=2)]
+    if surface == "explore":
+        node, node_id, old_signature = _explore(steps), "report", "def report(quotes)"
+        graph = PipelineGraph(nodes=[quotes, node], edges=[make_edge("quotes", "report")])
+    else:
+        node, node_id, old_signature = _stepped_input(quotes, steps), "quotes", "def quotes()"
+        graph = PipelineGraph(nodes=[node], edges=[])
+    code = graph_to_code(graph, pipeline_name="main")
+    old_form, replaced = re.subn(rf"def {node_id}\(df[^)]*\)", old_signature, code)
+    assert replaced == 1, code
+    _write_sidecars(project_root, graph)
+    (project_root / "main.py").write_text(old_form, encoding="utf-8", newline="\n")
+
+    raw, changes = _recovered_settings(project_root, node_id)
+    assert raw["steps"] == steps, surface
+    assert "_steps_discarded" not in raw, surface
+    reported = [(c.path, c.outcome) for c in changes if c.path in {"/code", "/steps"}]
+    assert reported == [("/code", "removed")], surface
+    recovered = GraphNode(
+        id=node_id,
+        data=NodeData(label=node_id, nodeType=node.data.nodeType, config=raw),
+    )
+    assert recovered.data.config["code"] == "df = df.head(2)", surface
+
+    document = load_pipeline_editor_document(project_root / "main.py", project_root=project_root)
+    target = next(item for item in document.nodes if item.authored_id == node_id)
+    plan = build_recover_unavailable_node_plan(
+        project_root=project_root,
+        request=PipelineRepairRecoverRequest(
+            source_file=document.source_file,
+            source_revision=document.source_revision,
+            target_source_file=target.source_file,
+            target_recovery_id=target.recovery_id,
+            action="recover",
+        ),
+    )
+    source = next(edit for edit in plan.edits if edit.path.name == "main.py")
+    assert source.after is not None
+    regenerated = source.after.decode("utf-8")
+    assert f"def {node_id}(df" in regenerated, surface
+    assert "    df = df.head(2)\n    return df\n" in regenerated, surface
+
+
 def test_recovery_plans_a_malformed_step_container_without_raising(project_root: Path) -> None:
     """Recovery never raises on a bad field: the unusable list goes, the body stays.
 
@@ -4972,13 +5063,13 @@ def test_recovery_plans_a_malformed_step_container_without_raising(project_root:
         ),
     )
     assert plan.response.changes
-    # The proposed replacement itself must carry the authored body. Searching the
-    # whole response would pass on `previous_config` alone, even if the
-    # replacement dropped the code.
-    main_edit = next(edit for edit in plan.edits if edit.path.name == "main.py")
-    assert main_edit.after is not None
-    replacement = main_edit.after.decode("utf-8")
-    assert "df = df.head(2)" in replacement
+    # The authored body must survive. The node regenerated from the recovered
+    # config (code only) is exactly the hook already on disk, so the plan leaves
+    # the source alone rather than rewriting it.
+    assert not any(edit.path.name == "main.py" for edit in plan.edits)
+    assert "    df = df.head(2)\n    return df\n" in (project_root / "main.py").read_text(
+        encoding="utf-8"
+    )
     sidecar_edit = next((edit for edit in plan.edits if edit.path.name == "quotes.json"), None)
     if sidecar_edit is not None and sidecar_edit.after is not None:
         assert "steps" not in json.loads(sidecar_edit.after.decode("utf-8"))

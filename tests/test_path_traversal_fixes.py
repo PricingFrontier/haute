@@ -186,6 +186,7 @@ submodel = haute.Submodel(
     definition_id="pricing",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 
 @submodel.polars
@@ -255,6 +256,7 @@ submodel = haute.Submodel(
     definition_id="pricing",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 @submodel.polars
 def base_rate() -> pl.LazyFrame:

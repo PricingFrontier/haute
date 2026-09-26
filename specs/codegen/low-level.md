@@ -42,25 +42,32 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/codegen.py` | Public orchestration API (`graph_to_code`, `graph_to_code_multi`); single-node dispatch (`_node_to_code`, `_generate_node_code`); instance-node handling; contract kwarg formatting/injection (`_format_contract_kwarg`, `_format_contract_source`, `_inject_contract_kwarg`); pipeline/submodel file assembly (`_generate_pipeline_lines`); the final parse gate (`_assert_emitted_files_parse`). |
-| `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`. String-safety helpers (`_safe_str`, `_safe_path`), shared field extraction (`_common_node_fields`, `_build_params` — parameters are the per-edge input names supplied by the orchestrator, and duplicates are rejected by `src/haute/codegen.py::_validate_duplicate_node_inputs`), docstring sanitization (`_sanitize_description`), the config-backed decorator line (`_config_decorator`), and per-type templates such as `_MODEL_SCORE`, `_BANDING`, and `_RETAINED_EXTERNAL`. |
-| `src/haute/_python_syntax.py` | Formatting-preserving valid-Python boundary: LibCST decorator-keyword injection, exact method-call discovery, exact expression/function replacement and generated function setup insertion, with stable structured syntax failures. It never repairs invalid Python syntax or evaluates source. |
+| `src/haute/codegen.py` | Public orchestration API (`graph_to_code`, `graph_to_code_multi`); single-node dispatch (`_node_to_code`, `_generate_node_code`, `_render`); instance-node handling (`_instance_to_code`); the contract decision and value (`_contract_keyword`, `_contract_value`); node emission order (`_emission_order`); module assembly (`_render_module`); the final parse gate (`_assert_emitted_files_parse`). |
+| `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`; each returns a `NodeSource` rather than text. Shared helpers build a configured node's declaration or hook (`_configured_node`), the config-backed decorator keywords (`_config_keywords`), parameters (`_params` — the per-edge input names supplied by the orchestrator; duplicates are rejected by `src/haute/codegen.py::_validate_duplicate_node_inputs`) and the transform body (`_transform_body`, which adds the output declaration only when the code binds `df` nowhere). `render_node_source` prints a `NodeSource` through the shared document printer; `_sanitize_description` and `_docstring_lines` prepare docstring text. |
+| `src/haute/_source_layout.py` | The document printer both codegen and the Polars step layout use: the Wadler/Prettier document (`Group`, `Indent`, `Line`, `IfBreak`), `print_doc`, string quoting as ruff writes it (`quote_string`), collections laid out one entry per line when broken (`bracketed`), call and signature arguments laid out as ruff lays them out (`arguments`: flat, then on one indented line, then one per line with a trailing comma; a broken signature's lone parameter also takes the comma, a lone call argument never), and the literal printer (`literal`) for decorator values. |
+| `src/haute/_python_syntax.py` | Formatting-preserving valid-Python boundary: exact method-call discovery, exact expression/function replacement, and one import inserted below another (`insert_import_after`, used by the node-scoped save), with stable structured syntax failures. It never repairs invalid Python syntax or evaluates source. Codegen no longer edits generated source, so it does not use this module. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): codegen registers and reads per-node code builders through the canonical registry. |
-| `src/haute/_code_extraction.py` | Reverse direction of the codegen builders' body wrapping: strips generated boilerplate back out of a persisted function body so the user-facing code editor shows only what the user actually typed. Consolidated engine (`extract_user_code`) dispatches through `BOILERPLATE_MATCHERS`/`_FINALISERS` registries keyed by node "kind." |
+| `src/haute/_code_extraction.py` | Reverse direction of the builders: recovers the user-authored code from a function body. Three kinds (`polars`, `hook`, `external`) share one engine (`extract_user_code`): strip the docstring, recognise a declaration body (`is_declaration_body`: nothing but `...` or `pass`), strip the transform output declaration or the External File `df = <first input>` binding, recognise the incomplete placeholder, strip the trailing `return df`, and finalise with the Polars rules. |
 | `src/haute/_ast_helpers.py` | Stateless AST/source utilities with no node/graph knowledge: literal evaluation (`_eval_ast_literal`), decorator introspection (`_get_decorator_kwargs`, `_is_pipeline_node_decorator`, `_get_decorator_node_type`), docstring/whitespace handling (`_strip_docstring`, `_dedent`), and whole-file extraction helpers (`_extract_function_bodies`, `_extract_connect_calls`, `_extract_meta`, `_extract_preamble`, `_extract_preserved_blocks`) shared with the parser. |
 
 ## Key types and data structures
 
-- **`_NodeCodeFn`** (`codegen.py`) — `Callable[[GraphNode, list[str] | None, list[str] | None], str]`; the injected per-node code generator (`_node_to_code` for pipelines, `_submodel_node_to_code` for submodel files), parameterizing `_generate_pipeline_lines` so both file kinds share one assembly routine. Edge Join input lists are ordered base-then-join from their role-bearing edges before this boundary; there is no parallel source-function-name channel.
+- **`NodeSource`** (`_codegen_builders.py`) — frozen dataclass: `decorator` (the
+  registry method name, e.g. `data_input`, `polars`, `instance`), `keywords`
+  (ordered `(name, value)` decorator keywords whose values are literals),
+  `params` / `keyword_only` (`Param(name, annotation)` tuples), `returns`
+  (`"pl.LazyFrame"` or `None`), `description`, and `body` (`None` for a
+  declaration, otherwise the unindented body text). It is what a builder says
+  about its node; `render_node_source(source, receiver=...)` prints it, adding
+  the contract keyword the orchestrator decided on.
 - **`_ConnectPair`** (`codegen.py`) — `tuple[str, str, str | None, str | None]`: `(src_func, tgt_func, source_port, target_port)`. `source_port`/`target_port` are `None` for the bare `connect("a", "b")` form used by ordinary single-output sources. Every `apiInput` edge — including one from a sole-frame source — carries its frame label as `source_port`, so the generated file always names the frame each connection delivers; a bare connect from an `apiInput` is not emitted.
-- **`CodegenBuilder`** (`_codegen_builders.py`) — `Callable[[GraphNode, list[str]], str]`; the signature every `_gen_*` function implements. Registered per `NodeType` into `NODE_REGISTRY[node_type].codegen` (see `haute._registry`); `NODE_REGISTRY` pairs each type's codegen builder with its exec-side runtime builder from `haute._builders`, and `validate_registry_complete` enforces both are present for every type.
-- **`MethodCallSite` / `StructuredSyntaxError`** (`_python_syntax.py`) — an immutable
-  exact attribute-call name plus one-based line/zero-based column span, and the
-  value-free failure raised when a source/keyword cannot be represented by the
-  valid-Python CST boundary.
-- **`MatcherResult`** (`_code_extraction.py`) — `NamedTuple(start_idx: int, return_vars: tuple[str, ...], generated_scaffold: bool = False)`. Output of a `BoilerplateMatcher`: `start_idx` is the first line of `cleaned_lines` considered user code; `return_vars` are variable names whose trailing `return <var>` should be stripped; `generated_scaffold=True` means generated setup (a `df = <helper>(...)` call or the explore kind's `df = <param>` binding) already produced `df`, so the finaliser runs with no param names and later references to the input parameters stay intentional user code.
-- **`BoilerplateMatcher`** (`_code_extraction.py`) — `Callable[[list[str], tuple[str, ...]], MatcherResult]`. One matcher per internal kind (`polars`, `explore`, `source`, `scenario_expander`, `model_score`, `rating_step`, `external`), registered in `BOILERPLATE_MATCHERS`.
-- **`_FINALISERS`** (`_code_extraction.py`) — `dict[str, Callable[[str, tuple[str, ...]], str]]`, the post-processing step per kind that runs after the shared strip-docstring → dedent → skip-boilerplate → strip-trailing-return pass (e.g. `_finalise_polars` unwraps redundant `df = (...)` parens and rewrites bare `return expr` to `df = expr`).
+- **`CodegenBuilder`** (`_codegen_builders.py`) — `Callable[[GraphNode, list[str]], NodeSource]`; the signature every `_gen_*` function implements. Registered per `NodeType` into `NODE_REGISTRY[node_type].codegen` (see `haute._registry`); `NODE_REGISTRY` pairs each type's codegen builder with its exec-side runtime builder from `haute._builders`, and `validate_registry_complete` enforces both are present for every type.
+- **Document nodes** (`_source_layout.py`) — `str | Group | Indent | Line | IfBreak | list`:
+  a `Group` prints flat when it fits on the line up to the next possible break and
+  broken otherwise; a broken `Line` is a newline at the current indent (flat: a space,
+  or nothing when soft); an `IfBreak` prints only inside a broken group (the magic
+  trailing comma).
+- **`MatcherResult`** (`_code_extraction.py`) — `NamedTuple(start_idx: int, return_vars: tuple[str, ...])`: the first line of the cleaned body that is user code, and the variables whose trailing `return <var>` is generated.
 - **`_UserCodeParseError`** (`_code_extraction.py`) — multiple-inherits `ParseError` (Haute's error hierarchy) and `ValueError`; raised by `_parse_user_code` when extractable text isn't valid Python, chaining the original `SyntaxError`.
 
 ## Control flow
@@ -79,47 +86,69 @@
 4. **No-submodel path:** order edges (`_order_edge_join_incoming_edges` puts
    each edge-join's two incoming edges in base-then-join order), topo-sort
    nodes (`_topo_sort` via strict `haute._topo.topo_sort_ids`, which raises
-   `UnknownEdgeEndpointError` with dropped-edge evidence for any dangling endpoint), build
+   `UnknownEdgeEndpointError` with dropped-edge evidence for any dangling endpoint) and
+   place each input-less node that feeds another immediately before its first consumer
+   (`_emission_order`), build
    id→func-name maps and each node's per-edge input-name list
    (`edge_input_name(edge, source_node)` in edge order — the same list the
    executor derives, so signature and binding can never disagree), raising
    `ParseError` on a duplicate input name within one node (via the shared
    `duplicate_input_names` detector in `_graph_utils.py`), build
    `connect_pairs` directly from edges, call
-   `_generate_pipeline_lines(kind="pipeline", ...)`, then
+   `_render_module(kind="pipeline", ...)`, then
    `_assert_emitted_files_parse` on the single resulting file.
 5. **Submodel path:** resolve every canonical occurrence and order definitions
-   by first occurrence. For each definition, topo-sort its internal graph,
+   by first occurrence. For each definition, order its internal graph the same way,
    derive child parameters from structured public input targets followed by
    internal edges, validate every structured output source, and emit one
    `haute.Submodel(..., definition_id=..., input_ports=...,
-   output_ports=...)` file. Then omit occurrence nodes from the root function
+   output_ports=...)` file, ending with `pipeline_dir=` when the definition's
+   file sits below the pipeline (`_submodel_paths.definition_pipeline_dir` of
+   its registration path: one `..` per folder). Then omit occurrence nodes from the root function
    list, translate parent boundary handles only to declared public port names,
    derive child-boundary parameters from sanitised public input port names and downstream names from sanitised public output port names, and emit one explicit
    `pipeline.submodel(path, name)` registration per occurrence (with `instance_of=owner_name` for copies). Parent `connect` calls refer to aliases
    plus public port names; synthetic `in__`/`out__` handles never enter source.
    Finally `_assert_emitted_files_parse` validates every emitted file.
 
-### `_generate_pipeline_lines` (shared by both paths above)
+### `_render_module` (shared by both paths above)
 
-Builds the file as a list of lines: docstring header (name run through
-`_sanitize_description` since it lands between the module docstring's triple
-quotes) → standard imports → optional per-file preamble →
-`Pipeline(...)`/`Submodel(...)` construction → any preserved blocks
-(`_emit_preserved_blocks`, wrapped in `# haute:preserve-start/-end` markers)
-→ original nodes (via `node_to_code_fn`) → instance nodes (via
-`_instance_to_code`, decorator prefix rewritten to `@submodel.` inside
-submodel files) → submodel import lines → `pipeline.connect(...)`/
-`submodel.connect(...)` calls (JSON-encoded frame names via `json.dumps` so
-labels containing quotes/backslashes/non-ASCII survive; deduped when
-`dedup_connects=True`).
+Builds the file as a sequence of blocks separated the way `ruff format`
+separates them: the docstring header (name run through `_sanitize_description`
+since it lands between the module docstring's triple quotes), one blank line,
+the imports, one blank line, the optional per-file preamble, the
+`Pipeline(...)`/`Submodel(...)` construction (an empty `description` is
+omitted), any preserved blocks (`_emit_preserved_blocks`, wrapped in
+`# haute:preserve-start/-end` markers), then each node function preceded by two
+blank lines (original nodes in emission order, then instance nodes), the
+submodel registration calls, and the `pipeline.connect(...)`/
+`submodel.connect(...)` calls under the `# Wire nodes together` comment
+(deduped when `dedup_connects=True`). The module ends with exactly one newline.
+The imports are `import haute` followed by `import polars as pl`; the second is
+emitted only when the rest of the module refers to the name `pl` (checked on
+the parsed module, so a preamble that uses `pl` keeps it).
+
+Every call and signature is printed through `haute._source_layout`: the
+constructor, decorators, `def` lines, submodel registrations and connect calls
+print flat when they fit in 88 columns, otherwise with their arguments on one
+indented line, otherwise one argument per line with a trailing comma (as ruff does,
+a lone parameter of a broken signature takes the comma too and a lone call argument
+never does); a list or
+dict value that does not fit puts one entry per line with a trailing comma.
+Strings take double quotes unless single ones need fewer escapes. The result is
+a fixed point of `ruff format` at its defaults.
+
+`_emission_order(sorted_nodes, edges)` keeps the topological order of every node
+that has inputs and moves each input-less node that feeds another to just before
+its first consumer, emitting the sources of one consumer in that consumer's edge
+order; an input-less node without consumers keeps its topological position.
 
 Preserved-block extraction is intentionally structural rather than byte-for-byte. The shared
 `haute._ast_helpers._extract_preserved_blocks` scan claims only completed column-zero marker
 pairs, removes marker lines and leading/trailing blank lines inside each block, ignores an
 unmatched start, and returns blocks in source order. `_extract_preamble` excludes those completed
 module spans, so the two stores are disjoint. Indented marker text remains in its enclosing
-function or construct and is not separately extracted. `_generate_pipeline_lines` emits each
+function or construct and is not separately extracted. `_render_module` emits each
 pipeline or submodel block once after object construction and before node functions, restoring
 fresh markers.
 
@@ -128,93 +157,71 @@ fresh markers.
 1. `_order_edge_join_incoming_edges` runs before per-node dispatch and orders
    each Edge Join's physical incoming edges base-then-join from their
    `targetHandle` values. It requires exactly one `base` and one `join` handle.
-2. `_node_to_code` passes the already edge-derived `source_names` to
+2. `_node_functions` passes the already edge-derived `source_names` to
    `_generate_node_code`; its parallel `source_ids` are used only to attribute
    column-contract parent names and never to resolve input roles or selectors.
 3. `_generate_node_code` — looks up `NODE_REGISTRY[node.data.nodeType].codegen`
    and calls it; raises `KeyError` if either the entry or its codegen builder
-   is missing.
+   is missing. The builder returns a `NodeSource`.
 4. A config-backed builder (`has_config_folder(node_type)`, from
-   `haute._config_io`) opens its code with `_config_decorator(node, func_name)`,
-   which renders `@pipeline.<decorator>(config=<path>)` from the complete
-   `NODE_TYPE_TO_DECORATOR` mapping and `config_path_for_node`; a missing
-   mapping raises `HauteError` with node context rather than defaulting. The
-   builder therefore renders no config values into its decorator, and
-   `_node_to_code` does not post-process its output. The rating-step builder
-   still validates the table and combined-output shapes it no longer renders,
-   because codegen runs at save and a malformed config must fail there as it
-   would at execution.
-5. `_format_contract_kwarg` computes the `contract=...` kwarg text (or
-   `None` for instance nodes whose contract comes from the referenced
-   original node). It derives the builder contract from the current config
-   (`_derive_contract_for_codegen`) and fills only that contract's opaque
-   sides from a declared `config["contract"]` (`Contract.fill_opaque_sides`),
-   keeping the declaration's `inputs_by_parent`; with no declaration it
-   emits the builder contract alone (`"opaque"` unless both sides are
-   concrete). `_node_to_code`'s `contract_source` picks the derivation:
+   `haute._config_io`) takes its first keyword from `_config_keywords(node,
+   func_name)`: `config=<path>` from `config_path_for_node`, with the decorator
+   name from the complete `NODE_TYPE_TO_DECORATOR` mapping; a missing mapping
+   raises `HauteError` with node context rather than defaulting. No config value
+   is rendered into the decorator. The rating-step builder still validates the
+   table and combined-output shapes, because codegen runs at save and a
+   malformed config must fail there as it would at execution; the optimiser and
+   optimiser-apply builders validate their input selectors for the same reason.
+5. `_contract_keyword` decides the contract keyword. It derives the builder
+   contract from the current config (`_derive_contract_for_codegen`) and fills
+   only that contract's opaque sides from a declared `config["contract"]`
+   (`Contract.fill_opaque_sides`), keeping the declaration's `inputs_by_parent`;
+   an instance, or `"declared"` generation, starts from the declaration alone. It
+   then compares the result with what the parser derives offline
+   (`resolve_parse_time_contract`) and returns `None` — no keyword — unless the
+   result has a concrete side the offline derivation leaves opaque or carries
+   `inputs_by_parent`. `_node_to_code`'s `contract_source` picks the derivation:
    `"builder"` (the default, used by save) derives through
    `_derive_contract_for_codegen`; `"offline"` (recovery generation) derives
-   what the parse-time check compares against (`resolve_parse_time_contract`),
-   so it never loads an external model artifact and the regenerated annotation
-   always passes that check; `"declared"` derives nothing. Instance nodes,
-   `"declared"` generation, and a declared `"opaque"` (which declares no side,
-   so cannot go stale) emit the declaration unchanged, and `"declared"` with no
-   declaration emits no kwarg. If present, `_inject_contract_kwarg` asks the structured
-   syntax boundary to add it to the first authored decorator, with any
-   `HauteError` enriched with `node_id`/`node_label`/
-   `node_type` before re-raising.
+   what the parse-time check compares against, so it never loads an external
+   model artifact; `"declared"` derives nothing.
+6. `render_node_source` prints the decorator (bare when it has no keywords, the
+   contract keyword last) and the function, with the receiver `pipeline` or
+   `submodel` chosen by the file kind.
 
-### Canonical data I/O and retained sidecar builders
+### Configured nodes: declarations and hooks
 
-- For files containing at least one config-folder node, `_generate_pipeline_lines`
-  emits the reserved `_HautePath` import before the standard imports and the
-  `_HAUTE_CONFIG_BASE` assignment immediately after the `Pipeline`/`Submodel`
-  constructor (files with no config-folder nodes omit both). A pipeline file
-  assigns `_HautePath(__file__).resolve().parent`; a submodel file assigns
-  `_HautePath(__file__).resolve().parents[N]` where `N` is the number of path
-  separators in the recorded registration path — config paths always resolve
-  against the parent pipeline directory, so the emitted base climbs exactly as
-  many levels as the registration path descends (`modules/x.py` -> `parents[1]`,
-  `x.py` -> `parents[0]`, `a/b/x.py` -> `parents[2]`). Submodel codegen with a
-  config-folder node without that depth is a `HauteError`. `_extract_preamble` excludes exactly those
-  reserved scaffold shapes (`.parent` and `.parents[N]`, matched structurally,
-  plus the `_HautePath` import) so codegen -> parse -> codegen emits one
-  config-base assignment and reaches a source-text fixpoint rather than
-  reclassifying generated infrastructure as authored preamble.
-- `_gen_data_input` emits the one retained tabular-input scaffold. It calls
-  `resolve_data_input_from_config` using the generated sidecar path and file
-  directory, assigns the returned lazy frame to `df`, appends optional user
-  code, and returns `df`. The `data_input` extraction matcher removes only
-  its canonical imports, config-base setup, and load call on the reverse
-  parse. Only the optional transform remains in node `code`.
-- `_gen_data_output` emits a config-sidecar decorator and an ordinary
-  pass-through body. It never writes during import or ordinary pipeline
-  execution; explicit publication belongs to the output-write runtime path.
-- `_gen_api_input` and `_gen_external_file` obtain their sidecar paths from
-  `config_path_for_node` and delegate to
-  `resolve_api_input_from_config` / `load_external_object_from_config` with
-  `Path(__file__).resolve().parent`. Their source contains no baked copy of
-  the sidecar's current data path, schema, file type, or model class.
-  External-file user code follows the generated object load.
+Every builder except `_gen_transform` describes a configured node.
+
+- **Declaration** (`_configured_node`, and `_instance_to_code` for an instance): no user code. Parameters are the node's
+  input names without annotations, there is no return annotation, and the body
+  is `...` — or the docstring alone when the node has a description, since a
+  docstring is already a complete body. API Input, Data Output, Edge Join,
+  Banding, Output, Live Switch, Modelling, Optimiser, Optimiser Apply and
+  Constant nodes are always declarations; so is an instance node, whose
+  decorator carries `of=` and its `inputMapping=`.
+- **Hook** (`_configured_node`): a Data Input, Rating Step, Model Score, Scenario Expander or
+  Explore node whose config carries code or steps. The first parameter is
+  `df: pl.LazyFrame` in place of the first input (a Data Input has only `df`),
+  the remaining inputs follow as `name: pl.LazyFrame`, the return annotation is
+  `pl.LazyFrame`, and the body is the user's code — or the rendered steps —
+  followed by `return df`. Steps that cannot be rendered give the
+  `INCOMPLETE_STEPS_BODY` placeholder as the whole body.
+- **External File hook**: every input stays a parameter by name, the loaded
+  object arrives as the keyword-only `obj`, and the body begins with
+  `df = <first input>` before the code and the closing `return df`. A
+  disconnected External File with code has no positional parameters and no
+  binding line.
+- The code-accepting builders raise `ConfigError` for an input named `df`.
 - Removed `dataSource`/`dataSink` enum values, decorators, templates, and
   extractor aliases have no compatibility path. Round trips preserve the
-  retained I/O provider branch, format/mode, arguments,
-  destination fields, connections, and user code without inventing inactive
-  fields. No cache-mode field exists to round-trip; execution mode is derived.
+  retained I/O provider branch, format/mode, arguments, destination fields,
+  connections, and user code without inventing inactive fields. No cache-mode
+  field exists to round-trip; execution mode is derived.
 
-### `_inject_contract_kwarg` / structured syntax boundary
-
-Operates on already-generated source because the per-type builders do not own
-contract computation. `inject_decorator_keyword` parses the complete module and
-the single keyword argument with LibCST, walks actual function decorators in
-source order, and updates the first call or bare attribute whose root is exactly
-`pipeline` or `submodel`. It rejects a duplicate `contract`, a malformed keyword,
-invalid module syntax, and a missing matching decorator. The output comes from
-the modified CST, so comments, quote spelling, line endings, trailing commas,
-and all syntax outside the changed decorator remain owned by the input tree.
-Invalid generated bodies are rejected here with a positioned structured error
-rather than being partially rewritten; the final AST gate remains the complete
-emitted-file assertion.
+The decorator performs the configured work when the module runs on its own; the
+table of what each type does, and the registration checks that keep declarations
+and hooks honest, belong to [pipeline-config](../pipeline-config/low-level.md).
 
 ### `extract_user_code` (the extraction engine)
 
@@ -223,16 +230,26 @@ emitted-file assertion.
    so line numbers are recoverable, parses, and slices past
    `ast.get_docstring`'s end line — never a textual triple-quote scan,
    because escaped quotes inside the docstring content defeat that).
-2. Look up the `kind`'s matcher and finaliser (`KeyError` if `kind` is
-   unknown); run the matcher against the cleaned lines to get a
-   `MatcherResult`.
-3. Slice from `result.start_idx`, `_dedent`, strip a trailing
+2. A body that is nothing but `...` or `pass` (`is_declaration_body`) has no
+   user code.
+3. Look up the `kind`'s matcher (`KeyError` if `kind` is unknown): `polars`
+   skips the exact unbound output declaration `df: pl.LazyFrame`; `external`
+   skips a first statement `df = <first positional parameter>`; `hook` skips
+   nothing. A recognised incomplete placeholder at that position is generated
+   too.
+4. Slice from `result.start_idx`, `_dedent`, strip a trailing
    `return <var>` for each `return_vars` entry via `_strip_trailing_return`
    (AST-based — `_strip_outer_trailing_return` only removes the return if it
    is the literal last OUTER-scope statement).
-4. If `result.generated_scaffold`, finalise unconditionally through
-   `_finalise_polars` with no param names (the scaffold already bound `df`);
-   otherwise run the kind's registered finaliser with the real param names.
+5. Finalise through `_finalise_polars`, with the parameter names for `polars`
+   and none for the other kinds. A closing outer-scope `return <expr>` becomes
+   `df = <expr>`; any other outer-scope `return` (inside an `if` or loop, or
+   followed by more statements) raises `ParseError` naming its line within the
+   code (`_reject_early_returns`), because an early return cannot become an
+   assignment without changing the node's result.
+
+`normalise_user_code(code, kind=...)` applies only step 5, so the parser can
+compare a step rendering with an extracted body on equal terms.
 
 ### The polars named-input contract
 
@@ -257,41 +274,33 @@ empty parameter list — never a phantom default `df` input — and an incoming
 edge whose derived name is literally `df` is rejected as a reserved-name
 collision once executable code is present, rather than weakening the
 output-only contract. A no-code half-built node still saves with its ordinary
-raising placeholder. For executable code, `_gen_transform` emits the unbound
-local declaration `df: pl.LazyFrame`, the user code verbatim, and the appended
-`return df`. The declaration creates a function-local output slot without
-binding a value, so a preamble global named `df` cannot mask a missing user
-assignment. User code must start from the input it means by name
-(`df = quotes.join(regions, ...)`), and reading `df` before assigning it is a
-`NameError` at run time, in the generated module and canvas execution alike.
+raising placeholder. For executable code, `_gen_transform` emits the user code
+verbatim and the appended `return df`. When the code does not itself make `df`
+a name of the function (`_code_makes_df_local`, which reads Python's own scoping
+through `symtable`, so every binding form and a `global df` declaration count),
+the body first declares `df: pl.LazyFrame`: the declaration creates a
+function-local output slot without binding a value, so a preamble global named
+`df` cannot mask the missing assignment. Code that binds `df` anywhere already
+makes it local, so the declaration would add nothing. User code must start from the input it means by
+name (`df = quotes.join(regions, ...)`), and reading `df` before assigning it is
+a `NameError` at run time, in the generated module and canvas execution alike.
 
 A stepped transform (`config["steps"]` is a list) has its body rendered by
 `_polars_steps.render_polars_steps` against the logical parameter names, one
-statement per step (over several lines when it is longer than 88 columns) with a
+statement per step (over several lines when it does not fit in 88 columns at the body's indentation) with a
 leading `df = <input>`, and its decorator carries
 `config="config/polars/<func>.json"` so the parser reloads the steps. A render
 failure emits the incomplete placeholder body (the save warns which step is
 incomplete); `steps` together with `inputMapping` on an original is a `ConfigError`.
 A stepped frame surface (`config["steps"]` is a list on a Data Input, External File,
-Rating Step, Model Score, Scenario Expander or Explore) has its user-code lines produced by
-`_stepped_body_code(config, node_type, source_names)`: the rendering by
+Rating Step, Model Score, Scenario Expander or Explore) is a hook whose body is
+produced by `_stepped_body_code(config, node_type, source_names)`: the rendering by
 `render_polars_steps(steps, step_input_names(node_type, source_names), start="frame")`,
-or `incomplete=True` when they cannot be rendered. The generator places the rendering
-where that surface's hand-written code goes (`_wrap_external_code` after the Data Input
-load scaffold or after `df = <first input>` for an External File; `_wrap_user_code` after
-the rating, scoring or expansion scaffold) and the `INCOMPLETE_STEPS_BODY` placeholder in
-the same position when incomplete (an External File keeps its `df = <first input>`
-binding before it); the steps live in each type's required sidecar, except Explore's,
-which `_gen_explore` appends to its decorator arguments as `steps=[...]` and
-`_build_node_config` reads back from the decorator kwargs. `extract_user_code`
-recognises a placeholder statement (either constant) immediately after the matcher's
-scaffold for every kind and treats it as generated scaffold, and
-`normalise_user_code(code, kind=..., param_names=...)` applies only the finaliser the
-kind's extraction ends with (`_finalise_polars` with no aliases for the scaffolded kinds
-`explore`, `scenario_expander` and `rating_step`, the kind's own finaliser otherwise;
-never the docstring stripper, the matcher or the trailing-return strip, which act on
-generated scaffold a rendering does not contain) so the parser can compare a rendering
-with an extracted body on equal terms.
+or `incomplete=True` when they cannot be rendered, in which case the hook's body is
+the `INCOMPLETE_STEPS_BODY` placeholder (after an External File's binding line). The
+steps live in each type's required sidecar, except Explore's, which `_gen_explore`
+appends to its decorator keywords as `steps=[...]` and `_build_node_config` reads back
+from the decorator kwargs.
 A node with NO code cannot run at
 all — there is no implicit single-input passthrough; codegen emits the
 `NotImplementedError` placeholder and the executor installs the matching
@@ -301,18 +310,6 @@ finaliser treats a leading `df = <param>` line as authored code, never as
 strippable scaffold, and does not collapse a lone `return <param>` body to
 empty code.
 
-`explore` is NOT part of this contract: its code box operates on the single
-implicit frame named `df` (like the `data_input` / `rating_step` /
-`scenario_expander` post-code hooks), so `_gen_explore` still emits the
-`df = <param>` binding line and the dedicated `explore` extraction kind strips
-exactly that line back out as generated scaffold (`generated_scaffold=True`).
-External-file code has the same documented implicit-frame contract:
-`_gen_external_file` emits `df = <first param>` immediately after loading
-`obj`, canvas/deploy execution opts into the matching alias, and
-`_match_external` strips that exact generated binding on reload. The loaded
-`obj` binding is caller-owned scaffold and takes precedence over a same-named
-preamble global, matching the generated function's local assignment.
-
 ## Edge cases and invariants
 
 - **Multi-edge into one node** (the same upstream `apiInput` feeding a node
@@ -320,22 +317,23 @@ preamble global, matching the generated function's local assignment.
   parameter name, so the parameters are distinct by the api-input schema's
   label-uniqueness rule; no suffixing exists. A derived duplicate across
   *different* sources (frame label colliding with another input's name) is a
-  `ParseError`, never a rename. Builders for implicit-frame node kinds retain
-  their default `df` parameter when disconnected; a zero-source `polars`
-  transform alone emits an empty parameter list.
-- **User-controlled text inside decorator arg lists** (a column literally
-  named `"price (gbp)"`, or containing `":)"`) — LibCST represents it as a
-  string literal rather than a delimiter. Comments and lookalike decorator
-  text are likewise trivia, never candidate syntax nodes.
+  `ParseError`, never a rename. A disconnected declaration or transform has an
+  empty parameter list; a disconnected hook has `df` alone.
+- **User-controlled text inside decorator keyword values** (a column literally
+  named `"price (gbp)"`, or containing `":)"` or a quote) — the literal printer
+  quotes every string itself (`quote_string`, escaping as ruff writes it), so
+  such text is always one string literal; there is no textual insertion point
+  for it to break.
 - **Descriptions containing triple quotes, backslashes, or edge whitespace**
   — `_sanitize_description` doubles every backslash, escapes every `"`
   (preventing any run of 3+ quotes from closing the enclosing `"""` early),
   and prepends a `\n` when the description has newlines or leading/trailing
   whitespace (neutralising `inspect.cleandoc`'s indent-stripping behaviour
   so a round-trip through `ast.get_docstring` reproduces the original
-  bit-for-bit). Curly braces are deliberately left untouched because the
-  sanitized value is always a `str.format` keyword argument, never spliced
-  into template text — `str.format` does not re-scan substituted values.
+  bit-for-bit). Continuation lines of a multi-line description are indented to
+  the function body, as `ruff format` indents docstrings; `inspect.cleandoc`
+  removes that common indentation again on read. Curly braces are left
+  untouched: the value is never spliced into a format template.
 - **`Contract.inputs_by_parent` stale keys** — a parent id present in the
   contract metadata but no longer connected after a UI rewire is *omitted*,
   not guessed at, logged via `contract_inputs_by_parent_omitted_stale`;
@@ -354,7 +352,7 @@ preamble global, matching the generated function's local assignment.
   reports it through `_validate_transforms_are_runnable` as a non-blocking
   warning, alongside the empty-`tables[]` API Input warning.
   The placeholder's message is a CONSTANT naming no node or source, so
-  `_match_polars` can recognise it and treat it as scaffold — the node
+  extraction can recognise it and treat it as generated — the node
   round-trips back into the editor still empty. An interpolated message would
   leave nothing fixed to match on, and matching loosely (any leading
   `raise NotImplementedError`) would swallow a user's own first line on reload.
@@ -367,7 +365,7 @@ preamble global, matching the generated function's local assignment.
   A textual comparison silently stops matching after any such reformat, and the
   placeholder then returns as the user's own code — writing a `raise` into a
   node they deliberately left empty. Anything the user adds AFTER the
-  placeholder is preserved (`generated_scaffold=True`); a `df = <param>` line
+  placeholder is preserved; a `df = <param>` line
   anywhere in a polars body is authored code, never scaffold (see "The polars
   named-input contract" above).
   The live executor keeps the same invariant: a no-code polars node installs a
@@ -388,7 +386,8 @@ preamble global, matching the generated function's local assignment.
 - **`EDGE_JOIN` codegen dispatch bypassing role ordering** — `_gen_edge_join`
   itself re-validates `len(source_names) == 2`. Graph assembly validates exactly one `base` and
   one `join` target handle and orders the physical edges before building source names. The
-  generated decorator contains join options only; explicit `connect(..., target_port=...)` calls
+  generated decorator contains join options only, on a declaration whose parameters are the
+  base and join inputs in that order; explicit `connect(..., target_port=...)` calls
   preserve roles for parser reconstruction. Retired `base_input`/`join_input` decorator arguments
   and `baseInput`/`joinInput` config are rejected rather than migrated.
 - **Cross-boundary edge-join role resolution at a submodel boundary** —
@@ -396,31 +395,23 @@ preamble global, matching the generated function's local assignment.
   target's bindings (public input-port targets plus internal edges) and orders
   them base-then-join via `haute._edge_join.resolve_edge_join_role_indices`,
   since the join's base/join role isn't visible from the root-graph edge alone.
-- **Windows-style paths in generated `path=` literals** — `_safe_path`
-  normalizes backslashes to forward slashes before escaping, so a pipeline
-  saved on Windows and read on Linux (or vice versa) still parses
-  correctly. Every config-driven generated helper resolves its `base_dir` from
-  `_HAUTE_CONFIG_BASE` (directly, or through a function-local
-  `base = str(_HAUTE_CONFIG_BASE)`); the only `__file__` expression in an emitted
-  module is the single `_HAUTE_CONFIG_BASE` assignment.
-- **External-file user imports directly after the generated load** —
-  `_match_external` is position-aware: imports BEFORE the generated
-  `load_external_object_from_config(...)` call are stripped as
-  boilerplate, imports AFTER it (or all imports, if there was no load at
-  all) are preserved as user code. The generated `df = <first param>` binding
-  immediately after the load is also stripped; a later alias remains authored
-  user code.
-- **One current generated scaffold per node type.** Extraction recognises
-  the current scaffold plus ordinary user code; it does not carry aliases for
-  retired generated chains or variable names. Rating-step codegen emits only
-  canonical table fields and `combined_outputs`, never retired table labels
-  or singular combined-output arguments.
-- **Model-score / rating-step boilerplate call detection** —
-  `_outer_boilerplate_call_end_line` locates `score_from_config(...)` /
-  `apply_rating_step_from_config(...)` via an AST walk over a
-  synthetically-wrapped body (so a top-level `return` stays valid), not a
-  substring search — a token matching the call name inside a string literal
-  or comment cannot mis-anchor the boilerplate boundary.
+- **Windows-style paths in generated `config=` literals** — `config_path_for_node`
+  builds sidecar paths with forward slashes, so a pipeline saved on Windows and read
+  on Linux (or vice versa) still parses correctly. No emitted module contains a
+  `__file__` expression; a decorator resolves its path against the file that
+  defines it.
+- **External File binding line** — the only generated statement before an External
+  File hook's code is `df = <first input>`. Extraction strips it only when it is the
+  first statement and names the first positional parameter; a later alias, or an
+  import the user wrote first, is authored code.
+- **Declarations are recognised structurally.** A body that is only `...` or `pass`
+  (after an optional docstring) is a declaration wherever it is written, so a
+  hand-formatted declaration parses as one. The only other generated statements are
+  the docstring, the appended `return df`, the transform output declaration, the
+  External File binding and the incomplete placeholder; extraction carries no
+  aliases for retired generated chains or variable names. Rating-step codegen emits
+  only canonical table fields and `combined_outputs`, never retired table labels or
+  singular combined-output arguments.
 - **Hierarchical main files are a static-parser artifact, not a live import mechanism** —
   `pipeline.submodel(path)` only appends the path to the live `Pipeline` object's
   `_submodel_files`; it does not import child decorators. `_assert_emitted_files_parse` proves the
@@ -432,9 +423,9 @@ preamble global, matching the generated function's local assignment.
 | Condition | Exception | Raised from |
 |---|---|---|
 | No codegen builder registered for a `NodeType` | `KeyError` | `codegen._generate_node_code` |
-| Config-backed node has no decorator mapping or its builder emitted no function definition | `HauteError` with node id/label/type | `codegen._node_to_code` |
-| Invalid module/keyword syntax, duplicate injected keyword, or no matching decorator | `HauteError` with stable reason and available line/column (then enriched with node id/label/type) | `_python_syntax.inject_decorator_keyword`, re-raised by `codegen._inject_contract_kwarg` / `_node_to_code` |
-| Contract computation hits `OSError` or an `mlflow.*` exception | degraded, with a `contract_emit_offline_on_error` warning, to the offline parse-time contract (`_config_builder.resolve_parse_time_contract`); a Model Score annotation keeps its configured output column and any declared inputs, and renders `contract="opaque"` when nothing is declared | `codegen._derive_contract_for_codegen` |
+| Config-backed node has no decorator mapping | `HauteError` with node id/label/type | `_codegen_builders._config_keywords` |
+| A decorator keyword value with no Python literal form (not a string, number, boolean, `None`, list, or string-keyed dict of those; or a non-finite float) | `HauteError` naming the value's type | `_source_layout.literal` |
+| Contract computation hits `OSError` or an `mlflow.*` exception | degraded, with a `contract_emit_offline_on_error` warning, to the offline parse-time contract (`_config_builder.resolve_parse_time_contract`); a Model Score annotation keeps any declared inputs, and the keyword is omitted when nothing the parser cannot derive remains | `codegen._derive_contract_for_codegen` |
 | Contract computation hits `ConfigError` | `ConfigError` (propagated) — except the `MlflowDestinationUnconfigured` marker: a MODEL_SCORE node whose explicit `mlflow_destination` is merely not configured on the authoring machine is environmental, so the annotation degrades to the offline parse-time contract with a warning (the executor resolves the same destination at run time and fails loudly there); every other `MlflowConfigError` (unknown key, rejected SDK mode) still propagates | `codegen._derive_contract_for_codegen` |
 | Contract computation hits a non-infra exception (`TypeError`, `KeyError`, `HauteError` incl. `ContractMismatchError`) | propagated unchanged | `codegen._derive_contract_for_codegen` |
 | `inputs_by_parent` ambiguous key collision | `ParseError` | `codegen._format_contract_source` |
@@ -448,14 +439,16 @@ preamble global, matching the generated function's local assignment.
 | Any emitted file fails `ast.parse` | `ConfigError` | `codegen._assert_emitted_files_parse` |
 | `polars` transform has no code (any source count) | No error — emits a `NotImplementedError`-raising placeholder so the graph still saves; fails at run time, warned at save time | `_codegen_builders._gen_transform`, `_save_pipeline._validate_transforms_are_runnable` |
 | `polars` transform with executable code and an input named `df` | `ConfigError` (node id/label) | `_codegen_builders._gen_transform` |
+| Data Input, External File, Rating Step, Model Score, Scenario Expander or Explore node with an input named `df` | `ConfigError` (node id/label) | `_codegen_builders._reject_df_input` |
 | stepped `polars` transform whose steps cannot be rendered | No error — incomplete placeholder body, warned at save time with the step index | `_codegen_builders._gen_transform`, `_save_pipeline._validate_transforms_are_runnable` |
-| stepped `dataInput`, `externalFile`, `ratingStep`, `modelScore`, `scenarioExpander` or `explore` whose steps cannot be rendered | No error — the `INCOMPLETE_STEPS_MESSAGE` placeholder replaces the surface's user-code lines, warned at save time with the step index | `_codegen_builders._stepped_body_code` and each surface's generator, `_save_pipeline._validate_transforms_are_runnable` |
+| stepped `dataInput`, `externalFile`, `ratingStep`, `modelScore`, `scenarioExpander` or `explore` whose steps cannot be rendered | No error — the hook's body is the `INCOMPLETE_STEPS_MESSAGE` placeholder, warned at save time with the step index | `_codegen_builders._stepped_body_code` and `_configured_node`, `_save_pipeline._validate_transforms_are_runnable` |
 | stepped `polars` original carrying `inputMapping` | `ConfigError` (node id/label) | `_codegen_builders._gen_transform` |
 | `edgeJoin` codegen called with `!= 2` sources | `ConfigError` | `_codegen_builders._gen_edge_join` |
 | `Explore` node with `!= 1` incoming edge | `ParseError` | `_codegen_builders._gen_explore` |
 | Codegen dispatched on a `SUBMODEL`/`SUBMODEL_PORT` occurrence | `RuntimeError` | `_codegen_builders._gen_submodel_placeholder_unreachable` |
 | Extraction engine given an unknown `kind` | `KeyError` | `_code_extraction.extract_user_code` |
 | User code text fails to parse during extraction | `_UserCodeParseError` (`ParseError` + `ValueError`, chains original `SyntaxError`) | `_code_extraction._parse_user_code` |
+| Node code returns early: an outer-scope `return` that is not the code's last statement | `ParseError` naming the line within the code; the parser adds the node as `node_id` | `_code_extraction._reject_early_returns`, `_graph_builders._resolve_node_skeleton` |
 | `_rewrite_outer_returns_as_assignment` hits a `return` fragment matching neither `return <expr>` nor bare `return` | `AssertionError` (`# pragma: no cover`, defensive) | `_code_extraction._rewrite_outer_returns_as_assignment` |
 
 All of the `ParseError`/`ConfigError`/`HauteError` types are Haute's
@@ -466,9 +459,29 @@ file tree on disk.
 ## Testing
 
 - `tests/test_codegen_input_identity.py` — graph-to-source tests pin edge-derived input names as generated Python parameters and persisted `connect` metadata.
+- `tests/test_codegen_layout.py` — the generated-file shape: a corpus graph covering every
+  node type as a declaration and every code-accepting type as a hook (plus a transform, an
+  instance and a submodel definition file) generates modules that `ruff format --check`
+  (ruff's defaults) leaves unchanged and that `ruff check --isolated` passes with the
+  pycodestyle, pyflakes, isort, pyupgrade, bugbear, comprehension, simplify, pie and
+  empty-docstring rules (not flake8-return: a hook whose code ends by assigning `df` is
+  followed by the generated `return df`, which RET504 reports, and the code is the user's);
+  no module contains a loader call, a `haute._` import, a
+  `__file__` expression or an empty docstring; `import polars as pl` appears only when the
+  module refers to `pl`; a declaration has no annotations and its description is the whole
+  body; long decorators, signatures and connect calls break as ruff breaks them; a string
+  containing a double quote takes single quotes; each input-less source is emitted directly
+  before its first consumer while other nodes keep their topological order; the transform
+  output declaration appears only when the code does not make `df` local; and an input
+  named `df` on a code-accepting node is a `ConfigError`.
+- `tests/test_codegen_contract_keyword.py` — the contract keyword appears only when it adds
+  information: omitted for an opaque contract and for one the node's settings already
+  imply (a Data Output or Output), kept for a Model Score's model-derived inputs, a declared
+  transform contract and `inputs_by_parent`; a file saved with the keyword omitted parses back
+  to the same effective contract, and a second save is byte-identical.
 - `tests/test_polars_steps.py::test_codegen_parse_round_trip_reproduces_rendered_code` — a stepped transform's generated module parses back to the rendered code and its steps; `test_stepped_original_rejects_input_mapping` covers the `inputMapping` rejection.
-- `tests/test_polars_steps.py::test_data_input_steps_execute_and_round_trip`, `test_data_input_incomplete_steps_fail_on_every_path`, `test_data_input_hand_edit_discards_steps_without_sidecar_marker` and `test_data_input_free_code_with_redundant_parentheses_reloads_in_step_mode` — a stepped Data Input's generated module carries the rendered lines after the load scaffold and parses back to its steps, an unrenderable list emits the `INCOMPLETE_STEPS_MESSAGE` placeholder that reloads as empty code with the steps kept, a hand edit discards the steps without a `_discarded_sidecar` marker, and a rendering the source finaliser normalises still reloads in step mode.
-- `tests/test_polars_steps.py::test_external_file_steps_reach_the_other_inputs_and_obj`, `test_external_file_unknown_input_and_input_mapping_fail_loudly`, `test_rating_step_steps_execute_and_round_trip`, `test_scenario_expander_steps_execute_and_round_trip` and `test_model_score_steps_round_trip_and_fail_before_any_model_loads` — each frame surface's generated module carries the rendering after its scaffold (after `df = <first input>` for an External File) and parses back to its steps, an unrenderable list emits the placeholder (an External File keeping its binding line) and reloads with the steps kept, and a stepped External File original refuses `inputMapping`.
+- `tests/test_polars_steps.py::test_data_input_steps_execute_and_round_trip`, `test_data_input_incomplete_steps_fail_on_every_path`, `test_data_input_hand_edit_discards_steps_without_sidecar_marker` and `test_data_input_free_code_with_redundant_parentheses_reloads_in_step_mode` — a stepped Data Input's generated module is a `df` hook whose body is the rendered lines and parses back to its steps, an unrenderable list emits the `INCOMPLETE_STEPS_MESSAGE` placeholder that reloads as empty code with the steps kept, a hand edit discards the steps without a `_discarded_sidecar` marker, and a rendering the source finaliser normalises still reloads in step mode.
+- `tests/test_polars_steps.py::test_external_file_steps_reach_the_other_inputs_and_obj`, `test_external_file_unknown_input_and_input_mapping_fail_loudly`, `test_rating_step_steps_execute_and_round_trip`, `test_scenario_expander_steps_execute_and_round_trip` and `test_model_score_steps_round_trip_and_fail_before_any_model_loads` — each frame surface's generated module is a hook whose body is the rendering (after `df = <first input>` for an External File) and parses back to its steps, an unrenderable list emits the placeholder (an External File keeping its binding line) and reloads with the steps kept, and a stepped External File original refuses `inputMapping`.
 - `tests/test_rename_stable_binding.py` — executes a coded transform before and after the rename shape the editor produces (edge renamed, `inputMapping` recording the logical name) with equal rows, shows the unmapped shape failing on the old name, and round-trips the mapping through codegen and the parser.
 
 Tests live under `tests/`, organised roughly one file per concern rather
@@ -499,18 +512,19 @@ than one file per module:
   submodel case proves save warnings cover embedded definitions.
 - **`test_codegen_builders.py`** — per-builder unit tests (`_gen_api_input`,
   `_gen_banding`, `_gen_scenario_expander`, `_gen_optimiser`, `_gen_explore`,
-  `_gen_data_input`, `_gen_data_output`) plus `TestCodegenExecValidation`, which executes
-  generated code to check that it is runnable, not just syntactically valid.
-- **`test_codegen_injection.py`** — the triple-quote / brace / paren-inside-
-  string decorator-injection bug class specifically: sanitize-description
-  correctness, triple-quote injection attempts, curly braces in values,
-  combined injection scenarios, and brace round-trip through the docstring.
+  `_gen_data_input`, `_gen_data_output`): each returns a declaration without code and a
+  hook with code, and `TestCodegenExecValidation` executes generated code to check that it
+  is runnable, not just syntactically valid.
+- **`test_codegen_injection.py`** — the triple-quote / brace / quote-inside-
+  string bug class specifically: sanitize-description correctness,
+  triple-quote injection attempts, curly braces and quotes in decorator values
+  (printed by the literal printer), combined injection scenarios, and brace
+  round-trip through the docstring.
 - **`test_codegen_fail_loudly.py`** — the loud-failure contract directly:
-  multiline/bare decorator contract injection, `inputs_by_parent`
-  preservation and stale-key dropping, unparseable-file refusal (both
-  single-file and submodel-file), missing-decorator rejection, name-
-  collision reporting across root+submodel, and the submodel-occurrence
-  unreachability guard.
+  `inputs_by_parent` preservation and stale-key dropping, unparseable-file
+  refusal (both single-file and submodel-file), a decorator value with no
+  literal form, name-collision reporting across root+submodel, and the
+  submodel-occurrence unreachability guard.
 - **`test_codegen_docstring_roundtrip.py`** — "Phase 5 Wave 9D #122
   pathological docstring round-trip tests": adversarial description strings
   that must both compile and round-trip through `ast.get_docstring`
@@ -524,29 +538,30 @@ than one file per module:
 - **`test_codegen_execution_equivalence.py`** — an execution-differential
   harness: runs a saved standalone `.py` file and asserts it produces the
   same result as the in-process executor for the same batch, covering
-  scenario-expander, optimiser-apply, live-switch, and modelling nodes
-  (the "genuine passthrough" node types called out in the high-level
-  Design rationale), plus `OUTPUT` — for the opposite reason: `OUTPUT` is
-  *not* a passthrough, and this harness is what catches a standalone run
-  silently reverting to one (its generated body once regressed to a bare
-  `return {first}`, so a saved pipeline's `pipeline.run()` returned the raw
-  upstream frame instead of the assembled response document).
+  scenario-expander, optimiser-apply, live-switch, modelling, edge-join,
+  constant, banding, rating-step and model-score declarations, a Data Input,
+  Model Score and External File hook, plus `OUTPUT` — for the opposite reason:
+  `OUTPUT` is *not* a passthrough, and this harness is what catches a
+  standalone run silently reverting to one (its generated body once regressed
+  to a bare `return {first}`, so a saved pipeline's `pipeline.run()` returned
+  the raw upstream frame instead of the assembled response document).
 - **`test_codegen_builders_contracts.py`** — small focused contracts not
-  covered elsewhere: live-switch body scenario-awareness, and model-score
-  registered-source decorator kwargs.
+  covered elsewhere: a live-switch declaration routing by the active scenario
+  in a standalone run, and model-score registered-source settings staying in
+  the sidecar.
 - **`test_code_extraction_coverage.py`** — internal-helper unit coverage for
   `_code_extraction.py`: user-code parsing, bare-return rewriting, trailing-
-  return stripping, the explore alias-scaffold matcher, matcher edge cases,
-  identifier rewriting, finalisers, and the redundant-RHS-wrapper proof.
+  return stripping, declaration bodies (`...`, `pass`, docstring only), the
+  External File binding matcher, finalisers, and the redundant-RHS-wrapper proof.
 - **`test_code_extraction_roundtrip.py`** — "remediation 5.1 (C5) + 5.6":
   the chain-assignment unwrap proof, a chain-assignment save→load→save
-  cycle, extraction failing loud on unparseable bodies, and external-file
-  import preservation (the position-aware boilerplate boundary).
+  cycle, extraction failing loud on unparseable bodies, and External File
+  code keeping the user's own leading imports.
 - **`test_ast_return_boundaries.py`** — contract tests specifically for the
   outer-vs-nested return-boundary detection against a hand-written "line
   heuristic" reference, including textual-return misfires the old heuristic
-  would have gotten wrong; separate classes for the model-score and
-  external-file extractors.
+  would have gotten wrong; separate classes for the hook and
+  External File extractors.
 - **`test_model_score_codegen.py`** — model-score-specific codegen and
   parser round-trip, including `_build_node_config` interaction.
 - Several other files exercise codegen indirectly as part of broader
@@ -579,5 +594,5 @@ writing a failing test before the fix.
 
 Single-node generation for a recovery candidate preserves an explicit authored
 column contract but does not derive a new contract from external model artifacts.
-This explicit offline mode emits the current scaffold without contacting external
+This explicit offline mode emits the current declaration or hook without contacting external
 services.

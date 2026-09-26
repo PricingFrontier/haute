@@ -10,16 +10,22 @@ valid-Python mutation and classification boundary is fixed by the accepted
 [structured syntax decision](structured-syntax-boundary.md). Given a validated
 `PipelineGraph`, it produces source that:
 
-- Imports `polars` and `haute`, constructs a `haute.Pipeline`/`haute.Submodel`
-  object, and defines one decorated function per node (`@pipeline.<type>` /
-  `@submodel.<type>`).
+- Imports `haute` (and `polars` when the module refers to it), constructs a
+  `haute.Pipeline`/`haute.Submodel` object, and defines one decorated function
+  per node (`@pipeline.<type>` / `@submodel.<type>`). The decorator says what
+  the node does and where its settings live; the function body holds only code
+  the user wrote. A node without user code is a one-line declaration.
 - Wires nodes together with `pipeline.connect(...)` calls that mirror the
   graph's edges, including multi-frame port names.
 - Embeds enough metadata (docstrings, decorator kwargs, JSON config sidecars,
-  column contracts, preserved free-form blocks) that the file can later be
-  parsed back into an equivalent graph — see
+  column contracts where they add information, preserved free-form blocks)
+  that the file can later be parsed back into an equivalent graph — see
   [pipeline-config](../pipeline-config/high-level.md) for the sidecar format
   and the parsing counterpart in `src/haute/parser.py`.
+- Reads like a formatted, hand-written Python file: it is a fixed point of
+  `ruff format` at its defaults and carries no generated scaffolding (no
+  loader calls, no private imports, no empty docstrings, no module
+  infrastructure).
 
 The generated file tree is the artifact saved to disk and later parsed for preview,
 execution, tracing, and deployment; it is not an intermediate serialization hidden from the
@@ -38,13 +44,17 @@ In scope:
   `haute.codegen.graph_to_code_multi`).
 - Per-node-type source generation (the `_gen_*` builders in
   `haute._codegen_builders`), covering every `NodeType` registered in
-  `haute._registry.NODE_REGISTRY`.
-- Injecting column-contract decorator kwargs (`_format_contract_kwarg` /
-  `_inject_contract_kwarg` in `src/haute/codegen.py`) through the
-  formatting-preserving LibCST boundary in `src/haute/_python_syntax.py`.
+  `haute._registry.NODE_REGISTRY`. A builder describes its node (decorator
+  keywords, parameters, body) rather than printing it.
+- Deciding whether a node's column contract adds information and, if so,
+  rendering it as the decorator's `contract=` keyword (`_format_contract_kwarg`
+  in `src/haute/codegen.py`).
+- Laying the module out the way `ruff format` would (`haute._source_layout`,
+  a small document printer shared with the Polars step renderer).
 - Extracting the user-authored portion of a node's code editor content back
-  out of generated boilerplate (`haute._code_extraction`), so the same text
-  can be re-embedded on the next save without accreting duplicate scaffolding.
+  out of a function body (`haute._code_extraction`): the docstring, the
+  appended `return df`, the transform output declaration and the incomplete
+  placeholder are the only generated parts left to strip.
 - Low-level AST/source utilities shared with the parser
   (`haute._ast_helpers`): docstring stripping, dedent, decorator inspection,
   preamble/preserved-block extraction.
@@ -78,7 +88,10 @@ Out of scope (owned by neighbouring components):
 ## Behaviour
 
 - **Deterministic given the same graph.** Node order follows a topological
-  sort (`haute._topo.topo_sort_ids`); contract dicts and column sets are sorted, while connect
+  sort (`haute._topo.topo_sort_ids`) in which every node without inputs that feeds another
+  node is placed immediately before its first consumer, so a data source is read where it
+  is used rather than at the top of the file; a node without inputs or consumers keeps
+  its topological position. Contract dicts and column sets are sorted, while connect
   calls preserve the graph's edge order (apart from edge-join role ordering and root-boundary
   deduplication). The same ordered graph therefore produces byte-identical output; codegen does
   not canonicalise arbitrary input edge ordering.
@@ -110,7 +123,10 @@ Out of scope (owned by neighbouring components):
   hard `ParseError` at codegen time; parameters are never disambiguated with
   hidden numeric suffixes. Every `apiInput` edge emits an explicit
   `source_port` in its connect call — including a sole-frame source — so the
-  file itself always names the frame each parameter binds.
+  file itself always names the frame each parameter binds. The one exception
+  is a configured node carrying code (see "Declarations and code"): its first
+  parameter is `df`, the frame the node's configured work produced, standing
+  in place of the first input.
 - **Submodel-aware.** A graph with no submodel occurrences produces exactly
   one file. A hierarchical graph emits each referenced definition file once,
   in first-occurrence order, plus a main file with one explicit
@@ -129,80 +145,113 @@ Out of scope (owned by neighbouring components):
   `definition_id`, complete literal `input_ports`/`output_ports` contract,
   description, preamble, and preserved blocks. Unused declared outputs
   therefore survive parse/save/reload without inference from parent edges.
+- **Declarations and code.** Every node type except `polars` is a *configured
+  node*: its behaviour comes from its settings, which live in a JSON sidecar
+  named by the decorator's `config=` keyword (inline decorator keywords for
+  Edge Join and Explore), and the decorator itself performs that behaviour when
+  the file runs on its own (see [pipeline-config](../pipeline-config/high-level.md)).
+  Codegen therefore emits no loader, scoring, join, switch or assembly call:
+  - A configured node without user code is a **declaration**,
+    `def <name>(<inputs>): ...`. Its parameters name its inputs, carry no
+    annotations and no return annotation, and the body is `...`, or the
+    docstring alone when the node has a description. The function is never
+    called.
+  - A Data Input, Rating Step, Model Score, Scenario Expander or Explore node
+    that carries code or steps is a **hook**,
+    `def <name>(df: pl.LazyFrame, <other inputs>: pl.LazyFrame) -> pl.LazyFrame:`.
+    `df` is the frame the configured work produced from the first input (a
+    Data Input's `df` is its loaded data, and it has no other parameters); the
+    body is the user's code followed by `return df`.
+  - An External File node that carries code or steps keeps every input as a
+    parameter, receives the loaded object as the keyword-only `obj`, and binds
+    `df = <first input>` as its first statement, the names its code box
+    documents: `def <name>(<inputs>: pl.LazyFrame, *, obj) -> pl.LazyFrame:`.
+  - API Input, Data Output, Edge Join, Banding, Output, Live Switch,
+    Modelling, Optimiser, Optimiser Apply and Constant nodes never carry code
+    and are always declarations.
+  An input named `df` on a node whose type accepts code is a `ConfigError`,
+  because a declaration whose first parameter is `df` would read as a hook.
 - **Config-backed decorators.** A node type with a declarative JSON sidecar
   (`haute._config_io.has_config_folder`) has its builder emit
-  `@pipeline.<decorator>(config="config/<type>/<name>.json")` itself, through
-  one shared helper: the decorator carries only the sidecar's path, never the
-  config's contents, and codegen does not rewrite a builder's output after the
-  fact. The config content itself is written separately by the config-io save
-  path. A config-backed type without a registered decorator is a `HauteError`;
-  codegen never defaults to a generic decorator.
-  The generated `_HAUTE_CONFIG_BASE` import and assignment are module
-  infrastructure, emitted exactly once outside authored preamble ownership.
-  Its value always resolves to the parent pipeline directory: a pipeline file
-  uses its own directory, and a submodel file climbs one level per path
-  segment in its recorded registration path, so definitions registered at any
-  depth inside the project resolve config paths identically at parse time and
-  at generated-module runtime.
-  Reverse parsing likewise removes the generated per-node loader scaffold;
-  neither its imports nor its load call may enter editable node `code` or be
-  executed by the user-code sandbox.
+  `@pipeline.<decorator>(config="config/<type>/<name>.json")` through one
+  shared helper: the decorator carries only the sidecar's path (and a contract
+  when it adds information), never the config's contents. The config content
+  itself is written separately by the config-io save path. A config-backed type
+  without a registered decorator is a `HauteError`; codegen never defaults to a
+  generic decorator. The module carries no config-base binding or other
+  infrastructure: a decorator resolves its sidecar path against the pipeline's
+  directory, the directory of the file that defines the function. A submodel
+  definition file below its pipeline instead records the way back as the last
+  keyword of its constructor, `pipeline_dir=".."` (one `..` per folder of its
+  registration path), and the parser checks that value against where the file
+  sits.
 - **Canonical data I/O generation.** `dataInput` emits
-  `@pipeline.data_input(config="config/data_input/<name>.json")`, loads the
-  configured input through the shared helper (a derived direct Parquet scan
-  or a published snapshot),
-  binds the result to `df`, runs optional user Polars code, then returns
-  `df`. `dataOutput` emits
-  `@pipeline.data_output(config="config/data_output/<name>.json")` with a
-  side-effect-free pass-through body: persistence happens only through the
-  explicit output-write execution surface, never on import or an ordinary
-  `Pipeline.run()`. Removed `dataSource`/`dataSink` forms are neither emitted
-  nor accepted as codegen node types.
-- **Retained sidecar inputs stay live.** API Input and External File bodies
-  contain only their sidecar path and call the shared config-driven loaders with
-  the module-level `_HAUTE_CONFIG_BASE` (the parent pipeline directory:
-  `.parent` in a pipeline file and `.parents[N]` in a submodel file) as the
-  base directory. They do not bake the sidecar's current data path, schema, file
-  type, or model class into source. A sidecar-only edit therefore changes the next
-  generated-function execution, and malformed sidecars raise the same
-  validation error as canvas execution.
-- **Contract kwarg injection.** Every ordinary node gets a `contract=...` decorator kwarg
-  documenting its column-level input/output contract (or the string sentinel `"opaque"` when it
-  cannot be determined statically). An instance node with no explicit declared contract omits the
-  kwarg because it inherits the original node's contract; an instance carrying a declaration has
-  that declaration emitted. Every other node's contract is re-derived from its current config on
-  every generation: parsing carries the previously generated annotation back onto
-  `config["contract"]`, so that declaration only supplies the sides (inputs/outputs) the builder
-  cannot derive, plus its `inputs_by_parent` fan-in metadata, and a concrete builder side replaces
-  it. A declared `"opaque"` declares no side and is emitted unchanged. Editing a node's config (renaming a Model Score output column, a banding output) therefore
-  saves the refreshed annotation instead of a stale one the post-save parse check rejects.
-  Injection rewrites already-generated source text in place (see Design rationale), rather than
-  templating the kwarg in from the start.
-- **Instance mappings are persisted, not merely baked into one function body.** An
-  instance emits both `of=...` and its explicit `inputMapping=...` on the
-  decorator, as well as the resolved keyword call to the original function.
-  Parsing therefore restores the mapping metadata needed for a later graph
-  edit or save instead of relying on name heuristics after the first reload.
+  `@pipeline.data_input(config="config/data_input/<name>.json")` on a
+  zero-parameter declaration, or on a `df` hook holding the post-load Polars
+  code. `dataOutput` emits
+  `@pipeline.data_output(config="config/data_output/<name>.json")` on a
+  declaration: persistence happens only through the explicit output-write
+  execution surface, never on import or an ordinary `Pipeline.run()`. Removed
+  `dataSource`/`dataSink` forms are neither emitted nor accepted as codegen
+  node types.
+- **Sidecars stay live.** Nothing from a sidecar is copied into source: not a
+  data path, schema, file type, model class, live-switch mapping or constant
+  value. A sidecar-only edit therefore changes the next standalone run exactly
+  as it changes canvas execution, and a malformed sidecar raises the same
+  validation error in both.
+- **Column contracts only where they add information.** A node's `contract=`
+  keyword is emitted only when it tells the parser something the parser cannot
+  derive offline from the node's configuration: a concrete input or output side
+  that `resolve_parse_time_contract` leaves opaque (a Model Score's feature
+  columns, a declared transform contract), or declared `inputs_by_parent`
+  fan-in metadata. An opaque contract, or one that only repeats what the node's
+  settings already imply, is omitted; an absent contract and `"opaque"` mean the
+  same to every consumer. The contract is re-derived from the current config on
+  every generation: parsing carries a previously generated annotation back onto
+  `config["contract"]`, where it only supplies the sides the builder cannot
+  derive plus its fan-in metadata, and a concrete builder side replaces it.
+  Editing a node's config (renaming a Model Score output column, a banding
+  output) therefore saves the refreshed annotation instead of a stale one the
+  post-save parse check rejects. The keyword is rendered with the rest of the
+  decorator; no generated source is edited after the fact.
+- **Instance mappings are persisted.** An instance is a declaration whose
+  decorator carries `of=...` and its explicit `inputMapping=...`. Parsing
+  therefore restores the mapping metadata needed for a later graph edit or save
+  instead of relying on name heuristics after the first reload.
 - **Polars transforms bind inputs by name only.** A `polars` node's function
   parameters are its logical inputs, one per incoming edge in edge order; `df` is
-  purely the output variable and is never pre-bound to an input. Generated
-  bodies declare `df` as an unbound local, then emit the user's code and the
-  appended `return df`; a same-named preamble global therefore cannot satisfy
-  a missing output assignment. Normally the logical name is the edge-derived
+  purely the output variable and is never pre-bound to an input. The body is the
+  user's code and the appended `return df`. When the code binds `df` nowhere,
+  the body first declares `df: pl.LazyFrame` as an unbound local, so a
+  same-named preamble global cannot satisfy the missing output assignment.
+  Normally the logical name is the edge-derived
   name; a non-instance Polars `inputMapping` may preserve an earlier logical
   name across a structural rewrite. Mapping values must match distinct current
   edge names and the resulting logical names must remain distinct valid Haute
   identifiers, otherwise generation and execution fail loudly. The user starts
-  from the input they mean by name and assigns the result to `df`. `explore`,
-  `external_file`, and the post-code hooks (`data_input`, `rating_step`,
-  `scenario_expander`, `model_score`) keep their single implicit `df` frame;
+  from the input they mean by name and assigns the result to `df`. Configured
+  nodes with code keep their implicit `df` frame (see "Declarations and code");
   only `polars` transforms carry the named-input contract.
-- **User code round-trips.** Text typed into a node's code editor is
-  embedded into the generated function body, wrapped with generated
-  boilerplate (imports, config-driven loads, a trailing `return df`). On the
-  next save, `haute._code_extraction` strips exactly that boilerplate back
-  out before re-wrapping, so repeated edit/save cycles do not accumulate
-  duplicate scaffolding or lose the user's formatting/comments.
+- **User code round-trips.** Text typed into a node's code editor is the
+  function body, followed by the appended `return df` (and, for an External
+  File, preceded by its `df = <first input>` binding). On the next save
+  `haute._code_extraction` removes only those generated statements, the
+  docstring, the transform output declaration and the incomplete placeholder,
+  so repeated edit/save cycles neither accumulate scaffolding nor lose the
+  user's formatting and comments.
+- **Formatted like a hand-written file.** The emitted module is a fixed point of
+  `ruff format` at its defaults (88 columns, double quotes, magic trailing
+  commas): the constructor, decorators, signatures, submodel registrations and
+  connect calls are laid out by `haute._source_layout` the way ruff lays them
+  out; strings take double quotes unless single ones need fewer escapes; the
+  imports are `import haute` then `import polars as pl`, the latter only when
+  the module refers to `pl`; and blank lines follow ruff's rules. A docstring is
+  emitted only for a non-empty description, except that a body with code whose
+  first statement is itself a string keeps an empty docstring so that string
+  stays code. Declarations carry no annotations, so a type checker does not
+  report their `...` bodies as missing return values. Only authored text
+  (preamble, preserved blocks, user code) can make a saved file differ from
+  ruff's layout.
 - **Preserved blocks.** Free-form module text wrapped by column-zero
   `# haute:preserve-start` / `# haute:preserve-end` markers in a pipeline or
   submodel file survives regeneration and is re-emitted after object
@@ -214,8 +263,8 @@ Out of scope (owned by neighbouring components):
   blank lines inside a completed module block are stripped, and unmatched
   module-level starts are ignored.
 - **Fails loudly, never emits a corrupt file.** Every code path that could
-  produce invalid Python — a missing codegen builder, an invalid structured
-  source edit, an unparseable emitted file — raises rather than degrading to a
+  produce invalid Python — a missing codegen builder, an invalid description or
+  literal, an unparseable emitted file — raises rather than degrading to a
   partial or passthrough result. See Failure model.
 
 **Stepped transforms.** When a transform config carries `steps`, `_gen_transform` renders
@@ -232,44 +281,40 @@ of the same steps), so a body in an earlier layout, quoting or spelling of the s
 steps is not an edit.
 
 **Stepped frame surfaces.** When a Data Input, External File, Rating Step, Model Score,
-Scenario Expander or Explore config carries `steps`, its generator renders them in frame mode
-against the surface's eligible input names (every edge name for an External File, the
-empty list otherwise) and places the rendered lines exactly where that surface's
-hand-written code goes: after the generated load, rating, scoring or expansion scaffold,
-after `df = <first input>` for an External File, after `df = <param>` for an Explore
-node (whose step list is emitted as a `steps=` decorator argument, not a sidecar), and
-before `return df`. When the steps
-cannot be rendered it emits the raising placeholder in that position instead, carrying the
-constant `INCOMPLETE_STEPS_MESSAGE`, so a standalone run of the module raises rather than
-running the node's base behaviour unchanged; the placeholder recogniser accepts either
-constant, and the extraction pipeline treats a recognised placeholder as scaffold for every
-matcher kind, so the body reloads as empty code with the steps kept. The parser does not
-require extraction to be a fixpoint of rendering: it compares the extracted body with the
-rendering passed through the same finaliser its kind's extraction ends with.
+Scenario Expander or Explore config carries `steps`, the node is a hook and its generator
+renders the steps in frame mode against the surface's eligible input names (every edge
+name for an External File, the empty list otherwise). The rendered lines are the hook's
+body, after the `df = <first input>` binding for an External File and before
+`return df`; an Explore node's step list is emitted as a `steps=` decorator argument,
+not a sidecar. When the steps cannot be rendered the hook's body is the raising
+placeholder instead, carrying the constant `INCOMPLETE_STEPS_MESSAGE`, so a standalone
+run of the module raises rather than running the node's configured work unchanged; the
+placeholder recogniser accepts either constant and extraction treats a recognised
+placeholder as generated, so the body reloads as empty code with the steps kept. The
+parser does not require extraction to be a fixpoint of rendering: it compares the
+extracted body with the rendering passed through the same finaliser extraction ends
+with.
 
 ## Design rationale
 
-- **Text generation with a structured mutation boundary.** Bodies are built from format
-  strings and f-strings, not `ast.unparse` or a templating engine, so the
-  emitted files read like hand-written Python and are directly diffable by a
-  human reviewer. String-safety for initial interpolation remains explicit in
-  `_safe_str`, `_safe_path`, and `_sanitize_description`. Post-generation
-  source mutation is different: it must pass through the LibCST boundary so
-  comments and untouched formatting have one owner and callers never splice a
-  manually located delimiter.
-- **Contract injection is a post-hoc source rewrite, not part of the
-  template.** Each `_gen_*` builder produces its decorator without knowing
-  about contracts; `_inject_contract_kwarg` parses the generated module and
-  keyword through `haute._python_syntax.inject_decorator_keyword`, changes the
-  first structured `@pipeline.*` or `@submodel.*` decorator call, and emits the
-  updated CST. A column literally named `"price (gbp)"`, a comment containing a
-  decorator, or multiline trivia therefore cannot become an insertion point.
-  This keeps contract computation (which can hit `ConfigError` or need an
-  MLflow round-trip) decoupled from the per-type body templates.
+- **Configured behaviour lives in the decorator.** Canvas execution, preview, trace and
+  deploy never ran generated function bodies: the executor builds each node from its
+  parsed configuration. The bodies existed only so a standalone `Pipeline.run()` could
+  repeat that work, which cost every saved file its loader imports, duplicated config
+  paths, private helper calls and module infrastructure. Performing the work in the
+  decorator removes all of it without changing what either path runs, and leaves the
+  function body as the one place user code lives.
+- **Structured generation and one layout routine.** Builders describe a node — decorator
+  keywords, parameters, docstring, body — and one printer lays the module out the way
+  `ruff format` would (the Wadler/Prettier document algorithm ruff itself follows). Saved
+  files are therefore diffable, lint-clean and stable under the project's formatter, and
+  there is no post-generation source edit: a contract is rendered with the rest of its
+  decorator. String safety for interpolated text remains explicit in the literal printer
+  and `_sanitize_description`.
 - **One proven shared node declaration, not inferred parity.** The modelling
   node's first-connected-input passthrough policy and decorator config keys are
-  declared once in `haute._registry` and consumed by both its runtime and
-  codegen builders. Other node types retain explicit builders until a direct
+  declared once in `haute._registry` and consumed by both the executor builder and the
+  standalone runtime. Other node types retain explicit builders until a direct
   cross-path result test proves that their semantics genuinely match.
 - **Global collision scope, not per-file.** A root-graph node and a
   submodel-child node emit into different `.py` files (legal at the file
@@ -289,14 +334,9 @@ rendering passed through the same finaliser its kind's extraction ends with.
   output column, with inputs opaque unless declared), which is exactly what
   the post-save parse check compares it against. Every other exception —
   misconfiguration, a genuine bug in contract computation — propagates and
-  fails the save; masking those behind `contract="opaque"` would hide a real
+  fails the save; masking it by omitting the contract would hide a real
   defect inside a file that then runs and fails far from the cause.
-- **Optimiser / modelling / explore bodies are genuine first-frame
-  passthroughs.** Their actual computation (solving, training) happens via
-  dedicated API routes, not by running the generated function — so a
-  passthrough body is runtime-equivalent, not a shortcut that silently
-  drops behaviour.
-- **Boilerplate stripping is AST-based, not line-based.** Determining which
+- **Return stripping is AST-based, not line-based.** Determining which
   `return` belongs to the outer node-body scope (vs. a nested `def`/`class`/
   `lambda` the user wrote) cannot be done reliably by string matching —
   comments, string literals containing the word "return," and multi-line
@@ -333,6 +373,14 @@ rendering passed through the same finaliser its kind's extraction ends with.
   are two halves of one round-trip contract; a change to how codegen wraps
   user code generally requires a matching change to how extraction unwraps
   it.
+- **Shares** `src/haute/_source_layout.py` with the Polars step layout
+  (`src/haute/_polars_steps_layout.py`, owned by
+  [pipeline-config](../pipeline-config/low-level.md)): one document printer
+  lays out both the module and the rendered step statements.
+- **Relies on** the standalone runtime in `src/haute/pipeline.py` and
+  `src/haute/_standalone_nodes.py` (owned by
+  [pipeline-config](../pipeline-config/high-level.md)) to perform each
+  configured node's work, so a declaration or hook runs on its own.
 - **Supplies canonical user-code text to** `haute.chunking`: chunk planning
   reads the parsed `dataInput` code field and applies its own row-locality
   proof to the same boilerplate-free text that codegen re-emits.
@@ -360,11 +408,13 @@ execution time on a mis-wired pipeline). Concretely:
   generic transform template.
 - **A config-backed node type has no decorator mapping** → `HauteError` with
   the node id, label, and type. Codegen never substitutes `@pipeline.polars`.
-- **Generated source or the injected keyword is invalid structured Python, the
-  keyword already exists, or no `@pipeline.*`/`@submodel.*` decorator was found** →
-  `HauteError` from `_python_syntax` / `_inject_contract_kwarg`, carrying a
-  stable reason and source position when parsing reached one,
-  enriched with the offending node's id/label/type before re-raising.
+- **An input named `df` on a node whose type accepts code** (Data Input,
+  External File, Rating Step, Model Score, Scenario Expander, Explore) →
+  `ConfigError` naming the node: a declaration whose first parameter is `df`
+  would read as a hook. Rename the upstream node or frame.
+- **A decorator keyword value that has no Python literal form** (anything but
+  strings, numbers, booleans, `None`, lists and string-keyed dicts of those) →
+  `HauteError` from the literal printer; codegen never falls back to `repr`.
 - **Contract computation raises `ConfigError`** (user misconfiguration) or
   any other non-infra exception → propagates unchanged; only `OSError` and
   `mlflow.*` exceptions are downgraded to the offline parse-time contract.
@@ -415,8 +465,9 @@ execution time on a mis-wired pipeline). Concretely:
 
 Generated training scripts build every family's job through the shared training configuration
 (`build_training_job_kwargs`), so a script and a canvas run share configuration, training
-identity and effective parameters, `positive_class` included. Generated Model Score code is
-suffix-agnostic: it selects the configured artifact, and the loader dispatches `.cbm`, `.rsglm`,
+identity and effective parameters, `positive_class` included. A generated Model Score node is
+suffix-agnostic: its decorator scores through `score_from_config`, which selects the configured
+artifact, and the loader dispatches `.cbm`, `.rsglm`,
 `.ubj`, `.lgbm` and `.ebm` to their flavors, so an XGBoost, LightGBM or EBM model scores
 through the same adapter as the GUI; an EBM also needs the feature contract saved beside it.
 

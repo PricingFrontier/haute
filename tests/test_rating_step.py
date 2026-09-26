@@ -6,6 +6,7 @@ import polars as pl
 import pytest
 
 from haute.codegen import graph_to_code
+from haute.errors import ParseError
 from haute.executor import _build_node_fn
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.parser import parse_pipeline_source
@@ -720,8 +721,8 @@ def rating(df: pl.LazyFrame) -> pl.LazyFrame:
         ]
         assert "after_rating" in n.data.config["code"]
 
-    def test_parse_rating_return_from_input_rebases_to_post_rating_df(self, tmp_path):
-        """Handwritten return input.with_columns(...) code must run against rated df."""
+    def test_parse_rating_hook_return_expression_becomes_a_df_assignment(self, tmp_path):
+        """A hook's ``return <expr>`` on the rated df reloads as ``df = <expr>``."""
         rating_config = write_node_config(
             tmp_path,
             NodeType.RATING_STEP,
@@ -738,9 +739,9 @@ import polars as pl
 from haute import pipeline
 
 @pipeline.rating_step(config="{rating_config}")
-def rating(source: pl.LazyFrame) -> pl.LazyFrame:
+def rating(df: pl.LazyFrame) -> pl.LazyFrame:
     """Combined outputs."""
-    return source.with_columns((pl.col("premium") + 5).alias("final_premium"))
+    return df.with_columns((pl.col("premium") + 5).alias("final_premium"))
 '''
         parsed = parse_pipeline_source(code, _base_dir=tmp_path)
         n = parsed.nodes[0]
@@ -750,8 +751,8 @@ def rating(source: pl.LazyFrame) -> pl.LazyFrame:
             'df = df.with_columns((pl.col("premium") + 5).alias("final_premium"))',
         )
 
-    def test_parse_rating_alias_from_input_rebases_to_post_rating_df(self, tmp_path):
-        """Alias patterns from the input parameter also target the rated df."""
+    def test_parse_rating_hook_alias_is_kept_as_authored(self, tmp_path):
+        """An alias of the rated df in a hook round-trips as the user wrote it."""
         rating_config = write_node_config(
             tmp_path,
             NodeType.RATING_STEP,
@@ -768,9 +769,9 @@ import polars as pl
 from haute import pipeline
 
 @pipeline.rating_step(config="{rating_config}")
-def rating(source: pl.LazyFrame) -> pl.LazyFrame:
+def rating(df: pl.LazyFrame) -> pl.LazyFrame:
     """Combined outputs."""
-    out = source.with_columns((pl.col("premium") + 5).alias("final_premium"))
+    out = df.with_columns((pl.col("premium") + 5).alias("final_premium"))
     return out
 '''
         parsed = parse_pipeline_source(code, _base_dir=tmp_path)
@@ -780,6 +781,22 @@ def rating(source: pl.LazyFrame) -> pl.LazyFrame:
             n.data.config["code"],
             'out = df.with_columns((pl.col("premium") + 5).alias("final_premium"))\ndf = out',
         )
+
+    def test_parse_rating_code_that_reads_its_input_is_rejected(self, tmp_path):
+        """Code must take the rated df; a body on the raw input would never run."""
+        rating_config = write_node_config(
+            tmp_path, NodeType.RATING_STEP, "rating", {"tables": [], "combinedOutputs": []}
+        )
+        code = f'''
+import polars as pl
+from haute import pipeline
+
+@pipeline.rating_step(config="{rating_config}")
+def rating(source: pl.LazyFrame) -> pl.LazyFrame:
+    return source.with_columns((pl.col("premium") + 5).alias("final_premium"))
+'''
+        with pytest.raises(ParseError, match="make the first parameter df"):
+            parse_pipeline_source(code, _base_dir=tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1024,8 +1041,9 @@ class TestRatingStepCodegen:
 
         assert rating_node.data.config["code"] == user_code
 
-    def test_generated_rating_function_applies_config_before_user_code(self):
-        """Generated rating/main.py code applies rating config before custom code."""
+    def test_generated_rating_hook_receives_the_rated_frame_as_df(self):
+        """A rating step with code is a hook: its decorator rates, then hands it df."""
+        from haute._codegen_builders import Param
         from haute.codegen import _generate_node_code
 
         node = _rating_node(
@@ -1046,8 +1064,13 @@ class TestRatingStepCodegen:
         )
         generated = _generate_node_code(node, source_names=["quotes"])
 
-        assert "apply_rating_step_from_config" in generated
-        assert generated.index("apply_rating_step_from_config") < generated.index("final_premium")
+        assert generated.decorator == "rating_step"
+        assert generated.keywords == (("config", "config/rating_step/rating.json"),)
+        assert generated.params == (Param("df", "pl.LazyFrame"),)
+        assert generated.returns == "pl.LazyFrame"
+        assert generated.body == (
+            "df = df.with_columns((pl.col('premium') + 5).alias('final_premium'))\nreturn df"
+        )
 
 
 class TestRatingStepCanonicalSidecarIntegration:

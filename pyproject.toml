@@ -530,6 +530,15 @@ disallow_untyped_defs = true
 exclude = ["tests/", "docs/"]
 
 [[tool.mypy.overrides]]
+# The assistant's example pipelines are saved pipeline files, not library code:
+# a node declaration is deliberately unannotated (an annotated `...` body fails
+# mypy's empty-body check), so only their annotated hooks and transforms carry
+# types. Their bodies are still checked.
+module = ["haute.assistant.assets.examples.*"]
+disallow_untyped_defs = false
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
 module = [
     "catboost.*",
     "joblib.*",

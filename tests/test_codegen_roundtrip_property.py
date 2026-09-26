@@ -8,26 +8,26 @@ The stable artifact invariant is source-focused:
   files from the first pass.
 
 Sidecar JSON bytes are intentionally outside the byte-identical assertion.
-The source is the user-edited artifact; sidecars are normalized storage. In
-particular, generated ``contract="opaque"`` annotations can make a parsed
-graph's next sidecar write include an explicit contract that was absent from a
-first-save GUI graph. This file compares source bytes and semantic config
-values after normalization, not sidecar formatting.
+The source is the user-edited artifact; sidecars are normalized storage. This
+file compares source bytes and semantic config values after normalization, not
+sidecar formatting.
 
 Known W5 tensions intentionally scoped here:
 
-* dataInput first-save non-idempotence with opaque contracts: this suite uses
-  explicit ``contract="opaque"`` in capstone fixtures and asserts source
+* declared opaque contracts: the capstone fixtures declare ``contract="opaque"``
+  on every node. An absent contract and ``"opaque"`` mean the same to every
+  consumer, so codegen omits the keyword: an inline node (Polars, Explore, Edge
+  Join) parses back without a contract while a sidecar keeps what it stored.
+  The comparator treats an opaque contract as absent and asserts source
   idempotence, not sidecar byte idempotence.
-* scaffold/docstring observations: generated scaffolding is not user semantic
-  code, but pipeline names and node docstrings/descriptions are. The
-  comparator asserts pipeline names and descriptions exactly, so module-header
-  and function-docstring injection classes are covered by the corpus/property.
-* submodel path interpolation: submodel container nodes are explicitly budgeted
-  out of this root-decorator property. Adversarial submodel *paths* with
-  quotes/backslashes remain a known raw interpolation surface in
-  ``pipeline.submodel("{path}")``; fuzzing that path would be a production bug
-  report, not a harness fallback.
+* docstring observations: the generated statements (docstring, ``return df``,
+  output declaration) are not user semantic code, but pipeline names and node
+  docstrings/descriptions are. The comparator asserts pipeline names and
+  descriptions exactly, so module-header and function-docstring injection
+  classes are covered by the corpus/property.
+* submodel paths: submodel container nodes are explicitly budgeted out of this
+  root-decorator property. Registration paths are printed by the literal
+  printer (``quote_string``) rather than interpolated into a template.
 * Tier-3 ``_parse_decorator_kwargs_regex`` policy: these properties exercise
   generated AST-valid artifacts. Editor-only recovery for manually corrupted
   files is covered by the pipeline recovery tests.
@@ -161,8 +161,8 @@ def _capstone_root_graph(
     * C5: transform and dataInput code boxes use multiline chain assignment.
     * Brace/docstring: descriptions and config strings include braces and
       triple quotes.
-    * Paren scanner: decorator strings include ``(`` and ``)`` before contract
-      injection runs.
+    * Literal printer: decorator strings include ``(``, ``)`` and quotes, which
+      must come back as the same string literal values.
     """
     left = "ui:left-source:7"
     api = "ui/api-input:8"
@@ -610,6 +610,11 @@ def _canonical_config(node_type: NodeType, config: dict[str, Any], remap: dict[s
     normalized = dict(config)
     if normalized.get("code") == "":
         normalized.pop("code")
+    if normalized.get("contract") == "opaque":
+        # An absent contract and "opaque" mean the same to every consumer, so
+        # codegen omits an opaque keyword and an inline node (Polars, Explore,
+        # Edge Join) parses back without one; a sidecar keeps what it stored.
+        normalized.pop("contract")
     if node_type == NodeType.BANDING:
         normalized = expand_banding_config_from_sidecar(normalized)
     if node_type == NodeType.RATING_STEP:

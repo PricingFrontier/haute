@@ -32,8 +32,6 @@ function buildLargeGraphSource(nodeCount: number): string {
   const lines = [
     '"""Large graph used by Playwright drag performance benchmarks."""',
     "",
-    "from pathlib import Path",
-    "",
     "import polars as pl",
     "",
     "import haute",
@@ -42,13 +40,7 @@ function buildLargeGraphSource(nodeCount: number): string {
     "",
     "",
     '@pipeline.data_input(config="config/data_input/raw_rows.json")',
-    "def raw_rows() -> pl.LazyFrame:",
-    "    from haute.graph_utils import resolve_data_input_from_config",
-    "    df = resolve_data_input_from_config(",
-    '        "config/data_input/raw_rows.json",',
-    "        base_dir=Path(__file__).parent,",
-    "    )",
-    "    return df",
+    "def raw_rows(): ...",
     "",
   ]
 

@@ -173,7 +173,7 @@ request node with non-empty function/default/handle identities and an optional
 config reference. Resolution is pure and performs no project I/O.
 
 **`SidecarModel`** (`haute/_sidecar.py`, re-exported by `routes/_helpers.py`) is the typed `.haute.json` schema: `positions:
-dict[str, dict[str, float]]`, `sources: list[str]` (defaults to `["live"]`), `active_source:
+dict[str, dict[str, float]]` (written in key order, so re-saving a graph reloaded in its source file's node order leaves the file unchanged), `sources: list[str]` (defaults to `["live"]`), `active_source:
 str`, and optional `managed_parent: str | None`. `managed_parent` is emitted
 only when the existing child sidecar already proves the same canonical
 project-relative owner, or when explicit Save derives a new definition from

@@ -36,6 +36,7 @@ from haute._ast_helpers import (
     _extract_preamble,
     _extract_preserved_blocks,
     _extract_submodel_meta,
+    _function_body_source,
     _get_decorator_kwargs,
     _get_decorator_node_type,
     _get_docstring,
@@ -43,15 +44,7 @@ from haute._ast_helpers import (
     _is_submodel_node_decorator,
     _strip_docstring,
 )
-from haute._code_extraction import (
-    _extract_external_user_code,
-    _extract_model_score_user_code,
-    _extract_rating_step_user_code,
-    _extract_scenario_expander_user_code,
-    _extract_source_user_code,
-    _extract_user_code,
-    _unwrap_chain_assignment,
-)
+from haute._code_extraction import _unwrap_chain_assignment, extract_user_code
 from haute._config_builder import _build_node_config, _copy_config_keys, _resolve_node_config
 from haute._graph_builders import _build_edges, _build_rf_nodes, _extract_decorated_nodes
 from haute._types import NodeType
@@ -990,31 +983,25 @@ class TestBuildNodeConfigExtended:
         assert config["min_value"] == 0.8
         assert config["stepCount"] == 5
 
-    def test_scenario_expander_config_extracts_user_code_after_boilerplate(self):
-        body = (
-            '    """Expand."""\n'
-            "    df = source\n"
-            '    df = df.filter(pl.col("sv") > 0.9)\n'
-            "    return df"
-        )
+    def test_scenario_expander_config_extracts_hook_code(self):
+        body = '    """Expand."""\n    df = df.filter(pl.col("sv") > 0.9)\n    return df'
         config = _build_node_config(
             NodeType.SCENARIO_EXPANDER,
             {"scenario_expander": True, "stepCount": 5},
             body,
-            ["source"],
+            ["df"],
         )
-        assert "code" in config
-        assert '.filter(pl.col("sv") > 0.9)' in config["code"]
+        assert config["code"] == 'df = df.filter(pl.col("sv") > 0.9)'
 
-    def test_scenario_expander_config_empty_code_without_sentinel(self):
-        body = '    """Expand."""\n    return source'
+    def test_scenario_expander_declaration_has_empty_code(self):
+        body = '    """Expand."""\n    ...'
         config = _build_node_config(
             NodeType.SCENARIO_EXPANDER,
             {"scenario_expander": True, "stepCount": 5},
             body,
             ["source"],
         )
-        assert config.get("code", "") == "df = source"
+        assert config["code"] == ""
 
     def test_optimiser_config(self):
         config = _build_node_config(
@@ -1099,17 +1086,10 @@ class TestBuildNodeConfigExtended:
         )
         assert config["sourceType"] == "run"
 
-    def test_model_score_code_after_scoring_call(self):
-        body = (
-            "    result = score_from_config(\n"
-            "        df,\n"
-            '        config="config/model_scoring/model.json",\n'
-            "    )\n"
-            "    x = 1\n"
-            "    return result"
-        )
-        config = _build_node_config(NodeType.MODEL_SCORE, {}, body, [])
-        assert "x = 1" in config["code"]
+    def test_model_score_hook_code_is_extracted(self):
+        body = "    x = 1\n    df = df.with_columns(pl.lit(x).alias('x'))\n    return df"
+        config = _build_node_config(NodeType.MODEL_SCORE, {}, body, ["df"])
+        assert config["code"] == "x = 1\ndf = df.with_columns(pl.lit(x).alias('x'))"
 
 
 # ===========================================================================
@@ -1259,8 +1239,8 @@ class TestResolveNodeConfig:
         assert node_type == NodeType.DATA_INPUT
         assert loaded["path"] == "data.csv"
 
-    def test_data_input_extracts_code_after_boilerplate(self, tmp_path):
-        """DataInput extracts user code from the function body."""
+    def test_data_input_hook_extracts_its_code(self, tmp_path):
+        """A Data Input ``df`` hook's post-load code becomes the node's code."""
         cfg = {
             "inputType": "file",
             "format": "parquet",
@@ -1273,26 +1253,20 @@ class TestResolveNodeConfig:
         cfg_file = cfg_dir / "my_source.json"
         cfg_file.write_text(json.dumps(cfg))
 
-        body = (
-            '    """Load data."""\n'
-            "    from haute.graph_utils import resolve_data_input_from_config\n"
-            '    df = resolve_data_input_from_config("config/data_input/my_source.json")\n'
-            "    df = df.filter(pl.col('x') > 0)\n"
-            "    return df"
-        )
+        body = '    """Load data."""\n    df = df.filter(pl.col(\'x\') > 0)\n    return df'
         node_type, loaded = _resolve_node_config(
             {"config": "config/data_input/my_source.json"},
             body,
-            [],
-            0,
+            ["df"],
+            1,
             tmp_path,
             explicit_node_type=NodeType.DATA_INPUT,
         )
         assert node_type == NodeType.DATA_INPUT
-        assert "filter" in loaded.get("code", "")
+        assert loaded["code"] == "df = df.filter(pl.col('x') > 0)"
 
     def test_data_input_without_post_code_gives_empty_code(self, tmp_path):
-        """DataInput with only its generated scaffold has empty code."""
+        """A Data Input declaration (its docstring alone) has empty code."""
         cfg = {
             "inputType": "file",
             "format": "parquet",
@@ -1305,12 +1279,7 @@ class TestResolveNodeConfig:
         cfg_file = cfg_dir / "my_source.json"
         cfg_file.write_text(json.dumps(cfg))
 
-        body = (
-            '    """Load data."""\n'
-            "    from haute.graph_utils import resolve_data_input_from_config\n"
-            '    df = resolve_data_input_from_config("config/data_input/my_source.json")\n'
-            "    return df"
-        )
+        body = '    """Load data."""'
         node_type, loaded = _resolve_node_config(
             {"config": "config/data_input/my_source.json"},
             body,
@@ -1347,7 +1316,7 @@ class TestResolveNodeConfig:
         cfg_file = cfg_dir / "my_transform.json"
         cfg_file.write_text("{}")
 
-        body = '    """doc"""\n    df = df.filter(pl.col("x") > 0)\n    return df'
+        body = '    """doc"""\n    ...'
 
         node_type, config = _resolve_node_config(
             {"config": "config/banding/my_transform.json"},
@@ -1358,6 +1327,7 @@ class TestResolveNodeConfig:
             explicit_node_type=NodeType.BANDING,
         )
         assert node_type == NodeType.BANDING
+        assert "code" not in config
 
     def test_does_not_mutate_decorator_kwargs(self):
         """_resolve_node_config must not modify the caller's dict (B21)."""
@@ -1462,19 +1432,19 @@ class TestDedentEdgeCases:
 
 
 # ===========================================================================
-# _extract_user_code — additional edge cases
+# extract_user_code (transforms) — additional edge cases
 # ===========================================================================
 
 
 class TestExtractUserCodeEdgeCases:
     def test_whitespace_only_body(self):
-        assert _extract_user_code("   \n   \n", []) == ""
+        assert extract_user_code("   \n   \n", kind="polars", param_names=[]) == ""
 
     def test_multiline_return(self):
         body = (
             '    """doc"""\n    return (\n        source\n        .filter(pl.col("x") > 0)\n    )'
         )
-        result = _extract_user_code(body, ["source"])
+        result = extract_user_code(body, kind="polars", param_names=["source"])
         assert "source" in result
         assert "filter" in result
 
@@ -1486,20 +1456,32 @@ class TestExtractUserCodeEdgeCases:
             "    df = df.select('b')\n"
             "    return df"
         )
-        result = _extract_user_code(body, ["quotes"])
+        result = extract_user_code(body, kind="polars", param_names=["quotes"])
         assert result == "df = df.rename({'a': 'b'})\ndf = df.select('b')"
         assert "return" not in result
 
     def test_multi_statement_roundtrip_stable(self):
         """Regression: repeated wrap→extract must not accumulate bare 'df'."""
-        from haute._codegen_builders import _wrap_user_code
+        from haute._codegen_builders import _transform_body
 
-        code = "df = df.rename({'a': 'b'})\ndf = df.select('b')"
+        code = "df = quotes.rename({'a': 'b'})\ndf = df.select('b')"
         for _ in range(5):
-            wrapped = _wrap_user_code(code, ["quotes"])
+            wrapped = "".join(f"    {line}\n" for line in _transform_body(code).splitlines())
             body = '    """desc"""\n' + wrapped
-            code = _extract_user_code(body, ["quotes"])
-        assert code == "df = df.rename({'a': 'b'})\ndf = df.select('b')"
+            code = extract_user_code(body, kind="polars", param_names=["quotes"])
+        assert code == "df = quotes.rename({'a': 'b'})\ndf = df.select('b')"
+
+    def test_output_declaration_roundtrip_stable(self):
+        """Code that never binds ``df`` gets the output declaration, which is
+        generated and never accumulates across repeated wrap→extract cycles."""
+        from haute._codegen_builders import _transform_body
+
+        code = "quotes.select('b')"
+        for _ in range(3):
+            wrapped = "".join(f"    {line}\n" for line in _transform_body(code).splitlines())
+            assert wrapped.startswith("    df: pl.LazyFrame\n")
+            code = extract_user_code(wrapped, kind="polars", param_names=["quotes"])
+        assert code == "quotes.select('b')"
 
 
 # ===========================================================================
@@ -1575,9 +1557,6 @@ class TestExtractDecoratedNodes:
             '@pipeline.data_input(config="config/data_input/source.json")\n'
             "def source():\n"
             '    """Load data."""\n'
-            "    from haute.graph_utils import resolve_data_input_from_config\n"
-            "    df = resolve_data_input_from_config('config/data_input/source.json')\n"
-            "    return df\n"
             "\n"
             "@pipeline.polars\n"
             "def transform(source):\n"
@@ -1593,6 +1572,8 @@ class TestExtractDecoratedNodes:
         assert len(nodes) == 2
         assert nodes[0]["func_name"] == "source"
         assert nodes[0]["node_type"] == NodeType.DATA_INPUT
+        assert nodes[0]["description"] == "Load data."
+        assert nodes[0]["config"]["code"] == ""
         assert nodes[1]["func_name"] == "transform"
 
     def test_extracts_submodel_nodes(self):
@@ -1750,50 +1731,26 @@ class TestUnwrapChainAssignment:
 
 
 # ===========================================================================
-# _extract_source_user_code
+# extract_user_code — a Data Input's ``df`` hook (the ``hook`` kind)
 # ===========================================================================
 
 
-class TestExtractSourceUserCode:
-    def test_canonical_loader_is_not_user_code(self):
-        body = (
-            "    from pathlib import Path\n"
-            "    from haute.graph_utils import resolve_data_input_from_config\n"
-            "    df = resolve_data_input_from_config(\n"
-            '        "config/data_input/input.json",\n'
-            "        base_dir=Path(__file__).parent,\n"
-            "    )\n"
-            "    df = df.filter(pl.col('x') > 0)\n"
-            "    return df"
-        )
-        result = _extract_source_user_code(body)
-        assert result == "df = df.filter(pl.col('x') > 0)"
+class TestExtractDataInputHookCode:
+    """A hook generates only its closing ``return df``; the decorator loads the data."""
 
-    def test_canonical_loader_without_post_code_returns_empty(self):
-        body = (
-            "    from pathlib import Path\n"
-            "    from haute.graph_utils import resolve_data_input_from_config\n"
-            "    df = resolve_data_input_from_config(\n"
-            '        "config/data_input/input.json",\n'
-            "        base_dir=Path(__file__).parent,\n"
-            "    )\n"
-            "    return df"
-        )
-        assert _extract_source_user_code(body) == ""
+    def test_post_load_code_is_user_code(self):
+        body = "    df = df.filter(pl.col('x') > 0)\n    return df"
+        assert extract_user_code(body, kind="hook") == "df = df.filter(pl.col('x') > 0)"
 
-    def test_canonical_direct_return_loader_is_not_user_code(self):
-        body = (
-            "    from pathlib import Path\n"
-            "    from haute.graph_utils import resolve_data_input_from_config\n"
-            "    return resolve_data_input_from_config(\n"
-            '        "config/data_input/input.json",\n'
-            "        base_dir=Path(__file__).parent,\n"
-            "    )"
-        )
+    def test_declaration_returns_empty(self):
+        assert extract_user_code('    """Load the quotes."""\n    ...', kind="hook") == ""
 
-        assert _extract_source_user_code(body) == ""
+    def test_bare_closing_return_is_not_user_code(self):
+        assert extract_user_code("    return df", kind="hook") == ""
 
-    def test_project_root_generated_loader_is_not_user_code(self):
+    def test_retired_loader_scaffold_is_user_code(self):
+        """There is no compatibility path: the retired loader chain is not
+        recognised as generated, so it reloads as the user's own code."""
         body = (
             "    from haute._project import get_project_root\n"
             "    from haute.graph_utils import resolve_data_input_from_config\n"
@@ -1805,120 +1762,85 @@ class TestExtractSourceUserCode:
             "    return df"
         )
 
-        assert _extract_source_user_code(body) == ""
+        assert extract_user_code(body, kind="hook") == (
+            "from haute._project import get_project_root\n"
+            "from haute.graph_utils import resolve_data_input_from_config\n"
+            "project_root = get_project_root(_HAUTE_CONFIG_BASE)\n"
+            "df = resolve_data_input_from_config(\n"
+            '    "config/data_input/input.json",\n'
+            "    base_dir=_HAUTE_CONFIG_BASE, project_root=project_root,\n"
+            ")"
+        )
 
 
 # ===========================================================================
-# _extract_scenario_expander_user_code
+# extract_user_code — a Scenario Expander's ``df`` hook
 # ===========================================================================
 
 
 class TestExtractScenarioExpanderUserCode:
     def test_handwritten_first_statement_is_not_mistaken_for_scaffold(self):
         body = "    df = df.filter(pl.col('scenario_value') > 1)\n    return df"
-        result = _extract_scenario_expander_user_code(body, ["quotes"])
+        result = extract_user_code(body, kind="hook", param_names=["df", "quotes"])
         assert result == "df = df.filter(pl.col('scenario_value') > 1)"
 
 
 # ===========================================================================
-# _extract_model_score_user_code
+# extract_user_code — a Model Score's ``df`` hook
 # ===========================================================================
 
 
 class TestExtractModelScoreUserCode:
-    def test_no_sentinel_and_no_score_returns_empty(self):
+    def test_every_statement_before_the_closing_return_is_user_code(self):
+        """Nothing in a hook is anchored on a scoring call: all of it is code."""
         body = "    x = 1\n    return x"
-        result = _extract_model_score_user_code(body)
+        result = extract_user_code(body, kind="hook")
+        assert result == "x = 1\ndf = x"
+
+    def test_declaration_is_not_user_code(self):
+        body = '    """Score the quotes."""'
+        result = extract_user_code(body, kind="hook")
         assert result == ""
 
-    def test_score_to_df_template_return_is_not_user_code(self):
-        body = (
-            "    from pathlib import Path\n"
-            "    from haute.graph_utils import score_from_config\n"
-            "    base = str(Path(__file__).parent)\n"
-            "    df = score_from_config(\n"
-            '        source, config="config/model_scoring/Score.json",\n'
-            "        base_dir=base,\n"
-            "    )\n"
-            "    return df"
-        )
-        result = _extract_model_score_user_code(body)
-        assert result == ""
-
-    def test_score_to_df_template_preserves_only_post_score_code(self):
-        body = (
-            "    from pathlib import Path\n"
-            "    from haute.graph_utils import score_from_config\n"
-            "    base = str(Path(__file__).parent)\n"
-            "    df = score_from_config(\n"
-            '        source, config="config/model_scoring/Score.json",\n'
-            "        base_dir=base,\n"
-            "    )\n"
-            "    df = df.with_columns(double_score=pl.col('prediction') * 2)\n"
-            "    return df"
-        )
-        result = _extract_model_score_user_code(body)
+    def test_hook_preserves_only_its_code(self):
+        body = "    df = df.with_columns(double_score=pl.col('prediction') * 2)\n    return df"
+        result = extract_user_code(body, kind="hook")
         assert result == "df = df.with_columns(double_score=pl.col('prediction') * 2)"
-        assert "score_from_config" not in result
 
 
 # ===========================================================================
-# _extract_rating_step_user_code
+# extract_user_code — a Rating Step's ``df`` hook
 # ===========================================================================
 
 
 class TestExtractRatingStepUserCode:
-    def test_rating_scaffold_is_not_user_code(self):
-        body = (
-            "    from pathlib import Path\n"
-            "    from haute.graph_utils import apply_rating_step_from_config\n"
-            "    base = Path(__file__).parent\n"
-            "    df = apply_rating_step_from_config(\n"
-            '        quotes, "config/rating_step/Rate.json", base_dir=base\n'
-            "    )\n"
-            "    return df"
-        )
-        result = _extract_rating_step_user_code(body, ["quotes"])
-        assert result == ""
+    def test_rating_declaration_is_not_user_code(self):
+        assert extract_user_code("    ...", kind="hook", param_names=["quotes"]) == ""
 
-    def test_rating_post_code_can_reference_original_input_name(self):
+    def test_rating_hook_code_can_reference_another_input(self):
+        """``df`` stands in for the first input; the others keep their names."""
         body = (
-            "    from pathlib import Path\n"
-            "    from haute.graph_utils import apply_rating_step_from_config\n"
-            "    base = Path(__file__).parent\n"
-            "    df = apply_rating_step_from_config(\n"
-            '        quotes, "config/rating_step/Rate.json", base_dir=base\n'
-            "    )\n"
-            "    audit = quotes.select('quote_id')\n"
+            "    audit = regions.select('quote_id')\n"
             "    df = df.join(audit, on='quote_id')\n"
             "    return df"
         )
-        result = _extract_rating_step_user_code(body, ["quotes"])
-        assert "audit = quotes.select('quote_id')" in result
-        assert "apply_rating_step_from_config" not in result
+        result = extract_user_code(body, kind="hook", param_names=["df", "regions"])
+        assert result == "audit = regions.select('quote_id')\ndf = df.join(audit, on='quote_id')"
 
 
 # ===========================================================================
-# _extract_external_user_code
+# extract_user_code — an External File hook (the ``external`` kind)
 # ===========================================================================
 
 
 class TestExtractExternalUserCode:
     def test_empty_body_returns_empty(self):
-        result = _extract_external_user_code("", ["df"])
+        result = extract_user_code("", kind="external", param_names=["model_input"])
         assert result == ""
 
-    def test_canonical_load_is_not_user_code(self):
-        body = (
-            "from pathlib import Path\n"
-            "from haute.graph_utils import load_external_object_from_config\n"
-            "obj = load_external_object_from_config(\n"
-            '    "config/load_file/model.json", base_dir=Path(__file__).parent\n'
-            ")\n"
-            "df = df.limit(10)\n"
-            "return df"
-        )
-        result = _extract_external_user_code(body, ["df"])
+    def test_generated_binding_is_not_user_code(self):
+        body = "df = model_input\ndf = df.limit(10)\nreturn df"
+        result = extract_user_code(body, kind="external", param_names=["model_input"])
         assert result == "df = df.limit(10)"
 
 
@@ -1953,6 +1875,83 @@ class TestExtractFunctionBodiesZeroCov:
 
     def test_empty_source_returns_empty(self):
         assert _extract_function_bodies("", tree=ast.parse("")) == {}
+
+
+# ===========================================================================
+# _function_body_source — a body that starts on the ``def`` line
+# ===========================================================================
+
+
+class TestFunctionBodySource:
+    """A body may share the header's last line: ``def f(): ...`` is a declaration."""
+
+    @staticmethod
+    def _body(source: str) -> str:
+        function = ast.parse(source).body[0]
+        assert isinstance(function, ast.FunctionDef)
+        return _function_body_source(source.splitlines(), function)
+
+    def test_one_line_declaration_body_is_the_ellipsis(self):
+        assert self._body("def sink(quotes): ...\n") == "..."
+
+    def test_multibyte_signature_before_the_body_is_sliced_by_bytes(self):
+        # ``ast`` reports the body's column in UTF-8 bytes, and "é" is two bytes:
+        # slicing by characters would cut into the ``...``.
+        assert self._body("def tarif_été(quotes): ...\n") == "..."
+        assert self._body('def rate(quotes: "données") -> None: ...\n') == "..."
+
+    def test_body_after_a_multi_line_signature(self):
+        assert self._body("def join(\n    base,\n    other,\n): ...\n") == "..."
+
+    def test_one_line_docstring_body(self):
+        assert self._body('def rates(): """Données."""\n') == '"""Données."""'
+
+    def test_statements_sharing_the_def_line(self):
+        assert self._body("def f(): x = 1; return x\n") == "x = 1; return x"
+
+    def test_indented_body_keeps_whole_lines(self):
+        assert self._body("def f(a):\n    x = 1\n    return x\n") == "    x = 1\n    return x"
+
+    def test_extract_function_bodies_slices_one_line_bodies(self):
+        source = "def a(): ...\n\n\ndef b(x):\n    return x\n"
+        assert _extract_function_bodies(source, tree=ast.parse(source)) == {
+            "a": "...",
+            "b": "    return x",
+        }
+
+    def test_one_line_declarations_parse_as_declarations(self, tmp_path):
+        """A one-line declaration, even after a multi-byte name, is not a body."""
+        from haute.parser import parse_pipeline_source
+        from tests.conftest import write_data_input_config, write_node_config
+
+        input_ref = write_data_input_config(tmp_path, "quotes", "quotes.parquet")
+        output_ref = write_node_config(
+            tmp_path,
+            NodeType.DATA_OUTPUT,
+            "sortie",
+            {
+                "outputType": "file",
+                "format": "parquet",
+                "mode": "sink",
+                "path": "out.parquet",
+                "arguments": {},
+            },
+        )
+        source = (
+            "import haute\n\n"
+            'pipeline = haute.Pipeline("one_liners")\n\n\n'
+            f'@pipeline.data_input(config="{input_ref}")\n'
+            "def données(): ...\n\n\n"
+            f'@pipeline.data_output(config="{output_ref}")\n'
+            "def sortie(données): ...\n"
+        )
+
+        graph = parse_pipeline_source(source, source_file="main.py", _base_dir=tmp_path)
+
+        assert graph.node_map["données"].data.nodeType == NodeType.DATA_INPUT
+        assert graph.node_map["données"].data.config["code"] == ""
+        assert graph.node_map["sortie"].data.nodeType == NodeType.DATA_OUTPUT
+        assert [(edge.source, edge.target) for edge in graph.edges] == [("données", "sortie")]
 
 
 # ===========================================================================

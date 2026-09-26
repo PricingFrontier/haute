@@ -16,28 +16,14 @@ Most pricing pipelines have a source, a sequence of transformations, and one
 terminal output:
 
 ```python
-from pathlib import Path as _HautePath
-
-import polars as pl
 import haute
+import polars as pl
 
 pipeline = haute.Pipeline("pricing", description="Short analyst-facing description")
 
-_HAUTE_CONFIG_BASE = _HautePath(__file__).resolve().parent
-
 
 @pipeline.data_input(config="config/data_input/quotes.json")
-def quotes() -> pl.LazyFrame:
-    from haute._project import get_project_root
-    from haute.graph_utils import resolve_data_input_from_config
-
-    project_root = get_project_root(_HAUTE_CONFIG_BASE)
-    df = resolve_data_input_from_config(
-        "config/data_input/quotes.json",
-        base_dir=_HAUTE_CONFIG_BASE,
-        project_root=project_root,
-    )
-    return df
+def quotes(): ...
 
 
 @pipeline.polars
@@ -51,9 +37,28 @@ def enriched(quotes: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @pipeline.output(config="config/quote_response/priced.json")
-def priced(enriched: pl.LazyFrame) -> pl.LazyFrame:
-    return enriched
+def priced(enriched): ...
 ```
+
+Every node type except `polars` is configured: its decorator names its settings
+and performs the node's work (reading the source, scoring, rating, joining,
+assembling the response) when the file runs.  Such a node is a one-line
+declaration whose parameters name its inputs and whose body is `...` (or its
+docstring).  To add post-processing code to a Data Input, Rating Step, Model
+Score, Scenario Expander or Explore node, make its first parameter `df` — the
+frame the node produced — and return the result:
+
+```python
+@pipeline.model_score(config="config/model_scoring/frequency.json")
+def frequency(df: pl.LazyFrame) -> pl.LazyFrame:
+    df = df.with_columns(frequency=pl.col("prediction").clip(0, 5))
+    return df
+```
+
+An External File's code keeps its inputs by name, receives the loaded object
+as the keyword-only `obj`, and starts from `df = <first input>`.  Never call
+Haute's loader or scoring helpers from a function body, and never import from a
+`haute._` module.
 
 This is also the shape produced by `haute init`: its starter pipeline reads
 `config/data_input/raw_rows.json`, enriches the frame with a `polars` stage,

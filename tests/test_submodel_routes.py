@@ -196,6 +196,7 @@ def _dissolve_body(
 
 
 def _write_submodel(path: Path, *, node_name: str = "base_rate") -> None:
+    """Write a definition one folder below the pipeline that registers it."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         f"""import polars as pl
@@ -206,6 +207,7 @@ submodel = haute.Submodel(
     definition_id="pricing-definition",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 
 @submodel.polars
@@ -491,7 +493,6 @@ class TestGetSubmodel:
         modules_dir.mkdir()
         (modules_dir / "pricing.py").write_text(
             """\
-import polars as pl
 import haute
 
 submodel = haute.Submodel(
@@ -499,12 +500,12 @@ submodel = haute.Submodel(
     definition_id="pricing-definition",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 
 
 @submodel.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.scan_parquet("rating-data.parquet")
+def source(): ...
 """,
             encoding="utf-8",
         )
@@ -535,6 +536,7 @@ def source() -> pl.LazyFrame:
             '    definition_id="pricing-definition",\n'
             "    input_ports=[],\n"
             "    output_ports=[],\n"
+            '    pipeline_dir="..",\n'
             ")\n"
             "@submodel.polars\ndef rate() -> pl.LazyFrame:\n    return pl.LazyFrame({'x': [1]})\n",
             encoding="utf-8",
@@ -568,6 +570,7 @@ def source() -> pl.LazyFrame:
             '    definition_id="pricing-definition",\n'
             "    input_ports=[],\n"
             "    output_ports=[],\n"
+            '    pipeline_dir="..",\n'
             ")\n"
             "@submodel.polars\ndef rate() -> pl.LazyFrame:\n    return pl.LazyFrame({'x': [1]})\n",
             encoding="utf-8",

@@ -131,8 +131,9 @@ def test_parser_round_trips_source_port_with_special_chars(tmp_path) -> None:
 
     Adversarial review C2: bare f-string interpolation of the port name
     would emit invalid Python for labels like `a"b` or `back\\slash`.
-    The codegen uses ``json.dumps`` to escape the literal; this test
-    pins that behaviour.
+    The codegen's literal printer escapes the string (and keeps non-ASCII
+    text as written, so the file is saved as UTF-8 like any Python
+    source); this test pins that behaviour.
     """
     from haute.codegen import graph_to_code
     from haute.parser import parse_pipeline_file
@@ -141,7 +142,7 @@ def test_parser_round_trips_source_port_with_special_chars(tmp_path) -> None:
         graph = _minimal_graph_with_sourcehandle(tricky)
         code = graph_to_code(graph, pipeline_name="t")
         py_path = tmp_path / "t.py"
-        py_path.write_text(code)
+        py_path.write_text(code, encoding="utf-8")
         parsed = parse_pipeline_file(py_path)
         matching = [e for e in parsed.edges if e.source == "quotes" and e.target == "processing"]
         assert len(matching) == 1
@@ -182,10 +183,13 @@ def test_generated_multiport_file_executes_as_plain_python(tmp_path) -> None:
     The AST parser never executes generated files, so a `connect()`
     signature that rejects `source_port` only surfaces when the file is
     run as plain Python (`import rating.main`, `Pipeline.run()`). This
-    pins the "everything on disk is plain runnable Python" promise.
+    pins the "everything on disk is plain runnable Python" promise: the
+    saved file plus the sidecars a save writes beside it, which the
+    constant's decorator reads when the file runs on its own.
     """
     import runpy
 
+    from haute._config_io import collect_node_configs
     from haute.codegen import graph_to_code
 
     # A constant source (self-contained, no df input) feeding a polars node,
@@ -216,7 +220,11 @@ def test_generated_multiport_file_executes_as_plain_python(tmp_path) -> None:
     code = graph_to_code(graph, pipeline_name="t")
     assert 'source_port="policies"' in code
     py_path = tmp_path / "t.py"
-    py_path.write_text(code)
+    py_path.write_text(code, encoding="utf-8")
+    for rel_path, content in collect_node_configs(graph).items():
+        sidecar = tmp_path / rel_path
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(content, encoding="utf-8")
 
     ns = runpy.run_path(str(py_path))  # raises TypeError if connect() rejects source_port
     pipeline = ns["pipeline"]

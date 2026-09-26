@@ -1,13 +1,15 @@
 """Tests for codegen injection bug B2 (triple-quote in descriptions).
 
 B2: Node descriptions containing triple quotes must not break generated
-docstrings.  The fix is in ``_sanitize_description`` which replaces ``\"\"\"``
-with ``'''`` so the generated ``\"\"\"{description}\"\"\"`` remains valid Python.
+docstrings.  The fix is in ``_sanitize_description``, which escapes every
+backslash and double quote so the generated ``\"\"\"{description}\"\"\"``
+remains valid Python and reads back as the original description.
 
-Also includes regression tests confirming that curly braces in user-controlled
-values (file paths, table names, etc.) are safe with Python's
-``str.format()`` — values substituted via keyword arguments are NOT
-re-processed by the format engine.
+Also includes regression tests confirming that curly braces and quotes in
+user-controlled values (file paths, table names, column names) are safe:
+config values stay in the JSON sidecars, and decorator keyword values are
+printed by the literal printer, which quotes every string itself — nothing is
+spliced into a format template.
 
 Every test verifies the generated code is syntactically valid via ``ast.parse``.
 """
@@ -22,6 +24,7 @@ import pytest
 
 from haute._codegen_builders import _sanitize_description
 from haute._config_io import collect_node_configs
+from haute._contracts import Contract
 from haute.codegen import (
     _instance_to_code,
     _node_to_code,
@@ -385,7 +388,7 @@ class TestTripleQuoteInjection:
         _ast_parse_node_code(code)
 
     def test_output_node_triple_quote_description(self):
-        """Output node (f-string path) handles triple-quote description."""
+        """Output declaration (the docstring is its whole body) handles triple quotes."""
         node = _make_node(
             "output",
             make_output_config(["a", "b"]),
@@ -396,7 +399,7 @@ class TestTripleQuoteInjection:
         _ast_parse_node_code(code)
 
     def test_model_score_with_user_code_triple_quote_description(self):
-        """Model score with user code (f-string path) handles triple quotes."""
+        """Model score hook (docstring before the user's code) handles triple quotes."""
         node = _make_node(
             "modelScore",
             {
@@ -414,7 +417,7 @@ class TestTripleQuoteInjection:
         _ast_parse_node_code(code)
 
     def test_model_score_without_user_code_triple_quote_description(self):
-        """Model score without user code (.format() path) handles triple quotes."""
+        """Model score declaration (docstring as the body) handles triple quotes."""
         node = _make_node(
             "modelScore",
             {
@@ -537,11 +540,11 @@ class TestTripleQuoteInjection:
 
 
 class TestCurlyBracesInValues:
-    """Verify that curly braces in user values are safe with .format().
+    """Verify that curly braces in user values are safe.
 
-    Python's str.format() processes replacement fields in the TEMPLATE only —
-    values substituted via keyword arguments are NOT re-processed.  These
-    tests document this behavior as a safety net.
+    No value is spliced into a format template: config values stay in the
+    JSON sidecar, and descriptions and user code are printed as they are.
+    These tests document this behavior as a safety net.
     """
 
     def test_path_with_braces_data_input_parquet(self):
@@ -655,7 +658,7 @@ class TestCurlyBracesInValues:
         _assert_sidecar_value("dataInput", node.data.config, "table", "catalog.{env}.table")
 
     def test_description_with_braces(self):
-        """Description containing {braces} in .format() templates."""
+        """Description containing {braces} on a declaration."""
         node = _make_node(
             "dataInput",
             _file_input_config("data.parquet"),
@@ -666,7 +669,7 @@ class TestCurlyBracesInValues:
         assert "{region}" in code
 
     def test_description_with_braces_in_transform(self):
-        """Transform description with {braces} (f-string path)."""
+        """Transform description with {braces} before a code body."""
         node = _make_node(
             "polars",
             {"code": ""},
@@ -846,22 +849,23 @@ class TestDescriptionRegression:
         _compile_node_code(code)
 
     def test_default_description_is_empty(self):
-        """An unset description produces an empty docstring.
+        """An unset description produces no docstring at all.
 
         Post Wave 9D #122: we intentionally do NOT substitute a
         ``<label> node`` placeholder for an empty description, because
         that mutation breaks the round-trip invariant (saved graph
         would come back with a synthetic description the user never
-        typed).  The emitted code still compiles — the docstring is
-        simply ``\"\"\"\"\"\"``.
+        typed).  Nor is an empty ``\"\"\"\"\"\"`` docstring emitted: the
+        function goes straight to its body.
         """
         import ast
 
         node = _make_node("polars", {"code": ""}, label="MyLabel")
         code = _node_to_code(node, source_names=["upstream"])
         _compile_node_code(code)
+        assert '""""""' not in code
         # Wrap the generated node in a minimal pipeline preamble so we
-        # can parse it and verify the docstring is empty.
+        # can parse it and verify there is no docstring.
         wrapper = (
             f"import polars as pl\nimport haute\npipeline = haute.Pipeline('test')\n\n{code}\n"
         )
@@ -869,7 +873,23 @@ class TestDescriptionRegression:
         fn = next(
             n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "MyLabel"
         )
-        assert (ast.get_docstring(fn) or "") == ""
+        assert ast.get_docstring(fn) is None
+
+    def test_code_starting_with_a_string_keeps_an_empty_docstring(self):
+        """Without a description, a leading string in the code would read as a docstring.
+
+        The one empty docstring codegen emits keeps that string as code, so the
+        description stays empty and the code reloads unchanged.
+        """
+        node = _make_node(
+            "polars",
+            {"code": '"""Explain the step."""\ndf = upstream'},
+            label="MyLabel",
+        )
+        code = _node_to_code(node, source_names=["upstream"])
+        _compile_node_code(code)
+        assert '    """"""\n    """Explain the step."""\n    df = upstream\n    return df\n' in code
+        assert _docstring_of(code, "MyLabel") == ""
 
     def test_description_with_newlines(self):
         """Newlines in descriptions are OK inside triple-quoted docstrings."""
@@ -931,26 +951,24 @@ _BRACE_DESCRIPTIONS = [
 class TestBraceDescriptionRoundTrip:
     """5.2: brace sanitization must be idempotent across save/load cycles.
 
-    The description is always substituted into the per-type templates as a
-    ``str.format`` *keyword argument* (or an f-string value) — never spliced
-    into the template text itself — and ``str.format`` does not re-scan
-    substituted values for replacement fields.  Doubling braces in the value
-    therefore lands the doubled braces literally in the emitted docstring;
-    the parser reads them back doubled, and the next save doubles again —
-    the description grows without bound.  These tests pin exact round-trip
-    and multi-cycle byte-stability.
+    The description is printed between triple quotes as it is — never
+    spliced into a format template — so it needs no brace escaping. Doubling
+    braces in the value would land the doubled braces literally in the
+    emitted docstring; the parser would read them back doubled, and the next
+    save would double again — the description growing without bound.  These
+    tests pin exact round-trip and multi-cycle byte-stability.
     """
 
     @pytest.mark.parametrize("description", _BRACE_DESCRIPTIONS)
-    def test_braces_roundtrip_via_fstring_path(self, description: str) -> None:
-        """polars builder (f-string interpolation path)."""
+    def test_braces_roundtrip_in_a_code_body(self, description: str) -> None:
+        """polars transform: the docstring precedes the user's code."""
         node = _make_node("polars", {"code": "df = upstream"}, description=description)
         code = _node_to_code(node, source_names=["upstream"])
         assert _docstring_of(code, "TestNode") == description
 
     @pytest.mark.parametrize("description", _BRACE_DESCRIPTIONS)
-    def test_braces_roundtrip_via_format_template_path(self, description: str) -> None:
-        """dataOutput builder (``str.format`` template path)."""
+    def test_braces_roundtrip_in_a_declaration(self, description: str) -> None:
+        """dataOutput declaration: the docstring is the whole body."""
         node = _make_node(
             "dataOutput",
             _file_output_config("out.parquet", "parquet"),
@@ -1028,8 +1046,8 @@ class TestBraceDescriptionRoundTrip:
 
 
 # ---------------------------------------------------------------------------
-# Remediation 5.4: parens inside string literals must not shift the
-# contract-injection point (production path through _node_to_code).
+# Remediation 5.4: parens inside string literals must not corrupt the
+# decorator (production path through _node_to_code).
 # ---------------------------------------------------------------------------
 
 
@@ -1046,8 +1064,14 @@ def _decorator_kwargs(code: str, func_name: str) -> dict[str, ast.expr]:
 class TestParenInsideStringDecoratorKwargs:
     """5.4: user strings containing ``(`` / ``)`` in decorator kwargs must not
     corrupt the emission.  The polars builder keeps its decorator inline
-    (no config-file rewrite), so ``selected_columns`` entries reach the
-    contract-injection paren scanner verbatim.
+    (no config-file rewrite), so ``selected_columns`` entries — and the
+    column names of a declared contract — reach the decorator verbatim.
+
+    A contract keyword was once spliced into the printed decorator by a paren
+    scanner that strings like these misled. The literal printer now quotes
+    every string itself and the contract keyword, present only when it adds
+    information (a declared transform contract, never an opaque one), is
+    rendered with the rest of the decorator.
     """
 
     def test_close_paren_smiley_in_selected_columns(self) -> None:
@@ -1057,7 +1081,9 @@ class TestParenInsideStringDecoratorKwargs:
         code = _node_to_code(node, source_names=["upstream"])
         kwargs = _decorator_kwargs(code, "TestNode")
         assert ast.literal_eval(kwargs["selected_columns"]) == [":)"]
-        assert "contract" in kwargs
+        # The derived contract is opaque, so no contract keyword is emitted.
+        assert "contract" not in kwargs
+        assert code.startswith('@pipeline.polars(selected_columns=[":)"])\n')
 
     def test_balanced_parens_in_selected_columns(self) -> None:
         node = _make_node(
@@ -1067,16 +1093,27 @@ class TestParenInsideStringDecoratorKwargs:
         code = _node_to_code(node, source_names=["upstream"])
         kwargs = _decorator_kwargs(code, "TestNode")
         assert ast.literal_eval(kwargs["selected_columns"]) == ["price (gbp)"]
-        assert "contract" in kwargs
+        assert "contract" not in kwargs
 
     def test_unbalanced_open_paren_in_selected_columns(self) -> None:
         """A lone ``(`` inside a string made the scanner run past the real
         closing paren into the function body."""
-        node = _make_node("polars", {"code": "df = upstream", "selected_columns": ["col("]})
+        node = _make_node(
+            "polars",
+            {
+                "code": "df = upstream",
+                "selected_columns": ["col("],
+                "contract": {"inputs": ["col("], "outputs": ["col)"]},
+            },
+        )
         code = _node_to_code(node, source_names=["upstream"])
         kwargs = _decorator_kwargs(code, "TestNode")
         assert ast.literal_eval(kwargs["selected_columns"]) == ["col("]
-        assert "contract" in kwargs
+        assert ast.literal_eval(kwargs["contract"]) == {"inputs": ["col("], "outputs": ["col)"]}
+        assert code.startswith(
+            '@pipeline.polars(\n    selected_columns=["col("], '
+            'contract={"inputs": ["col("], "outputs": ["col)"]}\n)\n'
+        )
 
     def test_open_paren_column_with_smiley_body(self) -> None:
         """The review's example: unbalanced decorator string + a body string
@@ -1085,18 +1122,24 @@ class TestParenInsideStringDecoratorKwargs:
         body = 'df = df.filter(pl.col("a") == ":)")'
         node = _make_node(
             "polars",
-            {"code": body, "selected_columns": ["a("]},
+            {
+                "code": body,
+                "selected_columns": ["a("],
+                "contract": {"inputs": ["a("], "outputs": ['b " :)']},
+            },
         )
         code = _node_to_code(node, source_names=["upstream"])
         kwargs = _decorator_kwargs(code, "TestNode")
         assert ast.literal_eval(kwargs["selected_columns"]) == ["a("]
-        assert "contract" in kwargs
+        assert ast.literal_eval(kwargs["contract"]) == {"inputs": ["a("], "outputs": ['b " :)']}
         # The body must survive verbatim.
-        assert 'df = df.filter(pl.col("a") == ":)")' in code
+        assert '    df = df.filter(pl.col("a") == ":)")\n    return df\n' in code
 
     def test_paren_strings_roundtrip_through_parser(self, tmp_path: Path) -> None:
         """Full cycle: the emitted file with paren-bearing strings parses and
-        the selected_columns survive a save/load cycle unchanged."""
+        the selected_columns and declared contract survive a save/load cycle
+        unchanged."""
+        declared = {"inputs": [":)", "a("], "outputs": ["price (gbp)"]}
         graph = _g(
             {
                 "nodes": [
@@ -1116,6 +1159,7 @@ class TestParenInsideStringDecoratorKwargs:
                             "config": {
                                 "code": "df = df.drop_nulls()",
                                 "selected_columns": [":)", "price (gbp)", "a("],
+                                "contract": declared,
                             },
                         },
                     },
@@ -1132,3 +1176,8 @@ class TestParenInsideStringDecoratorKwargs:
         parsed = parse_pipeline_source(code, source_file="cycle.py", _base_dir=tmp_path)
         pick = next(n for n in parsed.nodes if n.data.label == "Pick")
         assert pick.data.config.get("selected_columns") == [":)", "price (gbp)", "a("]
+        assert Contract.from_user_declared(
+            pick.data.config.get("contract")
+        ) == Contract.from_user_declared(declared)
+        # A second save of the parsed graph is byte-identical.
+        assert graph_to_code(parsed, pipeline_name="cycle") == code

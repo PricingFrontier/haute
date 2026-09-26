@@ -35,14 +35,15 @@ from typing import TYPE_CHECKING, Any, Literal
 from haute._types import MODELLING_CONFIG_KEYS, NodeType
 
 if TYPE_CHECKING:
+    from haute._codegen_builders import NodeSource
     from haute._types import GraphNode
 
 #: Exec-side builder signature: ``(NodeBuildContext) -> (func_name, fn, is_source)``.
 #: The context type is declared in ``_builders.py`` to avoid a circular import.
 ExecFn = Callable[..., tuple[str, Callable[..., Any], bool]]
 
-#: Codegen-side builder signature: ``(node, source_names) -> generated-source-str``.
-CodegenFn = Callable[["GraphNode", list[str]], str]
+#: Codegen-side builder signature: ``(node, source_names) -> NodeSource``.
+CodegenFn = Callable[["GraphNode", list[str]], "NodeSource"]
 
 #: Declared recompute cost for a NodeType.
 RecomputeCost = Literal["cheap", "costly", "code", "source"]
@@ -95,11 +96,11 @@ class NodeRegistryEntry:
     #: preview, dataOutput, submodel). Set on the EXEC side at registration.
     #:
     #: The invariant :func:`validate_registry_complete` enforces at import:
-    #: a behavioural type's codegen body must NOT be a bare
-    #: ``return {first_param}`` passthrough.  This makes a saved standalone
-    #: ``.py`` that silently no-ops for a stateful node UNREPRESENTABLE — the
-    #: codegen twin must route through a shared ``apply_*_from_config`` helper
-    #: (the same one the executor calls), so canvas and file cannot diverge.
+    #: a behavioural type is never one of the standalone runtime's passthrough
+    #: types. This makes a saved ``.py`` whose standalone run silently no-ops
+    #: for a stateful node UNREPRESENTABLE — its decorator must route through
+    #: the shared ``apply_*_from_config`` helper the executor calls, so canvas
+    #: and file cannot diverge.
     is_behavioural: bool = False
     #: Declared recompute cost for this NodeType ("cheap", "costly", "code",
     #: or "source"). Set on the EXEC side at registration; enforced by
@@ -140,7 +141,7 @@ def register_exec(
     config dict.  Used by the checkpoint projection pass to avoid writing
     unneeded columns to intermediate parquet files.
 
-    *is_behavioural* marks a stateful-apply node whose codegen body must not
+    *is_behavioural* marks a stateful-apply node whose standalone run must not
     be a bare passthrough — enforced by :func:`validate_registry_complete`.
 
     *recompute_cost* declares whether recomputing this builder is cheap,
@@ -236,10 +237,10 @@ def validate_registry_complete() -> None:
     2. Every NodeType has a column contract (previously optional yet
        dereferenced as mandatory at runtime — a missing one used to pass
        import validation and blow up later).
-    3. Every *behavioural* NodeType's codegen body is not a bare
-       ``return {first_param}`` passthrough — so a saved standalone ``.py``
-       cannot silently no-op for a stateful node.  This is what forces the
-       codegen twin through a shared ``apply_*_from_config`` helper.
+    3. No *behavioural* NodeType is a standalone passthrough — so a saved
+       ``.py`` run on its own cannot silently no-op for a stateful node.  This
+       is what forces its decorator through a shared ``apply_*_from_config``
+       helper.
 
     Raises ``RuntimeError`` naming the offending NodeType(s).
     """
@@ -267,58 +268,31 @@ def validate_registry_complete() -> None:
             f"  Missing cost:    {[n.value for n in missing_cost]}"
         )
 
-    _validate_behavioural_bodies_not_passthrough()
+    _validate_behavioural_types_not_standalone_passthrough()
 
 
-def _validate_behavioural_bodies_not_passthrough() -> None:
-    """Assert no behavioural NodeType emits a bare passthrough codegen body.
+def _validate_behavioural_types_not_standalone_passthrough() -> None:
+    """Assert no behavioural NodeType is passed through by a standalone run.
 
-    A behavioural (stateful-apply) node whose generated function body is
-    just ``return <param>`` would silently no-op under a standalone
-    ``pipeline.run()`` while the canvas executor applies the real transform.
-    We probe each behavioural type's codegen builder on a minimal node and
-    fail loudly at import if any return statement is a bare parameter — the
-    structural guarantee that stateful codegen routes through a shared
-    ``apply_*_from_config`` helper (returning a ``Call`` or a local, never a
-    raw input frame).
+    A behavioural (stateful-apply) node that a standalone ``pipeline.run()``
+    passed straight through would silently no-op while the canvas executor
+    applies the real transform. The standalone runtime lists the types it
+    passes through; none of them may be behavioural.
     """
-    import ast
+    from haute._standalone_nodes import STANDALONE_PASSTHROUGH_TYPES
 
-    from haute._types import GraphNode, NodeData
-
-    probe_source = "_probe_src"
-    offenders: list[str] = []
-    for nt in NodeType:
-        entry = NODE_REGISTRY.get(nt)
-        if entry is None or not entry.is_behavioural or entry.codegen is None:
-            continue
-        node = GraphNode(id=f"_probe_{nt.value}", data=NodeData(label="Probe", nodeType=nt))
-        code = entry.codegen(node, [probe_source])
-        if _codegen_body_is_bare_passthrough(ast.parse(code)):
-            offenders.append(nt.value)
+    offenders = sorted(
+        nt.value
+        for nt in STANDALONE_PASSTHROUGH_TYPES
+        if (entry := NODE_REGISTRY.get(nt)) is not None and entry.is_behavioural
+    )
     if offenders:
         raise RuntimeError(
-            "Behavioural NodeType(s) emit a bare `return {first}` passthrough "
-            "codegen body, which would silently no-op in a standalone "
-            "pipeline.run() while the executor applies the real transform. "
-            "Route the codegen body through the shared apply_*_from_config "
-            f"helper (the executor's twin):\n  {offenders}"
+            "Behavioural NodeType(s) are passed straight through by a standalone "
+            "pipeline.run(), which would silently no-op while the executor applies "
+            "the real transform. Route them through the shared apply_*_from_config "
+            f"helper (the executor's twin): {offenders}"
         )
-
-
-def _codegen_body_is_bare_passthrough(tree: Any) -> bool:
-    """Return True if the sole generated function returns a bare parameter."""
-    import ast
-
-    for fn in ast.walk(tree):
-        if not isinstance(fn, ast.FunctionDef):
-            continue
-        params = {arg.arg for arg in fn.args.args}
-        for stmt in ast.walk(fn):
-            if isinstance(stmt, ast.Return) and isinstance(stmt.value, ast.Name):
-                if stmt.value.id in params:
-                    return True
-    return False
 
 
 def ensure_registry_ready() -> None:

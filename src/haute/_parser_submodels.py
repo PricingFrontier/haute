@@ -32,6 +32,7 @@ from haute._graph_builders import (
 from haute._graph_utils import _edge_id, _sanitize_func_name
 from haute._parser_conservation import assert_parser_structure_conserved
 from haute._submodel_instances import rewrite_submodel_alias_references
+from haute._submodel_paths import is_pipeline_dir
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -235,15 +236,8 @@ def extract_submodel_registrations(tree: ast.Module) -> list[SubmodelRegistratio
     return registrations
 
 
-def _extract_definition_contract(
-    tree: ast.Module,
-) -> tuple[
-    str,
-    list[SubmodelInputPort],
-    list[SubmodelOutputPort],
-]:
-    """Return the required literal identity and public ports."""
-    constructor: ast.Call | None = None
+def _submodel_constructor(tree: ast.Module) -> ast.Call:
+    """The module-level ``submodel = haute.Submodel(...)`` call."""
     for node in ast.iter_child_nodes(tree):
         if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue
@@ -253,11 +247,66 @@ def _extract_definition_contract(
             and target.id == "submodel"
             and isinstance(node.value, ast.Call)
         ):
-            constructor = node.value
-            break
-    if constructor is None:
-        raise ParseError("Submodel source must assign a haute.Submodel constructor.")
+            return node.value
+    raise ParseError("Submodel source must assign a haute.Submodel constructor.")
 
+
+def _validate_pipeline_dir(tree: ast.Module, source_file: str, base_dir: Path | None) -> None:
+    """Check that the constructor's ``pipeline_dir`` leads to the registering pipeline.
+
+    A standalone run resolves the file's ``config=`` paths from there, so a
+    value that disagrees with where the file sits fails here rather than
+    reading another pipeline's sidecars.
+    """
+    keywords = [kw for kw in _submodel_constructor(tree).keywords if kw.arg == "pipeline_dir"]
+    if len(keywords) > 1:
+        raise ParseError("Submodel constructor contains a duplicate keyword.", field="pipeline_dir")
+    value: object = "."
+    if keywords:
+        try:
+            value = ast.literal_eval(keywords[0].value)
+        except (SyntaxError, ValueError) as exc:
+            raise ParseError(
+                "Submodel pipeline_dir must be a literal value.",
+                field="pipeline_dir",
+                line=getattr(keywords[0].value, "lineno", None),
+            ) from exc
+    if not is_pipeline_dir(value):
+        raise ParseError(
+            "Submodel pipeline_dir must be '..' once per folder between this file and the "
+            "pipeline that registers it (for example '..' or '../..').",
+            field="pipeline_dir",
+            value=repr(value),
+        )
+    if not source_file or base_dir is None:
+        return
+    source_path = Path(source_file)
+    if not source_path.is_absolute():
+        source_path = base_dir / source_path
+    try:
+        folders = source_path.resolve().parent.relative_to(base_dir.resolve()).parts
+    except ValueError:
+        return
+    expected = "/".join([".."] * len(folders)) or "."
+    if value != expected:
+        raise ParseError(
+            f"Submodel pipeline_dir is {value!r}, but the pipeline that registers this file "
+            f"is {expected!r} from it; its config= paths would resolve in the wrong folder.",
+            field="pipeline_dir",
+            source_file=source_file,
+            expected=expected,
+        )
+
+
+def _extract_definition_contract(
+    tree: ast.Module,
+) -> tuple[
+    str,
+    list[SubmodelInputPort],
+    list[SubmodelOutputPort],
+]:
+    """Return the required literal identity and public ports."""
+    constructor = _submodel_constructor(tree)
     values: dict[str, object] = {}
     for keyword in constructor.keywords:
         if keyword.arg == "outputs":
@@ -346,7 +395,9 @@ def parse_submodel_source(
 ) -> PipelineGraph:
     """Parse submodel source code and return a PipelineGraph.
 
-    *_base_dir* is the project root for resolving ``config=`` references.
+    *_base_dir* is the directory of the pipeline that registers the file: its
+    ``config=`` references resolve there, and the constructor's ``pipeline_dir``
+    must lead there from the file.
     """
 
     try:
@@ -418,6 +469,7 @@ def parse_submodel_source(
         graph._parser_input_ports,
         graph._parser_output_ports,
     ) = _extract_definition_contract(tree)
+    _validate_pipeline_dir(tree, source_file, _base_dir)
     return graph
 
 

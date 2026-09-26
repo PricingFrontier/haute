@@ -8,21 +8,11 @@ pipeline = haute.Pipeline("reference_join", description="Synthetic reference-joi
 
 
 @pipeline.data_input(config="config/quotes.json")
-def quotes() -> pl.LazyFrame:
-    from pathlib import Path
-
-    from haute.graph_utils import resolve_data_input_from_config
-
-    return resolve_data_input_from_config("config/quotes.json", base_dir=Path(__file__).parent)
+def quotes(): ...
 
 
 @pipeline.data_input(config="config/regions.json")
-def regions() -> pl.LazyFrame:
-    from pathlib import Path
-
-    from haute.graph_utils import resolve_data_input_from_config
-
-    return resolve_data_input_from_config("config/regions.json", base_dir=Path(__file__).parent)
+def regions(): ...
 
 
 @pipeline.edge_join(
@@ -31,8 +21,7 @@ def regions() -> pl.LazyFrame:
     right_on=["region"],
     validate="m:1",
 )
-def joined(quotes: pl.LazyFrame, regions: pl.LazyFrame) -> pl.LazyFrame:
-    return quotes.join(regions, on="region", how="left")
+def joined(quotes, regions): ...
 
 
 @pipeline.polars
@@ -43,8 +32,7 @@ def ordered(joined: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @pipeline.output(config="config/output.json")
-def response(ordered: pl.LazyFrame) -> pl.LazyFrame:
-    return ordered
+def response(ordered): ...
 
 
 pipeline.connect("quotes", "joined", target_port="base")

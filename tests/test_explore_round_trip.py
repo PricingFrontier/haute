@@ -421,7 +421,7 @@ def test_shared_pivot_formulas_round_trip_once_with_multiple_selections(tmp_path
     _write_configs(graph, tmp_path)
 
     assert code.index("pivot_formulas=") < code.index("pivots=")
-    assert code.count("'expression': 'pl.col(\"claims\").sum() / 100'") == 1
+    assert code.count('"expression": \'pl.col("claims").sum() / 100\'') == 1
     parsed = parse_pipeline_source(
         code, source_file=str(tmp_path / "pipeline.py"), _base_dir=tmp_path
     )

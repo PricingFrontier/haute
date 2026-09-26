@@ -872,7 +872,8 @@ and `Reset node` as the destructive alternative. Submodels, instances, unknown
 types and blocked nodes cannot reset or recover. `PipelineRepairTarget.action` chooses the dialog
 transport and confirmation labels. Reset explicitly warns that settings/custom
 code are replaced and configuration may be needed; recover explains that valid
-settings and code are retained and remaining gaps surface as completeness. The
+settings and code are retained, that a function body the node never runs is replaced
+and listed in the summary, and that remaining gaps surface as completeness. The
 palette and reset service share `src/haute/node_defaults.json`. Healthy-node
 panel headers carry no recovery affordance.
 

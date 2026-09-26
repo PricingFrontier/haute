@@ -18,7 +18,7 @@ def _legacy_demo(root: Path) -> Path:
         "import haute\nimport polars as pl\n\n"
         'submodel = haute.Submodel("Inputs", definition_id="Inputs", input_ports=[], '
         'output_ports=[{"portId": "output_1", "label": "live_switch", '
-        '"source": {"nodeId": "live_switch", "handleId": None}}])\n\n'
+        '"source": {"nodeId": "live_switch", "handleId": None}}], pipeline_dir="..")\n\n'
         "@submodel.polars\ndef live_switch():\n"
         '    df = pl.LazyFrame({"premium": [1]})\n    return df\n',
         encoding="utf-8",
@@ -42,15 +42,18 @@ def _legacy_demo(root: Path) -> Path:
 
 
 def _broken_constant(root: Path, *, prefix: str = "") -> Path:
-    """A constant whose config sidecar is malformed: reset rewrites main.py and custom.json."""
+    """A constant whose config sidecar is malformed: reset rewrites main.py and custom.json.
+
+    The declaration is spelled with ``pass``, so regenerating it as the
+    canonical ``def source(): ...`` changes main.py too.
+    """
     (root / "haute.toml").write_text('[project]\nname = "demo"\n')
     (root / "custom.json").write_text("{broken json")
     parent = root / "main.py"
     parent.write_text(
-        prefix + "import haute\nimport polars as pl\nfrom pathlib import Path\n"
-        "_HAUTE_CONFIG_BASE = Path(__file__).resolve().parent\n"
+        prefix + "import haute\nimport polars as pl\n"
         'pipeline = haute.Pipeline("demo")\n'
-        '@pipeline.constant(config="custom.json")\ndef source():\n    return None\n',
+        '@pipeline.constant(config="custom.json")\ndef source():\n    pass\n',
         encoding="utf-8",
         newline="\n",
     )
@@ -70,7 +73,8 @@ def _canonical_demo(root: Path, *, legacy_port: bool = False) -> Path:
     child.write_text(
         "import haute\nimport polars as pl\n\n"
         'submodel = haute.Submodel("Inputs", definition_id="Inputs", input_ports=[], '
-        f'output_ports=[{port}"source": {{"nodeId": "live_switch", "handleId": None}}}}])\n\n'
+        f'output_ports=[{port}"source": {{"nodeId": "live_switch", "handleId": None}}}}], '
+        'pipeline_dir="..")\n\n'
         "@submodel.polars\ndef live_switch():\n"
         '    df = pl.LazyFrame({"premium": [1]})\n    return df\n',
         encoding="utf-8",
@@ -211,16 +215,18 @@ def test_reset_broken_config_uses_palette_defaults_and_retains_reference(tmp_pat
     config.write_text("{broken json")
     parent = tmp_path / "main.py"
     parent.write_text(
-        "import haute\nimport polars as pl\nfrom pathlib import Path\n"
-        "_HAUTE_CONFIG_BASE = Path(__file__).resolve().parent\n"
-        'pipeline = haute.Pipeline("demo")\n'
-        '@pipeline.constant(config="custom.json")\ndef source():\n    return None\n'
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n'
+        '@pipeline.constant(config="custom.json")\ndef source():\n    pass\n'
     )
     request = _request(tmp_path, "source", "reset")
     result = _apply(tmp_path, request)
     assert result.document.load_status == "ready"
-    assert "custom.json" in parent.read_text()
-    assert "source" in parent.read_text()
+    # The node is regenerated as a declaration on its authored reference; the
+    # module gains no config-base binding or other infrastructure.
+    assert parent.read_text() == (
+        'import haute\nimport polars as pl\npipeline = haute.Pipeline("demo")\n'
+        '@pipeline.constant(config="custom.json")\ndef source(): ...\n'
+    )
     assert json.loads(config.read_text()) == {"values": [{"name": "constant_1", "value": "1.0"}]}
 
 
@@ -274,14 +280,13 @@ def test_config_reset_ownership_and_required_settings(tmp_path, case):
     kind = "data_input" if case == "required_setting" else "constant"
     path.write_text(
         'import haute\nimport polars as pl\npipeline=haute.Pipeline("demo")\n'
-        f'@pipeline.{kind}(config="custom.json")\ndef source():\n    return None\n'
+        f'@pipeline.{kind}(config="custom.json")\ndef source(): ...\n'
     )
     if case != "missing":
         (tmp_path / "custom.json").write_text("{bad json")
     if case == "shared":
         path.write_text(
-            path.read_text()
-            + '@pipeline.constant(config="custom.json")\ndef other():\n    return None\n'
+            path.read_text() + '@pipeline.constant(config="custom.json")\ndef other(): ...\n'
         )
     request = _request(tmp_path, "source", "reset")
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
@@ -380,7 +385,8 @@ def test_recover_retains_valid_settings_and_reports_outcomes(tmp_path):
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     (tmp_path / "main.py").write_text(
         'import haute\nimport polars as pl\npipeline=haute.Pipeline("demo")\n'
-        '@pipeline.data_input(config="in.json")\ndef source():\n'
+        '@pipeline.data_input(config="in.json")\n'
+        "def source(df: pl.LazyFrame) -> pl.LazyFrame:\n"
         '    df = df.filter(pl.col("premium") > 1234)\n    return df\n'
     )
     (tmp_path / "in.json").write_text(
@@ -429,26 +435,25 @@ def test_recover_regenerates_a_stale_contract_annotation(tmp_path):
     """A factor edited back to a draft leaves the saved annotation promising a
     column the node no longer creates, so the node cannot load. Recover rebuilds
     the node from its config file: the annotation is derived from the recovered
-    settings rather than carried forward, and no stale copy is left in the sidecar."""
+    settings rather than carried forward. Those settings imply their contract,
+    so the regenerated decorator carries none, and no stale copy is left in the
+    sidecar."""
+    from haute._config_builder import resolve_parse_time_contract
     from haute._pipeline_repair import build_recover_unavailable_node_plan
+    from haute._types import NodeType
 
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     (tmp_path / "main.py").write_text(
-        "from pathlib import Path as _HautePath\n\nimport polars as pl\nimport haute\n\n"
-        'pipeline = haute.Pipeline("demo")\n\n'
-        "_HAUTE_CONFIG_BASE = _HautePath(__file__).resolve().parent\n\n\n"
-        '@pipeline.polars(contract="opaque")\n'
+        'import haute\nimport polars as pl\n\npipeline = haute.Pipeline("demo")\n\n\n'
+        "@pipeline.polars\n"
         "def source() -> pl.LazyFrame:\n"
         '    df = pl.LazyFrame({"cover": ["comp"]})\n    return df\n\n\n'
-        '@pipeline.banding(config="config/banding/band.json", '
-        "contract={'inputs': ['cover'], 'outputs': ['cover_band']})\n"
-        "def band(source: pl.LazyFrame) -> pl.LazyFrame:\n"
-        '    """"""\n'
-        "    from haute.graph_utils import apply_banding_from_config\n"
-        "    base = _HAUTE_CONFIG_BASE\n"
-        '    df = apply_banding_from_config(source, "config/banding/band.json", base_dir=base)\n'
-        "    return df\n\n\n"
-        'pipeline.connect("source", "band")\n',
+        "@pipeline.banding(\n"
+        '    config="config/banding/band.json",\n'
+        '    contract={"inputs": ["cover"], "outputs": ["cover_band"]},\n'
+        ")\n"
+        "def band(source): ...\n\n\n"
+        '# Wire nodes together - edges define data flow\npipeline.connect("source", "band")\n',
         encoding="utf-8",
         newline="\n",
     )
@@ -474,8 +479,13 @@ def test_recover_regenerates_a_stale_contract_annotation(tmp_path):
     result = _apply(tmp_path, request)
 
     assert result.document.load_status == "ready"
+    source = (tmp_path / "main.py").read_text(encoding="utf-8")
+    assert '@pipeline.banding(config="config/banding/band.json")\ndef band(source): ...\n' in source
+    assert "cover_band" not in source
     node = next(item for item in result.document.nodes if item.authored_id == "band")
-    assert (node.config or {})["contract"] == {"inputs": [], "outputs": []}
+    assert "contract" not in (node.config or {})
+    derived = resolve_parse_time_contract(NodeType.BANDING, node.config or {})
+    assert (derived.inputs, derived.outputs) == (frozenset(), frozenset())
     assert json.loads(sidecar.read_text()) == {"factors": [draft]}
 
 
@@ -559,7 +569,7 @@ def test_recover_empty_locator_applies_as_incomplete(tmp_path):
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     (tmp_path / "main.py").write_text(
         'import haute\nimport polars as pl\npipeline=haute.Pipeline("demo")\n'
-        '@pipeline.data_input(config="in.json")\ndef source():\n    return None\n'
+        '@pipeline.data_input(config="in.json")\ndef source(): ...\n'
     )
     (tmp_path / "in.json").write_text(
         json.dumps(
@@ -596,7 +606,7 @@ def test_recover_refuses_unreadable_config_sidecars(tmp_path):
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     (tmp_path / "main.py").write_text(
         'import haute\nimport polars as pl\npipeline=haute.Pipeline("demo")\n'
-        '@pipeline.constant(config="custom.json")\ndef source():\n    return None\n'
+        '@pipeline.constant(config="custom.json")\ndef source(): ...\n'
     )
     (tmp_path / "custom.json").write_text("{bad json")
     request = _request(tmp_path, "source", "recover")
@@ -606,15 +616,32 @@ def test_recover_refuses_unreadable_config_sidecars(tmp_path):
     assert {p: p.read_bytes() for p in before} == before
 
 
-def test_recover_rejects_custom_body_for_non_code_types(tmp_path):
-    from haute._pipeline_repair import PipelineRepairError, build_recover_unavailable_node_plan
+_OUTPUT_CONFIG = {
+    "outputType": "file",
+    "format": "parquet",
+    "mode": "sink",
+    "path": "out.parquet",
+    "arguments": {},
+}
 
+
+def _removed_code_change(result):
+    changes = [change for change in result.field_changes if change.path == "/code"]
+    assert [change.outcome for change in changes] == ["removed"]
+    return changes[0]
+
+
+def test_recover_replaces_a_body_a_type_without_code_never_runs(tmp_path):
+    # The generated form before node declarations: a Data Output that returns
+    # its input. The type carries no code, so the body has no place to go;
+    # recover keeps the settings, regenerates the declaration and says so.
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     (tmp_path / "main.py").write_text(
         'import haute\nimport polars as pl\npipeline=haute.Pipeline("demo")\n'
-        '@pipeline.data_input(config="a.json")\ndef source_a():\n    return None\n'
-        '@pipeline.data_output(config="out.json")\ndef sink(source_a):\n'
-        "    surprise = 1\n    return surprise\n"
+        '@pipeline.data_input(config="a.json")\ndef source_a(): ...\n'
+        '@pipeline.data_output(config="out.json", contract="opaque")\n'
+        "def sink(source_a: pl.LazyFrame) -> pl.LazyFrame:\n"
+        '    """"""\n    surprise = source_a.head()\n    return surprise\n'
     )
     (tmp_path / "a.json").write_text(
         json.dumps(
@@ -624,33 +651,79 @@ def test_recover_rejects_custom_body_for_non_code_types(tmp_path):
                 "mode": "scan",
                 "path": "quotes.parquet",
                 "arguments": {},
-                "code": "",
             }
         )
     )
-    (tmp_path / "out.json").write_text(
-        json.dumps(
-            {
-                "outputType": "file",
-                "format": "parquet",
-                "mode": "sink",
-                "path": "out.parquet",
-                "arguments": {},
-                "cacheMode": "snapshot",
-            }
-        )
+    (tmp_path / "out.json").write_text(json.dumps(_OUTPUT_CONFIG))
+    document = load_pipeline_editor_document(tmp_path / "main.py", project_root=tmp_path)
+    assert next(n for n in document.nodes if n.authored_id == "sink").availability == (
+        "unavailable"
     )
     request = _request(tmp_path, "sink", "recover")
-    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    with pytest.raises(PipelineRepairError, match="scaffold|manual"):
-        build_recover_unavailable_node_plan(project_root=tmp_path, request=request)
-    assert {p: p.read_bytes() for p in before} == before
+
+    result = _apply(tmp_path, request)
+
+    assert result.document.load_status == "ready"
+    source = (tmp_path / "main.py").read_text()
+    assert "def sink(source_a): ..." in source
+    assert "surprise" not in source
+    assert json.loads((tmp_path / "out.json").read_text())["path"] == "out.parquet"
+    removed = _removed_code_change(result)
+    assert "carries no code" in removed.reason
+    main_diff = next(change.diff for change in result.changes if change.path == "main.py")
+    assert "-    surprise = source_a.head()" in main_diff
 
 
-def test_recover_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path):
-    # Recovering a damaged downstream node must not require healthy upstreams:
-    # its authored bindings stay trustworthy, and the applied node may remain
-    # blocked solely by the still-broken upstream.
+def test_recover_never_moves_a_body_its_decorator_never_calls_into_a_hook(tmp_path):
+    # A Data Input in the generated form before node declarations loads its
+    # own frame and names no df. Moving that body into a df hook would load
+    # the data twice (or, below an input, name a frame the hook never binds),
+    # so recover drops it with the settings kept, and reports it.
+    (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
+    (tmp_path / "main.py").write_text(
+        'import haute\nimport polars as pl\npipeline=haute.Pipeline("demo")\n'
+        '@pipeline.data_input(config="in.json", contract="opaque")\n'
+        "def source() -> pl.LazyFrame:\n"
+        '    """"""\n'
+        "    from haute.graph_utils import resolve_data_input_from_config\n\n"
+        '    df = resolve_data_input_from_config("in.json", base_dir=".")\n'
+        '    df = df.with_columns(pl.lit(1).alias("SaleFlag"))\n'
+        "    return df\n"
+    )
+    (tmp_path / "in.json").write_text(
+        json.dumps(
+            {
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "path": "quotes.parquet",
+                "arguments": {},
+                "contract": "opaque",
+            }
+        )
+    )
+    request = _request(tmp_path, "source", "recover")
+
+    result = _apply(tmp_path, request)
+
+    assert result.document.load_status == "ready"
+    source = (tmp_path / "main.py").read_text()
+    assert "def source(): ..." in source
+    assert "resolve_data_input_from_config" not in source
+    node = next(item for item in result.document.nodes if item.authored_id == "source")
+    assert not (node.config or {}).get("code")
+    assert json.loads((tmp_path / "in.json").read_text())["path"] == "quotes.parquet"
+    removed = _removed_code_change(result)
+    assert "first parameter df" in removed.reason
+    main_diff = next(change.diff for change in result.changes if change.path == "main.py")
+    assert "SaleFlag" in main_diff
+
+
+@pytest.mark.parametrize(("action", "sink_path"), [("recover", "out.parquet"), ("reset", "")])
+def test_repair_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path, action, sink_path):
+    # Recovering or resetting a damaged downstream node must not require
+    # healthy upstreams: its authored bindings stay trustworthy, and the
+    # applied node may remain blocked solely by the still-broken upstream.
     from haute._config_io import config_path_for_node
     from haute._types import GraphNode, NodeData, NodeType
     from haute.codegen import _node_to_code
@@ -673,7 +746,7 @@ def test_recover_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path):
     )
     (tmp_path / "main.py").write_text(
         'import haute\nimport polars as pl\npipeline=haute.Pipeline("demo")\n'
-        '@pipeline.data_input(config="a.json")\ndef source_a():\n    return None\n' + generated_sink
+        '@pipeline.data_input(config="a.json")\ndef source_a(): ...\n' + generated_sink
     )
     broken_input = {
         "inputType": "file",
@@ -694,12 +767,12 @@ def test_recover_works_down_a_broken_chain_leaving_the_target_blocked(tmp_path):
     assert by_id["sink"].availability == "unavailable"
     upstream_bytes = (tmp_path / "a.json").read_bytes()
 
-    request = _request(tmp_path, "sink", "recover")
+    request = _request(tmp_path, "sink", action)
     result = _apply(tmp_path, request)
     node = next(item for item in result.document.nodes if item.authored_id == "sink")
     assert node.availability == "blocked"
     written = json.loads(sink_reference.read_text())
-    assert written["path"] == "out.parquet"
+    assert written["path"] == sink_path
     assert "cacheMode" not in written
     assert (tmp_path / "a.json").read_bytes() == upstream_bytes
     sibling = next(item for item in result.document.nodes if item.authored_id == "source_a")

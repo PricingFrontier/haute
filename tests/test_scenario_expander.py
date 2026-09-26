@@ -48,7 +48,12 @@ class TestBuildConfig:
 
 
 class TestCodegen:
-    def test_codegen(self):
+    def test_codegen(self, tmp_path):
+        import runpy
+
+        from haute._config_io import collect_node_configs
+        from haute._types import PipelineGraph
+
         config = {
             "quote_id": "quote_id",
             "column_name": "scenario_value",
@@ -59,11 +64,29 @@ class TestCodegen:
         }
         node = _make_node(config, label="expand_scenarios")
         code = _node_to_code(node, source_names=["base_data"])
-        assert 'config="config/expander/expand_scenarios.json"' in code
-        assert "def expand_scenarios(base_data" in code
-        # Body applies the sidecar config via the shared helper (not a no-op
-        # passthrough) so a standalone pipeline.run() expands the grid.
-        assert "expand_scenarios_from_config(base_data" in code
+        assert code == (
+            '@pipeline.scenario_expander(config="config/expander/expand_scenarios.json")\n'
+            "def expand_scenarios(base_data): ...\n"
+        )
+
+        # The declaration's decorator applies the sidecar config (not a no-op
+        # passthrough), so a standalone run of the saved file expands the grid.
+        module = tmp_path / "main.py"
+        module.write_text(
+            f'import haute\n\npipeline = haute.Pipeline("p")\n\n\n{code}', encoding="utf-8"
+        )
+        for rel_path, content in collect_node_configs(
+            PipelineGraph(nodes=[node], edges=[])
+        ).items():
+            sidecar = tmp_path / rel_path
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            sidecar.write_text(content, encoding="utf-8")
+        expand_scenarios = runpy.run_path(str(module))["expand_scenarios"]
+        expanded = expand_scenarios(pl.DataFrame({"quote_id": [1, 2]}).lazy()).lazy().collect()
+        assert expanded.height == 2 * 21
+        assert expanded["scenario_index"].unique().sort().to_list() == list(range(21))
+        assert expanded["scenario_value"].min() == pytest.approx(0.8)
+        assert expanded["scenario_value"].max() == pytest.approx(1.2)
 
 
 class TestExecutor:
