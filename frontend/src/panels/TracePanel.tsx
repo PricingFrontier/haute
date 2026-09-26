@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react"
-import { AlertTriangle, Copy, Download, Printer, X, Scan } from "lucide-react"
+import { AlertTriangle, Copy, Download, Info, Printer, X, Scan } from "lucide-react"
 import type { TraceRequestState } from "../hooks/useTracing"
 import type { TraceOmission, TraceResult } from "../types/trace"
 import PanelShell from "./PanelShell"
@@ -37,7 +37,15 @@ function loadTraceExport() {
   return import("../trace/traceExport")
 }
 
+/** An omission that is a fact about the data (the join found no row), not a correlation gap. */
+function isJoinNoMatch(omission: TraceOmission): boolean {
+  return omission.reason === "join_no_match"
+}
+
 function omissionSummary(reason: string): string {
+  if (reason === "join_no_match") {
+    return "No row from this input joined the traced row: the join found no match."
+  }
   if (reason.includes("ambiguous") || reason.includes("duplicate")) {
     return "One upstream row could not be identified unambiguously."
   }
@@ -354,28 +362,35 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
         {evidenceEntries.map((entry, entryIndex) => {
           if (isTraceOmission(entry)) {
             const diagnostic = trace.correlation_diagnostics[entry.diagnostic_index]
+            const noMatch = isJoinNoMatch(entry)
+            const Icon = noMatch ? Info : AlertTriangle
+            const labelColor = noMatch ? "var(--text-muted)" : "var(--warning-strong)"
             return (
               <div
                 key={`omission-${entry.node_id}-${entry.topological_rank}`}
-                role="alert"
+                role={noMatch ? "note" : "alert"}
                 data-testid={`trace-omission-${entry.node_id}`}
                 className="rounded-lg px-3 py-2 text-[11px]"
-                style={{
-                  border: "1px dashed var(--warning-border-strong)",
-                  background: "var(--warning-soft)",
-                  color: "var(--text-secondary)",
-                }}
+                style={
+                  noMatch
+                    ? { border: "1px dashed var(--border)", color: "var(--text-secondary)" }
+                    : {
+                        border: "1px dashed var(--warning-border-strong)",
+                        background: "var(--warning-soft)",
+                        color: "var(--text-secondary)",
+                      }
+                }
               >
                 <div className="flex items-center gap-2">
-                  <AlertTriangle size={13} aria-hidden="true" style={{ color: "var(--warning-strong)" }} />
+                  <Icon size={13} aria-hidden="true" style={{ color: labelColor }} />
                   <span className="font-mono" style={{ color: "var(--text-muted)" }}>
                     {entry.topological_rank + 1}
                   </span>
                   <span className="font-semibold" style={{ color: "var(--text-primary)" }}>
                     {entry.node_name}
                   </span>
-                  <span className="text-[9px] uppercase tracking-wide" style={{ color: "var(--warning-strong)" }}>
-                    trace gap
+                  <span className="text-[9px] uppercase tracking-wide" style={{ color: labelColor }}>
+                    {noMatch ? "no match" : "trace gap"}
                   </span>
                 </div>
                 <div className="mt-1">{omissionSummary(entry.reason)}</div>

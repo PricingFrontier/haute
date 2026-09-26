@@ -266,6 +266,45 @@ describe("TracePanel", () => {
     expect(screen.queryByTestId("trace-correlation-diagnostics")).not.toBeInTheDocument()
   })
 
+  it("shows a join that found no row as a note rather than a trace gap", () => {
+    render(
+      <TracePanel
+        trace={makeTrace({
+          column: null,
+          steps: [makeStep({ node_id: "target", node_name: "Target", topological_rank: 1 })],
+          omissions: [{
+            node_id: "policies",
+            node_name: "policies",
+            node_type: "dataInput",
+            topological_rank: 0,
+            reason: "join_no_match",
+            diagnostic_index: 0,
+          }],
+          correlation_diagnostics: [{
+            code: "join_no_match",
+            severity: "info",
+            reason: "join_no_match",
+            message: "No row of node 'policies' joined the traced row of 'target'.",
+            node_id: "policies",
+            child_node_id: "target",
+            match_columns: ["quote_id"],
+            ignored_columns: [],
+            matched_row_indices: [],
+            seed_node_ids: [],
+          }],
+          nodes_in_trace: 1,
+        })}
+        onClose={vi.fn()}
+      />,
+    )
+
+    const note = screen.getByTestId("trace-omission-policies")
+    expect(note).toHaveAttribute("role", "note")
+    expect(note).toHaveTextContent("no match")
+    expect(note).not.toHaveTextContent("trace gap")
+    expect(note).toHaveTextContent("No row from this input joined the traced row")
+  })
+
   it.each([
     {
       name: "rich rating",

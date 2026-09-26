@@ -1680,6 +1680,27 @@ def has_ratio_constraint(constraints: dict[str, Any]) -> bool:
     )
 
 
+def online_apply_chosen_row_columns(
+    artifact: dict[str, Any],
+    *,
+    optimised_value_col: str = "",
+) -> dict[str, tuple[str, pl.DataType]]:
+    """Map each online apply output column naming the chosen scenario row to its input.
+
+    The apply emits the chosen row's quote id, scenario index, and scenario
+    value cast to the dtypes it decides in (``_prepare_online_apply_frame``):
+    ``{output column: (input column, dtype)}``.
+    """
+    return {
+        "quote_id": (artifact.get("quote_id", "quote_id"), pl.String()),
+        "optimal_step": (artifact.get("scenario_index", "scenario_index"), pl.Int32()),
+        optimised_value_col or "optimal_scenario_value": (
+            artifact.get("scenario_value", "scenario_value"),
+            pl.Float32(),
+        ),
+    }
+
+
 def online_apply_output_schema(
     artifact: dict[str, Any],
     *,
@@ -1690,11 +1711,12 @@ def online_apply_output_schema(
     """Return the exact schema a sum-constraint online apply emits."""
     constraints = artifact.get("constraints") or {}
     columns: dict[str, pl.DataType] = {
-        "quote_id": pl.String(),
-        "optimal_step": pl.Int32(),
-        optimised_value_col or "optimal_scenario_value": pl.Float32(),
-        "optimal_objective": pl.Float32(),
+        name: dtype
+        for name, (_input, dtype) in online_apply_chosen_row_columns(
+            artifact, optimised_value_col=optimised_value_col
+        ).items()
     }
+    columns["optimal_objective"] = pl.Float32()
     for name in sorted(constraints):
         columns[f"optimal_{name}"] = pl.Float32()
     if version:

@@ -956,7 +956,10 @@ exposed depends on the artifact's constraints (`has_ratio_constraint`):
   `online_apply_output_schema` derives from the artifact: `quote_id` (`Utf8`), `optimal_step`
   (`Int32`), the optimised value column or its configured rename (`Float32`),
   `optimal_objective` (`Float32`), `optimal_<constraint>` (`Float32`) per sorted constraint,
-  and the version column when configured. A limit Polars pushes to the scan reads only the
+  and the version column when configured. The first three name the chosen scenario row: its
+  quote id, scenario index, and scenario value cast to those dtypes
+  (`online_apply_chosen_row_columns`), which trace correlation reads to find that row in the
+  apply's input (see [tracing](../tracing/low-level.md)). A limit Polars pushes to the scan reads only the
   quote-id column to choose the first quotes in that order — which elides upstream row-local
   scoring for that read — and applies to the input filtered to those quotes, so upstream
   scoring runs only for their scenario rows. Without a limit the apply reads every row.

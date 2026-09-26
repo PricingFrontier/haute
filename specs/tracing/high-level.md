@@ -121,6 +121,27 @@ Out of scope (owned elsewhere, linked where relevant):
   The reorder guard reads exact structured Python method-call sites, so words
   inside comments or string literals cannot disable positional correlation and
   an unreadable transform is conservatively treated as potentially reordering.
+- **An online optimiser apply's parent row is the scenario the apply chose.** An
+  online apply collapses each quote's scenario rows into one row, which names the
+  chosen scenario by its quote id, its scenario index (`optimal_step`), and its
+  scenario value (the optimised value column), each in the dtype the apply decided
+  in. Correlation identifies the parent row by whichever of these the node's output
+  keeps, comparing each parent column cast to that dtype, so the step above the
+  apply shows the scenario row the optimiser picked. An output that keeps the quote
+  id but neither the step nor the value cannot name one scenario, and stays an
+  ambiguous omission.
+- **A node is traced through any child that proves its row.** A node read by
+  several traced children is correlated through the first that proves its row —
+  children reading it from head frames first, then the child nearest the target —
+  so an aggregating child (a claims count) does not hide the row a join's base
+  proves. The order is fixed by the graph, never by hash order. A multi-frame
+  source's row comes from one frame, so it is shown as the input only of the
+  children that read that frame.
+- **A join that found no row is a fact, not a gap.** When an Edge Join that keeps
+  unmatched base rows (`left`, `full`, `anti`) found no join-side row for the traced
+  row — no join-side row has the base row's key values, or a key is null — the join
+  side is reported as an informational `join_no_match` omission (an unsold quote's
+  policy, a quote with no claims) rather than as a correlation failure.
 - **Multi-frame sources correlate per edge, not per node pair.** A multi-frame
   source (e.g. a ≥2-table `apiInput`) stores `dict[label, DataFrame]`; each edge
   out of it carries a `sourceHandle` naming the frame that edge consumes, and the

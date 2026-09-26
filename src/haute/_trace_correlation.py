@@ -268,13 +268,13 @@ _INT64_MIN = -(2**63)
 _INT64_MAX = 2**63 - 1
 
 
-def _never_match_expr(column: str) -> pl.Expr:
-    """Return a frame-height false expression tied to *column*."""
-    return pl.col(column).is_null() & pl.lit(False)
+def _never_match_expr(subject: pl.Expr) -> pl.Expr:
+    """Return a frame-height false expression tied to *subject*."""
+    return subject.is_null() & pl.lit(False)
 
 
-def _finite_numeric_match_expr(column: str, expected: float) -> pl.Expr:
-    actual = pl.col(column).cast(pl.Float64)
+def _finite_numeric_match_expr(subject: pl.Expr, expected: float) -> pl.Expr:
+    actual = subject.cast(pl.Float64)
     delta = (actual - pl.lit(expected)).abs()
     magnitude = pl.max_horizontal(actual.abs(), pl.lit(abs(expected)))
     tolerance = pl.max_horizontal(
@@ -321,15 +321,25 @@ def _typed_value_match_expr(
     column: str,
     value: Any,
     dtype: pl.DataType,
+    *,
+    cast: pl.DataType | None = None,
 ) -> tuple[pl.Expr | None, str | None]:
-    """Build one exhaustive V1 comparison or return an unsupported reason."""
-    never_match = _never_match_expr(column)
+    """Build one exhaustive V1 comparison or return an unsupported reason.
+
+    *cast* compares the column cast (non-strict) to that dtype rather than in
+    its own *dtype*: a value a node emitted in a dtype its input was cast to.
+    """
+    subject = pl.col(column)
+    if cast is not None:
+        subject = subject.cast(cast, strict=False)
+        dtype = cast
+    never_match = _never_match_expr(subject)
     base = dtype.base_type()
 
     if base is pl.Object:
         return None, "unsupported_dtype"
     if value is None:
-        return pl.col(column).is_null(), None
+        return subject.is_null(), None
     if base is pl.Null:
         return never_match, None
 
@@ -338,14 +348,14 @@ def _typed_value_match_expr(
         if not dtype.is_float():
             return None, "incompatible_non_finite_dtype"
         if non_finite == "nan":
-            return pl.col(column).is_nan(), None
+            return subject.is_nan(), None
         sign = 1 if non_finite == "inf" else -1
-        return pl.col(column).is_infinite() & (pl.col(column) * sign > 0), None
+        return subject.is_infinite() & (subject * sign > 0), None
 
     if base is pl.Boolean:
         if type(value) is not bool:
             return None, "boolean_is_not_numeric"
-        return pl.col(column) == pl.lit(value), None
+        return subject == pl.lit(value), None
     if type(value) is bool:
         return None, "boolean_is_not_numeric"
 
@@ -356,35 +366,35 @@ def _typed_value_match_expr(
         if isinstance(value, int):
             if not bounds[0] <= value <= bounds[1]:
                 return None, "integer_range_mismatch"
-            return pl.col(column) == pl.lit(value), None
+            return subject == pl.lit(value), None
         if isinstance(value, float):
             if not math.isfinite(value):
                 return None, "incompatible_non_finite_dtype"
-            within_safe_range = (pl.col(column) >= -(2**53)) & (pl.col(column) <= 2**53)
-            return within_safe_range & _finite_numeric_match_expr(column, value), None
+            within_safe_range = (subject >= -(2**53)) & (subject <= 2**53)
+            return within_safe_range & _finite_numeric_match_expr(subject, value), None
         if isinstance(value, str):
             if _CANONICAL_INTEGER_RE.fullmatch(value) is None:
                 return never_match, None
             parsed = int(value)
             if abs(parsed) <= MAX_SAFE_INTEGER or not bounds[0] <= parsed <= bounds[1]:
                 return never_match, None
-            return pl.col(column) == pl.lit(parsed), None
+            return subject == pl.lit(parsed), None
         return None, "incompatible_integer_value"
 
     if dtype.is_float():
         if isinstance(value, int):
             if abs(value) > 2**53:
                 return None, "unsafe_integer_float_comparison"
-            return _finite_numeric_match_expr(column, float(value)), None
+            return _finite_numeric_match_expr(subject, float(value)), None
         if isinstance(value, float):
             if not math.isfinite(value):
                 token = _float_non_finite_token(value)
                 assert token is not None
                 if token == "nan":
-                    return pl.col(column).is_nan(), None
+                    return subject.is_nan(), None
                 sign = 1 if token == "inf" else -1
-                return pl.col(column).is_infinite() & (pl.col(column) * sign > 0), None
-            return _finite_numeric_match_expr(column, value), None
+                return subject.is_infinite() & (subject * sign > 0), None
+            return _finite_numeric_match_expr(subject, value), None
         return None, "incompatible_float_value"
 
     if base is pl.Decimal:
@@ -396,18 +406,18 @@ def _typed_value_match_expr(
             return None, "invalid_decimal_value"
         if not decimal_value.is_finite():
             return None, "invalid_decimal_value"
-        return pl.col(column) == pl.lit(decimal_value), None
+        return subject == pl.lit(decimal_value), None
 
     if base in (pl.String, pl.Categorical, pl.Enum):
         if not isinstance(value, str):
             return None, "incompatible_string_value"
-        expression = pl.col(column).cast(pl.String) if base is not pl.String else pl.col(column)
+        expression = subject.cast(pl.String) if base is not pl.String else subject
         return expression == pl.lit(value), None
 
     if base is pl.Binary:
         if not isinstance(value, (bytes, bytearray)):
             return None, "incompatible_binary_value"
-        return pl.col(column) == pl.lit(bytes(value)), None
+        return subject == pl.lit(bytes(value)), None
 
     if base is pl.Date:
         if isinstance(value, datetime):
@@ -416,7 +426,7 @@ def _typed_value_match_expr(
             date_value = value if isinstance(value, date) else date.fromisoformat(value)
         except (TypeError, ValueError):
             return None, "invalid_date_value"
-        return pl.col(column) == pl.lit(date_value), None
+        return subject == pl.lit(date_value), None
 
     if base is pl.Time:
         try:
@@ -428,7 +438,7 @@ def _typed_value_match_expr(
         nanoseconds = (
             time_value.hour * 3_600 + time_value.minute * 60 + time_value.second
         ) * 1_000_000_000 + time_value.microsecond * 1_000
-        return pl.col(column).cast(pl.Int64) == nanoseconds, None
+        return subject.cast(pl.Int64) == nanoseconds, None
 
     if isinstance(dtype, pl.Datetime):
         if isinstance(value, date) and not isinstance(value, datetime):
@@ -446,7 +456,7 @@ def _typed_value_match_expr(
         factor = _TIME_UNIT_NS[dtype.time_unit]
         if nanoseconds % factor:
             return never_match, None
-        return pl.col(column).cast(pl.Int64) == nanoseconds // factor, None
+        return subject.cast(pl.Int64) == nanoseconds // factor, None
 
     if isinstance(dtype, pl.Duration):
         duration = _parse_duration(value)
@@ -460,7 +470,7 @@ def _typed_value_match_expr(
         factor = _TIME_UNIT_NS[dtype.time_unit]
         if nanoseconds % factor:
             return never_match, None
-        return pl.col(column).cast(pl.Int64) == nanoseconds // factor, None
+        return subject.cast(pl.Int64) == nanoseconds // factor, None
 
     if dtype.is_nested():
         if not isinstance(value, (list, tuple, dict)):
@@ -469,7 +479,7 @@ def _typed_value_match_expr(
             literal = pl.lit(value, dtype=dtype)
         except (TypeError, ValueError, pl.exceptions.PolarsError):
             return None, "incompatible_nested_schema"
-        return pl.col(column) == literal, None
+        return subject == literal, None
 
     return None, "unsupported_dtype"
 
@@ -511,8 +521,13 @@ def _match_rows_vectorized(
     *,
     allow_relaxed: bool = False,
     work: CorrelationWork | None = None,
+    casts: Mapping[str, pl.DataType] | None = None,
 ) -> _RowMatchResult:
-    """Match row identity with native Polars expressions and bounded output."""
+    """Match row identity with native Polars expressions and bounded output.
+
+    *casts* compares each named column cast to its dtype (``_typed_value_match_expr``).
+    """
+    casts = casts or {}
     keys = tuple(
         column for column in key_columns if column in frame.columns and column in row_values
     )
@@ -521,7 +536,8 @@ def _match_rows_vectorized(
         work.rows_scanned += frame.height
         work.key_columns_scanned += len(keys)
         work.comparison_cells += frame.height * len(keys)
-    dtypes = tuple(str(frame.schema[column]) for column in keys)
+    compared = {column: casts.get(column, frame.schema[column]) for column in keys}
+    dtypes = tuple(str(compared[column]) for column in keys)
     if not keys:
         return _RowMatchResult(
             status=_RowMatchStatus.NO_MATCH,
@@ -540,6 +556,7 @@ def _match_rows_vectorized(
             column,
             row_values[column],
             frame.schema[column],
+            cast=casts.get(column),
         )
         if expression is None:
             return _unsupported_match_result(keys, dtypes, reason or "unsupported_dtype")
@@ -580,9 +597,12 @@ def _match_rows_vectorized(
     # unsupported rather than pretending to be a trustworthy no-match.
     for column in keys:
         expected = row_values[column]
-        if frame.schema[column].is_integer() and isinstance(expected, float):
+        if compared[column].is_integer() and isinstance(expected, float):
+            actual = pl.col(column)
+            if column in casts:
+                actual = actual.cast(casts[column], strict=False)
             has_unsafe = frame.select(
-                ((pl.col(column) < -(2**53)) | (pl.col(column) > 2**53)).any().alias("unsafe")
+                ((actual < -(2**53)) | (actual > 2**53)).any().alias("unsafe")
             ).item()
             if bool(has_unsafe):
                 return _unsupported_match_result(
@@ -722,22 +742,27 @@ def _identical_candidate_count(
     child_row: Mapping[str, Any],
     key_columns: Sequence[str],
     collect: Callable[[pl.LazyFrame], pl.DataFrame] | None = None,
+    casts: Mapping[str, pl.DataType] | None = None,
 ) -> int | None:
     """Count the rows matching *child_row* when every one of them is the same row.
 
     The candidates are the rows the matcher's own comparison accepts on
-    *key_columns*. They are identical when they form exactly one distinct row
-    across every column, compared exactly in their own dtypes (never with the
-    matcher's float tolerance). ``None`` when they differ, or when a column
-    cannot be compared or de-duplicated (decided from the schema, so an error
-    while reading the frame or plan propagates rather than reading as a tie).
+    *key_columns* (under *casts*). They are identical when they form exactly
+    one distinct row across every column, compared exactly in their own dtypes
+    (never with the matcher's float tolerance). ``None`` when they differ, or
+    when a column cannot be compared or de-duplicated (decided from the schema,
+    so an error while reading the frame or plan propagates rather than reading
+    as a tie).
     """
+    casts = casts or {}
     schema = frame.collect_schema() if isinstance(frame, pl.LazyFrame) else frame.schema
     if not all(_deduplicable(dtype) for dtype in schema.values()):
         return None
     key_expressions: list[pl.Expr] = []
     for column in key_columns:
-        expression, _reason = _typed_value_match_expr(column, child_row[column], schema[column])
+        expression, _reason = _typed_value_match_expr(
+            column, child_row[column], schema[column], cast=casts.get(column)
+        )
         if expression is None:
             return None
         key_expressions.append(expression.fill_null(False))
@@ -799,6 +824,7 @@ def _find_matching_row(
     allow_relaxed: bool = True,
     work: CorrelationWork | None = None,
     identical_candidates: Callable[[], int | None] | None = None,
+    casts: Mapping[str, pl.DataType] | None = None,
 ) -> tuple[dict[str, Any] | None, int]:
     """Find the row in *df* that matches *child_row* on shared columns.
 
@@ -821,7 +847,8 @@ def _find_matching_row(
     returned with position ``-1`` (no physical row is chosen) and an
     ``identical_row_match`` diagnostic. *identical_candidates* counts the
     candidates for a frame that holds only some of them (a row-scope lookup);
-    otherwise they are counted in *df*.
+    otherwise they are counted in *df*. *casts* compares each named column
+    cast to its dtype.
     """
     shared = [column for column in child_row if column in df.columns]
     match = _match_rows_vectorized(
@@ -830,6 +857,7 @@ def _find_matching_row(
         shared,
         allow_relaxed=allow_relaxed,
         work=work,
+        casts=casts,
     )
     if match.status in {_RowMatchStatus.UNIQUE_STRICT, _RowMatchStatus.UNIQUE_RELAXED}:
         idx = match.candidate_indices[0]
@@ -869,7 +897,10 @@ def _find_matching_row(
                 identical_candidates()
                 if identical_candidates is not None
                 else _identical_candidate_count(
-                    df, child_row=child_row, key_columns=match.effective_key_columns
+                    df,
+                    child_row=child_row,
+                    key_columns=match.effective_key_columns,
+                    casts=casts,
                 )
             )
             if identical_count is not None:
@@ -1605,6 +1636,7 @@ def _correlate_rows_posthoc(
                 children_of[pid].append(cid)
 
     # Step 3: walk backward through topo order
+    position = {node_id: index for index, node_id in enumerate(order)}
     for nid in reversed(order):
         if nid in result:
             continue
@@ -1619,22 +1651,39 @@ def _correlate_rows_posthoc(
                 result[nid] = None
                 row_indices[nid] = -1
                 continue
-            head_children = [cid for cid in resolved_children if row_scope.prefers_child(nid, cid)]
-            scoped_child_id = (head_children or resolved_children)[0]
-            scoped_child_frame = eager_outputs.get(scoped_child_id)
-            diagnostic_start = len(diagnostics) if diagnostics is not None else 0
-            scoped_row, scoped_idx = row_scope.resolve(
-                parent_id=nid,
-                child_id=scoped_child_id,
-                child_row=result[scoped_child_id] or {},
-                child_row_idx=row_indices.get(scoped_child_id, -1),
-                child_len=(
-                    len(scoped_child_frame) if isinstance(scoped_child_frame, pl.DataFrame) else -1
-                ),
-                diagnostics=diagnostics,
-                work=work,
-                traced_column=traced_column,
+            # Head-framed children first, then nearest the target first; the
+            # first child that proves the row decides it, and the first child's
+            # evidence explains a node none of them proves.
+            candidates = sorted(
+                resolved_children,
+                key=lambda cid: (not row_scope.prefers_child(nid, cid), -position[cid]),
             )
+            diagnostic_start = len(diagnostics) if diagnostics is not None else 0
+            scoped_child_id = candidates[0]
+            scoped_row: dict[str, Any] | None = None
+            scoped_idx = -1
+            kept_evidence: list[dict[str, Any]] | None = None
+            for child_id in candidates:
+                evidence: list[dict[str, Any]] | None = [] if diagnostics is not None else None
+                child_frame = eager_outputs.get(child_id)
+                row, index = row_scope.resolve(
+                    parent_id=nid,
+                    child_id=child_id,
+                    child_row=result[child_id] or {},
+                    child_row_idx=row_indices.get(child_id, -1),
+                    child_len=len(child_frame) if isinstance(child_frame, pl.DataFrame) else -1,
+                    diagnostics=evidence,
+                    work=work,
+                    traced_column=traced_column,
+                )
+                if row is not None:
+                    scoped_child_id, scoped_row, scoped_idx = child_id, row, index
+                    kept_evidence = evidence
+                    break
+                if kept_evidence is None:
+                    kept_evidence = evidence
+            if diagnostics is not None and kept_evidence:
+                diagnostics.extend(kept_evidence)
             result[nid] = scoped_row
             row_indices[nid] = scoped_idx
             if scoped_row is None and unresolved is not None:
@@ -1807,6 +1856,41 @@ _ROW_SCOPE_PROBE_LIMIT = 1_000
 # Edge Join strategies whose output rows for a base row depend only on that row's
 # values, and all of whose rows come from a base row.
 _ROW_TRANSFER_JOIN_STRATEGIES = frozenset({"left", "inner", "semi", "anti", "cross"})
+# Edge Join strategies that emit a base row no join-side row matched.
+_JOIN_SIDE_OPTIONAL_STRATEGIES = frozenset({"left", "full", "anti"})
+
+
+def _join_no_match_diagnostic(
+    parent_id: str, child_id: str, keys: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Report that no row of an Edge Join's join side matched the traced row."""
+    return {
+        "code": "join_no_match",
+        "severity": "info",
+        "reason": "join_no_match",
+        "message": (
+            f"No row of node {parent_id!r} joined the traced row of {child_id!r}: "
+            f"the join found no match on {sorted(keys)}."
+        ),
+        "node_id": parent_id,
+        "child_node_id": child_id,
+        "match_strategy": "row_scope",
+        "match_columns": sorted(keys),
+        "ignored_columns": [],
+        "matched_row_count": 0,
+        "matched_row_indices": [],
+    }
+
+
+class _CarriedValues(NamedTuple):
+    """The values a child carried from one parent row, keyed by the parent's columns.
+
+    ``casts`` names each column the child holds in another dtype; it is
+    compared as the parent column cast to that dtype.
+    """
+
+    values: dict[str, Any]
+    casts: dict[str, pl.DataType]
 
 
 @dataclass(frozen=True, slots=True)
@@ -2005,6 +2089,8 @@ class RowScopeResolver:
     lookups: dict[tuple[str, str | None, str], pl.DataFrame] = field(default_factory=dict)
     selector_aliases: frozenset[str] = frozenset()
     child_input_aliases: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    row_frames: dict[str, str] = field(default_factory=dict)
+    """The frame each resolved multi-frame node's row came from."""
     _join_key_columns: frozenset[str] | None = field(default=None, init=False, repr=False)
     _schemas: dict[tuple[str, str | None], pl.Schema] = field(
         default_factory=dict, init=False, repr=False
@@ -2067,6 +2153,7 @@ class RowScopeResolver:
         node_id: str,
         source_handle: str | None,
         values: Mapping[str, Any],
+        casts: Mapping[str, pl.DataType] | None = None,
     ) -> int | None:
         """Count the uncapped plan's rows matching *values* when they are all one row."""
         from haute._polars_utils import streaming_collect
@@ -2081,6 +2168,7 @@ class RowScopeResolver:
             collect=lambda counts: streaming_collect(
                 counts, execution_context=self.execution_context
             ),
+            casts=casts,
         )
 
     def schema_for(self, node_id: str, source_handle: str | None) -> pl.Schema | None:
@@ -2169,6 +2257,7 @@ class RowScopeResolver:
         node_id: str,
         source_handle: str | None,
         values: Mapping[str, Any],
+        casts: Mapping[str, pl.DataType] | None = None,
     ) -> pl.DataFrame | None:
         """Read up to two rows of a node's uncapped plan matching *values*.
 
@@ -2176,10 +2265,12 @@ class RowScopeResolver:
         Polars decode each of them across the whole input, so a lookup that
         carries a non-null join key first reads the rows matching its keys and
         matches the rest in memory, falling back to the full filter when that
-        probe reaches ``_ROW_SCOPE_PROBE_LIMIT`` rows.
+        probe reaches ``_ROW_SCOPE_PROBE_LIMIT`` rows. *casts* compares each
+        named column cast to its dtype.
         """
         from haute._polars_utils import streaming_collect
 
+        casts = casts or {}
         plan = self.plan_for(node_id, source_handle)
         schema = self.schema_for(node_id, source_handle)
         if plan is None or schema is None:
@@ -2190,7 +2281,9 @@ class RowScopeResolver:
         for column, value in values.items():
             if column not in schema:
                 return None
-            expression, _reason = _typed_value_match_expr(column, value, schema[column])
+            expression, _reason = _typed_value_match_expr(
+                column, value, schema[column], cast=casts.get(column)
+            )
             if expression is None:
                 return None
             # A filter already drops a row whose comparison is null; null-filling
@@ -2200,7 +2293,16 @@ class RowScopeResolver:
                 probe_expressions.append(expression)
         if not expressions:
             return None
-        key = (node_id, source_handle, repr(sorted(values.items(), key=lambda item: item[0])))
+        key = (
+            node_id,
+            source_handle,
+            repr(
+                (
+                    sorted(values.items(), key=lambda item: item[0]),
+                    sorted((column, str(dtype)) for column, dtype in casts.items()),
+                )
+            ),
+        )
         cached = self.lookups.get(key)
         if cached is not None:
             return cached
@@ -2221,6 +2323,101 @@ class RowScopeResolver:
         return cached
 
     def _carried_values(
+        self,
+        *,
+        parent_id: str,
+        child_id: str,
+        source_handle: str | None,
+        target_role: str | None,
+        child_row: Mapping[str, Any],
+    ) -> _CarriedValues | None:
+        """Return the values *child_row* provably carried from its parent row."""
+        child = self.node_map[child_id]
+        if child.data.nodeType is NodeType.OPTIMISER_APPLY:
+            chosen = self._online_apply_chosen_row(
+                child, parent_id=parent_id, source_handle=source_handle, child_row=child_row
+            )
+            if chosen is not None:
+                return chosen
+        values = self._shared_carried_values(
+            parent_id=parent_id,
+            child_id=child_id,
+            source_handle=source_handle,
+            target_role=target_role,
+            child_row=child_row,
+        )
+        return None if values is None else _CarriedValues(values, {})
+
+    def _online_apply_chosen_row(
+        self,
+        child: GraphNode,
+        *,
+        parent_id: str,
+        source_handle: str | None,
+        child_row: Mapping[str, Any],
+    ) -> _CarriedValues | None:
+        """Return the chosen scenario row's identity an online apply's row names.
+
+        The apply emits the chosen row's quote id, scenario index, and scenario
+        value in the dtypes it decided in; each kept one is compared as the
+        parent column cast to that dtype. ``None`` for a ratebook apply or an
+        apply without a source, which the contract rules cover.
+        """
+        from haute._builders import online_apply_chosen_row_columns
+        from haute._node_apply import load_configured_optimiser_artifact
+
+        config = child.data.config
+        artifact = load_configured_optimiser_artifact(config)
+        if artifact is None or artifact.get("mode", "online") == "ratebook":
+            return None
+        parent_schema = self.schema_for(parent_id, source_handle)
+        if parent_schema is None:
+            return None
+        values: dict[str, Any] = {}
+        casts: dict[str, pl.DataType] = {}
+        columns = online_apply_chosen_row_columns(
+            artifact, optimised_value_col=config.get("optimised_value_column", "")
+        )
+        for output_column, (input_column, dtype) in columns.items():
+            if output_column not in child_row or input_column not in parent_schema:
+                continue
+            values[input_column] = child_row[output_column]
+            if parent_schema[input_column] != dtype:
+                casts[input_column] = dtype
+        return _CarriedValues(values, casts)
+
+    def _unmatched_join_keys(
+        self,
+        *,
+        parent_id: str,
+        child_id: str,
+        source_handle: str | None,
+        target_role: str | None,
+        child_row: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Return the join keys no row of an Edge Join's join side matched, or ``None``.
+
+        Only a strategy that keeps a base row without a join-side match can
+        emit one; a null key matches no row. The join side's keys are probed
+        with the base row's key values, so a row whose key matched but whose
+        other values do not is not reported as a miss.
+        """
+        child = self.node_map[child_id]
+        if child.data.nodeType is not NodeType.EDGE_JOIN or target_role != "join":
+            return None
+        join_kwargs = build_edge_join_kwargs(child.data.config)
+        if join_kwargs["how"] not in _JOIN_SIDE_OPTIONAL_STRATEGIES:
+            return None
+        pairs = _edge_join_key_pairs(join_kwargs)
+        if not pairs or any(left_key not in child_row for left_key, _right_key in pairs):
+            return None
+        keys = {right_key: child_row[left_key] for left_key, right_key in pairs}
+        if any(value is None for value in keys.values()):
+            return keys
+        found = self.lookup(parent_id, source_handle, keys)
+        return keys if found is not None and found.height == 0 else None
+
+    def _shared_carried_values(
         self,
         *,
         parent_id: str,
@@ -2440,17 +2637,38 @@ class RowScopeResolver:
                 target_role=target_role,
                 child_row=child_row,
             )
-            lookup = self.lookup(parent_id, source_handle, carried) if carried else None
-            if not carried or lookup is None:
+            lookup = (
+                self.lookup(parent_id, source_handle, carried.values, carried.casts)
+                if carried is not None and carried.values
+                else None
+            )
+            if carried is None or lookup is None:
                 unproven = True
                 schema = self.schema_for(parent_id, source_handle)
                 if schema is not None:
                     self._record_frame(parent_id, source_handle, pl.DataFrame(schema=schema))
                 continue
             self._record_frame(parent_id, source_handle, lookup)
+            unmatched_keys = (
+                self._unmatched_join_keys(
+                    parent_id=parent_id,
+                    child_id=child_id,
+                    source_handle=source_handle,
+                    target_role=target_role,
+                    child_row=child_row,
+                )
+                if lookup.height == 0
+                else None
+            )
+            if unmatched_keys is not None:
+                if port_diagnostics is not None:
+                    port_diagnostics.append(
+                        _join_no_match_diagnostic(parent_id, child_id, unmatched_keys)
+                    )
+                continue
             row, index = _find_matching_row(
                 lookup,
-                dict(carried),
+                dict(carried.values),
                 diagnostics=port_diagnostics,
                 node_id=parent_id,
                 child_node_id=child_id,
@@ -2459,8 +2677,13 @@ class RowScopeResolver:
                 # The lookup holds at most two rows, so identity is counted
                 # over the node's whole plan.
                 identical_candidates=partial(
-                    self.identical_candidate_count, parent_id, source_handle, carried
+                    self.identical_candidate_count,
+                    parent_id,
+                    source_handle,
+                    carried.values,
+                    carried.casts,
                 ),
+                casts=carried.casts,
             )
             if row is not None:
                 matches.append(
@@ -2468,7 +2691,7 @@ class RowScopeResolver:
                         source_handle,
                         row,
                         index,
-                        len(carried),
+                        len(carried.values),
                         lookup,
                         False,
                         _identical_evidence(port_suppressed),
@@ -2531,6 +2754,8 @@ class RowScopeResolver:
         handle, row, index, _width, frame, from_head, identical = matches[0]
         if diagnostics is not None:
             diagnostics.extend(identical)
+        if handle is not None and isinstance(self.frames.get(parent_id), dict):
+            self.row_frames[parent_id] = handle
         if from_head:
             self.head_resolved.add(parent_id)
         elif handle is None and frame.height == 1:

@@ -206,8 +206,10 @@ bears on a traced column: it is always reported, never pruned for column relevan
 8. `_assemble_steps()` builds `TraceStep`s from the correlated rows: source nodes
    get `input_values = {}`; other nodes' `input_values` merge each parent's
    correlated row (namespacing every parent's copy as `f"{pid}.{k}"` whenever
-   more than one parent supplies the key). Nodes whose row correlation returned
-   `None` are skipped entirely.
+   more than one parent supplies the key). A multi-frame parent's row is merged
+   only into a child that reads the frame it came from (`row_frames` against
+   `source_frames_of`). Nodes whose row correlation returned `None` are skipped
+   entirely.
 9. `enrich_steps()` (from `src/haute/_trace_enrichment.py`, imported into `trace.py` as
    `_enrich_steps`, passed `source_frames_of`, `incoming_edges_of`, and the request's
    `lineage_plans` provider) enriches every step in place. An online optimiser apply's
@@ -321,13 +323,32 @@ the limited preview shows rather than independent source samples.
    wins, then the widest carried match, and a tie records `ambiguous_source_frame`. An
    unresolved port records an empty frame with its schema so column relevance keeps its
    omission; with no carried column the diagnostic reason is `row_scope_unproven`.
+   The resolver records in `row_frames` the frame each resolved multi-frame node's row
+   came from. A join-role port of an Edge Join whose `how` is `left`, `full`, or `anti`
+   whose lookup found no row is probed by `_unmatched_join_keys`: the join side's keys
+   looked up with the base row's key values (the child's left keys). No row, or a null
+   key (which joins nothing), proves the join found no row: the port records a
+   `join_no_match` diagnostic (severity `info`, reason `join_no_match`, the key columns
+   in `match_columns`) instead of `row_match_not_found`, so the omission is informational.
+   A key that matched a row whose other carried values differ remains an ordinary miss.
    `_correlate_rows_posthoc` does not correlate a parent through a child that reads none of
    its ports.
 4. **Carried columns (`_carried_values`).** Join-role parents use the edge-join
    right-provenance mapping; base-role parents use the child columns present in the base;
    pass-through node types (including OUTPUT documents and the optimiser) use every shared
    column; node types with column contracts use the shared columns minus the builder's
-   produced columns. Code (Polars, Explore, external file, and builder post-code) must pass
+   produced columns. An online optimiser apply (its artifact's `mode`, loaded through
+   `load_configured_optimiser_artifact`; an apply with no configured source is a
+   pass-through) carries only the chosen scenario row's identity:
+   `online_apply_chosen_row_columns` maps its output `quote_id`, `optimal_step`, and
+   optimised value column to the artifact's quote-id, scenario-index, and scenario-value
+   columns in the apply's `String`, `Int32`, and `Float32` dtypes. Each mapped column the
+   child row holds is carried under its parent name, and a parent column whose dtype
+   differs is compared cast (non-strict) to the apply's dtype. The lookup, the in-memory
+   match, and the identical-row count all build that comparison through
+   `_typed_value_match_expr`'s `cast`, so a `Float64` scenario value matches the apply's
+   `Float32` output exactly. A ratebook apply uses the contract rule above.
+   Code (Polars, Explore, external file, and builder post-code) must pass
    `carried_column_proof` in `src/haute/_column_lineage.py`, given each port plan's column
    names and dtypes (builder post-code, which runs on the builder's own output, gets none),
    the preamble's selector aliases, and the child's `inputMapping` aliases, which the proof
@@ -347,6 +368,12 @@ the limited preview shows rather than independent source samples.
      selector expands only against the root input's dtypes before any assigning operation
      or join; a positional rooted selector, a naming step deeper in the chain, a
      non-literal join suffix, or missing input schemas fail the proof;
+   - an expression rooted at `pl.col` given literal plain column names (a list or tuple,
+     or several names) assigns exactly those names, renamed only by its outermost call
+     (`alias`, or `.name.prefix`/`.name.suffix`); a bare selection of them assigns
+     nothing, and a `.name` or `.struct` step deeper in the chain, or a regex, wildcard,
+     or non-literal entry, fails the proof. An `alias` deeper in the chain is read as for
+     one column, since Polars rejects one alias over several;
    - `with_row_index` assigns its name; a literal `rename` assigns both names;
    - `join` or `cross_join` of another input or an inline literal frame (whose columns are
      assigned) with `how` of `inner`, `left`, `semi`, `anti`, or `cross` records its literal
@@ -453,9 +480,12 @@ of `(sourceHandle, targetHandle)` pairs per edge between that pair, in edge orde
    `row_indices` with it.
 2. Build `children_of` as the reverse of `parents_of`.
 3. With a `row_scope` resolver (every `execute_trace` call), walk `order` in reverse and
-   resolve each node through `RowScopeResolver.resolve` from a resolved child that reads
-   one of its ports, preferring a child whose edge can use head frames; a node with no such
-   child is not on the path to the target. Without a resolver (direct callers of the
+   resolve each node through `RowScopeResolver.resolve` from its resolved children that
+   read one of its ports, in a fixed order: children whose edge can use head frames first,
+   then by descending position in `order` (nearest the target first). The first child
+   that proves the row decides it and only its diagnostics are kept; when none does, the
+   first child's diagnostics explain the omission. A node with no such child is not on
+   the path to the target. Without a resolver (direct callers of the
    function), walk `order` in reverse. For each unresolved node with a materialized output:
    - Find a child of that node already resolved with a non-empty row
      (`resolved_child_id`); if none exists, the node is not on the path to the
@@ -663,7 +693,9 @@ snapshot deterministically.
   Boolean, integer/integer is exact, and finite float comparison uses
   `abs(a-b) <= max(1e-12, 1e-9 * max(abs(a), abs(b)))`. Integer/float comparison
   is allowed only through the JavaScript-safe boundary; an unsafe integer may
-  match only its exact canonical decimal string.
+  match only its exact canonical decimal string. A carried column with a cast (an
+  online optimiser apply's chosen-row identity) is compared as
+  `cast(column, dtype, strict=False)` under the same contract for that dtype.
 - **Temporal, decimal, categorical, and nested matching stays typed.** Date,
   Time, Datetime, and Duration compare through checked integer temporal
   representations with timezone-awareness preserved; Decimal uses exact
@@ -836,7 +868,13 @@ integration/regression suites:
   computed and positional selectors below an unordered join, a row-local `polars.selectors`
   program traced from head frames, a selector renamed mid-expression reported
   `row_scope_unproven` instead of attributed to an unrelated row, and code that addresses
-  its input through an `inputMapping` alias traced through both upstream Edge Joins.
+  its input through an `inputMapping` alias traced through both upstream Edge Joins, a
+  node its nearest child cannot prove traced through another child, and a left join's
+  unmatched and null keys reported as `join_no_match`.
+  `tests/test_trace_multi_frame.py::test_a_source_row_is_given_only_to_the_child_reading_its_frame`
+  pins a multi-frame source's row coming from the join base's frame and never given as
+  the input of a child reading another frame. `tests/test_column_lineage.py` pins the
+  carried-column proof of `pl.col` name lists against executed values.
   `tests/test_trace_multi_frame.py::test_row_scope_names_each_port_of_one_source_by_its_own_frame`
   pins per-edge input names for both edge orders.
 - **`tests/test_trace_row_scope_lookup.py`** — `RowScopeResolver.lookup` probes by Edge
@@ -896,7 +934,9 @@ integration/regression suites:
 - **`tests/test_trace_banding_lineage.py`** — lineage tests specific to
   banding-created fields.
 - **`tests/test_optimiser_apply_trace_enrichment.py`** — optimiser-apply
-  explainability enrichment.
+  explainability enrichment, and correlation of an online apply's parent to the
+  scenario row it chose through each kept identity column (scenario value, step,
+  or a non-string quote id), with the quote id alone left ambiguous.
 - **`tests/test_trace_w4_fixes.py`** — W4-audit correlation-soundness
   regressions: fail-loud/unresolved behaviour over wrong-row attribution, and
   numeric-comparison agreement with actual engine behaviour.

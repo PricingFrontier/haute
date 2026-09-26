@@ -356,6 +356,49 @@ def _resolve_artifact_path(path: str, base_dir: str | Path | None) -> str:
     return path
 
 
+def load_configured_optimiser_artifact(
+    config: Mapping[str, Any],
+    base_dir: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Load the artifact an optimiserApply node applies, or ``None`` without a source.
+
+    A node with no artifact file and no MLflow run or registered model is a
+    passthrough. MLflow sources load from the node's ``mlflow_destination``
+    (absent = auto).
+    """
+    source_type = config.get("sourceType", "")
+    artifact_path = config.get("artifact_path", "")
+    if artifact_path and not source_type:
+        from haute.errors import ConfigError
+
+        raise ConfigError(
+            "optimiserApply node with artifact_path requires sourceType='file'",
+            missing_field="sourceType",
+        )
+    run_id = config.get("run_id", "")
+    registered_model = config.get("registered_model", "")
+    has_file = bool(artifact_path) and source_type == "file"
+    has_mlflow = source_type in ("run", "registered") and (
+        (source_type == "run" and run_id) or (source_type == "registered" and registered_model)
+    )
+    if not has_file and not has_mlflow:
+        return None
+    if source_type in ("run", "registered"):
+        from haute._optimiser_io import load_mlflow_optimiser_artifact
+
+        return load_mlflow_optimiser_artifact(
+            source_type=source_type,
+            run_id=run_id,
+            registered_model=registered_model,
+            version=config.get("version", "latest"),
+            alias=str(config.get("alias", "") or ""),
+            destination=str(config.get("mlflow_destination", "") or ""),
+        )
+    from haute._optimiser_io import load_optimiser_artifact
+
+    return load_optimiser_artifact(_resolve_artifact_path(artifact_path, base_dir))
+
+
 def apply_optimiser_apply_from_config(
     *dfs: _Frame,
     config: dict[str, Any] | str | PathLike[str],
@@ -376,45 +419,14 @@ def apply_optimiser_apply_from_config(
     their executable incoming-edge names.
     """
     cfg = _resolve_node_config(config, base_dir)
-
-    source_type = cfg.get("sourceType", "")
-    artifact_path = cfg.get("artifact_path", "")
-    if artifact_path and not source_type:
-        from haute.errors import ConfigError
-
-        raise ConfigError(
-            "optimiserApply node with artifact_path requires sourceType='file'",
-            missing_field="sourceType",
-        )
-    run_id = cfg.get("run_id", "")
-    registered_model = cfg.get("registered_model", "")
-    has_file = bool(artifact_path) and source_type == "file"
-    has_mlflow = source_type in ("run", "registered") and (
-        (source_type == "run" and run_id) or (source_type == "registered" and registered_model)
-    )
-    if not has_file and not has_mlflow:
+    artifact = load_configured_optimiser_artifact(cfg, base_dir)
+    if artifact is None:
         return dfs[0] if dfs else pl.LazyFrame()
 
     version_col = cfg.get("version_column", "__optimiser_version__")
     optimised_value_col = cfg.get("optimised_value_column", "")
     ratebook_input = cfg.get("ratebook_input", "")
     names = list(source_names) if source_names is not None else []
-
-    if source_type in ("run", "registered"):
-        from haute._optimiser_io import load_mlflow_optimiser_artifact
-
-        artifact = load_mlflow_optimiser_artifact(
-            source_type=source_type,
-            run_id=run_id,
-            registered_model=registered_model,
-            version=cfg.get("version", "latest"),
-            alias=str(cfg.get("alias", "") or ""),
-            destination=str(cfg.get("mlflow_destination", "") or ""),
-        )
-    else:
-        from haute._optimiser_io import load_optimiser_artifact
-
-        artifact = load_optimiser_artifact(_resolve_artifact_path(artifact_path, base_dir))
 
     # Selection + dispatch live in _builders (widely re-exported); imported
     # lazily to keep this module free of an executor import cycle.

@@ -896,10 +896,10 @@ class TestLimitedPreviewTrace:
         looked_up: list[dict] = []
         real_lookup = RowScopeResolver.lookup
 
-        def recording_lookup(self, node_id, source_handle, values):
+        def recording_lookup(self, node_id, source_handle, values, casts=None):
             if node_id == "join":
                 looked_up.append(dict(values))
-            return real_lookup(self, node_id, source_handle, values)
+            return real_lookup(self, node_id, source_handle, values, casts)
 
         monkeypatch.setattr(RowScopeResolver, "lookup", recording_lookup)
         if with_region:
@@ -924,9 +924,9 @@ class TestLimitedPreviewTrace:
         looked_up: list[str] = []
         real_lookup = RowScopeResolver.lookup
 
-        def recording_lookup(self, node_id, source_handle, values):
+        def recording_lookup(self, node_id, source_handle, values, casts=None):
             looked_up.append(node_id)
-            return real_lookup(self, node_id, source_handle, values)
+            return real_lookup(self, node_id, source_handle, values, casts)
 
         monkeypatch.setattr(RowScopeResolver, "lookup", recording_lookup)
         return looked_up
@@ -1233,3 +1233,82 @@ class TestLimitedPreviewTrace:
 
         assert row == {"region": "north", "factor": 2.0}
         assert _step_by_id(result, "src").output_values == {"region": "north"}
+
+    def test_a_node_its_nearest_child_cannot_prove_is_traced_through_another(self, tmp_path):
+        from haute._types import GraphNode, NodeData, NodeType
+
+        path = tmp_path / "data.parquet"
+        pl.DataFrame({"id": list(range(10)), "v": [i * 10 for i in range(10)]}).write_parquet(path)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("src", str(path)),
+                    _transform_node("visible", "df = src.with_columns(w=pl.col('v') * 2)"),
+                    # ``pipe`` hides what the code writes, so this child, nearest
+                    # the target, carries nothing that proves its source row.
+                    _transform_node("opaque", "df = src.pipe(lambda frame: frame)"),
+                    GraphNode(
+                        id="join",
+                        data=NodeData(
+                            label="join",
+                            nodeType=NodeType.EDGE_JOIN,
+                            config={"how": "left", "on": ["id"]},
+                        ),
+                    ),
+                ],
+                "edges": [
+                    _edge("src", "visible"),
+                    _edge("src", "opaque"),
+                    _edge("opaque", "join", target_handle="base"),
+                    _edge("visible", "join", target_handle="join"),
+                ],
+            }
+        )
+
+        row, result = self._trace(graph, "join", 3, row_limit=5, column=None)
+
+        assert result.omissions == []
+        assert _step_by_id(result, "src").output_values == {"id": row["id"], "v": row["v"]}
+
+    def test_a_join_that_found_no_row_is_reported_as_no_match(self, tmp_path):
+        from haute._types import GraphNode, NodeData, NodeType
+
+        base_path = tmp_path / "base.parquet"
+        lookup_path = tmp_path / "lookup.parquet"
+        pl.DataFrame({"id": [0, 1, None, 3]}).write_parquet(base_path)
+        pl.DataFrame({"id": [0, 2], "premium": [0.0, 20.0]}).write_parquet(lookup_path)
+        graph = _g(
+            {
+                "nodes": [
+                    _source_node("base", str(base_path)),
+                    _source_node("lookup", str(lookup_path)),
+                    GraphNode(
+                        id="join",
+                        data=NodeData(
+                            label="join",
+                            nodeType=NodeType.EDGE_JOIN,
+                            config={"how": "left", "on": ["id"], "maintainOrder": "left"},
+                        ),
+                    ),
+                ],
+                "edges": [
+                    _edge("base", "join", target_handle="base"),
+                    _edge("lookup", "join", target_handle="join"),
+                ],
+            }
+        )
+
+        # id 1 has no lookup row, and a null id joins none.
+        for row_index in (1, 2):
+            row, result = self._trace(graph, "join", row_index, row_limit=5, column=None)
+
+            assert row["premium"] is None
+            assert [(omission.node_id, omission.reason) for omission in result.omissions] == [
+                ("lookup", "join_no_match")
+            ]
+            diagnostic = result.correlation_diagnostics[result.omissions[0].diagnostic_index]
+            assert (diagnostic["code"], diagnostic["severity"]) == ("join_no_match", "info")
+
+        _row, matched = self._trace(graph, "join", 0, row_limit=5, column=None)
+        assert matched.omissions == []
+        assert _step_by_id(matched, "lookup").output_values == {"id": 0, "premium": 0.0}

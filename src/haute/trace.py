@@ -887,6 +887,8 @@ def _execute_trace_core(
             source_frames_of=source_frames_of,
             cached_rows=cached_rows,
         ),
+        row_frames=row_scope.row_frames,
+        source_frames_of=source_frames_of,
     )
     if snapshot_plan is not None:
         for step in steps:
@@ -1311,14 +1313,23 @@ def _assemble_steps(
     parents_of: dict[str, list[str]],
     cached_rows: dict[str, dict[str, Any] | None],
     typed_rows: _TypedRows | None = None,
+    row_frames: Mapping[str, str] | None = None,
+    source_frames_of: Mapping[tuple[str, str], Sequence[str | None]] | None = None,
 ) -> list[TraceStep]:
     """Build TraceStep entries from the post-hoc-correlated per-node rows.
 
     Skips nodes where row correlation produced ``None`` (better to omit
     than to show wrong data). With *typed_rows*, each step also carries its
-    rows as one-row frames for evaluating its formulas.
+    rows as one-row frames for evaluating its formulas. *row_frames* names
+    the frame a multi-frame node's row came from; a child reading none of
+    that node's frames by that name (``source_frames_of``) is not given it.
     """
     steps: list[TraceStep] = []
+    frames_read = source_frames_of or {}
+
+    def reads_row(parent_id: str, child_id: str) -> bool:
+        frame = (row_frames or {}).get(parent_id)
+        return frame is None or frame in frames_read.get((parent_id, child_id), ())
 
     for topological_rank, nid in enumerate(order):
         is_source = nid in source_ids
@@ -1340,7 +1351,7 @@ def _assemble_steps(
             input_row = None
             provenance_aliases: dict[str, str] = {}
         else:
-            input_ids = parents_of.get(nid, [])
+            input_ids = [pid for pid in parents_of.get(nid, []) if reads_row(pid, nid)]
             provenance_aliases = {}
             if input_ids:
                 input_row = {}

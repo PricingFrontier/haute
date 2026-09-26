@@ -375,6 +375,71 @@ def _same_source_join_graph(api_config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _aggregated_join_side_graph(api_config: dict[str, Any]) -> dict[str, Any]:
+    """The policies frame is a join's base; the drivers frame, counted per policy, its join side."""
+    return {
+        "nodes": [
+            {
+                "id": "api",
+                "data": {
+                    "label": "api",
+                    "nodeType": NodeType.API_INPUT.value,
+                    "config": api_config,
+                },
+            },
+            {
+                "id": "counts",
+                "data": {
+                    "label": "counts",
+                    "nodeType": "polars",
+                    "config": {
+                        "code": "df = drivers.group_by('policy_id').agg(pl.len().alias('drivers'))"
+                    },
+                },
+            },
+            {
+                "id": "joined",
+                "data": {
+                    "label": "joined",
+                    "nodeType": NodeType.EDGE_JOIN.value,
+                    "config": {"how": "left", "on": ["policy_id"], "suffix": "_right"},
+                },
+            },
+        ],
+        "edges": [
+            {"id": "e_d", "source": "api", "target": "counts", "sourceHandle": "drivers"},
+            {
+                "id": "e_p",
+                "source": "api",
+                "target": "joined",
+                "sourceHandle": "policies",
+                "targetHandle": "base",
+            },
+            {"id": "e_c", "source": "counts", "target": "joined", "targetHandle": "join"},
+        ],
+    }
+
+
+@pytest.mark.parametrize("policy_id", [1001, 1002], ids=["two_drivers", "one_driver"])
+def test_a_source_row_is_given_only_to_the_child_reading_its_frame(
+    project: Path, policy_id: int
+) -> None:
+    """The source's row is the policies row the join's base proves, whichever order
+    the children are listed in; ``counts`` reads the drivers frame, so that row is
+    not its input."""
+    graph = make_graph(_aggregated_join_side_graph(_api_input_config(project)))
+
+    result = execute_trace(
+        graph, row_index=0, target_node_id="joined", row_values={"policy_id": policy_id}
+    )
+
+    steps = {step.node_id: step for step in result.steps}
+    assert result.omissions == []
+    assert steps["api"].output_values == {"policy_id": policy_id}
+    assert steps["joined"].input_values["api.policy_id"] == policy_id
+    assert steps["counts"].input_values == {}
+
+
 def test_trace_multi_edge_output_correlates_source_to_root_frame(project: Path) -> None:
     """Four edges api→out: the source step must correlate against the frame
     that actually identifies the traced row (the root ``policies`` frame),
