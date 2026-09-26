@@ -468,16 +468,31 @@ export function renameColumnInFormula(text: string, from: string, to: string, va
   const tokens = tokenize(text)
   const known = new Set(variables)
   const insert = nameText(to, known, false) ?? to
-  let renamed = text
-  for (let index = tokens.length - 1; index >= 0; index -= 1) {
-    const token = tokens[index]
-    if (token.kind !== "name" || token.value !== from) continue
-    if (!token.quoted) {
-      const next = tokens[index + 1]
-      if (KEYWORDS.has(token.value) || known.has(token.value) || (next?.kind === "punct" && next.value === "(")) continue
+  // Which argument of which call each token sits in: a catalogue function's
+  // arguments after the first are plain values (a type such as Float64, a
+  // number, text), never columns.
+  const calls: Array<{ fn: boolean; arg: number }> = []
+  const spans: Array<{ start: number; end: number }> = []
+  tokens.forEach((token, index) => {
+    const next = tokens[index + 1]
+    const opensCall = next?.kind === "punct" && next.value === "("
+    if (token.kind === "punct") {
+      if (token.value === "(") {
+        const previous = tokens[index - 1]
+        const fn = previous?.kind === "name" && !previous.quoted && functionNamed(previous.value) !== undefined
+        calls.push({ fn, arg: 0 })
+      } else if (token.value === ")") calls.pop()
+      else if (calls.length > 0) calls[calls.length - 1].arg += 1
+      return
     }
-    renamed = `${renamed.slice(0, token.start)}${insert}${renamed.slice(token.end)}`
-  }
+    if (token.kind !== "name" || token.value !== from) return
+    const inCall = calls[calls.length - 1]
+    if (inCall?.fn && inCall.arg > 0) return
+    if (!token.quoted && (KEYWORDS.has(token.value) || known.has(token.value) || opensCall)) return
+    spans.push({ start: token.start, end: token.end })
+  })
+  let renamed = text
+  for (const span of spans.reverse()) renamed = `${renamed.slice(0, span.start)}${insert}${renamed.slice(span.end)}`
   return renamed
 }
 

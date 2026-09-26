@@ -410,7 +410,8 @@ the character where reading stopped (the note clears as soon as the box
 holds the committed formula again, and the box keeps focus after a commit); a committed
 formula naming a column the step does not have (where its columns are complete) says so
 with the closest name offered, the offer renaming only that column's references (never
-matching quoted text, a function or a variable); and an expression text cannot express (one
+matching quoted text, a function, a variable or a function's plain-value argument such
+as a type); and an expression text cannot express (one
 holding a window, conditional or text join) is edited in the structured
 left/operator/right form instead. An operand field also offers an "Expression" source that
 opens a nested editor (the same "Computed as" select and expression form, indented under

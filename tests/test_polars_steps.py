@@ -21,7 +21,6 @@ from haute._code_extraction import (
     INCOMPLETE_TRANSFORM_MESSAGE,
     _extract_user_code,
 )
-from haute._config_builder import _same_program
 from haute._config_io import collect_node_configs, node_emits_sidecar
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
@@ -3326,55 +3325,91 @@ def test_parse_keeps_steps_saved_by_an_earlier_renderer(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("current", "earlier", "same"),
+    ("kind_step", "earlier"),
     [
-        ('df = df.select("a", "b")', "df = df.select(['a', 'b'])", True),
-        ('df = df.drop("a", pl.col(pl.String))', "df = df.drop(['a'], pl.col(pl.String))", True),
+        (step("x", "select", columns=["a", "b"]), "df = df.select(['a', 'b'])"),
         (
-            'df = df.with_columns(pl.col("a").fill_null(0))',
-            "df = df.with_columns(pl.col(['a']).fill_null(0))",
-            True,
+            step("x", "select", columns=["region"], dtypes=["Float64"]),
+            "df = df.select(['region', pl.col(pl.Float64).exclude('region')])",
         ),
-        ('df = df.sort("a")', "df = df.sort(['a'], descending=[False], nulls_last=False)", True),
+        (step("x", "drop", columns=["a"]), "df = df.drop(['a'])"),
         (
-            'df = df.sort("a", descending=True, nulls_last=True)',
+            step("x", "drop", columns=["region"], dtypes=["String"]),
+            "df = df.drop(['region'], pl.col(pl.String).exclude('region'))",
+        ),
+        (
+            step("x", "sort", keys=[{"column": "a", "descending": True}], nullsLast=True),
             "df = df.sort(['a'], descending=[True], nulls_last=True)",
-            True,
         ),
         (
-            'df = df.sort("a", "b", descending=[False, True])',
-            "df = df.sort(['a', 'b'], descending=[False, True], nulls_last=False)",
-            True,
+            step("x", "sort", keys=[{"column": "a", "descending": False}], nullsLast=False),
+            "df = df.sort(['a'], descending=[False], nulls_last=False)",
         ),
         (
-            'df = df.sort("a", "b")',
-            "df = df.sort(['a', 'b'], descending=[False, False], nulls_last=False)",
-            True,
-        ),
-        (
-            'df = df.unique(keep="any", maintain_order=True)',
+            step("x", "unique", columns=[], keep="any"),
             "df = df.unique(subset=None, keep='any', maintain_order=True)",
-            True,
-        ),
-        # Real edits stay edits.
-        ('df = df.select("a", "b")', "df = df.select(['a'])", False),
-        ('df = df.sort("a")', "df = df.sort(['a'], descending=[True], nulls_last=False)", False),
-        (
-            'df = df.unique(keep="any", maintain_order=True)',
-            "df = df.unique(subset=['a'], keep='any', maintain_order=True)",
-            False,
         ),
         (
-            'df = df.filter(pl.col("a").is_in([1, 2]))',
-            "df = df.filter(pl.col('a').is_in(1, 2))",
-            False,
+            step("x", "fill_null", columns=["a"], fill={"kind": "value", "value": num(0)}),
+            "df = df.with_columns(pl.col(['a']).fill_null(0))",
+        ),
+        (
+            step(
+                "x",
+                "group_by",
+                keys=["k"],
+                aggregations=[{"column": "a", "agg": "sum", "name": "t"}],
+            ),
+            "df = df.group_by(['k'], maintain_order=True).agg([pl.col('a').sum().alias('t')])",
+        ),
+        (
+            step(
+                "x", "group_by", keys=[], aggregations=[{"column": "", "agg": "len", "name": "n"}]
+            ),
+            "df = df.select([pl.len().alias('n')])",
         ),
     ],
 )
-def test_earlier_call_spellings_are_the_same_program(
-    current: str, earlier: str, same: bool
+def test_the_earlier_spelling_is_the_renderer_s_previous_output(
+    kind_step: dict[str, Any], earlier: str
 ) -> None:
-    assert _same_program(current, earlier) is same
+    """The earlier spelling reproduces what the renderer wrote before, as a program."""
+    rendered = render_polars_steps(
+        [source(), kind_step], ["quotes"], start="input", spelling="earlier"
+    )
+    assert ast.dump(ast.parse(step_text(rendered, 1))) == ast.dump(ast.parse(earlier))
+    current = render_polars_steps([source(), kind_step], ["quotes"], start="input")
+    assert step_text(current, 1) != step_text(rendered, 1)
+
+
+@pytest.mark.parametrize(
+    ("steps", "edit"),
+    [
+        # A list beside another argument is not the same call as the names passed one by one.
+        (
+            [source(), step("x", "select", columns=["premium", "region"])],
+            ('df = df.select("premium", "region")', "df = df.select(['premium'], 'region')"),
+        ),
+        # Authored code must match exactly, even where Polars would read it the same.
+        (
+            [source(), step("c", "free_code", code="df = df.select(['premium'])")],
+            ("df = df.select(['premium'])", "df = df.select('premium')"),
+        ),
+    ],
+)
+def test_parse_discards_steps_for_a_body_no_spelling_of_them_renders(
+    tmp_path: Path, steps: list[dict[str, Any]], edit: tuple[str, str]
+) -> None:
+    quotes, _rates = _frames(tmp_path)
+    graph = PipelineGraph(nodes=[quotes, _stepped("t", steps)], edges=[make_edge("quotes", "t")])
+    code = graph_to_code(graph, pipeline_name="main")
+    _write_sidecars(tmp_path, graph)
+    old, new = edit
+    assert old in code
+    parsed = parse_pipeline_source(code.replace(old, new), _base_dir=tmp_path)
+    node = next(n for n in parsed.nodes if n.id == "t")
+    assert "steps" not in node.data.config
+    assert node.data.config["_steps_discarded"].startswith("Steps were discarded because")
 
 
 def test_parse_discards_steps_when_only_a_free_code_comment_was_edited(tmp_path: Path) -> None:

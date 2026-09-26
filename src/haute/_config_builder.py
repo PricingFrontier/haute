@@ -410,80 +410,18 @@ def _comments(code: str) -> list[str]:
     ]
 
 
-#: Calls whose list arguments Polars reads exactly as the same names or
-#: expressions passed one by one, as the step renderer once wrote them.
-_SPREADABLE_METHODS = frozenset({"select", "drop", "group_by", "agg", "with_columns"})
-
-
-def _is_pl_col(func: ast.expr) -> bool:
-    return (
-        isinstance(func, ast.Attribute)
-        and func.attr == "col"
-        and isinstance(func.value, ast.Name)
-        and func.value.id == "pl"
-    )
-
-
-def _is_constant(node: ast.expr | None, value: object) -> bool:
-    return isinstance(node, ast.Constant) and node.value is value
-
-
-class _PolarsSpelling(ast.NodeTransformer):
-    """Rewrite the renderer's earlier spellings of its calls into its current ones.
-
-    Earlier renderings passed lists (``df.select(['a', 'b'])``,
-    ``group_by([...]).agg([...])``, ``pl.col(['a'])``) and spelled out Polars'
-    defaults (``sort(..., descending=[False], nulls_last=False)``,
-    ``unique(subset=None, ...)``). Polars reads each exactly as the current
-    spelling, so both sides of a comparison are brought to it first.
-    """
-
-    def visit_Call(self, node: ast.Call) -> ast.AST:
-        self.generic_visit(node)
-        method = node.func.attr if isinstance(node.func, ast.Attribute) else None
-        if method in _SPREADABLE_METHODS or method == "sort" or _is_pl_col(node.func):
-            args: list[ast.expr] = []
-            for arg in node.args:
-                args.extend(arg.elts if isinstance(arg, ast.List) else [arg])
-            node.args = args
-        if method == "sort":
-            keywords: list[ast.keyword] = []
-            for keyword in node.keywords:
-                value = keyword.value
-                if keyword.arg == "descending" and isinstance(value, ast.List):
-                    if len(value.elts) == 1:
-                        value = keyword.value = value.elts[0]
-                    elif all(_is_constant(elt, False) for elt in value.elts):
-                        continue
-                if keyword.arg in {"descending", "nulls_last"} and _is_constant(value, False):
-                    continue
-                keywords.append(keyword)
-            node.keywords = keywords
-        if method == "unique":
-            node.keywords = [
-                keyword
-                for keyword in node.keywords
-                if not (keyword.arg == "subset" and _is_constant(keyword.value, None))
-            ]
-        return node
-
-
-def _program_tree(code: str) -> str:
-    return ast.dump(_PolarsSpelling().visit(ast.parse(code)))
-
-
 def _same_program(rendered: str, body: str) -> bool:
-    """Whether a body is the rendering of the steps, whatever its layout.
+    """Whether a body is a rendering of the steps, whatever its layout.
 
     The same syntax tree and the same comments make the same program: a body
-    saved under an earlier layout, quoting or call spelling of the same steps,
-    or reformatted by ``ruff format``, still describes them, while any other
-    change, a comment in authored free code included, is a hand edit.
+    saved under an earlier layout or quoting of the same steps, or reformatted
+    by ``ruff format``, still describes them, while any other change, a
+    comment in authored free code included, is a hand edit.
     """
     if rendered == body:
         return True
     try:
-        same_tree = _program_tree(rendered) == _program_tree(body)
+        same_tree = ast.dump(ast.parse(rendered)) == ast.dump(ast.parse(body))
         return same_tree and _comments(rendered) == _comments(body)
     except (SyntaxError, tokenize.TokenError):
         return False
@@ -544,8 +482,17 @@ def _reconcile_steps(
         reason = f"the steps cannot be rendered ({exc})"
     else:
         kind = _EXTRACTION_KIND_BY_STEPPED_TYPE[node_type]
-        if _same_program(
-            normalise_user_code(rendered, kind=kind, param_names=param_names), body_code
+        # The renderer's earlier call spelling is accepted too, so a body it
+        # saved before keeps its steps; free code must match either way.
+        earlier = render_polars_steps(
+            steps,
+            step_input_names(node_type, param_names),
+            start=surface.start,
+            spelling="earlier",
+        ).code
+        if any(
+            _same_program(normalise_user_code(code, kind=kind, param_names=param_names), body_code)
+            for code in (rendered, earlier)
         ):
             return config
         reason = "the function body no longer matches the rendered steps"

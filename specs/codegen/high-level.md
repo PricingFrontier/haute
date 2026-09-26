@@ -227,8 +227,9 @@ names the failing step. A stepped original that also carries `inputMapping` is r
 with a `ConfigError`. Generating, parsing, and extracting a stepped transform reproduces
 the rendered code exactly, which is what lets the parser tell a hand-edited body from a
 rendered one; the parser compares the two as programs (the same syntax tree and
-comments, with the renderer's earlier call spellings read as its current ones), so a
-body in an earlier layout, quoting or spelling of the same steps is not an edit.
+comments, against both the current rendering and the renderer's earlier call spelling
+of the same steps), so a body in an earlier layout, quoting or spelling of the same
+steps is not an edit.
 
 **Stepped frame surfaces.** When a Data Input, External File, Rating Step, Model Score,
 Scenario Expander or Explore config carries `steps`, its generator renders them in frame mode

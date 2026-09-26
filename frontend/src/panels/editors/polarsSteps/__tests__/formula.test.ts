@@ -163,6 +163,12 @@ describe("renameColumnInFormula", () => {
     expect(renameColumnInFormula("rate * rate_x", "rate", "base", ["rate"])).toBe("rate * rate_x")
     expect(renameColumnInFormula("a + b", "a", "sum insured")).toBe("`sum insured` + b")
   })
+
+  it("leaves a function's plain-value arguments alone, a type named like the column included", () => {
+    expect(renameColumnInFormula("cast(Float64, Float64)", "Float64", "Float32")).toBe("cast(Float32, Float64)")
+    expect(renameColumnInFormula("round(abs(x), 2) + clip(x, 0, 1)", "x", "y")).toBe("round(abs(y), 2) + clip(y, 0, 1)")
+    expect(renameColumnInFormula("(x + 1) * x", "x", "y")).toBe("(y + 1) * y")
+  })
 })
 
 describe("callAtCaret", () => {
