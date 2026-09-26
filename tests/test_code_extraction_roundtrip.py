@@ -7,12 +7,13 @@ so one save/load cycle through the GUI corrupted the user's code into
 invalid Python.  The fix proves redundancy with the AST before unwrapping
 and keeps everything unprovable verbatim.
 
-CODE_REVIEW.md round-trip cluster (item 5.6): ``_match_external`` treated
-*every* ``import``/``from`` line in the body prefix as generated loader
-boilerplate, so a user import placed after the generated obj-load was
-silently dropped on extraction and the re-emitted file no longer ran
-standalone.  Imports are only loader boilerplate while they precede the
-load; position must otherwise be irrelevant.
+CODE_REVIEW.md round-trip cluster (item 5.6): External File extraction once
+treated *every* ``import``/``from`` line in the body prefix as generated
+loader boilerplate, so a user import was silently dropped on extraction and
+the re-emitted file no longer ran standalone.  An External File hook now
+generates exactly one statement before the user's code — ``df = <first
+input>`` — so every import is the user's, wherever it sits, and the binding
+is generated only as the first statement.
 
 The production path under test (the GUI save/load cycle):
 
@@ -38,9 +39,8 @@ import pytest
 from haute._code_extraction import (
     INCOMPLETE_TRANSFORM_BODY,
     POLARS_OUTPUT_DECLARATION,
-    _extract_external_user_code,
-    _extract_user_code,
     _unwrap_chain_assignment,
+    extract_user_code,
 )
 from haute.codegen import graph_to_code
 from haute.errors import ParseError
@@ -58,10 +58,8 @@ pipeline = Pipeline("demo")
 
 
 @pipeline.data_input(config="config/data_input/up.json")
-def up() -> pl.LazyFrame:
+def up():
     """src"""
-    df = pl.scan_parquet("data.parquet")
-    return df
 
 '''
 
@@ -74,7 +72,15 @@ def clean(up: pl.LazyFrame) -> pl.LazyFrame:
 
 _EXTERNAL_NODE = '''
 @pipeline.external_file(config="config/load_file/lookup.json")
-def lookup(up: pl.LazyFrame) -> pl.LazyFrame:
+def lookup(up: pl.LazyFrame, *, obj) -> pl.LazyFrame:
+    """ext"""
+{body}
+'''
+
+
+_DISCONNECTED_EXTERNAL_NODE = '''
+@pipeline.external_file(config="config/load_file/lookup.json")
+def lookup(*, obj) -> pl.LazyFrame:
     """ext"""
 {body}
 '''
@@ -329,114 +335,109 @@ class TestExtractionFailsLoudOnUnparseableBodies:
 
     def test_polars_unparseable_body_raises(self) -> None:
         with pytest.raises(ParseError):
-            _extract_user_code("    df = (a + b\n    return df", ["up"])
+            extract_user_code("    df = (a + b\n    return df", kind="polars", param_names=["up"])
+
+    def test_hook_unparseable_body_raises(self) -> None:
+        with pytest.raises(ParseError):
+            extract_user_code("    df = df.foo(\n    return df", kind="hook")
 
     def test_external_unparseable_body_raises(self) -> None:
         with pytest.raises(ParseError):
-            _extract_external_user_code(
-                "    obj = load_external_object_from_config('config/load_file/m.json')\n"
-                "    df = df.foo(\n"
-                "    return df",
-                ["df"],
+            extract_user_code(
+                "    df = up\n    df = df.foo(\n    return df",
+                kind="external",
+                param_names=["up"],
             )
 
 
 def test_generated_polars_output_declaration_is_not_user_code() -> None:
     body = "df: pl.LazyFrame\n_ = source\nreturn df"
 
-    assert _extract_user_code(body, ["source"]) == "_ = source"
+    assert extract_user_code(body, kind="polars", param_names=["source"]) == "_ = source"
 
 
 def test_generated_output_declaration_and_empty_placeholder_are_both_scaffold() -> None:
     body = POLARS_OUTPUT_DECLARATION + INCOMPLETE_TRANSFORM_BODY
 
-    assert _extract_user_code(body, ["source"]) == ""
+    assert extract_user_code(body, kind="polars", param_names=["source"]) == ""
 
 
 # ---------------------------------------------------------------------------
 # 5.6 — external-file imports survive extraction wherever they appear
 # ---------------------------------------------------------------------------
 
-_GENERATED_LOAD_PREFIX = [
-    "from pathlib import Path",
-    "from haute.graph_utils import load_external_object_from_config",
-    'obj = load_external_object_from_config("config/load_file/lookup.json")',
-]
+#: The External File hook's one generated leading statement, for input ``up``.
+_GENERATED_BINDING = ["df = up"]
+
+
+def _external(body_lines: list[str], param_names: list[str] | None = None) -> str:
+    return extract_user_code(
+        "\n".join(body_lines), kind="external", param_names=param_names or ["up"]
+    )
 
 
 class TestExternalImportPreservation:
     """User imports are user code regardless of where they sit.
 
-    Loader imports are only generated BEFORE the obj-load (see the
-    ``_EXTERNAL`` codegen template); once the load has been consumed,
-    every later line — including imports — is user code.  A body with no
-    load at all has no generated boilerplate, so its imports are user
-    code too.
+    The only generated statement before an External File hook's code is
+    ``df = <first input>`` (see ``_configured_node`` in the codegen
+    builders), and only as the first statement. Every import is the user's:
+    after the binding, between statements, or before a binding the user
+    wrote themselves.
     """
 
-    def test_import_directly_after_obj_load_is_preserved(self) -> None:
-        body = "\n".join(
+    def test_import_directly_after_the_binding_is_preserved(self) -> None:
+        result = _external(
             [
-                *_GENERATED_LOAD_PREFIX,
+                *_GENERATED_BINDING,
                 "import numpy as np",
                 "df = df.with_columns(pred=pl.lit(float(np.float64(0.5))))",
                 "return df",
             ]
         )
-        result = _extract_external_user_code(body, ["df"])
         assert result == (
             "import numpy as np\ndf = df.with_columns(pred=pl.lit(float(np.float64(0.5))))"
         )
 
-    def test_generated_df_input_binding_after_obj_load_is_stripped(self) -> None:
-        body = "\n".join(
+    def test_generated_binding_is_stripped(self) -> None:
+        result = _external(
             [
-                *_GENERATED_LOAD_PREFIX,
                 "df = features",
                 "df = df.with_columns(prediction=pl.lit(obj))",
                 "return df",
-            ]
+            ],
+            ["features"],
         )
 
-        assert _extract_external_user_code(body, ["features"]) == (
-            "df = df.with_columns(prediction=pl.lit(obj))"
-        )
+        assert result == "df = df.with_columns(prediction=pl.lit(obj))"
 
-    def test_assignment_from_a_non_first_input_after_obj_load_is_user_code(self) -> None:
-        body = "\n".join(
+    def test_assignment_from_a_non_first_input_is_user_code(self) -> None:
+        result = _external(["df = regions", "return df"], ["features", "regions"])
+
+        assert result == "df = regions"
+
+    def test_from_import_after_the_binding_is_preserved(self) -> None:
+        result = _external(
             [
-                *_GENERATED_LOAD_PREFIX,
-                "df = regions",
-                "return df",
-            ]
-        )
-
-        assert _extract_external_user_code(body, ["features", "regions"]) == "df = regions"
-
-    def test_from_import_after_obj_load_is_preserved(self) -> None:
-        body = "\n".join(
-            [
-                *_GENERATED_LOAD_PREFIX,
+                *_GENERATED_BINDING,
                 "from json import dumps",
                 'df = df.with_columns(meta=pl.lit(dumps({"k": 1})))',
                 "return df",
             ]
         )
-        result = _extract_external_user_code(body, ["df"])
         assert result.startswith("from json import dumps\n")
         assert "dumps" in result
 
     def test_import_between_user_statements_is_preserved(self) -> None:
-        body = "\n".join(
+        result = _external(
             [
-                *_GENERATED_LOAD_PREFIX,
+                *_GENERATED_BINDING,
                 "df = df.with_columns(a=pl.lit(1))",
                 "import json",
                 'df = df.with_columns(b=pl.lit(json.dumps({"k": 1})))',
                 "return df",
             ]
         )
-        result = _extract_external_user_code(body, ["df"])
         assert result == (
             "df = df.with_columns(a=pl.lit(1))\n"
             "import json\n"
@@ -444,9 +445,9 @@ class TestExternalImportPreservation:
         )
 
     def test_multiple_imports_interleaved_with_code_are_preserved(self) -> None:
-        body = "\n".join(
+        result = _external(
             [
-                *_GENERATED_LOAD_PREFIX,
+                *_GENERATED_BINDING,
                 "import numpy as np",
                 "df = df.with_columns(a=pl.lit(float(np.pi)))",
                 "from json import dumps",
@@ -454,7 +455,6 @@ class TestExternalImportPreservation:
                 "return df",
             ]
         )
-        result = _extract_external_user_code(body, ["df"])
         assert result == (
             "import numpy as np\n"
             "df = df.with_columns(a=pl.lit(float(np.pi)))\n"
@@ -462,47 +462,70 @@ class TestExternalImportPreservation:
             'df = df.with_columns(b=pl.lit(dumps({"k": 1})))'
         )
 
-    def test_no_load_body_keeps_its_imports(self) -> None:
-        # No load boilerplate exists, so nothing is generated — the
-        # imports belong to the user.
-        body = "import numpy as np\ndf = df.with_columns(y=pl.lit(float(np.pi)))\nreturn df"
-        result = _extract_external_user_code(body, ["df"])
-        assert result == ("import numpy as np\ndf = df.with_columns(y=pl.lit(float(np.pi)))")
+    def test_body_without_the_binding_keeps_its_imports(self) -> None:
+        # No binding was generated (the user starts from the input by name),
+        # so nothing is stripped — the imports belong to the user.
+        result = _external(
+            ["import numpy as np", "df = up.with_columns(y=pl.lit(float(np.pi)))", "return df"]
+        )
+        assert result == "import numpy as np\ndf = up.with_columns(y=pl.lit(float(np.pi)))"
+
+    def test_import_before_the_binding_keeps_the_binding_as_user_code(self) -> None:
+        # The binding is generated only as the first statement: after a user
+        # import, ``df = up`` is the user's own line.
+        result = _external(["import numpy as np", "df = up", "return df"])
+        assert result == "import numpy as np\ndf = up"
 
     def test_pure_boilerplate_body_still_returns_empty(self) -> None:
-        body = "\n".join([*_GENERATED_LOAD_PREFIX, "return df"])
-        assert _extract_external_user_code(body, ["df"]) == ""
+        assert _external([*_GENERATED_BINDING, "return df"]) == ""
 
-    def test_production_roundtrip_keeps_import_after_load(self, tmp_path: Path) -> None:
+    def test_production_roundtrip_keeps_import_after_binding(self, tmp_path: Path) -> None:
         """RED before the fix: the import vanished from the code box and
         the re-emitted file referenced ``np`` without importing it —
         the saved file no longer ran standalone."""
         body_lines = [
-            "from pathlib import Path",
-            "from haute.graph_utils import load_external_object_from_config",
-            'obj = load_external_object_from_config("config/load_file/lookup.json")',
+            *_GENERATED_BINDING,
             "import numpy as np",
-            "df = up.with_columns(pred=pl.lit(float(np.float64(0.5))))",
+            "df = df.with_columns(pred=pl.lit(float(np.float64(0.5))))",
             "return df",
         ]
         box1, regen1, box2, regen2 = _roundtrip_node_code(
             _EXTERNAL_NODE, body_lines, "lookup", tmp_path
         )
         assert box1 == (
-            "import numpy as np\ndf = up.with_columns(pred=pl.lit(float(np.float64(0.5))))"
+            "import numpy as np\ndf = df.with_columns(pred=pl.lit(float(np.float64(0.5))))"
         )
-        # The re-emitted function must still import numpy for standalone use.
+        # The re-emitted hook binds its input, then still imports numpy for
+        # standalone use.
         fn_body = regen1.split("def lookup(")[1]
-        assert "import numpy as np" in fn_body
+        assert fn_body.startswith('up: pl.LazyFrame, *, obj) -> pl.LazyFrame:\n    """ext"""\n')
+        assert "    df = up\n    import numpy as np\n" in fn_body
+        assert box2 == box1
+        assert _node_block(regen2, "lookup") == _node_block(regen1, "lookup")
+
+    def test_a_disconnected_hook_keeps_its_own_binding_of_obj(self, tmp_path: Path) -> None:
+        """With no input nothing is generated before the code: ``df = obj`` is the user's.
+
+        The keyword-only ``obj`` is not an input, so the binding matcher must
+        not mistake the user's first line for the generated one.
+        """
+        box1, regen1, box2, regen2 = _roundtrip_node_code(
+            _DISCONNECTED_EXTERNAL_NODE,
+            ["df = obj", "df = df.head(1)", "return df"],
+            "lookup",
+            tmp_path,
+        )
+        assert box1 == "df = obj\ndf = df.head(1)"
+        assert "def lookup(*, obj) -> pl.LazyFrame:\n" in regen1
+        assert '    """ext"""\n    df = obj\n    df = df.head(1)\n    return df\n' in regen1
         assert box2 == box1
         assert _node_block(regen2, "lookup") == _node_block(regen1, "lookup")
 
     def test_production_roundtrip_interleaved_imports(self, tmp_path: Path) -> None:
         body_lines = [
-            "from haute.graph_utils import load_external_object_from_config",
-            'obj = load_external_object_from_config("config/load_file/lookup.json")',
+            *_GENERATED_BINDING,
             "import numpy as np",
-            "df = up.with_columns(a=pl.lit(float(np.pi)))",
+            "df = df.with_columns(a=pl.lit(float(np.pi)))",
             "from json import dumps",
             'df = df.with_columns(b=pl.lit(dumps({"k": 1})))',
             "return df",
@@ -512,7 +535,7 @@ class TestExternalImportPreservation:
         )
         assert box1 == (
             "import numpy as np\n"
-            "df = up.with_columns(a=pl.lit(float(np.pi)))\n"
+            "df = df.with_columns(a=pl.lit(float(np.pi)))\n"
             "from json import dumps\n"
             'df = df.with_columns(b=pl.lit(dumps({"k": 1})))'
         )

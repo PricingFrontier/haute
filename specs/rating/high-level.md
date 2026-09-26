@@ -143,9 +143,10 @@ Out of scope (owned by neighbouring components):
   independent of *how* the config was authored (GUI node vs. hand-written
   `pipeline.banding(...)` decorator) or *where* it executes (interactive
   preview vs. a saved standalone script). `apply_banding_from_config` /
-  `apply_rating_step_from_config` are the generated-code twins of the
-  executor's node builders specifically so a saved pipeline file reproduces
-  GUI preview behaviour exactly — see
+  `apply_rating_step_from_config` are the standalone twins of the
+  executor's node builders: a saved pipeline file's Banding and Rating Step
+  decorators call them, so running the file reproduces GUI preview behaviour
+  exactly — see
   [execution-engine](../execution-engine/high-level.md).
 - **Fail loud on ambiguous or silently-lossy config**, per project convention:
   a rating-table miss with no default raises rather than quietly rating at a
@@ -211,11 +212,12 @@ Out of scope (owned by neighbouring components):
   routes `BANDING`/`RATING_STEP` sidecar JSON through
   `expand_banding_config_from_sidecar` and `normalise_rating_step_config`
   on load. Rating-step sidecars use the same canonical normaliser on save.
-- **[codegen](../codegen/high-level.md)** — emits `apply_banding_from_config(...)`
-  / `apply_rating_step_from_config(...)` calls into generated standalone
-  pipeline scripts, and `_code_extraction.py` locates the boundary between
-  the generated table/combine scaffold and any user-authored post-processing
-  code in a rating step.
+- **[codegen](../codegen/high-level.md)** — emits Banding and Rating Step
+  nodes as declarations (or, with post-processing code, as a `df` hook) whose
+  decorators apply the sidecar through `apply_banding_from_config` /
+  `apply_rating_step_from_config` in a standalone run
+  ([pipeline-config](../pipeline-config/high-level.md)); `_code_extraction.py`
+  recovers a rating step's post-processing code from the hook body.
 - **[tracing](../tracing/high-level.md)** — `_trace_enrichment.py` imports
   `normalise_rating_key` and `normalise_rating_tables`/`normalise_banding_factors`
   to build the structured `rating_step`/`banding` trace detail payloads shown

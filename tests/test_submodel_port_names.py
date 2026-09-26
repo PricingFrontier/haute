@@ -282,8 +282,8 @@ def test_codegen_emits_name_and_never_label_or_portid():
     )
     files = graph_to_code_multi(parent_graph, pipeline_name="main")
     sub_code = files["modules/sub_test.py"]
-    assert "'name': 'in_data'" in sub_code
-    assert "'name': 'out_data'" in sub_code
+    assert '"name": "in_data"' in sub_code
+    assert '"name": "out_data"' in sub_code
     assert "label" not in sub_code
     assert "portId" not in sub_code
 

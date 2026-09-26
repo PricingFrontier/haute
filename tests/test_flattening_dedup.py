@@ -335,6 +335,7 @@ class TestParsePipelineFlattenRegression:
                         "source": {"nodeId": "Finalise", "handleId": None},
                     }
                 ],
+                pipeline_dir="..",
             )
 
             @submodel.polars
@@ -353,14 +354,12 @@ class TestParsePipelineFlattenRegression:
             tmp_path,
             "main.py",
             f"""\
-            import polars as pl
             import haute
 
             pipeline = haute.Pipeline("root")
 
             @pipeline.data_input(config="{source_config}")
-            def Source() -> pl.LazyFrame:
-                return pl.scan_parquet("data/in.parquet")
+            def Source(): ...
 
             pipeline.submodel(
                 "modules/scoring.py",
@@ -408,6 +407,7 @@ class TestParsePipelineFlattenRegression:
                     }
                 ],
                 output_ports=[],
+                pipeline_dir="..",
             )
 
             @submodel.polars
@@ -420,14 +420,12 @@ class TestParsePipelineFlattenRegression:
             tmp_path,
             "main.py",
             f"""\
-            import polars as pl
             import haute
 
             pipeline = haute.Pipeline("root")
 
             @pipeline.data_input(config="{source_config}")
-            def Source() -> pl.LazyFrame:
-                return pl.scan_parquet("data/in.parquet")
+            def Source(): ...
 
             pipeline.submodel(
                 "modules/scoring.py",

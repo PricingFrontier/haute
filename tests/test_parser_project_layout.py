@@ -37,6 +37,7 @@ submodel = haute.Submodel(
     definition_id="scoring",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 
 
@@ -48,15 +49,13 @@ def score() -> pl.LazyFrame:
     _write(
         tmp_path / "rating" / "main.py",
         f"""\
-import polars as pl
 import haute
 
 pipeline = haute.Pipeline("nested_paths")
 
 
 @pipeline.data_input(config="{source_config}")
-def raw_rows() -> pl.LazyFrame:
-    return pl.scan_parquet("data/sample.parquet")
+def raw_rows(): ...
 
 
 pipeline.submodel(
@@ -95,6 +94,7 @@ submodel = haute.Submodel(
     definition_id="root_scoring",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 
 
@@ -106,7 +106,6 @@ def root_score(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
     _write(
         tmp_path / "rating" / "modules" / "scoring.py",
         """\
-import polars as pl
 import haute
 
 submodel = haute.Submodel(
@@ -114,12 +113,12 @@ submodel = haute.Submodel(
     definition_id="rating_scoring",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 
 
 @submodel.data_input(config="config/data_input/rating_source.json")
-def rating_score() -> pl.LazyFrame:
-    return pl.scan_parquet("rating-data.parquet")
+def rating_score(): ...
 """,
     )
     write_data_input_config(

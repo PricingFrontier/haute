@@ -1,5 +1,4 @@
-"""Codegen builder registry — per-type ``_gen_*`` functions that emit
-Python source for each :class:`NodeType`.
+"""Codegen builder registry — per-type ``_gen_*`` functions describing each node.
 
 Paired with the exec-side builders in :mod:`haute._builders` via the
 unified :data:`haute._registry.NODE_REGISTRY`.  The orchestration module
@@ -15,6 +14,14 @@ Layering:
                                      ``graph_to_code_multi``, pipeline-
                                      level assembly.
 
+A builder returns a :class:`NodeSource`: what the node's generated function
+says, before layout. Every node type except ``polars`` is configured — its
+decorator performs the node's work when the file runs on its own
+(:mod:`haute._standalone_nodes`) — so its function is a *declaration* (the
+inputs and a ``...`` body) or, when the user wrote code, a *hook* that takes
+the configured result as ``df``. :func:`render_node_source` prints a
+``NodeSource`` the way ``ruff format`` would.
+
 SUBMODEL / SUBMODEL_PORT are registered with codegen builders that raise
 loudly.  By the time codegen dispatches on a node, the submodel boundary
 has already been handled — either ``graph_to_code_multi`` emitted the
@@ -26,8 +33,10 @@ has broken; fail loudly rather than emitting silent passthrough code.
 
 from __future__ import annotations
 
-import math
-from collections.abc import Callable
+import ast
+import symtable
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from haute._code_extraction import (
@@ -54,17 +63,15 @@ from haute._polars_steps import (
 )
 from haute._rating import _normalise_combined_outputs
 from haute._rating_step_config import normalise_rating_tables
-from haute._registry import (
-    MODELLING_NODE_SEMANTICS,
-    CodegenFn,
-    NodeInputPolicy,
-)
+from haute._registry import CodegenFn
 from haute._registry import (
     register_codegen as _register_codegen_in_registry,
 )
 from haute._registry import (
     set_codegen as _set_codegen_in_registry,
 )
+from haute._source_layout import INDENT, Doc, arguments, literal, print_doc
+from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import (
     COLUMN_CONFIG_KEYS,
     NODE_TYPE_TO_DECORATOR,
@@ -73,63 +80,39 @@ from haute._types import (
 )
 from haute.errors import ConfigError, HauteError, ParseError
 
-# ---------------------------------------------------------------------------
-# String-safety helpers — double-quoted Python literals with proper escaping.
-# ---------------------------------------------------------------------------
-
-
-def _safe_str(value: str) -> str:
-    """Produce a double-quoted Python string literal with proper escaping.
-
-    Escapes backslashes, double quotes, and newlines to prevent code
-    injection via config values.
-    """
-    escaped = (
-        value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
-    )
-    return f'"{escaped}"'
-
-
-def _safe_path(value: str) -> str:
-    """Produce a double-quoted Python path literal with forward slashes.
-
-    Normalises Windows backslashes to forward slashes before escaping,
-    so generated code is cross-platform.  Python and Polars handle
-    forward slashes on all operating systems.
-    """
-    return _safe_str(value.replace("\\", "/"))
+#: The annotation every frame parameter and code-carrying function returns.
+FRAME = "pl.LazyFrame"
 
 
 # ---------------------------------------------------------------------------
-# Common helpers shared across builders.
+# What a node's function says, and how it prints.
 # ---------------------------------------------------------------------------
 
 
-def _build_extra_kwargs(config: dict, keys: tuple[str, ...]) -> list[str]:
-    """Build ``"key={value!r}"`` decorator kwarg strings for present config keys.
+@dataclass(frozen=True, slots=True)
+class Param:
+    """One function parameter; declarations leave ``annotation`` unset."""
 
-    Skips keys whose value is ``None``, ``""``, or ``[]``.
+    name: str
+    annotation: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NodeSource:
+    """A node's generated function before layout.
+
+    ``body`` is ``None`` for a declaration: its body is ``...`` (or the
+    docstring alone) and it carries no annotations. Otherwise it is the
+    function's statements, unindented, including any closing ``return df``.
     """
-    parts: list[str] = []
-    for key in keys:
-        val = config.get(key)
-        if val is not None and val != "" and val != []:
-            parts.append(f"{key}={val!r}")
-    return parts
 
-
-def _build_params(source_names: list[str], *, default_df: bool = True) -> str:
-    """Build the function parameter string from supplied per-edge names.
-
-    The graph orchestrator validates duplicate names before reaching a
-    builder.  This helper also asserts that upstream invariant defensively;
-    inventing suffixes here would make generated signatures disagree with the
-    executor's edge-derived bindings.
-    """
-    names = source_names or (["df"] if default_df else [])
-    duplicates = duplicate_input_names(names)
-    assert not duplicates, f"duplicate codegen input name(s): {duplicates!r}"
-    return ", ".join(f"{name}: pl.LazyFrame" for name in names)
+    decorator: str
+    keywords: tuple[tuple[str, object], ...]
+    params: tuple[Param, ...]
+    keyword_only: tuple[Param, ...] = ()
+    returns: str | None = None
+    description: str = ""
+    body: str | None = None
 
 
 def _sanitize_description(desc: str) -> str:
@@ -161,13 +144,8 @@ def _sanitize_description(desc: str) -> str:
       the first line's leading whitespace and the minimum common
       indent of the remaining lines, which otherwise corrupts user-
       authored indented multi-line descriptions.
-    - Curly braces are left untouched.  The sanitized value is always
-      supplied to the per-type templates as a ``str.format`` *keyword
-      argument* (or an f-string value) — never spliced into template
-      text — and ``str.format`` does not re-scan substituted values
-      for replacement fields.  Doubling braces here landed the doubled
-      braces literally in the emitted docstring, which the parser read
-      back doubled, growing the description on every save/load cycle.
+    - Curly braces are left untouched: the value is never spliced into a
+      format template.
     """
     # Neutralise cleandoc: prepend a newline when desc has newlines or
     # leading/trailing whitespace that cleandoc would strip.  For all-ASCII
@@ -180,164 +158,149 @@ def _sanitize_description(desc: str) -> str:
     # escape sequences (backslash-U, backslash-N, etc).
     escaped = value.replace("\\", "\\\\")
     # Escape every " so no triple-quote run can form inside the docstring
-    # and prematurely close the enclosing """ literal.  Braces are NOT
-    # escaped — see the docstring above.
+    # and prematurely close the enclosing """ literal.
     escaped = escaped.replace('"', '\\"')
     return escaped
 
 
-def _common_node_fields(node: GraphNode) -> tuple[str, str, dict]:
-    """Extract the (func_name, description, config) triple used by every builder.
+def _docstring_lines(description: str) -> list[str]:
+    """The indented docstring for *description*, continuation lines indented as ruff does.
 
-    The description is sanitised so that triple-quotes, backslash escape
-    sequences, and multi-line content cannot break the generated docstring
-    AND so that ``ast.get_docstring`` round-trips it bit-for-bit.  An
-    intentionally-empty description is preserved as-is (it becomes
-    ``\"\"\"\"\"\"``) — we do not substitute a ``<label> node`` placeholder,
-    because that would make the round-trip lossy.
+    ``inspect.cleandoc`` removes that common indentation again on read, so the
+    round trip is unchanged. It measures the indentation on lines with text
+    only, so continuation lines that are all whitespace stay as they are.
     """
-    data = node.data
-    return (
-        _sanitize_func_name(data.label),
-        _sanitize_description(data.description),
-        data.config,
+    first, *rest = _sanitize_description(description).split("\n")
+    if any(line.strip() for line in rest):
+        rest = [f"{INDENT}{line}" if line else "" for line in rest]
+    lines = [f'"""{first}', *rest]
+    lines[-1] += '"""'
+    return [f"{INDENT}{lines[0]}", *lines[1:]]
+
+
+def _starts_with_string(body: str) -> bool:
+    """Whether the body's first statement is a bare string, which would read as a docstring."""
+    try:
+        statements = ast.parse(body).body
+    except SyntaxError:
+        return False
+    return bool(
+        statements
+        and isinstance(statements[0], ast.Expr)
+        and isinstance(statements[0].value, ast.Constant)
+        and isinstance(statements[0].value.value, str)
     )
 
 
-def _first_source(source_names: list[str]) -> str:
-    """Return the first upstream name, defaulting to ``"df"``."""
-    return source_names[0] if source_names else "df"
+def _param_doc(param: Param) -> Doc:
+    return param.name if param.annotation is None else f"{param.name}: {param.annotation}"
 
 
-def _format_kwarg_source(key: str, value: Any) -> str:
-    """Format a Python keyword argument with stable string quoting."""
-    if isinstance(value, str):
-        return f"{key}={_safe_str(value)}"
-    return f"{key}={value!r}"
+def render_node_source(
+    source: NodeSource,
+    *,
+    func_name: str,
+    receiver: str = "pipeline",
+    extra_keywords: Sequence[tuple[str, object]] = (),
+) -> str:
+    """Print a node's function the way ``ruff format`` lays it out."""
+    keywords = [*source.keywords, *extra_keywords]
+    decorator: Doc = f"@{receiver}.{source.decorator}"
+    if keywords:
+        decorator = [
+            decorator,
+            arguments("(", [[name, "=", literal(value)] for name, value in keywords], ")"),
+        ]
+    entries: list[Doc] = [_param_doc(param) for param in source.params]
+    if source.keyword_only:
+        entries.append("*")
+        entries.extend(_param_doc(param) for param in source.keyword_only)
+    returns = f" -> {source.returns}" if source.returns else ""
+    one_line_declaration = source.body is None and not source.description
+    signature = [f"def {func_name}", arguments("(", entries, ")", signature=True), f"{returns}:"]
+    if one_line_declaration:
+        signature.append(" ...")
+    lines = [print_doc(decorator), print_doc(signature)]
+    if source.description:
+        lines.extend(_docstring_lines(source.description))
+    if source.body is not None:
+        if not source.description and _starts_with_string(source.body):
+            # Keep a leading string in the code: an empty docstring comes first.
+            lines.append(f'{INDENT}""""""')
+        lines.extend(f"{INDENT}{line}" if line.strip() else "" for line in source.body.splitlines())
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
-# Template fragments for each node type
+# Shared builder helpers.
 # ---------------------------------------------------------------------------
 
 
-_LIVE_SWITCH = '''\
-{decorator}
-def {func_name}({params}) -> pl.LazyFrame:
-    """{description}"""
-    from haute._model_scorer import _scenario_ctx
-    from haute.graph_utils import select_live_switch_input
-    return select_live_switch_input(
-        {input_scenario_map_repr}, _scenario_ctx.get(),
-        {frames_dict}, {input_order_repr}, switch={switch_repr},
-    )
-'''
-
-_MODEL_SCORE = '''\
-{decorator}
-def {func_name}({params}) -> pl.LazyFrame:
-    """{description}"""
-    from haute.graph_utils import score_from_config
-    base = str(_HAUTE_CONFIG_BASE)
-    df = score_from_config({first_param}, config={config_path_repr}, base_dir=base)
-    return df
-'''
+def _build_extra_kwargs(config: dict, keys: tuple[str, ...]) -> list[tuple[str, object]]:
+    """Decorator keywords for present config keys, skipping ``None``, ``""`` and ``[]``."""
+    return [
+        (key, config[key])
+        for key in keys
+        if config.get(key) is not None and config.get(key) != "" and config.get(key) != []
+    ]
 
 
-def _retained_api_input_template(decorator: str, config_path: str) -> str:
-    """Emit an API input whose loader is entirely driven by its sidecar."""
-    return f'''\
-{decorator}
-def {{func_name}}() -> pl.LazyFrame | dict[str, pl.LazyFrame]:
-    """{{description}}"""
-    from haute.graph_utils import resolve_api_input_from_config
-    return resolve_api_input_from_config(
-        {_safe_path(config_path)}, base_dir=_HAUTE_CONFIG_BASE
-    )
-'''
+def _params(names: Sequence[str], annotation: str | None = None) -> tuple[Param, ...]:
+    """Parameters for the per-edge input names supplied by the orchestrator.
+
+    The graph orchestrator validates duplicate names before reaching a
+    builder.  This helper also asserts that upstream invariant defensively;
+    inventing suffixes here would make generated signatures disagree with the
+    executor's edge-derived bindings.
+    """
+    duplicates = duplicate_input_names(list(names))
+    assert not duplicates, f"duplicate codegen input name(s): {duplicates!r}"
+    return tuple(Param(name, annotation) for name in names)
 
 
-_BANDING = '''\
-{decorator}
-def {func_name}({params}) -> pl.LazyFrame:
-    """{description}"""
-    from haute.graph_utils import apply_banding_from_config
-    base = _HAUTE_CONFIG_BASE
-    df = apply_banding_from_config({first}, {config_path_repr}, base_dir=base)
-    return df
-'''
+def _func_name(node: GraphNode) -> str:
+    return _sanitize_func_name(node.data.label)
 
-_RATING_STEP = '''\
-{decorator}
-def {func_name}({params}) -> pl.LazyFrame:
-    """{description}"""
-    from haute.graph_utils import apply_rating_step_from_config
-    base = _HAUTE_CONFIG_BASE
-    df = apply_rating_step_from_config({first}, {config_path_repr}, base_dir=base)
-    return df
-'''
 
-_SCENARIO_EXPANDER = '''\
-{decorator}
-def {func_name}({params}) -> pl.LazyFrame:
-    """{description}"""
-    from haute.graph_utils import expand_scenarios_from_config
-    base = _HAUTE_CONFIG_BASE
-    return expand_scenarios_from_config({first}, {config_path_repr}, base_dir=base)
-'''
+def _config_keywords(node: GraphNode, func_name: str) -> tuple[str, tuple[tuple[str, object], ...]]:
+    """The decorator name and ``config=`` keyword of a config-backed node.
 
-# optimiser / modelling are genuine passthroughs in the executor (preview /
-# training happen via dedicated API routes), so a first-frame passthrough
-# body is runtime-equivalent — they are NOT registered as behavioural.
-_OPTIMISER = '''\
-{decorator}
-def {func_name}({params}) -> pl.LazyFrame:
-    """{description}"""
-    return {first}
-'''
+    The config lives in ``config/<type>/<name>.json`` and is written by the
+    config-io save path, so the decorator carries only that path.
+    """
+    node_type = node.data.nodeType
+    try:
+        decorator = NODE_TYPE_TO_DECORATOR[node_type]
+    except KeyError as exc:
+        raise HauteError(
+            "config-backed node has no registered decorator; this is a codegen bug",
+            node_id=node.id,
+            node_label=node.data.label,
+            node_type=str(node_type),
+        ) from exc
+    config_path = config_path_for_node(node_type, func_name).as_posix()
+    return decorator, (("config", config_path),)
 
-_OPTIMISER_APPLY = '''\
-{decorator}
-def {func_name}({params}) -> pl.LazyFrame:
-    """{description}"""
-    from haute.graph_utils import apply_optimiser_apply_from_config
-    base = _HAUTE_CONFIG_BASE
-    return apply_optimiser_apply_from_config(
-        {args}, config={config_path_repr}, base_dir=base,
-        source_names={source_names_repr},
-    )
-'''
 
-_EXPLORE = '''\
-@pipeline.explore({decorator_args})
-def {func_name}({params}) -> pl.LazyFrame:
-    """{description}"""
-    return {first}
-'''
+def _reject_df_input(node: GraphNode, source_names: Sequence[str]) -> None:
+    """A node that may carry code cannot take an input named ``df``.
 
-_CONSTANT = '''\
-{decorator}
-def {func_name}() -> pl.LazyFrame:
-    """{description}"""
-    return pl.LazyFrame({data_dict})
-'''
-
-_RETAINED_EXTERNAL = '''\
-{decorator}
-def {func_name}({params}) -> pl.LazyFrame:
-    """{description}"""
-    from haute.graph_utils import load_external_object_from_config
-    obj = load_external_object_from_config(
-        {config_path_repr}, base_dir=_HAUTE_CONFIG_BASE
-    )
-{body}
-'''
+    ``df`` names the frame the node produced; a declaration whose first
+    parameter is ``df`` would read as a hook.
+    """
+    if "df" in source_names:
+        raise ConfigError(
+            "Input name 'df' is reserved for the frame this node produces; rename the "
+            "upstream node or frame.",
+            node_id=node.id,
+            node_label=node.data.label,
+        )
 
 
 def _stepped_body_code(
     config: dict, node_type: NodeType, edge_names: list[str]
 ) -> tuple[str, bool]:
-    """The user-code lines a frame-mode surface's body carries.
+    """The user-code lines a frame-mode surface's hook carries.
 
     For a stepped config: the rendering against the surface's eligible input
     names, or ``incomplete=True`` when the steps cannot be rendered (the body
@@ -356,40 +319,59 @@ def _stepped_body_code(
     return rendered, False
 
 
-def _wrap_external_code(code: str, *, input_name: str | None = None) -> str:
-    """Wrap external-file code around its documented implicit ``df`` frame.
-
-    Generated external functions bind their first input to ``df`` before the
-    user-authored multi-statement body, then append ``return df``.
-    """
-    code = code.strip()
-    lines = [f"    df = {input_name}"] if input_name else []
-    if code:
-        lines.extend(f"    {line}" for line in code.splitlines())
-    lines.append("    return df")
-    return "\n".join(lines)
+_INCOMPLETE_STEPS = INCOMPLETE_STEPS_BODY.rstrip("\n")
 
 
-def _wrap_user_code(code: str, source_names: list[str]) -> str:
-    """Wrap user code into indented function body lines.
+def _unindented(body: str) -> str:
+    """A generated body constant written for a function body, at column 0."""
+    return "\n".join(line.removeprefix(INDENT) for line in body.rstrip("\n").splitlines())
 
-    User code must assign to ``df``.  We indent it and append ``return df``.
-    """
-    code = code.strip()
-    if not code:
-        first = source_names[0] if source_names else "df"
-        return f"    return {first}"
 
-    indented = "\n".join(f"    {line}" for line in code.splitlines())
-    return f"{indented}\n    return df"
+def _configured_node(
+    node: GraphNode,
+    source_names: list[str],
+    *,
+    decorator: str,
+    keywords: tuple[tuple[str, object], ...],
+) -> NodeSource:
+    """A configured node's function: a declaration, or a ``df`` hook holding its code."""
+    node_type = node.data.nodeType
+    description = node.data.description
+    if node_type not in CODE_NODE_TYPES:
+        return NodeSource(decorator, keywords, _params(source_names), description=description)
+    _reject_df_input(node, source_names)
+    code, incomplete = _stepped_body_code(node.data.config, node_type, source_names)
+    if not code and not incomplete:
+        return NodeSource(decorator, keywords, _params(source_names), description=description)
+    tail = _unindented(_INCOMPLETE_STEPS) if incomplete else f"{code}\nreturn df"
+    if node_type == NodeType.EXTERNAL_FILE:
+        binding = f"df = {source_names[0]}\n" if source_names else ""
+        return NodeSource(
+            decorator,
+            keywords,
+            _params(source_names, FRAME),
+            keyword_only=(Param("obj"),),
+            returns=FRAME,
+            description=description,
+            body=binding + tail,
+        )
+    params = (Param("df", FRAME), *_params(source_names[1:], FRAME))
+    return NodeSource(
+        decorator, keywords, params, returns=FRAME, description=description, body=tail
+    )
+
+
+def _config_backed(node: GraphNode, source_names: list[str]) -> NodeSource:
+    decorator, keywords = _config_keywords(node, _func_name(node))
+    return _configured_node(node, source_names, decorator=decorator, keywords=keywords)
 
 
 # ---------------------------------------------------------------------------
-# Codegen builder callable signature.
+# Codegen builder callable signature and registration.
 # ---------------------------------------------------------------------------
 
-#: Builder signature: (node, source_names) -> generated Python code string.
-CodegenBuilder = Callable[[GraphNode, list[str]], str]
+#: Builder signature: (node, source_names) -> the node's generated function.
+CodegenBuilder = Callable[[GraphNode, list[str]], NodeSource]
 
 
 def _register_codegen(node_type: NodeType) -> Callable[[CodegenBuilder], CodegenBuilder]:
@@ -400,336 +382,111 @@ def _register_codegen(node_type: NodeType) -> Callable[[CodegenBuilder], Codegen
     return _register_codegen_in_registry(node_type)
 
 
-def _config_decorator(node: GraphNode, func_name: str) -> str:
-    """The decorator line of a config-backed node: a reference to its sidecar.
-
-    The config lives in ``config/<type>/<name>.json`` and is written by the
-    config-io save path, so the decorator carries only that path. Every
-    config-backed builder opens its code with this line.
-    """
-    node_type = node.data.nodeType
-    try:
-        decorator = NODE_TYPE_TO_DECORATOR[node_type]
-    except KeyError as exc:
-        raise HauteError(
-            "config-backed node has no registered decorator; this is a codegen bug",
-            node_id=node.id,
-            node_label=node.data.label,
-            node_type=str(node_type),
-        ) from exc
-    config_path = config_path_for_node(node_type, func_name).as_posix()
-    return f"@pipeline.{decorator}(config={_safe_path(config_path)})"
-
-
 # ---------------------------------------------------------------------------
 # Per-type builders
 # ---------------------------------------------------------------------------
 
 
 @_register_codegen(NodeType.API_INPUT)
-def _gen_api_input(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, config = _common_node_fields(node)
-    cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
-    template = _retained_api_input_template(_config_decorator(node, func_name), cfg_path)
-    return template.format(
-        func_name=func_name,
-        description=description,
-    )
+def _gen_api_input(node: GraphNode, source_names: list[str]) -> NodeSource:
+    return _config_backed(node, source_names)
 
 
 @_register_codegen(NodeType.LIVE_SWITCH)
-def _gen_live_switch(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, config = _common_node_fields(node)
-    params = ", ".join(f"{s}: pl.LazyFrame" for s in source_names)
-    input_scenario_map: dict[str, str] = config.get("input_scenario_map", {})
-    # The body reads the active runtime source from the shared scenario
-    # contextvar (set by Pipeline.run/score) and delegates to the same
-    # selector the executor uses, so a standalone file routes the SAME branch
-    # instead of hard-wiring the "live" input.
-    frames_dict = "{" + ", ".join(f"{s!r}: {s}" for s in source_names) + "}"
-    return _LIVE_SWITCH.format(
-        decorator=_config_decorator(node, func_name),
-        func_name=func_name,
-        description=description,
-        params=params,
-        input_scenario_map_repr=repr(input_scenario_map),
-        frames_dict=frames_dict,
-        input_order_repr=repr(list(source_names)),
-        switch_repr=repr(func_name),
-    )
+def _gen_live_switch(node: GraphNode, source_names: list[str]) -> NodeSource:
+    # The decorator reads the input-to-scenario map from the sidecar and routes
+    # the active scenario's input, as the executor does.
+    return _config_backed(node, source_names)
 
 
 @_register_codegen(NodeType.CONSTANT)
-def _gen_constant(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, config = _common_node_fields(node)
-    raw_values = config.get("values", []) or []
-    # Build a dict literal for the LazyFrame constructor.  Mirror the executor
-    # (_build_constant): a missing/empty name is skipped (not emitted as a
-    # default "col" column), and a None value becomes a null literal rather
-    # than raising AttributeError on ``_safe_str(None)``.
-    data_pairs: list[str] = []
-    for v in raw_values:
-        name = v.get("name") or ""
-        if not name:
-            continue
-        val = v.get("value", "")
-        # Try numeric coercion for the code literal
-        try:
-            num = float(val)
-            if math.isnan(num):
-                data_pairs.append(f"{_safe_str(name)}: [float('nan')]")
-            elif math.isinf(num):
-                sign = "" if num > 0 else "-"
-                data_pairs.append(f"{_safe_str(name)}: [float('{sign}inf')]")
-            else:
-                data_pairs.append(f"{_safe_str(name)}: [{num!r}]")
-        except (ValueError, TypeError):
-            if val is None:
-                data_pairs.append(f"{_safe_str(name)}: [None]")
-            else:
-                data_pairs.append(f"{_safe_str(name)}: [{_safe_str(str(val))}]")
-    data_dict = "{" + ", ".join(data_pairs) + "}" if data_pairs else '{"constant": [0]}'
-    return _CONSTANT.format(
-        decorator=_config_decorator(node, func_name),
-        func_name=func_name,
-        description=description,
-        data_dict=data_dict,
-    )
+def _gen_constant(node: GraphNode, source_names: list[str]) -> NodeSource:
+    return _config_backed(node, source_names)
 
 
 @_register_codegen(NodeType.MODEL_SCORE)
-def _gen_model_score(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, config = _common_node_fields(node)
-    user_code, incomplete = _stepped_body_code(config, NodeType.MODEL_SCORE, source_names)
-    params = _build_params(source_names)
-    first_param = _first_source(source_names)
-    cfg_path = config_path_for_node(NodeType.MODEL_SCORE, func_name).as_posix()
-    decorator = _config_decorator(node, func_name)
-
-    if user_code or incomplete:
-        user_body = (
-            INCOMPLETE_STEPS_BODY.rstrip("\n") if incomplete else _wrap_user_code(user_code, ["df"])
-        )
-        return (
-            f"{decorator}\n"
-            f"def {func_name}({params}) -> pl.LazyFrame:\n"
-            f'    """{description}"""\n'
-            f"    from haute.graph_utils import score_from_config\n"
-            f"    base = str(_HAUTE_CONFIG_BASE)\n"
-            f"    df = score_from_config(\n"
-            f"        {first_param}, config={_safe_path(cfg_path)},\n"
-            f"        base_dir=base,\n"
-            f"    )\n"
-            f"{user_body}\n"
-        )
-
-    return _MODEL_SCORE.format(
-        decorator=decorator,
-        func_name=func_name,
-        description=description,
-        params=params,
-        first_param=first_param,
-        config_path_repr=_safe_path(cfg_path),
-    )
+def _gen_model_score(node: GraphNode, source_names: list[str]) -> NodeSource:
+    return _config_backed(node, source_names)
 
 
 @_register_codegen(NodeType.BANDING)
-def _gen_banding(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, _config = _common_node_fields(node)
-    # The body applies the sidecar config at runtime — the same pattern
-    # rating bodies use — so a standalone `pipeline.run()` of the saved
-    # file bands instead of silently passing the frame through.
-    config_path_repr = _safe_path(config_path_for_node(NodeType.BANDING, func_name).as_posix())
-    return _BANDING.format(
-        decorator=_config_decorator(node, func_name),
-        func_name=func_name,
-        description=description,
-        params=_build_params(source_names),
-        first=_first_source(source_names),
-        config_path_repr=config_path_repr,
-    )
+def _gen_banding(node: GraphNode, source_names: list[str]) -> NodeSource:
+    return _config_backed(node, source_names)
 
 
 @_register_codegen(NodeType.RATING_STEP)
-def _gen_rating_step(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, config = _common_node_fields(node)
+def _gen_rating_step(node: GraphNode, source_names: list[str]) -> NodeSource:
     # Codegen runs at save: a malformed table or combined-output shape fails
     # here as it would at execution, though neither is rendered into the code.
-    normalise_rating_tables(config)
-    _normalise_combined_outputs(config)
-    params = _build_params(source_names)
-    first = _first_source(source_names)
-    code, incomplete = _stepped_body_code(config, NodeType.RATING_STEP, source_names)
-    decorator = _config_decorator(node, func_name)
-    config_path_repr = _safe_path(config_path_for_node(NodeType.RATING_STEP, func_name).as_posix())
-    if code or incomplete:
-        user_body = (
-            INCOMPLETE_STEPS_BODY.rstrip("\n") if incomplete else _wrap_user_code(code, ["df"])
-        )
-        return (
-            f"{decorator}\n"
-            f"def {func_name}({params}) -> pl.LazyFrame:\n"
-            f'    """{description}"""\n'
-            f"    from haute.graph_utils import apply_rating_step_from_config\n"
-            f"    base = _HAUTE_CONFIG_BASE\n"
-            f"    df = apply_rating_step_from_config({first}, {config_path_repr}, base_dir=base)\n"
-            f"{user_body}\n"
-        )
-    return _RATING_STEP.format(
-        decorator=decorator,
-        func_name=func_name,
-        description=description,
-        params=params,
-        first=first,
-        config_path_repr=config_path_repr,
-    )
+    normalise_rating_tables(node.data.config)
+    _normalise_combined_outputs(node.data.config)
+    return _config_backed(node, source_names)
 
 
 @_register_codegen(NodeType.SCENARIO_EXPANDER)
-def _gen_scenario_expander(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, config = _common_node_fields(node)
-    params = _build_params(source_names)
-    first = _first_source(source_names)
-    decorator = _config_decorator(node, func_name)
-    config_path_repr = _safe_path(
-        config_path_for_node(NodeType.SCENARIO_EXPANDER, func_name).as_posix()
-    )
-    code, incomplete = _stepped_body_code(config, NodeType.SCENARIO_EXPANDER, source_names)
-
-    # The body applies the sidecar config at runtime — the same shared helper
-    # the executor calls — so a standalone ``pipeline.run()`` expands the
-    # scenario grid instead of silently passing the frame through.
-    if not code and not incomplete:
-        return _SCENARIO_EXPANDER.format(
-            decorator=decorator,
-            func_name=func_name,
-            description=description,
-            params=params,
-            first=first,
-            config_path_repr=config_path_repr,
-        )
-
-    user_body = INCOMPLETE_STEPS_BODY.rstrip("\n") if incomplete else _wrap_user_code(code, ["df"])
-    return (
-        f"{decorator}\n"
-        f"def {func_name}({params}) -> pl.LazyFrame:\n"
-        f'    """{description}"""\n'
-        f"    from haute.graph_utils import expand_scenarios_from_config\n"
-        f"    base = _HAUTE_CONFIG_BASE\n"
-        f"    df = expand_scenarios_from_config({first}, {config_path_repr}, base_dir=base)\n"
-        f"{user_body}\n"
-    )
+def _gen_scenario_expander(node: GraphNode, source_names: list[str]) -> NodeSource:
+    return _config_backed(node, source_names)
 
 
 @_register_codegen(NodeType.OPTIMISER)
-def _gen_optimiser(node: GraphNode, source_names: list[str]) -> str:
-    # Genuine passthrough in the executor (solving happens via the optimiser
-    # solve route), but a multi-input optimiser must pass through its exact
-    # configured data edge rather than whichever edge happens to sort first.
-    func_name, description, config = _common_node_fields(node)
-    data_input = validate_optimiser_input_selectors(
-        node.data.nodeType,
-        config,
-        source_names,
-        node_label=func_name,
+def _gen_optimiser(node: GraphNode, source_names: list[str]) -> NodeSource:
+    # A multi-input optimiser must name its data edge; the decorator passes that
+    # exact input through, so a bad selector fails at save as at execution.
+    validate_optimiser_input_selectors(
+        node.data.nodeType, node.data.config, source_names, node_label=_func_name(node)
     )
-    selected_input = data_input if data_input is not None else _first_source(source_names)
-    return _OPTIMISER.format(
-        decorator=_config_decorator(node, func_name),
-        func_name=func_name,
-        description=description,
-        params=_build_params(source_names),
-        first=selected_input,
-    )
+    return _config_backed(node, source_names)
 
 
-def _modelling_first_source(source_names: list[str]) -> str:
-    """Select modelling's generated return frame from its shared semantics."""
-    if MODELLING_NODE_SEMANTICS.input_policy is NodeInputPolicy.FIRST_CONNECTED:
-        return _first_source(source_names)
-    raise RuntimeError(
-        f"Unsupported modelling input policy: {MODELLING_NODE_SEMANTICS.input_policy!r}"
-    )
-
-
-@_register_codegen(MODELLING_NODE_SEMANTICS.node_type)
-def _gen_modelling(node: GraphNode, source_names: list[str]) -> str:
-    # Genuine passthrough in the executor (training happens via the modelling
-    # train route) — the first-frame body is runtime-equivalent.
-    func_name, description, _config = _common_node_fields(node)
-    return (
-        f"{_config_decorator(node, func_name)}\n"
-        f"def {func_name}({_build_params(source_names)}) -> pl.LazyFrame:\n"
-        f'    """{description}"""\n'
-        f"    return {_modelling_first_source(source_names)}\n"
-    )
+@_register_codegen(NodeType.MODELLING)
+def _gen_modelling(node: GraphNode, source_names: list[str]) -> NodeSource:
+    return _config_backed(node, source_names)
 
 
 @_register_codegen(NodeType.OPTIMISER_APPLY)
-def _gen_optimiser_apply(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, config = _common_node_fields(node)
+def _gen_optimiser_apply(node: GraphNode, source_names: list[str]) -> NodeSource:
     validate_optimiser_input_selectors(
-        node.data.nodeType,
-        config,
-        source_names,
-        node_label=func_name,
+        node.data.nodeType, node.data.config, source_names, node_label=_func_name(node)
     )
-    param_names = source_names or ["df"]
-    # Frames are passed positionally; exact executable source names let the
-    # shared helper resolve the configured ratebook_input.
-    args = ", ".join(param_names)
-    names_repr = repr(list(source_names))
-    return _OPTIMISER_APPLY.format(
-        decorator=_config_decorator(node, func_name),
-        func_name=func_name,
-        description=description,
-        params=_build_params(source_names),
-        args=args,
-        config_path_repr=_safe_path(
-            config_path_for_node(NodeType.OPTIMISER_APPLY, func_name).as_posix()
-        ),
-        source_names_repr=names_repr,
-    )
+    return _config_backed(node, source_names)
 
 
 # Explore uses nested decorator kwargs for presentation configuration, rather
 # than flat snake_case kwargs. These opaque values let the UI evolve without
 # coupling code generation to every presentation-specific field.
-def _explore_decorator_args(
+def _explore_keywords(
     overview: Any,
     pivot_formulas: Any,
     pivots: Any,
     charts: Any,
     column_config: dict[str, Any],
-) -> str:
-    """Build the decorator argument string for ``@pipeline.explore(...)``.
+) -> list[tuple[str, object]]:
+    """The keywords for ``@pipeline.explore(...)``, in a stable order.
 
-    Returns ``""`` when all values are empty (so the decorator stays bare).
-    Non-empty values are emitted in stable
-    overview-then-pivot_formulas-then-pivots-then-charts order, followed by
-    shared column metadata, using :func:`repr` to make valid Python literals
-    that round-trip through :mod:`ast`.
+    Empty values are skipped (so the decorator stays bare when nothing is
+    set). Non-empty values are emitted overview, pivot_formulas, pivots, charts,
+    then shared column metadata.
     """
     overview = validate_explore_overview(overview, context="explore node config")
     pivot_formulas, pivots = validate_explore_pivot_state(
         pivot_formulas, pivots, context="explore node config"
     )
     charts = validate_explore_charts(charts, context="explore node config")
-    args: list[str] = []
+    keywords: list[tuple[str, object]] = []
     if overview:
-        args.append(f"overview={overview!r}")
+        keywords.append(("overview", overview))
     if pivot_formulas:
-        args.append(f"pivot_formulas={pivot_formulas!r}")
+        keywords.append(("pivot_formulas", pivot_formulas))
     if pivots:
-        args.append(f"pivots={pivots!r}")
+        keywords.append(("pivots", pivots))
     if charts:
-        args.append(f"charts={charts!r}")
-    args.extend(_build_extra_kwargs(column_config, COLUMN_CONFIG_KEYS))
-    return ", ".join(args)
+        keywords.append(("charts", charts))
+    keywords.extend(_build_extra_kwargs(column_config, COLUMN_CONFIG_KEYS))
+    return keywords
 
 
 @_register_codegen(NodeType.EXPLORE)
-def _gen_explore(node: GraphNode, source_names: list[str]) -> str:
+def _gen_explore(node: GraphNode, source_names: list[str]) -> NodeSource:
     if len(source_names) != 1:
         raise ParseError(
             "Explore nodes must have exactly one incoming edge.",
@@ -738,146 +495,97 @@ def _gen_explore(node: GraphNode, source_names: list[str]) -> str:
             incoming_count=len(source_names),
             incoming_sources=source_names,
         )
-    func_name, description, config = _common_node_fields(node)
-    params = _build_params(source_names)
-    first = source_names[0]
-    code, incomplete = _stepped_body_code(config, NodeType.EXPLORE, source_names)
-    overview = config["overview"] if "overview" in config else {}
-    pivot_formulas = config.get("pivot_formulas")
-    pivots = config["pivots"] if "pivots" in config else []
-    charts = config["charts"] if "charts" in config else []
-    decorator_args = _explore_decorator_args(overview, pivot_formulas, pivots, charts, config)
+    config = node.data.config
+    keywords = _explore_keywords(
+        config["overview"] if "overview" in config else {},
+        config.get("pivot_formulas"),
+        config["pivots"] if "pivots" in config else [],
+        config["charts"] if "charts" in config else [],
+        config,
+    )
     steps = config.get("steps")
     if isinstance(steps, list):
         # No sidecar: the steps travel in the decorator beside pivots and charts.
-        step_arg = f"steps={steps!r}"
-        decorator_args = f"{decorator_args}, {step_arg}" if decorator_args else step_arg
-    if code or incomplete:
-        user_body = (
-            INCOMPLETE_STEPS_BODY.rstrip("\n") if incomplete else _wrap_user_code(code, ["df"])
-        )
-        return (
-            f"@pipeline.explore({decorator_args})\n"
-            f"def {func_name}({params}) -> pl.LazyFrame:\n"
-            f'    """{description}"""\n'
-            f"    df = {first}\n"
-            f"{user_body}\n"
-        )
-    return _EXPLORE.format(
-        func_name=func_name,
-        description=description,
-        params=params,
-        first=first,
-        decorator_args=decorator_args,
-    )
+        keywords.append(("steps", steps))
+    return _configured_node(node, source_names, decorator="explore", keywords=tuple(keywords))
 
 
 @_register_codegen(NodeType.EXTERNAL_FILE)
-def _gen_external_file(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, config = _common_node_fields(node)
-    code, incomplete = _stepped_body_code(config, NodeType.EXTERNAL_FILE, source_names)
-    params = _build_params(source_names)
-    first = _first_source(source_names)
-    if incomplete:
-        # The first input is still bound as df, then the placeholder raises.
-        binding = f"    df = {first}\n" if first else ""
-        body = binding + INCOMPLETE_STEPS_BODY.rstrip("\n")
-    else:
-        body = _wrap_external_code(code, input_name=first)
-    cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
-    return _RETAINED_EXTERNAL.format(
-        decorator=_config_decorator(node, func_name),
-        func_name=func_name,
-        description=description,
-        config_path_repr=_safe_path(cfg_path),
-        params=params,
-        body=body,
-    )
+def _gen_external_file(node: GraphNode, source_names: list[str]) -> NodeSource:
+    return _config_backed(node, source_names)
 
 
 @_register_codegen(NodeType.DATA_INPUT)
-def _gen_data_input(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, config = _common_node_fields(node)
-    # The config (format/mode/source fields/arguments) lives in the JSON
-    # sidecar like every other config-folder node; the decorator references
-    # it, and the body executes the same registry invocation the canvas
-    # executor uses, anchored to the pipeline dir.
-    cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
-    code = str(config.get("code") or "").strip()
-    steps = config.get("steps")
-    if isinstance(steps, list):
-        # The sidecar owns the steps; the post-load lines are their frame-mode
-        # rendering, or the raising placeholder when they cannot be rendered
-        # (the save warns which step is incomplete), so a standalone run never
-        # reads the source unchanged past an incomplete step list.
-        try:
-            code = render_polars_steps(
-                steps, step_input_names(NodeType.DATA_INPUT, []), start="frame"
-            ).code
-        except PolarsStepError:
-            body = INCOMPLETE_STEPS_BODY.rstrip("\n")
-        else:
-            body = _wrap_external_code(code)
-    else:
-        body = _wrap_external_code(code)
-    return (
-        f"{_config_decorator(node, func_name)}\n"
-        f"def {func_name}() -> pl.LazyFrame:\n"
-        f'    """{description}"""\n'
-        f"    from haute._project import get_project_root\n"
-        f"    from haute.graph_utils import resolve_data_input_from_config\n"
-        f"    project_root = get_project_root(_HAUTE_CONFIG_BASE)\n"
-        f"    df = resolve_data_input_from_config(\n"
-        f"        {_safe_path(cfg_path)}, base_dir=_HAUTE_CONFIG_BASE, "
-        f"project_root=project_root\n"
-        f"    )\n"
-        f"{body}\n"
-    )
+def _gen_data_input(node: GraphNode, source_names: list[str]) -> NodeSource:
+    return _config_backed(node, source_names)
 
 
 @_register_codegen(NodeType.DATA_OUTPUT)
-def _gen_data_output(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, _config = _common_node_fields(node)
-    params = _build_params(source_names)
-    first = _first_source(source_names)
-    return (
-        f"{_config_decorator(node, func_name)}\n"
-        f"def {func_name}({params}) -> pl.LazyFrame:\n"
-        f'    """{description}"""\n'
-        f"    return {first}\n"
-    )
+def _gen_data_output(node: GraphNode, source_names: list[str]) -> NodeSource:
+    # Persistence happens only through the explicit output-write surface; a
+    # standalone run passes the frame through.
+    return _config_backed(node, source_names)
 
 
 @_register_codegen(NodeType.OUTPUT)
-def _gen_output(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, _config = _common_node_fields(node)
-    param_names = source_names or ["df"]
-    params = _build_params(source_names)
-    # v2: the outputMapping lives in a JSON schema mapping (like every other
-    # config-folder node — apiInput, dataInput, …), referenced by
-    # ``config=``. The body routes through the SAME assembler the canvas
-    # executor calls, so a standalone ``pipeline.run()`` / ``score()``
-    # returns the assembled response document — not a passthrough of the
-    # raw upstream frame.
-    cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
-    args = "".join(f"        {p},\n" for p in param_names)
-    return (
-        f"{_config_decorator(node, func_name)}\n"
-        f"def {func_name}({params}) -> pl.LazyFrame:\n"
-        f'    """{description}"""\n'
-        f"    from haute.graph_utils import assemble_output_from_config\n"
-        f"    return assemble_output_from_config(\n"
-        f"{args}"
-        f"        config={_safe_path(cfg_path)},\n"
-        f"        base_dir=_HAUTE_CONFIG_BASE,\n"
-        f"        source_names={param_names!r},\n"
-        f"    )\n"
+def _gen_output(node: GraphNode, source_names: list[str]) -> NodeSource:
+    # The decorator assembles the response document from the sidecar mapping,
+    # through the same assembler the canvas executor calls.
+    return _config_backed(node, source_names)
+
+
+@_register_codegen(NodeType.EDGE_JOIN)
+def _gen_edge_join(node: GraphNode, source_names: list[str]) -> NodeSource:
+    if len(source_names) != 2:
+        raise ConfigError(
+            "edgeJoin codegen requires exactly two incoming sources.",
+            node_id=node.id,
+            node_label=node.data.label,
+            source_names=source_names,
+        )
+    config = node.data.config
+    # Validate at save as the executor does at run time.
+    build_edge_join_kwargs(config)
+    keywords = tuple(edge_join_config_to_decorator_kwargs(config))
+    return NodeSource(
+        "edge_join", keywords, _params(source_names), description=node.data.description
     )
 
 
+def _code_makes_df_local(code: str) -> bool:
+    """Whether *code*, as a function body, makes ``df`` the function's own name.
+
+    Read with Python's own scoping (``symtable``): any binding makes ``df``
+    local, and a ``global df`` declaration claims it too. Only when neither
+    holds could ``return df`` reach a module global.
+    """
+    wrapped = "def _node():\n" + "\n".join(f"{INDENT}{line}" for line in code.splitlines())
+    try:
+        table = symtable.symtable(wrapped, "<node>", "exec")
+    except SyntaxError:
+        return False
+    function = table.get_children()[0]
+    try:
+        symbol = function.lookup("df")
+    except KeyError:
+        return False
+    return symbol.is_local() or symbol.is_declared_global()
+
+
+def _transform_body(code: str) -> str:
+    """A transform's body: the code and ``return df``, first declaring ``df`` if needed.
+
+    The declaration makes ``df`` a function local without binding it, so a
+    preamble global named ``df`` cannot stand in for a missing assignment. Code
+    that binds ``df`` anywhere already makes it local.
+    """
+    declaration = "" if _code_makes_df_local(code) else POLARS_OUTPUT_DECLARATION.strip() + "\n"
+    return f"{declaration}{code}\nreturn df"
+
+
 @_register_codegen(NodeType.POLARS)
-def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
-    func_name, description, config = _common_node_fields(node)
+def _gen_transform(node: GraphNode, source_names: list[str]) -> NodeSource:
+    config = node.data.config
     code = str(config.get("code") or "").strip()
     input_mapping = config.get("inputMapping")
     steps = config.get("steps")
@@ -907,44 +615,28 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
             node_id=node.id,
             node_label=node.data.label,
         )
-    params = _build_params(logical_source_names, default_df=False)
-    decorator_args = _build_extra_kwargs(config, COLUMN_CONFIG_KEYS)
+    keywords = _build_extra_kwargs(config, COLUMN_CONFIG_KEYS)
     if input_mapping is not None:
         # ``resolve_input_mapping_names`` validated the persisted value before
         # it reaches source interpolation.
-        decorator_args.append(f"inputMapping={input_mapping!r}")
+        keywords.append(("inputMapping", input_mapping))
     if isinstance(steps, list):
-        sidecar = config_path_for_node(NodeType.POLARS, func_name).as_posix()
-        decorator_args.append(f"config={_safe_path(sidecar)}")
-    decorator = (
-        f"@pipeline.polars({', '.join(decorator_args)})" if decorator_args else "@pipeline.polars"
-    )
-
-    if not code:
-        # Not written yet. A polars node's output is whatever its code assigns
-        # to ``df``; with no code there is nothing to return — there is no
-        # implicit passthrough, whatever the input count. Not a reason to block
-        # a SAVE — a half-built graph is a normal state to leave the editor in
-        # — so emit a body that is valid Python, keeps the node's inputs bound,
-        # and fails loudly if the pipeline is run. Save surfaces this as a
-        # warning (see `_validate_transforms_are_runnable`), and the
-        # placeholder round-trips back to "no code" in the editor.
-        return (
-            f"{decorator}\n"
-            f"def {func_name}({params}) -> pl.LazyFrame:\n"
-            f'    """{description}"""\n'
-            f"{INCOMPLETE_TRANSFORM_BODY}"
-        )
-
-    # Inputs are the named parameters; ``df`` is only the output variable, so
-    # no binding is prepended — the code starts from the input it names.
-    body = _wrap_user_code(code, ["df"])
-    return (
-        f"{decorator}\n"
-        f"def {func_name}({params}) -> pl.LazyFrame:\n"
-        f'    """{description}"""\n'
-        f"{POLARS_OUTPUT_DECLARATION}"
-        f"{body}\n"
+        sidecar = config_path_for_node(NodeType.POLARS, _func_name(node)).as_posix()
+        keywords.append(("config", sidecar))
+    # Not written yet: a polars node's output is whatever its code assigns to
+    # ``df``, so with no code there is nothing to return — there is no implicit
+    # passthrough, whatever the input count. A half-built graph is a normal
+    # state to save, so the body is valid Python that keeps the inputs bound
+    # and fails loudly if run; save warns about it, and the placeholder
+    # round-trips back to "no code" in the editor.
+    body = _transform_body(code) if code else _unindented(INCOMPLETE_TRANSFORM_BODY)
+    return NodeSource(
+        "polars",
+        tuple(keywords),
+        _params(logical_source_names, FRAME),
+        returns=FRAME,
+        description=node.data.description,
+        body=body,
     )
 
 
@@ -955,36 +647,10 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
-@_register_codegen(NodeType.EDGE_JOIN)
-def _gen_edge_join(node: GraphNode, source_names: list[str]) -> str:
-    if len(source_names) != 2:
-        raise ConfigError(
-            "edgeJoin codegen requires exactly two incoming sources.",
-            node_id=node.id,
-            node_label=node.data.label,
-            source_names=source_names,
-        )
-    func_name, description, config = _common_node_fields(node)
-    base_name, join_name = source_names
-    params = _build_params(source_names)
-    decorator_args = ", ".join(
-        _format_kwarg_source(key, value)
-        for key, value in edge_join_config_to_decorator_kwargs(config)
-    )
-    # Keep codegen-time validation without duplicating join semantics in the body.
-    build_edge_join_kwargs(config)
-    return (
-        f"@pipeline.edge_join({decorator_args})\n"
-        f"def {func_name}({params}) -> pl.LazyFrame:\n"
-        f'    """{description}"""\n'
-        f"    return pipeline._apply_edge_join({_safe_str(func_name)}, {base_name}, {join_name})\n"
-    )
-
-
 def _gen_submodel_placeholder_unreachable(
     node: GraphNode,
     source_names: list[str],
-) -> str:
+) -> NodeSource:
     """Should never be reached.
 
     Submodels are handled at the ``graph_to_code_multi`` level: the
@@ -1013,19 +679,17 @@ _set_codegen_in_registry(NodeType.SUBMODEL_PORT, _gen_submodel_placeholder_unrea
 
 
 __all__ = [
-    # Type aliases
+    # Types
     "CodegenBuilder",
     "CodegenFn",
+    "NodeSource",
+    "Param",
+    # Rendering
+    "render_node_source",
     # Helpers
     "_build_extra_kwargs",
-    "_build_params",
-    "_common_node_fields",
-    "_first_source",
-    "_safe_path",
-    "_safe_str",
+    "_params",
     "_sanitize_description",
-    "_wrap_external_code",
-    "_wrap_user_code",
     # Per-type builders (imported by some tests)
     "_gen_api_input",
     "_gen_banding",

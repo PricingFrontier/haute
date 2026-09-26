@@ -39,9 +39,8 @@ pipeline = haute.Pipeline("test", description="A test pipeline")
 
 
 @pipeline.data_input(config="{source_config}")
-def load_data() -> pl.DataFrame:
+def load_data():
     """Load input data."""
-    return pl.scan_parquet("data.parquet")
 
 
 @pipeline.polars
@@ -85,8 +84,7 @@ pipeline = haute.Pipeline("edges_test")
 
 
 @pipeline.data_input(config="{source_config}")
-def a() -> pl.DataFrame:
-    return pl.DataFrame()
+def a(): ...
 
 
 @pipeline.polars
@@ -120,13 +118,11 @@ pipeline = haute.Pipeline("disconnected")
 
 
 @pipeline.data_input(config="{config_a}")
-def quotes() -> pl.DataFrame:
-    return pl.DataFrame()
+def quotes(): ...
 
 
 @pipeline.data_input(config="{config_b}")
-def nb_batch() -> pl.DataFrame:
-    return pl.DataFrame()
+def nb_batch(): ...
 """
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p)
@@ -143,8 +139,7 @@ pipeline = haute.Pipeline("implicit")
 
 
 @pipeline.data_input(config="{source_config}")
-def source() -> pl.DataFrame:
-    return pl.DataFrame()
+def source(): ...
 
 
 @pipeline.polars
@@ -166,9 +161,8 @@ pipeline = haute.Pipeline("config_test")
 
 
 @pipeline.data_input(config="{source_config}")
-def load_data() -> pl.DataFrame:
+def load_data():
     """Read the data."""
-    return pl.scan_parquet("data/input.parquet")
 '''
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p)
@@ -201,13 +195,11 @@ pipeline = haute.Pipeline("explore_test")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    return source
+def inspect_claims(source): ...
 
 
 pipeline.connect("source", "inspect_claims")
@@ -231,13 +223,11 @@ pipeline = haute.Pipeline("explore_code")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    df = source
+def inspect_claims(df: pl.LazyFrame) -> pl.LazyFrame:
     df = df.filter(pl.col("premium") > 0)
     df = df.with_columns((pl.col("premium") * 2).alias("double_premium"))
     return df
@@ -268,13 +258,11 @@ pipeline = haute.Pipeline("explore_overview")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore(overview={"dataset_snapshot": True})
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    return source
+def inspect_claims(source): ...
 
 
 pipeline.connect("source", "inspect_claims")
@@ -297,13 +285,11 @@ pipeline = haute.Pipeline("explore_overview_schema")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore(overview={"schema": True})
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    return source
+def inspect_claims(source): ...
 
 
 pipeline.connect("source", "inspect_claims")
@@ -326,8 +312,7 @@ pipeline = haute.Pipeline("explore_overview_concise")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore(
@@ -339,8 +324,7 @@ def source() -> pl.LazyFrame:
         "data_quality": True,
     }
 )
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    return source
+def inspect_claims(source): ...
 
 
 pipeline.connect("source", "inspect_claims")
@@ -369,13 +353,11 @@ pipeline = haute.Pipeline("explore_overview_empty")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore(overview={})
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    return source
+def inspect_claims(source): ...
 
 
 pipeline.connect("source", "inspect_claims")
@@ -411,13 +393,11 @@ pipeline = haute.Pipeline("explore_overview_invalid")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore({decorator_arg})
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    return source
+def inspect_claims(source): ...
 
 
 pipeline.connect("source", "inspect_claims")
@@ -437,8 +417,7 @@ pipeline = haute.Pipeline("explore_overview_unknown")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore(
@@ -452,8 +431,7 @@ def source() -> pl.LazyFrame:
         },
     }
 )
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    return source
+def inspect_claims(source): ...
 
 
 pipeline.connect("source", "inspect_claims")
@@ -473,13 +451,11 @@ pipeline = haute.Pipeline("explore_bad")
 
 
 @pipeline.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.LazyFrame()
+def source(): ...
 
 
 @pipeline.explore
-def inspect_claims(source: pl.LazyFrame) -> pl.LazyFrame:
-    return source
+def inspect_claims(source): ...
 
 
 @pipeline.polars
@@ -539,8 +515,7 @@ import haute
 pipeline = haute.Pipeline("broken", description="has syntax error")
 
 @pipeline.data_input(config="{source_config}")
-def load_data() -> pl.DataFrame:
-    return pl.scan_parquet("data.parquet")
+def load_data(): ...
 
 @pipeline.polars
 def transform(load_data: pl.DataFrame) -> pl.DataFrame:
@@ -640,8 +615,7 @@ pipeline = haute.Pipeline("flat_test")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.DataFrame:
-    return pl.DataFrame()
+def src(): ...
 """
         p = _write_pipeline(tmp_path, code)
         graph = parse_pipeline_file(p, flatten=True)
@@ -981,9 +955,8 @@ pipeline = haute.Pipeline("roundtrip")
 
 
 @pipeline.data_input(config="{source_config}")
-def source() -> pl.DataFrame:
+def source():
     """Load data."""
-    return pl.scan_parquet("data.parquet")
 
 
 @pipeline.polars
@@ -1003,6 +976,12 @@ pipeline.connect("source", "transform")
         write_data_input_config(tmp_path, "source", "data.parquet")
 
         generated = graph_to_code(graph1, pipeline_name="roundtrip")
+        # A Data Input without code is regenerated as a declaration whose
+        # description is its whole body.
+        assert (
+            f'@pipeline.data_input(config="{source_config}")\ndef source():\n    """Load data."""\n'
+            in generated
+        )
         p2 = tmp_path / "roundtrip2.py"
         p2.write_text(generated)
         graph2 = parse_pipeline_file(p2)
@@ -1013,6 +992,10 @@ pipeline.connect("source", "transform")
         names1 = {n.id for n in graph1.nodes}
         names2 = {n.id for n in graph2.nodes}
         assert names1 == names2
+        assert graph2.nodes[0].data.description == "Load data."
+        assert graph2.model_dump(exclude={"source_file"}) == graph1.model_dump(
+            exclude={"source_file"}
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1032,8 +1015,7 @@ pipeline = haute.Pipeline("circular_main")
 
 
 @pipeline.data_input(config="{main_src_config}")
-def src() -> pl.DataFrame:
-    return pl.DataFrame()
+def src(): ...
 
 
 pipeline.submodel(
@@ -1053,8 +1035,7 @@ pipeline.submodel(
 )
 
 @pipeline.data_input(config="{sub_src_config}")
-def b_node() -> pl.DataFrame:
-    return pl.DataFrame()
+def b_node(): ...
 """
         (tmp_path / "test_pipeline.py").write_text(main_code)
         (tmp_path / "sub_b.py").write_text(sub_b_code)
@@ -1076,8 +1057,7 @@ pipeline = haute.Pipeline("missing_sub")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.DataFrame:
-    return pl.DataFrame()
+def src(): ...
 
 
 pipeline.submodel(
@@ -1167,8 +1147,7 @@ pipeline = haute.Pipeline("collision_parent")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.DataFrame:
-    return pl.DataFrame()
+def src(): ...
 
 
 pipeline.submodel(
@@ -1207,8 +1186,7 @@ pipeline = haute.Pipeline("empty_sub_parent")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.DataFrame:
-    return pl.DataFrame()
+def src(): ...
 
 
 pipeline.submodel(
@@ -1234,12 +1212,12 @@ submodel = haute.Submodel(
     definition_id="scoring",
     input_ports=[],
     output_ports=[],
+    pipeline_dir="..",
 )
 
 
 @submodel.data_input(config="{child_source_config}")
-def raw_rows() -> pl.LazyFrame:
-    return pl.scan_parquet("data/in.parquet")
+def raw_rows(): ...
 
 
 @submodel.polars
@@ -1299,8 +1277,7 @@ pipeline = haute.Pipeline("syntax_err_parent")
 
 
 @pipeline.data_input(config="{source_config}")
-def src() -> pl.DataFrame:
-    return pl.DataFrame()
+def src(): ...
 
 
 pipeline.submodel(

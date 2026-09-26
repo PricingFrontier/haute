@@ -2346,7 +2346,7 @@ class TestCodegenAndParseRoundTrip:
     """Generated code carries a config= sidecar reference and parses back."""
 
     def test_data_input_codegen_shape(self) -> None:
-        from haute._codegen_builders import _gen_data_input
+        from haute.codegen import _node_to_code
         from tests.conftest import compile_node_code
 
         node = _data_input_node(
@@ -2358,24 +2358,29 @@ class TestCodegenAndParseRoundTrip:
                 "code": "df = df.filter(pl.col('id') > 0)",
             },
         )
-        code = _gen_data_input(node, [])
-        assert '@pipeline.data_input(config="config/data_input/quotes_in.json")' in code
-        assert "resolve_data_input_from_config" in code
-        assert "df = df.filter(pl.col('id') > 0)" in code
+        code = _node_to_code(node, [])
+        # A hook: the decorator reads the source and hands the frame over as df.
+        assert code.startswith(
+            '@pipeline.data_input(config="config/data_input/quotes_in.json")\n'
+            "def quotes_in(df: pl.LazyFrame) -> pl.LazyFrame:\n"
+        )
+        assert "resolve_data_input_from_config" not in code
+        assert "    df = df.filter(pl.col('id') > 0)\n    return df" in code
         compile_node_code(code)
 
     def test_data_output_codegen_shape(self) -> None:
-        from haute._codegen_builders import _gen_data_output
+        from haute.codegen import _node_to_code
         from tests.conftest import compile_node_code
 
         node = _data_output_node(
             "prices_out",
             {"outputType": "file", "format": "ndjson", "path": "out.jsonl"},
         )
-        code = _gen_data_output(node, ["scored"])
-        assert '@pipeline.data_output(config="config/data_output/prices_out.json")' in code
-        assert "write_polars_output_from_config" not in code
-        assert "return scored" in code
+        code = _node_to_code(node, ["scored"])
+        assert code == (
+            '@pipeline.data_output(config="config/data_output/prices_out.json")\n'
+            "def prices_out(scored): ...\n"
+        )
         compile_node_code(code)
 
     def test_full_graph_to_code_to_graph_round_trip(self, haute_scratch) -> None:
@@ -2512,19 +2517,37 @@ def test_generated_data_input_resolves_project_relative_dataset_from_nested_pipe
     assert frame.collect().to_dicts() == [{"quote_id": 1}, {"quote_id": 2}]
 
 
-def test_data_input_codegen_passes_discovered_project_root() -> None:
-    from haute._codegen_builders import _gen_data_input
-
-    code = _gen_data_input(
-        _data_input_node(
-            "quotes", {"inputType": "file", "format": "parquet", "path": "data/quotes.parquet"}
-        ),
-        [],
+def test_standalone_data_input_declaration_reads_from_the_discovered_project_root(
+    tmp_path: Path,
+) -> None:
+    """A nested pipeline's declaration resolves its dataset against the project root."""
+    project_root = tmp_path / "project"
+    pipeline_root = project_root / "rating"
+    config_dir = pipeline_root / "config" / "data_input"
+    data_dir = project_root / "data"
+    config_dir.mkdir(parents=True)
+    data_dir.mkdir(parents=True)
+    (project_root / ".git").mkdir()
+    (project_root / "haute.toml").write_text('[project]\nname = "nested"\n', encoding="utf-8")
+    pl.DataFrame({"quote_id": [1, 2]}).write_parquet(data_dir / "quotes.parquet")
+    (config_dir / "quotes.json").write_text(
+        json.dumps({"inputType": "file", "format": "parquet", "path": "data/quotes.parquet"}),
+        encoding="utf-8",
     )
+    source = (
+        "import haute\n\n"
+        'pipeline = haute.Pipeline("nested")\n\n\n'
+        '@pipeline.data_input(config="config/data_input/quotes.json")\n'
+        "def quotes(): ...\n"
+    )
+    main = pipeline_root / "main.py"
+    main.write_text(source, encoding="utf-8")
+    namespace: dict[str, object] = {"__file__": str(main)}
+    exec(compile(source, str(main), "exec"), namespace)
 
-    assert "get_project_root(_HAUTE_CONFIG_BASE)" in code
-    assert "base_dir=_HAUTE_CONFIG_BASE" in code
-    assert "project_root=project_root" in code
+    frame = namespace["pipeline"].run()  # type: ignore[attr-defined]
+
+    assert frame.lazy().collect().to_dicts() == [{"quote_id": 1}, {"quote_id": 2}]
 
 
 def test_staging_identity_and_manifest_guards_reject_untrusted_artifacts(tmp_path: Path) -> None:

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from haute._ast_helpers import (
+    _function_body_source,
     _get_decorator_kwargs,
     _get_decorator_node_type,
 )
@@ -90,9 +91,7 @@ def _extract_decorated_node_skeletons(
         )
         body = func_bodies.get(stmt.name, "")
         if source_lines is not None and stmt.body:
-            body_start = stmt.body[0].lineno - 1
-            body_end = stmt.body[-1].end_lineno or stmt.body[-1].lineno
-            body = "\n".join(source_lines[body_start:body_end])
+            body = _function_body_source(source_lines, stmt)
         decorator_start = min(
             getattr(decorator, "lineno", stmt.lineno)
             for decorator in stmt.decorator_list

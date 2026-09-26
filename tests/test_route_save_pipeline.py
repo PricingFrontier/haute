@@ -885,7 +885,7 @@ class TestSaveSimpleGraph:
         assert "inputs_by_parent" not in content
         assert "join_policy_data" not in content
         # The declared inputs themselves are preserved.
-        assert "'inputs': ['premium', 'quote_id']" in content
+        assert '"inputs": ["premium", "quote_id"]' in content
         # The drop is surfaced, not silent.
         omitted = [log for log in logs if log["event"] == "contract_inputs_by_parent_omitted_stale"]
         assert len(omitted) == 1

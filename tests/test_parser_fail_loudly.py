@@ -18,7 +18,10 @@ Covered items:
           ``src/haute/executor.py:391-449``
 
     #22 — Polars codegen empty-code fragile edge case
-          ``src/haute/codegen.py:813-829`` + ``_wrap_user_code:357``
+          ``src/haute/_codegen_builders.py::_gen_transform``
+
+Also covered: the declaration and hook shapes the parser enforces on every
+configured node (``src/haute/_config_builder.py::_validate_node_function``).
 
 Project principle (from ``CLAUDE.md``): code must fail loudly with a typed
 ``haute.errors.*`` exception carrying structured context, instead of
@@ -28,22 +31,29 @@ silently papering over configuration or structural problems.
 from __future__ import annotations
 
 import json
+import re
+import textwrap
 from pathlib import Path
 
 import polars as pl
 import pytest
 
+import haute
+from haute._code_extraction import (
+    INCOMPLETE_TRANSFORM_BODY,
+    extract_user_code,
+)
 from haute._code_extraction import (
     INCOMPLETE_TRANSFORM_MESSAGE as _INCOMPLETE_MSG,
 )
-from haute._code_extraction import extract_user_code
-from haute._codegen_builders import _gen_transform
+from haute._codegen_builders import _func_name, _gen_transform, render_node_source
 from haute._config_builder import _resolve_node_config
 from haute._graph_utils import build_instance_mapping
-from haute._types import NodeType
-from haute.codegen import _instance_to_code, graph_to_code_multi
+from haute._types import NODE_TYPE_TO_DECORATOR, GraphNode, NodeType, PipelineGraph
+from haute.codegen import _instance_to_code, graph_to_code, graph_to_code_multi
 from haute.errors import ConfigError, HauteError, ParseError
 from haute.executor import execute_graph
+from haute.parser import parse_pipeline_source
 from tests.conftest import (
     make_edge as _edge,
 )
@@ -59,6 +69,7 @@ from tests.conftest import (
 from tests.conftest import (
     make_transform_node as _transform_node,
 )
+from tests.conftest import write_node_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -767,24 +778,23 @@ class TestItem21ExtendPathNoStaleData:
 # Item #22 — Polars codegen empty-code fragile edge case
 # ===========================================================================
 #
-# Current behaviour (``codegen.py:813-829`` + ``_wrap_user_code:357``):
+# Original behaviour: the empty-code branch of the transform builder emitted
+# ``return <first input>``, silently picking ``source_names[0]`` as the single
+# source.  For a transform with >1 upstream node this dropped all but the
+# first input with no warning; for zero sources it returned ``return df``
+# where ``df`` was never bound.
 #
-#     if not code:
-#         body = _wrap_user_code(code, source_names)  # returns "return <first>"
-#         return (...)
-#
-# The empty-code branch silently picks ``source_names[0]`` as the single
-# source.  For a transform with >1 upstream node, this drops all but the
-# first input with no warning; for zero-source the code returns ``return df``
-# where ``df`` is never bound.
-#
-# After the fix: the empty-code branch is explicit and tested per scenario:
-#   - single-source: returns ``return <src>`` (current behaviour).
-#   - multi-source: either explicitly joins them (no silent drop) OR
-#     raises ``ConfigError`` naming the multi-source situation.
-#   - zero-source: raises ``ConfigError`` (polars transform with no code AND
-#     no inputs is incoherent).
+# Current contract (``_gen_transform``): a transform with no code emits the
+# constant ``INCOMPLETE_TRANSFORM_BODY`` placeholder whatever its input count.
+# The node still saves (a half-built graph is a normal editor state), running
+# it raises ``NotImplementedError``, and extraction recognises the placeholder
+# structurally so the node reloads with no code.
 # ===========================================================================
+
+
+def _transform_code(node: GraphNode, source_names: list[str]) -> str:
+    """The transform's generated function, printed as it lands in the module."""
+    return render_node_source(_gen_transform(node, source_names), func_name=_func_name(node))
 
 
 class TestItem22EmptyPolarsCodeExplicit:
@@ -800,9 +810,11 @@ class TestItem22EmptyPolarsCodeExplicit:
                 "data": {"label": "Pass", "nodeType": "polars", "config": {}},
             }
         )
-        code = _gen_transform(node, ["upstream"])
-        assert "raise NotImplementedError" in code
-        assert "def Pass(upstream: pl.LazyFrame)" in code
+        code = _transform_code(node, ["upstream"])
+        assert code == (
+            "@pipeline.polars\n"
+            "def Pass(upstream: pl.LazyFrame) -> pl.LazyFrame:\n" + INCOMPLETE_TRANSFORM_BODY
+        )
 
     def test_zero_sources_emits_a_placeholder_that_fails_at_run_time(self) -> None:
         """A polars transform with NO upstream sources AND no user code cannot
@@ -815,9 +827,15 @@ class TestItem22EmptyPolarsCodeExplicit:
                 "data": {"label": "Orphan", "nodeType": "polars", "config": {}},
             }
         )
-        code = _gen_transform(node, [])
-        assert "raise NotImplementedError" in code
+        code = _transform_code(node, [])
+        header = "@pipeline.polars\ndef Orphan() -> pl.LazyFrame:\n"
+        assert code == header + INCOMPLETE_TRANSFORM_BODY
         assert "return df" not in code
+        # Running the generated function (without its decorator) is the point.
+        namespace: dict[str, object] = {}
+        exec(code.removeprefix("@pipeline.polars\n"), {"pl": pl}, namespace)
+        with pytest.raises(NotImplementedError, match="no code yet"):
+            namespace["Orphan"]()  # type: ignore[operator]
 
     def test_incomplete_placeholder_round_trips_as_no_user_code(self) -> None:
         """The placeholder is scaffold, not authored code: reopening the saved
@@ -829,25 +847,26 @@ class TestItem22EmptyPolarsCodeExplicit:
                 "data": {"label": "Merge", "nodeType": "polars", "config": {}},
             }
         )
-        code = _gen_transform(node, ["left", "right"])
+        code = _transform_code(node, ["left", "right"])
         body = "\n".join(code.splitlines()[2:])  # drop decorator + def line
+        assert body.strip()
         assert extract_user_code(body, kind="polars", param_names=("left", "right")) == ""
 
     @pytest.mark.parametrize(
         "body",
         [
-            # As codegen emits it (repr → single quotes, exploded by the
-            # magic trailing comma).
+            # As codegen emits it (double quotes, exploded by the magic
+            # trailing comma, as ``ruff format`` lays it out).
+            INCOMPLETE_TRANSFORM_BODY,
+            # The same statement with single quotes — the generated .py is a
+            # real source file the user and their tooling edit, so the
+            # quoting on disk is not codegen's to choose.
             f"    raise NotImplementedError(\n        {_INCOMPLETE_MSG!r},\n    )\n",
-            # As it lands on disk once a formatter has been near the file —
-            # the generated .py is a real source file the user and their
-            # tooling edit, so double quotes are the common on-disk form.
-            f'    raise NotImplementedError(\n        "{_INCOMPLETE_MSG}",\n    )\n',
             # Collapsed onto one line, trailing comma dropped.
             f'    raise NotImplementedError("{_INCOMPLETE_MSG}")\n',
             f"    raise NotImplementedError('{_INCOMPLETE_MSG}')\n",
         ],
-        ids=["as-emitted", "double-quoted", "one-line", "single-quoted-one-line"],
+        ids=["as-emitted", "single-quoted", "one-line", "single-quoted-one-line"],
     )
     def test_placeholder_is_recognised_however_it_is_formatted(self, body: str) -> None:
         """Recognition must be structural, not textual. Matching the emitted
@@ -885,7 +904,7 @@ class TestItem22EmptyPolarsCodeExplicit:
             }
         )
         try:
-            code = _gen_transform(node, ["left", "right"])
+            code = _transform_code(node, ["left", "right"])
         except ConfigError:
             return  # raising is an acceptable resolution
         # Non-raising path must NOT silently drop 'right'.
@@ -897,9 +916,10 @@ class TestItem22EmptyPolarsCodeExplicit:
         assert "right" in code or "join" in code, (
             f"Multi-source empty-code silently dropped 'right'. Code: {code!r}"
         )
+        assert "return left" not in code
 
     def test_single_source_with_code_unchanged(self) -> None:
-        """Non-empty user code path continues to work as before."""
+        """Non-empty user code is emitted verbatim, followed by ``return df``."""
         node = _n(
             {
                 "id": "t",
@@ -910,10 +930,14 @@ class TestItem22EmptyPolarsCodeExplicit:
                 },
             }
         )
-        code = _gen_transform(node, ["upstream"])
-        assert "df = upstream" in code  # aliasing line
-        assert "upstream.filter" in code
-        assert "return df" in code
+        code = _transform_code(node, ["upstream"])
+        # The user's own line binds df, so no output declaration is needed.
+        assert code == (
+            "@pipeline.polars\n"
+            "def Filt(upstream: pl.LazyFrame) -> pl.LazyFrame:\n"
+            "    df = upstream.filter(pl.col('x') > 0)\n"
+            "    return df\n"
+        )
 
     def test_empty_code_branch_is_distinguishable_from_nonempty(self) -> None:
         """Smoke: the empty-code and non-empty branches produce visibly
@@ -934,10 +958,183 @@ class TestItem22EmptyPolarsCodeExplicit:
                 },
             }
         )
-        empty_code = _gen_transform(empty_node, ["up"])
-        nonempty_code = _gen_transform(nonempty_node, ["up"])
-        # Non-empty branch includes the "df = <first>" alias line.
+        empty_code = _transform_code(empty_node, ["up"])
+        nonempty_code = _transform_code(nonempty_node, ["up"])
+        # The non-empty branch carries the user's own ``df = up`` line.
         assert "df = up" in nonempty_code
-        # Empty branch does NOT need the alias — it returns the source
-        # directly.
+        # The empty branch binds nothing: it is the raising placeholder.
         assert "df = up" not in empty_code
+        assert "raise NotImplementedError" in empty_code
+
+
+# ===========================================================================
+# Declarations and hooks — the function shapes a standalone run relies on
+# ===========================================================================
+#
+# Every node type except ``polars`` is a configured node: its decorator does
+# the node's work when the file runs on its own. Its function is either a
+# declaration — the inputs as plain parameters and a body of ``...``, ``pass``
+# or a docstring alone, never called — or, on a type that accepts code, a
+# hook whose first parameter is ``df`` (an External File hook: the
+# keyword-only ``obj``). Any other shape would run differently on its own
+# than in the canvas, so the parser rejects it with a ``ParseError`` naming
+# the node. On a type that carries no code, ``df`` is just an input name.
+# ===========================================================================
+
+_PALETTE_DEFAULTS: dict[str, dict] = json.loads(
+    Path(haute.__file__).with_name("node_defaults.json").read_text(encoding="utf-8")
+)
+
+
+def _parse_configured_node(
+    tmp_path: Path,
+    node_type: NodeType,
+    function: str,
+    *,
+    upstream: str = "quotes",
+) -> PipelineGraph:
+    """Parse one configured node, with valid settings, beside a Polars upstream.
+
+    *function* is the node's ``def`` and body, written under its decorator.
+    The settings are the palette defaults, so only the function's shape can
+    be wrong.
+    """
+    func_name = function.split("def ", 1)[1].split("(", 1)[0]
+    settings = {k: v for k, v in _PALETTE_DEFAULTS[node_type.value].items() if k != "steps"}
+    reference = write_node_config(tmp_path, node_type, func_name, settings)
+    source = (
+        "import polars as pl\n"
+        "import haute\n\n"
+        'pipeline = haute.Pipeline("shapes")\n\n\n'
+        "@pipeline.polars\n"
+        f"def {upstream}() -> pl.LazyFrame:\n"
+        '    return pl.LazyFrame({"premium": [1.0]})\n\n\n'
+        f'@pipeline.{NODE_TYPE_TO_DECORATOR[node_type]}(config="{reference}")\n'
+        f"{textwrap.dedent(function).strip()}\n"
+    )
+    return parse_pipeline_source(source, source_file="main.py", _base_dir=tmp_path)
+
+
+class TestConfiguredNodeFunctionShapes:
+    """``_validate_node_function``: a declaration or a hook, and nothing else."""
+
+    @pytest.mark.parametrize(
+        ("node_type", "function", "advice"),
+        [
+            pytest.param(
+                NodeType.DATA_INPUT,
+                "def source():\n    return pl.scan_parquet('data.parquet')",
+                "make the first parameter df",
+                id="data-input",
+            ),
+            pytest.param(
+                NodeType.MODEL_SCORE,
+                "def score(quotes):\n    return quotes.with_columns(pl.lit(1.0).alias('p'))",
+                "make the first parameter df",
+                id="model-score",
+            ),
+            pytest.param(
+                NodeType.EXTERNAL_FILE,
+                "def lookup(quotes):\n    df = quotes\n    return df",
+                "keyword-only parameter obj",
+                id="external-file-without-obj",
+            ),
+        ],
+    )
+    def test_code_without_the_hook_marker_is_rejected(
+        self, tmp_path: Path, node_type: NodeType, function: str, advice: str
+    ) -> None:
+        """(a) A body with code but no ``df``/``obj`` marker would never run on its
+        own: the decorator performs the node's work and never calls the function."""
+        with pytest.raises(ParseError, match="has a function body") as exc_info:
+            _parse_configured_node(tmp_path, node_type, function)
+        assert advice in str(exc_info.value)
+        assert exc_info.value.context["node_type"] == node_type.value
+
+    @pytest.mark.parametrize(
+        ("node_type", "function", "marker"),
+        [
+            pytest.param(NodeType.RATING_STEP, "def rate(df): ...", "df", id="ellipsis"),
+            pytest.param(
+                NodeType.DATA_INPUT, 'def source(df):\n    """Loads."""', "df", id="docstring"
+            ),
+            pytest.param(
+                NodeType.SCENARIO_EXPANDER, "def grid(df, regions):\n    pass", "df", id="pass"
+            ),
+            pytest.param(
+                NodeType.EXTERNAL_FILE, "def lookup(quotes, *, obj): ...", "obj", id="external"
+            ),
+        ],
+    )
+    def test_a_hook_without_code_is_rejected(
+        self, tmp_path: Path, node_type: NodeType, function: str, marker: str
+    ) -> None:
+        """(b) A hook is always called; one with nothing to run is a mistake."""
+        with pytest.raises(ParseError, match=f"takes {marker} but has no code") as exc_info:
+            _parse_configured_node(tmp_path, node_type, function)
+        assert exc_info.value.context["node_type"] == node_type.value
+
+    @pytest.mark.parametrize(
+        ("node_type", "function"),
+        [
+            pytest.param(NodeType.BANDING, "def band(quotes):\n    return quotes", id="banding"),
+            pytest.param(
+                NodeType.DATA_OUTPUT,
+                "def sink(quotes):\n    quotes.sink_parquet('out.parquet')",
+                id="data-output",
+            ),
+            pytest.param(NodeType.CONSTANT, "def rates():\n    return None", id="constant"),
+            pytest.param(
+                NodeType.BANDING, "def band(df):\n    return df.head()", id="df-named-input"
+            ),
+        ],
+    )
+    def test_a_body_on_a_type_without_code_is_rejected(
+        self, tmp_path: Path, node_type: NodeType, function: str
+    ) -> None:
+        """(c) These types never carry code, whatever their parameters are called."""
+        expected = f"Its node type ({node_type.value}) carries no code"
+        with pytest.raises(ParseError, match=re.escape(expected)) as exc_info:
+            _parse_configured_node(tmp_path, node_type, function)
+        assert exc_info.value.context["node_id"] == function.split("def ", 1)[1].split("(")[0]
+
+    def test_a_declaration_without_code_may_take_an_input_named_df(self, tmp_path: Path) -> None:
+        """(c) On a type that carries no code, ``df`` names an input, not a hook."""
+        graph = _parse_configured_node(
+            tmp_path, NodeType.DATA_OUTPUT, "def sink(df): ...", upstream="df"
+        )
+
+        assert graph.node_map["sink"].data.nodeType == NodeType.DATA_OUTPUT
+        assert [(edge.source, edge.target) for edge in graph.edges] == [("df", "sink")]
+        regenerated = graph_to_code(graph, pipeline_name="shapes")
+        assert "def sink(df): ...\n" in regenerated
+        reparsed = parse_pipeline_source(regenerated, source_file="main.py", _base_dir=tmp_path)
+        assert [(edge.source, edge.target) for edge in reparsed.edges] == [("df", "sink")]
+
+    @pytest.mark.parametrize(
+        ("node_type", "function", "code"),
+        [
+            pytest.param(
+                NodeType.RATING_STEP,
+                "def rate(df: pl.LazyFrame) -> pl.LazyFrame:\n    df = df.head(1)\n    return df",
+                "df = df.head(1)",
+                id="rating-step-hook",
+            ),
+            pytest.param(
+                NodeType.EXTERNAL_FILE,
+                "def lookup(quotes: pl.LazyFrame, *, obj) -> pl.LazyFrame:\n"
+                "    df = quotes\n"
+                "    df = df.head(1)\n"
+                "    return df",
+                "df = df.head(1)",
+                id="external-file-hook",
+            ),
+        ],
+    )
+    def test_a_hook_with_code_parses(
+        self, tmp_path: Path, node_type: NodeType, function: str, code: str
+    ) -> None:
+        """The accepted hook shapes parse, and only the generated lines are dropped."""
+        graph = _parse_configured_node(tmp_path, node_type, function)
+        func_name = function.split("def ", 1)[1].split("(", 1)[0]
+        assert graph.node_map[func_name].data.config["code"] == code

@@ -14,10 +14,7 @@ from pathlib import Path
 import pytest
 
 from haute._ast_helpers import _extract_preamble, _strip_docstring
-from haute._code_extraction import (
-    _source_load_boilerplate_end_index,
-    extract_user_code,
-)
+from haute._code_extraction import _match_hook, extract_user_code
 from haute._graph_builders import _build_edges
 from haute._pipeline_recovery import load_pipeline_editor_document
 from haute._submodel_instances import qualified_runtime_node_id
@@ -35,23 +32,23 @@ def _write(tmp_path: Path, name: str, code: str) -> Path:
 
 # ---------------------------------------------------------------------------
 # F135 — _match_source dropped the first user statement when a DataSource body
-# had no recognised source-load line.
+# had no recognised source-load line. A Data Input is now a ``df`` hook whose
+# body holds no generated statement before the user's code.
 # ---------------------------------------------------------------------------
 
 
 class TestSourceLoadBoilerplateConservation:
-    def test_no_source_load_keeps_index_at_zero(self) -> None:
+    def test_hook_matcher_keeps_index_at_zero(self) -> None:
         cleaned = [
             "df = df.filter(pl.col('x') > 0)",
             "df = df.with_columns(pl.lit(1).alias('y'))",
         ]
-        assert _source_load_boilerplate_end_index(cleaned) == 0
+        assert _match_hook(cleaned, ("df",)).start_idx == 0
 
     def test_source_extractor_keeps_all_user_code(self) -> None:
         body = "df = df.filter(pl.col('x') > 0)\ndf = df.with_columns(pl.lit(1).alias('y'))"
-        code = extract_user_code(body, kind="source", param_names=["df"])
-        assert "df.filter" in code
-        assert "with_columns" in code
+        code = extract_user_code(body, kind="hook", param_names=["df"])
+        assert code == body
 
 
 # ---------------------------------------------------------------------------
@@ -182,8 +179,7 @@ class TestParameterBucketConservation:
                     return None
 
                 @pipeline.live_switch(config="config/source_switch/switch.json")
-                def switch(a, *, c=None):
-                    return a
+                def switch(a, *, c=None): ...
                 """
             ),
         )
@@ -221,7 +217,9 @@ class TestNodeFunctionConservation:
 
 # ---------------------------------------------------------------------------
 # F272 — ModelScore boilerplate matcher anchored on a string literal that
-# merely mentioned score_from_config(, dropping the real user code.
+# merely mentioned score_from_config(, dropping the real user code. A Model
+# Score is now a ``df`` hook: nothing is anchored on any call, so no user
+# statement can be dropped.
 # ---------------------------------------------------------------------------
 
 
@@ -231,14 +229,14 @@ class TestModelScoreBoilerplateAnchoring:
             [
                 'decoy = "score_from_config("  # not a real call',
                 "result = score_from_config(cfg, df)",
-                'final = result.select("prediction")',
+                'df = result.select("prediction")',
+                "return df",
             ]
         )
-        code = extract_user_code(body, kind="model_score", param_names=["df"])
-        # The real call is located by AST; the pre-call decoy string is
-        # boilerplate-side and the genuine post-call user code survives.
-        assert 'select("prediction")' in code
-        assert "decoy" not in code
+        code = extract_user_code(body, kind="hook", param_names=["df"])
+        # Every statement before the closing ``return df`` is the user's,
+        # including a call named like the retired scoring helper.
+        assert code == "\n".join(body.splitlines()[:-1])
 
 
 # ---------------------------------------------------------------------------

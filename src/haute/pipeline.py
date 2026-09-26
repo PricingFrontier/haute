@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -10,19 +11,26 @@ from typing import Any, Self, cast
 import polars as pl
 
 from haute._edge_join import (
-    execute_edge_join,
     normalise_edge_join_decorator_kwargs,
     resolve_edge_join_role_indices,
 )
 from haute._graph_utils import _edge_id, _sanitize_func_name
 from haute._logging import get_logger
+from haute._standalone_nodes import (
+    SOURCE_NODE_TYPES,
+    FunctionKind,
+    function_kind,
+    is_configured,
+    run_configured_node,
+)
+from haute._submodel_paths import is_pipeline_dir
 from haute._types import (
     GraphEdge,
     NodeType,
     SubmodelInputPort,
     SubmodelOutputPort,
 )
-from haute.errors import ConfigError, ExecutionError
+from haute.errors import ExecutionError
 from haute.graph_utils import topo_sort_ids
 
 logger = get_logger(component="pipeline")
@@ -30,21 +38,37 @@ logger = get_logger(component="pipeline")
 
 @dataclass
 class Node:
-    """A single step in a pipeline."""
+    """A single step in a pipeline.
+
+    A ``polars`` node's function is its transform. Every other node type is
+    configured: its decorator performs the node's work, and its function is
+    either a declaration (never called) or a hook that receives the work's
+    result as ``df`` (see :mod:`haute._standalone_nodes`).
+    """
 
     name: str
     description: str
     fn: Callable
     is_source: bool
     config: dict = field(default_factory=dict)
+    #: From the defining file to its pipeline's directory, where ``config=``
+    #: paths resolve: ``.`` except in a submodel definition file.
+    pipeline_dir: str = "."
+    kind: FunctionKind = field(init=False, repr=False)
     _input_arity: _InputArity = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        self.kind = function_kind(self.node_type, self.fn, self.name, self.config)
         self._input_arity = _inspect_input_arity(
             self.fn,
             is_source=self.is_source,
             node_name=self.name,
         )
+
+    @property
+    def node_type(self) -> NodeType:
+        """The node's type, from its decorator (``polars`` when it has none)."""
+        return NodeType(self.config.get("_node_type", NodeType.POLARS))
 
     @property
     def is_deploy_input(self) -> bool:
@@ -91,9 +115,30 @@ class Node:
                 node=self.name,
             )
 
+    def _run_configured(self, frames: tuple[pl.DataFrame, ...]) -> pl.DataFrame:
+        result: pl.DataFrame = run_configured_node(
+            self.node_type,
+            self.kind,
+            name=self.name,
+            config=self.config,
+            fn=self.fn,
+            frames=frames,
+            pipeline_dir=self.pipeline_dir,
+        )
+        return result
+
     def __call__(self, *dfs: pl.DataFrame) -> pl.DataFrame:
         self._raise_if_unresolved_instance()
         if self.is_source:
+            if dfs:
+                raise ExecutionError(
+                    f"Node '{self.name}' is a source and takes no input frames, "
+                    f"but received {len(dfs)}.",
+                    node=self.name,
+                    received=len(dfs),
+                )
+            if self.kind != "transform":
+                return self._run_configured(())
             result: pl.DataFrame = self.fn()
             return result
         arity = self.input_arity
@@ -114,8 +159,20 @@ class Node:
                 expected=arity.describe(),
                 received=len(dfs),
             )
+        if self.kind != "transform":
+            return self._run_configured(dfs)
         result = self.fn(*dfs)
         return result
+
+
+def _runs_node(node: Node) -> Callable[..., pl.DataFrame]:
+    """What a configured node's decorator returns: a callable that runs the node."""
+
+    @functools.wraps(node.fn)
+    def run(*frames: pl.DataFrame) -> pl.DataFrame:
+        return node(*frames)
+
+    return run
 
 
 @dataclass(frozen=True)
@@ -213,6 +270,7 @@ class NodeRegistry:
         self._edges: list[RegisteredEdge] = []
         self._submodel_files: list[str] = []
         self._submodel_registrations: list[RegisteredSubmodel] = []
+        self._pipeline_dir = "."
 
     def _register_node(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Internal decorator to register a function as a node.
@@ -222,9 +280,14 @@ class NodeRegistry:
         """
 
         def _register(f: Callable) -> Callable:
-            sig = inspect.signature(f)
-            params = [p for p in sig.parameters.values() if p.name != "self"]
-            is_source = len(params) == 0
+            node_type = NodeType(config.get("_node_type", NodeType.POLARS))
+            if is_configured(node_type, config):
+                # A configured source's hook takes df, yet it has no inputs.
+                is_source = node_type in SOURCE_NODE_TYPES
+            else:
+                sig = inspect.signature(f)
+                params = [p for p in sig.parameters.values() if p.name != "self"]
+                is_source = len(params) == 0
 
             conflicting_registration = next(
                 (
@@ -251,10 +314,15 @@ class NodeRegistry:
                 fn=f,
                 is_source=is_source,
                 config=config,
+                pipeline_dir=self._pipeline_dir,
             )
             self._nodes.append(n)
             self._node_map[n.name] = n
-            return f
+            if n.kind == "transform" and not n.config.get("_instance"):
+                return f
+            # A declaration's body does nothing, so the name it defines runs the
+            # node instead: calling it does what a pipeline run does.
+            return _runs_node(n)
 
         if fn is not None:
             return _register(fn)
@@ -282,24 +350,6 @@ class NodeRegistry:
         """Decorator alias for edge-join nodes."""
         normalised_config = normalise_edge_join_decorator_kwargs(config)
         return self._register_node(fn, _node_type=NodeType.EDGE_JOIN, **normalised_config)
-
-    def _apply_edge_join(
-        self,
-        node_name: str,
-        base: pl.LazyFrame | pl.DataFrame,
-        join: pl.LazyFrame | pl.DataFrame,
-    ) -> pl.LazyFrame | pl.DataFrame:
-        """Apply an edge-join node's registered config to two frames."""
-        node = self._node_map.get(node_name)
-        if node is None:
-            raise ConfigError("edgeJoin runtime node is not registered.", node=node_name)
-        if node.config.get("_node_type") != NodeType.EDGE_JOIN:
-            raise ConfigError(
-                "edgeJoin runtime node must be registered as an edgeJoin.",
-                node=node_name,
-                node_type=node.config.get("_node_type"),
-            )
-        return execute_edge_join(base, join, node.config, collect_eager=True)
 
     def model_score(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Decorator alias for model-score nodes."""
@@ -445,17 +495,17 @@ class Pipeline(NodeRegistry):
     Usage:
         pipeline = Pipeline("main")
 
-        # Folder-backed types (data_input, external_file, …) reference a
-        # JSON sidecar rather than inline kwargs, matching the scaffold and
-        # what the parser accepts:
+        # A configured node's decorator names its sidecar and does its work;
+        # its function only declares the node's inputs:
         @pipeline.data_input(config="config/data_input/read_data.json")
-        def read_data() -> pl.DataFrame: ...
+        def read_data(): ...
 
         @pipeline.polars
-        def transform(df: pl.DataFrame) -> pl.DataFrame: ...
+        def transform(read_data: pl.LazyFrame) -> pl.LazyFrame:
+            return read_data.filter(pl.col("premium") > 0)
 
-        @pipeline.output
-        def result(df: pl.DataFrame) -> pl.DataFrame: ...
+        @pipeline.output(config="config/quote_response/result.json")
+        def result(transform): ...
 
         pipeline.connect("read_data", "transform").connect("transform", "result")
         result = pipeline.run()
@@ -784,7 +834,12 @@ class Pipeline(NodeRegistry):
 
 
 class Submodel(NodeRegistry):
-    """A reusable definition declared in a separate Python module."""
+    """A reusable definition declared in a separate Python module.
+
+    ``pipeline_dir`` leads from this file to the directory of the pipeline that
+    registers it (``..`` for a file in ``modules/``): its nodes' ``config=``
+    paths resolve there, as they do for the pipeline's own nodes.
+    """
 
     def __init__(
         self,
@@ -794,6 +849,7 @@ class Submodel(NodeRegistry):
         definition_id: str,
         input_ports: list[dict[str, Any] | SubmodelInputPort],
         output_ports: list[dict[str, Any] | SubmodelOutputPort],
+        pipeline_dir: str = ".",
     ) -> None:
         if not isinstance(definition_id, str):
             raise TypeError("Submodel definition_id must be a string.")
@@ -801,8 +857,14 @@ class Submodel(NodeRegistry):
             raise ValueError("Submodel definition_id must be a non-empty unpadded string.")
         if not isinstance(input_ports, list) or not isinstance(output_ports, list):
             raise TypeError("Submodel input_ports and output_ports must be lists.")
+        if not is_pipeline_dir(pipeline_dir):
+            raise ValueError(
+                "Submodel pipeline_dir must be '..' once per folder between this file and "
+                f"the pipeline that registers it (got {pipeline_dir!r})."
+            )
 
         super().__init__(name, description)
+        self._pipeline_dir = pipeline_dir
         self._definition_id = definition_id
         for port_field, ports in (("input_ports", input_ports), ("output_ports", output_ports)):
             for port in ports:
@@ -821,6 +883,11 @@ class Submodel(NodeRegistry):
     def definition_id(self) -> str:
         """Stable reusable-definition identity."""
         return self._definition_id
+
+    @property
+    def pipeline_dir(self) -> str:
+        """From this file to the directory of the pipeline that registers it."""
+        return self._pipeline_dir
 
     @property
     def input_ports(self) -> list[SubmodelInputPort]:

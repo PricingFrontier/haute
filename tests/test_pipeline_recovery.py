@@ -97,8 +97,7 @@ def _legacy_explore_source(name: str = "legacy") -> str:
                 "sort_by": None,
             }},
         }}])
-        def explore(aggregate):
-            return aggregate
+        def explore(aggregate): ...
 
         @pipeline.polars
         def model_input(aggregate):
@@ -435,8 +434,7 @@ def test_ready_document_carries_all_server_owned_api_input_identities(
         pipeline = haute.Pipeline("identity-document")
 
         @pipeline.api_input(config="config/quote_input/request.json")
-        def request():
-            return None
+        def request(): ...
 
         @pipeline.polars
         def consume(quotes):
@@ -501,8 +499,7 @@ def test_ready_document_keeps_incomplete_api_input_config_repairable(
         pipeline = haute.Pipeline("identity-document")
 
         @pipeline.api_input(config="config/quote_input/request.json")
-        def request():
-            return None
+        def request(): ...
         """,
     )
 
@@ -574,8 +571,7 @@ def test_undeclared_sidecar_key_fails_the_parse_and_localises_to_its_node(
         pipeline = haute.Pipeline("stale_key")
 
         @pipeline.constant(config="config/constant/rates.json")
-        def rates():
-            return None
+        def rates(): ...
 
         @pipeline.polars
         def priced(rates):
@@ -936,8 +932,7 @@ def test_recovery_revision_tracks_malformed_config_and_missing_sidecar(
         pipeline = haute.Pipeline("revision")
 
         @pipeline.data_input(config="config/data_input/source.json")
-        def source():
-            return None
+        def source(): ...
         """,
     )
 
@@ -1022,6 +1017,7 @@ def test_ready_document_revision_authenticates_strictly_parsed_child_bytes(
             definition_id="child-definition",
             input_ports=[],
             output_ports=[],
+            pipeline_dir="..",
         )
 
         @submodel.polars
@@ -1103,6 +1099,7 @@ def test_ready_document_exposes_submodel_output_port_as_executable_name(
                 "name": "output_1",
                 "source": {"nodeId": "transform", "handleId": None},
             }],
+            pipeline_dir="..",
         )
 
         @submodel.polars
@@ -1167,6 +1164,7 @@ def test_recovery_revision_authenticates_child_bytes_the_document_presents(
             definition_id="child-definition",
             input_ports=[],
             output_ports=[],
+            pipeline_dir="..",
         )
 
         @submodel.polars
@@ -1296,11 +1294,11 @@ def test_recovery_revision_tracks_child_config_from_parent_config_base(
             definition_id="child",
             input_ports=[],
             output_ports=[],
+            pipeline_dir="..",
         )
 
         @submodel.data_input(config="{config_ref}")
-        def child_source():
-            return None
+        def child_source(): ...
         ''',
     )
     pipeline_file = _write(
@@ -1504,8 +1502,7 @@ def test_explore_shape_failure_is_local_and_blocks_only_downstream(
             return None
 
         @pipeline.explore(pivots=[])
-        def inspect(source):
-            return source
+        def inspect(source): ...
 
         @pipeline.polars
         def downstream(inspect):
@@ -1580,6 +1577,7 @@ def test_unknown_submodel_decorator_is_rejected_strictly_and_conserved(
             definition_id="child",
             input_ports=[],
             output_ports=[],
+            pipeline_dir="..",
         )
 
         @submodel.removed_node
@@ -1627,6 +1625,7 @@ def test_duplicate_submodel_definition_paths_mark_every_occurrence_unavailable(
             definition_id="shared",
             input_ports=[],
             output_ports=[],
+            pipeline_dir="..",
         )
     """
     (tmp_path / "models").mkdir()
@@ -1680,6 +1679,7 @@ def test_duplicate_submodel_alias_stays_degraded_while_revision_is_computed(
             definition_id="shared",
             input_ports=[],
             output_ports=[],
+            pipeline_dir="..",
         )
         """,
     )
@@ -1755,8 +1755,7 @@ def test_recovery_preview_plans_only_the_ready_ancestor_closure(
             return source
 
         @pipeline.explore(pivots=[{"version": 1}])
-        def broken(source):
-            return source
+        def broken(source): ...
         """,
     )
     monkeypatch.chdir(tmp_path)
@@ -1819,8 +1818,7 @@ def test_recovery_preview_closure_shares_canonical_cache_identity(
             return source
 
         @pipeline.explore(pivots=[{"version": 1}])
-        def broken(source):
-            return source
+        def broken(source): ...
         """,
     )
     monkeypatch.chdir(tmp_path)
@@ -2030,6 +2028,7 @@ def test_unexpected_submodel_parser_defect_is_localised_with_incident(
             definition_id="shared",
             input_ports=[],
             output_ports=[],
+            pipeline_dir="..",
         )
         """,
     )
@@ -2240,6 +2239,7 @@ def test_remove_unavailable_node_repairs_a_child_submodel_source(
             definition_id="scoring",
             input_ports=[],
             output_ports=[],
+            pipeline_dir="..",
         )
 
         @submodel.removed_node

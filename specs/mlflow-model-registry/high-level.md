@@ -94,10 +94,11 @@ Out of scope (owned elsewhere):
   [deploy](../deploy/high-level.md) (`deploy/_bundler.py`,
   `deploy/_mlflow.py`), which reuses this component's loader primitives
   but owns the packaging/serving concern.
-- The MODEL_SCORE node's place in the pipeline graph, its codegen
-  template, and executor wiring — `score_from_config` in
-  `_model_scorer.py` is codegen's *delegation target*, not the generator;
-  see the execution-engine and codegen components.
+- The MODEL_SCORE node's place in the pipeline graph, its generated
+  declaration, and executor wiring — `score_from_config` in
+  `_model_scorer.py` is what a standalone run's Model Score decorator calls,
+  not the generator; see the execution-engine, codegen and pipeline-config
+  components.
 - General HTTP conventions (auth, response timeout wrapping) beyond the
   discovery routes themselves — see
   [server-api](../server-api/high-level.md).
@@ -297,9 +298,9 @@ Out of scope (owned elsewhere):
   `_model_scorer.py` loads and enforces at score time.
 - Is consumed by the pipeline
   [execution-engine](../execution-engine/high-level.md): the MODEL_SCORE
-  node calls `ModelScorer.score()` / `score_frame()` directly, and
-  codegen-generated pipeline scripts call `score_from_config` as their
-  delegation target.
+  node calls `ModelScorer.score()` / `score_frame()` directly, and a
+  standalone run of a saved pipeline scores through `score_from_config`
+  from the Model Score decorator.
 - Is consumed by [deploy](../deploy/high-level.md), which loads and
   bundles models via the same `load_mlflow_model` /
   `resolve_mlflow_source` primitives for its own scorer, and by

@@ -84,7 +84,7 @@ def test_rename_stable_binding_execution_and_round_trip():
 
     # 4. Codegen round-trip asserting inputMapping preserved and parameter list is 'src'
     code = graph_to_code(renamed_graph, pipeline_name="rename_stable_binding")
-    assert "inputMapping={'src': 'Renamed_Src'}" in code
+    assert '@pipeline.polars(inputMapping={"src": "Renamed_Src"})\n' in code
     assert "def consumer(src: pl.LazyFrame)" in code
     assert "df = src.with_columns" in code
 

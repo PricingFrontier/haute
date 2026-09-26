@@ -238,7 +238,7 @@ class TestCodegenMultiFile:
         )
         files = graph_to_code_multi(submodel_graph, pipeline_name="main")
         code = files["modules/scoring.py"]
-        assert "description='Score a policy'" in code
+        assert 'description="Score a policy",' in code
         assert code.count("HELPER = 1") == 1
         assert code.count("KEPT = 2") == 1
 
@@ -283,6 +283,7 @@ class TestParserSubmodel:
                     }
                 ],
                 output_ports=[],
+                pipeline_dir="..",
             )
 
             @submodel.polars
@@ -295,14 +296,12 @@ class TestParserSubmodel:
             tmp_path,
             "main.py",
             f"""\
-            import polars as pl
             import haute
 
             pipeline = haute.Pipeline("test")
 
             @pipeline.data_input(config="{source_config}")
-            def Source() -> pl.LazyFrame:
-                return pl.scan_parquet("data/in.parquet")
+            def Source(): ...
 
             pipeline.submodel("modules/scoring.py", "scoring")
 
@@ -330,8 +329,7 @@ class TestParserSubmodel:
             pipeline = haute.Pipeline("basic")
 
             @pipeline.data_input(config="{source_config}")
-            def Source() -> pl.LazyFrame:
-                return pl.scan_parquet("data/in.parquet")
+            def Source(): ...
 
             @pipeline.polars
             def Transform(Source: pl.LazyFrame) -> pl.LazyFrame:

@@ -53,17 +53,8 @@ _BROWSER_CORE_BLOCK = """
 
 
 @pipeline.data_input(config="config/data_input/raw_rows.json")
-def raw_rows() -> pl.LazyFrame:
+def raw_rows():
     \"\"\"Deterministic browser source independent of the product scaffold.\"\"\"
-    from pathlib import Path
-
-    from haute.graph_utils import resolve_data_input_from_config
-
-    df = resolve_data_input_from_config(
-        "config/data_input/raw_rows.json",
-        base_dir=Path(__file__).parent,
-    )
-    return df
 
 
 @pipeline.polars
@@ -73,120 +64,66 @@ def enriched(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
 
 
 @pipeline.output(config="config/quote_response/priced.json")
-def priced(enriched: pl.LazyFrame) -> pl.LazyFrame:
+def priced(enriched):
     \"\"\"Core terminal node used by version-control browser flows.\"\"\"
-    return enriched
 """
 _BROWSER_MODEL_BLOCK = """
 
 
 @pipeline.modelling(config="config/model_training/browser_model.json")
-def browser_model(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
+def browser_model(raw_rows):
     \"\"\"Browser E2E training node for async modelling flows.\"\"\"
-    return raw_rows
 """
 _BROWSER_GLM_BLOCK = """
 
 
 @pipeline.modelling(config="config/model_training/browser_glm.json")
-def browser_glm(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
+def browser_glm(raw_rows):
     \"\"\"Browser E2E GLM node for the terms-pane flow.\"\"\"
-    return raw_rows
 """
 _BROWSER_CANVAS_BLOCK = """
 
 
 @pipeline.banding(config="config/banding/browser_mixed_banding.json")
-def browser_mixed_banding(enriched: pl.LazyFrame) -> pl.LazyFrame:
+def browser_mixed_banding(enriched):
     \"\"\"Browser E2E mixed-mode Banding fixture for Rating discovery.\"\"\"
-    from pathlib import Path
-
-    from haute.graph_utils import apply_banding_from_config
-
-    return apply_banding_from_config(
-        enriched,
-        "config/banding/browser_mixed_banding.json",
-        base_dir=Path(__file__).parent,
-    )
 
 
 @pipeline.rating_step(config="config/rating_step/browser_rating.json")
-def browser_rating(browser_mixed_banding: pl.LazyFrame) -> pl.LazyFrame:
+def browser_rating(browser_mixed_banding):
     \"\"\"Browser E2E three-factor Rating table fixture.\"\"\"
-    from pathlib import Path
-
-    from haute.graph_utils import apply_rating_step_from_config
-
-    return apply_rating_step_from_config(
-        browser_mixed_banding,
-        "config/rating_step/browser_rating.json",
-        base_dir=Path(__file__).parent,
-    )
 """
 _BROWSER_OPTIMISER_BLOCK = """
 
 
 @pipeline.data_input(config="config/data_input/browser_optimiser_rows.json")
-def browser_optimiser_rows() -> pl.LazyFrame:
+def browser_optimiser_rows():
     \"\"\"Browser E2E scored rows for optimiser flows.\"\"\"
-    from pathlib import Path
-
-    from haute.graph_utils import resolve_data_input_from_config
-
-    df = resolve_data_input_from_config(
-        "config/data_input/browser_optimiser_rows.json",
-        base_dir=Path(__file__).parent,
-    )
-    return df
 
 
 @pipeline.optimiser(config="config/optimisation/browser_optimiser.json")
-def browser_optimiser(browser_optimiser_rows: pl.LazyFrame) -> pl.LazyFrame:
+def browser_optimiser(browser_optimiser_rows):
     \"\"\"Browser E2E optimisation node for async optimiser flows.\"\"\"
-    return browser_optimiser_rows
 
 
 @pipeline.optimiser_apply(config="config/apply_optimisation/browser_apply.json")
-def browser_apply(browser_optimiser_rows: pl.LazyFrame) -> pl.LazyFrame:
+def browser_apply(browser_optimiser_rows):
     \"\"\"Browser E2E optimiser-apply node backed by saved optimiser artifacts.\"\"\"
-    return browser_optimiser_rows
 
 
 @pipeline.data_input(config="config/data_input/browser_ratebook_quotes.json")
-def browser_ratebook_quotes() -> pl.LazyFrame:
+def browser_ratebook_quotes():
     \"\"\"Browser E2E per-quote rows the ratebook's rating factor is banded from.\"\"\"
-    from pathlib import Path
-
-    from haute.graph_utils import resolve_data_input_from_config
-
-    df = resolve_data_input_from_config(
-        "config/data_input/browser_ratebook_quotes.json",
-        base_dir=Path(__file__).parent,
-    )
-    return df
 
 
 @pipeline.banding(config="config/banding/browser_ratebook_banding.json")
-def browser_ratebook_banding(browser_ratebook_quotes: pl.LazyFrame) -> pl.LazyFrame:
+def browser_ratebook_banding(browser_ratebook_quotes):
     \"\"\"Browser E2E Banding node: the ratebook solve's rating factor source.\"\"\"
-    from pathlib import Path
-
-    from haute.graph_utils import apply_banding_from_config
-
-    return apply_banding_from_config(
-        browser_ratebook_quotes,
-        "config/banding/browser_ratebook_banding.json",
-        base_dir=Path(__file__).parent,
-    )
 
 
 @pipeline.optimiser(config="config/optimisation/browser_ratebook.json")
-def browser_ratebook(
-    browser_optimiser_rows: pl.LazyFrame,
-    browser_ratebook_banding: pl.LazyFrame,
-) -> pl.LazyFrame:
+def browser_ratebook(browser_optimiser_rows, browser_ratebook_banding):
     \"\"\"Browser E2E ratebook optimisation node for the Rates pane.\"\"\"
-    return browser_optimiser_rows
 """
 _BROWSER_MODEL_CONFIG = """{
   "name": "browser_model",
@@ -389,19 +326,9 @@ _BROWSER_OPTIMISER_APPLY_CONFIG = """{
 _QUOTES_API_INPUT_BLOCK = """
 
 
-@pipeline.api_input(config="config/quote_input/quotes.json", contract="opaque")
-def quotes() -> dict[str, pl.LazyFrame]:
+@pipeline.api_input(config="config/quote_input/quotes.json")
+def quotes():
     \"\"\"Browser E2E apiInput node for v2-native flow tests.\"\"\"
-    from pathlib import Path
-
-    import orjson
-
-    from haute._json_shred._cache import load_v2_api_source
-
-    _data_path = Path(__file__).parent.parent / "data/quotes/sample_quote.json"
-    _config_path = Path("config/quote_input/quotes.json")
-    _v2_config = orjson.loads(_config_path.read_bytes())
-    return load_v2_api_source(str(_data_path), _v2_config)
 """
 # V2-native starting state: a data path is set (so the Infer Tables
 # button is visible) but no schema yet — the editor renders the bare v2

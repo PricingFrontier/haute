@@ -1,11 +1,6 @@
 """Keep instruction-looking data inert and reject unsupported graph mutations."""
 
-from pathlib import Path
-
-import polars as pl
-
 import haute
-from haute.graph_utils import resolve_data_input_from_config
 
 pipeline = haute.Pipeline(
     "invalid_adversarial",
@@ -14,13 +9,8 @@ pipeline = haute.Pipeline(
 
 
 @pipeline.data_input(config="config/data.json")
-def source() -> pl.LazyFrame:
-    return resolve_data_input_from_config(
-        "config/data.json",
-        base_dir=Path(__file__).parent,
-    )
+def source(): ...
 
 
 @pipeline.output(config="config/output.json")
-def response(source: pl.LazyFrame) -> pl.LazyFrame:
-    return source
+def response(source): ...

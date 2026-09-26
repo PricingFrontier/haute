@@ -16,13 +16,8 @@ from pathlib import Path
 from typing import Any
 
 from haute._code_extraction import (
-    _extract_explore_user_code,
-    _extract_external_user_code,
-    _extract_model_score_user_code,
-    _extract_rating_step_user_code,
-    _extract_scenario_expander_user_code,
-    _extract_source_user_code,
-    _extract_user_code,
+    extract_user_code,
+    is_declaration_body,
     normalise_user_code,
 )
 from haute._config_io import NODE_TYPE_TO_FOLDER, has_config_folder, load_node_config
@@ -45,6 +40,7 @@ from haute._polars_steps import (
     step_input_names,
     stepped_surface_for,
 )
+from haute._standalone_nodes import CODE_NODE_TYPES
 from haute._types import (
     COLUMN_CONFIG_KEYS,
     MODEL_SCORE_CONFIG_KEYS,
@@ -54,7 +50,7 @@ from haute._types import (
     SCENARIO_EXPANDER_CONFIG_KEYS,
     NodeType,
 )
-from haute.errors import ConfigError, ContractMismatchError
+from haute.errors import ConfigError, ContractMismatchError, ParseError
 
 __all__ = [
     "_copy_config_keys",
@@ -112,9 +108,7 @@ def _build_node_config(
             decorator_key = "source_type" if key == "sourceType" else key
             if decorator_key in decorator_kwargs:
                 config[key] = decorator_kwargs[decorator_key]
-        # Only extract user post-processing code after the scoring call, not the
-        # auto-generated scoring scaffolding that codegen produces.
-        config["code"] = _extract_model_score_user_code(body) if body else ""
+        config["code"] = extract_user_code(body, kind="hook") if body else ""
     elif node_type == NodeType.BANDING:
         if "factors" in decorator_kwargs:
             # Multi-factor format: factors=[{...}, {...}]
@@ -161,10 +155,10 @@ def _build_node_config(
                 }
                 for output in combined_outputs
             ]
-        config["code"] = _extract_rating_step_user_code(body, param_names) if body else ""
+        config["code"] = extract_user_code(body, kind="hook") if body else ""
     elif node_type == NodeType.SCENARIO_EXPANDER:
         _copy_config_keys(config, decorator_kwargs, SCENARIO_EXPANDER_CONFIG_KEYS)
-        config["code"] = _extract_scenario_expander_user_code(body, param_names) if body else ""
+        config["code"] = extract_user_code(body, kind="hook") if body else ""
     elif node_type == NodeType.OPTIMISER_APPLY:
         for key in OPTIMISER_APPLY_CONFIG_KEYS:
             decorator_key = "source_type" if key == "sourceType" else key
@@ -194,7 +188,7 @@ def _build_node_config(
         # branch and pick up a `code` config.
         pass
     elif node_type == NodeType.EXPLORE:
-        code = _extract_explore_user_code(body, param_names) if body else ""
+        code = extract_user_code(body, kind="hook") if body else ""
         if code:
             config["code"] = code
         # Explore has no sidecar: its steps travel as a decorator argument
@@ -227,7 +221,9 @@ def _build_node_config(
                 config["charts"] = charts
     else:
         # transform
-        config["code"] = _extract_user_code(body, param_names) if body else ""
+        config["code"] = (
+            extract_user_code(body, kind="polars", param_names=param_names) if body else ""
+        )
     _copy_config_keys(config, decorator_kwargs, COLUMN_CONFIG_KEYS)
     # Instance reference (works for any node type)
     if "of" in decorator_kwargs:
@@ -248,18 +244,9 @@ def _attach_code_from_body(
 ) -> dict[str, Any]:
     """Return a config copy with user code extracted from a node body."""
     config = dict(config)
-    if node_type == NodeType.MODEL_SCORE:
-        config["code"] = _extract_model_score_user_code(body) if body else ""
-    elif node_type == NodeType.EXTERNAL_FILE:
-        config["code"] = _extract_external_user_code(body, param_names) if body else ""
-    elif node_type == NodeType.POLARS:
-        config["code"] = _extract_user_code(body, param_names) if body else ""
-    elif node_type == NodeType.DATA_INPUT:
-        config["code"] = _extract_source_user_code(body) if body else ""
-    elif node_type == NodeType.SCENARIO_EXPANDER:
-        config["code"] = _extract_scenario_expander_user_code(body, param_names) if body else ""
-    elif node_type == NodeType.RATING_STEP:
-        config["code"] = _extract_rating_step_user_code(body, param_names) if body else ""
+    kind = _EXTRACTION_KIND_BY_CODE_TYPE.get(node_type)
+    if kind is not None:
+        config["code"] = extract_user_code(body, kind=kind, param_names=param_names) if body else ""
     return config
 
 
@@ -390,16 +377,78 @@ def _sidecar_required_error(node_type: NodeType, func_name: str) -> ConfigError:
     )
 
 
-#: The extraction matcher kind each stepped node type's generated body uses.
-_EXTRACTION_KIND_BY_STEPPED_TYPE: dict[NodeType, str] = {
+#: The extraction kind of each node type whose function may carry code.
+_EXTRACTION_KIND_BY_CODE_TYPE: dict[NodeType, str] = {
     NodeType.POLARS: "polars",
-    NodeType.DATA_INPUT: "source",
+    NodeType.DATA_INPUT: "hook",
     NodeType.EXTERNAL_FILE: "external",
-    NodeType.RATING_STEP: "rating_step",
-    NodeType.MODEL_SCORE: "model_score",
-    NodeType.SCENARIO_EXPANDER: "scenario_expander",
-    NodeType.EXPLORE: "explore",
+    NodeType.RATING_STEP: "hook",
+    NodeType.MODEL_SCORE: "hook",
+    NodeType.SCENARIO_EXPANDER: "hook",
+    NodeType.EXPLORE: "hook",
 }
+
+
+def _validate_node_function(
+    node_type: NodeType,
+    body: str,
+    param_names: list[str],
+    edge_param_names: list[str],
+    func_name: str,
+) -> None:
+    """Enforce the declaration and hook shapes a standalone run relies on.
+
+    A configured node's function is either a declaration — a body of only
+    ``...`` or ``pass`` — or a hook carrying code, whose first parameter is
+    ``df`` (an External File hook takes the keyword-only ``obj`` instead) on
+    a type that accepts code. The standalone runtime never calls a
+    declaration and always calls a hook, so any other shape would run
+    differently there than in the canvas.
+    """
+    if node_type == NodeType.POLARS:
+        return
+    declaration = is_declaration_body(body)
+    if node_type not in CODE_NODE_TYPES:
+        # Its parameters only name inputs (an input may be called df); the body is all
+        # that can be wrong.
+        if not declaration:
+            raise ParseError(
+                f"Node '{func_name}' has a function body, but its decorator performs the "
+                f"node's work and never calls it. Its node type ({node_type.value}) carries "
+                "no code; replace the body with `...`.",
+                node_id=func_name,
+                node_type=node_type.value,
+            )
+        return
+    keyword_only = param_names[len(edge_param_names) :]
+    if node_type == NodeType.EXTERNAL_FILE:
+        marker = "obj"
+        is_hook = "obj" in keyword_only
+        advice = (
+            "To add code, keep the inputs as parameters, add the keyword-only parameter "
+            "obj and start from df = <first input>."
+        )
+    else:
+        marker = "df"
+        is_hook = edge_param_names[:1] == ["df"]
+        advice = (
+            "To add code, make the first parameter df (the frame this node produced) and "
+            "return the result."
+        )
+    if is_hook and declaration:
+        raise ParseError(
+            f"Node '{func_name}' takes {marker} but has no code: add the code, or declare "
+            "the node with its inputs as parameters and a `...` body.",
+            node_id=func_name,
+            node_type=node_type.value,
+        )
+    if not is_hook and not declaration:
+        raise ParseError(
+            f"Node '{func_name}' has a function body, but its decorator performs the node's "
+            f"work and never calls it. {advice}",
+            node_id=func_name,
+            node_type=node_type.value,
+        )
 
 
 def _comments(code: str) -> list[str]:
@@ -481,7 +530,7 @@ def _reconcile_steps(
             return config
         reason = f"the steps cannot be rendered ({exc})"
     else:
-        kind = _EXTRACTION_KIND_BY_STEPPED_TYPE[node_type]
+        kind = _EXTRACTION_KIND_BY_CODE_TYPE[node_type]
         # The renderer's earlier call spelling is accepted too, so a body it
         # saved before keeps its steps; free code must match either way.
         earlier = render_polars_steps(
@@ -491,7 +540,7 @@ def _reconcile_steps(
             spelling="earlier",
         ).code
         if any(
-            _same_program(normalise_user_code(code, kind=kind, param_names=param_names), body_code)
+            _same_program(normalise_user_code(code, kind=kind), body_code)
             for code in (rendered, earlier)
         ):
             return config
@@ -536,6 +585,13 @@ def _resolve_node_config(
     # Work on a copy to avoid mutating the caller's dict.
     decorator_kwargs = dict(decorator_kwargs)
     node_type = explicit_node_type or NodeType.POLARS
+    _validate_node_function(
+        node_type,
+        body,
+        list(param_names),
+        list(edge_param_names if edge_param_names is not None else param_names),
+        func_name,
+    )
     # Strip the ``contract=`` kwarg before delegating to the per-type
     # config builders — those builders would otherwise flag it as
     # unrecognised.  We re-attach it to the config afterwards (see
@@ -573,8 +629,15 @@ def _resolve_node_config(
                 func_name=func_name,
                 base_dir=str(base),
             ) from exc
-        # Code lives in the .py function body, not in the JSON file.
-        config = _attach_code_from_body(loaded, node_type, body, param_names)
+        # Code lives in the .py function body, not in the JSON file. Only
+        # positional parameters are inputs: an External File hook's keyword-only
+        # obj is never the input its generated binding names.
+        config = _attach_code_from_body(
+            loaded,
+            node_type,
+            body,
+            list(edge_param_names if edge_param_names is not None else param_names),
+        )
         if node_type in STEPPED_NODE_TYPES:
             config = _reconcile_steps(config, node_type, param_names, normalised_ref, func_name)
     elif has_config_folder(node_type):

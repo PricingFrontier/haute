@@ -28,9 +28,9 @@ from haute._pipeline_repair import (
 )
 from haute._python_syntax import (
     SourceNodeReplacement,
-    prepend_function_statements,
     replace_source_nodes,
 )
+from haute._source_layout import quote_string
 from haute._types import GraphNode, NodeData, NodeType
 from haute.errors import ConfigError, HauteError
 from haute.schemas import (
@@ -287,26 +287,9 @@ def _reset_node(
             if isinstance(literal, ast.Constant) and literal.value == default_reference
         ]
         generated = _replace_spans(
-            generated.encode("utf-8"), [(literal, repr(reference)) for literal in literals]
+            generated.encode("utf-8"),
+            [(literal, quote_string(reference)) for literal in literals],
         ).decode("utf-8")
-        if "_HAUTE_CONFIG_BASE" in generated and not any(
-            isinstance(statement, (ast.Assign, ast.AnnAssign))
-            and any(
-                isinstance(n, ast.Name)
-                and isinstance(n.ctx, ast.Store)
-                and n.id == "_HAUTE_CONFIG_BASE"
-                for n in ast.walk(statement)
-            )
-            for statement in tree.body
-        ):
-            # Bind inside the replacement function, avoiding a module-wide edit.
-            depth = len(path.parent.relative_to(root_path.parent).parts)
-            base_expression = f"_HauteResetPath(__file__).resolve().parents[{depth}]"
-            generated = prepend_function_statements(
-                generated,
-                "from pathlib import Path as _HauteResetPath\n"
-                f"_HAUTE_CONFIG_BASE = {base_expression}\n",
-            )
         # The annotation lives on the decorator; a sidecar copy is what goes stale.
         sidecar_config = {key: value for key, value in config.items() if key != "contract"}
         after = (
@@ -379,16 +362,7 @@ def _recover_node(
     # The guard only decides whether the body is recognised generated
     # scaffolding; engine issues are completeness for a direct recover, never
     # a plan gate.
-    require_generated_body(
-        node_type,
-        target.authored_id,
-        result.config,
-        function,
-        params=params,
-        reference=reference,
-        receiver="pipeline" if path == root_path else "submodel",
-        config_base_depth=len(path.parent.relative_to(root_path.parent).parts),
-    )
+    require_generated_body(node_type, function)
     edits = _reset_node(
         root,
         root_path,

@@ -198,8 +198,7 @@ def test_parse_accepts_incomplete_data_input_sidecar(tmp_path):
         "import haute\n"
         'pipeline = haute.Pipeline("demo")\n'
         '@pipeline.data_input(config="in.json")\n'
-        "def source():\n"
-        "    return None\n"
+        "def source(): ...\n"
     )
     (tmp_path / "in.json").write_text(
         json.dumps(
@@ -226,11 +225,9 @@ def test_document_reports_completeness_for_loadable_incomplete_nodes(tmp_path):
         "import haute\n"
         'pipeline = haute.Pipeline("demo")\n'
         '@pipeline.data_input(config="in.json")\n'
-        "def source():\n"
-        "    return None\n"
+        "def source(): ...\n"
         '@pipeline.data_output(config="out.json")\n'
-        "def sink(source):\n"
-        "    return None\n"
+        "def sink(source): ...\n"
     )
     (tmp_path / "in.json").write_text(
         json.dumps(
@@ -280,8 +277,7 @@ def test_parse_still_rejects_structural_violations(tmp_path):
         "import haute\n"
         'pipeline = haute.Pipeline("demo")\n'
         '@pipeline.data_input(config="in.json")\n'
-        "def source():\n"
-        "    return None\n"
+        "def source(): ...\n"
     )
     (tmp_path / "in.json").write_text(
         json.dumps({"inputType": "file", "format": "json", "mode": "scan", "path": "x.json"})

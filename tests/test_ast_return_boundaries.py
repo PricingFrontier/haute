@@ -43,39 +43,28 @@ Location of the heuristic (file:line):
     — ``_strip_trailing_return``.
   * ``src/haute/_code_extraction.py:287-301``
     — ``_finalise_polars`` Pattern 2 ``return`` → ``df =`` rewrite.
-  * ``src/haute/_code_extraction.py:314-319``
-    — ``_finalise_external`` flat ``== "return df"`` check.
 
 Scope of the dev's fix:
-  Four internal helpers in a single file.  The public surface
-  (``_extract_user_code`` / ``_extract_source_user_code`` /
-  ``_extract_model_score_user_code`` / ``_extract_external_user_code``)
-  stays identical — only the implementation swaps from line-scanning to
-  an AST walk.
+  Internal helpers in a single file.  The public surface
+  (``extract_user_code(body, kind=...)`` for the ``polars``, ``hook`` and
+  ``external`` kinds) stays identical — only the implementation swaps from
+  line-scanning to an AST walk.
 
 Tests are split into:
 
   1. Regression guards — behaviours that work TODAY and must keep working.
-  2. ``xfail(strict=True)`` — known misfires that the AST migration fixes.
-     These will flip to XPASS once the dev's fix lands, which is the
-     signal to unmark them.
+  2. Former ``xfail(strict=True)`` misfires that the AST migration fixed.
 
 No dev code is written in this file.  We use only the public extractor
-API (``_extract_user_code`` & friends) so that if the dev reshapes the
-internals (which they will), these tests still compile and still pin
-the contract.
+API (``extract_user_code``) so that if the dev reshapes the internals,
+these tests still compile and still pin the contract.
 """
 
 from __future__ import annotations
 
 import ast
 
-from haute._code_extraction import (
-    _extract_external_user_code,
-    _extract_model_score_user_code,
-    _extract_source_user_code,
-    _extract_user_code,
-)
+from haute._code_extraction import extract_user_code
 
 # ---------------------------------------------------------------------------
 # Helpers — build function bodies as the extractors expect them
@@ -103,6 +92,21 @@ def _body(*lines: str, docstring: str | None = None, indent: str = "    ") -> st
         parts.append(f'{indent}"""{docstring}"""')
     parts.extend(indent + ln if ln else ln for ln in lines)
     return "\n".join(parts)
+
+
+def _extract_transform_code(body: str, param_names: list[str]) -> str:
+    """A transform's user code (the ``polars`` kind)."""
+    return extract_user_code(body, kind="polars", param_names=param_names)
+
+
+def _extract_hook_code(body: str) -> str:
+    """A configured node's ``df`` hook code (Data Input, Model Score, ...)."""
+    return extract_user_code(body, kind="hook", param_names=["df"])
+
+
+def _extract_external_code(body: str, param_names: list[str]) -> str:
+    """An External File hook's code, after its ``df = <first input>`` binding."""
+    return extract_user_code(body, kind="external", param_names=param_names)
 
 
 def _assert_is_valid_python(code: str, *, context: str) -> None:
@@ -142,7 +146,7 @@ class TestCurrentCorrectBehaviour:
             docstring="simple",
         )
 
-        result = _extract_user_code(body, ["source"])
+        result = _extract_transform_code(body, ["source"])
 
         _assert_is_valid_python(result, context="simple single return")
         assert "return" not in result, (
@@ -153,11 +157,10 @@ class TestCurrentCorrectBehaviour:
 
     def test_empty_function_no_return_raises_nothing(self) -> None:
         """A body that just has a docstring yields the empty string (no user code)."""
-        # The `_extract_source_user_code` returns "" for pure boilerplate
-        # and a polars body with only a docstring is the empty-body case.
+        # A docstring-only body is a declaration: it holds no code at all.
         body = _body(docstring="empty polars")
 
-        result = _extract_user_code(body, [])
+        result = _extract_transform_code(body, [])
 
         assert result == "", f"empty polars body must yield '', got {result!r}"
 
@@ -166,7 +169,7 @@ class TestCurrentCorrectBehaviour:
         # A typical polars node sans docstring:
         body = "    return df.filter(pl.col('a') > 0)"
 
-        result = _extract_user_code(body, ["df"])
+        result = _extract_transform_code(body, ["df"])
 
         _assert_is_valid_python(result, context="indent-0 return")
         assert result.startswith("df = "), (
@@ -184,7 +187,7 @@ class TestCurrentCorrectBehaviour:
             docstring="multi-line return",
         )
 
-        result = _extract_user_code(body, ["source"])
+        result = _extract_transform_code(body, ["source"])
 
         _assert_is_valid_python(result, context="multi-line return")
         assert "df = (" in result or "source" in result, (
@@ -204,7 +207,7 @@ class TestCurrentCorrectBehaviour:
             docstring="codegen trailing",
         )
 
-        result = _extract_user_code(body, ["df"])
+        result = _extract_transform_code(body, ["df"])
 
         _assert_is_valid_python(result, context="trailing return df")
         assert "return df" not in result, (
@@ -220,7 +223,7 @@ class TestCurrentCorrectBehaviour:
             docstring="return_underscore",
         )
 
-        result = _extract_user_code(body, ["source"])
+        result = _extract_transform_code(body, ["source"])
 
         _assert_is_valid_python(result, context="return_underscore")
         assert "return_val = 42" in result
@@ -249,7 +252,7 @@ class TestLineHeuristicMisfires:
             docstring="nested fn",
         )
 
-        result = _extract_user_code(body, ["source"])
+        result = _extract_transform_code(body, ["source"])
 
         _assert_is_valid_python(result, context="nested fn")
         # The inner function body must still have its `return 1`:
@@ -272,7 +275,7 @@ class TestLineHeuristicMisfires:
             docstring="nested return df",
         )
 
-        result = _extract_user_code(body, ["source"])
+        result = _extract_transform_code(body, ["source"])
 
         _assert_is_valid_python(result, context="nested return df")
         # The inner function must retain its terminal `return df`:
@@ -295,7 +298,7 @@ class TestLineHeuristicMisfires:
             docstring="async inner",
         )
 
-        result = _extract_user_code(body, ["source"])
+        result = _extract_transform_code(body, ["source"])
 
         _assert_is_valid_python(result, context="async inner")
         # The async def's return must be preserved:
@@ -312,7 +315,7 @@ class TestLineHeuristicMisfires:
             docstring="class inner",
         )
 
-        result = _extract_user_code(body, ["source"])
+        result = _extract_transform_code(body, ["source"])
 
         _assert_is_valid_python(result, context="class inner")
         assert "return 1" in result, f"class method's `return` wrongly rewritten:\n{result}"
@@ -337,7 +340,7 @@ class TestLineHeuristicMisfires:
             docstring="early-exit",
         )
 
-        result = _extract_user_code(body, ["condition", "early", "late"])
+        result = _extract_transform_code(body, ["condition", "early", "late"])
 
         _assert_is_valid_python(result, context="early-exit")
         # No top-level `return …` should survive:
@@ -351,7 +354,7 @@ class TestLineHeuristicMisfires:
         assert "df = late" in result, f"late-exit branch not flipped to `df = late`:\n{result}"
 
     def test_source_node_nested_fn_return_df_preserved(self) -> None:
-        """Data Input body: inner helper's terminal ``return df`` must NOT be eaten.
+        """Data Input hook: inner helper's terminal ``return df`` must NOT be eaten.
 
         Pathological body: the user ends the node body with an inner
         helper whose last line is ``return df``.  No outer return
@@ -362,15 +365,14 @@ class TestLineHeuristicMisfires:
         helper ``def`` is left with no body).
         """
         body = _body(
-            "from haute.graph_utils import resolve_data_input_from_config",
-            'df = resolve_data_input_from_config("config/data_input/input.json")',
+            "df = df.filter(pl.col('x') > 0)",
             "def helper():",
             "    df = pl.DataFrame()",
             "    return df",
             docstring="nested inside source with no outer return",
         )
 
-        result = _extract_source_user_code(body)
+        result = _extract_hook_code(body)
 
         _assert_is_valid_python(result, context="source-nested")
         # The inner function's `return df` must survive:
@@ -388,15 +390,13 @@ class TestLineHeuristicMisfires:
         body — which is a SyntaxError.
         """
         body = _body(
-            "from haute.graph_utils import resolve_data_input_from_config",
-            'df = resolve_data_input_from_config("config/data_input/input.json")',
             "x = 1",
             "def helper():",
             "    return df",
             docstring="inner = just return df",
         )
 
-        result = _extract_source_user_code(body)
+        result = _extract_hook_code(body)
 
         # The outer wrapper for codegen will syntax-fail on import if
         # this result is missing the helper body.  An AST walk knows
@@ -428,7 +428,7 @@ class TestTextualReturnMisfires:
             docstring="comment with return",
         )
 
-        result = _extract_user_code(body, ["source"])
+        result = _extract_transform_code(body, ["source"])
 
         _assert_is_valid_python(result, context="comment return")
         # The comment is user code — keep it:
@@ -444,7 +444,7 @@ class TestTextualReturnMisfires:
             docstring="string with return",
         )
 
-        result = _extract_user_code(body, ["source"])
+        result = _extract_transform_code(body, ["source"])
 
         _assert_is_valid_python(result, context="string return")
         assert 'msg = "return to sender"' in result
@@ -460,7 +460,7 @@ class TestTextualReturnMisfires:
             docstring="decorator text",
         )
 
-        result = _extract_user_code(body, ["source"])
+        result = _extract_transform_code(body, ["source"])
 
         _assert_is_valid_python(result, context="decorator text")
         assert "@some.returning_decorator" in result
@@ -483,13 +483,13 @@ class TestASTInvariants:
     """
 
     def test_extractor_accepts_plain_string_source(self) -> None:
-        """``_extract_user_code`` takes a ``str`` — no tree / node / CST required."""
+        """``extract_user_code`` takes a ``str`` — no tree / node / CST required."""
         body = _body(
             "return source",
             docstring="plain string",
         )
         # Pre-existing signature — must not become tree-only:
-        result = _extract_user_code(body, ["source"])
+        result = _extract_transform_code(body, ["source"])
         assert isinstance(result, str)
 
     def test_extractor_handles_unusual_whitespace(self) -> None:
@@ -504,7 +504,7 @@ class TestASTInvariants:
         # so this is a regression guard.
         body = '    """windows\r\n"""\r\n    return source\r\n'
 
-        result = _extract_user_code(body, ["source"])
+        result = _extract_transform_code(body, ["source"])
 
         assert result == "df = source"
 
@@ -528,7 +528,7 @@ class TestASTInvariants:
             docstring="deeply nested",
         )
 
-        result = _extract_user_code(body, ["source"])
+        result = _extract_transform_code(body, ["source"])
 
         _assert_is_valid_python(result, context="deeply nested")
         # Both inner returns must survive:
@@ -551,7 +551,7 @@ class TestASTInvariants:
             docstring="lambda",
         )
 
-        result = _extract_user_code(body, ["source"])
+        result = _extract_transform_code(body, ["source"])
 
         _assert_is_valid_python(result, context="lambda")
         assert "f = lambda x: x * 2" in result
@@ -559,49 +559,40 @@ class TestASTInvariants:
 
 
 # ---------------------------------------------------------------------------
-# End-to-end regression — the model_score path exercises the trailing-
-# return strip through a different code path than _finalise_polars, and
-# could regress independently.
+# End-to-end regression — a configured node's ``df`` hook (here a Model
+# Score's) exercises the trailing-return strip through a different code path
+# than a transform's, and could regress independently.
 # ---------------------------------------------------------------------------
 
 
-class TestModelScoreExtractor:
-    """``_extract_model_score_user_code`` uses the same trailing-return
-    strip.  Pin its boundary so the AST migration doesn't regress it.
+class TestHookExtractor:
+    """The ``hook`` kind uses the same trailing-return strip.  Pin its
+    boundary so the AST migration doesn't regress it.
     """
 
     def test_model_score_post_processing_preserved(self) -> None:
-        """Post-processing after ``score_from_config(...)`` is extracted whole."""
+        """The post-scoring code of a Model Score hook is extracted whole."""
         body = _body(
-            "from pathlib import Path",
-            "from haute.graph_utils import score_from_config",
-            'df = score_from_config(source, config="score.json")',
             'df = df.with_columns(doubled=pl.col("prediction") * 2)',
             "return df",
             docstring="score with post",
         )
 
-        result = _extract_model_score_user_code(body)
+        result = _extract_hook_code(body)
 
         _assert_is_valid_python(result, context="modelScore post")
-        assert "doubled" in result
-        assert "score_from_config" not in result
-        assert "return df" not in result
-        assert 'df = df.with_columns(doubled=pl.col("prediction") * 2)' in result
+        assert result == 'df = df.with_columns(doubled=pl.col("prediction") * 2)'
 
     def test_model_score_inner_fn_return_result_preserved(self) -> None:
-        """Inner helper returning ``result`` must NOT have that return stripped.
+        """Inner helper returning another variable must NOT have that return stripped.
 
         Regression guard: this case happens to work today because the
-        trailing-return strip checks ``.strip() == "return result"`` on
+        trailing-return strip checks ``.strip() == "return df"`` on
         the FINAL line, and the inner helper's ``return r`` differs
         textually (indented).  But we still pin it so the AST migration
         can't regress it.
         """
         body = _body(
-            "from pathlib import Path",
-            "from haute.graph_utils import score_from_config",
-            'df = score_from_config(source, config="score.json")',
             "def process(r):",
             "    r = r.with_columns(x=pl.lit(1))",
             "    return r",
@@ -610,7 +601,7 @@ class TestModelScoreExtractor:
             docstring="nested process",
         )
 
-        result = _extract_model_score_user_code(body)
+        result = _extract_hook_code(body)
 
         _assert_is_valid_python(result, context="modelScore nested")
         # The inner helper's return must survive:
@@ -623,37 +614,28 @@ class TestModelScoreExtractor:
             f"Outer trailing `return df` not stripped:\n{result}"
         )
         assert "df = process(df)" in result
-        assert "df = process(df)" in result
 
     def test_model_score_inner_fn_return_result_at_end_preserved(self) -> None:
-        """Inner helper whose body's ABSOLUTE LAST line is ``return result``.
+        """Inner helper whose body's ABSOLUTE LAST line is ``return df``.
 
         This is the pathological case: the body ends with an inner
-        ``def identity(): return result`` — no outer return after it.
-        The trailing-strip eats the inner ``    return result`` line
-        (its ``.strip() == "return result"`` matches), leaving
+        ``def identity(): return df`` — no outer return after it.
+        A line-based trailing-strip eats the inner ``    return df`` line
+        (its ``.strip() == "return df"`` matches), leaving
         ``def identity():`` with no body → SyntaxError when codegen
         re-wraps this.
         """
         body = _body(
-            "from pathlib import Path",
-            "from haute.graph_utils import score_from_config",
-            'df = score_from_config(source, config="score.json")',
             "def identity():",
             "    return df",
             docstring="inner return result at end",
         )
 
-        result = _extract_model_score_user_code(body)
+        result = _extract_hook_code(body)
 
         _assert_is_valid_python(result, context="modelScore inner at end")
-        # The inner function survives, but generated score variables are
-        # normalised to the UI/runtime name (`df`).
-        assert "def identity" in result
-        assert "return df" in result, (
-            "Inner `return result` should become `return df` after generated "
-            f"score variable normalisation:\n{result}"
-        )
+        # The inner function survives verbatim: extraction renames nothing.
+        assert result == "def identity():\n    return df"
 
 
 # ---------------------------------------------------------------------------
@@ -662,23 +644,21 @@ class TestModelScoreExtractor:
 
 
 class TestExternalFileExtractor:
-    """``_extract_external_user_code`` also uses the trailing-return strip."""
+    """The ``external`` kind also uses the trailing-return strip, after its binding."""
 
     def test_external_file_trailing_return_stripped(self) -> None:
         """Baseline: trailing ``return df`` in external-file body is stripped."""
         body = _body(
-            "from haute.graph_utils import load_external_object_from_config",
-            'obj = load_external_object_from_config("config/load_file/model.json")',
+            "df = model_input",
             "df = df.with_columns(pred=pl.lit(obj.predict()))",
             "return df",
             docstring="pickled model",
         )
 
-        result = _extract_external_user_code(body, ["df"])
+        result = _extract_external_code(body, ["model_input"])
 
         _assert_is_valid_python(result, context="external")
-        assert "return df" not in result
-        assert "pred=pl.lit" in result
+        assert result == "df = df.with_columns(pred=pl.lit(obj.predict()))"
 
     def test_external_file_inner_fn_return_preserved(self) -> None:
         """Inner helper's ``return df`` inside external-file body must survive.
@@ -689,8 +669,7 @@ class TestExternalFileExtractor:
         migration doesn't regress.
         """
         body = _body(
-            "from haute.graph_utils import load_external_object_from_config",
-            'obj = load_external_object_from_config("config/load_file/model.json")',
+            "df = model_input",
             "def transform(df):",
             "    df = df.with_columns(pred=pl.lit(obj.predict()))",
             "    return df",
@@ -699,13 +678,14 @@ class TestExternalFileExtractor:
             docstring="external with helper",
         )
 
-        result = _extract_external_user_code(body, ["df"])
+        result = _extract_external_code(body, ["model_input"])
 
         _assert_is_valid_python(result, context="external inner")
         assert "def transform" in result
         # Inner return preserved (it's at scope of `transform`, not outer):
         inner_return_count = sum(1 for line in result.splitlines() if line.strip() == "return df")
         assert inner_return_count >= 1, f"Inner helper's `return df` was stripped:\n{result}"
+        assert result.endswith("df = transform(df)")
 
     def test_external_file_inner_fn_return_df_at_end_preserved(self) -> None:
         """Pathological case: inner helper's sole body line is ``return df``.
@@ -717,15 +697,14 @@ class TestExternalFileExtractor:
         leave it alone.
         """
         body = _body(
-            "from haute.graph_utils import load_external_object_from_config",
-            'obj = load_external_object_from_config("config/load_file/model.json")',
+            "df = model_input",
             "x = 1",
             "def helper():",
             "    return df",
             docstring="external inner at end",
         )
 
-        result = _extract_external_user_code(body, ["df"])
+        result = _extract_external_code(body, ["model_input"])
 
         _assert_is_valid_python(result, context="external inner at end")
         assert "def helper" in result

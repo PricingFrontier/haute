@@ -20,6 +20,7 @@ submodel = haute.Submodel(
             "source": {"nodeId": "enriched", "handleId": None},
         }
     ],
+    pipeline_dir="..",
 )
 
 

@@ -32,8 +32,8 @@ def _two_inputs(root: Path) -> Path:
     main.write_text(
         "import haute\nimport polars as pl\n"
         'pipeline = haute.Pipeline("demo")\n'
-        '@pipeline.data_input(config="a.json")\ndef source_a():\n    return None\n'
-        '@pipeline.data_input(config="b.json")\ndef source_b():\n    return None\n'
+        '@pipeline.data_input(config="a.json")\ndef source_a(): ...\n'
+        '@pipeline.data_input(config="b.json")\ndef source_b(): ...\n'
     )
     (root / "a.json").write_text(json.dumps(BROKEN_INPUT))
     (root / "b.json").write_text(json.dumps(BROKEN_INPUT))
@@ -127,11 +127,11 @@ def test_scoped_save_rejects_unavailable_target_and_shared_config(tmp_path):
     shared_root.mkdir()
     (shared_root / "haute.toml").write_text('[project]\nname="demo"\n')
     (shared_root / "main.py").write_text(
-        "import haute\nimport polars as pl\n"
+        "import haute\n"
         'pipeline = haute.Pipeline("demo")\n'
-        '@pipeline.data_input(config="x.json")\ndef source_x():\n    return None\n'
-        '@pipeline.constant(config="custom.json")\ndef first():\n    return None\n'
-        '@pipeline.constant(config="custom.json")\ndef second():\n    return None\n'
+        '@pipeline.data_input(config="x.json")\ndef source_x(): ...\n'
+        '@pipeline.constant(config="custom.json")\ndef first(): ...\n'
+        '@pipeline.constant(config="custom.json")\ndef second(): ...\n'
     )
     (shared_root / "x.json").write_text(json.dumps(BROKEN_INPUT))
     (shared_root / "custom.json").write_text(
@@ -156,7 +156,7 @@ def test_scoped_save_edits_blocked_node_downstream_of_broken_input(tmp_path):
     main.write_text(
         "import haute\nimport polars as pl\n"
         'pipeline = haute.Pipeline("demo")\n'
-        '@pipeline.data_input(config="a.json")\ndef source_a():\n    return None\n'
+        '@pipeline.data_input(config="a.json")\ndef source_a(): ...\n'
         "@pipeline.polars\ndef transform(source_a: pl.LazyFrame) -> pl.LazyFrame:\n"
         "    df: pl.LazyFrame\n    df = source_a\n    return df\n"
     )
@@ -181,24 +181,25 @@ def test_scoped_save_edits_blocked_node_downstream_of_broken_input(tmp_path):
 def test_scoped_save_regenerates_the_contract_annotation_from_the_saved_settings(tmp_path):
     """Renaming a banding output changes the columns the node creates, so the
     annotation carried back from the last parse is stale; the save regenerates
-    it rather than writing an annotation the reload's parse check rejects."""
+    it from the saved settings rather than writing an annotation the reload's
+    parse check rejects. Those settings imply the whole contract, so the
+    regenerated decorator carries no annotation at all."""
+    from haute._config_builder import resolve_parse_time_contract
+    from haute._contracts import Contract
     from haute._pipeline_repair_actions import apply_scoped_node_save
+    from haute._types import NodeType
 
     (tmp_path / "haute.toml").write_text('[project]\nname="demo"\n')
     main = tmp_path / "main.py"
     main.write_text(
-        "from pathlib import Path as _HautePath\n\nimport polars as pl\nimport haute\n\n"
-        'pipeline = haute.Pipeline("demo")\n\n'
-        "_HAUTE_CONFIG_BASE = _HautePath(__file__).resolve().parent\n\n\n"
-        '@pipeline.data_input(config="a.json")\ndef source_a():\n    return None\n\n\n'
-        '@pipeline.banding(config="band.json", '
-        "contract={'inputs': ['age'], 'outputs': ['age_band']})\n"
-        "def band(source_a: pl.LazyFrame) -> pl.LazyFrame:\n"
-        '    """"""\n'
-        "    from haute.graph_utils import apply_banding_from_config\n"
-        "    base = _HAUTE_CONFIG_BASE\n"
-        '    df = apply_banding_from_config(source_a, "band.json", base_dir=base)\n'
-        "    return df\n\n\n"
+        "import haute\n\n"
+        'pipeline = haute.Pipeline("demo")\n\n\n'
+        '@pipeline.data_input(config="a.json")\ndef source_a(): ...\n\n\n'
+        "@pipeline.banding(\n"
+        '    config="band.json",\n'
+        '    contract={"inputs": ["age"], "outputs": ["age_band"]},\n'
+        ")\n"
+        "def band(source_a): ...\n\n\n"
         'pipeline.connect("source_a", "band")\n',
         encoding="utf-8",
         newline="\n",
@@ -224,7 +225,13 @@ def test_scoped_save_regenerates_the_contract_annotation_from_the_saved_settings
 
     node = next(item for item in saved.nodes if item.authored_id == "band")
     assert node.availability == "blocked"
-    assert (node.config or {})["contract"] == {"inputs": ["age"], "outputs": ["age_group"]}
+    saved_source = main.read_text(encoding="utf-8")
+    assert '@pipeline.banding(config="band.json")\ndef band(source_a): ...\n' in saved_source
+    assert "age_band" not in saved_source
+    assert "contract" not in (node.config or {})
+    assert resolve_parse_time_contract(NodeType.BANDING, node.config or {}) == Contract(
+        inputs=frozenset({"age"}), outputs=frozenset({"age_group"})
+    )
     assert "contract" not in json.loads((tmp_path / "band.json").read_text())
 
 
@@ -353,7 +360,7 @@ def test_scoped_save_refuses_a_scenario_expander_without_a_grid_size(client, mon
     # A broken sibling makes the document degraded, where the scoped save applies.
     (tmp_path / "main.py").write_text(
         graph_to_code(graph, pipeline_name="demo")
-        + '\n@pipeline.data_input(config="a.json")\ndef source_a():\n    return None\n'
+        + '\n@pipeline.data_input(config="a.json")\ndef source_a(): ...\n'
     )
     (tmp_path / "a.json").write_text(json.dumps(BROKEN_INPUT))
     for rel_path, content in collect_node_configs(graph).items():
