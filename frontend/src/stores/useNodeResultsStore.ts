@@ -568,6 +568,25 @@ function withoutApplyEntriesForNodes(
   return kept.length === entries.length ? entries : kept
 }
 
+/**
+ * Whether a frontier select reply answers the node's installed solve: the same
+ * job and the same frontier generation. A recompute keeps the job and reuses
+ * point indices for different points, so a reply from another generation (a
+ * late one, or one the node has not installed yet) describes another point.
+ */
+function selectReplyIsCurrent(
+  cached: CachedSolveResult | undefined,
+  jobId: string,
+  selectResult: FrontierSelectResponse,
+): cached is SolvedCachedSolveResult {
+  return (
+    cached !== undefined
+    && cached.result !== null
+    && cached.jobId === jobId
+    && cached.originalResult.frontier_generation === selectResult.frontier_generation
+  )
+}
+
 /** A select response is the server's complete result for its point. */
 function frontierPointSummaryFromSelect(selectResult: FrontierSelectResponse): FrontierPointSummary {
   return {
@@ -733,11 +752,17 @@ interface NodeResultsState {
   completeSolveJob: (nodeId: string, result: OptimiserSolveResult, terminalStatus?: SolveProgress) => void
   failSolveJob: (nodeId: string, error: string, terminalStatus?: SolveProgress) => void
   selectFrontierPoint: (nodeId: string, pointIndex: number | null) => void
-  updateFrontierAfterSelect: (nodeId: string, pointIndex: number, selectResult: FrontierSelectResponse) => void
+  /**
+   * Store the reply for a point the user selected, and display it unless the
+   * selection has moved on. A reply for a job or frontier generation other
+   * than the node's installed one is dropped.
+   */
+  updateFrontierAfterSelect: (nodeId: string, jobId: string, pointIndex: number, selectResult: FrontierSelectResponse) => void
   /**
    * Store a materialised point summary for one job without changing the
-   * selection: a reply for a job the node has moved past is dropped, and the
-   * displayed result changes only if that point is (still) selected.
+   * selection: a reply for a job or frontier generation the node does not hold
+   * is dropped, and the displayed result changes only if that point is (still)
+   * selected.
    */
   recordFrontierPointSummary: (nodeId: string, jobId: string, pointIndex: number, selectResult: FrontierSelectResponse) => void
   /**
@@ -1058,7 +1083,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  updateFrontierAfterSelect: (nodeId, pointIndex, selectResult) => {
+  updateFrontierAfterSelect: (nodeId, jobId, pointIndex, selectResult) => {
     // Backend echoes ``point_index`` in every select response.  A mismatch is
     // never a race — it is a contract violation, so fail loudly per CLAUDE.md.
     if (selectResult.point_index != null && selectResult.point_index !== pointIndex) {
@@ -1068,7 +1093,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     }
     set((s) => {
       const cached = s.solveResults[nodeId]
-      if (!cached || cached.result === null) return s
+      if (!selectReplyIsCurrent(cached, jobId, selectResult)) return s
       touchCachedResult(solveResultRecency, nodeId)
       const summary = frontierPointSummaryFromSelect(selectResult)
       // Keep the richer summary so re-selecting this point needs no round trip.
@@ -1119,9 +1144,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => {
       const cached = s.solveResults[nodeId]
       if (
-        !cached
-        || cached.result === null
-        || cached.jobId !== jobId
+        !selectReplyIsCurrent(cached, jobId, selectResult)
         || !cached.frontier?.point_summaries[pointIndex]
       ) return s
       touchCachedResult(solveResultRecency, nodeId)

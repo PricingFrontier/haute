@@ -523,7 +523,7 @@ def _select_point(
         # Without a point the result is the solve's, which carries its own report.
         return _frontier_select_response(result, result.get("adjustments"))
     adjustments = (
-        _point_adjustments(body.job_id, body.point_index, token)
+        _point_adjustments(body.job_id, body.point_index, result["frontier_generation"], token)
         if body.include_adjustments
         else None
     )
@@ -531,15 +531,18 @@ def _select_point(
 
 
 def _point_adjustments(
-    job_id: str, point_index: int, token: ExecutionCancellationToken
+    job_id: str, point_index: int, generation: int, token: ExecutionCancellationToken
 ) -> dict[str, Any]:
-    """A frontier point's adjustment report: cached for the job's life, else computed.
+    """The adjustment report for *point_index* of frontier *generation*: cached, else computed.
 
-    The report is stored only if the frontier generation it was computed for is
-    still current; a recompute in between is the frontier-changed 409.
+    *generation* is the selected summary's, so the response never pairs one
+    frontier's totals with another's distribution: the job must still be at it
+    when the report is read (cached or not) and when it is stored; a recompute
+    in between is the frontier-changed 409.
     """
     job = _store.require_completed_job(job_id)
-    generation = _frontier_generation_or_raise(job)
+    if _frontier_generation_or_raise(job) != generation:
+        raise HTTPException(status_code=409, detail=_FRONTIER_CHANGED_DETAIL)
     key = (generation, point_index)
     cached = (job.get(ADJUSTMENT_REPORTS_KEY) or {}).get(key)
     if cached is not None:

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 
+from haute._config_validation import RESERVED_ANALYSIS_COLUMN_PREFIX
 from haute._execution_admission import (
     ExecutionAdmissionError,
     execution_budget_for_profile,
@@ -763,6 +764,20 @@ def validate_input_value_contracts(
         raise OptimiserSetupError(400, null_value_detail)
 
 
+_CARRIED_ANALYSIS_PREFIX = f"{RESERVED_ANALYSIS_COLUMN_PREFIX}analysis:"
+
+
+def carried_analysis_column(column: str) -> str:
+    """The name the data-input path carries analysis *column* under in the solver input.
+
+    Under the reserved ``__haute_`` prefix no analysis column may use, so the
+    copy never shares a name with a solver column: an analysis column the
+    solver also reads (a constraint or the objective) is carried uncast beside
+    the solver's Float32 cast, and the side table keeps the source dtype.
+    """
+    return f"{_CARRIED_ANALYSIS_PREFIX}{column}"
+
+
 def validate_and_project(
     source_lf: Any,
     config: dict[str, Any],
@@ -774,7 +789,9 @@ def validate_and_project(
     """Validate the solver columns and project the solver input.
 
     *analysis_columns* (the data-input analysis path) are required and kept,
-    uncast, after the solver columns; the grid build never reads them.
+    uncast, after the solver columns, each under ``carried_analysis_column``:
+    a column the solver also reads is projected for both, cast for the solver
+    and uncast for the analysis table. The grid build never reads the copies.
     Returns ``(constraint_cols, projected_lazy_frame)``.
     """
     import polars as pl
@@ -841,9 +858,10 @@ def validate_and_project(
     if qid_dtype == pl.String:
         cast_exprs.append(pl.col(qid_col).cast(pl.Categorical))
 
-    return constraint_cols, source_lf.select([*solver_cols, *kept_analysis_columns]).with_columns(
-        cast_exprs
-    )
+    carried = [
+        pl.col(column).alias(carried_analysis_column(column)) for column in kept_analysis_columns
+    ]
+    return constraint_cols, source_lf.select([*solver_cols, *carried]).with_columns(cast_exprs)
 
 
 def resolve_analysis_frame(

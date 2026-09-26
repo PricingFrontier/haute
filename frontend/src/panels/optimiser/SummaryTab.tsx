@@ -15,7 +15,7 @@ import RatebookImpactBeeswarm from "./RatebookImpactBeeswarm"
 import { hasFactorTables } from "./ratebookFactorTables"
 import ConstraintAttainmentTable from "./ConstraintAttainmentTable"
 import DiagnosticsIssues from "../DiagnosticsIssues"
-import { DEPLOYED_FACTOR_DIFFERS_LABEL, NO_UNADJUSTED_NOTE, formatShare } from "./adjustments"
+import { DEPLOYED_FACTOR_DIFFERS_LABEL, NO_UNADJUSTED_NOTE, formatShare, rangeEdgeShare } from "./adjustments"
 
 type RatebookRatesLoadState =
   | { status: "idle" }
@@ -153,7 +153,7 @@ function AdjustmentsSummary({
               ["Adjusted up", quotes.share_up],
               ["Adjusted down", quotes.share_down],
               ...(quotes.share_unadjusted === null ? [] : [["Unadjusted", quotes.share_unadjusted] as const]),
-              ["At the range edge", quotes.share_at_min + quotes.share_at_max],
+              ["At the range edge", rangeEdgeShare(report, quotes)],
             ] as const).map(([label, share]) => (
               <div key={label} className="flex justify-between gap-4">
                 <dt style={{ color: "var(--text-secondary)" }}>{label}</dt>

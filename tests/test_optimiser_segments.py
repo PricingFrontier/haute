@@ -18,9 +18,11 @@ import numpy as np
 import polars as pl
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from haute.routes._optimiser_outcomes import (
     ANALYSIS_ROW_PRESENT_COLUMN,
+    DEPLOYED_FACTOR_DIFFERS,
     ChoiceFrames,
     ChoiceFrameSpec,
     ChoiceJoinError,
@@ -33,6 +35,7 @@ from haute.routes._optimiser_segments import (
     MAX_SEGMENT_LEVELS,
     SEGMENT_INDEXES_KEY,
     AnalysisSegments,
+    FactorLevelSegments,
     SegmentLevelsExceededError,
     segment_keys,
     segment_spread,
@@ -43,7 +46,7 @@ from haute.routes.optimiser import (
     OPTIMISER_SEGMENTS_ROUTE,
     _store,
 )
-from haute.schemas import OptimiserSegmentKey
+from haute.schemas import OptimiserSegmentKey, OptimiserSegmentRow
 from tests.optimiser_fixtures import run_frontier_and_wait
 from tests.test_optimiser_outcomes import _data_graph, _scored, _side_graph, _solved
 
@@ -328,6 +331,32 @@ class TestMissingAndOther:
             sum(_f32(_GRID[s]) for s in merged_steps) / 3, rel=1e-12
         )
 
+    @pytest.mark.parametrize(
+        ("n_levels", "merged"),
+        [(MAX_CATEGORICAL_LEVELS, None), (MAX_CATEGORICAL_LEVELS + 1, 1)],
+    )
+    def test_the_sixteenth_level_alone_is_other(self, n_levels: int, merged: int | None) -> None:
+        # Level k00 has 2 quotes, the rest 1 each: k<n-1> is the smallest by quotes then value.
+        regions = ["k00", *(f"k{i:02d}" for i in range(n_levels))]
+        steps = [i % 3 for i in range(len(regions))]
+        frames, n = _frames(steps, {"region": pl.Series(regions, dtype=pl.String)})
+        response = _run(frames, n)
+
+        values = [row for row in response.rows if row.kind == "value"]
+        assert len(values) == MAX_CATEGORICAL_LEVELS
+        assert response.n_levels == n_levels
+        assert sum(row.quotes for row in response.rows) == n
+        others = [row for row in response.rows if row.kind == "other"]
+        if merged is None:
+            assert others == []
+            return
+        [other] = others
+        assert (other.label, other.merged_levels, other.quotes) == ("Other", 1, 1)
+        # A single merged level's figures are that level's.
+        last = regions.index(f"k{n_levels - 1:02d}")
+        assert other.unweighted.mean_scenario_value == _f32(_GRID[steps[last]])
+        assert segment_spread(response) > 0
+
     def test_a_value_named_other_or_missing_is_still_a_value(self) -> None:
         frames, n = _frames([0, 1], {"region": pl.Series(["Other", "Missing"])})
         response = _run(frames, n)
@@ -447,6 +476,117 @@ class TestSpread:
     def test_one_level_has_no_spread(self) -> None:
         frames, n = _frames([0, 2], {"region": pl.Series(["A", "A"])})
         assert segment_spread(_run(frames, n)) == 0.0
+
+
+def _factor_frames(levels: Sequence[str]) -> tuple[ChoiceFrames, ChoiceFrameSpec, int]:
+    """A ratebook choice frame and its factor rows: one quote per level, k00 twice."""
+    regions = ["k00", *levels]
+    n = len(regions)
+    quotes = [f"q{i:04d}" for i in range(n)]
+    steps = [i % 3 for i in range(n)]
+    spec = ChoiceFrameSpec(
+        mode="ratebook",
+        constraint_names=("volume",),
+        analysis_columns=(),
+        scenario_grid=tuple((step, _f32(value)) for step, value in enumerate(_GRID)),
+        factor_columns=(("region",),),
+    )
+    choice = pl.LazyFrame(
+        {
+            "quote_id": pl.Series(quotes, dtype=pl.String),
+            "optimal_step": pl.Series(steps, dtype=pl.Int32),
+            "optimal_scenario_value": pl.Series([_GRID[s] for s in steps], dtype=pl.Float32),
+            "optimal_objective": pl.Series([1.0] * n, dtype=pl.Float32),
+            "optimal_volume": pl.Series([1.0] * n, dtype=pl.Float32),
+            DEPLOYED_FACTOR_DIFFERS: pl.Series([False] * n, dtype=pl.Boolean),
+        }
+    )
+    factors = pl.LazyFrame(
+        {
+            "quote_id": pl.Series(quotes, dtype=pl.String),
+            "region": pl.Series(regions, dtype=pl.String),
+        }
+    )
+    frames = ChoiceFrames(
+        choice=choice,
+        analysis=None,
+        analysis_key="quote_id",
+        collect=lambda plan: plan.collect(),
+        factors=factors,
+        factors_key="quote_id",
+    )
+    return frames, spec, n
+
+
+class TestFactorLevels:
+    @pytest.mark.parametrize(
+        ("n_levels", "merged"),
+        [(MAX_CATEGORICAL_LEVELS, None), (MAX_CATEGORICAL_LEVELS + 1, 1)],
+    )
+    def test_the_sixteenth_factor_level_alone_is_other(
+        self, n_levels: int, merged: int | None
+    ) -> None:
+        frames, spec, n = _factor_frames([f"k{i:02d}" for i in range(n_levels)])
+        reducer = FactorLevelSegments(factor="region", weight="quotes")
+        reducer.validate(spec)
+        key = OptimiserSegmentKey(
+            key="region",
+            source="factor",
+            binning="categorical",
+            available=True,
+            unavailable_reason=None,
+        )
+        response = segments_response(
+            reducer.run(frames, spec, n),
+            spec,
+            key,
+            "quotes",
+            point_index=None,
+            frontier_generation=0,
+        )
+
+        assert response.n_levels == n_levels
+        assert len([row for row in response.rows if row.kind == "value"]) == MAX_CATEGORICAL_LEVELS
+        assert sum(row.quotes for row in response.rows) == n
+        others = [row for row in response.rows if row.kind == "other"]
+        if merged is None:
+            assert others == []
+            return
+        [other] = others
+        assert (other.label, other.merged_levels, other.quotes) == ("Other", 1, 1)
+        assert other.deployed_factor_differs == 0
+
+
+class TestOtherContract:
+    def _row(self, **overrides: Any) -> dict[str, Any]:
+        figures = {
+            "mean_scenario_value": 1.0,
+            "share_up": 0.0,
+            "share_down": 0.0,
+            "share_at_edge": 0.0,
+        }
+        return {
+            "label": "Other",
+            "kind": "other",
+            "lower": None,
+            "upper": None,
+            "merged_levels": 1,
+            "quotes": 1,
+            "weight_total": 1.0,
+            "unweighted": figures,
+            "weighted": figures,
+            "deployed_factor_differs": None,
+            **overrides,
+        }
+
+    def test_other_may_merge_one_level_but_not_none(self) -> None:
+        assert OptimiserSegmentRow.model_validate(self._row()).merged_levels == 1
+        with pytest.raises(ValidationError):
+            OptimiserSegmentRow.model_validate(self._row(merged_levels=0))
+        with pytest.raises(ValidationError):
+            OptimiserSegmentRow.model_validate(self._row(merged_levels=None))
+        with pytest.raises(ValidationError):
+            OptimiserSegmentRow.model_validate(self._row(kind="value", label="k15"))
 
 
 class TestCountsAreChecked:
@@ -770,6 +910,27 @@ class TestSegmentIndexRoute:
         )
         assert recomputed["status"] == "completed", recomputed
         assert _store.require_job(job_id)[SEGMENT_INDEXES_KEY] == {}
+
+    def test_sixteen_levels_are_broken_down_and_ranked(self, client, tmp_path):
+        # k0..k15, one quote each: the fifteen largest by value are listed and the
+        # sixteenth is Other on its own, in the breakdown and the ranking index.
+        n_quotes = MAX_CATEGORICAL_LEVELS + 1
+        job_id, _status = _solved(
+            client, _side_graph(_scored(tmp_path, n_quotes=n_quotes), _k_frame(tmp_path, n_quotes))
+        )
+
+        response = _segments(client, job_id, "region")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["n_levels"] == n_quotes
+        [other] = [row for row in body["rows"] if row["kind"] == "other"]
+        assert (other["merged_levels"], other["quotes"]) == (1, 1)
+
+        index = _index(client, job_id)
+        assert index.status_code == 200, index.text
+        [key] = index.json()["keys"]
+        assert key["key"] == "region" and key["available"] is True
+        assert key["spread"] is not None
 
 
 def _k_frame(root: Path, n_quotes: int) -> Path:

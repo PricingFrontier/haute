@@ -445,6 +445,7 @@ class QuoteQueries:
                 body.job_id, target, reducer, cancellation_token=token
             )
             from_artifact = True
+            generation = _frontier_generation_or_raise(job)
         else:
             # Refused before the point is materialised or selected.
             spec, reducer = _validated_page(job, body)
@@ -462,6 +463,7 @@ class QuoteQueries:
             total_objective = float(selected["total_objective"])
             constraints = selected["constraints"]
             from_artifact = ticket.from_artifact
+            generation = ticket.generation
         rows = result.rows.to_dicts()
         return OptimiserApplyResponse(
             status="ok",
@@ -475,4 +477,5 @@ class QuoteQueries:
             offset=body.offset,
             preview_row_count=len(rows),
             preview_row_limit=body.limit,
+            frontier_generation=generation,
         )

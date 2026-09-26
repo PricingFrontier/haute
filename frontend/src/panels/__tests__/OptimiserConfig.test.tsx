@@ -2862,6 +2862,7 @@ describe("OptimiserConfig", () => {
         ...summary(10),
         status: "ok",
         point_index: 0,
+        frontier_generation: 0,
         baseline_objective: 0,
         baseline_constraints: {},
         factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
@@ -2904,6 +2905,7 @@ describe("OptimiserConfig", () => {
         ...summary(10),
         status: "ok",
         point_index: 0,
+        frontier_generation: 0,
         baseline_objective: 0,
         baseline_constraints: {},
         factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
@@ -2945,6 +2947,57 @@ describe("OptimiserConfig", () => {
       expect(cached?.jobId).toBe("job_newer")
       expect(cached?.frontier?.point_summaries[0].factor_tables).toBeNull()
       expect(cached?.result?.factor_tables).toEqual({})
+    })
+
+    it("drops a factor-table reply from a frontier generation the node has recomputed past", async () => {
+      const { config, deliver } = seedRatebookFrontier()
+      renderConfig(makeProps({ config }))
+      fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
+      // The recompute keeps the job and point 0 is a different point now.
+      act(() => {
+        const previous = useNodeResultsStore.getState().solveResults.opt_1
+        if (!previous || previous.result === null) throw new Error("The seeded solve has no result")
+        const recomputed = { ...previous.originalResult, frontier_generation: 1 }
+        useNodeResultsStore.setState({
+          solveResults: {
+            opt_1: {
+              ...previous,
+              result: recomputed,
+              originalResult: recomputed,
+              frontier: previous.frontier && { ...previous.frontier, frontier_generation: 1 },
+            },
+          },
+        })
+      })
+
+      await deliver()
+      const cached = useNodeResultsStore.getState().solveResults.opt_1
+      expect(cached?.originalResult?.frontier_generation).toBe(1)
+      expect(cached?.frontier?.point_summaries[0].factor_tables).toBeNull()
+      expect(cached?.result?.factor_tables).toEqual({})
+    })
+
+    it("reports a factor-table reply from a generation the result does not show", async () => {
+      const { config } = seedRatebookFrontier()
+      mockSelectFrontierPoint.mockResolvedValue({
+        total_objective: 10, constraints: {}, lambdas: {}, converged: true, iterations: null,
+        cd_iterations: null, clamp_rate: null, history: null, adjustments: null, diagnostics_errors: [],
+        status: "ok",
+        point_index: 0,
+        frontier_generation: 3,
+        baseline_objective: 0,
+        baseline_constraints: {},
+        factor_tables: { age_band: [{ __factor_group__: "17-25", optimal_scenario_value: 1.1, quote_count: 40 }] },
+        error: null,
+      })
+      renderConfig(makeProps({ config }))
+      fireEvent.click(screen.getByRole("button", { name: "Load factor tables for CSV" }))
+
+      expect(await screen.findByText(
+        /The server answered for frontier generation 3, but this result shows generation 0\./,
+      )).toBeInTheDocument()
+      const cached = useNodeResultsStore.getState().solveResults.opt_1
+      expect(cached?.frontier?.point_summaries[0].factor_tables).toBeNull()
     })
 
     it("publishes the chosen frontier point, the same selection the preview shows", async () => {

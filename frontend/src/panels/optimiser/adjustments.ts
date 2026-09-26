@@ -1,5 +1,7 @@
 /** The Adjustments view's shared copy and formatting, which Summary also uses. */
 
+import type { OptimiserAdjustmentReport, OptimiserAdjustmentWeighting } from "../../api/types"
+
 /** A point report's identity: point indices mean something only within one job and generation. */
 export function pointAdjustmentKey(jobId: string, frontierGeneration: number, pointIndex: number): string {
   return `${jobId}:${frontierGeneration}:${pointIndex}`
@@ -22,4 +24,25 @@ export function formatScenarioValue(value: number): string {
 
 export function formatShare(share: number): string {
   return `${(share * 100).toFixed(1)}%`
+}
+
+/** Whether the report's grid is one step, which is then both the range minimum and its maximum. */
+export function isOneStepGrid(report: OptimiserAdjustmentReport): boolean {
+  return report.bars.length === 1
+}
+
+/**
+ * A weighting's share at the edge of the scenario range: at its minimum step or
+ * its maximum. On a one-step grid they are the same step, so its share is
+ * counted once (the union), never summed to 200%.
+ */
+export function rangeEdgeShare(report: OptimiserAdjustmentReport, weighting: OptimiserAdjustmentWeighting): number {
+  if (!isOneStepGrid(report)) return weighting.share_at_min + weighting.share_at_max
+  if (weighting.share_at_min !== weighting.share_at_max) {
+    throw new Error(
+      `A one-step grid's share at the minimum (${weighting.share_at_min}) and at the maximum `
+      + `(${weighting.share_at_max}) must be the same step's share (${weighting.label}).`,
+    )
+  }
+  return weighting.share_at_min
 }

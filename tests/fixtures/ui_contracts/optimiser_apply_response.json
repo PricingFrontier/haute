@@ -26,5 +26,6 @@
   "offset": 0,
   "preview_row_count": 1,
   "preview_row_limit": 100,
+  "frontier_generation": 0,
   "error": null
 }

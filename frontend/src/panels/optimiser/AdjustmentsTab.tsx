@@ -10,9 +10,11 @@
  * only while this view is open, through frontier select with
  * `include_adjustments`, in the Rates flow's pattern: one AbortController per
  * request and a request sequence, so a reply for a point, job or generation the
- * view has moved past is dropped. A browser abort only discards the reply; a
- * 409 replaced by another point's apply is reissued, not shown; a 410 says the
- * point is gone, with no Retry; anything else offers Retry. Loaded reports
+ * view has moved past is dropped, and a reply the server answered for another
+ * generation than the one shown (it recomputed first) is reported, not kept. A
+ * browser abort only discards the reply; a 409 replaced by another point's
+ * apply is reissued, not shown; a 410 says the point is gone, with no Retry;
+ * anything else offers Retry. Loaded reports
  * belong to the preview's review (`pointReports`), so stepping back to a point
  * already loaded makes no request.
  */
@@ -37,8 +39,11 @@ import {
   NO_UNADJUSTED_NOTE,
   formatScenarioValue,
   formatShare,
+  isOneStepGrid,
   pointAdjustmentKey,
+  rangeEdgeShare,
 } from "./adjustments"
+import { frontierGenerationMismatch } from "./optimiserHelpers"
 
 /** Loaded frontier point reports, keyed by `pointAdjustmentKey`. */
 export type PointAdjustmentReports = Readonly<Record<string, OptimiserAdjustmentReport>>
@@ -98,6 +103,11 @@ export default function AdjustmentsTab({
     )
       .then((response) => {
         if (!isCurrent()) return
+        const mismatch = frontierGenerationMismatch(response.frontier_generation, frontierGeneration)
+        if (mismatch !== null) {
+          setFailure({ key: pointKey, gone: false, message: mismatch })
+          return
+        }
         if (response.adjustments === null) {
           setFailure({
             key: pointKey,
@@ -121,7 +131,7 @@ export default function AdjustmentsTab({
         })
       })
     return () => controller.abort()
-  }, [needsLoad, pointIndex, pointKey, jobId, attempt])
+  }, [needsLoad, pointIndex, pointKey, jobId, frontierGeneration, attempt])
 
   if (pointIndex !== null) {
     if (failed) {
@@ -330,8 +340,13 @@ function AdjustmentsReport({
           ["Adjusted up", weighting.share_up],
           ["Adjusted down", weighting.share_down],
           ...(weighting.share_unadjusted === null ? [] : [["Unadjusted", weighting.share_unadjusted] as const]),
-          [`At range minimum (${formatScenarioValue(first.scenario_value)})`, weighting.share_at_min],
-          [`At range maximum (${formatScenarioValue(last.scenario_value)})`, weighting.share_at_max],
+          // A one-step grid's only step is both edges: one row, its share once.
+          ...(isOneStepGrid(report)
+            ? [[`At the range edge (${formatScenarioValue(first.scenario_value)})`, rangeEdgeShare(report, weighting)] as const]
+            : [
+              [`At range minimum (${formatScenarioValue(first.scenario_value)})`, weighting.share_at_min] as const,
+              [`At range maximum (${formatScenarioValue(last.scenario_value)})`, weighting.share_at_max] as const,
+            ]),
         ] as const).map(([label, share]) => (
           <div key={label} className="flex gap-1.5">
             <dt style={{ color: "var(--text-muted)" }}>{label}</dt>

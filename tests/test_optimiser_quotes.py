@@ -373,6 +373,8 @@ class TestApplyRoute:
             ("region", "analysis"),
         ]
         assert body["row_count"] == body["matched_row_count"] == 9
+        # The page names the frontier generation it was answered for.
+        assert body["frontier_generation"] == status["result"]["frontier_generation"]
         assert body["offset"] == 0
         assert body["preview_row_limit"] == APPLY_PREVIEW_ROW_LIMIT
         assert body["preview_row_count"] == 9
@@ -446,6 +448,7 @@ class TestApplyRoute:
             frontier["result"]["points"][2]["total_objective"]
         )
         assert _store.require_job(job_id)["selected_frontier_point"] == 2
+        assert body["frontier_generation"] == frontier["result"]["frontier_generation"]
 
     def test_at_range_edge_is_answered_after_the_grid_is_evicted(self, client, tmp_path):
         job_id, _status = _solved(client, _data_graph(_scored(tmp_path)))

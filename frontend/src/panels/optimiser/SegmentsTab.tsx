@@ -11,8 +11,10 @@
  * belong to the review too (`results`), keyed by job, generation, target, key
  * and weighting, so returning to one makes no request. Each request has its own
  * AbortController: switching key, weighting or point aborts the one in flight
- * and drops its reply. A 409 replaced by another point's apply is reissued; a
- * 410 says the point is gone, with no Retry; anything else offers Retry.
+ * and drops its reply; a reply the server answered for another frontier
+ * generation than the one shown (it recomputed first) is reported, not kept. A
+ * 409 replaced by another point's apply is reissued; a 410 says the point is
+ * gone, with no Retry; anything else offers Retry.
  */
 
 import { useEffect, useId, useMemo, useRef, useState } from "react"
@@ -38,6 +40,7 @@ import {
   type RelativityBar,
 } from "../RelativityBars"
 import { DEPLOYED_FACTOR_DIFFERS_LABEL, formatScenarioValue, formatShare } from "./adjustments"
+import { frontierGenerationMismatch } from "./optimiserHelpers"
 import { formatVsNeutral } from "./ratebookFactorTables"
 
 /** The key choice and search, shared with the Rates tab through the preview's review. */
@@ -72,9 +75,14 @@ function breakdownKey(target: string, key: string, weight: string): string {
   return JSON.stringify([target, key, weight])
 }
 
-/** One request's lifecycle: aborted when its identity changes, a replaced 409 reissued. */
-function useLatestRequest<T>(
+/**
+ * One request's lifecycle: aborted when its identity changes, a replaced 409
+ * reissued. A reply the server answered for another frontier generation than
+ * the one shown (it recomputed first) is reported, never kept.
+ */
+function useLatestRequest<T extends { frontier_generation: number }>(
   identity: string | null,
+  frontierGeneration: number,
   load: (signal: AbortSignal) => Promise<T>,
   onLoaded: (identity: string, value: T) => void,
 ): { failure: LoadFailure | null; retry: () => void } {
@@ -92,7 +100,13 @@ function useLatestRequest<T>(
     const controller = new AbortController()
     loadRef.current(controller.signal)
       .then((value) => {
-        if (!controller.signal.aborted) onLoadedRef.current(identity, value)
+        if (controller.signal.aborted) return
+        const mismatch = frontierGenerationMismatch(value.frontier_generation, frontierGeneration)
+        if (mismatch !== null) {
+          setFailure({ key: identity, gone: false, message: mismatch })
+          return
+        }
+        onLoadedRef.current(identity, value)
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return
@@ -107,7 +121,7 @@ function useLatestRequest<T>(
         })
       })
     return () => controller.abort()
-  }, [identity, failed, attempt])
+  }, [identity, frontierGeneration, failed, attempt])
   return { failure: failed ? failure : null, retry: () => setFailure(null) }
 }
 
@@ -142,6 +156,7 @@ export default function SegmentsTab({
   const index = results.indexes[target]
   const indexRequest = useLatestRequest(
     catalogue.length > 0 && index === undefined ? target : null,
+    frontierGeneration,
     (signal) => getOptimiserSegmentIndex({ job_id: jobId, point_index: pointIndex }, { signal }),
     onIndex,
   )
@@ -186,6 +201,7 @@ export default function SegmentsTab({
             key={row.feature}
             segmentKey={row.key}
             jobId={jobId}
+            frontierGeneration={frontierGeneration}
             pointIndex={pointIndex}
             target={target}
             solvedResult={solvedResult}
@@ -212,6 +228,7 @@ function weightOptions(result: OptimiserSolveResult): { key: string; label: stri
 function SegmentKeyPane({
   segmentKey,
   jobId,
+  frontierGeneration,
   pointIndex,
   target,
   solvedResult,
@@ -220,6 +237,7 @@ function SegmentKeyPane({
 }: {
   segmentKey: OptimiserSegmentKey
   jobId: string
+  frontierGeneration: number
   pointIndex: number | null
   target: string
   solvedResult: OptimiserSolveResult
@@ -232,6 +250,7 @@ function SegmentKeyPane({
   const response = results.breakdowns[identity]
   const request = useLatestRequest(
     segmentKey.available && response === undefined ? identity : null,
+    frontierGeneration,
     (signal) => getOptimiserSegments(
       { job_id: jobId, point_index: pointIndex, key: segmentKey.key, weight },
       { signal },

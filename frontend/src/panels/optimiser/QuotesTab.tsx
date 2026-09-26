@@ -28,6 +28,7 @@ import useNodeResultsStore, {
   type OptimiserApplyQuery,
 } from "../../stores/useNodeResultsStore"
 import { formatValue } from "../../utils/formatValue"
+import { frontierGenerationMismatch } from "./optimiserHelpers"
 import {
   SortableValuesTable,
   ValuesTableSearch,
@@ -210,7 +211,17 @@ export default function QuotesTab({ nodeId, jobId, mode, frontierGeneration, poi
       .then((response) => {
         // Aborted means this tab's identity (its query included) moved on; the
         // store also refuses an identity whose job, generation or target did.
-        if (!controller.signal.aborted) recordApply(nodeId, identity, response)
+        if (controller.signal.aborted) return
+        // The server may have recomputed the frontier after this request.
+        const mismatch = frontierGenerationMismatch(
+          response.frontier_generation,
+          identity.frontierGeneration,
+        )
+        if (mismatch) {
+          setFailure({ key, error: mismatch, gone: false })
+          return
+        }
+        recordApply(nodeId, identity, response)
       })
       .catch((error) => {
         if (controller.signal.aborted) return

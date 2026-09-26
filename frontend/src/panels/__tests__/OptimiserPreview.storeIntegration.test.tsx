@@ -6,7 +6,7 @@ import useNodeResultsStore, {
   resetNodeResultsDerivedCaches,
 } from "../../stores/useNodeResultsStore"
 import useGraphStore from "../../stores/useGraphStore"
-import { makeFrontier } from "../../test-utils/factories"
+import { makeFrontier, makeFrontierSelect } from "../../test-utils/factories"
 import {
   makeOnlineFrontier,
   makeOnlineSolveResult,
@@ -108,6 +108,7 @@ describe("OptimiserPreview store integration", () => {
     mockSelectFrontierPoint.mockResolvedValueOnce({
       status: "ok",
       point_index: 0,
+      frontier_generation: 0,
       total_objective: 120,
       constraints: { volume: 0.9 },
       baseline_objective: 80,
@@ -161,6 +162,7 @@ describe("OptimiserPreview store integration", () => {
     mockSelectFrontierPoint.mockResolvedValueOnce({
       status: "ok",
       point_index: 0,
+      frontier_generation: 0,
       total_objective: 120,
       constraints: { volume: 0.9 },
       baseline_objective: 80,
@@ -221,6 +223,7 @@ describe("OptimiserPreview store integration", () => {
       .mockResolvedValueOnce({
         status: "ok",
         point_index: 0,
+        frontier_generation: 0,
         total_objective: 120,
         constraints: { volume: 0.9 },
         baseline_objective: 80,
@@ -268,6 +271,7 @@ describe("OptimiserPreview store integration", () => {
     mockSelectFrontierPoint.mockResolvedValueOnce({
       status: "ok",
       point_index: 0,
+      frontier_generation: 0,
       total_objective: 120,
       constraints: { volume: 0.9 },
       baseline_objective: 80,
@@ -343,6 +347,7 @@ describe("OptimiserPreview store integration", () => {
     const point0Response = {
       status: "ok",
       point_index: 0,
+      frontier_generation: 0,
       total_objective: 100,
       constraints: { volume: 0.9 },
       baseline_objective: 80,
@@ -360,6 +365,7 @@ describe("OptimiserPreview store integration", () => {
     const point1Response = {
       status: "ok",
       point_index: 1,
+      frontier_generation: 0,
       total_objective: 130,
       constraints: { volume: 0.93 },
       baseline_objective: 80,
@@ -458,8 +464,85 @@ describe("OptimiserPreview store integration", () => {
     expect(final.frontier!.point_summaries[0].factor_tables).toBeNull()
   })
 
+  describe("rates across a frontier recompute of the same job", () => {
+    /** Install a ratebook solve of job_123 whose one frontier point is worth `objective`. */
+    function solveRatebookGeneration(generation: number, objective: number) {
+      const store = useNodeResultsStore.getState()
+      store.startSolveJob("opt_1", "job_123", "Ratebook Optimiser", { volume: { min: 0.9 } }, "h1", "live", 0)
+      store.completeSolveJob("opt_1", makeRatebookSolveResult({
+        frontier_generation: generation,
+        frontier: makeFrontier({
+          ...makeRatebookFrontier([{ objective, volume: 0.9, lambda: 0.1 }]),
+          frontier_generation: generation,
+        }),
+      }))
+    }
+
+    function ratesReply(generation: number, objective: number, group: string) {
+      return makeFrontierSelect({
+        point_index: 0,
+        frontier_generation: generation,
+        total_objective: objective,
+        constraints: { volume: 0.9 },
+        effective_bounds: { volume: { kind: "min", bound: 0.9 } },
+        lambdas: { volume: 0.1 },
+        factor_tables: {
+          region: [{ __factor_group__: group, optimal_scenario_value: 1.08, quote_count: 10 }],
+        },
+      })
+    }
+
+    it("re-requests the reused point index and drops the earlier generation's late reply", async () => {
+      let resolveEarlier!: (value: unknown) => void
+      mockSelectFrontierPoint
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveEarlier = resolve }))
+        .mockResolvedValueOnce(ratesReply(2, 200, "RecomputedRegion"))
+      solveRatebookGeneration(1, 100)
+      render(<OptimiserPreview data={useNodeResultsStore.getState().getOptimiserPreview("opt_1")!} nodeId="opt_1" allNodes={[]} edges={[]} />)
+
+      fireEvent.click(screen.getByRole("tab", { name: "Rates" }))
+      await waitFor(() => expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(1))
+
+      // The recompute keeps job_123, and point 0 is selected again: a different point.
+      act(() => solveRatebookGeneration(2, 200))
+
+      expect(await screen.findAllByText("RecomputedRegion")).not.toHaveLength(0)
+      expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(2)
+      expect(mockSelectFrontierPoint).toHaveBeenLastCalledWith(
+        { job_id: "job_123", point_index: 0, include_ratebook_tables: true },
+        { signal: expect.any(AbortSignal) },
+      )
+
+      // Generation 1's reply lands last; it must not relabel generation 1's totals as generation 2's.
+      await act(async () => { resolveEarlier(ratesReply(1, 100, "StaleRegion")) })
+
+      const cached = useNodeResultsStore.getState().solveResults.opt_1
+      expect(cached.originalResult?.frontier_generation).toBe(2)
+      expect(cached.result?.total_objective).toBe(200)
+      expect(cached.frontier!.point_summaries[0].total_objective).toBe(200)
+      expect(cached.result?.factor_tables).toEqual(ratesReply(2, 200, "RecomputedRegion").factor_tables)
+      expect(screen.queryByText("StaleRegion")).not.toBeInTheDocument()
+    })
+
+    it("reports a reply from a generation the result does not show instead of installing it", async () => {
+      // The server recomputed before this result's generation 1 was installed over.
+      mockSelectFrontierPoint.mockResolvedValueOnce(ratesReply(2, 300, "NewerRegion"))
+      solveRatebookGeneration(1, 100)
+      const before = useNodeResultsStore.getState().solveResults.opt_1
+      render(<OptimiserPreview data={useNodeResultsStore.getState().getOptimiserPreview("opt_1")!} nodeId="opt_1" allNodes={[]} edges={[]} />)
+
+      fireEvent.click(screen.getByRole("tab", { name: "Rates" }))
+
+      expect(await screen.findByText(
+        /Rate table load failed: The server answered for frontier generation 2, but this result shows generation 1\./,
+      )).toBeInTheDocument()
+      expect(screen.queryByText("NewerRegion")).not.toBeInTheDocument()
+      expect(useNodeResultsStore.getState().solveResults.opt_1).toBe(before)
+    })
+  })
+
   describe("per-quote detail (Quotes)", () => {
-    function applyResponse(quoteId: string, rowCount = 1250): ApplyOptimiserResponse {
+    function applyResponse(quoteId: string, rowCount = 1250, frontierGeneration = 0): ApplyOptimiserResponse {
       return {
         status: "ok",
         total_objective: 1250000,
@@ -475,6 +558,7 @@ describe("OptimiserPreview store integration", () => {
         offset: 0,
         preview_row_count: 1,
         preview_row_limit: 100,
+        frontier_generation: frontierGeneration,
         error: null,
       }
     }
@@ -573,7 +657,7 @@ describe("OptimiserPreview store integration", () => {
     it("refetches the same point index after a frontier recompute", async () => {
       mockApplyOptimiser
         .mockResolvedValueOnce(applyResponse("OLD_POINT"))
-        .mockResolvedValueOnce(applyResponse("NEW_POINT"))
+        .mockResolvedValueOnce(applyResponse("NEW_POINT", 1250, 1))
       solveOnline("job_123", { generation: 0 })
       renderLive()
       openQuotes()
@@ -617,7 +701,7 @@ describe("OptimiserPreview store integration", () => {
       let resolveEarlier!: (response: ApplyOptimiserResponse) => void
       mockApplyOptimiser
         .mockImplementationOnce(() => new Promise((resolve) => { resolveEarlier = resolve }))
-        .mockResolvedValueOnce(applyResponse("RECOMPUTED"))
+        .mockResolvedValueOnce(applyResponse("RECOMPUTED", 1250, 1))
       solveOnline("job_123", { generation: 0 })
       renderLive()
       openQuotes()

@@ -29,7 +29,7 @@ import { NODE_TYPES } from "../../utils/nodeTypes"
 import { downloadTextFile } from "../editors/shared/tableClipboard"
 import type { OnUpdateConfig, OnUpdateConfigResult } from "../editors"
 import { useGraph } from "../useGraph"
-import { optimiserResultSavePath } from "./optimiserHelpers"
+import { frontierGenerationMismatch, optimiserResultSavePath } from "./optimiserHelpers"
 import { factorTablesCsv, hasFactorTables } from "./ratebookFactorTables"
 
 const SECTION_LABEL_CLASS = "text-[11px] font-bold uppercase tracking-[0.08em]"
@@ -140,9 +140,12 @@ export default function OptimiserPublishSection({
     const collar = isRatebook ? cached.originalResult.combined_factor_bounds : null
     // A frontier point's tables arrive only when it is materialised; the Rates
     // tab does that on view, and Export can ask for them here.
-    const tablesKey = `${jobId}:${target ?? "solved"}`
-    // The reply is stored against the job and point that asked for it; the
-    // selection is never changed by it.
+    // A recompute keeps the job and reuses point indices, so the frontier
+    // generation is part of the request's identity.
+    const frontierGeneration = cached.originalResult.frontier_generation
+    const tablesKey = `${jobId}:${frontierGeneration}:${target ?? "solved"}`
+    // The reply is stored against the job, generation and point that asked for
+    // it; the selection is never changed by it.
     const loadPointTables = async () => {
       if (target === null) return
       const pointIndex = target
@@ -151,6 +154,11 @@ export default function OptimiserPublishSection({
       try {
         const response = await selectFrontierPointApi({ job_id: jobId, point_index: pointIndex, include_ratebook_tables: true })
         if (!isDocumentExecutionFenceCurrent(documentFence)) return
+        const mismatch = frontierGenerationMismatch(response.frontier_generation, frontierGeneration)
+        if (mismatch !== null) {
+          setTablesLoad({ key: tablesKey, status: "error", error: mismatch })
+          return
+        }
         recordPointSummary(nodeId, jobId, pointIndex, response)
         setTablesLoad((current) => (current?.key === tablesKey ? null : current))
       } catch (error) {

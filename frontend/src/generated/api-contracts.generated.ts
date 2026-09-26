@@ -1654,6 +1654,7 @@ export interface OptimiserApplyResponse {
   };
   error: string | null;
   from_artifact: boolean;
+  frontier_generation: number;
   matched_row_count: number;
   offset: number;
   preview: {

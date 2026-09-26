@@ -1134,6 +1134,7 @@ describe("useNodeResultsStore", () => {
         offset: 0,
         preview_row_count: 1,
         preview_row_limit: 100,
+        frontier_generation: 0,
         error: null,
       }
     }
@@ -1691,7 +1692,7 @@ describe("useNodeResultsStore", () => {
         converged: true,
       }))
 
-      s.updateFrontierAfterSelect("n1", 2, makeFrontierSelect({
+      s.updateFrontierAfterSelect("n1", "j1", 2, makeFrontierSelect({
         status: "ok",
         total_objective: 250,
         constraints: { premium: 70 },
@@ -1721,7 +1722,7 @@ describe("useNodeResultsStore", () => {
         warning: "Stale original warning",
       }))
 
-      s.updateFrontierAfterSelect("n1", 2, makeFrontierSelect({
+      s.updateFrontierAfterSelect("n1", "j1", 2, makeFrontierSelect({
         status: "ok",
         total_objective: 250,
         constraints: { premium: 70 },
@@ -1760,7 +1761,7 @@ describe("useNodeResultsStore", () => {
       }
       s.completeSolveJob("n1", makeSolveResult({ mode: "ratebook", frontier }))
 
-      s.updateFrontierAfterSelect("n1", 0, makeFrontierSelect({
+      s.updateFrontierAfterSelect("n1", "j1", 0, makeFrontierSelect({
         status: "ok",
         total_objective: 250,
         constraints: { premium: 70 },
@@ -1822,7 +1823,7 @@ describe("useNodeResultsStore", () => {
       }
       s.completeSolveJob("n1", makeSolveResult({ mode: "ratebook", frontier }))
 
-      s.updateFrontierAfterSelect("n1", 0, makeFrontierSelect({
+      s.updateFrontierAfterSelect("n1", "j1", 0, makeFrontierSelect({
         status: "ok",
         total_objective: 250,
         constraints: { premium: 70 },
@@ -1889,7 +1890,7 @@ describe("useNodeResultsStore", () => {
       s.selectFrontierPoint("n1", 0)
       // …then the user clicks point 1 before point 0's response lands.
       s.selectFrontierPoint("n1", 1)
-      s.updateFrontierAfterSelect("n1", 1, makeFrontierSelect({
+      s.updateFrontierAfterSelect("n1", "j1", 1, makeFrontierSelect({
         status: "ok",
         point_index: 1,
         total_objective: 260,
@@ -1904,7 +1905,7 @@ describe("useNodeResultsStore", () => {
 
       // The late response from point 0 arrives.  Frontend must not regress
       // selectedPointIndex/result back to point 0.
-      s.updateFrontierAfterSelect("n1", 0, makeFrontierSelect({
+      s.updateFrontierAfterSelect("n1", "j1", 0, makeFrontierSelect({
         status: "ok",
         point_index: 0,
         total_objective: 240,
@@ -1958,7 +1959,7 @@ describe("useNodeResultsStore", () => {
       }))
 
       expect(() =>
-        s.updateFrontierAfterSelect("n1", 0, makeFrontierSelect({
+        s.updateFrontierAfterSelect("n1", "j1", 0, makeFrontierSelect({
           status: "ok",
           point_index: 1,
           total_objective: 260,
@@ -1988,7 +1989,7 @@ describe("useNodeResultsStore", () => {
       })
       s.completeSolveJob("n1", original)
 
-      s.updateFrontierAfterSelect("n1", 1, makeFrontierSelect({
+      s.updateFrontierAfterSelect("n1", "j1", 1, makeFrontierSelect({
         status: "ok",
         total_objective: 999,
         constraints: { premium: 99 },
@@ -2009,6 +2010,119 @@ describe("useNodeResultsStore", () => {
       expect(cached.result?.adjustments).toBeUndefined()
       // The select response always carries its point's factor tables, empty here.
       expect(cached.result?.factor_tables).toEqual({})
+    })
+
+    // ────────────────────────────────────────────────────────────
+    // Select responses are fenced by job and frontier generation.
+    // A recompute reuses the job id and the point indices, so a late
+    // reply for generation 1's point 0 must never land on generation
+    // 2's point 0 (or on another job's).
+    // ────────────────────────────────────────────────────────────
+
+    function completeRatebookGeneration(jobId: string, generation: number, pointObjective: number) {
+      const s = useNodeResultsStore.getState()
+      s.startSolveJob("n1", jobId, "Node 1", {}, "h1", "live", 0)
+      s.completeSolveJob("n1", makeSolveResult({
+        mode: "ratebook",
+        frontier_generation: generation,
+        frontier: makeFrontier({
+          points: [onlinePoint(pointObjective), onlinePoint(pointObjective + 10)],
+          point_summaries: [
+            pointSummary({ total_objective: pointObjective }),
+            pointSummary({ total_objective: pointObjective + 10 }),
+          ],
+          n_points: 2,
+          points_returned: 2,
+          constraint_names: ["premium"],
+          swept_axes: ["premium"],
+          frontier_generation: generation,
+        }),
+      }))
+    }
+
+    const staleTables = { region: [{ __factor_group__: "North", optimal_scenario_value: 0.8, quote_count: 10 }] }
+
+    it.each([
+      ["updateFrontierAfterSelect", (response: ReturnType<typeof makeFrontierSelect>) => (
+        useNodeResultsStore.getState().updateFrontierAfterSelect("n1", "j1", 0, response)
+      )],
+      ["recordFrontierPointSummary", (response: ReturnType<typeof makeFrontierSelect>) => (
+        useNodeResultsStore.getState().recordFrontierPointSummary("n1", "j1", 0, response)
+      )],
+    ] as const)("%s drops a late reply from an earlier frontier generation of the same job", (_name, write) => {
+      completeRatebookGeneration("j1", 1, 100)
+      // The recompute keeps the job and point 0 is selected again, now worth 200.
+      completeRatebookGeneration("j1", 2, 200)
+      const before = useNodeResultsStore.getState().solveResults["n1"]
+      expect(before.selectedPointIndex).toBe(0)
+      expect(before.result?.total_objective).toBe(200)
+
+      write(makeFrontierSelect({
+        point_index: 0,
+        frontier_generation: 1,
+        total_objective: 100,
+        factor_tables: staleTables,
+      }))
+
+      const after = useNodeResultsStore.getState().solveResults["n1"]
+      expect(after).toBe(before)
+      expect(after.result?.total_objective).toBe(200)
+      expect(after.frontier!.point_summaries[0].total_objective).toBe(200)
+      expect(after.frontier!.frontier_generation).toBe(2)
+    })
+
+    it.each([
+      ["updateFrontierAfterSelect", (response: ReturnType<typeof makeFrontierSelect>) => (
+        useNodeResultsStore.getState().updateFrontierAfterSelect("n1", "j1", 0, response)
+      )],
+      ["recordFrontierPointSummary", (response: ReturnType<typeof makeFrontierSelect>) => (
+        useNodeResultsStore.getState().recordFrontierPointSummary("n1", "j1", 0, response)
+      )],
+    ] as const)("%s drops a reply from a generation the node has not installed yet", (_name, write) => {
+      completeRatebookGeneration("j1", 1, 100)
+      const before = useNodeResultsStore.getState().solveResults["n1"]
+
+      // The server recomputed first: its generation 2 point 0 is not the node's point 0.
+      write(makeFrontierSelect({ point_index: 0, frontier_generation: 2, total_objective: 300, factor_tables: staleTables }))
+
+      expect(useNodeResultsStore.getState().solveResults["n1"]).toBe(before)
+    })
+
+    it.each([
+      ["updateFrontierAfterSelect", (response: ReturnType<typeof makeFrontierSelect>) => (
+        useNodeResultsStore.getState().updateFrontierAfterSelect("n1", "j1", 0, response)
+      )],
+      ["recordFrontierPointSummary", (response: ReturnType<typeof makeFrontierSelect>) => (
+        useNodeResultsStore.getState().recordFrontierPointSummary("n1", "j1", 0, response)
+      )],
+    ] as const)("%s drops a reply for a job the node has moved past, even at the same generation", (_name, write) => {
+      completeRatebookGeneration("j1", 1, 100)
+      completeRatebookGeneration("j2", 1, 200)
+      const before = useNodeResultsStore.getState().solveResults["n1"]
+
+      write(makeFrontierSelect({ point_index: 0, frontier_generation: 1, total_objective: 100, factor_tables: staleTables }))
+
+      expect(useNodeResultsStore.getState().solveResults["n1"]).toBe(before)
+    })
+
+    it.each([
+      ["updateFrontierAfterSelect", (response: ReturnType<typeof makeFrontierSelect>) => (
+        useNodeResultsStore.getState().updateFrontierAfterSelect("n1", "j1", 0, response)
+      )],
+      ["recordFrontierPointSummary", (response: ReturnType<typeof makeFrontierSelect>) => (
+        useNodeResultsStore.getState().recordFrontierPointSummary("n1", "j1", 0, response)
+      )],
+    ] as const)("%s installs a reply for the node's current job and generation", (_name, write) => {
+      completeRatebookGeneration("j1", 1, 100)
+      completeRatebookGeneration("j1", 2, 200)
+
+      write(makeFrontierSelect({ point_index: 0, frontier_generation: 2, total_objective: 205, factor_tables: staleTables }))
+
+      const cached = useNodeResultsStore.getState().solveResults["n1"]
+      expect(cached.selectedPointIndex).toBe(0)
+      expect(cached.result?.total_objective).toBe(205)
+      expect(cached.result?.factor_tables).toEqual(staleTables)
+      expect(cached.frontier!.point_summaries[0].total_objective).toBe(205)
     })
 
     // ────────────────────────────────────────────────────────────

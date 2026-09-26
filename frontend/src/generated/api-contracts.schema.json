@@ -8268,6 +8268,11 @@
           "title": "From Artifact",
           "type": "boolean"
         },
+        "frontier_generation": {
+          "minimum": 0,
+          "title": "Frontier Generation",
+          "type": "integer"
+        },
         "matched_row_count": {
           "minimum": 0,
           "title": "Matched Row Count",
@@ -8323,6 +8328,7 @@
         "offset",
         "preview_row_count",
         "preview_row_limit",
+        "frontier_generation",
         "error"
       ],
       "title": "OptimiserApplyResponse",
@@ -10269,7 +10275,7 @@
         "merged_levels": {
           "anyOf": [
             {
-              "minimum": 2,
+              "minimum": 1,
               "type": "integer"
             },
             {

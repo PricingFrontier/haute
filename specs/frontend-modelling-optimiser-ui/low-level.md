@@ -72,14 +72,14 @@ Only a current, accepted save response may acknowledge this revision transition.
 | `frontend/src/panels/modelling/FailoverHelp.tsx`, `frontend/src/panels/modelling/OffsetFieldLabel.tsx`, `frontend/src/panels/modelling/styles.ts` | Algorithm help, offset label and modelling visual helpers, including the shared modelling input surface. |
 | `frontend/src/panels/optimiser/SummaryTab.tsx` | Objective, the constraint-attainment table (with λ, for both modes), ratebook-impact state and a compact adjustments summary (up / down / unadjusted / at the range edge) linking to the Adjustments tab. |
 | `frontend/src/panels/HistogramChart.tsx` | The shared histogram (extracted from Residuals): a titled `ChartSvg` with value gridlines, x ticks, axis labels, a dashed reference line and a legend. Bars are placed on a numeric axis (Residuals' bins, by centre) or as evenly spaced categories (the Adjustments grid values), and may be focusable (`role="button"`, a described `aria-label`, activated by hover, focus, click, Enter or Space) with the active bar highlighted. A non-finite bar value or an empty bar list throws. |
-| `frontend/src/panels/optimiser/AdjustmentsTab.tsx`, `frontend/src/panels/optimiser/adjustments.ts` | The online Adjustments view (see Control flow): the adjustment report's bars against the 1.0 base price, the Weight by switch, the quantile row, the shares, a detail line for the active bar, a values table, and the lazy per-point load; and the copy and formatting Summary shares with it (the point-report key, the no-1.0 note, grid values and shares). |
+| `frontend/src/panels/optimiser/AdjustmentsTab.tsx`, `frontend/src/panels/optimiser/adjustments.ts` | The online Adjustments view (see Control flow): the adjustment report's bars against the 1.0 base price, the Weight by switch, the quantile row, the shares, a detail line for the active bar, a values table, and the lazy per-point load; and the copy and formatting Summary shares with it (the point-report key, the no-1.0 note, grid values and shares, and `rangeEdgeShare`, the union of the minimum and maximum edge shares, counted once on a one-step grid). |
 | `frontend/src/panels/optimiser/SegmentsTab.tsx` | The Segments view (see Control flow): the result's segment keys in the per-feature diagnostic layout, ranked by the index's adjustment spread (unranked while it loads), the selected key's per-level mean scenario value as `RelativityBars` around 1.0 with an aligned quote strip, a `ChartFocusDetail` line, a values table, the Weight by switch, and the review-owned caches of loaded breakdowns and indexes. |
 | `frontend/src/panels/optimiser/constraintAttainment.ts`, `frontend/src/panels/optimiser/ConstraintAttainmentTable.tsx` | The one pure attainment judgement (`constraintAttainment({kind, bound, achieved})` → bound, achieved, signed slack and slack %, `met`/`breached`; non-finite input throws) and the Constraint / Kind / Bound / Achieved / Slack / Status / λ table Summary and the detail card share. |
 | `frontend/src/panels/optimiser/ConvergenceChart.tsx`, `frontend/src/panels/optimiser/FrontierChart.tsx`, `frontend/src/panels/optimiser/DetailCard.tsx` | Iteration convergence (online history or the ratebook `ratebook_cd_trace` as `IterationLinesChart` small multiples with a `ChartValuesTable`; an online solve without history throws), the selectable frontier slice chart and strict frontier-point detail display. `FrontierChart` draws one slice on `ResponsiveChart`, `ChartSvg`, `ChartValueGrid` and `ChartLegend` at the container width with 12 px axes named by the objective column and the x constraint; it keeps the overlap bucketing (one focusable marker per coordinate, preferring global point 2, then the selected point) and keyboard selection, joins only feasible points in bound order (an infeasible point breaks the line), draws a non-converged point hollow and a converged-but-breached point as a cross, and reports the hovered or focused point through `ChartFocusDetail`. `DetailCard` shows the displayed result's objective and attainment table, the point's feasibility with its reason, `converged` and iterations, each λ exactly as reported with the sign it enters each quote's choice with, and the discrete trade-off row. Both charts scale through the shared `chartDomain`/`chartTicks`/`formatChartNumber`. |
 | `frontend/src/panels/optimiser/frontierSlices.ts` | The frontier's pure slice and feasibility model: `frontierConstraintKinds` (each constraint's min/max from the solve's bounds via `effectiveConstraintBounds`; a missing one throws), `assessFrontierPoint` (feasible = `converged` and every constraint's `totals` meets its absolute `bounds` by `constraintAttainment`, swept or not; a missing bound or total throws), `sliceFrontier` (groups the points by the other constraints' `thresholds` with exact equality, since they come from linspace; each slice lists **global** indices in ascending x bound, ties by index), and `discreteTradeOff` (Δobjective / Δrelaxation to the next point in the relaxing direction of the same slice, `bound_next − bound` for max and `bound − bound_next` for min, only between two feasible points with different bounds). |
 | `frontend/src/panels/ChartFocusDetail.tsx` | The polite `role="status"` line under a chart that states the hovered or focused item's exact values, or a placeholder; AvE bins and frontier points use it. |
 | `frontend/src/panels/optimiser/RatebookRatesTab.tsx`, `frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx`, `frontend/src/panels/optimiser/ratebookFactorTables.ts` | Ratebook Rates tab, impact beeswarm and factor-table helpers over the generated `OptimiserFactorTableRow` (`__factor_group__`, `optimal_scenario_value`, `quote_count`), read directly with no per-row parsing or fallbacks: banding order, `factorRateSpread` (the quote-weighted mean \|ln rate\|, which ranks factors in both views), `levelQuoteShares` (per-level quote shares rounded by largest remainder to sum to exactly 100.0%), `formatVsNeutral`, and `factorTablesCsv(factorTables, collar)`, which appends `combined_factor_min`/`combined_factor_max` to every row. A non-positive rate or a factor with no quotes throws. |
-| `frontend/src/panels/optimiser/iterationSummary.ts`, `frontend/src/panels/optimiser/optimiserHelpers.ts` | Iteration copy and optimiser result/save helpers. |
+| `frontend/src/panels/optimiser/iterationSummary.ts`, `frontend/src/panels/optimiser/optimiserHelpers.ts` | Iteration copy and optimiser result/save helpers, including `frontierGenerationMismatch`, the message for a point reply the server answered for another frontier generation than the result shows. |
 | `frontend/src/utils/banding.ts` | Extracts banding factor-levels/order and resolves an optimiser's explicit or sole direct banding source. |
 | `frontend/src/utils/polarsDtypes.ts` | Shared canonical Polars numeric-dtype predicate used by modelling and banding controls, and the Date/Datetime predicate (`isTemporalDtype`, matching the Date and Datetime dtype strings Polars renders) banding uses to offer Numeric on date columns. |
 
@@ -240,8 +240,11 @@ Only a current, accepted save response may acknowledge this revision transition.
 4. `frontend/src/panels/OptimiserPreview.tsx` picks the available result tabs and the selected
    frontier point, which is also the publish target (`selectedPointIndex`, `null` = the solved
    result). In ratebook mode a selected point without tables is materialised only on Rates/Summary;
-   request sequence bookkeeping drops stale replies and persists accepted tables in the result
-   store. Save and MLflow requests always send the target explicitly (`point_index` omitted for the
+   a request's identity is `(jobId, frontier_generation, point)` (a recompute keeps the job and
+   reuses point indices for other points, so a new generation re-requests the same index), request
+   sequence bookkeeping drops stale replies, a reply the server answered for another
+   `frontier_generation` than the result shows (it recomputed first) is reported as a Rates error
+   and never stored, and accepted tables persist in the result store. Save and MLflow requests always send the target explicitly (`point_index` omitted for the
    solved result) and never consume the server-side result, so they and the Quotes view may run
    in any order. `OptimiserPreviewData` carries `solvedResult` (the store's as-solved
    `originalResult`) beside the displayed `result`: Convergence (offered for every result) draws
@@ -256,7 +259,9 @@ Only a current, accepted save response may acknowledge this revision transition.
    reset with it. `result.warning` renders as an amber `role="status"` strip in the workspace notices slot.
    Rates, Quotes and Adjustments error states offer **Retry**, which reissues the failed
    request. Summary shows the displayed result's adjustments compactly ("Adjusted up", "Adjusted
-   down", "Unadjusted" only when the grid has 1.0, and "At the range edge", by quote count) with
+   down", "Unadjusted" only when the grid has 1.0, and "At the range edge", by quote count; the
+   edge share is the union of the minimum and maximum steps, so on a one-step grid, whose only
+   step is both, it is that step's share, never their sum) with
    a **View adjustments** button that opens the Adjustments tab; with a frontier point selected
    (whose summary carries no report) it says the point's adjustments load in the Adjustments tab,
    with the same button.
@@ -266,7 +271,8 @@ Only a current, accepted save response may acknowledge this revision transition.
    point's report through `POST /frontier/select` with `include_adjustments: true`, only while
    the tab is open, in the Rates flow's pattern: one `AbortController` per request and a
    request sequence, so a reply for a point, job or generation the tab has moved past is
-   dropped; a browser abort (a new point, closing the tab) only discards the reply; a 409 whose
+   dropped, and a reply the server answered for another `frontier_generation` than the tab shows
+   is reported (with **Retry**) and never kept; a browser abort (a new point, closing the tab) only discards the reply; a 409 whose
    `error_code` is `frontier_point_apply_replaced` is not an error, and the tab reissues the
    request while it still shows that point; a 410 shows the server's message with no Retry
    (only a new solve helps); any other failure shows the message with **Retry**. A loaded point
@@ -284,7 +290,9 @@ Only a current, accepted save response may acknowledge this revision transition.
    interpolated between its neighbours (none when 1.0 is outside the grid, which a note states).
    **Weight by** (`aria-pressed` buttons) offers Quotes and each weighting the report computed;
    a refused weighting is named with its reason. Under the chart: a quantile row (P5, P25,
-   median, P75, P95, mean), the shares, a `ChartFocusDetail` line for the active bar, the note
+   median, P75, P95, mean), the shares (at range minimum and at range maximum, each labelled with
+   its grid value, or on a one-step grid a single "At the range edge (v)" row, since its only step
+   is both; a one-step report whose two edge shares differ throws), a `ChartFocusDetail` line for the active bar, the note
    "The scenario grid has no 1.0 step, so no quote is unadjusted." when `has_unadjusted` is
    false, and a closed values table (Step | Scenario value | Quotes | Share of quotes, plus the
    weighting and its share when one is chosen).
@@ -301,7 +309,9 @@ Only a current, accepted save response may acknowledge this revision transition.
    its reason and makes no request. An available key loads `POST /segments` for the target (the
    selected point, else the solved result) and the chosen weighting, with one `AbortController`
    per request: switching key, weighting or point aborts the request in flight, and a reply for a
-   key, weighting, point, job or generation the view has moved past is dropped. A 409
+   key, weighting, point, job or generation the view has moved past is dropped; a breakdown or
+   index the server answered for another `frontier_generation` than the view shows is reported
+   (with **Retry**) and never kept. A 409
    `frontier_point_apply_replaced` is reissued, a 410 shows the message with no Retry, anything
    else offers **Retry**. Loaded breakdowns and indexes are kept for the review, by
    `(job, generation, target, key, weight)` and `(job, generation, target)`, so returning to one
@@ -341,8 +351,10 @@ Only a current, accepted save response may acknowledge this revision transition.
    through `allNodes` by `nodeId`; `""` for Auto) and the Export pane derives availability from
    that destination alone. It publishes through `useOptimiserPublishStore`, whose state belongs to
    one solve job. Export's factor-table load stores its
-   reply through `recordFrontierPointSummary`, which drops a reply for a job the node has moved past
-   and never changes the selection.
+   reply through `recordFrontierPointSummary`, which drops a reply for a job or frontier generation
+   the node does not hold and never changes the selection; its load is identified by
+   `(jobId, frontier_generation, target)`, and a reply the server answered for another generation
+   than the result shows is reported as the load's error.
 5. `frontend/src/panels/OptimiserDataPreview.tsx` caps rows at 5,000 before grouping by quote,
    orders scenario rows, and calculates full-preview statistics only when its Statistics tab is open.
 
@@ -564,7 +576,9 @@ a ratebook page's factor product and flag. `frontend/src/panels/__tests__/GLMCom
 extracted `SortableValuesTable`.
 Store-integration tests cover the apply cache (no second request on reopening Quotes, a refetch
 after a frontier recompute, late responses from an earlier job or generation discarded, the
-16-entry bound), the tab kept across stepper presses and reset on a new job or node, Convergence
+16-entry bound), Rates across a same-job recompute (the reused point index re-requested and the
+earlier generation's late reply never installed; a reply from a generation the result does not
+show reported, not stored), the tab kept across stepper presses and reset on a new job or node, Convergence
 kept after point select, the fixed as-solved marker, the warning strip and
 Retry. `frontend/src/panels/__tests__/IterationLinesChart.test.tsx` covers the shared chart's
 real tick values, log axis, reference lines, marker, gaps and loud failures, and

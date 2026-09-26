@@ -24,3 +24,15 @@ import { portableKey } from "../../utils/portableKey"
 export function optimiserResultSavePath(nodeLabel: string, nodeId: string): string {
   return `output/optimiser_${portableKey(nodeLabel)}_${portableKey(nodeId)}.json`
 }
+
+/**
+ * Why a point reply cannot be shown: the server answered for another frontier
+ * generation than the result on screen (it recomputed since, and the node has
+ * not installed that recompute). A recompute reuses point indices for other
+ * points, so the reply describes a different point and is never kept.
+ */
+export function frontierGenerationMismatch(answered: number, shown: number): string | null {
+  return answered === shown
+    ? null
+    : `The server answered for frontier generation ${answered}, but this result shows generation ${shown}.`
+}

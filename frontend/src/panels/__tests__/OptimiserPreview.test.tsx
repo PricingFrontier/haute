@@ -218,6 +218,7 @@ describe("OptimiserPreview", () => {
       baseline_constraints: { loss_ratio: 0.60 },
       lambdas: { loss_ratio: 0.006 },
       converged: true,
+      frontier_generation: 0,
       error: null,
     })
     mockSaveOptimiser.mockResolvedValue({ status: "ok", path: "output/optimiser_My_Optimiser_opt_1.json", message: "" })

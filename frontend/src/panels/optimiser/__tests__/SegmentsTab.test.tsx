@@ -128,10 +128,12 @@ function ranked(overrides: Partial<OptimiserSegmentIndexResponse> = {}): Optimis
 function Harness({
   solvedResult = makeOnlineSolveResult({ segment_keys: KEYS }),
   pointIndex = null,
+  frontierGeneration = 0,
   initialSelected = null,
 }: {
   solvedResult?: OptimiserSolveResult
   pointIndex?: number | null
+  frontierGeneration?: number
   initialSelected?: string | null
 }) {
   const [selected, setSelected] = useState<string | null>(initialSelected)
@@ -142,7 +144,7 @@ function Harness({
       <output data-testid="shared-selection">{selected ?? ""}</output>
       <SegmentsTab
         jobId="job_1"
-        frontierGeneration={0}
+        frontierGeneration={frontierGeneration}
         pointIndex={pointIndex}
         solvedResult={solvedResult}
         selection={{ selected, onSelect: setSelected, search, onSearch: setSearch }}
@@ -347,6 +349,43 @@ describe("SegmentsTab: a key's breakdown", () => {
     // Region was already loaded for this target: no second request for it.
     expect(mockSegments.mock.calls.map((call) => (call[0] as { key: string }).key)).toEqual(["region", "age"])
     expect(mockIndex).toHaveBeenCalledTimes(1)
+  })
+
+  it("drops an earlier generation's replies once a recompute reuses the point index", async () => {
+    const earlierIndex = deferred<OptimiserSegmentIndexResponse>()
+    const earlierBreakdown = deferred<OptimiserSegmentsResponse>()
+    mockIndex
+      .mockReturnValueOnce(earlierIndex.promise)
+      .mockResolvedValueOnce(ranked({ point_index: 2, frontier_generation: 1 }))
+    mockSegments
+      .mockReturnValueOnce(earlierBreakdown.promise)
+      .mockResolvedValueOnce(breakdown({ point_index: 2, frontier_generation: 1, rows: [level("Recomputed", 100, 1.1)] }))
+    const { rerender } = render(<Harness pointIndex={2} frontierGeneration={0} initialSelected="region" />)
+    rerender(<Harness pointIndex={2} frontierGeneration={1} initialSelected="region" />)
+    await flush()
+    await act(async () => {
+      earlierIndex.resolve(ranked({ point_index: 2, frontier_generation: 0, keys: [{ ...KEYS[0], spread: 0.5 }] }))
+      earlierBreakdown.resolve(breakdown({ point_index: 2, frontier_generation: 0, rows: [level("Stale", 100, 0.9)] }))
+    })
+
+    expect(screen.getAllByText("Recomputed").length).toBeGreaterThan(0)
+    expect(screen.queryByText("Stale")).toBeNull()
+    expect(browserKeys()).toEqual(["age", "region", "postcode"])
+  })
+
+  it("reports replies from a generation the view does not show instead of keeping them", async () => {
+    // The server recomputed the frontier before the node installed the new generation.
+    mockIndex.mockResolvedValue(ranked({ point_index: 2, frontier_generation: 1 }))
+    mockSegments.mockResolvedValue(breakdown({ point_index: 2, frontier_generation: 1 }))
+    render(<Harness pointIndex={2} frontierGeneration={0} initialSelected="region" />)
+    await flush()
+
+    const mismatch = /The server answered for frontier generation 1, but this result shows generation 0\./
+    expect(screen.getByText(new RegExp(`The keys could not be ranked: ${mismatch.source}`))).toBeTruthy()
+    expect(screen.getByText(new RegExp(`The segments could not be loaded: ${mismatch.source}`))).toBeTruthy()
+    // Unranked, and no breakdown drawn from the other generation.
+    expect(browserKeys()).toEqual(["region", "age", "postcode"])
+    expect(screen.queryByText("North")).toBeNull()
   })
 
   it("offers Retry after a failure, and none for a point that is gone", async () => {

@@ -6,6 +6,7 @@ import { makeFrontierSelect } from "../../../test-utils/factories"
 import AdjustmentsTab, { type PointAdjustmentReports } from "../AdjustmentsTab"
 import {
   makeAdjustmentReport,
+  makeOneStepAdjustmentReport,
   makeOnlineSolveResult,
   makeRatebookAdjustmentReport,
   makeRatebookSolveResult,
@@ -110,6 +111,19 @@ describe("AdjustmentsTab: the as-solved report", () => {
     expect(within(shares).getByText("Unadjusted").nextSibling).toHaveTextContent("30.0%")
     expect(within(shares).getByText("At range minimum (0.85)").nextSibling).toHaveTextContent("2.0%")
     expect(within(shares).getByText("At range maximum (1.15)").nextSibling).toHaveTextContent("6.0%")
+  })
+
+  it("states a one-step grid's only step once as the range edge", () => {
+    render(<Harness solvedResult={makeOnlineSolveResult({
+      scenario_grid: [{ optimal_step: 0, scenario_value: 1.0 }],
+      adjustments: makeOneStepAdjustmentReport(),
+    })} />)
+
+    const shares = screen.getByRole("group", { name: "Shares" })
+    // The minimum and the maximum are the same step: one row, its share.
+    expect(within(shares).getByText("At the range edge (1)").nextSibling).toHaveTextContent("100.0%")
+    expect(within(shares).queryByText(/At range minimum/)).not.toBeInTheDocument()
+    expect(within(shares).queryByText(/At range maximum/)).not.toBeInTheDocument()
   })
 
   it("weighs the bars and figures by the objective at the chosen scenario on request", () => {
@@ -330,6 +344,48 @@ describe("AdjustmentsTab: a selected frontier point", () => {
     const alert = screen.getByRole("alert")
     expect(alert).toHaveTextContent("Frontier point 3 is no longer available. Re-run the solve to inspect it.")
     expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
+  })
+
+  it("discards an earlier generation's reply once a recompute reuses the point index", async () => {
+    const earlier = deferred<ReturnType<typeof makeFrontierSelect>>()
+    const recomputed = deferred<ReturnType<typeof makeFrontierSelect>>()
+    mockSelectFrontierPoint.mockReturnValueOnce(earlier.promise).mockReturnValueOnce(recomputed.promise)
+    const onLoaded = vi.fn()
+    const { rerender } = render(<Harness pointIndex={2} frontierGeneration={0} onLoaded={onLoaded} />)
+    rerender(<Harness pointIndex={2} frontierGeneration={1} onLoaded={onLoaded} />)
+
+    expect(mockSelectFrontierPoint).toHaveBeenCalledTimes(2)
+    await act(async () => recomputed.resolve(makeFrontierSelect({
+      point_index: 2,
+      frontier_generation: 1,
+      adjustments: makeAdjustmentReport({ n_quotes: 222 }),
+    })))
+    await act(async () => earlier.resolve(makeFrontierSelect({
+      point_index: 2,
+      frontier_generation: 0,
+      adjustments: makeAdjustmentReport({ n_quotes: 111 }),
+    })))
+
+    expect(onLoaded).toHaveBeenCalledTimes(1)
+    expect(onLoaded.mock.calls[0][0]).toBe("job_1:1:2")
+    expect(onLoaded.mock.calls[0][1].n_quotes).toBe(222)
+  })
+
+  it("reports a reply from a generation the view does not show instead of keeping it", async () => {
+    // The server recomputed the frontier before the node installed the new generation.
+    mockSelectFrontierPoint.mockResolvedValueOnce(makeFrontierSelect({
+      point_index: 2,
+      frontier_generation: 1,
+      adjustments: makeAdjustmentReport(),
+    }))
+    const onLoaded = vi.fn()
+    render(<Harness pointIndex={2} frontierGeneration={0} onLoaded={onLoaded} />)
+    await act(async () => {})
+
+    expect(onLoaded).not.toHaveBeenCalled()
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The server answered for frontier generation 1, but this result shows generation 0.",
+    )
   })
 
   it("fails loudly when the server answers a point without its report", async () => {

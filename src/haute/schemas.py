@@ -3555,8 +3555,9 @@ class OptimiserSegmentRow(BaseModel):
     # A bin's bounds: ``[lower, upper)``, the last bin ``[lower, upper]``.
     lower: float | None
     upper: float | None
-    # How many distinct values the Other level merges.
-    merged_levels: int | None = Field(ge=2)
+    # How many distinct values the Other level merges: every level beyond the top
+    # 15, so one when there are exactly 16.
+    merged_levels: int | None = Field(ge=1)
     quotes: int = Field(gt=0)
     weight_total: float | None = Field(ge=0)
     unweighted: OptimiserSegmentFigures
@@ -3884,6 +3885,9 @@ class OptimiserApplyResponse(BaseModel):
     offset: int = Field(ge=0)
     preview_row_count: int = Field(ge=0)
     preview_row_limit: int = Field(ge=1, le=APPLY_PREVIEW_ROW_LIMIT)
+    # The frontier generation the page was answered for, so a client can refuse
+    # a page from a frontier recomputed after its request.
+    frontier_generation: int = Field(ge=0)
     error: str | None = None
 
     @model_validator(mode="after")

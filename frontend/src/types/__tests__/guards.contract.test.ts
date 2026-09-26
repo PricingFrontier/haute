@@ -3104,9 +3104,11 @@ describe("API response guards", () => {
       offset: 100,
       preview_row_count: 1,
       preview_row_limit: 100,
+      frontier_generation: 3,
     })
     expect(parsedApply.matched_row_count).toBe(101)
     expect(parsedApply.offset).toBe(100)
+    expect(parsedApply.frontier_generation).toBe(3)
     expect(parsedApply.from_artifact).toBe(false)
     expect(frontier.constraint_names).toEqual(["loss"])
     expect(frontierAutoRange.ranges.expected_margin).toEqual({ min: 11, max: 39 })

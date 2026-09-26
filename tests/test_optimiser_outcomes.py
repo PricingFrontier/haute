@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -708,8 +709,132 @@ class TestProcessMode:
 
 
 # ---------------------------------------------------------------------------
+# An analysis column the solver also reads (a constraint or the objective)
+# ---------------------------------------------------------------------------
+
+
+def _exposure(quote: int) -> float:
+    """A Float64 per-quote value Float32 cannot hold exactly (0.1 steps)."""
+    return 0.1 * (quote + 1)
+
+
+def _with_exposure(scored: Path) -> Path:
+    """*scored* with ``exposure``, a Float64 column constant within each quote."""
+    frame = pl.read_parquet(scored)
+    frame = frame.with_columns(
+        pl.col("quote_id")
+        .str.slice(1)
+        .cast(pl.Int64)
+        .map_elements(_exposure, return_dtype=pl.Float64)
+        .alias("exposure")
+    )
+    frame.write_parquet(scored)
+    return scored
+
+
+class _RecordSolverInput:
+    """Record the solver input's solver-column schema and each grid build's arguments."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, solver_columns: Sequence[str]) -> None:
+        self.schemas: list[dict[str, pl.DataType]] = []
+        self.calls: list[dict[str, Any]] = []
+        real = _optimiser_input.price_contour().build_grid_from_parquet_chunked
+
+        def recording(path: str, constraint_cols: list[str], chunk: int, **kwargs: Any) -> Any:
+            schema = pl.read_parquet_schema(path)
+            self.schemas.append({column: schema[column] for column in solver_columns})
+            self.calls.append({"constraints": list(constraint_cols), **kwargs})
+            return real(path, constraint_cols, chunk, **kwargs)
+
+        monkeypatch.setattr(
+            _optimiser_input.price_contour(), "build_grid_from_parquet_chunked", recording
+        )
+
+
+_KEY_COLUMNS = ("quote_id", "scenario_index", "scenario_value", "volume")
+
+
+@pytest.mark.parametrize("execution_mode", ["thread", "process"])
+class TestAnAnalysisColumnTheSolverReads:
+    def _solve_both(
+        self,
+        client: Any,
+        project: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        execution_mode: str,
+        *,
+        analysis_columns: list[str],
+        solver_columns: Sequence[str],
+        **config: Any,
+    ) -> tuple[dict[str, Any], str, dict[str, Any], _RecordSolverInput]:
+        if execution_mode == "process":
+            monkeypatch.setenv("HAUTE_INTERACTIVE_EXECUTION_MODE", "process")
+        scored = _with_exposure(_scored(project))
+        recorded = _RecordSolverInput(monkeypatch, solver_columns)
+        _plain_job, plain = _solved(client, _data_graph(scored, **config))
+        job_id, with_analysis = _solved(
+            client, _data_graph(scored, analysis_columns=analysis_columns, **config)
+        )
+        return plain, job_id, with_analysis, recorded
+
+    def _assert_same_solve(
+        self, plain: dict[str, Any], with_analysis: dict[str, Any], recorded: _RecordSolverInput
+    ) -> None:
+        # The solver read the same columns, at the same (Float32) dtypes, and solved
+        # exactly the same problem.
+        assert recorded.schemas[0] == recorded.schemas[1]
+        assert recorded.schemas[1]["exposure"] == pl.Float32
+        assert recorded.calls[0] == recorded.calls[1]
+        for key in ("total_objective", "constraints", "lambdas", "n_quotes", "n_steps"):
+            assert with_analysis["result"][key] == plain["result"][key]
+
+    def _assert_exposure_side_table(self, job_id: str, columns: list[str]) -> None:
+        table = _side_table(job_id)
+        assert table.columns == ["quote_id", *columns, ANALYSIS_ROW_PRESENT_COLUMN]
+        # The analysis copy keeps the source's Float64 values, never the solver's Float32.
+        assert table.schema["exposure"] == pl.Float64
+        assert table["exposure"].to_list() == [_exposure(q) for q in range(9)]
+        assert _analysis_handle(job_id)["column_stats"]["exposure"]["dtype"] == "Float64"
+
+    def test_a_constraint_column(self, client, project, monkeypatch, execution_mode):
+        plain, job_id, with_analysis, recorded = self._solve_both(
+            client,
+            project,
+            monkeypatch,
+            execution_mode,
+            analysis_columns=["exposure", "region"],
+            solver_columns=(*_KEY_COLUMNS, "expected_income", "exposure"),
+            constraints={"volume": {"min": 0.9}, "exposure": {"max": 1000.0}},
+        )
+
+        self._assert_same_solve(plain, with_analysis, recorded)
+        assert recorded.calls[1]["constraints"] == ["volume", "exposure"]
+        self._assert_exposure_side_table(job_id, ["exposure", "region"])
+        assert _side_table(job_id)["region"].to_list() == [_region(q) for q in range(9)]
+
+    def test_the_objective_column(self, client, project, monkeypatch, execution_mode):
+        plain, job_id, with_analysis, recorded = self._solve_both(
+            client,
+            project,
+            monkeypatch,
+            execution_mode,
+            analysis_columns=["exposure"],
+            solver_columns=(*_KEY_COLUMNS, "exposure"),
+            objective="exposure",
+        )
+
+        self._assert_same_solve(plain, with_analysis, recorded)
+        self._assert_exposure_side_table(job_id, ["exposure"])
+
+
+# ---------------------------------------------------------------------------
 # The extraction itself
 # ---------------------------------------------------------------------------
+
+
+def _carried(column: str) -> str:
+    """A data-input analysis column as the solver input carries it."""
+    return _optimiser_input.carried_analysis_column(column)
 
 
 class TestWriteQuoteAnalysis:
@@ -718,8 +843,8 @@ class TestWriteQuoteAnalysis:
         pl.DataFrame(
             {
                 "quote_id": pl.Series(["a", "a", "b", "b", "c", "c"], dtype=pl.Categorical),
-                "band": [1, 1, 2, 2, 2, 2],
-                "segment": ["x", "x", None, None, "yy", "yy"],
+                _carried("band"): [1, 1, 2, 2, 2, 2],
+                _carried("segment"): ["x", "x", None, None, "yy", "yy"],
             }
         ).write_parquet(source)
 
@@ -761,7 +886,9 @@ class TestWriteQuoteAnalysis:
         root = tmp_path / "analysis"
         monkeypatch.setattr(_optimiser_artifacts, "_quote_analysis_artifact_root", lambda: root)
         source = tmp_path / "input.parquet"
-        pl.DataFrame({"quote_id": ["a", "a", "b"], "band": [1, 2, None]}).write_parquet(source)
+        pl.DataFrame({"quote_id": ["a", "a", "b"], _carried("band"): [1, 2, None]}).write_parquet(
+            source
+        )
 
         with pytest.raises(AnalysisColumnNotConstantError, match="'band' \\(1 quote\\)"):
             write_quote_analysis(
@@ -778,7 +905,7 @@ class TestWriteQuoteAnalysis:
             _optimiser_artifacts, "_quote_analysis_artifact_root", lambda: tmp_path / "analysis"
         )
         source = tmp_path / "input.parquet"
-        pl.DataFrame({"quote_id": ["a", "a"], "band": [1, None]}).write_parquet(source)
+        pl.DataFrame({"quote_id": ["a", "a"], _carried("band"): [1, None]}).write_parquet(source)
 
         with pytest.raises(AnalysisColumnNotConstantError, match="quote 'a'"):
             write_quote_analysis(

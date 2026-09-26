@@ -49,7 +49,7 @@ from haute._polars_utils import bounded_sink, streaming_collect
 from haute._ram_estimate import decoded_frame_row_width_bytes, estimate_choice_query_peak_bytes
 from haute.routes import _optimiser_artifacts
 from haute.routes._job_store import ArtifactHandleUnavailableError, JobStore
-from haute.routes._optimiser_input import OptimiserSetupError
+from haute.routes._optimiser_input import OptimiserSetupError, carried_analysis_column
 from haute.routes._shared_flights import SharedFlights
 
 if TYPE_CHECKING:
@@ -184,10 +184,15 @@ def write_quote_analysis(
     import polars as pl
 
     analysis_columns = list(columns)
-    # Grouped on the key as stored; the table's key is cast to String after.
-    source = (
-        pl.scan_parquet(solver_input_path) if analysis_frame is None else analysis_frame
-    ).select(quote_id, *analysis_columns)
+    # Grouped on the key as stored; the table's key is cast to String after. The
+    # solver input carries each analysis column as its own uncast copy.
+    if analysis_frame is None:
+        source = pl.scan_parquet(solver_input_path).select(
+            quote_id,
+            *(pl.col(carried_analysis_column(column)).alias(column) for column in analysis_columns),
+        )
+    else:
+        source = analysis_frame.select(quote_id, *analysis_columns)
     per_quote = source.group_by(quote_id).agg(
         [pl.col(column).first() for column in analysis_columns]
         + [

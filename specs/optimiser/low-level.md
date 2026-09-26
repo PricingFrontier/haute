@@ -1554,8 +1554,14 @@ the data input) and `"side_input"` otherwise.
 - *Data-input path (carry-through).* `_optimiser_solve_required_columns_by_node` adds the
   analysis columns to the data input's seed, and `validate_and_project(analysis_columns=...)`
   requires them (a missing one is a `400` naming it) and keeps exactly them, uncast, after the
-  solver columns. The worker's solver-input parquet therefore carries them; `build_quote_grid`
-  and `_admit_resident_grid` read only solver columns.
+  solver columns, each under `carried_analysis_column(column)` (`__haute_analysis:<column>`,
+  in the reserved prefix no analysis column may use). An analysis column the solver also reads
+  (a constraint or the objective, e.g. a per-quote `exposure`) is therefore projected for both:
+  the solver's copy cast to Float32 as always, the analysis copy in the source dtype, so the
+  solver input is the same as without analysis columns and the side table keeps full
+  precision. The worker's solver-input parquet therefore carries them; `build_quote_grid` and
+  `_admit_resident_grid` read only solver columns, and extraction reads the carried copies back
+  under their own names.
 - *Side-input path.* The execution target becomes the Optimiser itself in online mode too
   (`_setup_execution_target_node_id`), `_optimiser_side_input_ids` preserves the analysis source
   in both modes, `_optimiser_solve_required_columns_by_node` seeds it with `quote_id` + the
@@ -1577,7 +1583,7 @@ memory the extraction has freed). Every step is a lazy plan; the only collection
 reductions.
 
 1. *One streamed reduction.* Over the source (the written solver input's `quote_id` +
-   analysis columns, or the side-input frame's projection), a single `group_by(quote_id)` — grouped on the key as
+   carried analysis columns, renamed back, or the side-input frame's projection), a single `group_by(quote_id)` — grouped on the key as
    stored — gives each column's `first()` value and a varies flag, and is sunk to a per-quote
    file (`per_quote.parquet`) in the table's own directory, never collected. The flag is
    `n_unique > 1` computed without a per-group set: the group's smallest and largest 64-bit
@@ -1985,8 +1991,12 @@ in both modes.
 **A frontier point.** A point's summary carries `adjustments: null`, so selecting a point
 removes the as-solved report from the displayed result; the point's own report is loaded on
 request. `POST /frontier/select` with `include_adjustments: true` selects the point as before
-and then answers `adjustments` with the point's report: from the job's report cache when it
-holds `(frontier_generation, point_index)`, otherwise through
+and then answers `adjustments` with the point's report for the selected summary's
+`frontier_generation`, so one response never pairs one frontier's totals with another's
+distribution: the job must still be at that generation when the report is read (a recompute
+between selection and the report, cached or not, is the frontier-changed 409). The report
+comes from the job's report cache when it holds `(frontier_generation, point_index)`, otherwise
+through
 `ChoiceQueryService.choice_query(job_id, ChoiceTarget(point_index), ScenarioHistogram())`
 (point materialisation, admission, single-flight, latest-wins and the named 409 and 410, all as
 OPT-V09B specifies, in both modes). The route runs off the event loop and a client that
@@ -1998,8 +2008,8 @@ without the flag it is `null`.
 point_index)` to a report, in insertion order, for the job's 24-hour lifetime: heavy-state
 slimming and the slimming after a user action never touch it, so a cached report is served
 after the quote grid and the point's apply artifact are gone. A computed report is stored under
-the parent's lock only when the job's `frontier_generation` still equals the one captured
-before the query (a recompute in between is the frontier-changed 409, and nothing is stored).
+the parent's lock only when the job's `frontier_generation` still equals the selected
+summary's (a recompute in between is the frontier-changed 409, and nothing is stored).
 It holds at most `MAX_CACHED_ADJUSTMENT_REPORTS = 64` reports; storing a 65th drops the oldest.
 A frontier recompute clears it in the same update that advances the generation.
 
@@ -2125,7 +2135,8 @@ target falls in exactly one level:
   the estimate admitted. Then the first `MAX_CATEGORICAL_LEVELS = 15` are listed (`kind:
   "value"`; a factor level labelled as the Rates tab labels it, `_ratebook_factor_level_key`)
   and the rest are summed into one `"Other"` level (`kind: "other"`, `merged_levels` the number
-  it merges), listed after them. The re-aggregation is in the lazy plan: only at most 17 rows
+  it merges, at least 1: exactly 16 levels list 15 and an Other of one; 15 or fewer have no
+  Other), listed after them. The re-aggregation is in the lazy plan: only at most 17 rows
   are collected.
 - Level figures are additive Float64 sums of the Float32 choice columns: `quotes`, the sum of
   the scenario value, the counts above and below 1.0, the count at the grid's first or last step

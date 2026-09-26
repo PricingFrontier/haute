@@ -93,6 +93,35 @@ export function makeAdjustmentReport(
   }
 }
 
+/** A one-step grid's report (the grid is just 1.0): every quote sits on the only
+ *  step, which is both the range minimum and its maximum. */
+export function makeOneStepAdjustmentReport(
+  overrides: Partial<OptimiserAdjustmentReport> = {},
+): OptimiserAdjustmentReport {
+  return {
+    n_quotes: 400,
+    has_unadjusted: true,
+    bars: [{ optimal_step: 0, scenario_value: 1.0, quotes: 400, weights: { optimal_objective: 5000 } }],
+    weightings: [
+      {
+        key: "quotes",
+        label: "Quotes",
+        total: 400,
+        mean: 1.0,
+        quantiles: { p5: 1.0, p25: 1.0, p50: 1.0, p75: 1.0, p95: 1.0 },
+        share_up: 0,
+        share_down: 0,
+        share_unadjusted: 1,
+        share_at_min: 1,
+        share_at_max: 1,
+      },
+    ],
+    diagnostics_errors: [],
+    deployed_factor_differs: null,
+    ...overrides,
+  }
+}
+
 /** The ratebook solve's adjustment report over its nine-step grid (0.8 to 1.2),
  *  as `adjustment_report` builds it from price-contour's canonical evaluation:
  *  200 quotes, 18 of them flagged "deployed factor differs from evaluated step". */

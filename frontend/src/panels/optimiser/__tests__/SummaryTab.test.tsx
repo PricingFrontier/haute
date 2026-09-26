@@ -2,7 +2,12 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest"
 import SummaryTab from "../SummaryTab"
 import { makeSolveResult } from "../../../test-utils/factories"
-import { makeAdjustmentReport, makeOnlineSolveResult, makeRatebookSolveResult } from "./fixtures"
+import {
+  makeAdjustmentReport,
+  makeOneStepAdjustmentReport,
+  makeOnlineSolveResult,
+  makeRatebookSolveResult,
+} from "./fixtures"
 
 afterEach(cleanup)
 
@@ -173,6 +178,44 @@ describe("optimiser SummaryTab adjustments summary", () => {
     expect(onOpenAdjustments).toHaveBeenCalledTimes(1)
     // The old unlabelled histogram is gone.
     expect(screen.queryByText("Scenario Value Distribution")).not.toBeInTheDocument()
+  })
+
+  it("counts a one-step grid's only step once at the range edge", () => {
+    render(
+      <SummaryTab
+        selectedPointIndex={null}
+        result={makeOnlineSolveResult({
+          scenario_grid: [{ optimal_step: 0, scenario_value: 1.0 }],
+          adjustments: makeOneStepAdjustmentReport(),
+        })}
+        onOpenAdjustments={() => {}}
+      />,
+    )
+
+    const summary = screen.getByRole("group", { name: "Adjustments" })
+    // The minimum and the maximum are the same step: its share, not their sum.
+    expect(within(summary).getByText("At the range edge").nextSibling).toHaveTextContent("100.0%")
+    expect(within(summary).getByText("Unadjusted").nextSibling).toHaveTextContent("100.0%")
+  })
+
+  it("fails loudly when a one-step report's minimum and maximum shares disagree", () => {
+    const report = makeOneStepAdjustmentReport()
+    const broken = makeOneStepAdjustmentReport({
+      weightings: [{ ...report.weightings[0], share_at_max: 0.5 }],
+    })
+    // React reports the render error to the console before rethrowing it.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+    try {
+      expect(() => render(
+        <SummaryTab
+          selectedPointIndex={null}
+          result={makeOnlineSolveResult({ scenario_grid: [{ optimal_step: 0, scenario_value: 1.0 }], adjustments: broken })}
+          onOpenAdjustments={() => {}}
+        />,
+      )).toThrow(/one-step grid's share at the minimum \(1\) and at the maximum \(0\.5\)/)
+    } finally {
+      consoleError.mockRestore()
+    }
   })
 
   it("counts a ratebook result's quotes whose deployed factor differs from the evaluated step", () => {

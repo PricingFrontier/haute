@@ -290,14 +290,22 @@ for it (`frontier.point_summaries[i]`, derived by the optimiser's
 `frontier_point_summary`) to `originalResult` — no network call, and nothing
 is derived from the frontier row; a `null` summary field clears that field.
 A completed solve with frontier points selects point 0.
-`updateFrontierAfterSelect` is the network-driven counterpart used after an
-explicit backend `/optimiser/frontier/select` (ratebook materialisation); it
-validates the echoed `point_index` matches the request, stores the response
+`updateFrontierAfterSelect(nodeId, jobId, pointIndex, response)` is the
+network-driven counterpart used after an explicit backend
+`/optimiser/frontier/select` (ratebook materialisation); it validates the
+echoed `point_index` matches the request, drops the response unless its job
+and `frontier_generation` are the node's installed ones (`jobId`,
+`originalResult.frontier_generation`: a recompute keeps the job and reuses
+point indices for other points, so a late reply from an earlier generation,
+or one from a generation not yet installed, describes another point), stores the response
 as that point's summary (so later re-selecting that point doesn't need
 another round trip), and — critically — if the user has since selected a
 *different* point while the request was in flight, it keeps the stored
 summary but does not regress the displayed `result`/`selectedPointIndex` to
 the stale response's point (the "stale-response guard").
+`recordFrontierPointSummary(nodeId, jobId, pointIndex, response)` (Export's
+factor-table load) applies the same job and generation fence, stores the
+point's summary and never changes the selection.
 
 **Optimiser apply cache** (`optimiserApplyCache`, `recordOptimiserApply`,
 `touchOptimiserApply`, `optimiserApplyIdentityFor`, `optimiserApplyKey`): the

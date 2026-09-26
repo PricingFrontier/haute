@@ -437,3 +437,64 @@ class TestFrontierPoint:
 
         assert response.status_code == 409
         assert not _store.require_job(job_id).get(ADJUSTMENT_REPORTS_KEY)
+
+    def test_a_recompute_between_selection_and_the_report_is_a_conflict(
+        self, client, tmp_path, monkeypatch
+    ):
+        # The selected summary is generation N's; a report read at N + 1 would pair
+        # one frontier's totals with another's distribution in one 200.
+        from haute.routes import optimiser as optimiser_routes
+        from haute.routes._optimiser_frontier import _FRONTIER_CHANGED_DETAIL
+
+        job_id, _frontier = _with_frontier(client, tmp_path)
+        real_select = optimiser_routes._frontier_service.select_point
+
+        def select_then_recompute(*args: Any, **kwargs: Any) -> Any:
+            result = real_select(*args, **kwargs)
+            _store.atomic_update(
+                job_id,
+                {"frontier_generation": result["frontier_generation"] + 1},
+                expected_status="completed",
+            )
+            return result
+
+        monkeypatch.setattr(
+            optimiser_routes._frontier_service, "select_point", select_then_recompute
+        )
+        response = _select(client, job_id, 1, include_adjustments=True)
+
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == _FRONTIER_CHANGED_DETAIL
+        assert not _store.require_job(job_id).get(ADJUSTMENT_REPORTS_KEY)
+
+    def test_a_cached_report_of_the_next_generation_is_not_paired_with_this_selection(
+        self, client, tmp_path, monkeypatch
+    ):
+        # A recompute lands after selection and another request caches the new
+        # frontier's report for the same point: the cache hit is for a different
+        # generation than the selected summary, so it is the same conflict.
+        from haute.routes import optimiser as optimiser_routes
+        from haute.routes._optimiser_frontier import _FRONTIER_CHANGED_DETAIL
+
+        job_id, _frontier = _with_frontier(client, tmp_path)
+        report = _select(client, job_id, 1, include_adjustments=True).json()["adjustments"]
+        _store.atomic_update(job_id, {ADJUSTMENT_REPORTS_KEY: {}}, expected_status="completed")
+        real_select = optimiser_routes._frontier_service.select_point
+
+        def select_then_recompute_and_cache(*args: Any, **kwargs: Any) -> Any:
+            result = real_select(*args, **kwargs)
+            later = result["frontier_generation"] + 1
+            _store.atomic_update(
+                job_id,
+                {"frontier_generation": later, ADJUSTMENT_REPORTS_KEY: {(later, 1): report}},
+                expected_status="completed",
+            )
+            return result
+
+        monkeypatch.setattr(
+            optimiser_routes._frontier_service, "select_point", select_then_recompute_and_cache
+        )
+        response = _select(client, job_id, 1, include_adjustments=True)
+
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == _FRONTIER_CHANGED_DETAIL
