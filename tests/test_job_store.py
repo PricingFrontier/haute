@@ -4136,3 +4136,20 @@ class TestArtifactLease:
                 store.delete_job(job_id)
                 raise ValueError("reader failed")
         assert not artifact_dir.exists()
+
+    def test_released_detached_handles_wait_for_a_reader(self, tmp_path: Path) -> None:
+        """A handle a caller removed through its own update is cleaned only after its lease."""
+        store = JobStore()
+        job_id, cleaned, artifact_dir = self._leased_job(
+            store, tmp_path, "test_lease_released_detached_artifact"
+        )
+        handles = dict(store.require_job(job_id)["artifact_handles"])
+
+        with store.lease(job_id, "table"):
+            store.atomic_update(job_id, {"artifact_handles": {}}, expected_status="completed")
+            store.release_detached_artifact_handles(job_id, [handles["table"], handles["other"]])
+            # The unleased handle goes at once; the leased one waits for its reader.
+            assert cleaned == [str(tmp_path / "other.parquet")]
+            assert artifact_dir.exists()
+        assert not artifact_dir.exists()
+        assert str(artifact_dir / "table.parquet") in cleaned

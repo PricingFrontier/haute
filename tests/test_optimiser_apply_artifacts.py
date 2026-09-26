@@ -14,8 +14,8 @@ from haute.routes._optimiser_artifacts import (
     _APPLY_RESULT_HANDLE_KIND,
     _ARTIFACT_HANDLE_VERSION,
     _cleanup_apply_result_artifact,
-    _load_apply_result_artifact,
     _persist_apply_result_artifact,
+    _scan_apply_result_artifact,
 )
 
 
@@ -35,8 +35,8 @@ def test_persisted_apply_artifact_round_trips_through_validated_handle() -> None
     assert handle is not None
 
     try:
-        loaded = _load_apply_result_artifact(handle)
-        assert loaded.to_dicts() == df.to_dicts()
+        loaded = _scan_apply_result_artifact(handle)
+        assert loaded.collect().to_dicts() == df.to_dicts()
         assert Path(handle["path"]).name == "result.parquet"
         assert Path(handle["path"]).parent == Path(handle["directory"])
     finally:
@@ -50,7 +50,7 @@ def test_apply_artifact_load_rejects_paths_outside_owned_root(tmp_path: Path) ->
     pl.DataFrame({"quote_id": ["q1"]}).write_parquet(outside_path)
 
     with pytest.raises(HTTPException) as exc_info:
-        _load_apply_result_artifact(
+        _scan_apply_result_artifact(
             _handle(path=str(outside_path), directory=str(outside_dir), row_count=1)
         )
 
@@ -84,7 +84,7 @@ def test_apply_artifact_cleanup_rejects_path_directory_mismatch(tmp_path: Path) 
 
 def test_apply_artifact_load_rejects_relative_paths() -> None:
     with pytest.raises(HTTPException) as exc_info:
-        _load_apply_result_artifact(
+        _scan_apply_result_artifact(
             _handle(path="relative/result.parquet", directory="relative", row_count=1)
         )
 
@@ -102,11 +102,11 @@ def test_apply_artifact_read_failure_logs_underlying_cause_before_wrapping() -> 
 
     try:
         with (
-            patch("polars.read_parquet", side_effect=OSError("corrupt parquet")),
+            patch("polars.scan_parquet", side_effect=OSError("corrupt parquet")),
             patch("haute.routes._optimiser_artifacts.logger.error") as log_error,
             pytest.raises(HTTPException) as exc_info,
         ):
-            _load_apply_result_artifact(handle)
+            _scan_apply_result_artifact(handle)
         assert exc_info.value.status_code == 500
         assert "corrupt" in str(exc_info.value.detail).lower()
         log_error.assert_called_once()

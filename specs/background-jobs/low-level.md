@@ -300,6 +300,10 @@ eviction, `delete_job`, `detach_artifact_handle` or `clear_all` — still detach
 at once, but its cleaner is deferred; the release of the last lease runs it, outside the lock.
 A new lease can never be taken on a handle already detached, because taking one requires the
 handle to be attached. Cleanup of an unleased handle runs as before.
+`release_detached_artifact_handles(job_id, handles)` is the same deferred cleanup for handles a
+caller has already removed from `artifact_handles` through its own `atomic_update` (the optimiser's
+eviction of the oldest frontier-point artifact and its invalidation on recompute): an unleased
+handle is cleaned at once, a leased one when its last lease is released.
 
 `has_job_with_status` validates its status and runs TTL eviction before querying.
 `has_job_matching` supplies immutable snapshots to its predicate while the namespace

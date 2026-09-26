@@ -17686,7 +17686,8 @@ class TestPublishWithoutHeavyState:
         )
         frame = pl.DataFrame({"quote_id": ["q1"], "optimal_scenario_value": [1.0]})
         with patch(
-            "haute.routes.optimiser._load_apply_result_artifact", return_value=frame
+            "haute.routes._optimiser_artifacts._scan_apply_result_artifact",
+            return_value=frame.lazy(),
         ) as load:
             resp = client.post("/api/optimiser/apply", json={"job_id": "anchor_apply"})
 

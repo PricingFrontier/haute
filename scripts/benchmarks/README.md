@@ -20,5 +20,9 @@ test suite or a product-behaviour contract.
   frontier sweep (24 September 2026). The parallel sweep was faster but raised
   peak memory and changed results, so the frontier stays serial; the decision is
   recorded in `specs/optimiser/low-level.md`.
+- `opt-v09b-choice-query-memory.*`: peak memory of the optimiser's bounded
+  choice queries (histogram, group-by, row index, top-k) at 1M and 5M quotes,
+  with and without an analysis side table (26 September 2026). The numbers and
+  the thresholds they set are in `specs/optimiser/low-level.md`.
 - `price_contour_ratebook_frontier/`: a standalone reproduction of a slow
   ratebook efficient frontier, with its metadata.

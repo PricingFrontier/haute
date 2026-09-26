@@ -14,13 +14,26 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Literal, Protocol, cast
 
 from fastapi import HTTPException
 
+from haute._execution_admission import (
+    ExecutionAdmissionError,
+    WorkEstimate,
+    create_admitted_execution_context,
+)
+from haute._execution_context import (
+    ExecutionCancellationToken,
+    ExecutionContext,
+    ExecutionMemoryLimitExceededError,
+    ExecutionProfile,
+)
 from haute._logging import get_logger
 from haute._price_contour import price_contour
+from haute._ram_estimate import decoded_frame_row_width_bytes, estimate_point_apply_peak_bytes
 from haute._ratebook_collar import COMBINED_FACTOR_BOUNDS_KEY
 from haute._types import SolveResultLike
 from haute.routes._background_jobs import (
@@ -39,10 +52,12 @@ from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
 from haute.routes._job_lifecycle import JobLifecycle, TerminalReason
 from haute.routes._job_store import JobSnapshot, JobStore, RunningJobFields
 from haute.routes._optimiser_artifacts import (
+    _APPLY_RESULT_HANDLE_KEY,
     _RATEBOOK_FACTORS_HANDLE_KEY,
+    APPLY_RESULT_UNAVAILABLE_DETAIL,
     _cleanup_apply_result_artifact,
-    _load_apply_result_artifact,
     _persist_apply_result_artifact,
+    frontier_point_unavailable_detail,
 )
 from haute.routes._optimiser_input import (
     _estimate_quote_id_column_or_raise,  # noqa: F401 - estimate pre-flight, re-exported
@@ -52,6 +67,7 @@ from haute.routes._optimiser_limits import (
     enforce_frontier_compute_budget,
     limited_frontier_payload,
 )
+from haute.routes._optimiser_outcomes import lease_apply_frame
 from haute.routes._optimiser_service import (
     _FRONTIER_RECOMPUTE_JOB_TYPE,
     _JOB_TYPE_KEY,
@@ -70,6 +86,11 @@ from haute.routes._optimiser_solver import (
     frontier_point_factor_tables,
     solver_worker_context,
 )
+from haute.routes._shared_flights import (
+    FlightReplacedError,
+    FlightSubscription,
+    LatestWinsQueue,
+)
 from haute.schemas import (
     OptimiserFrontierRequest,
     OptimiserFrontierResponse,
@@ -80,6 +101,18 @@ logger = get_logger(component="server.optimiser")
 
 _FRONTIER_APPLY_HANDLE_PREFIX = "frontier_apply_result:"
 _MAX_FRONTIER_APPLY_ARTIFACTS = 8
+_POINT_APPLY_OPERATION = "optimiser_point_apply"
+_FRONTIER_CHANGED_DETAIL = (
+    "The frontier changed while materialising the selected point. "
+    "Select a point from the current frontier and try again."
+)
+FRONTIER_POINT_APPLY_REPLACED_DETAIL = {
+    "error_code": "frontier_point_apply_replaced",
+    "message": (
+        "Another frontier point was requested while this one waited for the point being "
+        "applied, so this request was dropped. Select the point again to inspect it."
+    ),
+}
 _CONSTRAINT_THRESHOLD_KEYS = tuple(CONSTRAINT_THRESHOLD_KINDS)
 
 
@@ -562,6 +595,28 @@ def _invalidate_frontier_apply_artifact_handles(
     return retained_handles, invalidated_handles
 
 
+@dataclass(frozen=True, slots=True)
+class PointApplyTicket:
+    """One request for a frontier point's apply artifact: retained, or queued to materialise."""
+
+    point_index: int
+    generation: int
+    handle_key: str
+    from_artifact: bool
+    subscription: FlightSubscription[None] | None
+
+    def wait(self, cancellation_token: ExecutionCancellationToken | None = None) -> None:
+        """Wait for the point's artifact; a cancelled token detaches only this request."""
+        if self.subscription is None:
+            return
+        try:
+            self.subscription.wait(cancellation_token, operation=_POINT_APPLY_OPERATION)
+        except FlightReplacedError:
+            raise HTTPException(
+                status_code=409, detail=FRONTIER_POINT_APPLY_REPLACED_DETAIL
+            ) from None
+
+
 class OptimiserFrontierService:
     """Frontier sweeps, point selection and point artifacts for one job store."""
 
@@ -571,6 +626,8 @@ class OptimiserFrontierService:
         self.sweeps = CancellableJobRegistry()
         self._locks_guard = threading.Lock()
         self._parent_locks: dict[str, threading.RLock] = {}
+        # One point apply per job at a time; the latest other request waits.
+        self._point_applies: LatestWinsQueue[str, tuple[int, int], None] = LatestWinsQueue()
 
     def parent_lock(self, parent_job_id: str) -> threading.RLock:
         """The lock every frontier state change for *parent_job_id* holds."""
@@ -997,171 +1054,181 @@ class OptimiserFrontierService:
             return updated_job, selected_result, _summary_solve_result(selected_result)
         return job, selected_result, _summary_solve_result(selected_result)
 
-    def materialise_point_apply(
-        self,
-        job_id: str,
-        point_index: int,
-    ) -> tuple[Any, dict[str, Any], bool]:
-        """Return ``(dataframe, result_summary, from_cached_artifact)`` for a frontier point.
+    def request_point_apply(self, job_id: str, point_index: int) -> PointApplyTicket:
+        """The per-quote apply result of one frontier point, retained or queued for materialising.
 
-        Online-mode only: ratebook jobs are rejected by the route-level gate
-        (and the guard below) because the real ``RatebookResult`` has no
-        per-quote dataframe to materialise — see
-        ``_RATEBOOK_APPLY_DETAIL_UNSUPPORTED``.
+        Online-mode only: ratebook jobs are rejected (see
+        ``_RATEBOOK_APPLY_DETAIL_UNSUPPORTED``). A retained artifact answers at
+        once. Otherwise the point needs the solve's live quote grid (a named 410
+        without it) and joins the job's latest-wins queue: at most one
+        ``apply_from_grid`` runs per job, since it cannot be interrupted.
         """
         with self.parent_lock(job_id):
             job = self._store.require_completed_job(job_id)
-            # Defense in depth behind the route gate: running ``apply_from_grid``
-            # for a ratebook job would silently discard the solved factor tables.
+            # Running ``apply_from_grid`` for a ratebook job would silently
+            # discard the solved factor tables.
             _reject_ratebook_apply_detail(job)
-            base_result = _base_result_for_frontier(job)
-            result_dict = _frontier_point_result_dict(
-                {**job, "base_result": base_result},
-                point_index,
-            )
-            frontier_generation = _frontier_generation_or_raise(job)
-            artifact_handles = _artifact_handles_or_raise(job)
+            result_dict = _frontier_point_result_for_job(job, point_index)
+            generation = _frontier_generation_or_raise(job)
             handle_key = _frontier_apply_handle_key(point_index)
-            existing_handle = artifact_handles.get(handle_key)
+            existing_handle = _artifact_handles_or_raise(job).get(handle_key)
             if existing_handle is not None:
                 if not isinstance(existing_handle, dict):
                     raise HTTPException(
                         status_code=500,
                         detail="Job frontier apply artifact handle is invalid",
                     )
-                updated_job = self._store.atomic_update(
-                    job_id,
-                    {
-                        "base_result": base_result,
-                        "selected_frontier_point": point_index,
-                        "result": result_dict,
-                    },
-                    expected_status="completed",
-                )
-                if updated_job is None:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            "Optimiser job state changed while loading the frontier point. "
-                            "Re-run the solve to materialise it again."
-                        ),
-                    )
-                return _load_apply_result_artifact(existing_handle), result_dict, True
+                return PointApplyTicket(point_index, generation, handle_key, True, None)
+        if not self._store.touch_heavy_objects(job_id, required_keys=("quote_grid",)):
+            raise HTTPException(
+                status_code=410,
+                detail=frontier_point_unavailable_detail(point_index, grid_expired=True),
+            )
+        lambdas = dict(result_dict["lambdas"])
+        subscription = self._point_applies.subscribe(
+            job_id,
+            (generation, point_index),
+            lambda _token: self._materialise_point(job_id, point_index, generation, lambdas),
+        )
+        return PointApplyTicket(point_index, generation, handle_key, False, subscription)
 
+    def select_applied_point(
+        self, job_id: str, point_index: int, generation: int
+    ) -> dict[str, Any]:
+        """Record *point_index* as the job's selected point; 409 if the frontier moved on."""
+        with self.parent_lock(job_id):
+            job = self._store.require_completed_job(job_id)
+            if _frontier_generation_or_raise(job) != generation:
+                raise HTTPException(status_code=409, detail=_FRONTIER_CHANGED_DETAIL)
+            base_result = _base_result_for_frontier(job)
+            result_dict = _frontier_point_result_dict(
+                {**job, "base_result": base_result}, point_index
+            )
+            updated_job = self._store.atomic_update(
+                job_id,
+                {
+                    "base_result": base_result,
+                    "selected_frontier_point": point_index,
+                    "result": result_dict,
+                },
+                expected_status="completed",
+            )
+            if updated_job is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Optimiser job state changed while loading the frontier point. "
+                        "Re-run the solve to materialise it again."
+                    ),
+                )
+            return result_dict
+
+    def _point_apply_estimate(self, job_id: str) -> int:
+        """A point's apply peak, from the as-solved apply frame it shares its shape with."""
+        import polars as pl
+
+        with lease_apply_frame(
+            self._store,
+            job_id,
+            _APPLY_RESULT_HANDLE_KEY,
+            unavailable_detail=APPLY_RESULT_UNAVAILABLE_DETAIL,
+        ) as as_solved:
+            row_count = int(as_solved.select(pl.len()).collect().item())
+            sample = as_solved.head(512).collect()
+        return estimate_point_apply_peak_bytes(
+            row_count=row_count, row_width_bytes=decoded_frame_row_width_bytes(sample)
+        )
+
+    def _materialise_point(
+        self,
+        job_id: str,
+        point_index: int,
+        generation: int,
+        lambdas: dict[str, Any],
+    ) -> None:
+        """Apply one point's λ to the live grid and publish its artifact (a queue run)."""
+        handle_key = _frontier_apply_handle_key(point_index)
+        with self.parent_lock(job_id):
+            job = self._store.require_completed_job(job_id)
+            if _frontier_generation_or_raise(job) != generation:
+                raise HTTPException(status_code=409, detail=_FRONTIER_CHANGED_DETAIL)
+            if _artifact_handles_or_raise(job).get(handle_key) is not None:
+                return
+            quote_grid = job.get("quote_grid")
+            if quote_grid is None:
+                raise HTTPException(
+                    status_code=410,
+                    detail=frontier_point_unavailable_detail(point_index, grid_expired=True),
+                )
+            constraints = job.get("config", {}).get("constraints", {})
+
+        context: ExecutionContext | None = None
         new_handle: dict[str, Any] | None = None
         owns_new_handle = False
         try:
-            if not self._store.touch_heavy_objects(job_id, required_keys=("quote_grid",)):
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Quote grid is not available for this job. Re-run the solve to "
-                        "materialise this frontier point."
-                    ),
-                )
-            with self.parent_lock(job_id):
-                job = self._store.require_completed_job(job_id)
-                if _frontier_generation_or_raise(job) != frontier_generation:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            "The frontier changed while materialising the selected point. "
-                            "Select a point from the current frontier and try again."
-                        ),
-                    )
-                quote_grid = job.get("quote_grid")
-                if quote_grid is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "Quote grid is not available for this job. Re-run the solve to "
-                            "materialise this frontier point."
-                        ),
-                    )
-
-            apply_result = price_contour().apply_from_grid(
-                quote_grid,
-                lambdas=result_dict["lambdas"],
-                constraints=job.get("config", {}).get("constraints", {}),
+            # Admitted on its own estimate before the uninterruptible apply starts.
+            context = create_admitted_execution_context(
+                operation=_POINT_APPLY_OPERATION,
+                profile=ExecutionProfile.EXPLORE_ANALYSIS,
+                job_id=job_id,
+                estimate=WorkEstimate(
+                    estimated_bytes=self._point_apply_estimate(job_id),
+                    subject=f"The frontier point apply (point {point_index})",
+                    remedy="Raise HAUTE_EXPLORE_MEMORY_LIMIT_MB to inspect this point.",
+                ),
             )
-            df = _dataframe_or_raise(apply_result, context="Apply result")
+            apply_result = price_contour().apply_from_grid(
+                quote_grid, lambdas=lambdas, constraints=constraints
+            )
+            _dataframe_or_raise(apply_result, context="Apply result")
             new_handle = _persist_apply_result_artifact(apply_result)
-
             owns_new_handle = True
-            duplicate_handle = False
-            evicted_handles: list[dict[str, Any]] = []
-            with self.parent_lock(job_id):
-                latest_job = self._store.require_completed_job(job_id)
-                if _frontier_generation_or_raise(latest_job) != frontier_generation:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            "The frontier changed while materialising the selected point. "
-                            "Select a point from the current frontier and try again."
-                        ),
-                    )
-                latest_handles = _artifact_handles_or_raise(latest_job)
-                existing_latest_handle = latest_handles.get(handle_key)
-                if existing_latest_handle is not None:
-                    if not isinstance(existing_latest_handle, dict):
-                        raise HTTPException(
-                            status_code=500,
-                            detail="Job frontier apply artifact handle is invalid",
-                        )
-                    duplicate_handle = True
-                    updated_job = self._store.atomic_update(
-                        job_id,
-                        {
-                            "base_result": base_result,
-                            "selected_frontier_point": point_index,
-                            "result": result_dict,
-                        },
-                        expected_status="completed",
-                    )
-                else:
-                    updated_handles, evicted_handles = _with_bounded_frontier_apply_handle(
-                        latest_handles,
-                        handle_key,
-                        new_handle,
-                    )
-                    updated_job = self._store.atomic_update_if_heavy_present(
-                        job_id,
-                        {
-                            "artifact_handles": updated_handles,
-                            "base_result": base_result,
-                            "selected_frontier_point": point_index,
-                            "result": result_dict,
-                        },
-                        required_keys=("quote_grid",),
-                        expected_status="completed",
-                    )
-                    if updated_job is not None:
-                        owns_new_handle = False
-                if updated_job is None:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            "Optimiser runtime state changed while materialising the frontier "
-                            "point. Re-run the solve to materialise it again."
-                        ),
-                    )
-
-            if duplicate_handle:
-                _cleanup_orphan_apply_artifact(new_handle, job_id=job_id)
-                owns_new_handle = False
-            for evicted_handle in evicted_handles:
-                _cleanup_orphan_apply_artifact(
-                    evicted_handle,
-                    job_id=job_id,
-                    event="frontier_apply_artifact_cap_cleanup_failed",
-                )
-            return df, result_dict, False
-        except Exception:
-            # A request-created apply artifact is removed on any failure; the
-            # failure itself propagates to the application handlers.
+            del apply_result
+            owns_new_handle = self._publish_point_handle(job_id, handle_key, generation, new_handle)
+        except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
+            raise HTTPException(status_code=507, detail=exc.to_payload()) from None
+        finally:
+            if context is not None:
+                context.release_admission()
+            # A request-created artifact the job did not adopt is removed on any
+            # outcome; a failure itself propagates to every waiting caller.
             if owns_new_handle and new_handle is not None:
                 _cleanup_orphan_apply_artifact(new_handle, job_id=job_id)
-            raise
+
+    def _publish_point_handle(
+        self,
+        job_id: str,
+        handle_key: str,
+        generation: int,
+        new_handle: dict[str, Any],
+    ) -> bool:
+        """Adopt *new_handle* into the job; returns whether the caller still owns it."""
+        with self.parent_lock(job_id):
+            latest_job = self._store.require_completed_job(job_id)
+            if _frontier_generation_or_raise(latest_job) != generation:
+                raise HTTPException(status_code=409, detail=_FRONTIER_CHANGED_DETAIL)
+            latest_handles = _artifact_handles_or_raise(latest_job)
+            if latest_handles.get(handle_key) is not None:
+                return True
+            updated_handles, evicted_handles = _with_bounded_frontier_apply_handle(
+                latest_handles, handle_key, new_handle
+            )
+            updated_job = self._store.atomic_update_if_heavy_present(
+                job_id,
+                {"artifact_handles": updated_handles},
+                required_keys=("quote_grid",),
+                expected_status="completed",
+            )
+            if updated_job is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Optimiser runtime state changed while materialising the frontier "
+                        "point. Re-run the solve to materialise it again."
+                    ),
+                )
+        self._store.release_detached_artifact_handles(job_id, evicted_handles)
+        return False
 
     def _raise_if_sweep_stopped(self, frontier_job_id: str) -> None:
         reason = self.sweeps.cancellation_reason(frontier_job_id)
@@ -1279,12 +1346,7 @@ class OptimiserFrontierService:
                             "Re-run the solve to compute a new frontier."
                         ),
                     )
-                for handle in invalidated_handles:
-                    _cleanup_orphan_apply_artifact(
-                        handle,
-                        job_id=parent_job_id,
-                        event="frontier_recompute_stale_apply_artifact_cleanup_failed",
-                    )
+                self._store.release_detached_artifact_handles(parent_job_id, invalidated_handles)
                 completed_job = self._lifecycle.transition(
                     frontier_job_id,
                     to="completed",

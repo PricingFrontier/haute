@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from haute._env import float_env
 from haute._execution_admission import (
@@ -20,6 +20,7 @@ from haute._execution_admission import (
     isolated_execution_budget,
 )
 from haute._execution_context import (
+    ExecutionCancellationToken,
     ExecutionContext,
     ExecutionProfile,
 )
@@ -54,7 +55,8 @@ from haute.routes._job_store import get_job_store
 from haute.routes._mlflow_log_errors import mlflow_log_http_exception, require_mlflow_installed
 from haute.routes._optimiser_artifacts import (
     _APPLY_RESULT_HANDLE_KEY,
-    _load_apply_result_artifact,
+    APPLY_RESULT_UNAVAILABLE_DETAIL,
+    frontier_point_unavailable_detail,
 )
 from haute.routes._optimiser_frontier import (
     _CONSTRAINT_THRESHOLD_KEYS,
@@ -77,9 +79,11 @@ from haute.routes._optimiser_input import (
 from haute.routes._optimiser_limits import (
     limited_apply_preview_payload,
 )
+from haute.routes._optimiser_outcomes import ChoiceQueryService, lease_apply_frame
 from haute.routes._optimiser_service import OptimiserSolveService, _with_flattened_optimiser_graph
 from haute.routes._optimiser_solver import _job_elapsed_seconds
 from haute.routes._optimiser_worker import OptimiserEstimateOutcome, optimiser_estimate_worker
+from haute.routes._synchronous_analysis import run_until_disconnected
 from haute.routes.pipeline import (
     _interactive_affinity_key,
     _prepare_runtime_graph,
@@ -118,6 +122,7 @@ router = APIRouter(prefix="/api/optimiser", tags=["optimiser"])
 _store = get_job_store("optimiser")
 _solve_service = OptimiserSolveService(_store)
 _frontier_service = OptimiserFrontierService(_store)
+_choice_service = ChoiceQueryService(_store, _frontier_service)
 
 
 def _prepare_optimiser_execution_request(
@@ -406,13 +411,20 @@ async def cancel_solve(job_id: str) -> OptimiserStatusResponse:
 
 
 @router.post("/apply", response_model=OptimiserApplyResponse)
-def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
+async def apply_lambdas(body: OptimiserApplyRequest, request: Request) -> OptimiserApplyResponse:
     """Apply solved lambdas and return the per-quote detail preview.
 
     Online mode only: the real ``RatebookResult`` carries factor tables,
     not per-quote scenario selections, so ratebook jobs are rejected with
-    an explicit 422 contract error before any solver or artifact work.
+    an explicit 422 contract error before any solver or artifact work. A
+    client that leaves stops waiting for a point's apply without stopping it.
     """
+    return await run_until_disconnected(request, lambda token: _apply_preview(body, token))
+
+
+def _apply_preview(
+    body: OptimiserApplyRequest, token: ExecutionCancellationToken
+) -> OptimiserApplyResponse:
     logger.info("apply_requested", job_id=body.job_id)
     job: Mapping[str, Any] = _store.require_completed_job(body.job_id)
     _reject_ratebook_apply_detail(job)
@@ -420,16 +432,26 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
     # ``point_index`` names the target: a frontier point, or (``None``) the
     # job's own solve — never the server-side selected point.
     if body.point_index is not None:
-        df, result, from_artifact = _frontier_service.materialise_point_apply(
-            body.job_id,
-            body.point_index,
+        ticket = _frontier_service.request_point_apply(body.job_id, body.point_index)
+        ticket.wait(token)
+        result = _frontier_service.select_applied_point(
+            body.job_id, body.point_index, ticket.generation
         )
+        with lease_apply_frame(
+            _store,
+            body.job_id,
+            ticket.handle_key,
+            unavailable_detail=frontier_point_unavailable_detail(
+                body.point_index, grid_expired=False
+            ),
+        ) as frame:
+            preview = limited_apply_preview_payload(frame)
         response = OptimiserApplyResponse(
             status="ok",
             total_objective=result["total_objective"],
             constraints=result["constraints"],
-            from_artifact=from_artifact,
-            **limited_apply_preview_payload(df),
+            from_artifact=ticket.from_artifact,
+            **preview,
         )
         # Keep the solver and quote grid so the other points stay inspectable.
         _clear_result_data_after_user_action(body.job_id)
@@ -444,16 +466,22 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
         df = _dataframe_or_raise(solve_result, context="Job solve_result")
         total_objective = typed_solve_result.total_objective
         constraints = typed_solve_result.total_constraints
+        preview = limited_apply_preview_payload(df.lazy())
     else:
         from_artifact = True
         artifact_handles = _artifact_handles_or_raise(job)
-        apply_handle = artifact_handles.get(_APPLY_RESULT_HANDLE_KEY)
-        if not isinstance(apply_handle, dict):
+        if not isinstance(artifact_handles.get(_APPLY_RESULT_HANDLE_KEY), dict):
             raise HTTPException(
                 status_code=400,
                 detail="Job has no apply artifact handle. Re-run the solve to regenerate it.",
             )
-        df = _load_apply_result_artifact(apply_handle)
+        with lease_apply_frame(
+            _store,
+            body.job_id,
+            _APPLY_RESULT_HANDLE_KEY,
+            unavailable_detail=APPLY_RESULT_UNAVAILABLE_DETAIL,
+        ) as frame:
+            preview = limited_apply_preview_payload(frame)
         job_result = _base_result_for_frontier(job)
         raw_total_objective = job_result.get("total_objective")
         raw_constraints = job_result.get("constraints", {})
@@ -470,7 +498,7 @@ def apply_lambdas(body: OptimiserApplyRequest) -> OptimiserApplyResponse:
         total_objective=total_objective,
         constraints=constraints,
         from_artifact=from_artifact,
-        **limited_apply_preview_payload(df),
+        **preview,
     )
     _clear_result_data_after_user_action(body.job_id)
     return response

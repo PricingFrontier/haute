@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from haute.routes._frontier_point_summary import (
     ConstraintKind,
     frontier_point_rows,
     frontier_point_summary,
 )
+
+if TYPE_CHECKING:
+    import polars as pl
 
 APPLY_PREVIEW_ROW_LIMIT = 100
 FRONTIER_POINT_LIMIT = 2_000
@@ -69,12 +72,17 @@ def enforce_frontier_compute_budget(
             )
 
 
-def limited_apply_preview_payload(df: Any) -> dict[str, Any]:
-    """Return a capped optimiser-apply preview with explicit row metadata."""
+def limited_apply_preview_payload(frame: pl.LazyFrame) -> dict[str, Any]:
+    """Return a capped optimiser-apply preview with explicit row metadata.
 
-    row_count = len(df)
-    visible_df = df.head(APPLY_PREVIEW_ROW_LIMIT)
-    preview = visible_df.to_dicts()
+    *frame* is the lazy apply frame: only its count and first
+    ``APPLY_PREVIEW_ROW_LIMIT`` rows are collected, so a caller reading a
+    persisted artifact calls this inside its lease.
+    """
+    import polars as pl
+
+    row_count = int(frame.select(pl.len()).collect().item())
+    preview = frame.head(APPLY_PREVIEW_ROW_LIMIT).collect().to_dicts()
 
     return {
         "preview": preview,

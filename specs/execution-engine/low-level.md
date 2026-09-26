@@ -889,6 +889,12 @@ reserving are separate steps, so a refusal while only waitable holders remain re
 to waiting until the same deadline. Training, dispersion
 and GLM-schema admissions wait out `training_prep:training_evaluation_preview`, because
 the server finishes an estimate preview the browser has already superseded.
+Bounded work that can estimate its own peak passes a `WorkEstimate(estimated_bytes, subject,
+remedy)`: admission refuses it when the estimate exceeds the allowance (the budget, capped by
+any process-RSS cap, less the sampled RSS), with a reason naming the subject, the estimate, the
+allowance and the remedy, and reserves the estimate rather than the whole `memory_limit_bytes`
+in flight, so several small bounded operations fit side by side; the context's RSS limit is the
+budget's as before. The optimiser's choice queries and frontier point applies (OPT-V09B) use it.
 
 **Chunked map-reduce (`chunking.chunk_plan` → `iter_chunked_frames`).** `chunk_plan()`
 prepares the graph the same way as the other two paths, identifies the chunk-start

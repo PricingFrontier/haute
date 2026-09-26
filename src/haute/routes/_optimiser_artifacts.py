@@ -19,7 +19,7 @@ import shutil
 import tempfile
 from collections.abc import Iterator, Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import HTTPException
 
@@ -31,6 +31,9 @@ from haute._logging import get_logger
 from haute._polars_utils import bounded_sink, read_parquet_metadata
 from haute._types import SolveResultLike
 from haute.routes._job_store import register_artifact_cleaner
+
+if TYPE_CHECKING:
+    import polars as pl
 
 logger = get_logger(component="server.optimiser.solve")
 
@@ -428,8 +431,13 @@ def _log_artifact_load_failure(
     )
 
 
-def _load_apply_result_artifact(handle: dict[str, Any]) -> Any:
-    """Load a persisted optimiser apply dataframe from a validated handle."""
+def _scan_apply_result_artifact(handle: dict[str, Any]) -> pl.LazyFrame:
+    """Lazily scan a persisted optimiser apply frame from a validated handle.
+
+    Callers hold a ``JobStore.lease`` on the handle for as long as they collect
+    from the scan. The parquet footer is read here, so a corrupt file is the
+    stable 500 at once rather than a failure inside a later collection.
+    """
     import polars as pl
 
     try:
@@ -444,22 +452,23 @@ def _load_apply_result_artifact(handle: dict[str, Any]) -> Any:
         ) from exc
     if not artifact_path.is_file():
         logger.warning("optimiser_apply_artifact_missing", path=str(artifact_path))
-        raise HTTPException(
-            status_code=410,
-            detail=(
-                "Optimiser apply artifact is no longer available. "
-                "Re-run the solve to regenerate it."
-            ),
-        )
+        raise HTTPException(status_code=410, detail=APPLY_RESULT_UNAVAILABLE_DETAIL)
 
     try:
-        return pl.read_parquet(artifact_path)
+        scan = pl.scan_parquet(artifact_path)
+        scan.collect_schema()
     except Exception as exc:
         _log_artifact_load_failure("optimiser_apply_artifact_read_failed", handle, exc)
         raise HTTPException(
             status_code=500,
             detail="Optimiser apply artifact is corrupt. Re-run the solve to regenerate it.",
         ) from exc
+    return scan
+
+
+APPLY_RESULT_UNAVAILABLE_DETAIL = (
+    "Optimiser apply artifact is no longer available. Re-run the solve to regenerate it."
+)
 
 
 def _load_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
@@ -577,3 +586,24 @@ def _range_parts_directory() -> Iterator[Path]:
     """A private directory the auto-range reducer spills bucket parts into, removed on exit."""
     with tempfile.TemporaryDirectory(prefix="haute_frontier_range_parts_") as raw_dir:
         yield Path(raw_dir)
+
+
+def frontier_point_unavailable_detail(point_index: int, *, grid_expired: bool) -> dict[str, str]:
+    """The named 410 for a frontier point with no retained result to read.
+
+    *grid_expired*: the point has no retained artifact and the solve's quote
+    grid has gone, so it cannot be materialised again. Otherwise its artifact
+    was evicted between the request and the read.
+    """
+    if grid_expired:
+        message = (
+            f"Frontier point {point_index}'s per-quote result is no longer available: it is "
+            "not among the retained point results and the solve's quote grid has expired. "
+            "Re-run the solve to inspect this point."
+        )
+    else:
+        message = (
+            f"Frontier point {point_index}'s per-quote result was replaced by newer point "
+            "results while it was being read. Select the point again."
+        )
+    return {"error_code": "frontier_point_unavailable", "message": message}

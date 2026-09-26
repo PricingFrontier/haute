@@ -186,9 +186,21 @@ Invariants:
 - Every capped/paginated response (apply preview, frontier points) states its true total count
   and whether it was truncated; nothing is silently dropped without saying so.
 - A completed solve retains at most eight per-frontier-point apply artifacts. Materialising a
-  ninth point evicts and deletes the oldest point artifact; returning to that point recomputes it.
-  Concurrent point materialisations merge handles under the frontier-state lock, so one handle
-  cannot overwrite and orphan another.
+  ninth point evicts and deletes the oldest point artifact (after any reader still holding it
+  finishes); returning to that point recomputes it while the quote grid is alive, and is a named
+  410 once the grid has gone. At most one point materialisation runs per job, because the
+  library's point apply cannot be interrupted: a newer request for another point waits in a
+  single slot and replaces (409) an older waiter, so rapid stepping through points never queues
+  more than one pending apply. Callers asking for the same point share one materialisation, and
+  a caller that disconnects leaves only itself. Handles merge under the frontier-state lock, so
+  one handle cannot overwrite and orphan another.
+- Per-quote questions about the chosen scenarios (how many quotes chose each grid step, the
+  adjustments by analysis segment, the extreme quotes, a page of quotes) are answered by bounded
+  queries that run in the lazy plan and return a small result: no route returns the whole
+  per-quote frame. Each query is admitted against the analysis memory budget with its own
+  estimate and refused (507, naming the remedy) when it would not fit; identical concurrent
+  queries share one run. They cover online solves only until ratebook per-quote choices exist
+  (a ratebook query is a named 422).
 - Crash-surviving apply-result, ratebook-factor and quote-analysis directories carry distinct
   versioned Haute ownership markers. Startup cleanup can remove only stale marked direct
   children of those three dedicated roots; unmarked or foreign temporary data is never swept.
@@ -394,7 +406,10 @@ some other way.
 An optimiser artifact is never written with a non-finite value or (for ratebook) a missing
 factor-table/dtype-contract section or combined-factor collar; the save/log request is rejected before the write, listing
 every offending path in the payload. A valid server-owned handle whose artifact has been
-removed or expired returns 410 with a stable re-run message. An invalid server-owned handle or
+removed or expired returns 410 with a stable re-run message. A frontier point with neither a
+retained artifact nor a live quote grid is the named 410 `frontier_point_unavailable`, and a
+point request replaced by a newer one while it waited is the named 409
+`frontier_point_apply_replaced`. An invalid server-owned handle or
 a present-but-corrupt artifact returns a sanitized 500; filesystem and parquet details remain
 server-side. Applying a structurally valid legacy ratebook
 artifact without `factor_dtypes`, or applying one to a changed factor dtype, raises

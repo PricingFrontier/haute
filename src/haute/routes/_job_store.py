@@ -18,7 +18,7 @@ import functools
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
@@ -851,6 +851,16 @@ class JobStore:
             self._jobs[job_id] = {**old, "artifact_handles": handles}
             artifact_cleanups.append((job_id, (dict(handle),)))
             return True
+
+    def release_detached_artifact_handles(
+        self, job_id: str, handles: Iterable[Mapping[str, Any]]
+    ) -> None:
+        """Clean up handles the caller already removed from the job in its own update.
+
+        An unleased handle is cleaned at once; a leased one when its last lease
+        is released, as for every other cleanup.
+        """
+        self._cleanup_artifact_handles(job_id, tuple(dict(handle) for handle in handles))
 
     @contextmanager
     def lease(self, job_id: str, key: str) -> Iterator[dict[str, Any]]:

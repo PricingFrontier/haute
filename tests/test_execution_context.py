@@ -623,6 +623,72 @@ def test_training_admission_keeps_waiting_when_a_preview_takes_the_gap(
     assert len(interlopers) == 1
 
 
+def test_work_estimates_reserve_only_their_own_bytes_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two bounded operations fit side by side where two whole budgets would not."""
+    from haute._execution_admission import WorkEstimate, create_admitted_execution_context
+
+    _clear_execution_memory_env(monkeypatch)
+    gib = 1024 * 1024 * 1024
+    monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * gib)
+
+    def admit(name: str) -> ExecutionContext:
+        return create_admitted_execution_context(
+            operation=name,
+            profile=ExecutionProfile.EXPLORE_ANALYSIS,
+            memory_sampler=lambda: 100,
+            estimate=WorkEstimate(estimated_bytes=2 * gib, subject=name, remedy="Ask for less."),
+        )
+
+    first, second = admit("query_a"), admit("query_b")
+    try:
+        with pytest.raises(ExecutionAdmissionError) as whole_budget:
+            create_admitted_execution_context(
+                operation="whole_budget",
+                profile=ExecutionProfile.EXPLORE_ANALYSIS,
+                memory_sampler=lambda: 100,
+            )
+        assert whole_budget.value.reason == "in_flight_memory_budget_exceeded"
+        # The context still enforces the profile's whole budget as its RSS limit.
+        assert first.memory_limit_bytes is not None and first.memory_limit_bytes > 2 * gib
+    finally:
+        first.release_admission()
+        second.release_admission()
+
+
+def test_an_estimate_above_the_allowance_is_refused_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_admission import WorkEstimate, create_admitted_execution_context
+
+    _clear_execution_memory_env(monkeypatch)
+    monkeypatch.setenv("HAUTE_EXPLORE_MEMORY_LIMIT_BYTES", str(1000))
+
+    with pytest.raises(ExecutionAdmissionError) as refused:
+        create_admitted_execution_context(
+            operation="big_query",
+            profile=ExecutionProfile.EXPLORE_ANALYSIS,
+            memory_sampler=lambda: 100,
+            estimate=WorkEstimate(
+                estimated_bytes=1001, subject="The big query", remedy="Ask for fewer rows."
+            ),
+        )
+    assert refused.value.reason == (
+        "The big query needs an estimated 1001 bytes; the explore_analysis allowance is "
+        "1000 bytes. Ask for fewer rows."
+    )
+    # At the allowance it is admitted.
+    admitted = create_admitted_execution_context(
+        operation="fitting_query",
+        profile=ExecutionProfile.EXPLORE_ANALYSIS,
+        memory_sampler=lambda: 100,
+        estimate=WorkEstimate(estimated_bytes=1000, subject="The query", remedy="n/a"),
+    )
+    admitted.release_admission()
+
+
 def test_training_admission_retries_when_the_preview_releases_after_the_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

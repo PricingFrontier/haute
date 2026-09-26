@@ -788,3 +788,335 @@ class TestWriteQuoteAnalysis:
                 columns=("band",),
                 execution_context=None,
             )
+
+
+# ---------------------------------------------------------------------------
+# OPT-V09B: bounded queries over the chosen scenarios
+# ---------------------------------------------------------------------------
+
+
+def _choices(job_id: str, reducer: Any, point_index: int | None = None) -> Any:
+    from haute.routes._optimiser_outcomes import ChoiceTarget
+    from haute.routes.optimiser import _choice_service
+
+    return _choice_service.choice_query(job_id, ChoiceTarget(point_index), reducer)
+
+
+def _close(actual: float, expected: float) -> bool:
+    return abs(actual - expected) <= 1e-9 * max(1.0, abs(expected))
+
+
+def _apply_frame(job_id: str, key: str = "apply_result") -> pl.DataFrame:
+    return pl.read_parquet(_store.require_job(job_id)["artifact_handles"][key]["path"])
+
+
+def _rewrite_side_table(job_id: str, edit: Any) -> None:
+    path = _analysis_handle(job_id)["path"]
+    edit(pl.read_parquet(path)).write_parquet(path)
+
+
+@pytest.mark.usefixtures("_widen_sandbox_root")
+class TestChoiceQueries:
+    def test_the_histogram_reconciles_to_the_solved_totals(self, client, tmp_path):
+        from haute.routes._optimiser_outcomes import ScenarioHistogram
+
+        job_id, status = _solved(
+            client, _data_graph(_scored(tmp_path), analysis_columns=["region"])
+        )
+        result = _choices(job_id, ScenarioHistogram())
+        rows = result.rows
+
+        # Every grid step, from the recorded grid, including steps nobody chose.
+        assert rows.select("optimal_step", "scenario_value").to_dicts() == _expected_grid()
+        assert rows["quotes"].sum() == 9 == result.total
+        assert rows["optimal_objective"].dtype == pl.Float64
+        assert rows["optimal_volume"].dtype == pl.Float64
+        assert _close(rows["optimal_objective"].sum(), status["result"]["total_objective"])
+        assert _close(rows["optimal_volume"].sum(), status["result"]["constraints"]["volume"])
+        chosen = _apply_frame(job_id)["optimal_step"].value_counts()
+        assert dict(zip(rows["optimal_step"], rows["quotes"], strict=True)) == {
+            step: int(chosen.filter(pl.col("optimal_step") == step)["count"].sum())
+            for step in range(3)
+        }
+
+    def test_a_frontier_points_histogram_reconciles_to_that_points_totals(self, client, tmp_path):
+        from haute.routes._optimiser_outcomes import ScenarioHistogram
+
+        job_id, _status = _solved(client, _data_graph(_scored(tmp_path)))
+        frontier = run_frontier_and_wait(
+            client,
+            {
+                "job_id": job_id,
+                "threshold_ranges": {"volume": [5.0, 8.0]},
+                "n_points_per_dim": 3,
+            },
+        )
+        assert frontier["status"] == "completed", frontier
+        point = frontier["result"]["points"][2]
+
+        rows = _choices(job_id, ScenarioHistogram(), point_index=2).rows
+
+        assert _close(rows["optimal_objective"].sum(), point["total_objective"])
+        assert _close(rows["optimal_volume"].sum(), point["totals"]["volume"])
+        # The query materialised the point's artifact and left the selection alone.
+        job = _store.require_job(job_id)
+        assert "frontier_apply_result:2" in job["artifact_handles"]
+        assert job.get("selected_frontier_point") is None
+
+    def test_a_segment_breakdown_joins_the_side_table_one_to_one(self, client, tmp_path):
+        from haute.routes._optimiser_outcomes import ScenarioHistogram, SegmentGroupBy
+
+        job_id, _status = _solved(
+            client, _data_graph(_scored(tmp_path), analysis_columns=["region"])
+        )
+        result = _choices(job_id, SegmentGroupBy(("region",), limit=10))
+        rows = result.rows.sort("region")
+
+        assert result.total == 3
+        assert dict(zip(rows["region"], rows["quotes"], strict=True)) == {
+            "North": 3,
+            "South": 3,
+            "Île": 3,
+        }
+        histogram = _choices(job_id, ScenarioHistogram()).rows
+        assert _close(rows["optimal_objective"].sum(), histogram["optimal_objective"].sum())
+        apply = _apply_frame(job_id)
+        north = apply.filter(pl.col("quote_id").is_in(["q000", "q003", "q006"]))
+        assert _close(
+            rows.filter(pl.col("region") == "North")["mean_scenario_value"].item(),
+            north["optimal_scenario_value"].cast(pl.Float64).mean(),
+        )
+
+    def test_the_group_limit_keeps_the_largest_groups_and_counts_them_all(self, client, tmp_path):
+        from haute.routes._optimiser_outcomes import SegmentGroupBy
+
+        job_id, _status = _solved(
+            client, _data_graph(_scored(tmp_path, n_quotes=10), analysis_columns=["region"])
+        )
+        result = _choices(job_id, SegmentGroupBy(("region",), limit=1))
+
+        # q000..q009: North has four quotes, South and Île three each.
+        assert result.total == 3
+        assert result.rows.select("region", "quotes").to_dicts() == [
+            {"region": "North", "quotes": 4}
+        ]
+
+    def test_a_segment_breakdown_needs_configured_analysis_columns(self, client, tmp_path):
+        from fastapi import HTTPException
+
+        from haute.routes._optimiser_outcomes import SegmentGroupBy
+
+        job_id, _status = _solved(client, _data_graph(_scored(tmp_path)))
+        with pytest.raises(HTTPException) as caught:
+            _choices(job_id, SegmentGroupBy(("region",), limit=10))
+        assert caught.value.status_code == 400
+        assert "region" in str(caught.value.detail)
+
+    @pytest.mark.parametrize("damage", ["dropped_row", "foreign_quote", "repeated_quote"])
+    def test_a_side_table_that_does_not_join_one_to_one_fails_loudly(
+        self, client, tmp_path, damage
+    ):
+        from haute.routes._optimiser_outcomes import ChoiceJoinError, ScenarioHistogram
+
+        job_id, _status = _solved(
+            client, _data_graph(_scored(tmp_path), analysis_columns=["region"])
+        )
+        edits = {
+            "dropped_row": lambda frame: frame.filter(pl.col("quote_id") != "q004"),
+            "foreign_quote": lambda frame: frame.with_columns(
+                pl.when(pl.col("quote_id") == "q004")
+                .then(pl.lit("q999"))
+                .otherwise(pl.col("quote_id"))
+                .alias("quote_id")
+            ),
+            "repeated_quote": lambda frame: frame.with_columns(
+                pl.when(pl.col("quote_id") == "q004")
+                .then(pl.lit("q005"))
+                .otherwise(pl.col("quote_id"))
+                .alias("quote_id")
+            ),
+        }
+        _rewrite_side_table(job_id, edits[damage])
+
+        # The histogram never reads the side table: only the 1:1 assertion can catch it.
+        with pytest.raises(ChoiceJoinError):
+            _choices(job_id, ScenarioHistogram())
+
+    def test_top_k_and_row_index_return_bounded_rows_with_the_analysis_columns(
+        self, client, tmp_path
+    ):
+        from haute.routes._optimiser_outcomes import RowIndex, TopK
+
+        job_id, _status = _solved(
+            client, _data_graph(_scored(tmp_path), analysis_columns=["region"])
+        )
+        apply = _apply_frame(job_id)
+
+        top = _choices(job_id, TopK("optimal_objective", k=2))
+        expected_top = apply.sort(["optimal_objective", "quote_id"], descending=[True, False]).head(
+            2
+        )
+        assert top.total == 9
+        assert top.rows["quote_id"].to_list() == expected_top["quote_id"].to_list()
+        assert "region" in top.rows.columns
+
+        bottom = _choices(job_id, TopK("optimal_objective", k=2, descending=False))
+        assert bottom.rows["quote_id"].to_list() == (
+            apply.sort(["optimal_objective", "quote_id"]).head(2)["quote_id"].to_list()
+        )
+
+        page = _choices(job_id, RowIndex(offset=3, limit=4))
+        assert page.total == 9
+        assert page.rows["quote_id"].to_list() == apply["quote_id"].slice(3, 4).to_list()
+        assert page.rows["region"].to_list() == [_region(q) for q in range(3, 7)]
+
+    @pytest.mark.parametrize(
+        "invalid",
+        [
+            "k_over_cap",
+            "k_by_a_non_choice_column",
+            "negative_offset",
+            "zero_limit",
+            "limit_over_cap",
+            "no_group_columns",
+            "group_limit_over_cap",
+        ],
+    )
+    def test_an_unbounded_or_invalid_reducer_is_refused(self, client, tmp_path, invalid):
+        from fastapi import HTTPException
+
+        from haute.routes._optimiser_outcomes import (
+            MAX_CHOICE_ROWS,
+            RowIndex,
+            SegmentGroupBy,
+            TopK,
+        )
+
+        reducers = {
+            "k_over_cap": lambda: TopK("optimal_objective", k=MAX_CHOICE_ROWS + 1),
+            "k_by_a_non_choice_column": lambda: TopK("region", k=2),
+            "negative_offset": lambda: RowIndex(offset=-1, limit=2),
+            "zero_limit": lambda: RowIndex(offset=0, limit=0),
+            "limit_over_cap": lambda: RowIndex(offset=0, limit=MAX_CHOICE_ROWS + 1),
+            "no_group_columns": lambda: SegmentGroupBy((), limit=5),
+            "group_limit_over_cap": lambda: SegmentGroupBy(("region",), limit=MAX_CHOICE_ROWS + 1),
+        }
+        job_id, _status = _solved(
+            client, _data_graph(_scored(tmp_path), analysis_columns=["region"])
+        )
+        with pytest.raises(HTTPException) as caught:
+            _choices(job_id, reducers[invalid]())
+        assert caught.value.status_code == 400
+
+    def test_an_over_budget_query_is_refused_before_it_runs(self, client, tmp_path, monkeypatch):
+        from fastapi import HTTPException
+
+        from haute._polars_utils import streaming_collect
+        from haute.routes import _optimiser_outcomes
+        from haute.routes._optimiser_outcomes import ScenarioHistogram
+
+        job_id, _status = _solved(
+            client, _data_graph(_scored(tmp_path), analysis_columns=["region"])
+        )
+        collected: list[Any] = []
+
+        def recording_collect(frame: Any, **kwargs: Any) -> Any:
+            collected.append(frame)
+            return streaming_collect(frame, **kwargs)
+
+        monkeypatch.setattr(_optimiser_outcomes, "streaming_collect", recording_collect)
+        monkeypatch.setenv("HAUTE_EXPLORE_MEMORY_LIMIT_BYTES", str(32 * 1024 * 1024))
+        with pytest.raises(HTTPException) as caught:
+            _choices(job_id, ScenarioHistogram())
+
+        assert caught.value.status_code == 507
+        detail = caught.value.detail
+        assert detail["error_code"] == "memory_limit"
+        assert "choice query" in detail["reason"]
+        assert "HAUTE_EXPLORE_MEMORY_LIMIT_MB" in detail["reason"]
+        # Refused on its estimate: no join or reducer plan was collected.
+        assert collected == []
+
+    def test_identical_concurrent_queries_share_one_run(self, client, tmp_path, monkeypatch):
+        from haute.routes._optimiser_outcomes import (
+            ChoiceQueryService,
+            ScenarioHistogram,
+            TopK,
+        )
+
+        job_id, _status = _solved(
+            client, _data_graph(_scored(tmp_path), analysis_columns=["region"])
+        )
+        entered = threading.Event()
+        release = threading.Event()
+        runs: list[Any] = []
+        real_run = ChoiceQueryService._run
+
+        def held_run(self: Any, *args: Any, **kwargs: Any) -> Any:
+            runs.append(args)
+            entered.set()
+            assert release.wait(30)
+            return real_run(self, *args, **kwargs)
+
+        monkeypatch.setattr(ChoiceQueryService, "_run", held_run)
+        outcomes: list[Any] = []
+        threads = [
+            threading.Thread(
+                target=lambda: outcomes.append(_choices(job_id, ScenarioHistogram())),
+                daemon=True,
+            )
+            for _ in range(3)
+        ]
+        threads[0].start()
+        assert entered.wait(30)
+        for thread in threads[1:]:
+            thread.start()
+        time.sleep(0.2)
+        other = threading.Thread(
+            target=lambda: outcomes.append(_choices(job_id, TopK("optimal_objective", k=1))),
+            daemon=True,
+        )
+        other.start()
+        time.sleep(0.2)
+        release.set()
+        for thread in [*threads, other]:
+            thread.join(30)
+
+        assert len(outcomes) == 4
+        # The three identical queries ran once; the different query ran on its own.
+        assert len(runs) == 2
+        histograms = [o for o in outcomes if "quotes" in o.rows.columns]
+        assert len(histograms) == 3
+        assert all(h.rows.equals(histograms[0].rows) for h in histograms)
+
+    def test_an_analysis_column_named_like_a_choice_column_is_refused(self, client, tmp_path):
+        from fastapi import HTTPException
+
+        from haute.routes._optimiser_outcomes import ScenarioHistogram
+
+        scored = _scored(tmp_path)
+        pl.read_parquet(scored).with_columns(
+            pl.col("region").alias("optimal_objective")
+        ).write_parquet(scored)
+        job_id, _status = _solved(
+            client, _data_graph(scored, analysis_columns=["optimal_objective"])
+        )
+        with pytest.raises(HTTPException) as caught:
+            _choices(job_id, ScenarioHistogram())
+        assert caught.value.status_code == 400
+        assert "optimal_objective" in str(caught.value.detail)
+
+
+def test_a_ratebook_job_is_refused_by_name(clean_job_store):
+    from fastapi import HTTPException
+
+    from haute.routes._optimiser_outcomes import ScenarioHistogram
+    from tests.job_store_support import seed_job
+    from tests.optimiser_fixtures import make_ratebook_frontier_job
+
+    seed_job(clean_job_store, "ratebook_choices", make_ratebook_frontier_job())
+    with pytest.raises(HTTPException) as caught:
+        _choices("ratebook_choices", ScenarioHistogram())
+    assert caught.value.status_code == 422
+    assert caught.value.detail["error_code"] == "optimiser_choices_online_only"
+    assert "ratebook" in caught.value.detail["message"].lower()

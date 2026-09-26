@@ -26,6 +26,14 @@ from tests.optimiser_fixtures import make_select_job as _make_select_job
 # ``clean_job_store`` lives in tests/conftest.py — single source of truth.
 
 
+def _as_solved_handles() -> dict:
+    """The job's as-solved apply artifact: a point's apply is estimated from it."""
+    from haute.routes._optimiser_artifacts import _persist_apply_result_artifact
+
+    frame = pl.DataFrame({"quote_id": ["q1", "q2"], "optimal_scenario_value": [0.9, 1.0]})
+    return {"apply_result": _persist_apply_result_artifact(SimpleNamespace(dataframe=frame))}
+
+
 def _frontier_job(*, artifact_handles: object | None = None) -> dict:
     solver = MagicMock()
     solver.solve.return_value = SimpleNamespace(
@@ -248,7 +256,12 @@ def test_apply_rejects_missing_artifact_summary(client, clean_job_store):
         "missing_apply_summary",
         {
             "status": "completed",
-            "artifact_handles": {"apply_result": {"path": "already-validated-by-patch"}},
+            "artifact_handles": {
+                "apply_result": {
+                    "kind": "optimiser_apply_result",
+                    "path": "already-validated-by-patch",
+                }
+            },
             "result": "not a summary mapping",
             "created_at": time.time(),
             "completed_at": time.time(),
@@ -257,8 +270,8 @@ def test_apply_rejects_missing_artifact_summary(client, clean_job_store):
 
     try:
         with patch(
-            "haute.routes.optimiser._load_apply_result_artifact",
-            return_value=pl.DataFrame({"quote_id": ["q1"]}),
+            "haute.routes._optimiser_artifacts._scan_apply_result_artifact",
+            return_value=pl.LazyFrame({"quote_id": ["q1"]}),
         ):
             resp = client.post(
                 "/api/optimiser/apply",
@@ -277,7 +290,12 @@ def test_apply_rejects_incomplete_artifact_summary(client, clean_job_store):
         "incomplete_apply_summary",
         {
             "status": "completed",
-            "artifact_handles": {"apply_result": {"path": "already-validated-by-patch"}},
+            "artifact_handles": {
+                "apply_result": {
+                    "kind": "optimiser_apply_result",
+                    "path": "already-validated-by-patch",
+                }
+            },
             "result": {"total_objective": "not numeric", "constraints": {"volume": 0.9}},
             "created_at": time.time(),
             "completed_at": time.time(),
@@ -286,8 +304,8 @@ def test_apply_rejects_incomplete_artifact_summary(client, clean_job_store):
 
     try:
         with patch(
-            "haute.routes.optimiser._load_apply_result_artifact",
-            return_value=pl.DataFrame({"quote_id": ["q1"]}),
+            "haute.routes._optimiser_artifacts._scan_apply_result_artifact",
+            return_value=pl.LazyFrame({"quote_id": ["q1"]}),
         ):
             resp = client.post(
                 "/api/optimiser/apply",
@@ -423,7 +441,11 @@ def test_frontier_apply_cleans_new_artifact_after_unexpected_store_failure(
     assert orphan_handle is not None
     orphan_path = Path(orphan_handle["path"])
     orphan_dir = Path(orphan_handle["directory"])
-    seed_job(clean_job_store, "select_store_failure", _frontier_job(artifact_handles={}))
+    seed_job(
+        clean_job_store,
+        "select_store_failure",
+        _frontier_job(artifact_handles=_as_solved_handles()),
+    )
     apply_result = SimpleNamespace(
         dataframe=pl.DataFrame({"optimal_scenario_value": [1.0]}),
     )
@@ -787,13 +809,13 @@ def test_apply_reuses_cached_frontier_apply_artifact_for_online_mode(
 # ---------------------------------------------------------------------------
 
 
-def test_apply_returns_400_when_quote_grid_evicted_from_heavy_state(
+def test_apply_returns_named_410_when_quote_grid_evicted_from_heavy_state(
     client,
     clean_job_store,
 ):
-    """If the quote grid's heavy-object TTL has elapsed, applying a frontier
-    point must return a clear 400 instructing the user to re-run the solve.
-    Earlier this path returned a confusing 500.
+    """If the quote grid's heavy-object TTL has elapsed, an unmaterialised
+    frontier point is gone: a named 410 instructing the user to re-run the
+    solve. Earlier this path returned a confusing 500.
     """
     seed_job(
         clean_job_store,
@@ -838,18 +860,20 @@ def test_apply_returns_400_when_quote_grid_evicted_from_heavy_state(
     )
 
     # ``touch_heavy_objects`` returns False when the required keys are
-    # missing — the dispatcher must surface that as a clean 400.
+    # missing — the dispatcher must surface that as the named 410.
     with patch.object(clean_job_store, "touch_heavy_objects", return_value=False):
         resp = client.post(
             "/api/optimiser/apply",
             json={"job_id": "apply_evicted", "point_index": 0},
         )
 
-    assert resp.status_code == 400
-    assert "quote grid is not available" in resp.json()["detail"].lower()
+    assert resp.status_code == 410
+    detail = resp.json()["detail"]
+    assert detail["error_code"] == "frontier_point_unavailable"
+    assert "quote grid has expired" in detail["message"]
 
 
-def test_apply_returns_400_when_quote_grid_value_is_none_after_touch(
+def test_apply_returns_named_410_when_quote_grid_value_is_none_after_touch(
     client,
     clean_job_store,
 ):
@@ -902,8 +926,10 @@ def test_apply_returns_400_when_quote_grid_value_is_none_after_touch(
             json={"job_id": "apply_none_grid", "point_index": 0},
         )
 
-    assert resp.status_code == 400
-    assert "quote grid is not available" in resp.json()["detail"].lower()
+    assert resp.status_code == 410
+    detail = resp.json()["detail"]
+    assert detail["error_code"] == "frontier_point_unavailable"
+    assert "quote grid has expired" in detail["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -971,7 +997,7 @@ def test_apply_cleans_up_orphan_artifact_when_atomic_update_loses_race(
                 "input_summary": make_input_summary(),
             },
             "quote_grid": MagicMock(),
-            "artifact_handles": {},
+            "artifact_handles": _as_solved_handles(),
             "created_at": time.time(),
             "completed_at": time.time(),
         },

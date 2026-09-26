@@ -560,6 +560,14 @@ The gap IDs (`OPT-G01`…`OPT-G22`) refer to the gap table under "Screens today 
 
 **Evidence:** Current code this package changes or relies on: `src/haute/routes/_optimiser_artifacts.py`, `src/haute/routes/_optimiser_frontier.py`, `src/haute/routes/optimiser.py`, `src/haute/routes/_optimiser_limits.py`, `src/haute/_execution_admission.py`, `tests/test_optimiser_apply.py`.
 
+**Implemented (26 September 2026).** As specified in the optimiser low-level specification ("Bounded choice queries and point materialisation", "Measured choice-query memory"), with these choices the plan left open or that measurement changed:
+
+- The 1:1 correspondence with the side table is asserted by a streamed key fingerprint (row count and hash sums, the OPT-V09A precedent) rather than a whole-table join. Only the group-by joins every quote; top-k and the row index attach analysis values to their own rows. A whole-table join held about 1 GiB in the server process at 5M quotes for reducers that never read the analysis values.
+- "Index" is `RowIndex(offset, limit)`, a page of rows in the apply frame's quote order, which the Quotes explorer (OPT-V12) pages with.
+- Admission takes each operation's own estimate (`WorkEstimate`): an estimate over the allowance is refused with its remedy, and the estimate, not the profile's whole budget, is reserved in flight, so several bounded queries run side by side.
+- The point queue and query single-flight are `LatestWinsQueue` and `SharedFlights` (`src/haute/routes/_shared_flights.py`); `/apply` is asynchronous so a client that leaves detaches only itself.
+- No route exposes `choice_query` yet; OPT-V10 to OPT-V12 add theirs over it.
+
 ### OPT-V09C — Ratebook per-quote choices (decisions: Q8, Q17)
 
 **Why:** The wave 4 tabs describe ratebook solves from the library's canonical per-quote evaluation (price-contour 0.5.0), never from a haute reconstruction.

@@ -8,28 +8,49 @@ sunk, never collected — and read back only inside a job-store lease.
 
 The scenario grid is recorded once, from the solver input at setup, and is
 the only source for which adjustments were possible.
+
+Bounded choice queries (OPT-V09B) read one target's per-quote apply frame --
+the as-solved result or a frontier point -- inside leases, join the side
+table 1:1 when there is one, and run a reducer in the lazy plan so only a
+small result is ever collected. Each run is admitted with its own estimate
+and single-flighted by job, frontier generation, target and reducer.
 """
 
 from __future__ import annotations
 
 import math
 import shutil
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, cast
 
 from fastapi import HTTPException
 
+from haute._execution_admission import (
+    ExecutionAdmissionError,
+    WorkEstimate,
+    create_admitted_execution_context,
+)
+from haute._execution_context import (
+    ExecutionCancellationToken,
+    ExecutionMemoryLimitExceededError,
+    ExecutionProfile,
+)
 from haute._polars_utils import bounded_sink, streaming_collect
+from haute._ram_estimate import decoded_frame_row_width_bytes, estimate_choice_query_peak_bytes
 from haute.routes import _optimiser_artifacts
 from haute.routes._job_store import ArtifactHandleUnavailableError, JobStore
 from haute.routes._optimiser_input import OptimiserSetupError
+from haute.routes._shared_flights import SharedFlights
 
 if TYPE_CHECKING:
     import polars as pl
 
     from haute._execution_context import ExecutionContext
+    from haute.routes._optimiser_frontier import OptimiserFrontierService
 
 ANALYSIS_ROW_PRESENT_COLUMN = "__haute_analysis_row_present"
 """False for a solved quote the chosen analysis frame has no row for (its "Missing" level)."""
@@ -294,3 +315,532 @@ def require_scenario_grid(job: Mapping[str, Any]) -> list[dict[str, Any]]:
             "input before the solve starts."
         )
     return [dict(step) for step in grid]
+
+
+# ---------------------------------------------------------------------------
+# OPT-V09B: bounded queries over the chosen scenarios
+# ---------------------------------------------------------------------------
+
+MAX_CHOICE_ROWS = 1000
+"""The most rows (or groups) any reducer returns."""
+
+CHOICE_QUOTE_ID = "quote_id"
+"""The apply frame's key column: price-contour always writes it under this name."""
+
+_SAMPLE_ROWS = 512
+_TOTAL_COLUMN = "__haute_total"
+_TWO_32 = 1 << 32
+_CHOICE_OPERATION = "optimiser_choice_query"
+_CHOICE_REMEDY = "Raise HAUTE_EXPLORE_MEMORY_LIMIT_MB, or ask for fewer groups or rows."
+
+CHOICES_ONLINE_ONLY_DETAIL = {
+    "error_code": "optimiser_choices_online_only",
+    "message": (
+        "Per-quote choices are not available for ratebook optimiser results yet: the ratebook "
+        "solver's per-quote evaluation is not kept. Use the factor tables on the result (Rates "
+        "tab)."
+    ),
+}
+
+
+class ChoiceJoinError(RuntimeError):
+    """The chosen rows and the analysis side table do not describe the same quotes.
+
+    Both are written for the solved quotes, so a disagreement is a defect,
+    raised rather than answered with a partial breakdown.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class ChoiceTarget:
+    """What a query reads: the as-solved result (``None``) or one frontier point."""
+
+    point_index: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class ChoiceQueryResult:
+    """A reducer's bounded rows and the count they were taken from."""
+
+    rows: pl.DataFrame
+    total: int
+
+
+@dataclass(frozen=True, slots=True)
+class ChoiceFrameSpec:
+    """What a reducer may rely on about the choice frame it runs over."""
+
+    constraint_names: tuple[str, ...]
+    analysis_columns: tuple[str, ...]
+    scenario_grid: tuple[tuple[int, float], ...]
+
+    @property
+    def value_columns(self) -> tuple[str, ...]:
+        """The per-quote values summed into totals: the objective, then each constraint."""
+        return ("optimal_objective", *(f"optimal_{name}" for name in self.constraint_names))
+
+    @property
+    def choice_columns(self) -> tuple[str, ...]:
+        return (CHOICE_QUOTE_ID, "optimal_step", "optimal_scenario_value", *self.value_columns)
+
+
+Collect = Callable[["pl.LazyFrame"], "pl.DataFrame"]
+
+
+@dataclass(frozen=True, slots=True)
+class ChoiceFrames:
+    """The leased choice frame, and the side table it corresponds to 1:1 when there is one.
+
+    The correspondence is checked before a reducer runs (``_require_same_quotes``).
+    A reducer that needs analysis values for every quote reads ``joined()``; one
+    that keeps a few rows attaches them to those rows only (``with_analysis``).
+    """
+
+    choice: pl.LazyFrame
+    analysis: pl.LazyFrame | None
+    analysis_key: str
+    collect: Collect
+
+    def joined(self) -> pl.LazyFrame:
+        """Every chosen row with its analysis values: an inner 1:1 join in apply order."""
+        if self.analysis is None:
+            return self.choice
+        return self.choice.join(
+            self.analysis,
+            left_on=CHOICE_QUOTE_ID,
+            right_on=self.analysis_key,
+            how="inner",
+            validate="1:1",
+            maintain_order="left",
+        )
+
+    def with_analysis(self, rows: pl.DataFrame) -> pl.DataFrame:
+        """*rows* (a bounded result of the choice frame) with their analysis values attached."""
+        import polars as pl
+
+        if self.analysis is None:
+            return rows
+        found = self.collect(
+            self.analysis.filter(pl.col(self.analysis_key).is_in(rows[CHOICE_QUOTE_ID].implode()))
+        )
+        if found.height != rows.height:
+            raise ChoiceJoinError(
+                f"The analysis side table holds {found.height} of the {rows.height} requested "
+                "quotes; it must hold exactly one row per solved quote."
+            )
+        return rows.join(
+            found,
+            left_on=CHOICE_QUOTE_ID,
+            right_on=self.analysis_key,
+            how="left",
+            validate="1:1",
+            maintain_order="left",
+        )
+
+
+class ChoiceReducer(Protocol):
+    """A bounded reduction of the choice frame, run in its lazy plan."""
+
+    joins_every_quote: ClassVar[bool]
+    """Whether the plan joins the whole side table (it groups by analysis values)."""
+
+    def validate(self, spec: ChoiceFrameSpec) -> None:
+        """Refuse arguments the frame cannot answer, or an unbounded result, with a 400."""
+
+    def result_rows(self, spec: ChoiceFrameSpec) -> int:
+        """The most rows the result can hold."""
+
+    def scans_every_quote(self) -> bool:
+        """Whether the plan reads every chosen row (a page of rows reads only its own)."""
+
+    def run(self, frames: ChoiceFrames, spec: ChoiceFrameSpec, row_count: int) -> ChoiceQueryResult:
+        """Run the plan over the *row_count* chosen rows and collect its bounded result."""
+
+
+def _bad_request(message: str) -> HTTPException:
+    return HTTPException(status_code=400, detail=message)
+
+
+def _require_row_bound(name: str, value: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_CHOICE_ROWS:
+        raise _bad_request(f"{name} must be an integer from 1 to {MAX_CHOICE_ROWS}; got {value!r}.")
+
+
+def _float64_sums(spec: ChoiceFrameSpec) -> list[pl.Expr]:
+    import polars as pl
+
+    return [pl.col(column).cast(pl.Float64).sum() for column in spec.value_columns]
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioHistogram:
+    """Quotes and Float64 totals per step of the recorded scenario grid, every step included."""
+
+    joins_every_quote: ClassVar[bool] = False
+
+    def validate(self, spec: ChoiceFrameSpec) -> None:
+        return None
+
+    def result_rows(self, spec: ChoiceFrameSpec) -> int:
+        return len(spec.scenario_grid)
+
+    def scans_every_quote(self) -> bool:
+        return True
+
+    def run(self, frames: ChoiceFrames, spec: ChoiceFrameSpec, row_count: int) -> ChoiceQueryResult:
+        import polars as pl
+
+        per_step = frames.choice.group_by("optimal_step").agg(
+            pl.len().cast(pl.Int64).alias("quotes"), *_float64_sums(spec)
+        )
+        grid = pl.LazyFrame(
+            {
+                "optimal_step": [step for step, _value in spec.scenario_grid],
+                "scenario_value": [value for _step, value in spec.scenario_grid],
+            },
+            schema={"optimal_step": pl.Int32, "scenario_value": pl.Float64},
+        )
+        rows = frames.collect(
+            grid.join(per_step, on="optimal_step", how="left")
+            .with_columns(pl.col("quotes", *spec.value_columns).fill_null(0))
+            .sort("optimal_step")
+        )
+        counted = int(rows["quotes"].sum())
+        if counted != row_count:
+            raise ChoiceJoinError(
+                f"{row_count - counted} of {row_count} quotes chose a step outside the "
+                "recorded scenario grid."
+            )
+        return ChoiceQueryResult(rows=rows, total=row_count)
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentGroupBy:
+    """Quotes, mean scenario value and Float64 totals per analysis segment, largest first."""
+
+    columns: tuple[str, ...]
+    limit: int
+
+    joins_every_quote: ClassVar[bool] = True
+
+    def validate(self, spec: ChoiceFrameSpec) -> None:
+        _require_row_bound("The group limit", self.limit)
+        if not self.columns:
+            raise _bad_request("A segment breakdown needs at least one analysis column.")
+        if len(set(self.columns)) != len(self.columns):
+            raise _bad_request(f"A segment breakdown lists a column twice: {list(self.columns)}.")
+        unknown = [column for column in self.columns if column not in spec.analysis_columns]
+        if unknown:
+            configured = list(spec.analysis_columns) or "none"
+            raise _bad_request(
+                f"{unknown} are not analysis columns of this solve (configured: {configured}). "
+                "Add them to the optimiser's analysis columns and re-run the solve."
+            )
+
+    def result_rows(self, spec: ChoiceFrameSpec) -> int:
+        return self.limit
+
+    def scans_every_quote(self) -> bool:
+        return True
+
+    def run(self, frames: ChoiceFrames, spec: ChoiceFrameSpec, row_count: int) -> ChoiceQueryResult:
+        import polars as pl
+
+        keys = list(self.columns)
+        rows = frames.collect(
+            frames.joined()
+            .group_by(keys)
+            .agg(
+                pl.len().cast(pl.Int64).alias("quotes"),
+                pl.col("optimal_scenario_value")
+                .cast(pl.Float64)
+                .mean()
+                .alias("mean_scenario_value"),
+                *_float64_sums(spec),
+            )
+            .with_columns(pl.len().alias(_TOTAL_COLUMN))
+            .sort(["quotes", *keys], descending=[True, *([False] * len(keys))], nulls_last=True)
+            .head(self.limit)
+        )
+        total = int(rows[_TOTAL_COLUMN][0]) if rows.height else 0
+        return ChoiceQueryResult(rows=rows.drop(_TOTAL_COLUMN), total=total)
+
+
+@dataclass(frozen=True, slots=True)
+class TopK:
+    """The *k* quotes with the largest (or smallest) chosen value of *by*; ties by quote id."""
+
+    by: str
+    k: int
+    descending: bool = True
+
+    joins_every_quote: ClassVar[bool] = False
+
+    def validate(self, spec: ChoiceFrameSpec) -> None:
+        _require_row_bound("k", self.k)
+        rankable = ("optimal_scenario_value", *spec.value_columns)
+        if self.by not in rankable:
+            raise _bad_request(f"Quotes can be ranked by {list(rankable)}; got {self.by!r}.")
+
+    def result_rows(self, spec: ChoiceFrameSpec) -> int:
+        return self.k
+
+    def scans_every_quote(self) -> bool:
+        return True
+
+    def run(self, frames: ChoiceFrames, spec: ChoiceFrameSpec, row_count: int) -> ChoiceQueryResult:
+        rows = frames.collect(
+            frames.choice.sort(
+                [self.by, CHOICE_QUOTE_ID], descending=[self.descending, False]
+            ).head(self.k)
+        )
+        return ChoiceQueryResult(rows=frames.with_analysis(rows), total=row_count)
+
+
+@dataclass(frozen=True, slots=True)
+class RowIndex:
+    """The rows at positions ``[offset, offset + limit)`` of the apply frame's quote order."""
+
+    offset: int
+    limit: int
+
+    joins_every_quote: ClassVar[bool] = False
+
+    def validate(self, spec: ChoiceFrameSpec) -> None:
+        _require_row_bound("The row limit", self.limit)
+        if isinstance(self.offset, bool) or not isinstance(self.offset, int) or self.offset < 0:
+            raise _bad_request(
+                f"The row offset must be a non-negative integer; got {self.offset!r}."
+            )
+
+    def result_rows(self, spec: ChoiceFrameSpec) -> int:
+        return self.limit
+
+    def scans_every_quote(self) -> bool:
+        return False
+
+    def run(self, frames: ChoiceFrames, spec: ChoiceFrameSpec, row_count: int) -> ChoiceQueryResult:
+        rows = frames.collect(frames.choice.slice(self.offset, self.limit))
+        return ChoiceQueryResult(rows=frames.with_analysis(rows), total=row_count)
+
+
+@contextmanager
+def lease_apply_frame(
+    store: JobStore,
+    job_id: str,
+    key: str,
+    *,
+    unavailable_detail: str | Mapping[str, str],
+) -> Iterator[pl.LazyFrame]:
+    """Scan the job's apply artifact under *key* while holding a lease on it.
+
+    Collect only inside the block. A job or handle that is gone is a 410 with
+    *unavailable_detail*.
+    """
+    with ExitStack() as stack:
+        try:
+            handle = stack.enter_context(store.lease(job_id, key))
+        except ArtifactHandleUnavailableError as exc:
+            raise HTTPException(status_code=410, detail=unavailable_detail) from exc
+        yield _optimiser_artifacts._scan_apply_result_artifact(handle)
+
+
+def _sample_width(frame: pl.LazyFrame) -> float:
+    """The decoded width of one row, from a bounded sample of the first rows."""
+    return decoded_frame_row_width_bytes(frame.head(_SAMPLE_ROWS).collect())
+
+
+def _choice_frame(apply: pl.LazyFrame, spec_columns: Sequence[str]) -> pl.LazyFrame:
+    missing = [column for column in spec_columns if column not in apply.collect_schema()]
+    if missing:
+        raise ChoiceJoinError(f"The apply result has no chosen-scenario columns {missing}.")
+    return apply.select(list(spec_columns))
+
+
+def _key_fingerprint(frame: pl.LazyFrame, key: str, collect: Collect) -> tuple[int, int, int]:
+    """Rows, and the sums of the high and low halves of each key's 64-bit hash.
+
+    Two key columns of distinct values with equal fingerprints hold the same
+    keys, but for a hash-sum collision (about 2^-64). One streamed aggregate:
+    nothing per key is held, unlike a join.
+    """
+    import polars as pl
+
+    hashed = pl.col(key).cast(pl.String).hash(seed=0)
+    return cast(
+        tuple[int, int, int],
+        collect(
+            frame.select(
+                pl.len().cast(pl.UInt64).alias("rows"),
+                (hashed // _TWO_32).sum().alias("high"),
+                (hashed % _TWO_32).sum().alias("low"),
+            )
+        ).row(0),
+    )
+
+
+def _require_same_quotes(frames: ChoiceFrames, analysis: pl.LazyFrame, row_count: int) -> None:
+    """Assert the side table holds exactly the chosen rows' quotes, one row each."""
+    chosen = _key_fingerprint(frames.choice, CHOICE_QUOTE_ID, frames.collect)
+    side = _key_fingerprint(analysis, frames.analysis_key, frames.collect)
+    if side[0] != row_count or side != chosen:
+        raise ChoiceJoinError(
+            f"The analysis side table ({side[0]} rows) does not hold the {row_count} chosen "
+            "quotes one row each; it must hold exactly one row per solved quote."
+        )
+
+
+class ChoiceQueryService:
+    """Bounded, admitted, single-flighted queries over one job's chosen scenarios."""
+
+    def __init__(self, store: JobStore, frontier: OptimiserFrontierService) -> None:
+        self._store = store
+        self._frontier = frontier
+        self._flights: SharedFlights[tuple[Any, ...], ChoiceQueryResult] = SharedFlights()
+
+    def choice_query(
+        self,
+        job_id: str,
+        target: ChoiceTarget,
+        reducer: ChoiceReducer,
+        *,
+        cancellation_token: ExecutionCancellationToken | None = None,
+    ) -> ChoiceQueryResult:
+        """Answer *reducer* over *target*'s chosen scenarios with a bounded result.
+
+        A frontier point without an artifact is materialised first (through
+        the job's point queue). A disconnected caller (*cancellation_token*)
+        detaches from the shared run without stopping it for the others.
+        """
+        from haute.routes._optimiser_frontier import _frontier_generation_or_raise, _job_mode
+
+        job = self._store.require_completed_job(job_id)
+        if _job_mode(job) == "ratebook":
+            raise HTTPException(status_code=422, detail=CHOICES_ONLINE_ONLY_DETAIL)
+        spec = _choice_spec(job)
+        reducer.validate(spec)
+        if target.point_index is None:
+            generation = _frontier_generation_or_raise(job)
+            handle_key = _optimiser_artifacts._APPLY_RESULT_HANDLE_KEY
+            unavailable: str | Mapping[str, str] = (
+                _optimiser_artifacts.APPLY_RESULT_UNAVAILABLE_DETAIL
+            )
+        else:
+            ticket = self._frontier.request_point_apply(job_id, target.point_index)
+            ticket.wait(cancellation_token)
+            generation, handle_key = ticket.generation, ticket.handle_key
+            unavailable = _optimiser_artifacts.frontier_point_unavailable_detail(
+                target.point_index, grid_expired=False
+            )
+        subscription = self._flights.subscribe(
+            (job_id, generation, target, reducer),
+            lambda token: self._run(job_id, handle_key, unavailable, reducer, token),
+        )
+        return subscription.wait(cancellation_token, operation=_CHOICE_OPERATION)
+
+    def _run(
+        self,
+        job_id: str,
+        handle_key: str,
+        unavailable: str | Mapping[str, str],
+        reducer: ChoiceReducer,
+        token: ExecutionCancellationToken,
+    ) -> ChoiceQueryResult:
+        import polars as pl
+
+        job = self._store.require_completed_job(job_id)
+        spec = _choice_spec(job)
+        context: ExecutionContext | None = None
+        try:
+            with ExitStack() as stack:
+                apply = stack.enter_context(
+                    lease_apply_frame(
+                        self._store, job_id, handle_key, unavailable_detail=unavailable
+                    )
+                )
+                choice = _choice_frame(apply, spec.choice_columns)
+                row_count = int(choice.select(pl.len()).collect().item())
+                analysis: pl.LazyFrame | None = None
+                analysis_width: float | None = None
+                if spec.analysis_columns:
+                    analysis = self._leased_analysis(stack, job_id, row_count)
+                    analysis_width = _sample_width(analysis)
+                context = create_admitted_execution_context(
+                    operation=_CHOICE_OPERATION,
+                    profile=ExecutionProfile.EXPLORE_ANALYSIS,
+                    job_id=job_id,
+                    cancellation_token=token,
+                    estimate=WorkEstimate(
+                        estimated_bytes=estimate_choice_query_peak_bytes(
+                            row_count=row_count,
+                            choice_row_width_bytes=_sample_width(choice),
+                            analysis_row_width_bytes=analysis_width,
+                            scans_every_quote=reducer.scans_every_quote(),
+                            joins_every_quote=reducer.joins_every_quote,
+                            result_rows=reducer.result_rows(spec),
+                        ),
+                        subject=f"The optimiser choice query ({type(reducer).__name__})",
+                        remedy=_CHOICE_REMEDY,
+                    ),
+                )
+                admitted = context
+
+                def collect(plan: pl.LazyFrame) -> pl.DataFrame:
+                    return streaming_collect(plan, execution_context=admitted)
+
+                frames = ChoiceFrames(
+                    choice=choice,
+                    analysis=analysis,
+                    analysis_key=str(job["config"].get("quote_id") or CHOICE_QUOTE_ID),
+                    collect=collect,
+                )
+                if analysis is not None:
+                    _require_same_quotes(frames, analysis, row_count)
+                return reducer.run(frames, spec, row_count)
+        except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
+            raise HTTPException(status_code=507, detail=exc.to_payload()) from None
+        finally:
+            if context is not None:
+                context.release_admission()
+
+    def _leased_analysis(self, stack: ExitStack, job_id: str, row_count: int) -> pl.LazyFrame:
+        import polars as pl
+
+        try:
+            handle = stack.enter_context(
+                self._store.lease(job_id, _optimiser_artifacts._QUOTE_ANALYSIS_HANDLE_KEY)
+            )
+        except ArtifactHandleUnavailableError as exc:
+            raise HTTPException(
+                status_code=410, detail=_optimiser_artifacts.QUOTE_ANALYSIS_UNAVAILABLE_DETAIL
+            ) from exc
+        if handle["row_count"] != row_count:
+            raise ChoiceJoinError(
+                f"quote_analysis.parquet records {handle['row_count']} rows for {row_count} "
+                "chosen rows; it must hold exactly one row per solved quote."
+            )
+        return pl.scan_parquet(_optimiser_artifacts._quote_analysis_path(handle))
+
+
+def _choice_spec(job: Mapping[str, Any]) -> ChoiceFrameSpec:
+    """The job's choice-frame description, refusing an analysis column the join cannot keep."""
+    constraints = job["config"].get("constraints") or {}
+    handle = (job.get("artifact_handles") or {}).get(
+        _optimiser_artifacts._QUOTE_ANALYSIS_HANDLE_KEY
+    )
+    analysis_columns = tuple(handle["columns"]) if isinstance(handle, Mapping) else ()
+    spec = ChoiceFrameSpec(
+        constraint_names=tuple(str(name) for name in constraints),
+        analysis_columns=analysis_columns,
+        scenario_grid=tuple(
+            (int(step["optimal_step"]), float(step["scenario_value"]))
+            for step in require_scenario_grid(job)
+        ),
+    )
+    clashing = sorted(set(analysis_columns) & set(spec.choice_columns))
+    if clashing:
+        raise _bad_request(
+            f"Analysis columns {clashing} have the names of chosen-scenario columns, so a "
+            "breakdown cannot keep both. Rename them upstream and re-run the solve."
+        )
+    return spec
