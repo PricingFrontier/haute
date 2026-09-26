@@ -1205,6 +1205,7 @@ export interface TrainEstimateResponse {
   total_rows: number | null;
   training_mb: number | null;
   unavailable: TrainEstimateUnavailable | null;
+  unbounded_join_node_ids: string[];
   warning: string | null;
   was_downsampled: boolean;
 }

@@ -1617,7 +1617,8 @@ def test_training_ram_estimates_use_only_usable_snapshots(
     jobs = JobStore()
     seed_job(jobs, "ram", {"status": "running"})
     try:
-        _warning, _limit, rows, columns = TrainService(jobs)._estimate_ram(graph, "T", None, "ram")
+        estimate = TrainService(jobs)._estimate_ram(graph, "T", None, "ram")
+        rows, columns = estimate.total_rows, estimate.probe_columns
     finally:
         jobs.delete_job("ram")
 

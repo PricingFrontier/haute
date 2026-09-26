@@ -2964,7 +2964,7 @@ describe("API response guards", () => {
     const estimate = parseTrainEstimateResponse({
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
       training_mb: 25, available_mb: 512, bytes_per_row: 256,
-      was_downsampled: false, warning: null, gpu_vram_estimated_mb: null,
+      was_downsampled: false, warning: null, unbounded_join_node_ids: [], gpu_vram_estimated_mb: null,
       gpu_vram_available_mb: null, gpu_warning: null, unavailable: null,
       evaluation_preview: {
         schema_version: 1, strategy: "temporal", validation_method: "cross_validation",
@@ -3012,6 +3012,7 @@ describe("API response guards", () => {
       [{ unavailable: undefined }, /unavailable/],
       [{ estimated_mb: null }, /requires a row total and memory figures/],
       [{ total_rows: null }, /requires a row total and memory figures/],
+      [{ unbounded_join_node_ids: ["join"], was_downsampled: true }, /worst-case row bound/],
       [{ estimated_mb: undefined }, /estimated_mb/],
       [{ unavailable: schema }, /has no memory figures/],
       [{ ...blank, unavailable: schema, was_downsampled: true }, /no downsampling verdict or warning/],
@@ -3037,7 +3038,7 @@ describe("API response guards", () => {
     const estimate = {
       total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
       training_mb: 25, available_mb: 512, bytes_per_row: 256,
-      was_downsampled: false, warning: null, gpu_vram_estimated_mb: null,
+      was_downsampled: false, warning: null, unbounded_join_node_ids: [], gpu_vram_estimated_mb: null,
       gpu_vram_available_mb: null, gpu_warning: null, unavailable: null,
     }
     expect(() => parseTrainEstimateResponse({

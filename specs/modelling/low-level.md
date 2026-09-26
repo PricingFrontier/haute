@@ -1701,6 +1701,20 @@ Focused evidence lives in `tests/test_evaluation.py`,
 `tests/test_training_response_evaluation.py`, `tests/test_tuning.py`, and
 `tests/test_training_tuning.py`, with worker/route/export/publication integration in
 `tests/test_training_worker_protocol.py`, `tests/test_modelling_routes.py`, and
+- The row-cardinality proof carries, beside its bound, the ids of the joins without a key
+  contract it depends on (`_ResolvedRowCardinality.many_to_many_join_node_ids`, inherited
+  downstream: an Edge Join with `validate` `m:m` or absent, or a Polars node whose own join
+  declares none). `RamEstimate.unbounded_join_node_ids` and
+  `TrainEstimateResponse.unbounded_join_node_ids` report them. With any, `total_rows` is the
+  worst case: `was_downsampled` is false and `warning` null even when the bound exceeds
+  RAM, and `safe_row_limit` is the RAM row limit training would apply. Declaring the join
+  many-to-one (`validate="m:1"`) turns the bound into the base frame's row count. Training
+  start (`_training_lifecycle`) records no warning from the estimate. It samples the
+  prepared input to the RAM row limit, as before, then reads the prepared Parquet file's row
+  count: only when the RAM limit, not the user's `row_limit`, was binding and the file holds
+  that many rows does the job record the downsampling warning, which names the joins for an
+  unproven bound instead of claiming a source row count (a frame of exactly the limit's rows
+  is indistinguishable and is reported as sampled).
 `tests/test_modelling_export.py`. Frontend guard, config, preview, summary and progress
 suites prove the same canonical vocabulary and bounded lifecycle end to end.
 
@@ -1767,7 +1781,12 @@ suites prove the same canonical vocabulary and bounded lifecycle end to end.
   shows "Memory estimate unavailable" with its reason in place of the missing figures
   (naming the blocking node by its canvas label for `row_count_unprovable`), the source
   rows when known, and the available RAM. It never shows a fits-in-memory or downsample
-  verdict, or a memory figure. Split has no loading message beneath its settings;
+  verdict, or a memory figure. When the estimate names joins without a key contract, Train
+  shows "Row count not proven" in the neutral style instead of a verdict: "Up to N rows:
+  <join label> has no key contract", an Open button per named join on the canvas that opens
+  its settings (where declaring many-to-one bounds it), the upper bound, the RAM that bound
+  would need, the training row limit when one applies, and the available RAM. "Will
+  downsample" and "Dataset fits in memory" appear only for a proven row count. Split has no loading message beneath its settings;
   the allocation summary still updates when the exact preview arrives.
 
 ### Training allocation ordering (cache implementation correction)

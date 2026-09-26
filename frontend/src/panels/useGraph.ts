@@ -16,6 +16,8 @@ export type GraphContextValue = {
   edges: SimpleEdge[]
   submodels?: Record<string, unknown>
   preamble?: string
+  /** Opens a node on the canvas in the panel, as clicking it does; absent where there is no canvas. */
+  openNode?: (nodeId: string) => void
 }
 
 // `undefined` distinguishes "no provider" from "provider with empty graph".

@@ -173,7 +173,11 @@
 - **`RamEstimate`** (`_ram_estimate.py`, frozen dataclass) — `safe_row_limit`,
   `total_rows`, `estimated_bytes`, `available_bytes`, `bytes_per_row`,
   `was_downsampled`, `warning`, `probe_columns`, `unavailable_reason`,
-  `blocking_node_id`. An unavailable estimate has one
+  `blocking_node_id`, `unbounded_join_node_ids`. `unbounded_join_node_ids` names, in graph
+  order, the joins without a key contract that the row total depends on (an Edge Join or a
+  Polars join declaring no `validate`, which carries the row product); the row total is then
+  a worst case, so the estimate has no downsampling verdict or warning, only the RAM row
+  limit (`safe_row_limit`) training applies if more rows arrive. An unavailable estimate has one
   `TrainingEstimateUnavailableReason` (`row_count_unprovable` with the blocking node and
   no row total, or `schema_unresolvable` with the row total) and `None` memory figures;
   construction rejects any other combination.

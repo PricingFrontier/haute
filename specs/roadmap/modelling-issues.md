@@ -38,72 +38,12 @@ the demo pipeline has been rewritten in the declaration format.
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| MDL-01 | Planned | P2 | The memory estimate says how many rows training will really use, and never reports a join's worst case as the row count. |
 | MDL-06 | Decision | P3 | A CatBoost model with small categorical columns does not train many times slower than it needs to. |
 | MDL-07 | Decision | P3 | The Summary tab leads with the out-of-sample metrics when a validation fit ran. |
 | MDL-08 | Planned | P3 | An open page recovers when the frontend it was served from has been rebuilt. |
 | MDL-09 | Decision | P3 | A trained model's results survive a server restart, or the panel says why they are gone. |
 
 ## Planned improvements
-
-### MDL-01 — The memory estimate reports a join's worst case as the row count
-**Why:** For the demo model the Train tab shows a "Will downsample" box
-reading Source rows 10,000,000,000, Training rows 149,958,852 (with 69.4 GB
-free; 204,238,763 with 94.6 GB free), Est. training RAM 48.6 GB (66.2 GB) and
-Available RAM 69.4 GB (94.6 GB), while the run summary above it says 80,000
-training and 20,000 validation rows. The server logs the same decision when
-training starts: `downsampling safe_rows=149290300 total_rows=10000000000
-warning='Dataset downsampled to 149,290,300 of 10,000,000,000 rows to fit in
-available RAM (69.1 GB). Estimated peak training memory: 3241.0 GB.'`, and
-the warning is stored on the job. Nothing is downsampled: the row limit (149
-million) is far above the 100,000 rows that arrive, and the model trains on
-all of them.
-
-10,000,000,000 is 100,000 × 100,000. The estimate takes its row count from the
-graph's proven cardinality upper bound (`cardinality.output_rows` in
-`estimate_safe_training_rows`), and an Edge Join without a `validate`
-contract carries the row product, exactly as an undeclared Polars join does.
-The bound is a correct worst case for admission, but the Train tab presents it
-as the size of the data, says it "Will downsample", sizes the RAM from it, and
-the job carries a downsampling warning for a run that downsampled nothing. An
-analyst reading it would reasonably think training is about to throw data
-away, or that the pipeline has exploded, and nothing on screen says the
-number comes from a join that could be declared many-to-one.
-
-**Plan:** Keep the worst-case bound for admission, and stop presenting it as
-the row count:
-
-1. When the bound depends on an undeclared join (the cardinality evidence
-   already records the join node), the estimate says so: "Up to
-   10,000,000,000 rows: `competitor_join` has no key contract", with a link
-   that opens the join's settings, where declaring `many-to-one` (`validate=
-   "m:1"`) turns the bound into the base frame's row count.
-2. Training decides whether to downsample from the rows it actually has
-   (it writes its input to a temporary Parquet file before the split, so the
-   count is known), and records the warning only when it did. The Train tab's box reads "Will downsample" only when the
-   decision rests on a proven count; with an unproven bound it reads
-   "Row count not proven" in the neutral style, with the upper bound and the
-   RAM it would need.
-3. The client-side "Training rows" figure uses the server's `safe_row_limit`
-   rather than recomputing it (the two differed: 149,958,852 on screen,
-   149,290,300 in the log, for the same run).
-
-**Acceptance:** On the demo pipeline the Train tab no longer says "Will
-downsample" or shows a ten-billion row count as fact; with `validate="m:1"`
-on `competitor_join` it shows 100,000 rows and "Dataset fits in memory". A
-route test estimates an undeclared left join of two 100,000-row inputs and
-asserts the response marks the count as an unproven bound naming the join; a
-training test on that graph asserts no downsampling warning on the job and
-all rows trained; a component test renders both box states.
-
-**Dependencies:** None.
-
-**Evidence:** `src/haute/_ram_estimate.py::estimate_safe_training_rows`;
-`src/haute/_cardinality.py::join_cardinality_upper_bound`;
-`src/haute/routes/_training_preparation.py::estimate_training_memory`;
-`src/haute/routes/modelling.py::estimate_training`;
-`src/haute/routes/_training_lifecycle.py`;
-`frontend/src/panels/modelling/TrainingActionsAndResults.tsx::TrainingActionsAndResults`.
 
 ### MDL-06 — CatBoost's default encoding of small categorical columns is slow
 **Why:** The demo model takes minutes to train: 134 s from Train Model to

@@ -520,6 +520,8 @@ function NodePropertiesPanel({
   importsOpen,
   assistantOpen,
   onCloseGit,
+  /** Opens another canvas node in the panel, as clicking it does. */
+  onOpenNode: (nodeId: string) => void
   onCloseUtility,
   onCloseImports,
   onSave,
@@ -560,6 +562,7 @@ function NodePropertiesPanel({
   let content: ReactNode
   if (gitOpen) {
     content = (
+  onOpenNode,
       <Suspense fallback={null}>
         <GitPanel onClose={onCloseGit} onSave={onSave} />
       </Suspense>
@@ -616,6 +619,7 @@ function NodePropertiesPanel({
           onRenameNode={onRenameNode}
           onDeleteEdge={onDeleteEdge}
           onDeleteSubmodelInputPort={onDeleteSubmodelInputPort}
+        openNode={onOpenNode}
           onSwapEdgeJoinInputs={onSwapEdgeJoinInputs}
           readOnly={editingReadOnly}
           documentReadOnly={documentEditingReadOnly}
@@ -1337,7 +1341,7 @@ function FlowEditor() {
   }, [editingReadOnly, isBoundaryConnection, panelGraph])
 
   const {
-    onConnect, onSelectionChange, onNodeClick, handleDeleteEdge,
+    onConnect, onSelectionChange, openNode, onNodeClick, handleDeleteEdge,
     onConnectStart, onConnectEnd, onConnectionPointerMove, clearEdgeJoinCandidate,
     edgeJoinCandidateEdgeId, onNodeContextMenu, onDragOver, onDrop,
   } = useEdgeHandlers({
@@ -1367,6 +1371,14 @@ function FlowEditor() {
         : null
     ),
     [editingReadOnly, edgeJoinCandidateEdgeId, edgesWithTrace],
+  // A panel names a node on this canvas (a join its estimate depends on); a
+  // missing one is a caller bug, not something to open silently.
+  const openCanvasNode = useCallback((nodeId: string) => {
+    const node = graphRef.current.nodes.find((candidate) => candidate.id === nodeId)
+    if (!node) throw new Error(`Node ${nodeId} is not on the canvas`)
+    openNode(node)
+  }, [openNode])
+
   )
   const edgesWithEdgeJoinCandidate = useMemo(
     () => withEdgeJoinInsertionCandidate(edgesWithTrace, presentedEdgeJoinCandidateEdgeId),
@@ -1773,6 +1785,7 @@ function FlowEditor() {
         editingReadOnly={editingReadOnly}
         contextMenu={contextMenu}
         setContextMenu={setContextMenu}
+          onOpenNode={openCanvasNode}
         onDeleteNode={handleDeleteNode}
         onDuplicateNode={handleDuplicateNode}
         onRenameNodeMenu={handleRenameNode}

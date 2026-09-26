@@ -24,7 +24,7 @@ without pushing history or clearing redo; this includes generated step-code refr
 | `frontend/src/nodes/SubmodelPortNode.tsx` | Renders one composite Input or Output boundary card inside a drilled submodel. Both headers use the same right-pointing arrow while their handles retain their graph semantics. Input turns its ordered declared ports, including unrouted ports, into shared source-handle rows and has no creation row; Output renders one shared default-input row and never lists exported frames. |
 | `frontend/src/panels/editors/SubmodelPortEditor.tsx` | Renders the drilled boundary inspector body. Input reuses the standard `InputSourcesBar` chip/remove presentation for its declared public frames and exposes no mutation control when read-only; Output has no editable interface list. |
 | `frontend/src/panels/useGraph.ts` | Defines `GraphContext` (`React.Context<GraphContextValue \| undefined>`) and the `useGraph()` consumer hook, which throws when called outside a provider. |
-| `frontend/src/panels/GraphContext.tsx` | `GraphProvider` component; memoises the context value on `{allNodes, edges, submodels, preamble}` identity. |
+| `frontend/src/panels/GraphContext.tsx` | `GraphProvider` component; memoises the context value on `{allNodes, edges, submodels, preamble, openNode}` identity. |
 | `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. It exports the production `computeStructuralFingerprint` for direct contract tests; tests must not maintain a copied fingerprint implementation. |
 | `frontend/src/types/node.ts` | Shared node-data and persisted node-type contract owned by [frontend-shared](../frontend-shared/low-level.md) and consumed by the canvas. |
 | `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: ordinary atomic delete, guarded submodel deletion, duplicate and instance creation that resolve authoritative identities before commit, reusable-submodel occurrence creation with deterministic fresh id/alias allocation, rename dialog, and in-flight-guarded ELK auto-layout. Resolver rejection, malformed output, or graph replacement leaves state untouched. |
@@ -259,7 +259,11 @@ reconciliation rather than dropping them or committing a second mutation.
   per direction, not one per frame. `externalNodeIds` is the ordered, distinct
   set of flat parent node ids whose trace steps collapse onto that card.
 - **`GraphContextValue`** (`useGraph.ts`) —
-  `{ allNodes: SimpleNode[]; edges: SimpleEdge[]; submodels?; preamble? }`.
+  `{ allNodes: SimpleNode[]; edges: SimpleEdge[]; submodels?; preamble?; openNode? }`.
+  `openNode(nodeId)` opens a node on the canvas in the panel exactly as clicking it does
+  (`useEdgeHandlers`'s `openNode`, which `onNodeClick` also calls); App supplies it and throws
+  for an id that is not on the canvas, so a panel offers it only for nodes in `allNodes`
+  (the Train pane's joins without a key contract). Read-only surfaces leave it unset.
 - **`PanelGraphContextSnapshot`** (`usePanelGraphContext.ts`) —
   `{ allNodes, edges, nodeById: Map<string, SimpleNode>, getNode }`, built by
   `toSimpleNode`/`toSimpleEdge`, which strip React-Flow-only fields and

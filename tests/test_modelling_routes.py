@@ -353,6 +353,57 @@ def _make_modelling_graph(
     return graph.model_dump()
 
 
+def _make_joined_modelling_graph(tmp_path, rows: int, validate: str | None) -> dict:
+    """quotes left-joined to competitor prices on quote_id, feeding a modelling node."""
+    rng = np.random.RandomState(7)
+    quotes = tmp_path / "quotes.parquet"
+    competitor = tmp_path / "competitor.parquet"
+    pl.DataFrame({"quote_id": range(rows), "x1": rng.randn(rows)}).write_parquet(quotes)
+    pl.DataFrame({"quote_id": range(rows), "y": rng.rand(rows) * 10}).write_parquet(competitor)
+    join_config: dict[str, object] = {"how": "left", "on": ["quote_id"]}
+    if validate is not None:
+        join_config["validate"] = validate
+    model = _make_modelling_graph(str(quotes))["nodes"][1]
+    model["data"]["config"]["exclude"] = ["quote_id"]
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "quotes",
+                    "data": {
+                        "label": "quotes",
+                        "nodeType": "dataInput",
+                        "config": make_ready_file_input_config(str(quotes)),
+                    },
+                },
+                {
+                    "id": "competitor",
+                    "data": {
+                        "label": "competitor",
+                        "nodeType": "dataInput",
+                        "config": make_ready_file_input_config(str(competitor)),
+                    },
+                },
+                {
+                    "id": "competitor_join",
+                    "data": {
+                        "label": "competitor_join",
+                        "nodeType": "edgeJoin",
+                        "config": join_config,
+                    },
+                },
+                model,
+            ],
+            "edges": [
+                make_edge("quotes", "competitor_join", target_handle="base").model_dump(),
+                make_edge("competitor", "competitor_join", target_handle="join").model_dump(),
+                make_edge("competitor_join", "train").model_dump(),
+            ],
+        }
+    )
+    return graph.model_dump()
+
+
 @pytest.fixture(autouse=True)
 def _fast_optional_training_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     """Endpoint tests assert job state, metrics, and warnings, not optional charts."""
@@ -494,6 +545,24 @@ class TestTrainEndpoint:
             assert "feature" in entry
             assert "type" in entry
             assert "bins" in entry
+
+    def test_an_unproven_join_bound_trains_on_every_row_without_a_downsample_warning(
+        self, client, tmp_path, monkeypatch
+    ) -> None:
+        """The RAM limit applies to the rows that arrive, not the join's product (MDL-01)."""
+        graph = _make_joined_modelling_graph(tmp_path, 200, None)
+        # Too little RAM for the 40,000-row worst case: the limit floors at 500 rows,
+        # more than the 200 that really arrive.
+        monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 1)
+
+        resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 200, resp.text
+        status = _poll_until_done(client, resp.json()["job_id"])
+        assert status["status"] == "completed", status
+        assert status["warning"] is None
+        assert status["result"]["warning"] is None
+        assert status["result"]["development_rows"] == 200
 
     def test_train_reports_progress(self, client, training_data):
         """Training should report iteration progress via the status endpoint."""
@@ -1541,6 +1610,31 @@ class TestEstimateEndpoint:
         assert "estimated_mb" in data
         assert "training_mb" in data
 
+    @pytest.mark.parametrize(
+        ("validate", "rows", "unbounded"),
+        [(None, 100_000 * 100_000, ["competitor_join"]), ("m:1", 100_000, [])],
+        ids=["undeclared", "many-to-one"],
+    )
+    def test_an_undeclared_join_is_an_unproven_bound_naming_the_join(
+        self, client, tmp_path, validate: str | None, rows: int, unbounded: list[str]
+    ) -> None:
+        """A join's row product is a worst case, never a count to downsample from (MDL-01)."""
+        graph = _make_joined_modelling_graph(tmp_path, 100_000, validate)
+
+        resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["total_rows"] == rows
+        assert data["unbounded_join_node_ids"] == unbounded
+        # Neither says "Will downsample": the product is unproven, and 100,000 rows fit.
+        assert (data["was_downsampled"], data["warning"]) == (False, None)
+        if unbounded:
+            # Ten billion rows cannot fit, so training would sample to this limit.
+            assert data["safe_row_limit"] is not None
+        else:
+            assert data["safe_row_limit"] is None
+
     def test_estimate_gpu_unknown_vram_returns_advisory_warning(self, client, training_data):
         """Unknown VRAM surfaces as gpu_warning in the response, without the
         switch-to-CPU refusal suffix reserved for observed-insufficient VRAM."""
@@ -1980,6 +2074,10 @@ class TestEstimateEndpoint:
             ({"estimated_mb": None}, "requires a row total and memory figures"),
             ({"total_rows": None}, "requires a row total and memory figures"),
             (
+                {"unbounded_join_node_ids": ["join"], "warning": "downsampled"},
+                "worst-case row bound has no downsampling verdict",
+            ),
+            (
                 {"unavailable": {"reason": "schema_unresolvable", "blocking_node_id": None}},
                 "has no memory figures",
             ),
@@ -2056,6 +2154,7 @@ class TestEstimateEndpoint:
             "available_mb": 8192.0,
             "bytes_per_row": 10.0,
             "unavailable": None,
+            "unbounded_join_node_ids": [],
         }
         with pytest.raises(ValidationError, match=message):
             TrainEstimateResponse.model_validate({**payload, **overrides})
@@ -2392,6 +2491,7 @@ class TestBackgroundThreadErrors:
             available_bytes=500.0,
             bytes_per_row=10.0,
             was_downsampled=True,
+            unbounded_join_node_ids=(),
         )
         from tests.test_training_worker_protocol import _SuccessfulTrainingJob
 
@@ -2429,6 +2529,7 @@ class TestBackgroundThreadErrors:
             available_bytes=500.0,
             bytes_per_row=10.0,
             was_downsampled=True,
+            unbounded_join_node_ids=(),
         )
         from tests.test_training_worker_protocol import _SuccessfulTrainingJob
 
@@ -2448,6 +2549,39 @@ class TestBackgroundThreadErrors:
                 status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
                 # RAM warning should be suppressed since user limit (30) < RAM limit (50)
                 assert status.get("warning") is None
+
+
+def test_downsampling_warning_comes_from_the_rows_training_prepared(tmp_path) -> None:
+    """The RAM limit warns only when it removed rows, and never claims a join's product."""
+    from haute._types import PipelineGraph
+    from haute.routes._training_lifecycle import _downsampling_warning
+
+    graph = PipelineGraph.model_validate(
+        _make_joined_modelling_graph(tmp_path, rows=10, validate=None)
+    )
+
+    def estimate(unbounded: tuple[str, ...]) -> RamEstimate:
+        return RamEstimate(
+            safe_row_limit=500,
+            total_rows=40_000,
+            estimated_bytes=10**9,
+            available_bytes=2 * 1024**3,
+            bytes_per_row=100.0,
+            was_downsampled=not unbounded,
+            warning=None if unbounded else "Dataset downsampled to 500 of 40,000 rows",
+            unbounded_join_node_ids=unbounded,
+        )
+
+    unproven = estimate(("competitor_join",))
+    # Fewer rows than the limit arrived: nothing was removed.
+    assert _downsampling_warning(graph, unproven, 200) is None
+    assert _downsampling_warning(graph, unproven, 500) == (
+        "Dataset downsampled to 500 rows to fit in available RAM (2.0 GB). Its row count is "
+        "not proven: 'competitor_join' has no key contract, so up to 40,000 rows could arrive."
+    )
+    assert _downsampling_warning(graph, estimate(()), 500) == (
+        "Dataset downsampled to 500 of 40,000 rows"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -4002,7 +4136,20 @@ class TestDispersionErrorPaths:
         )
         with (
             patch.object(service, "_compile_preamble", return_value=None),
-            patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
+            patch.object(
+                service,
+                "_estimate_ram",
+                return_value=RamEstimate(
+                    safe_row_limit=None,
+                    total_rows=100,
+                    estimated_bytes=1_000,
+                    available_bytes=10**9,
+                    bytes_per_row=10.0,
+                    was_downsampled=False,
+                    warning=None,
+                    probe_columns=3,
+                ),
+            ),
             patch(
                 "haute.routes._training_lifecycle.create_admitted_execution_context",
                 return_value=context,

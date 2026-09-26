@@ -240,6 +240,7 @@ type TrainPaneProps = {
 }
 
 function TrainPane({
+  nodeOpener: (nodeId: string) => (() => void) | null
   algorithm,
   config,
   onUpdate,
@@ -259,6 +260,7 @@ function TrainPane({
 }: TrainPaneProps) {
   const rowLimit = typeof config.row_limit === "number" ? config.row_limit : null
   const validationMessages = validationIssues.map((issue) => issue.message)
+  nodeOpener,
 
   const toggleGpu = (enabled: boolean) => {
     const { task_type: _taskType, ...nonGpuParams } = params
@@ -319,6 +321,7 @@ function TrainPane({
         tuningEnabled={tuningEnabled}
         onTrain={requestTrain}
         onCancel={onCancel}
+        nodeOpener={nodeOpener}
       />
     </>
   )
@@ -331,7 +334,7 @@ export default function ModellingConfig({
   activePane = "target",
   onPaneIssuesChange,
 }: Props) {
-  const { allNodes, edges, submodels, preamble } = useGraph()
+  const { allNodes, edges, submodels, preamble, openNode } = useGraph()
   const nodeId = String(config._nodeId ?? "")
   const setModellingPane = useUIStore((state) => state.setModellingPane)
   const reviewPane = (pane: ModellingPane) => setModellingPane(nodeId, pane)
@@ -448,6 +451,10 @@ export default function ModellingConfig({
     [activeSource, graph, nodeId],
   )
   const estimate = useStaleConfigEstimate<TrainEstimate>(
+  const canvasNodeOpener = useCallback(
+    (id: string) => (openNode && allNodes.some((node) => node.id === id) ? () => openNode(id) : null),
+    [allNodes, openNode],
+  )
     nodeId,
     trainingIdentity,
     cachedResult,
@@ -622,6 +629,7 @@ export default function ModellingConfig({
       algorithm={algorithm}
       config={config}
       onUpdate={onUpdate}
+      nodeOpener={canvasNodeOpener}
       nodeLabel={allNodes.find((node) => node.id === nodeId)?.data.label ?? "model"}
       trainedJobId={
         cachedResult && cachedResult.result.status !== "error" && cachedResult.jobId

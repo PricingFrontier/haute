@@ -319,6 +319,7 @@ export function makeTrainEstimate(
     gpu_vram_available_mb: null,
     gpu_warning: null,
     unavailable: null,
+    unbounded_join_node_ids: [],
     evaluation_preview: null,
     ...overrides,
   }

@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import polars as pl
 from fastapi import HTTPException
@@ -165,6 +165,9 @@ from haute.schemas import (
     TrainStatusResponse,
 )
 
+if TYPE_CHECKING:
+    from haute._ram_estimate import RamEstimate
+
 logger = get_logger(component="server.modelling.train")
 
 
@@ -210,6 +213,37 @@ def _finite_numbers(values: Mapping[str, Any]) -> bool:
         and isinstance(value, int | float)
         and math.isfinite(float(value))
         for value in values.values()
+    )
+
+
+def _parquet_rows(path: str) -> int:
+    """The row count of a prepared training Parquet file, from its metadata."""
+    return int(pl.scan_parquet(path).select(pl.len()).collect().item())
+
+
+def _downsampling_warning(
+    graph: PipelineGraph, estimate: RamEstimate, prepared_rows: int
+) -> str | None:
+    """The job warning when the RAM row limit sampled the prepared input, else None.
+
+    The sample keeps at most the limit, so a file holding exactly that many rows
+    was sampled (one that had exactly that many rows is indistinguishable).
+    """
+    limit = estimate.safe_row_limit
+    if limit is None or prepared_rows < limit:
+        return None
+    if not estimate.unbounded_join_node_ids:
+        return estimate.warning
+    joins = [
+        f"'{graph.node_map[join].data.label}'" if join in graph.node_map else f"'{join}'"
+        for join in estimate.unbounded_join_node_ids
+    ]
+    subject = joins[0] if len(joins) == 1 else f"{', '.join(joins[:-1])} and {joins[-1]}"
+    verb = "has" if len(joins) == 1 else "have"
+    return (
+        f"Dataset downsampled to {limit:,} rows to fit in available RAM "
+        f"({estimate.available_bytes / 1024**3:.1f} GB). Its row count is not proven: "
+        f"{subject} {verb} no key contract, so up to {estimate.total_rows:,} rows could arrive."
     )
 
 
@@ -552,28 +586,26 @@ class TrainService:
             cancellation_token.throw_if_cancelled("training_preparation", job_id=job_id)
             preamble_ns = self._compile_preamble(body.graph)
             cancellation_token.throw_if_cancelled("training_preamble", job_id=job_id)
-            ram_warning, row_limit, total_source_rows, probe_columns = self._estimate_ram(
+            ram_est = self._estimate_ram(
                 body.graph, node_id, preamble_ns, job_id, source=body.source
             )
             cancellation_token.throw_if_cancelled("training_memory_estimate", job_id=job_id)
+            total_source_rows = ram_est.total_rows
             user_limit = config.get("row_limit")
-            row_limit = _clamp_row_limit(row_limit, user_limit)
-            if (
-                ram_warning
-                and user_limit
+            row_limit = _clamp_row_limit(ram_est.safe_row_limit, user_limit)
+            # The user's own limit is their choice, never a RAM downsample.
+            ram_limit_binds = ram_est.safe_row_limit is not None and not (
+                user_limit
                 and isinstance(user_limit, (int, float))
                 and int(user_limit) > 0
                 and row_limit == int(user_limit)
-            ):
-                ram_warning = None
-                self._store.update_job(job_id, warning=None)
+            )
             train_params = build_train_params(config)
-            ram_warning = self._check_gpu_vram_before_launch(
+            self._check_gpu_vram_before_launch(
                 train_params,
                 row_limit,
                 total_source_rows,
-                probe_columns,
-                ram_warning,
+                ram_est.probe_columns,
                 job_id,
                 algorithm=str(config.get("algorithm", "catboost")).lower(),
                 device=str(config.get("device") or "cpu"),
@@ -600,6 +632,17 @@ class TrainService:
                 execution_context=execution_context,
             )
             execution_context.checkpoint(label="training_preparation_complete")
+            ram_warning = (
+                _downsampling_warning(body.graph, ram_est, _parquet_rows(tmp_parquet))
+                if ram_limit_binds
+                else None
+            )
+            if ram_warning:
+                gpu_warning = self._store.require_job(job_id).get("gpu_warning")
+                self._store.update_job(
+                    job_id,
+                    warning=f"{ram_warning}\n{gpu_warning}" if gpu_warning else ram_warning,
+                )
             feature_selection = self._store.require_job(job_id).get("feature_selection")
             self._launch_background(
                 job_id,
@@ -736,14 +779,16 @@ class TrainService:
         execution_context: ExecutionContext | None = None
         launch_started = False
         try:
-            _ram_warning, row_limit, _total_rows, _probe_cols = self._estimate_ram(
+            ram_est = self._estimate_ram(
                 body.graph,
                 body.node_id,
                 preamble_ns,
                 job_id,
                 source=body.source,
             )
-            row_limit = _clamp_row_limit(row_limit, config.get("row_limit"))
+            if ram_est.warning:
+                self._store.update_job(job_id, warning=ram_est.warning)
+            row_limit = _clamp_row_limit(ram_est.safe_row_limit, config.get("row_limit"))
             row_limit = min(row_limit or _DISPERSION_ESTIMATE_ROW_CAP, _DISPERSION_ESTIMATE_ROW_CAP)
 
             keep_cols = _training_projection_keep_columns(config)
@@ -1348,15 +1393,12 @@ class TrainService:
         preamble_ns: dict[str, Any] | None,
         job_id: str,
         source: str = "live",
-    ) -> tuple[str | None, int | None, int | None, int]:
-        """Estimate safe row limit from available RAM.
+    ) -> RamEstimate:
+        """Estimate the RAM row limit; the caller decides what it records.
 
-        Returns (ram_warning, row_limit, total_source_rows, probe_columns).
+        A training run records a downsampling warning only once its prepared
+        input shows the limit removed rows (``_downsampling_warning``).
         """
-        ram_warning: str | None = None
-        total_source_rows: int | None = None
-        probe_columns: int = 0
-
         try:
             self._store.update_job(job_id, message="Estimating memory requirements")
             ram_est = estimate_training_memory(
@@ -1364,12 +1406,6 @@ class TrainService:
                 node_id,
                 source=source,
             )
-            row_limit = ram_est.safe_row_limit
-            ram_warning = ram_est.warning
-            total_source_rows = ram_est.total_rows
-            probe_columns = ram_est.probe_columns
-            if ram_warning:
-                self._store.update_job(job_id, warning=ram_warning)
         except Exception as exc:
             logger.warning("ram_estimate_failed", error=str(exc), exc_info=True)
             detail = {
@@ -1388,7 +1424,7 @@ class TrainService:
                 detail=detail,
             ) from None
 
-        return ram_warning, row_limit, total_source_rows, probe_columns
+        return ram_est
 
     def _check_gpu_vram_before_launch(
         self,
@@ -1396,17 +1432,16 @@ class TrainService:
         row_limit: int | None,
         total_source_rows: int | None,
         probe_columns: int,
-        ram_warning: str | None,
         job_id: str,
         *,
         algorithm: str = "catboost",
         device: str = "cpu",
-    ) -> str | None:
+    ) -> None:
         """Check GPU VRAM and refuse a job that cannot fit on the selected GPU."""
         catboost_gpu = str(train_params.get("task_type", "")).upper() == "GPU"
         xgboost_gpu = algorithm == "xgboost" and device == "gpu"
         if not (catboost_gpu or xgboost_gpu):
-            return ram_warning
+            return
 
         try:
             effective_rows = row_limit or (total_source_rows or 0)
@@ -1426,11 +1461,7 @@ class TrainService:
                     estimated_mb=vram_check.estimated_mb,
                     available_mb=vram_check.available_mb,
                 )
-                self._store.update_job(
-                    job_id,
-                    gpu_warning=gpu_warning,
-                    warning=f"{ram_warning}\n{gpu_warning}" if ram_warning else gpu_warning,
-                )
+                self._store.update_job(job_id, gpu_warning=gpu_warning, warning=gpu_warning)
                 raise _gpu_vram_http_exception(
                     warning=gpu_warning,
                     estimated_mb=vram_check.estimated_mb,
@@ -1445,13 +1476,7 @@ class TrainService:
                     estimated_mb=vram_check.estimated_mb,
                 )
                 self._store.update_job(
-                    job_id,
-                    gpu_warning=vram_check.warning,
-                    warning=(
-                        f"{ram_warning}\n{vram_check.warning}"
-                        if ram_warning
-                        else vram_check.warning
-                    ),
+                    job_id, gpu_warning=vram_check.warning, warning=vram_check.warning
                 )
         except HTTPException:
             raise
@@ -1461,13 +1486,7 @@ class TrainService:
                 "GPU VRAM feasibility could not be checked before launch; "
                 "GPU training may fail or exhaust GPU memory."
             )
-            self._store.update_job(
-                job_id,
-                gpu_warning=check_failed,
-                warning=f"{ram_warning}\n{check_failed}" if ram_warning else check_failed,
-            )
-
-        return ram_warning
+            self._store.update_job(job_id, gpu_warning=check_failed, warning=check_failed)
 
     def _execute_and_sink(
         self,

@@ -84,12 +84,13 @@ type ConfigOverrides = Partial<Parameters<typeof ModellingConfig>[0]> & {
   edges?: SimpleEdge[]
   submodels?: Record<string, unknown>
   preamble?: string
+  openNode?: (nodeId: string) => void
 }
 
 function defaultProps(overrides: ConfigOverrides = {}) {
   // Strip graph-context keys — they flow via `<GraphProvider>` in tests, not props.
-  const { allNodes, edges, submodels, preamble, config, ...rest } = overrides
-  void allNodes; void edges; void submodels; void preamble
+  const { allNodes, edges, submodels, preamble, openNode, config, ...rest } = overrides
+  void allNodes; void edges; void submodels; void preamble; void openNode
   const evaluation = {
     schema_version: 1,
     strategy: "random",
@@ -144,10 +145,10 @@ function withPassThroughGraph() {
 }
 
 function renderConfig(overrides: ConfigOverrides = {}) {
-  const { allNodes = [], edges = [], submodels, preamble } = overrides
+  const { allNodes = [], edges = [], submodels, preamble, openNode } = overrides
   const props = defaultProps(overrides)
   const result = render(
-    <GraphProvider allNodes={allNodes} edges={edges} submodels={submodels} preamble={preamble}>
+    <GraphProvider allNodes={allNodes} edges={edges} submodels={submodels} preamble={preamble} openNode={openNode}>
       <ModellingConfig {...props} />
     </GraphProvider>,
   )
@@ -1414,6 +1415,7 @@ describe("ModellingConfig", () => {
         training_mb: 10000,
         available_mb: 8192,
         bytes_per_row: 500,
+        unbounded_join_node_ids: [],
         was_downsampled: true,
         warning: null,
         gpu_vram_estimated_mb: null,
@@ -1436,6 +1438,7 @@ describe("ModellingConfig", () => {
         available_mb: 8192,
         bytes_per_row: 500,
         was_downsampled: false,
+        unbounded_join_node_ids: [],
         gpu_vram_estimated_mb: 512,
         gpu_vram_available_mb: 8192,
         warning: null,
@@ -1457,6 +1460,7 @@ describe("ModellingConfig", () => {
         available_mb: 8192,
         bytes_per_row: 500,
         was_downsampled: false,
+        unbounded_join_node_ids: [],
         gpu_vram_estimated_mb: 12000,
         gpu_vram_available_mb: 8192,
         warning: null,
@@ -1478,6 +1482,7 @@ describe("ModellingConfig", () => {
         expect(toasts.some((t) => t.text.includes("Training estimate failed"))).toBe(true)
       })
       // Inline warning is shown
+        unbounded_join_node_ids: [],
       expect(screen.getByText("Memory estimate failed")).toBeTruthy()
       // Verify toast content
       const toasts = useToastStore.getState().toasts
@@ -1516,6 +1521,7 @@ describe("ModellingConfig", () => {
         available_mb: 8192,
         bytes_per_row: null,
         was_downsampled: false,
+        unbounded_join_node_ids: [],
         warning: null,
         gpu_vram_estimated_mb: null,
         gpu_vram_available_mb: null,
@@ -1537,6 +1543,7 @@ describe("ModellingConfig", () => {
   // ═════════════════════════════════════════════════════════════════
   // Edge cases
   // ═════════════════════════════════════════════════════════════════
+        unbounded_join_node_ids: [],
 
   describe("Edge cases", () => {
     beforeEach(() => { defaultPane = "features" })
@@ -1549,6 +1556,33 @@ describe("ModellingConfig", () => {
     it("renders with empty columns array", () => {
       renderConfig({ upstreamColumns: [] })
       expect(screen.getByText(/Features/)).toBeTruthy()
+
+    it("opens a named join on the canvas from its unproven row bound", async () => {
+      mockEstimateTrainingRam.mockResolvedValue({
+        total_rows: 10_000_000_000,
+        safe_row_limit: 149_958_852,
+        estimated_mb: 50_000,
+        training_mb: 50_000,
+        available_mb: 71_065,
+        bytes_per_row: 5_000,
+        was_downsampled: false,
+        // The second join is inside a submodel, not on this canvas.
+        unbounded_join_node_ids: ["join", "submodel__inner_join"],
+        warning: null,
+        gpu_vram_estimated_mb: null,
+        gpu_vram_available_mb: null,
+        gpu_warning: null,
+        unavailable: null,
+        evaluation_preview: null,
+      })
+      const join = { id: "join", data: { label: "competitor_join", description: "", nodeType: "edgeJoin" } }
+      const openNode = vi.fn()
+      renderConfig({ allNodes: [join], openNode })
+
+      fireEvent.click(await screen.findByRole("button", { name: 'Open "competitor_join"' }))
+      expect(openNode).toHaveBeenCalledWith("join")
+      expect(screen.getAllByRole("button", { name: /^Open "/ })).toHaveLength(1)
+    })
     })
 
     it("GPU toggle enables GPU training", () => {
