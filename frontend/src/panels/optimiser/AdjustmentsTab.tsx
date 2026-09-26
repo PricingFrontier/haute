@@ -1,8 +1,10 @@
 /**
- * The online Adjustments view: how the optimiser adjusted the book relative to
- * the base price (scenario value 1.0), for the solved result or the selected
+ * The Adjustments view: how the optimiser adjusted the book relative to the
+ * base price (scenario value 1.0), for the solved result or the selected
  * frontier point. One bar per value of the solve's scenario grid, from the
  * backend's adjustment report; nothing here is inferred from the chosen rows.
+ * A ratebook report describes the grid step price-contour evaluated for each
+ * quote and counts the quotes whose deployed factor differs from it.
  *
  * The solved result carries its report. A selected point's report is loaded
  * only while this view is open, through frontier select with
@@ -29,7 +31,14 @@ import { CHART_COLORS } from "../../theme/colors"
 import ChartFocusDetail from "../ChartFocusDetail"
 import HistogramChart, { type HistogramBar } from "../HistogramChart"
 import { ChartValuesTable, ResponsiveChart } from "../modelling/ChartScaffold"
-import { NO_UNADJUSTED_NOTE, formatScenarioValue, formatShare, pointAdjustmentKey } from "./adjustments"
+import {
+  DEPLOYED_FACTOR_DIFFERS_LABEL,
+  DEPLOYED_FACTOR_DIFFERS_NOTE,
+  NO_UNADJUSTED_NOTE,
+  formatScenarioValue,
+  formatShare,
+  pointAdjustmentKey,
+} from "./adjustments"
 
 /** Loaded frontier point reports, keyed by `pointAdjustmentKey`. */
 export type PointAdjustmentReports = Readonly<Record<string, OptimiserAdjustmentReport>>
@@ -133,7 +142,7 @@ export default function AdjustmentsTab({
   if (report === null) {
     const reason = solvedResult.diagnostics_errors.find((error) => error.diagnostic === "adjustments")
     if (!reason) {
-      throw new Error("The online result has no adjustment report and no diagnostic saying why.")
+      throw new Error("The result has no adjustment report and no diagnostic saying why.")
     }
     return (
       <div role="alert" className="flex items-start gap-2 text-xs px-3 py-2 rounded" style={{ background: "var(--danger-soft)", color: "var(--danger)" }}>
@@ -330,6 +339,9 @@ function AdjustmentsReport({
           </div>
         ))}
       </dl>
+      {report.deployed_factor_differs !== null && (
+        <DeployedFactorDiffers count={report.deployed_factor_differs} nQuotes={report.n_quotes} />
+      )}
       <ChartValuesTable
         summary="View adjustment values"
         ariaLabel="Adjustment values"
@@ -349,5 +361,22 @@ function AdjustmentsReport({
         ])}
       />
     </div>
+  )
+}
+
+/** A ratebook report's count of quotes whose deployed factor differs from the evaluated step. */
+function DeployedFactorDiffers({ count, nQuotes }: { count: number; nQuotes: number }) {
+  return (
+    <section role="group" aria-label="Deployed factor" className="space-y-1 text-xs">
+      <dl className="m-0 flex flex-wrap gap-x-4 gap-y-1 font-mono">
+        <div className="flex gap-1.5">
+          <dt style={{ color: "var(--text-muted)" }}>{DEPLOYED_FACTOR_DIFFERS_LABEL}</dt>
+          <dd className="m-0" style={{ color: "var(--text-primary)" }}>
+            {`${count.toLocaleString()} quotes (${formatShare(count / nQuotes)})`}
+          </dd>
+        </div>
+      </dl>
+      <p className="validation-chart-description m-0">{DEPLOYED_FACTOR_DIFFERS_NOTE}</p>
+    </section>
   )
 }

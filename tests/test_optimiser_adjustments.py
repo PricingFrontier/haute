@@ -36,9 +36,11 @@ from tests.test_optimiser_outcomes import _data_graph, _scored, _solved
 
 def _spec(grid: Sequence[float], constraints: Sequence[str] = ("volume",)) -> ChoiceFrameSpec:
     return ChoiceFrameSpec(
+        mode="online",
         constraint_names=tuple(constraints),
         analysis_columns=(),
         scenario_grid=tuple((step, float(np.float32(value))) for step, value in enumerate(grid)),
+        factor_columns=(),
     )
 
 
@@ -53,7 +55,7 @@ def _frame(
     n = len(steps)
     return pl.LazyFrame(
         {
-            "quote_id": [f"q{i:03d}" for i in range(n)],
+            "quote_id": pl.Series([f"q{i:03d}" for i in range(n)], dtype=pl.String),
             "optimal_step": pl.Series(list(steps), dtype=pl.Int32),
             "optimal_scenario_value": pl.Series(
                 [float(grid[step]) for step in steps], dtype=pl.Float32

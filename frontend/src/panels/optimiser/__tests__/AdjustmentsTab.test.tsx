@@ -4,7 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { OptimiserAdjustmentReport, OptimiserSolveResult } from "../../../api/types"
 import { makeFrontierSelect } from "../../../test-utils/factories"
 import AdjustmentsTab, { type PointAdjustmentReports } from "../AdjustmentsTab"
-import { makeAdjustmentReport, makeOnlineSolveResult } from "./fixtures"
+import {
+  makeAdjustmentReport,
+  makeOnlineSolveResult,
+  makeRatebookAdjustmentReport,
+  makeRatebookSolveResult,
+} from "./fixtures"
 
 const mockSelectFrontierPoint = vi.fn()
 
@@ -193,6 +198,42 @@ describe("AdjustmentsTab: the as-solved report", () => {
     vi.spyOn(console, "error").mockImplementation(() => {})
     expect(() => render(<Harness solvedResult={makeOnlineSolveResult({ adjustments: null })} />))
       .toThrow(/adjustment report/)
+  })
+})
+
+describe("AdjustmentsTab: a ratebook report", () => {
+  it("describes the evaluated steps and counts the quotes whose deployed factor differs", () => {
+    render(<Harness solvedResult={makeRatebookSolveResult()} />)
+
+    expect(within(chart()).getAllByTestId("adjustment-bar")).toHaveLength(9)
+    expect(screen.getByText("As solved: 200 quotes")).toBeInTheDocument()
+    const deployed = screen.getByRole("group", { name: "Deployed factor" })
+    expect(within(deployed).getByText("Deployed factor differs from evaluated step").nextSibling)
+      .toHaveTextContent("18 quotes (9.0%)")
+    expect(deployed).toHaveTextContent(
+      "Inside the scenario range the Optimiser Apply node deploys the unsnapped product of the "
+      + "factor rates; the solve evaluated each quote at the nearest grid step. A product past "
+      + "a grid edge deploys at that edge, the step the solve evaluated, so it is not counted.",
+    )
+  })
+
+  it("loads a ratebook point's report with its own count", async () => {
+    mockSelectFrontierPoint.mockResolvedValue(makeFrontierSelect({
+      point_index: 1,
+      adjustments: makeRatebookAdjustmentReport({ deployed_factor_differs: 0 }),
+    }))
+    render(<Harness solvedResult={makeRatebookSolveResult()} pointIndex={1} />)
+
+    expect(await screen.findByText("Frontier point 2: 200 quotes")).toBeInTheDocument()
+    const deployed = screen.getByRole("group", { name: "Deployed factor" })
+    expect(within(deployed).getByText("Deployed factor differs from evaluated step").nextSibling)
+      .toHaveTextContent("0 quotes (0.0%)")
+  })
+
+  it("says nothing about a deployed factor for an online report", () => {
+    render(<Harness />)
+
+    expect(screen.queryByRole("group", { name: "Deployed factor" })).not.toBeInTheDocument()
   })
 })
 

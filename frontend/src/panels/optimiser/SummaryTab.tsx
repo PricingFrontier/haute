@@ -15,7 +15,7 @@ import RatebookImpactBeeswarm from "./RatebookImpactBeeswarm"
 import { hasFactorTables } from "./ratebookFactorTables"
 import ConstraintAttainmentTable from "./ConstraintAttainmentTable"
 import DiagnosticsIssues from "../DiagnosticsIssues"
-import { NO_UNADJUSTED_NOTE, formatShare } from "./adjustments"
+import { DEPLOYED_FACTOR_DIFFERS_LABEL, NO_UNADJUSTED_NOTE, formatShare } from "./adjustments"
 
 type RatebookRatesLoadState =
   | { status: "idle" }
@@ -159,6 +159,14 @@ function AdjustmentsSummary({
                 <dd className="m-0" style={{ color: "var(--text-primary)" }}>{formatShare(share)}</dd>
               </div>
             ))}
+            {report.deployed_factor_differs !== null && (
+              <div className="flex justify-between gap-4" title={DEPLOYED_FACTOR_DIFFERS_LABEL}>
+                <dt style={{ color: "var(--text-secondary)" }}>Deployed ≠ evaluated step</dt>
+                <dd className="m-0" style={{ color: "var(--text-primary)" }}>
+                  {`${report.deployed_factor_differs.toLocaleString()} quotes`}
+                </dd>
+              </div>
+            )}
           </dl>
           {!report.has_unadjusted && (
             <p className="m-0 text-[11px]" style={{ color: "var(--text-muted)" }}>{NO_UNADJUSTED_NOTE}</p>

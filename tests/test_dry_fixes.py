@@ -14,7 +14,11 @@ import polars as pl
 import pytest
 
 from haute.routes._job_store import JobStore
-from tests.optimiser_fixtures import SOLVE_SCENARIO_GRID, library_frontier_frame
+from tests.optimiser_fixtures import (
+    SOLVE_SCENARIO_GRID,
+    library_frontier_frame,
+    make_ratebook_quote_results,
+)
 
 # ──────────────────────────────────────────────────────────────────────
 # D6: _finalize_solve_result
@@ -43,8 +47,10 @@ class _FakeSolveResult:
         self.lambdas = lambdas or {"loss": 0.5}
         # The absolute bound of the configured ``{"loss": {"max": 1.05}}``.
         self.constraint_bounds = {"loss": 1.05} if constraint_bounds is None else constraint_bounds
-        # Every online result carries its per-quote frame.
+        # Every online result carries its per-quote frame, and every ratebook
+        # result its canonical per-quote evaluation.
         self.dataframe = pl.DataFrame({"optimal_scenario_value": [1.0]})
+        self.quote_results = make_ratebook_quote_results(list(self.total_constraints))
 
 
 # A running solve job; its config names the constraint the fake result reports.

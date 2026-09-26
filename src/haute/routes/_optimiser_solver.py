@@ -77,7 +77,12 @@ from haute.routes._optimiser_limits import (
     enforce_frontier_compute_budget,
     limited_frontier_payload,
 )
-from haute.routes._optimiser_outcomes import _choice_spec, histogram_of_frame, require_scenario_grid
+from haute.routes._optimiser_outcomes import (
+    ChoiceMode,
+    _choice_spec,
+    histogram_of_frame,
+    require_scenario_grid,
+)
 from haute.schemas import (
     OptimiserRatebookCdTrace,
     _normalise_frontier_range_pair,
@@ -173,23 +178,36 @@ def _job_elapsed_seconds(job: Mapping[str, Any], fallback: float = 0.0) -> float
     return max(fallback_elapsed, time.monotonic() - float(start_time), 0.0)
 
 
+def _report_of_frame(frame: pl.DataFrame, job: Mapping[str, Any], mode: str) -> dict[str, Any]:
+    spec = _choice_spec(job, cast(ChoiceMode, mode))
+    return adjustment_report(histogram_of_frame(frame.lazy(), spec), spec).model_dump()
+
+
 def _as_solved_adjustments(solve_result: SolveResultLike, job: Mapping[str, Any]) -> dict[str, Any]:
     """The online solve's adjustment report (OPT-V10), from its resident per-quote frame."""
     frame = getattr(solve_result, "dataframe", None)
     if frame is None:
         raise ValueError("The online solve result has no per-quote frame to describe.")
-    spec = _choice_spec(job)
-    return adjustment_report(histogram_of_frame(frame.lazy(), spec), spec).model_dump()
+    return _report_of_frame(frame, job, "online")
 
 
-def _ratebook_adjustments(solve_result: Any, job: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The ratebook solve's adjustment report: none yet.
+def _ratebook_adjustments(solve_result: Any, job: Mapping[str, Any]) -> dict[str, Any]:
+    """The ratebook solve's adjustment report (OPT-V09C), from price-contour's canonical
+    per-quote evaluation of its factor tables (``RatebookResult.quote_results``)."""
+    return _report_of_frame(ratebook_quote_results(solve_result), job, "ratebook")
 
-    TODO(OPT-V09C): build it from ``RatebookResult.quote_results`` (the canonical
-    per-quote evaluation) through ``histogram_of_frame`` and ``adjustment_report``,
-    as the online path does, once ratebook per-quote choices are persisted.
-    """
-    return None
+
+def ratebook_quote_results(solve_result: Any) -> pl.DataFrame:
+    """A ratebook result's per-quote evaluation; a result without one is a defect, raised."""
+    import polars as pl
+
+    frame = solve_result.quote_results
+    if not isinstance(frame, pl.DataFrame):
+        raise TypeError(
+            "A ratebook result's quote_results must be a Polars DataFrame; got "
+            f"{type(frame).__name__}"
+        )
+    return frame
 
 
 def _diagnostic_error(
@@ -938,13 +956,14 @@ def _finalize_solve_result(
     # Read through JobStore so concurrent eviction cannot race this snapshot.
     job_snapshot: Mapping[str, Any] = store.get_job(job_id) or {}
     adjustments: dict[str, Any] | None = None
-    if mode == "online":
-        try:
-            adjustments = _as_solved_adjustments(solve_result, job_snapshot)
-        except Exception as exc:
-            diagnostics_errors.append(_diagnostic_error("adjustments", exc, job_id=job_id))
-    else:
-        adjustments = _ratebook_adjustments(solve_result, job_snapshot)
+    try:
+        adjustments = (
+            _as_solved_adjustments(solve_result, job_snapshot)
+            if mode == "online"
+            else _ratebook_adjustments(solve_result, job_snapshot)
+        )
+    except Exception as exc:
+        diagnostics_errors.append(_diagnostic_error("adjustments", exc, job_id=job_id))
 
     result_dict: dict[str, Any] = {
         "mode": mode,
@@ -1065,16 +1084,22 @@ def _finalize_solve_result(
     def publish_completion_fields() -> Mapping[str, Any]:
         """Persist durable artifacts only after this worker owns completion."""
         artifact_handles: dict[str, Any] = {}
-        # Only an online solve has a per-quote frame; ratebook has factor tables.
-        if mode == "online":
-            apply_result_handle = _optimiser_artifacts._persist_apply_result_artifact(solve_result)
-            artifact_handles[_optimiser_artifacts._APPLY_RESULT_HANDLE_KEY] = apply_result_handle
-            uncommitted_handles.append(
-                (
-                    apply_result_handle,
-                    "solve_completion_orphan_apply_artifact_cleanup_failed",
-                )
+        # The as-solved per-quote frame: the online apply frame, or price-contour's
+        # canonical evaluation of the ratebook factor tables (OPT-V09C).
+        apply_result_handle = (
+            _optimiser_artifacts._persist_apply_result_artifact(solve_result)
+            if mode == "online"
+            else _optimiser_artifacts._persist_apply_frame_artifact(
+                ratebook_quote_results(solve_result)
             )
+        )
+        artifact_handles[_optimiser_artifacts._APPLY_RESULT_HANDLE_KEY] = apply_result_handle
+        uncommitted_handles.append(
+            (
+                apply_result_handle,
+                "solve_completion_orphan_apply_artifact_cleanup_failed",
+            )
+        )
 
         factor_handle = ratebook_factors_handle
         if factor_handle is None:

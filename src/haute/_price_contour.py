@@ -66,6 +66,10 @@ REQUIRED_SYMBOLS: tuple[str, ...] = (
     "RatebookOptimiser.solve",
     "RatebookOptimiser.frontier",
     "RatebookOptimiser.summary",
+    # The canonical per-quote evaluation: a solve's frame, and a frontier point's
+    # frame from the tables the frontier kept (OPT-V09C).
+    "RatebookOptimiser.evaluate",
+    "RatebookResult.quote_results",
     "RatebookFactorContexts",
     # A ratebook frontier keeps each point's factor tables; haute materialises
     # a selected point from them instead of re-solving.

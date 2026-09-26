@@ -3,7 +3,7 @@
  *
  * Renders in the same slot as DataPreview when an optimiser solve has
  * completed.  Shows Frontier (default when data exists), Summary,
- * Rates (ratebook mode), Adjustments and Quotes (online mode) and
+ * Rates (ratebook mode), Adjustments (both modes), Quotes (online mode) and
  * Convergence tabs as available. Publishing lives only in the node's Export pane, whose target
  * is the frontier point selected here.
  */
@@ -52,7 +52,6 @@ import { isSolveResultStale, startOptimiserSolve } from "./optimiser/solveAction
 import { useOptimiserReadiness } from "./optimiser/useOptimiserReadiness"
 import { optimiserResultProvenance } from "./optimiser/resultProvenance"
 import {
-  adjustmentsOffered,
   OPTIMISER_VIEW_INTRODUCTIONS,
   OPTIMISER_VIEW_LABELS,
   type OptimiserResultView,
@@ -418,8 +417,8 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
   const iterationSummary = formatOptimiserIterationSummary(result)
   const availableTabs: OptimiserResultView[] = frontierWithPoints ? ["frontier", "summary"] : ["summary"]
   if (hasRates || canMaterialiseSelectedRates) availableTabs.push("rates")
-  const offersAdjustments = adjustmentsOffered(solvedResult)
-  if (offersAdjustments) availableTabs.push("adjustments")
+  // Every result describes its adjustments: online choices, or the ratebook's evaluated steps.
+  availableTabs.push("adjustments")
   if (result.mode !== "ratebook") availableTabs.push("quotes")
   // Convergence draws the solve's history or CD trace, so every result offers it.
   availableTabs.push("convergence")
@@ -543,7 +542,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges, submod
           selectedPointIndex={selectedIdx}
           canMaterialiseRatebookRates={selectedRatebookRatesMissing}
           ratebookRatesDetail={ratesDetail}
-          onOpenAdjustments={offersAdjustments ? openAdjustments : undefined}
+          onOpenAdjustments={openAdjustments}
         />
       )}
 

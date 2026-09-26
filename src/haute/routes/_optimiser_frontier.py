@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Literal, Protocol, cast
@@ -57,7 +57,7 @@ from haute.routes._optimiser_artifacts import (
     _RATEBOOK_FACTORS_HANDLE_KEY,
     APPLY_RESULT_UNAVAILABLE_DETAIL,
     _cleanup_apply_result_artifact,
-    _persist_apply_result_artifact,
+    _persist_apply_frame_artifact,
     frontier_point_unavailable_detail,
 )
 from haute.routes._optimiser_input import (
@@ -125,16 +125,9 @@ class _FrontierRecomputeRunningJob(RunningJobFields):
     timeout: int | None
 
 
-# The real ``price_contour.RatebookResult`` carries factor tables and
-# portfolio aggregates only — there is NO per-quote dataframe to serve, so
-# the ``/apply`` ("Load detail") affordance has no ratebook backend.  Pinned
-# by ``tests/test_optimiser_routes_real_library.py``.
-_RATEBOOK_APPLY_DETAIL_UNSUPPORTED = (
-    "Per-quote apply detail is not available for ratebook optimiser results: "
-    "the ratebook solver produces factor tables, not per-quote scenario "
-    "selections. Use the factor tables on the result (Rates tab), or save the "
-    "result and apply it with an Optimiser Apply node."
-)
+# The heavy state a ratebook point's per-quote evaluation reads; it is kept and
+# slimmed together with the quote grid.
+_RATEBOOK_POINT_RUNTIME_KEYS = ("solver", "quote_grid", "ratebook_factor_contexts")
 
 
 def _job_mode(job: Mapping[str, Any]) -> str:
@@ -144,17 +137,24 @@ def _job_mode(job: Mapping[str, Any]) -> str:
     return str(job.get("config", {}).get("mode", result_mode))
 
 
-def _reject_ratebook_apply_detail(job: Mapping[str, Any]) -> None:
-    """Gate ``/apply`` for ratebook jobs with an explicit contract error.
+def _point_runtime_keys(job: Mapping[str, Any]) -> tuple[str, ...]:
+    """The heavy state materialising one of *job*'s frontier points needs."""
+    return _RATEBOOK_POINT_RUNTIME_KEYS if _job_mode(job) == "ratebook" else ("quote_grid",)
 
-    Raising here — before any heavy-state lookups or solver work — keeps the
-    failure cheap and actionable.  Without the gate the request either dies
-    on the missing ``RatebookResult.dataframe`` (opaque 500) or, worse, an
-    ``apply_from_grid`` fallback would return per-quote selections that
-    ignore the solved factor tables: silently wrong output.
-    """
-    if _job_mode(job) == "ratebook":
-        raise HTTPException(status_code=422, detail=_RATEBOOK_APPLY_DETAIL_UNSUPPORTED)
+
+def _require_evaluation_is_the_point(
+    evaluation: Any, point: Mapping[str, Any], point_index: int
+) -> None:
+    """A ratebook point's evaluation must reproduce its frontier row exactly (price-contour
+    0.5 evaluates each row from these very tables); anything else is a different point."""
+    evaluated = (float(evaluation.total_objective), dict(evaluation.total_constraints))
+    row = (float(point["total_objective"]), dict(point["totals"]))
+    if evaluated != row:
+        raise RuntimeError(
+            f"Frontier point {point_index}'s factor tables evaluate to objective "
+            f"{evaluated[0]!r} and constraints {evaluated[1]!r}, not its frontier row's "
+            f"{row[0]!r} and {row[1]!r}; the point's per-quote choices cannot be described."
+        )
 
 
 class _DataFrameResultLike(Protocol):
@@ -1058,18 +1058,17 @@ class OptimiserFrontierService:
     def request_point_apply(self, job_id: str, point_index: int) -> PointApplyTicket:
         """The per-quote apply result of one frontier point, retained or queued for materialising.
 
-        Online-mode only: ratebook jobs are rejected (see
-        ``_RATEBOOK_APPLY_DETAIL_UNSUPPORTED``). A retained artifact answers at
-        once. Otherwise the point needs the solve's live quote grid (a named 410
-        without it) and joins the job's latest-wins queue: at most one
-        ``apply_from_grid`` runs per job, since it cannot be interrupted.
+        A retained artifact answers at once. Otherwise the point needs the
+        solve's live quote grid (a named 410 without it; a ratebook point also
+        its solver and factor contexts, slimmed with the grid) and joins the
+        job's latest-wins queue: at most one point apply runs per job, since
+        neither ``apply_from_grid`` nor ``evaluate`` can be interrupted.
         """
         with self.parent_lock(job_id):
             job = self._store.require_completed_job(job_id)
-            # Running ``apply_from_grid`` for a ratebook job would silently
-            # discard the solved factor tables.
-            _reject_ratebook_apply_detail(job)
-            result_dict = _frontier_point_result_for_job(job, point_index)
+            # Validates the point before anything is queued.
+            _frontier_point_result_for_job(job, point_index)
+            runtime_keys = _point_runtime_keys(job)
             generation = _frontier_generation_or_raise(job)
             handle_key = _frontier_apply_handle_key(point_index)
             existing_handle = _artifact_handles_or_raise(job).get(handle_key)
@@ -1080,27 +1079,31 @@ class OptimiserFrontierService:
                         detail="Job frontier apply artifact handle is invalid",
                     )
                 return PointApplyTicket(point_index, generation, handle_key, True, None)
-        if not self._store.touch_heavy_objects(job_id, required_keys=("quote_grid",)):
+        if not self._store.touch_heavy_objects(job_id, required_keys=runtime_keys):
             raise HTTPException(
                 status_code=410,
                 detail=frontier_point_unavailable_detail(point_index, grid_expired=True),
             )
-        lambdas = dict(result_dict["lambdas"])
         subscription = self._point_applies.subscribe(
             job_id,
             (generation, point_index),
-            lambda _token: self._materialise_point(job_id, point_index, generation, lambdas),
+            lambda _token: self._materialise_point(job_id, point_index, generation),
         )
         return PointApplyTicket(point_index, generation, handle_key, False, subscription)
 
     def select_applied_point(
         self, job_id: str, point_index: int, generation: int
     ) -> dict[str, Any]:
-        """Record *point_index* as the job's selected point; 409 if the frontier moved on."""
+        """Record *point_index* as the job's selected point; 409 if the frontier moved on.
+
+        A ratebook point is recorded materialised, with its own factor tables.
+        """
         with self.parent_lock(job_id):
             job = self._store.require_completed_job(job_id)
             if _frontier_generation_or_raise(job) != generation:
                 raise HTTPException(status_code=409, detail=_FRONTIER_CHANGED_DETAIL)
+            if _job_mode(job) == "ratebook":
+                return self._materialise_ratebook_point_locked(job_id, point_index)[1]
             base_result = _base_result_for_frontier(job)
             result_dict = _frontier_point_result_dict(
                 {**job, "base_result": base_result}, point_index
@@ -1140,14 +1143,49 @@ class OptimiserFrontierService:
             row_count=row_count, row_width_bytes=decoded_frame_row_width_bytes(sample)
         )
 
-    def _materialise_point(
-        self,
-        job_id: str,
-        point_index: int,
-        generation: int,
-        lambdas: dict[str, Any],
-    ) -> None:
-        """Apply one point's λ to the live grid and publish its artifact (a queue run)."""
+    def _point_frame_computation(
+        self, job: Mapping[str, Any], point_index: int
+    ) -> Callable[[], Any]:
+        """How one point's per-quote frame is computed, from *job* read under the parent lock.
+
+        Online, ``apply_from_grid`` with the point's λ; ratebook, price-contour's
+        canonical evaluation of the tables the frontier kept for the point, which
+        must reproduce the point's frontier row.
+        """
+        runtime: dict[str, Any] = {}
+        for key in _point_runtime_keys(job):
+            value = job.get(key)
+            if value is None:
+                raise HTTPException(
+                    status_code=410,
+                    detail=frontier_point_unavailable_detail(point_index, grid_expired=True),
+                )
+            runtime[key] = value
+        quote_grid = runtime["quote_grid"]
+        if _job_mode(job) == "ratebook":
+            point, _frontier_data = _frontier_point_or_raise(job, point_index)
+            tables = _frontier_point_factor_tables_or_raise(job, point_index)
+            solver, contexts = runtime["solver"], runtime["ratebook_factor_contexts"]
+
+            def evaluate() -> Any:
+                evaluation = solver.evaluate(quote_grid, contexts, tables)
+                _require_evaluation_is_the_point(evaluation, point, point_index)
+                return evaluation.quote_results
+
+            return evaluate
+        lambdas = dict(_frontier_point_result_for_job(job, point_index)["lambdas"])
+        constraints = job.get("config", {}).get("constraints", {})
+
+        def apply() -> Any:
+            apply_result = price_contour().apply_from_grid(
+                quote_grid, lambdas=lambdas, constraints=constraints
+            )
+            return _dataframe_or_raise(apply_result, context="Apply result")
+
+        return apply
+
+    def _materialise_point(self, job_id: str, point_index: int, generation: int) -> None:
+        """Compute one point's per-quote frame and publish its artifact (a queue run)."""
         handle_key = _frontier_apply_handle_key(point_index)
         with self.parent_lock(job_id):
             job = self._store.require_completed_job(job_id)
@@ -1155,13 +1193,7 @@ class OptimiserFrontierService:
                 raise HTTPException(status_code=409, detail=_FRONTIER_CHANGED_DETAIL)
             if _artifact_handles_or_raise(job).get(handle_key) is not None:
                 return
-            quote_grid = job.get("quote_grid")
-            if quote_grid is None:
-                raise HTTPException(
-                    status_code=410,
-                    detail=frontier_point_unavailable_detail(point_index, grid_expired=True),
-                )
-            constraints = job.get("config", {}).get("constraints", {})
+            compute_frame = self._point_frame_computation(job, point_index)
 
         context: ExecutionContext | None = None
         new_handle: dict[str, Any] | None = None
@@ -1178,13 +1210,10 @@ class OptimiserFrontierService:
                     remedy="Raise HAUTE_EXPLORE_MEMORY_LIMIT_MB to inspect this point.",
                 ),
             )
-            apply_result = price_contour().apply_from_grid(
-                quote_grid, lambdas=lambdas, constraints=constraints
-            )
-            _dataframe_or_raise(apply_result, context="Apply result")
-            new_handle = _persist_apply_result_artifact(apply_result)
+            frame = compute_frame()
+            new_handle = _persist_apply_frame_artifact(frame)
             owns_new_handle = True
-            del apply_result
+            del frame
             owns_new_handle = self._publish_point_handle(job_id, handle_key, generation, new_handle)
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
             raise HTTPException(status_code=507, detail=exc.to_payload()) from None

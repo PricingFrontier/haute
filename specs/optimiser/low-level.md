@@ -7,7 +7,7 @@
 | `src/haute/routes/optimiser.py` | FastAPI router (`/api/optimiser/*`). Owns request/response assembly, frontier-point selection, artifact-payload building/validation for save and MLflow log, and the module-level `_store`/`_solve_service` singletons. |
 | `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService`: job admission, pipeline execution, setup orchestration over the steps in `_optimiser_input.py`, solver launch over `_optimiser_solver.py`, and background frontier-auto-range estimation. Each setup step is one orchestration method over a free step in `_optimiser_input.py`: `_recorded_setup_failures` records an `OptimiserSetupError` on the job as its terminal state and answers the matching `HTTPException`; chunk provenance is recorded by `_record_setup_chunking`; a ratebook factor-extraction refusal is recorded by the setup failure mapping instead. It owns no filesystem deletion. |
 | `src/haute/routes/_optimiser_solver.py` | The solver layer: the worker-context guard (`solver_worker_context`, `require_solver_worker_context`), the heavy entry points (`_solve_online`, `_solve_ratebook`, `_compute_frontier`) with `SolveContext`, result finalisation (`_finalize_solve_result`, the inline frontier, scenario-value statistics), and ratebook factor-table canonicalisation, ordering and serialisation. |
-| `src/haute/routes/_optimiser_frontier.py` | The frontier domain: `OptimiserFrontierService` (sweep admission, `start_sweep`/`sweep_status`/`cancel_sweep`, background `_run_sweep` publication, `select_point`, `materialise_ratebook_point`, the online point apply (`request_point_apply`, `select_applied_point`) behind one per-job `LatestWinsQueue`, `solve_result_for_selected_point`, and a `parent_lock` per parent solve) and the pure frontier range, point and artifact-handle helpers. |
+| `src/haute/routes/_optimiser_frontier.py` | The frontier domain: `OptimiserFrontierService` (sweep admission, `start_sweep`/`sweep_status`/`cancel_sweep`, background `_run_sweep` publication, `select_point`, `materialise_ratebook_point`, the point apply (`request_point_apply`, `select_applied_point`; online through price-contour's point apply, ratebook through its canonical evaluation) behind one per-job `LatestWinsQueue`, `solve_result_for_selected_point`, and a `parent_lock` per parent solve) and the pure frontier range, point and artifact-handle helpers. |
 | `src/haute/routes/_optimiser_input.py` | Solve-input planning with no job or result knowledge: the column demand setup plans at each node (`_optimiser_solve_required_columns_by_node`, `_solve_columns_by_node`), the retained side inputs and execution target, exact data-input edge resolution (`_resolve_optimiser_input_edge`, `_resolve_optimiser_data_input_id`), the analysis-column plan (`resolve_analysis_plan`, `AnalysisPlan`), the value-contract expressions and their failure details, solver-input chunk sizing (`_chunk_size_decision_for_parquet`), resident-grid admission (`_admit_resident_grid`), the projected-parquet borrow check, and `_find_optimiser_node`. It also holds the setup steps themselves as free functions that never touch the job store: `resolve_data_input_frame`, `validate_and_project`, `validate_and_project_auto_range`, `validate_input_value_contracts`, `extract_ratebook_factors`, `resolve_analysis_frame`, `write_solver_input`, `grid_chunk_decision` (returns the chunk size and its provenance) and `build_quote_grid`, plus `grid_construction_failures`, which types a solver-input write or grid-build failure. A refusal is an `OptimiserSetupError` carrying the HTTP status and detail, the terminal reason, the message and the job fields: the HTTP status and detail, or `contract_error_job_fields` for a public contract error. The input estimate's pre-flight and single scan (`estimate_input_metrics`) and its typed answers (`ESTIMATE_MAPPED_ERRORS`, `estimate_failure_http_exception`) live here too, shared by the in-process count and the pool worker. |
 | `src/haute/routes/_optimiser_artifacts.py` | The owned artifact lifecycle: the three ownership-marked artifact families (apply result, ratebook factors, quote analysis) — their roots, handle validation, persistence, loading, job-store cleaners, orphan cleanup and stale-startup reaping (`reap_stale_optimiser_artifacts`) — and setup's temporary files (the solver-input parquet, a worker's ratebook factors and quote-analysis directories, the range reducer's spill directory). |
 | `src/haute/routes/_optimiser_outcomes.py` | The per-quote analysis side table (OPT-V09A): `write_quote_analysis` (the streamed constant-within-quote check, the one-row-per-quote reduction into `quote_analysis.parquet`, the missing-quote count and the cardinality metadata), `AnalysisColumnNotConstantError`, the table's row-count check against the grid (`require_one_row_per_solved_quote`), the scenario-grid record (`scenario_grid_from_values`, `require_scenario_grid`) and the lease-scoped reader `collect_quote_analysis`. See "Analysis-column side table and scenario grid" below. It also holds the bounded choice queries (OPT-V09B): `ChoiceTarget`, the reducers (`ScenarioHistogram`, `SegmentGroupBy`, `TopK`, `RowIndex`), `ChoiceQueryResult`, `ChoiceJoinError`, `lease_apply_frame` and `ChoiceQueryService.choice_query`. See "Bounded choice queries and point materialisation" below. |
@@ -105,6 +105,9 @@ single-flight key already computes), and, only while heavy state is retained, `s
 `scenario_grid` (recorded by setup right after the grid build, in both modes: the solver
 input's complete grid as `[{optimal_step, scenario_value}]`, see "Analysis-column side table and
 scenario grid"), and `artifact_handles["quote_analysis"]` when analysis columns are configured.
+`artifact_handles["apply_result"]` is the as-solved per-quote frame in both modes (online:
+`SolveResult.dataframe`; ratebook: `RatebookResult.quote_results`, see "Ratebook per-quote
+choices (OPT-V09C)"), and `artifact_handles["ratebook_factors"]` the ratebook factor rows.
 `publish_summary`, `input_provenance` and `scenario_grid` are not heavy keys and survive every
 slimming.
 `_result_finite_validated_for` (private, never in a response) records the
@@ -708,15 +711,16 @@ judges attainment only against `effective_bounds` (see the
 
 ### Apply preview (`POST /apply`, `haute.routes.optimiser.apply_lambdas`)
 
-Rejects ratebook jobs outright (`_reject_ratebook_apply_detail` — checked before any
-heavy-state lookup, since a ratebook `RatebookResult` has no per-quote dataframe). For online
-jobs, `point_index` names the target explicitly: a number resolves that frontier point and
-`null` resolves the anchor solve — never the server-side `selected_frontier_point`. The route is
+Serves both modes. `point_index` names the target explicitly: a number resolves that frontier
+point and `null` resolves the anchor solve — never the server-side `selected_frontier_point`.
+A ratebook preview holds the rows of the per-quote frame price-contour evaluated
+(`quote_results`: the online columns plus `factor_product`, `clamped_low` and `clamped_high`; see
+"Ratebook per-quote choices (OPT-V09C)"). The route is
 asynchronous and runs its blocking work through `run_until_disconnected`, so a client that
 leaves stops waiting (see "Bounded choice queries and point materialisation").
 
-- *Anchor.* The still-live in-memory `solve_result.dataframe` if present, or otherwise the
-  persisted apply-result artifact, read with `scan_parquet` inside a `JobStore.lease` on
+- *Anchor.* For an online job the still-live in-memory `solve_result.dataframe` if present;
+  otherwise, and always for a ratebook job, the persisted apply-result artifact, read with `scan_parquet` inside a `JobStore.lease` on
   `artifact_handles["apply_result"]` (`lease_apply_frame`); totals come from the anchor summary
   (`base_result`, else `result`).
 - *Frontier point.* `OptimiserFrontierService.request_point_apply` answers at once from the
@@ -724,7 +728,11 @@ leaves stops waiting (see "Bounded choice queries and point materialisation").
   materialisation on the job's `LatestWinsQueue` and the request waits for it. Then
   `select_applied_point` records the point as selected (`base_result`, `selected_frontier_point`,
   `result`) under the parent's lock, refusing with 409 if `frontier_generation` moved since the
-  request captured it, and the preview reads the point's artifact inside a lease.
+  request captured it, and the preview reads the point's artifact inside a lease. For a ratebook
+  point the recorded result is the materialised one (`materialise_ratebook_point`: the row
+  summary with the point's factor tables), as `POST /frontier/select` with
+  `include_ratebook_tables` records it, so the job's result never shows a point's totals beside
+  the solve's tables.
 
 `limited_apply_preview_payload(frame)` takes the lazy frame and returns a lazy count and the
 first `APPLY_PREVIEW_ROW_LIMIT` rows (`head`), both collected inside the lease, with explicit
@@ -832,14 +840,19 @@ Three artifact families, all rooted under the versioned marker-aware OS-temp hie
 `<tempdir>/haute/artifacts/v1/optimiser_quote_analysis`; the third is described in
 "Analysis-column side table and scenario grid"):
 
-- **Persist** (`_persist_apply_result_artifact`, `_persist_ratebook_factors_artifact`,
-  `_persist_ratebook_factors_lazy_artifact` — the lazy variant sinks a
-  `LazyFrame` via `bounded_sink` without ever collecting it into memory): each writes into a
-  freshly created direct child under the artifact root and writes a versioned family-specific
-  ownership marker before writing payload data. For the apply-result case it explicitly nulls the
-  source object's `.dataframe` attribute afterward (logging at debug level if the attribute
-  cannot be cleared) so the heavy dataframe is not held twice, once on disk and once in the job
-  store's retained `solve_result`.
+- **Persist** (`_persist_apply_frame_artifact`, `_persist_apply_result_artifact`,
+  `_persist_ratebook_factors_artifact`, `_persist_ratebook_factors_lazy_artifact` — the lazy
+  variant sinks a `LazyFrame` via `bounded_sink` without ever collecting it into memory): each
+  writes into a freshly created direct child under the artifact root and writes a versioned
+  family-specific ownership marker before writing payload data. `_persist_apply_frame_artifact`
+  writes one per-quote apply frame (a Polars `DataFrame`, anything else a `TypeError`): the online
+  result's `dataframe`, a ratebook result's `quote_results`, or a frontier point's frame.
+  `_persist_apply_result_artifact` is its online wrapper and explicitly nulls the source object's
+  `.dataframe` attribute afterward (logging at debug level if the attribute cannot be cleared) so
+  the heavy dataframe is not held twice, once on disk and once in the job store's retained
+  `solve_result`. price-contour caches a ratebook result's `quote_results` on the result itself,
+  so that frame stays resident with the heavy `solve_result` until heavy-state slimming drops
+  it.
 - **Validate** (`_validate_server_owned_parquet_handle`): re-derives the expected
   directory/path from the handle's own fields and checks they resolve (with a TOCTOU-aware
   strict-resolution-only-if-exists rule, so validating a handle whose artifact was already
@@ -1244,7 +1257,7 @@ whose message already names every problem and the remedy.
   `release_detached_artifact_handles`. Its OPT-V09B classes cover the choice queries over real
   solves: the histogram reconciling to the solved totals for the as-solved result and a frontier
   point, the join-count failure, the 1:1 join to the side table, each reducer's bound and
-  validation, admission refusal, single-flight, and the ratebook refusal.
+  validation, admission refusal and single-flight.
 - `tests/test_optimiser_frontier_materialisation.py` covers the point queue: A/B/C rapid
   stepping (one apply at a time, B replaced with 409, C run after A), shared-subscriber
   disconnect, admission refusal before `apply_from_grid` (the mock is never called), availability
@@ -1262,6 +1275,20 @@ whose message already names every problem and the remedy.
   at finalize, a point report equal to the report of that point's own apply frame, a cached
   report served after the grid and the point's artifact are gone, a recompute invalidating the
   cache, the 64-entry bound, the generation fence, and the report surviving grid eviction.
+- `tests/test_optimiser_ratebook_choices.py` covers OPT-V09C against the real price-contour
+  library: the "deployed factor differs from evaluated step" flag against a hand count on a frame
+  the kernel evaluated from hand-chosen tables (products on a grid value and on an end value not
+  flagged, within-range rounding flagged, products past either end not flagged), its per-step
+  and report counts, the per-mode schemas (the ratebook one equal to `quote_results_schema`, a
+  damaged or wrong-mode frame refused by name); over real ratebook solves, the as-solved and
+  every frontier point's frame agreeing per quote with the scored input at the chosen step and
+  with the Float32 product of the published rates, and in aggregate with the solve's or the
+  point's totals, `/apply` for the as-solved result and a point (the point selected with its own
+  tables), a point's report through frontier select, the named 410 for an unmaterialised point
+  once the grid has gone, a point whose tables do not reproduce its row refused, composite and
+  numeric factor segments with no analysis columns (counts summing to `n_quotes`, levels and
+  counts equal to the Rates tab's), the level limit, invalid factor breakdowns, and the factor
+  rows' 1:1 correspondence (a dropped, foreign or repeated quote refused).
 - `tests/test_frontier_point_summary.py` covers `frontier_point_rows` (the library frame to typed
   points, per mode, failing on any schema mismatch or malformed value), the write-back to the
   library row the MLflow CSV uses, and `frontier_point_summary` over typed points.
@@ -1315,7 +1342,7 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
 - **`tests/test_optimiser_routes_real_library.py`** — runs against the real `price-contour`
   library (not mocked) rather than a stub, organized into `TestRealLibraryShapeContracts` (pins
   that the route's frontier compute budget constant equals the library's own
-  `max_total_points` default — the two must never drift apart), `TestRatebookApplyDetailContract`,
+  `max_total_points` default — the two must never drift apart), `TestRatebookResultContract`,
   `TestOnlineApplyDetailRealSchema`, `TestFrontierComputeBudgetContract`, and
   `TestEstimateSingleScanContract` (pins the "exactly one streaming scan" cost contract for
   `/estimate`); the frontier-touching tests in these classes all go through
@@ -1371,7 +1398,7 @@ returns the nested result. The helpers are used across `test_optimiser_routes.py
 - **`tests/test_optimiser_frontier_materialisation.py`** — frontier-point selection/materialisation
   in isolation: cached-summary reuse without touching the solver, malformed/partial frontier-
   point rejection, explicit-point save/mlflow-log without a live solve result, stale-solve-result
-  avoidance, ratebook-point contract error on `/apply`, artifact-vs-response-preview agreement,
+  avoidance, artifact-vs-response-preview agreement,
   distinct data per point index, store-copy-stable generation fencing, and
   config-name-vs-column-name normalisation.
 - **`tests/test_optimiser_ratebook_apply_agreement.py`** — cross-checks that the saved-artifact
@@ -1664,9 +1691,9 @@ Thresholds, which a change to this path must re-measure against with the same me
 
 ## Bounded choice queries and point materialisation
 
-The behaviour is defined in [the high-level specification](high-level.md#behaviour). OPT-V09B
-covers online solves only; a ratebook job is refused (see "Ratebook" below) until OPT-V09C
-gives it a canonical per-quote frame.
+The behaviour is defined in [the high-level specification](high-level.md#behaviour). Both
+modes are served: an online target's frame is price-contour's apply frame, a ratebook target's
+its canonical per-quote evaluation (see "Ratebook per-quote choices (OPT-V09C)").
 
 **Targets.** `ChoiceTarget(point_index)` names what a query reads: `None` is the as-solved
 result (`artifact_handles["apply_result"]`), and an integer is that point of the job's current
@@ -1675,11 +1702,18 @@ artifact. It is never the server-side selected point.
 
 **The choice frame.** `ChoiceQueryService.choice_query(job_id, target, reducer,
 cancellation_token=...)` reads the target's apply artifact with `scan_parquet` inside a
-`JobStore.lease` (`lease_apply_frame`) and projects it to the chosen scenario of each quote:
-`quote_id` (String), `optimal_step` (Int32, the index into the job's `scenario_grid`),
+`JobStore.lease` (`lease_apply_frame`). The artifact must have exactly its mode's schema
+(`apply_frame_schema(mode, constraint_names)`, names, order and dtypes): online, `quote_id`
+(String), `optimal_step` (Int32, the index into the job's `scenario_grid`),
 `optimal_scenario_value`, `optimal_objective` and `optimal_<c>` for each configured constraint
-in config order (Float32, as price-contour wrote them). A frame missing one of those columns is a
-`ChoiceJoinError`.
+in config order (Float32, as price-contour wrote them); ratebook, the same followed by
+`factor_product` (Float32), `clamped_low` and `clamped_high` (Boolean), which is
+`price_contour.quote_results_schema(constraint_names)`. Any other schema is a `ChoiceJoinError`
+naming the missing, unexpected and mistyped columns. The choice frame is the artifact's columns;
+a ratebook frame adds `deployed_factor_differs` (Boolean, see "Ratebook per-quote choices
+(OPT-V09C)"). `ChoiceFrameSpec` records the `mode`, the constraint names, the analysis columns,
+the scenario grid and, for ratebook, the factor specs (`factor_columns`, each named
+`":".join(columns)` as the Rates tab names its tables).
 
 **The side table, 1:1.** When the job holds `artifact_handles["quote_analysis"]`, a second lease
 is taken on the side table (its key is the configured quote-id column) and its correspondence to
@@ -1725,7 +1759,10 @@ count the rows were taken from.
   number of quotes.
 
 The histogram reads only the choice frame; the group-by reads `joined()`; top-k and the row
-index attach the analysis values to their own rows.
+index attach the analysis values to their own rows; the factor segments read the factor side
+table (see "Ratebook per-quote choices (OPT-V09C)"). For a ratebook target the histogram also
+counts each step's `deployed_factor_differs` quotes, and the group-by and factor segments count
+each group's.
 
 `ApplyOptimiser.with_explainer_columns` emits `selected`, `is_baseline` and `linearised_<c>` per
 candidate row of one traced quote; none of them is a per-quote chosen value a reducer returns,
@@ -1760,11 +1797,13 @@ identical query starts afresh. A finished run's key is released at once: results
 cached.
 
 **Point materialisation.** `OptimiserFrontierService.request_point_apply(job_id, point_index)`
-validates the job (completed, online), the point and captures `frontier_generation`:
+validates the job (completed), the point and captures `frontier_generation`:
 
 - A retained `frontier_apply_result:<i>` handle answers at once.
 - Otherwise the point is available only while the quote grid is alive
-  (`touch_heavy_objects(("quote_grid",))`); when it is not, the answer is the named 410
+  (`touch_heavy_objects(("quote_grid",))`; a ratebook point also needs the solver and the factor
+  contexts, `("solver", "quote_grid", "ratebook_factor_contexts")`, heavy state that is kept and
+  slimmed together with the grid); when it is not, the answer is the named 410
   `{"error_code": "frontier_point_unavailable", "message": ...}`. A point whose artifact was
   evicted (as the ninth) is therefore re-materialised while the grid lives and a 410 after.
 - Materialisation goes through the job's `LatestWinsQueue`, keyed `(frontier_generation,
@@ -1778,11 +1817,15 @@ validates the job (completed, online), the point and captures `frontier_generati
 - The run re-checks for a handle published meanwhile, reads the grid under the parent's lock
   with the generation fence (409 when a recompute advanced it; the named 410 when the grid is
   gone), then admits an `EXPLORE_ANALYSIS` context (`operation="optimiser_point_apply"`) with
-  its own `WorkEstimate` **before** `apply_from_grid` is called, so a refusal (507) never starts
-  the uninterruptible apply. The estimate is `estimate_point_apply_peak_bytes` over the as-solved
+  its own `WorkEstimate` **before** the point's frame is computed, so a refusal (507) never starts
+  the uninterruptible call. The estimate is `estimate_point_apply_peak_bytes` over the as-solved
   apply artifact's row count and sampled decoded width, read inside a lease: a point's frame has
-  exactly its shape. It then
-  applies, persists and publishes the handle under the parent's lock (generation fence, heavy
+  exactly its shape. The frame is the point's apply: online, `apply_from_grid(grid, lambdas=the
+  point's λ, constraints=...)`'s `dataframe`; ratebook, `solver.evaluate(grid, factor_contexts,
+  frontier_factor_tables[point_index]).quote_results`, whose totals must equal the point's
+  frontier row exactly (price-contour's contract; a difference is a `RuntimeError`, never a
+  silently different point). It then
+  persists and publishes the handle under the parent's lock (generation fence, heavy
   state present, at most eight point handles). The run never changes the selection; `/apply`
   selects after it has waited.
 - Evicted and recompute-invalidated point handles are released through
@@ -1794,9 +1837,6 @@ gone is a 404, and a handle whose file is gone the stable 410 of the artifact li
 point is available while its artifact exists or while the grid is alive; otherwise the named
 410 above. A point handle evicted between `request_point_apply` and the read is the same named
 410, telling the user to select the point again.
-
-**Ratebook.** A choice query on a ratebook job is refused before any lease with 422
-`{"error_code": "optimiser_choices_online_only", "message": ...}`; `/apply` keeps its own 422.
 
 **Measured scaling.** See "Measured choice-query memory" below.
 
@@ -1893,20 +1933,25 @@ statistical contract:
   per-step Float64 sums), so a report's weighted totals equal the target's solved totals to
   Float64 rounding.
 - `n_quotes` is the target's quote count (the histogram's `total`).
+- `deployed_factor_differs` is, for a ratebook target, the number of quotes flagged "deployed
+  factor differs from evaluated step" (the histogram's `deployed_factor_differs` counts summed;
+  see "Ratebook per-quote choices (OPT-V09C)"), and `null` for an online target, whose deployed
+  scenario is the chosen step itself.
 
 The report is validated where it is built: bars list steps `0..n-1` with strictly increasing
-values, every weighting but `"quotes"` is keyed in every bar's `weights`, and
-`share_unadjusted` is `null` exactly when `has_unadjusted` is false.
+values, every weighting but `"quotes"` is keyed in every bar's `weights`,
+`share_unadjusted` is `null` exactly when `has_unadjusted` is false, and
+`deployed_factor_differs` is at most `n_quotes`.
 
-**As solved.** `_finalize_solve_result` computes an online solve's report before the completion
+**As solved.** `_finalize_solve_result` computes the solve's report before the completion
 is published, from the solve's in-memory per-quote frame through the same reducer
-(`histogram_of_frame(frame, spec)`, which runs `ScenarioHistogram` over the frame projected to
-the choice columns, with the job's `scenario_grid` and configured constraints), and stores it as
-`result["adjustments"]`. A report that cannot be built (a missing choice column, a step outside
-the grid, no quotes) leaves `adjustments` `null` and records an `"adjustments"` entry in the
-result's `diagnostics_errors`. A ratebook solve has no per-quote frame until OPT-V09C, so its
-`adjustments` is `null` with no entry (the hook `_ratebook_adjustments` names where
-OPT-V09C computes it from `RatebookResult.quote_results`).
+(`histogram_of_frame(frame, spec)`, which runs `ScenarioHistogram` over the frame's choice
+columns, with the job's `scenario_grid`, configured constraints and mode), and stores it as
+`result["adjustments"]`: online from `SolveResult.dataframe` (`_as_solved_adjustments`),
+ratebook from `RatebookResult.quote_results` (`_ratebook_adjustments`). A report that cannot be
+built (a frame whose schema is not its mode's, a step outside the grid, no quotes) leaves
+`adjustments` `null` and records an `"adjustments"` entry in the result's `diagnostics_errors`,
+in both modes.
 
 **A frontier point.** A point's summary carries `adjustments: null`, so selecting a point
 removes the as-solved report from the displayed result; the point's own report is loaded on
@@ -1914,8 +1959,8 @@ request. `POST /frontier/select` with `include_adjustments: true` selects the po
 and then answers `adjustments` with the point's report: from the job's report cache when it
 holds `(frontier_generation, point_index)`, otherwise through
 `ChoiceQueryService.choice_query(job_id, ChoiceTarget(point_index), ScenarioHistogram())`
-(point materialisation, admission, single-flight, latest-wins, the named 409 and 410, and the
-ratebook 422 all as OPT-V09B specifies). The route runs off the event loop and a client that
+(point materialisation, admission, single-flight, latest-wins and the named 409 and 410, all as
+OPT-V09B specifies, in both modes). The route runs off the event loop and a client that
 disconnects detaches only itself (`run_until_disconnected`). Without a point,
 `adjustments` is the as-solved report whether or not it was requested; with a point and
 without the flag it is `null`.
@@ -1928,3 +1973,69 @@ the parent's lock only when the job's `frontier_generation` still equals the one
 before the query (a recompute in between is the frontier-changed 409, and nothing is stored).
 It holds at most `MAX_CACHED_ADJUSTMENT_REPORTS = 64` reports; storing a 65th drops the oldest.
 A frontier recompute clears it in the same update that advances the generation.
+
+## Ratebook per-quote choices (OPT-V09C)
+
+The behaviour is defined in [the high-level specification](high-level.md#behaviour). A
+ratebook result is described from price-contour's canonical evaluation (0.5.0, "The
+price-contour contract haute relies on"), never from a haute reconstruction: each quote at the
+grid step nearest the Float32 product of its factor rates (`factor_product`), clamped to the end
+steps.
+
+**The as-solved frame.** At completion `_finalize_solve_result` persists
+`RatebookResult.quote_results` as `artifact_handles["apply_result"]`
+(`_persist_apply_frame_artifact`), inside the same completion publisher, with the same
+ownership, lease, cleaner, orphan cleanup and startup reaping as an online apply frame. A
+ratebook result without `quote_results` fails the completion loudly. Its schema is
+`quote_results_schema(constraint_names)`: the online apply frame's columns (`quote_id`, `optimal_step`,
+`optimal_scenario_value`, `optimal_objective`, `optimal_<c>`) followed by
+`factor_product`, `clamped_low` and `clamped_high`, in the grid's quote order.
+
+**A frontier point's frame** is `solver.evaluate(quote_grid, ratebook_factor_contexts,
+frontier_factor_tables[i]).quote_results`, materialised through `request_point_apply` exactly as
+an online point (admission first, one per job, latest-wins, shared per point, at most eight
+retained, the named 410 when it has no artifact and the grid has gone). Before the frame is
+persisted its evaluation's `total_objective` and `total_constraints` must equal the point's
+frontier row (`total_objective`, `totals`) exactly, as price-contour guarantees; a difference is
+a `RuntimeError`. Each retained point's tables are those the frontier kept, so no point is
+re-solved.
+
+**Deployed factor differs from evaluated step.** The solve evaluates each quote at its nearest
+step; the Optimiser Apply node deploys the unsnapped product of the factor rates, clipped to
+`combined_factor_bounds` (Q17). They differ only by the rounding to the nearest step inside the
+scenario range: a product past a grid edge deploys at that edge, the step the solver evaluated.
+The per-quote flag `deployed_factor_differs` is therefore
+
+    factor_product != optimal_scenario_value  and  not clamped_low  and  not clamped_high
+
+over the frame's own Float32 columns; the product is never recomputed in haute. A product
+exactly on a grid value, including an end value, is not flagged (the clamp flags are strict). The
+choice frame carries the flag per quote (top-k and the row index return it), the histogram and
+segment reducers count it per group, and the adjustment report states the portfolio count
+(`deployed_factor_differs`).
+
+**Factor segments.** A quote's factor levels come from the persisted ratebook factor rows
+(`artifact_handles["ratebook_factors"]`: the configured quote-id column and every factor
+column, as the banding source held them, one row per solved quote). `FactorSegments(factor,
+limit)` groups the chosen scenarios by one factor spec, named as the Rates tab names it
+(`":".join(columns)`, one of `ChoiceFrameSpec.factor_names`; any other name, an online job, or a
+limit outside `1..MAX_CHOICE_ROWS` is a 400). A composite factor is grouped by **all** its
+constituent columns. It is the second leased side table of `choice_query`: a reducer that reads
+factors (`reads_factors`) takes a lease on `artifact_handles["ratebook_factors"]` (a job or handle
+that is gone is the stable 410 "re-run the solve"), requires the handle's `row_count` to equal the
+chosen rows, and asserts the 1:1 correspondence with the same streamed key fingerprint as the
+analysis table (the quote id cast to String, as price-contour keys its frame), raising
+`ChoiceJoinError` on any difference, before the reducer runs. `ChoiceFrames.with_factors()` is then
+the inner 1:1 join on the quote id (`validate="1:1"`, `maintain_order="left"`). Each row is one
+level: `level`, the label the Rates tab shows for it (`__factor_group__`: each component
+canonicalised by `normalise_rating_key` under the factor column's dtype and joined with the
+unit separator, `_ratebook_factor_level_key`), `quotes`, `mean_scenario_value`, the Float64 sums
+and `deployed_factor_differs`, ordered by `quotes` descending and then the constituent values
+ascending, the first `limit` levels; `total` is the number of levels. The segments need no
+analysis columns: their quote counts sum to `n_quotes`, and each level's count equals that
+level's `quote_count` in the result's factor table. Admission adds the factor table's sampled
+decoded width to the side-table width the estimate reads (`side_row_width_bytes`), and the join
+counts as a whole-table join. An analysis column or a factor column whose name is a choice-frame
+column is refused with a 400, as before.
+
+The Segments tab that reads these reducers is OPT-V11's.

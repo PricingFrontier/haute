@@ -3461,6 +3461,7 @@ describe("API response guards", () => {
         share_up: 0, share_down: 0.5, share_unadjusted: 0.5, share_at_min: 0.5, share_at_max: 0.5,
       }],
       diagnostics_errors: [],
+      deployed_factor_differs: null,
     }
     expect(parseFrontierSelectResponse({ ...selected, adjustments: report }).adjustments).toEqual(report)
     const { bars: _bars, ...withoutBars } = report; void _bars

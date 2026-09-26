@@ -1,4 +1,3 @@
-import type { OptimiserSolveResult } from "../../api/types"
 import type { ResultsWorkspaceIntro } from "../ResultsWorkspace"
 import { LAMBDA_LABEL } from "./lambdaCopy"
 
@@ -10,16 +9,6 @@ export type OptimiserResultView =
   | "adjustments"
   | "quotes"
   | "convergence"
-
-/**
- * Whether the Adjustments view describes this result: online results only.
- * TODO(OPT-V09C): offer it for ratebook results once their per-quote choices
- * (price-contour's canonical `quote_results`) are persisted and the choice
- * queries accept ratebook jobs.
- */
-export function adjustmentsOffered(result: OptimiserSolveResult): boolean {
-  return result.mode === "online"
-}
 
 export const OPTIMISER_VIEW_LABELS: Record<OptimiserResultView, string> = {
   frontier: "Frontier",
@@ -60,6 +49,7 @@ export const OPTIMISER_VIEW_INTRODUCTIONS: Record<OptimiserResultView, ResultsWo
     description:
       "How the optimiser adjusted the book relative to the base price: the quotes (or weight) "
       + "at each scenario value of the grid, where 1.0 is the base price with no adjustment. "
+      + "A ratebook result is described at the grid step the solver evaluated for each quote. "
       + "It describes the solution only; nothing is compared with current pricing.",
   },
   quotes: {

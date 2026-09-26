@@ -453,7 +453,7 @@ def test_frontier_apply_cleans_new_artifact_after_unexpected_store_failure(
     with (
         patch("price_contour.apply_from_grid", return_value=apply_result),
         patch(
-            "haute.routes._optimiser_frontier._persist_apply_result_artifact",
+            "haute.routes._optimiser_frontier._persist_apply_frame_artifact",
             return_value=orphan_handle,
         ),
         patch.object(
@@ -1006,7 +1006,7 @@ def test_apply_cleans_up_orphan_artifact_when_atomic_update_loses_race(
     with (
         patch("price_contour.apply_from_grid", return_value=apply_result),
         patch(
-            "haute.routes._optimiser_frontier._persist_apply_result_artifact",
+            "haute.routes._optimiser_frontier._persist_apply_frame_artifact",
             return_value=new_handle,
         ),
         patch.object(

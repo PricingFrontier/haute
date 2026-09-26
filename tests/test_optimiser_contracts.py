@@ -1545,7 +1545,7 @@ def _choices(steps: list[int], values: list[float]) -> pl.DataFrame:
     n = len(steps)
     return pl.DataFrame(
         {
-            "quote_id": [f"q{i}" for i in range(n)],
+            "quote_id": pl.Series([f"q{i}" for i in range(n)], dtype=pl.String),
             "optimal_step": pl.Series(steps, dtype=pl.Int32),
             "optimal_scenario_value": pl.Series(values, dtype=pl.Float32),
             "optimal_objective": pl.Series([1.0] * n, dtype=pl.Float32),
@@ -1584,11 +1584,35 @@ class TestResultDiagnostics:
         assert job["result"]["diagnostics_errors"] == []
         OptimiserSolveResult.model_validate(job["result"])
 
-    def test_a_ratebook_solve_has_no_report_until_ratebook_choices_exist(self) -> None:
-        job = _finalize(_StatsResult(), mode="ratebook")
+    def test_a_ratebook_solve_reports_its_canonical_per_quote_evaluation(self) -> None:
+        result = _StatsResult()
+        # q0's product 0.93 rounds to the 0.9 step; q1's lies past the 1.1 end.
+        result.quote_results = _choices([0, 2], [0.9, 1.1]).with_columns(
+            pl.Series("factor_product", [0.93, 1.3], dtype=pl.Float32),
+            pl.Series("clamped_low", [False, False]),
+            pl.Series("clamped_high", [False, True]),
+        )
+        job = _finalize(
+            result,
+            mode="ratebook",
+            config={
+                "mode": "ratebook",
+                "constraints": {"loss": {"max": 1.05}},
+                "factor_columns": [["region"]],
+            },
+        )
 
-        assert job["result"]["adjustments"] is None
+        report = job["result"]["adjustments"]
         assert job["result"]["diagnostics_errors"] == []
+        assert [bar["quotes"] for bar in report["bars"]] == [1, 0, 1]
+        assert report["deployed_factor_differs"] == 1
+        OptimiserSolveResult.model_validate(job["result"])
+
+    def test_a_ratebook_result_without_its_per_quote_evaluation_fails_the_completion(
+        self,
+    ) -> None:
+        with pytest.raises(AttributeError, match="quote_results"):
+            _finalize(_StatsResult(), mode="ratebook")
 
     def test_a_failed_frontier_is_in_the_list_and_keeps_frontier_error(self) -> None:
         from haute.routes._optimiser_solver import _finalize_solve_result

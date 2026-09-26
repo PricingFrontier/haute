@@ -1,7 +1,9 @@
 """Ownership-marked optimiser artifacts and setup-owned solver-input files.
 
 Three artifact families live under dedicated, marker-owned temp roots: the
-online apply result (``optimiser_apply_result``), the ratebook factor table
+per-quote apply result of either mode (``optimiser_apply_result``: an online
+apply frame, or a ratebook result's canonical ``quote_results``), the ratebook
+factor table
 (``optimiser_ratebook_factors``) and the per-quote analysis side table
 (``optimiser_quote_analysis``). Their handle is the canonical persisted wire
 schema. This module persists, validates, loads and removes them, registers the
@@ -257,11 +259,45 @@ QUOTE_ANALYSIS_UNAVAILABLE_DETAIL = (
 )
 
 
-def _persist_apply_result_artifact(solve_result: SolveResultLike) -> dict[str, Any]:
-    """Persist an online result's per-quote dataframe behind an explicit handle.
+def _persist_apply_frame_artifact(frame: Any) -> dict[str, Any]:
+    """Persist one per-quote apply frame behind an explicit handle.
 
-    Only online solves and online apply results carry a per-quote frame; a
-    result without one is a caller error, never a silent "nothing to persist".
+    *frame* is an online apply frame (a solve's or a frontier point's
+    ``dataframe``) or a ratebook evaluation's ``quote_results``; anything but a
+    Polars ``DataFrame`` is a caller error, never a silent "nothing to persist".
+    """
+    import polars as pl
+
+    if not isinstance(frame, pl.DataFrame):
+        raise TypeError(
+            f"An optimiser apply frame must be a Polars DataFrame to persist; got "
+            f"{type(frame).__name__}"
+        )
+    artifact_dir = create_owned_artifact_directory(
+        _prepare_apply_artifact_root(), _APPLY_ARTIFACT_DIR_PREFIX, _APPLY_ARTIFACT_OWNER
+    )
+    artifact_path = artifact_dir / _APPLY_RESULT_FILENAME
+    try:
+        frame.write_parquet(artifact_path)
+        row_count = len(frame)
+    except BaseException:
+        shutil.rmtree(artifact_dir, ignore_errors=True)
+        raise
+    return {
+        "kind": _APPLY_RESULT_HANDLE_KIND,
+        "version": _ARTIFACT_HANDLE_VERSION,
+        "format": "parquet",
+        "path": str(artifact_path),
+        "directory": str(artifact_dir),
+        "row_count": row_count,
+    }
+
+
+def _persist_apply_result_artifact(solve_result: SolveResultLike) -> dict[str, Any]:
+    """Persist an online result's per-quote dataframe, then drop the result's reference.
+
+    Only online solves and online apply results carry a ``dataframe``; a result
+    without one is a caller error (see ``_persist_apply_frame_artifact``).
     """
     import polars as pl
 
@@ -271,17 +307,7 @@ def _persist_apply_result_artifact(solve_result: SolveResultLike) -> dict[str, A
             "An online optimiser result must carry a per-quote Polars DataFrame to "
             f"persist; {type(solve_result).__name__}.dataframe is {type(df).__name__}"
         )
-
-    artifact_dir = create_owned_artifact_directory(
-        _prepare_apply_artifact_root(), _APPLY_ARTIFACT_DIR_PREFIX, _APPLY_ARTIFACT_OWNER
-    )
-    artifact_path = artifact_dir / _APPLY_RESULT_FILENAME
-    try:
-        df.write_parquet(artifact_path)
-        row_count = len(df)
-    except BaseException:
-        shutil.rmtree(artifact_dir, ignore_errors=True)
-        raise
+    handle = _persist_apply_frame_artifact(df)
     try:
         cast(Any, solve_result).dataframe = None
     except Exception:
@@ -289,15 +315,7 @@ def _persist_apply_result_artifact(solve_result: SolveResultLike) -> dict[str, A
             "optimiser_apply_dataframe_reference_not_clearable",
             solve_result_type=type(solve_result).__name__,
         )
-
-    return {
-        "kind": _APPLY_RESULT_HANDLE_KIND,
-        "version": _ARTIFACT_HANDLE_VERSION,
-        "format": "parquet",
-        "path": str(artifact_path),
-        "directory": str(artifact_dir),
-        "row_count": row_count,
-    }
+    return handle
 
 
 def _persist_ratebook_factors_artifact(factors_df: Any) -> dict[str, Any] | None:
@@ -485,10 +503,7 @@ def _load_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
         ) from exc
     if not artifact_path.is_file():
         logger.warning("optimiser_ratebook_artifact_missing", path=str(artifact_path))
-        raise HTTPException(
-            status_code=410,
-            detail="Optimiser ratebook factor artifact is no longer available. Re-run the solve.",
-        )
+        raise HTTPException(status_code=410, detail=RATEBOOK_FACTORS_UNAVAILABLE_DETAIL)
     try:
         return pl.read_parquet(artifact_path)
     except Exception as exc:
@@ -499,10 +514,13 @@ def _load_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
         ) from exc
 
 
-def _scan_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
-    """Return a lazy scan for a validated ratebook factor artifact."""
-    import polars as pl
+RATEBOOK_FACTORS_UNAVAILABLE_DETAIL = (
+    "Optimiser ratebook factor artifact is no longer available. Re-run the solve."
+)
 
+
+def _ratebook_factors_path(handle: dict[str, Any]) -> Path:
+    """The validated, present factor file behind *handle*: a 410 when it is gone."""
     try:
         artifact_path, _artifact_dir = _validate_ratebook_factors_artifact_handle(handle)
     except ValueError as exc:
@@ -517,10 +535,15 @@ def _scan_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
         ) from exc
     if not artifact_path.is_file():
         logger.warning("optimiser_ratebook_artifact_scan_missing", path=str(artifact_path))
-        raise HTTPException(
-            status_code=410,
-            detail="Optimiser ratebook factor artifact is no longer available. Re-run the solve.",
-        )
+        raise HTTPException(status_code=410, detail=RATEBOOK_FACTORS_UNAVAILABLE_DETAIL)
+    return artifact_path
+
+
+def _scan_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
+    """Return a lazy scan for a validated ratebook factor artifact."""
+    import polars as pl
+
+    artifact_path = _ratebook_factors_path(handle)
     try:
         return pl.scan_parquet(artifact_path)
     except Exception as exc:

@@ -9,7 +9,9 @@ A quote is adjusted up above 1.0, down below it and unadjusted at exactly 1.0,
 which is a category only when the grid has a 1.0 step. Quote count always
 weighs the report; the objective and each constraint, evaluated at the chosen
 scenario, weigh it too unless a quote's value is negative or the total is zero,
-in which case the weighting is refused by name, never computed.
+in which case the weighting is refused by name, never computed. A ratebook
+report also counts the quotes whose deployed factor differs from the step the
+solver evaluated (OPT-V09C).
 """
 
 from __future__ import annotations
@@ -19,7 +21,12 @@ from collections.abc import Callable, Mapping, Sequence
 from itertools import accumulate
 from typing import Any
 
-from haute.routes._optimiser_outcomes import NEGATIVE_PREFIX, ChoiceFrameSpec, ChoiceQueryResult
+from haute.routes._optimiser_outcomes import (
+    DEPLOYED_FACTOR_DIFFERS,
+    NEGATIVE_PREFIX,
+    ChoiceFrameSpec,
+    ChoiceQueryResult,
+)
 from haute.schemas import OptimiserAdjustmentReport
 
 QUOTES_WEIGHT = "quotes"
@@ -97,6 +104,9 @@ def adjustment_report(
                 for key in weights
             ],
             "diagnostics_errors": errors,
+            "deployed_factor_differs": (
+                int(rows[DEPLOYED_FACTOR_DIFFERS].sum()) if spec.mode == "ratebook" else None
+            ),
         }
     )
 

@@ -1147,12 +1147,20 @@ describe("OptimiserPreview", () => {
       expect(adjustmentRequests()).toHaveLength(1)
     })
 
-    it("offers Adjustments for online results only, until ratebook choices exist", () => {
+    it("offers Adjustments for a ratebook result, summarised on Summary", () => {
       const ratebook = makeRatebookSolveResult()
       renderPreview({ data: makeData({ result: ratebook, solvedResult: ratebook }) })
 
-      expect(screen.queryByRole("tab", { name: "Adjustments" })).not.toBeInTheDocument()
-      expect(screen.queryByRole("group", { name: "Adjustments" })).not.toBeInTheDocument()
+      const summary = screen.getByRole("group", { name: "Adjustments" })
+      expect(within(summary).getByText("Deployed ≠ evaluated step").nextSibling)
+        .toHaveTextContent("18 quotes")
+      fireEvent.click(within(summary).getByRole("button", { name: "View adjustments" }))
+
+      expect(screen.getByRole("tab", { name: "Adjustments" })).toHaveAttribute("aria-selected", "true")
+      expect(screen.getByText("As solved: 200 quotes")).toBeInTheDocument()
+      expect(within(screen.getByRole("group", { name: "Deployed factor" }))
+        .getByText("Deployed factor differs from evaluated step").nextSibling)
+        .toHaveTextContent("18 quotes (9.0%)")
     })
 
     it("keeps Convergence for a selected point and says whose history it shows", () => {

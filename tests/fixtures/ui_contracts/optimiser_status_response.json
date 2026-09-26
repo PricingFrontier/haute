@@ -132,7 +132,8 @@
           "share_at_max": 0.43478260869565216
         }
       ],
-      "diagnostics_errors": []
+      "diagnostics_errors": [],
+      "deployed_factor_differs": null
     },
     "clamp_rate": null,
     "combined_factor_bounds": null,

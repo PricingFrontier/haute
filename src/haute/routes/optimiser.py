@@ -74,7 +74,7 @@ from haute.routes._optimiser_frontier import (
     _frontier_point_constraints_override,
     _frontier_point_mlflow_summary,
     _job_has_frontier_points,
-    _reject_ratebook_apply_detail,
+    _job_mode,
     _summary_solve_result,
 )
 from haute.routes._optimiser_input import (
@@ -429,12 +429,11 @@ async def cancel_solve(job_id: str) -> OptimiserStatusResponse:
 
 @router.post("/apply", response_model=OptimiserApplyResponse)
 async def apply_lambdas(body: OptimiserApplyRequest, request: Request) -> OptimiserApplyResponse:
-    """Apply solved lambdas and return the per-quote detail preview.
+    """Return the per-quote detail preview of the solve or one frontier point.
 
-    Online mode only: the real ``RatebookResult`` carries factor tables,
-    not per-quote scenario selections, so ratebook jobs are rejected with
-    an explicit 422 contract error before any solver or artifact work. A
-    client that leaves stops waiting for a point's apply without stopping it.
+    Both modes: a ratebook preview holds price-contour's canonical per-quote
+    evaluation. A client that leaves stops waiting for a point's apply without
+    stopping it.
     """
     return await run_until_disconnected(request, lambda token: _apply_preview(body, token))
 
@@ -444,7 +443,6 @@ def _apply_preview(
 ) -> OptimiserApplyResponse:
     logger.info("apply_requested", job_id=body.job_id)
     job: Mapping[str, Any] = _store.require_completed_job(body.job_id)
-    _reject_ratebook_apply_detail(job)
 
     # ``point_index`` names the target: a frontier point, or (``None``) the
     # job's own solve — never the server-side selected point.
@@ -474,7 +472,8 @@ def _apply_preview(
         _clear_result_data_after_user_action(body.job_id)
         return response
 
-    solve_result = job.get("solve_result")
+    # A ratebook result's per-quote frame is only ever its persisted artifact.
+    solve_result = job.get("solve_result") if _job_mode(job) == "online" else None
     from_artifact = False
     if solve_result is not None and not hasattr(solve_result, "dataframe"):
         _dataframe_or_raise(solve_result, context="Job solve_result")

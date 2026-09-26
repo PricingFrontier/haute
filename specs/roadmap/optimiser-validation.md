@@ -603,6 +603,15 @@ Agreement tests per quote and in aggregate for the objective and every constrain
 
 **Evidence:** Current code this package changes or relies on: `src/haute/routes/_optimiser_frontier.py`, `src/haute/_builders.py` (`_apply_ratebook`).
 
+**Implemented (26 September 2026).** As specified in the optimiser low-level specification ("Ratebook per-quote choices (OPT-V09C)", "Bounded choice queries and point materialisation", "Adjustment reports (OPT-V10)") and the frontend specification, with these choices the plan left open:
+
+- The persisted apply frame must have exactly its mode's schema (`apply_frame_schema`; the ratebook one is price-contour's `quote_results_schema`); any other schema is a `ChoiceJoinError` naming the differences. The per-quote flag is the choice frame's `deployed_factor_differs` column (`factor_product != optimal_scenario_value` on a quote with neither clamp flag); the histogram, the analysis group-by and the factor segments count it per group, and the adjustment report states the portfolio count (`deployed_factor_differs`, `null` for online).
+- A ratebook point's frame is materialised only while the solver, the quote grid and the factor contexts are held (they are slimmed together), and its evaluation must reproduce the point's frontier row exactly, else a `RuntimeError`: a mismatch would describe a different point.
+- `/apply` for a ratebook point records the materialised point (its own factor tables) as the selection, as frontier select with `include_ratebook_tables` does, so the job's result never pairs a point's totals with the solve's tables.
+- The factor breakdown is its own reducer, `FactorSegments(factor, limit)`, whose rows carry `level` (the Rates tab's `__factor_group__` label) rather than the constituent columns; the Segments tab (OPT-V11) builds on it.
+- The frontend's `adjustmentsOffered` hook was removed rather than filled: every result now has a report, so the Adjustments tab and Summary's compact summary are always offered. The Quotes tab stays online-only in the frontend until OPT-V12, although `/apply` now serves ratebook detail.
+- price-contour caches `quote_results` on the result, so a ratebook solve's frame stays resident with the heavy `solve_result` until heavy-state slimming (an online solve's is dropped once persisted).
+
 ### OPT-V10 — Adjustments tab: the distribution of chosen scenario values, including for the selected point
 
 **Why:** Show, on real axes, how the optimiser adjusted the book relative to the base price: how many quotes (or how much of a weight) got each adjustment, for the as-solved result **and** for the selected frontier point. This is a description of the solution, not an impact analysis. Gaps closed: G05 (re-scoped: the adjustment distribution replaces dislocation), G06 (backend half).
@@ -664,7 +673,7 @@ Agreement tests per quote and in aggregate for the objective and every constrain
 - The negative-weight guard is per quote, not per step: `ScenarioHistogram` also counts each step's quotes whose objective or constraint value is below zero (`negative_<column>`), since a step's sum can be positive while one of its quotes is negative.
 - "Served without the grid" means a cached point report needs neither the quote grid nor the point's apply artifact; each bar still carries its grid value.
 - `POST /frontier/select` runs off the event loop (`run_until_disconnected`), because with `include_adjustments` it can wait for a point to materialise.
-- Ratebook results have no report yet: the as-solved report is `null` with no diagnostic, and the Adjustments tab is offered for online results only. The hooks OPT-V09C fills are `_ratebook_adjustments` (`_optimiser_solver.py`) and `adjustmentsOffered` (`resultViews.ts`); the choice queries already refuse ratebook jobs by name.
+- Ratebook results had no report yet (filled by OPT-V09C): the as-solved report was `null` with no diagnostic, and the Adjustments tab was offered for online results only, through the hooks `_ratebook_adjustments` (`_optimiser_solver.py`) and `adjustmentsOffered` (`resultViews.ts`).
 - Summary's compact adjustments summary appears wherever the workspace offers the Adjustments tab. The Quotes "at range edge" filter in the acceptance list belongs to OPT-V12, which reads the same `scenario_grid`.
 
 ### OPT-V11 — Segments tab: where the optimiser adjusted (AvE-style layout)

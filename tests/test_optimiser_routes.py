@@ -53,6 +53,7 @@ from tests.optimiser_fixtures import (
     make_frontier_data,
     make_frontier_point,
     make_input_summary,
+    make_ratebook_quote_results,
     make_solved_result,
     setup_grid_stub,
     typed_frontier_point,
@@ -5341,15 +5342,16 @@ def _ratebook_solve_result_namespace(
     factor_tables: dict[str, dict[str, float]] | None = None,
     constraint_bounds: dict[str, float] | None = None,
     per_factor_results: list[PerFactorRecord] | None = None,
+    quote_results: pl.DataFrame | None = None,
 ) -> SimpleNamespace:
     """Mock shaped like the REAL ``price_contour.RatebookResult``.
 
     Deliberately has NO ``dataframe`` and NO ``iterations`` attribute —
-    the real result carries factor tables and aggregates only (pinned by
-    ``tests/test_optimiser_routes_real_library.py``).  Every mocked
-    ratebook solve must use this shape: a phantom ``dataframe=`` would
-    make ``_finalize_solve_result`` persist an apply artifact and
-    scenario stats that real ratebook solves never produce (3b.9).
+    the real result carries factor tables, aggregates and the canonical
+    per-quote evaluation ``quote_results`` (pinned by
+    ``tests/test_optimiser_routes_real_library.py``), which a mocked solve's
+    finalize persists as the apply artifact (OPT-V09C). Its default holds two
+    quotes at ``SOLVE_SCENARIO_GRID``'s middle step, one per constraint.
 
     ``per_factor_results`` defaults to one pass over ``region`` ending on the
     result's totals and λ, as a real solve's CD trace does.
@@ -5357,6 +5359,11 @@ def _ratebook_solve_result_namespace(
     total_constraints = total_constraints if total_constraints is not None else {"volume": 0.97}
     lambdas = lambdas if lambdas is not None else {"volume": 0.7}
     return SimpleNamespace(
+        quote_results=(
+            quote_results
+            if quote_results is not None
+            else make_ratebook_quote_results(list(total_constraints))
+        ),
         total_objective=total_objective,
         baseline_objective=baseline_objective,
         total_constraints=total_constraints,
@@ -9571,7 +9578,7 @@ class TestFrontierSelect:
 
         with (
             patch(
-                "haute.routes._optimiser_frontier._persist_apply_result_artifact",
+                "haute.routes._optimiser_frontier._persist_apply_frame_artifact",
                 side_effect=AssertionError("selection must not persist apply artifacts"),
             ),
             patch.object(
@@ -10440,7 +10447,7 @@ class TestFinalizeSolveResult:
         assert solve_result.dataframe is None
         assert "dataframe" not in job["result"]
 
-    def test_finalized_ratebook_job_persists_factors_artifact_not_dataframe(self):
+    def test_finalized_ratebook_job_persists_factors_and_quote_results_artifacts(self):
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_artifacts import (
             _RATEBOOK_FACTORS_HANDLE_KEY,
@@ -10480,8 +10487,10 @@ class TestFinalizeSolveResult:
         assert handle["kind"] == "optimiser_ratebook_factors"
         assert handle["row_count"] == 2
         assert _load_ratebook_factors_artifact(handle).equals(factors_df)
-        # A real-shape ratebook result must not leave an apply artifact behind.
-        assert "apply_result" not in job["artifact_handles"]
+        # The as-solved apply artifact is price-contour's canonical per-quote evaluation.
+        apply_handle = job["artifact_handles"]["apply_result"]
+        assert apply_handle["kind"] == "optimiser_apply_result"
+        assert pl.read_parquet(apply_handle["path"]).equals(solve_result.quote_results)
 
     def test_finalized_job_skips_artifact_publication_when_status_guard_is_lost(
         self,
@@ -10893,65 +10902,6 @@ class TestApplyLambdasUnit:
         assert job["status"] == "completed"
         assert job["result"] == {"total_objective": 100.0}
         assert "solve_result" not in job
-
-    def test_apply_ratebook_frontier_point_is_explicit_contract_error(
-        self,
-        client,
-        clean_job_store,
-    ):
-        """The real ``RatebookResult`` has no per-quote dataframe, so the
-        "Load detail" apply has nothing to serve in ratebook mode.  The
-        route must reject with 422 BEFORE any solver or artifact work —
-        the old behaviour re-ran a full CD solve and then died on the
-        missing ``dataframe`` attribute as an opaque 500."""
-        mock_solver, _mock_grid, _factor_contexts = _make_ratebook_frontier_materialisation_job(
-            clean_job_store,
-            "apply_rb_frontier",
-        )
-
-        resp = client.post(
-            "/api/optimiser/apply",
-            json={"job_id": "apply_rb_frontier", "point_index": 0},
-        )
-
-        assert resp.status_code == 422
-        detail = resp.json()["detail"]
-        assert "ratebook" in detail.lower()
-        assert "factor tables" in detail.lower()
-        mock_solver.solve.assert_not_called()
-        job = clean_job_store.require_job("apply_rb_frontier")
-        assert "frontier_apply_result:0" not in job["artifact_handles"]
-        assert job.get("selected_frontier_point") is None
-        # The rejection must not consume the frontier-analysis session.
-        assert job["solver"] is mock_solver
-
-    def test_apply_ratebook_frontier_point_rejection_is_idempotent(
-        self,
-        client,
-        clean_job_store,
-    ):
-        """Repeated detail attempts keep failing cleanly without mutating
-        job state or invoking the solver."""
-        mock_solver, _mock_grid, _factors_df = _make_ratebook_frontier_materialisation_job(
-            clean_job_store,
-            "apply_rb_frontier_cached",
-        )
-
-        first_resp = client.post(
-            "/api/optimiser/apply",
-            json={"job_id": "apply_rb_frontier_cached", "point_index": 0},
-        )
-        second_resp = client.post(
-            "/api/optimiser/apply",
-            json={"job_id": "apply_rb_frontier_cached", "point_index": 0},
-        )
-
-        assert first_resp.status_code == 422
-        assert second_resp.status_code == 422
-        assert first_resp.json()["detail"] == second_resp.json()["detail"]
-        mock_solver.solve.assert_not_called()
-        job = clean_job_store.require_job("apply_rb_frontier_cached")
-        assert job["artifact_handles"] == {}
 
     def test_save_ratebook_frontier_point_rebuilds_stale_cached_summary(
         self,
@@ -12170,70 +12120,6 @@ class TestSelectFrontierPointResolve:
         job = clean_job_store.require_job("rb_select_rates_switch")
         assert job["selected_frontier_point"] == 1
         assert job["result"]["factor_tables"] == second_data["factor_tables"]
-        mock_solver.solve.assert_not_called()
-
-    def test_apply_ratebook_frontier_point_rejection_preserves_rate_table_switching(
-        self,
-        client,
-        clean_job_store,
-    ):
-        """A rejected detail attempt must not break later rate-table switching.
-
-        The "Load detail" apply is a 422 contract error in ratebook mode
-        (the real ``RatebookResult`` has no per-quote dataframe); the
-        rejection must leave the frontier-analysis session fully intact so
-        the user can keep materialising rate tables for other points.
-        """
-        mock_solver, mock_grid, factor_contexts = _make_ratebook_frontier_materialisation_job(
-            clean_job_store,
-            "rb_apply_then_switch_rates",
-        )
-        replace_job(
-            clean_job_store,
-            "rb_apply_then_switch_rates",
-            _append_second_ratebook_frontier_point,
-        )
-
-        first_rates = client.post(
-            "/api/optimiser/frontier/select",
-            json={
-                "job_id": "rb_apply_then_switch_rates",
-                "point_index": 0,
-                "include_ratebook_tables": True,
-            },
-        )
-        apply_detail = client.post(
-            "/api/optimiser/apply",
-            json={
-                "job_id": "rb_apply_then_switch_rates",
-                "point_index": 0,
-            },
-        )
-        second_rates = client.post(
-            "/api/optimiser/frontier/select",
-            json={
-                "job_id": "rb_apply_then_switch_rates",
-                "point_index": 1,
-                "include_ratebook_tables": True,
-            },
-        )
-
-        assert first_rates.status_code == 200
-        assert apply_detail.status_code == 422
-        assert "ratebook" in apply_detail.json()["detail"].lower()
-        assert second_rates.status_code == 200, second_rates.json()
-        assert second_rates.json()["factor_tables"] == _expected_region_factor_tables(
-            north=1.12,
-            south=0.98,
-        )
-        assert second_rates.json()["total_objective"] == 240.0
-        job = clean_job_store.require_job("rb_apply_then_switch_rates")
-        assert job["solver"] is mock_solver
-        assert job["quote_grid"] is mock_grid
-        assert job["ratebook_factor_contexts"] is factor_contexts
-        assert "solve_result" not in job
-        # Neither the rate-table materialisations nor the rejected detail
-        # attempt re-solve: the frontier kept each point's tables.
         mock_solver.solve.assert_not_called()
 
     def test_resolve_records_frontier_provenance(self, client, clean_job_store):
@@ -13582,13 +13468,11 @@ class TestSolveRatebookUnit:
         with pytest.raises(ValueError, match=message):
             self._solve_ratebook_with(_ratebook_solve_result_namespace(per_factor_results=records))
 
-    def test_solve_ratebook_real_shape_persists_no_apply_artifact_or_stats(self):
-        """3b.9 characterization pin: the REAL ``RatebookResult`` has no
-        ``.dataframe`` (pinned by tests/test_optimiser_routes_real_library.py),
-        so a ratebook solve through the service must persist NO apply-result
-        artifact and fabricate NO scenario-value stats/histogram.  Phantom
-        ``dataframe=`` mock fields used to make both appear — this pin keeps
-        that divergence from silently returning."""
+    def test_solve_ratebook_persists_its_quote_results_and_reports_them(self):
+        """The REAL ``RatebookResult`` has no ``.dataframe`` (pinned by
+        tests/test_optimiser_routes_real_library.py): a ratebook solve persists its
+        canonical ``quote_results`` as the apply artifact and builds the as-solved
+        adjustment report from it, counting the flagged quotes (OPT-V09C)."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_artifacts import (
             _APPLY_RESULT_HANDLE_KEY,
@@ -13602,7 +13486,11 @@ class TestSolveRatebookUnit:
                 "input_provenance": SOLVE_PROVENANCE,
                 "scenario_grid": SOLVE_SCENARIO_GRID,
                 "status": "running",
-                "config": {"constraints": {"volume": {"min": 0.9}}},
+                "config": {
+                    "mode": "ratebook",
+                    "constraints": {"volume": {"min": 0.9}},
+                    "factor_columns": [["region"]],
+                },
             }
         )
 
@@ -13617,11 +13505,14 @@ class TestSolveRatebookUnit:
             "factor_columns": [["region"]],
             "quote_id": "quote_id",
         }
+        # q1's product 1.02 rounds to the 1.0 step; q2's lands on it.
+        quote_results = make_ratebook_quote_results(["volume"])
 
         with _persisted_ratebook_factors_handle(factors_df) as factors_handle:
             with patch("price_contour.RatebookOptimiser") as mock_solver:
                 mock_solver.return_value.solve.return_value = _ratebook_solve_result_namespace(
                     factor_tables={"region": {"North": 1.08, "South": 0.92}},
+                    quote_results=quote_results,
                 )
                 _solve_ratebook(
                     SolveContext(
@@ -13638,14 +13529,13 @@ class TestSolveRatebookUnit:
 
             job = store.require_job(job_id)
             assert job["status"] == "completed"
-            assert _APPLY_RESULT_HANDLE_KEY not in job["artifact_handles"]
+            apply_path = job["artifact_handles"][_APPLY_RESULT_HANDLE_KEY]["path"]
+            assert pl.read_parquet(apply_path).equals(quote_results)
             assert _RATEBOOK_FACTORS_HANDLE_KEY in job["artifact_handles"]
-            # No per-quote ratebook frame until OPT-V09C: no report, and no error.
-            assert job["result"]["adjustments"] is None
-            assert not any(
-                error["diagnostic"] == "adjustments"
-                for error in job["result"]["diagnostics_errors"]
-            )
+            report = job["result"]["adjustments"]
+            assert job["result"]["diagnostics_errors"] == []
+            assert [bar["quotes"] for bar in report["bars"]] == [0, 2, 0]
+            assert report["deployed_factor_differs"] == 1
 
     def test_solve_ratebook_orders_factor_tables_by_banding_rule_order(self):
         """Ratebook rates are serialised in the source banding row order."""

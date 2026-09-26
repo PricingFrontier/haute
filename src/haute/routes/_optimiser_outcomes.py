@@ -14,6 +14,12 @@ the as-solved result or a frontier point -- inside leases, join the side
 table 1:1 when there is one, and run a reducer in the lazy plan so only a
 small result is ever collected. Each run is admitted with its own estimate
 and single-flighted by job, frontier generation, target and reducer.
+
+A ratebook target's frame is price-contour's canonical per-quote evaluation
+(OPT-V09C): the online columns plus the factor product and the clamp flags,
+from which each quote's "deployed factor differs from evaluated step" flag is
+read, and a ratebook job's factor rows are a second leased side table that
+the factor segments join 1:1.
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast
 
 from fastapi import HTTPException
 
@@ -333,14 +339,44 @@ _TWO_32 = 1 << 32
 _CHOICE_OPERATION = "optimiser_choice_query"
 _CHOICE_REMEDY = "Raise HAUTE_EXPLORE_MEMORY_LIMIT_MB, or ask for fewer groups or rows."
 
-CHOICES_ONLINE_ONLY_DETAIL = {
-    "error_code": "optimiser_choices_online_only",
-    "message": (
-        "Per-quote choices are not available for ratebook optimiser results yet: the ratebook "
-        "solver's per-quote evaluation is not kept. Use the factor tables on the result (Rates "
-        "tab)."
-    ),
-}
+ChoiceMode = Literal["online", "ratebook"]
+
+DEPLOYED_FACTOR_DIFFERS = "deployed_factor_differs"
+"""A ratebook quote whose deployed factor differs from the step the solver evaluated.
+
+Inside the scenario range the Optimiser Apply node deploys the unsnapped product
+of the factor rates, while the solve evaluated the nearest step; past a grid end
+the deployed factor is collared to that end, the evaluated step (Q17). So the
+flag is the frame's own Float32 ``factor_product`` differing from its
+``optimal_scenario_value`` on a quote the kernel did not clamp; the product is
+never recomputed here.
+"""
+
+
+def apply_frame_schema(mode: ChoiceMode, constraint_names: Sequence[str]) -> dict[str, Any]:
+    """The exact ``{column: dtype}`` of a *mode*'s persisted apply frame, in column order.
+
+    Online, price-contour's apply frame: the quote id, the chosen step and scenario
+    value, and the objective and each constraint at it. Ratebook, its
+    ``quote_results_schema``: the same, then the factor product and the clamp flags.
+    """
+    import polars as pl
+
+    schema: dict[str, Any] = {
+        CHOICE_QUOTE_ID: pl.String(),
+        "optimal_step": pl.Int32(),
+        "optimal_scenario_value": pl.Float32(),
+        "optimal_objective": pl.Float32(),
+    }
+    for name in constraint_names:
+        schema[f"optimal_{name}"] = pl.Float32()
+    if mode == "ratebook":
+        schema["factor_product"] = pl.Float32()
+        schema["clamped_low"] = pl.Boolean()
+        schema["clamped_high"] = pl.Boolean()
+    elif mode != "online":
+        raise ValueError(f"Unknown optimiser mode {mode!r}; expected 'online' or 'ratebook'.")
+    return schema
 
 
 class ChoiceJoinError(RuntimeError):
@@ -368,11 +404,17 @@ class ChoiceQueryResult:
 
 @dataclass(frozen=True, slots=True)
 class ChoiceFrameSpec:
-    """What a reducer may rely on about the choice frame it runs over."""
+    """What a reducer may rely on about the choice frame it runs over.
 
+    ``factor_columns`` are a ratebook solve's factor specs (each named
+    ``":".join(columns)``, as the Rates tab names its tables); empty online.
+    """
+
+    mode: ChoiceMode
     constraint_names: tuple[str, ...]
     analysis_columns: tuple[str, ...]
     scenario_grid: tuple[tuple[int, float], ...]
+    factor_columns: tuple[tuple[str, ...], ...]
 
     @property
     def value_columns(self) -> tuple[str, ...]:
@@ -380,8 +422,18 @@ class ChoiceFrameSpec:
         return ("optimal_objective", *(f"optimal_{name}" for name in self.constraint_names))
 
     @property
+    def apply_schema(self) -> dict[str, Any]:
+        return apply_frame_schema(self.mode, self.constraint_names)
+
+    @property
     def choice_columns(self) -> tuple[str, ...]:
-        return (CHOICE_QUOTE_ID, "optimal_step", "optimal_scenario_value", *self.value_columns)
+        """The choice frame's columns: the apply frame's, and a ratebook quote's flag."""
+        flag = (DEPLOYED_FACTOR_DIFFERS,) if self.mode == "ratebook" else ()
+        return (*self.apply_schema, *flag)
+
+    @property
+    def factor_names(self) -> tuple[str, ...]:
+        return tuple(":".join(columns) for columns in self.factor_columns)
 
 
 Collect = Callable[["pl.LazyFrame"], "pl.DataFrame"]
@@ -389,17 +441,36 @@ Collect = Callable[["pl.LazyFrame"], "pl.DataFrame"]
 
 @dataclass(frozen=True, slots=True)
 class ChoiceFrames:
-    """The leased choice frame, and the side table it corresponds to 1:1 when there is one.
+    """The leased choice frame, and the side tables it corresponds to 1:1.
 
     The correspondence is checked before a reducer runs (``_require_same_quotes``).
     A reducer that needs analysis values for every quote reads ``joined()``; one
-    that keeps a few rows attaches them to those rows only (``with_analysis``).
+    that keeps a few rows attaches them to those rows only (``with_analysis``);
+    one that groups by rating factor reads ``with_factors()``, the ratebook factor
+    rows being leased only for such a reducer.
     """
 
     choice: pl.LazyFrame
     analysis: pl.LazyFrame | None
     analysis_key: str
     collect: Collect
+    factors: pl.LazyFrame | None = None
+    factors_key: str = CHOICE_QUOTE_ID
+
+    def with_factors(self) -> pl.LazyFrame:
+        """Every chosen row with its factor levels: an inner 1:1 join in apply order."""
+        import polars as pl
+
+        if self.factors is None:
+            raise RuntimeError("with_factors() needs the leased ratebook factor rows.")
+        return self.choice.join(
+            self.factors.with_columns(pl.col(self.factors_key).cast(pl.String)),
+            left_on=CHOICE_QUOTE_ID,
+            right_on=self.factors_key,
+            how="inner",
+            validate="1:1",
+            maintain_order="left",
+        )
 
     def joined(self) -> pl.LazyFrame:
         """Every chosen row with its analysis values: an inner 1:1 join in apply order."""
@@ -442,7 +513,10 @@ class ChoiceReducer(Protocol):
     """A bounded reduction of the choice frame, run in its lazy plan."""
 
     joins_every_quote: ClassVar[bool]
-    """Whether the plan joins the whole side table (it groups by analysis values)."""
+    """Whether the plan joins a whole side table (it groups by analysis values or factors)."""
+
+    reads_factors: ClassVar[bool]
+    """Whether the plan reads the ratebook factor rows (``ChoiceFrames.with_factors``)."""
 
     def validate(self, spec: ChoiceFrameSpec) -> None:
         """Refuse arguments the frame cannot answer, or an unbounded result, with a 400."""
@@ -485,6 +559,31 @@ def _negative_counts(spec: ChoiceFrameSpec) -> list[pl.Expr]:
     ]
 
 
+def _deployed_counts(spec: ChoiceFrameSpec) -> list[pl.Expr]:
+    """A ratebook group's count of flagged quotes; nothing online."""
+    import polars as pl
+
+    if spec.mode != "ratebook":
+        return []
+    return [pl.col(DEPLOYED_FACTOR_DIFFERS).sum().cast(pl.Int64).alias(DEPLOYED_FACTOR_DIFFERS)]
+
+
+def _deployed_columns(spec: ChoiceFrameSpec) -> list[str]:
+    return [DEPLOYED_FACTOR_DIFFERS] if spec.mode == "ratebook" else []
+
+
+def _segment_aggregates(spec: ChoiceFrameSpec) -> list[pl.Expr]:
+    """One segment's quotes, mean scenario value, Float64 totals and (ratebook) flag count."""
+    import polars as pl
+
+    return [
+        pl.len().cast(pl.Int64).alias("quotes"),
+        pl.col("optimal_scenario_value").cast(pl.Float64).mean().alias("mean_scenario_value"),
+        *_float64_sums(spec),
+        *_deployed_counts(spec),
+    ]
+
+
 @dataclass(frozen=True, slots=True)
 class ScenarioHistogram:
     """Quotes, Float64 totals and negative-value counts per step of the recorded grid.
@@ -493,6 +592,7 @@ class ScenarioHistogram:
     """
 
     joins_every_quote: ClassVar[bool] = False
+    reads_factors: ClassVar[bool] = False
 
     def validate(self, spec: ChoiceFrameSpec) -> None:
         return None
@@ -510,11 +610,13 @@ class ScenarioHistogram:
             pl.len().cast(pl.Int64).alias("quotes"),
             *_float64_sums(spec),
             *_negative_counts(spec),
+            *_deployed_counts(spec),
         )
         counted_columns = [
             "quotes",
             *spec.value_columns,
             *(f"{NEGATIVE_PREFIX}{column}" for column in spec.value_columns),
+            *_deployed_columns(spec),
         ]
         grid = pl.LazyFrame(
             {
@@ -546,7 +648,7 @@ def histogram_of_frame(frame: pl.LazyFrame, spec: ChoiceFrameSpec) -> ChoiceQuer
     """
     import polars as pl
 
-    choice = _choice_frame(frame, spec.choice_columns)
+    choice = _choice_frame(frame, spec)
     row_count = int(choice.select(pl.len()).collect().item())
     frames = ChoiceFrames(
         choice=choice,
@@ -565,6 +667,7 @@ class SegmentGroupBy:
     limit: int
 
     joins_every_quote: ClassVar[bool] = True
+    reads_factors: ClassVar[bool] = False
 
     def validate(self, spec: ChoiceFrameSpec) -> None:
         _require_row_bound("The group limit", self.limit)
@@ -587,26 +690,83 @@ class SegmentGroupBy:
         return True
 
     def run(self, frames: ChoiceFrames, spec: ChoiceFrameSpec, row_count: int) -> ChoiceQueryResult:
-        import polars as pl
-
         keys = list(self.columns)
-        rows = frames.collect(
-            frames.joined()
-            .group_by(keys)
-            .agg(
-                pl.len().cast(pl.Int64).alias("quotes"),
-                pl.col("optimal_scenario_value")
-                .cast(pl.Float64)
-                .mean()
-                .alias("mean_scenario_value"),
-                *_float64_sums(spec),
-            )
-            .with_columns(pl.len().alias(_TOTAL_COLUMN))
-            .sort(["quotes", *keys], descending=[True, *([False] * len(keys))], nulls_last=True)
-            .head(self.limit)
-        )
+        rows = frames.collect(_largest_groups(frames.joined(), keys, spec, self.limit))
         total = int(rows[_TOTAL_COLUMN][0]) if rows.height else 0
         return ChoiceQueryResult(rows=rows.drop(_TOTAL_COLUMN), total=total)
+
+
+def _largest_groups(
+    frame: pl.LazyFrame, keys: list[str], spec: ChoiceFrameSpec, limit: int
+) -> pl.LazyFrame:
+    """The *limit* largest groups of *frame* by *keys*, then by the keys ascending (nulls last),
+    each carrying the number of groups."""
+    import polars as pl
+
+    return (
+        frame.group_by(keys)
+        .agg(_segment_aggregates(spec))
+        .with_columns(pl.len().alias(_TOTAL_COLUMN))
+        .sort(["quotes", *keys], descending=[True, *([False] * len(keys))], nulls_last=True)
+        .head(limit)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class FactorSegments:
+    """Quotes, mean scenario value, Float64 totals and flag counts per level of one rating
+    factor of a ratebook result, largest first.
+
+    *factor* is the factor spec's name as the Rates tab names it (``":".join(columns)``);
+    a composite factor is grouped by all its columns, and each level is labelled as the
+    Rates tab labels it (``__factor_group__``).
+    """
+
+    factor: str
+    limit: int
+
+    joins_every_quote: ClassVar[bool] = True
+    reads_factors: ClassVar[bool] = True
+
+    def validate(self, spec: ChoiceFrameSpec) -> None:
+        _require_row_bound("The level limit", self.limit)
+        if spec.mode != "ratebook":
+            raise _bad_request(
+                "A breakdown by rating factor exists only for ratebook results; this is an "
+                f"{spec.mode} result."
+            )
+        if self.factor not in spec.factor_names:
+            raise _bad_request(
+                f"{self.factor!r} is not a rating factor of this solve (factors: "
+                f"{list(spec.factor_names)})."
+            )
+
+    def result_rows(self, spec: ChoiceFrameSpec) -> int:
+        return self.limit
+
+    def scans_every_quote(self) -> bool:
+        return True
+
+    def run(self, frames: ChoiceFrames, spec: ChoiceFrameSpec, row_count: int) -> ChoiceQueryResult:
+        import polars as pl
+
+        from haute.routes._optimiser_solver import _ratebook_factor_level_key
+
+        columns = list(spec.factor_columns[spec.factor_names.index(self.factor)])
+        if frames.factors is None:
+            raise RuntimeError("Factor segments need the leased ratebook factor rows.")
+        factor_schema = frames.factors.collect_schema()
+        dtypes = [factor_schema[column] for column in columns]
+        grouped = frames.collect(_largest_groups(frames.with_factors(), columns, spec, self.limit))
+        total = int(grouped[_TOTAL_COLUMN][0]) if grouped.height else 0
+        levels = [
+            _ratebook_factor_level_key([row[column] for column in columns], dtypes)
+            for row in grouped.select(columns).iter_rows(named=True)
+        ]
+        rows = grouped.drop(_TOTAL_COLUMN, *columns).insert_column(
+            0, pl.Series("level", levels, dtype=pl.String)
+        )
+        return ChoiceQueryResult(rows=rows, total=total)
 
 
 @dataclass(frozen=True, slots=True)
@@ -618,6 +778,7 @@ class TopK:
     descending: bool = True
 
     joins_every_quote: ClassVar[bool] = False
+    reads_factors: ClassVar[bool] = False
 
     def validate(self, spec: ChoiceFrameSpec) -> None:
         _require_row_bound("k", self.k)
@@ -648,6 +809,7 @@ class RowIndex:
     limit: int
 
     joins_every_quote: ClassVar[bool] = False
+    reads_factors: ClassVar[bool] = False
 
     def validate(self, spec: ChoiceFrameSpec) -> None:
         _require_row_bound("The row limit", self.limit)
@@ -693,11 +855,35 @@ def _sample_width(frame: pl.LazyFrame) -> float:
     return decoded_frame_row_width_bytes(frame.head(_SAMPLE_ROWS).collect())
 
 
-def _choice_frame(apply: pl.LazyFrame, spec_columns: Sequence[str]) -> pl.LazyFrame:
-    missing = [column for column in spec_columns if column not in apply.collect_schema()]
-    if missing:
-        raise ChoiceJoinError(f"The apply result has no chosen-scenario columns {missing}.")
-    return apply.select(list(spec_columns))
+def _choice_frame(apply: pl.LazyFrame, spec: ChoiceFrameSpec) -> pl.LazyFrame:
+    """The target's choice frame: its apply frame, which must have exactly its mode's
+    schema, and for a ratebook target each quote's ``deployed_factor_differs`` flag."""
+    import polars as pl
+
+    expected = spec.apply_schema
+    actual = dict(apply.collect_schema())
+    if list(actual.items()) != list(expected.items()):
+        missing = [column for column in expected if column not in actual]
+        unexpected = [column for column in actual if column not in expected]
+        mistyped = [
+            f"{column} ({actual[column]}, expected {dtype})"
+            for column, dtype in expected.items()
+            if column in actual and actual[column] != dtype
+        ]
+        raise ChoiceJoinError(
+            f"The {spec.mode} apply result does not have the {spec.mode} apply-frame schema: "
+            f"missing {missing}, unexpected {unexpected}, mistyped {mistyped}, "
+            f"column order {list(actual)} (expected {list(expected)})."
+        )
+    if spec.mode != "ratebook":
+        return apply
+    return apply.with_columns(
+        (
+            (pl.col("factor_product") != pl.col("optimal_scenario_value"))
+            & ~pl.col("clamped_low")
+            & ~pl.col("clamped_high")
+        ).alias(DEPLOYED_FACTOR_DIFFERS)
+    )
 
 
 def _key_fingerprint(frame: pl.LazyFrame, key: str, collect: Collect) -> tuple[int, int, int]:
@@ -722,13 +908,15 @@ def _key_fingerprint(frame: pl.LazyFrame, key: str, collect: Collect) -> tuple[i
     )
 
 
-def _require_same_quotes(frames: ChoiceFrames, analysis: pl.LazyFrame, row_count: int) -> None:
-    """Assert the side table holds exactly the chosen rows' quotes, one row each."""
+def _require_same_quotes(
+    frames: ChoiceFrames, side: pl.LazyFrame, key: str, row_count: int, table: str
+) -> None:
+    """Assert the *table* side table holds exactly the chosen rows' quotes, one row each."""
     chosen = _key_fingerprint(frames.choice, CHOICE_QUOTE_ID, frames.collect)
-    side = _key_fingerprint(analysis, frames.analysis_key, frames.collect)
-    if side[0] != row_count or side != chosen:
+    fingerprint = _key_fingerprint(side, key, frames.collect)
+    if fingerprint[0] != row_count or fingerprint != chosen:
         raise ChoiceJoinError(
-            f"The analysis side table ({side[0]} rows) does not hold the {row_count} chosen "
+            f"The {table} ({fingerprint[0]} rows) does not hold the {row_count} chosen "
             "quotes one row each; it must hold exactly one row per solved quote."
         )
 
@@ -755,11 +943,9 @@ class ChoiceQueryService:
         the job's point queue). A disconnected caller (*cancellation_token*)
         detaches from the shared run without stopping it for the others.
         """
-        from haute.routes._optimiser_frontier import _frontier_generation_or_raise, _job_mode
+        from haute.routes._optimiser_frontier import _frontier_generation_or_raise
 
         job = self._store.require_completed_job(job_id)
-        if _job_mode(job) == "ratebook":
-            raise HTTPException(status_code=422, detail=CHOICES_ONLINE_ONLY_DETAIL)
         spec = _choice_spec(job)
         reducer.validate(spec)
         if target.point_index is None:
@@ -801,13 +987,31 @@ class ChoiceQueryService:
                         self._store, job_id, handle_key, unavailable_detail=unavailable
                     )
                 )
-                choice = _choice_frame(apply, spec.choice_columns)
+                choice = _choice_frame(apply, spec)
                 row_count = int(choice.select(pl.len()).collect().item())
                 analysis: pl.LazyFrame | None = None
-                analysis_width: float | None = None
+                factors: pl.LazyFrame | None = None
+                side_widths: list[float] = []
                 if spec.analysis_columns:
-                    analysis = self._leased_analysis(stack, job_id, row_count)
-                    analysis_width = _sample_width(analysis)
+                    analysis = self._leased_side_table(
+                        stack,
+                        job_id,
+                        _optimiser_artifacts._QUOTE_ANALYSIS_HANDLE_KEY,
+                        row_count,
+                        unavailable=_optimiser_artifacts.QUOTE_ANALYSIS_UNAVAILABLE_DETAIL,
+                        scan=_optimiser_artifacts._quote_analysis_path,
+                    )
+                    side_widths.append(_sample_width(analysis))
+                if reducer.reads_factors:
+                    factors = self._leased_side_table(
+                        stack,
+                        job_id,
+                        _optimiser_artifacts._RATEBOOK_FACTORS_HANDLE_KEY,
+                        row_count,
+                        unavailable=_optimiser_artifacts.RATEBOOK_FACTORS_UNAVAILABLE_DETAIL,
+                        scan=_optimiser_artifacts._ratebook_factors_path,
+                    )
+                    side_widths.append(_sample_width(factors))
                 context = create_admitted_execution_context(
                     operation=_CHOICE_OPERATION,
                     profile=ExecutionProfile.EXPLORE_ANALYSIS,
@@ -817,7 +1021,7 @@ class ChoiceQueryService:
                         estimated_bytes=estimate_choice_query_peak_bytes(
                             row_count=row_count,
                             choice_row_width_bytes=_sample_width(choice),
-                            analysis_row_width_bytes=analysis_width,
+                            side_row_width_bytes=sum(side_widths) if side_widths else None,
                             scans_every_quote=reducer.scans_every_quote(),
                             joins_every_quote=reducer.joins_every_quote,
                             result_rows=reducer.result_rows(spec),
@@ -831,14 +1035,23 @@ class ChoiceQueryService:
                 def collect(plan: pl.LazyFrame) -> pl.DataFrame:
                     return streaming_collect(plan, execution_context=admitted)
 
+                quote_key = _configured_quote_id(job)
                 frames = ChoiceFrames(
                     choice=choice,
                     analysis=analysis,
-                    analysis_key=str(job["config"].get("quote_id") or CHOICE_QUOTE_ID),
+                    analysis_key=quote_key,
                     collect=collect,
+                    factors=factors,
+                    factors_key=quote_key,
                 )
                 if analysis is not None:
-                    _require_same_quotes(frames, analysis, row_count)
+                    _require_same_quotes(
+                        frames, analysis, quote_key, row_count, "analysis side table"
+                    )
+                if factors is not None:
+                    _require_same_quotes(
+                        frames, factors, quote_key, row_count, "ratebook factor table"
+                    )
                 return reducer.run(frames, spec, row_count)
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
             raise HTTPException(status_code=507, detail=exc.to_payload()) from None
@@ -846,44 +1059,77 @@ class ChoiceQueryService:
             if context is not None:
                 context.release_admission()
 
-    def _leased_analysis(self, stack: ExitStack, job_id: str, row_count: int) -> pl.LazyFrame:
+    def _leased_side_table(
+        self,
+        stack: ExitStack,
+        job_id: str,
+        key: str,
+        row_count: int,
+        *,
+        unavailable: str,
+        scan: Callable[[dict[str, Any]], Path],
+    ) -> pl.LazyFrame:
+        """Lease the job's side table under *key* and scan it; its rows must be the chosen rows."""
         import polars as pl
 
         try:
-            handle = stack.enter_context(
-                self._store.lease(job_id, _optimiser_artifacts._QUOTE_ANALYSIS_HANDLE_KEY)
-            )
+            handle = stack.enter_context(self._store.lease(job_id, key))
         except ArtifactHandleUnavailableError as exc:
-            raise HTTPException(
-                status_code=410, detail=_optimiser_artifacts.QUOTE_ANALYSIS_UNAVAILABLE_DETAIL
-            ) from exc
+            raise HTTPException(status_code=410, detail=unavailable) from exc
         if handle["row_count"] != row_count:
             raise ChoiceJoinError(
-                f"quote_analysis.parquet records {handle['row_count']} rows for {row_count} "
+                f"The {key} side table records {handle['row_count']} rows for {row_count} "
                 "chosen rows; it must hold exactly one row per solved quote."
             )
-        return pl.scan_parquet(_optimiser_artifacts._quote_analysis_path(handle))
+        return pl.scan_parquet(scan(handle))
 
 
-def _choice_spec(job: Mapping[str, Any]) -> ChoiceFrameSpec:
-    """The job's choice-frame description, refusing an analysis column the join cannot keep."""
-    constraints = job["config"].get("constraints") or {}
+def _configured_quote_id(job: Mapping[str, Any]) -> str:
+    """The quote-id column the side tables are keyed by (the configured one)."""
+    return str(job["config"].get("quote_id") or CHOICE_QUOTE_ID)
+
+
+def _choice_spec(job: Mapping[str, Any], mode: ChoiceMode | None = None) -> ChoiceFrameSpec:
+    """The job's choice-frame description, refusing a side column the join cannot keep.
+
+    *mode* is the solve's; a completed job's is read from it (``None``). The solve's
+    finalize passes its own, before the job records a result.
+    """
+    from haute.routes._optimiser_frontier import _job_mode
+
+    resolved_mode = _job_mode(job) if mode is None else mode
+    if resolved_mode not in ("online", "ratebook"):
+        raise ValueError(f"Unknown optimiser mode {resolved_mode!r}.")
+    config = job["config"]
+    constraints = config.get("constraints") or {}
     handle = (job.get("artifact_handles") or {}).get(
         _optimiser_artifacts._QUOTE_ANALYSIS_HANDLE_KEY
     )
     analysis_columns = tuple(handle["columns"]) if isinstance(handle, Mapping) else ()
+    factor_columns = (
+        tuple(tuple(str(column) for column in group) for group in config["factor_columns"])
+        if resolved_mode == "ratebook"
+        else ()
+    )
     spec = ChoiceFrameSpec(
+        mode=cast(ChoiceMode, resolved_mode),
         constraint_names=tuple(str(name) for name in constraints),
         analysis_columns=analysis_columns,
         scenario_grid=tuple(
             (int(step["optimal_step"]), float(step["scenario_value"]))
             for step in require_scenario_grid(job)
         ),
+        factor_columns=factor_columns,
     )
-    clashing = sorted(set(analysis_columns) & set(spec.choice_columns))
-    if clashing:
-        raise _bad_request(
-            f"Analysis columns {clashing} have the names of chosen-scenario columns, so a "
-            "breakdown cannot keep both. Rename them upstream and re-run the solve."
-        )
+    choice_columns = set(spec.choice_columns)
+    for kind, columns in (
+        ("Analysis", analysis_columns),
+        ("Rating factor", tuple(column for group in factor_columns for column in group)),
+    ):
+        clashing = sorted(set(columns) & choice_columns)
+        if clashing:
+            raise _bad_request(
+                f"{kind} columns {clashing} have the names of chosen-scenario columns, so a "
+                "breakdown cannot keep both. Rename them upstream and re-run the solve."
+            )
     return spec

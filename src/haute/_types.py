@@ -798,7 +798,7 @@ class RatebookSolveResultLike(SolveResultLike, Protocol):
 
     Extends the common interface with attributes specific to the ratebook
     solver: factor tables, coordinate-descent iteration count, clamp rate,
-    and baseline values.
+    baseline values, and the canonical per-quote evaluation (``quote_results``).
     """
 
     @property
@@ -813,6 +813,8 @@ class RatebookSolveResultLike(SolveResultLike, Protocol):
     def clamp_rate(self) -> float: ...
     @property
     def per_factor_results(self) -> Sequence[PerFactorRecordLike]: ...
+    @property
+    def quote_results(self) -> pl.DataFrame: ...
 
 
 MODEL_SCORE_CONFIG_KEYS: tuple[str, ...] = (

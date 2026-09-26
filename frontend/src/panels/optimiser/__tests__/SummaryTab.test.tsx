@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest"
 import SummaryTab from "../SummaryTab"
 import { makeSolveResult } from "../../../test-utils/factories"
-import { makeAdjustmentReport, makeOnlineSolveResult } from "./fixtures"
+import { makeAdjustmentReport, makeOnlineSolveResult, makeRatebookSolveResult } from "./fixtures"
 
 afterEach(cleanup)
 
@@ -173,6 +173,29 @@ describe("optimiser SummaryTab adjustments summary", () => {
     expect(onOpenAdjustments).toHaveBeenCalledTimes(1)
     // The old unlabelled histogram is gone.
     expect(screen.queryByText("Scenario Value Distribution")).not.toBeInTheDocument()
+  })
+
+  it("counts a ratebook result's quotes whose deployed factor differs from the evaluated step", () => {
+    render(
+      <SummaryTab
+        selectedPointIndex={null}
+        result={makeRatebookSolveResult()}
+        onOpenAdjustments={() => {}}
+      />,
+    )
+
+    const summary = screen.getByRole("group", { name: "Adjustments" })
+    expect(within(summary).getByText("Adjusted up").nextSibling).toHaveTextContent("40.0%")
+    expect(within(summary).getByText("Deployed ≠ evaluated step").nextSibling)
+      .toHaveTextContent("18 quotes")
+  })
+
+  it("has no deployed-factor count for an online result", () => {
+    render(
+      <SummaryTab selectedPointIndex={null} result={makeOnlineSolveResult()} onOpenAdjustments={() => {}} />,
+    )
+
+    expect(screen.queryByText("Deployed ≠ evaluated step")).not.toBeInTheDocument()
   })
 
   it("omits the unadjusted share when the grid has no 1.0", () => {

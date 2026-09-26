@@ -87,6 +87,45 @@ export function makeAdjustmentReport(
           + "negative value (optimal_loss_ratio).",
       },
     ],
+    // Online: the deployed scenario is the chosen step itself.
+    deployed_factor_differs: null,
+    ...overrides,
+  }
+}
+
+/** The ratebook solve's adjustment report over its nine-step grid (0.8 to 1.2),
+ *  as `adjustment_report` builds it from price-contour's canonical evaluation:
+ *  200 quotes, 18 of them flagged "deployed factor differs from evaluated step". */
+export function makeRatebookAdjustmentReport(
+  overrides: Partial<OptimiserAdjustmentReport> = {},
+): OptimiserAdjustmentReport {
+  const grid = [0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2]
+  const quotes = [10, 0, 20, 30, 60, 40, 20, 0, 20]
+  return {
+    n_quotes: 200,
+    has_unadjusted: true,
+    bars: grid.map((scenario_value, optimal_step) => ({
+      optimal_step,
+      scenario_value,
+      quotes: quotes[optimal_step],
+      weights: {},
+    })),
+    weightings: [
+      {
+        key: "quotes",
+        label: "Quotes",
+        total: 200,
+        mean: 1.0,
+        quantiles: { p5: 0.8, p25: 0.95, p50: 1.0, p75: 1.05, p95: 1.2 },
+        share_up: 0.4,
+        share_down: 0.3,
+        share_unadjusted: 0.3,
+        share_at_min: 0.05,
+        share_at_max: 0.1,
+      },
+    ],
+    diagnostics_errors: [],
+    deployed_factor_differs: 18,
     ...overrides,
   }
 }
@@ -277,8 +316,7 @@ export function makeRatebookSolveResult(
     factor_tables: makeRatebookFactorTables(),
     combined_factor_bounds: { min: 0.8, max: 1.2 },
     ratebook_cd_trace: makeRatebookCdTrace(),
-    // No per-quote ratebook choices until OPT-V09C.
-    adjustments: null,
+    adjustments: makeRatebookAdjustmentReport(),
     ...overrides,
   })
 }

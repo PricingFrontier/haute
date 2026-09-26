@@ -8100,7 +8100,7 @@
     },
     "OptimiserAdjustmentReport": {
       "additionalProperties": false,
-      "description": "The distribution of one target's chosen scenario values against the 1.0 base price.\n\nOne bar per step of the solve's scenario grid (steps nobody chose included)\nand, per computed weighting (quote count first), the summary figures. A\nrefused weighting (a negative value or a zero total) is named in\n``diagnostics_errors`` and appears nowhere else.",
+      "description": "The distribution of one target's chosen scenario values against the 1.0 base price.\n\nOne bar per step of the solve's scenario grid (steps nobody chose included)\nand, per computed weighting (quote count first), the summary figures. A\nrefused weighting (a negative value or a zero total) is named in\n``diagnostics_errors`` and appears nowhere else.\n\n``deployed_factor_differs`` is, for a ratebook target, how many quotes'\ndeployed factor (the unsnapped product of the rates, collared to the\nscenario range) differs from the grid step the solver evaluated; ``None``\nfor an online target, whose deployed scenario is the chosen step.",
       "properties": {
         "bars": {
           "items": {
@@ -8109,6 +8109,18 @@
           "minItems": 1,
           "title": "Bars",
           "type": "array"
+        },
+        "deployed_factor_differs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Deployed Factor Differs"
         },
         "diagnostics_errors": {
           "items": {
@@ -8140,7 +8152,8 @@
         "has_unadjusted",
         "bars",
         "weightings",
-        "diagnostics_errors"
+        "diagnostics_errors",
+        "deployed_factor_differs"
       ],
       "title": "OptimiserAdjustmentReport",
       "type": "object"

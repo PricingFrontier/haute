@@ -258,8 +258,8 @@ Only a current, accepted save response may acknowledge this revision transition.
    a **View adjustments** button that opens the Adjustments tab; with a frontier point selected
    (whose summary carries no report) it says the point's adjustments load in the Adjustments tab,
    with the same button.
-   **Adjustments** (online results only; ratebook results gain it with OPT-V09C, whose hook is
-   `adjustmentsOffered(result)` in `resultViews.ts`) shows the as-solved report
+   **Adjustments** (every result, online and ratebook; a ratebook report describes the step
+   price-contour evaluated for each quote) shows the as-solved report
    (`solvedResult.adjustments`) when no point is selected. With a point selected it loads that
    point's report through `POST /frontier/select` with `include_adjustments: true`, only while
    the tab is open, in the Rates flow's pattern: one `AbortController` per request and a
@@ -269,8 +269,13 @@ Only a current, accepted save response may acknowledge this revision transition.
    request while it still shows that point; a 410 shows the server's message with no Retry
    (only a new solve helps); any other failure shows the message with **Retry**. A loaded point
    report is kept for the tab's review (node, job, frontier generation, point), so stepping
-   back to a point already loaded makes no request. An online as-solved result without a report
-   shows the result's `"adjustments"` diagnostic message; one with neither throws. The chart is
+   back to a point already loaded makes no request. An as-solved result without a report
+   shows the result's `"adjustments"` diagnostic message; one with neither throws. A ratebook
+   report (`deployed_factor_differs` not null) adds, under the shares, "Deployed factor differs
+   from evaluated step: N quotes (x%)" with the note that inside the scenario range the Optimiser
+   Apply node deploys the unsnapped product of the rates while the solve evaluated the nearest
+   step, and that a product past a grid edge deploys at the edge; Summary's compact summary adds
+   the same count as "Deployed ≠ evaluated step". An online report (`null`) shows neither. The chart is
    a categorical `HistogramChart`: one bar per grid value (empty bars included), labelled by the
    grid value, x axis "Scenario value (1.0 = base price)", y axis the chosen weighting ("Quotes"
    or its label), and a dashed "1.0 = base price (no adjustment)" line at the 1.0 bar or

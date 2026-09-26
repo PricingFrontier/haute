@@ -110,8 +110,10 @@ ratebook) factor tables are available as a job summary. From there a user can:
   be stopped through `POST /frontier/cancel/{job_id}`; timeout polling requests the same
   cooperative stop before publishing `timed_out`. A stopped sweep may never publish frontier data
   to the parent solve job, even if the underlying solver call returns later.
-- Preview the online result as a capped table of per-quote selected scenarios (ratebook has no
-  such per-quote view — see Failure model).
+- Preview the result as a capped table of per-quote selected scenarios, in both modes: a
+  ratebook preview holds price-contour's canonical per-quote evaluation (the evaluated step, its
+  objective and constraint values, the factor product and whether it was clamped to a grid
+  end).
 - Save the result to a JSON artifact on disk, or log it to MLflow together with a frontier CSV
   and the same artifact. Publishing names its target explicitly: no point index means the job's
   own solve (the anchor), a point index means that frontier point, and the server's currently
@@ -181,8 +183,16 @@ Invariants:
 - Ratebook apply verifies each saved factor name and dtype descriptor against the apply-frame
   schema before constructing a lookup. A legacy artifact without dtype metadata or any mismatch
   fails as a typed 422/background contract error; it never becomes a neutral rating miss.
-- Ratebook solves have no per-quote result dataframe; the apply-preview and per-quote trace
-  affordances are only ever meaningful for online mode.
+- A ratebook solve's per-quote choices are price-contour's canonical evaluation of its factor
+  tables (`RatebookResult.quote_results`, and `RatebookOptimiser.evaluate` of a frontier point's
+  kept tables), persisted at completion like an online apply frame; haute never reconstructs a
+  ratebook quote's step. The views describe the step the solver evaluated, because its objective
+  and constraint values are the only ones the solve vouches for. The deployed factor (the
+  unsnapped product of the rates, collared to the scenario range) differs from it only by the
+  rounding to the nearest step inside the range, so each quote carries a "deployed factor
+  differs from evaluated step" flag (its factor product is not its evaluated value and it was not
+  clamped to a grid end) and the adjustment report counts them; a product past a grid edge
+  deploys at that edge and is not flagged.
 - Every capped/paginated response (apply preview, frontier points) states its true total count
   and whether it was truncated; nothing is silently dropped without saying so.
 - A completed solve retains at most eight per-frontier-point apply artifacts. Materialising a
@@ -199,8 +209,9 @@ Invariants:
   queries that run in the lazy plan and return a small result: no route returns the whole
   per-quote frame. Each query is admitted against the analysis memory budget with its own
   estimate and refused (507, naming the remedy) when it would not fit; identical concurrent
-  queries share one run. They cover online solves only until ratebook per-quote choices exist
-  (a ratebook query is a named 422).
+  queries share one run. They cover both modes; a ratebook result can also be broken down by
+  rating factor (a composite factor by all its columns, each level labelled as the Rates tab
+  labels it), with no analysis columns configured.
 - The adjustments the optimiser chose are described exactly, for the as-solved result and for
   any frontier point: one bar per step of the recorded scenario grid (steps nobody chose
   included), against 1.0 as the unadjusted base price, over every quote. A quote is adjusted
@@ -412,11 +423,10 @@ an algorithm `error`, and an untyped orchestration/post-processing exception is
 an unexpected `error`; a bare `ValueError` is never treated as user data solely
 because of its Python type.
 
-Ratebook mode has no per-quote result dataframe, so the apply-preview and apply-trace
-affordances return an explicit 422 contract error naming the correct alternative (the factor
-tables on the result, or re-applying a saved artifact through an `OPTIMISER_APPLY` node) rather
-than either crashing on a missing attribute or silently returning a misleading result computed
-some other way.
+A ratebook result's per-quote frame is always price-contour's canonical evaluation: a result
+without one fails the solve's completion, a frame whose schema is not the mode's fails the query
+(500), and a frontier point whose evaluation does not reproduce its frontier row exactly fails
+rather than describing a different point.
 
 An optimiser artifact is never written with a non-finite value or (for ratebook) a missing
 factor-table/dtype-contract section or combined-factor collar; the save/log request is rejected before the write, listing

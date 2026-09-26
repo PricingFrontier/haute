@@ -3446,6 +3446,11 @@ class OptimiserAdjustmentReport(BaseModel):
     and, per computed weighting (quote count first), the summary figures. A
     refused weighting (a negative value or a zero total) is named in
     ``diagnostics_errors`` and appears nowhere else.
+
+    ``deployed_factor_differs`` is, for a ratebook target, how many quotes'
+    deployed factor (the unsnapped product of the rates, collared to the
+    scenario range) differs from the grid step the solver evaluated; ``None``
+    for an online target, whose deployed scenario is the chosen step.
     """
 
     model_config = _STRICT_ROW
@@ -3455,6 +3460,7 @@ class OptimiserAdjustmentReport(BaseModel):
     bars: list[OptimiserAdjustmentBar] = Field(min_length=1)
     weightings: list[OptimiserAdjustmentWeighting] = Field(min_length=1)
     diagnostics_errors: list[OptimiserDiagnosticError]
+    deployed_factor_differs: int | None = Field(ge=0)
 
     @model_validator(mode="after")
     def _bars_and_weightings_agree(self) -> OptimiserAdjustmentReport:
@@ -3483,6 +3489,12 @@ class OptimiserAdjustmentReport(BaseModel):
                     f"weighting {weighting.key!r}: share_unadjusted is null exactly when the "
                     "grid has no 1.0 step"
                 )
+        differs = self.deployed_factor_differs
+        if differs is not None and differs > self.n_quotes:
+            raise ValueError(
+                f"deployed_factor_differs ({self.deployed_factor_differs}) cannot exceed "
+                f"n_quotes ({self.n_quotes})"
+            )
         return self
 
 

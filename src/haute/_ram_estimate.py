@@ -2295,7 +2295,7 @@ def estimate_choice_query_peak_bytes(
     *,
     row_count: int,
     choice_row_width_bytes: float,
-    analysis_row_width_bytes: float | None,
+    side_row_width_bytes: float | None,
     scans_every_quote: bool,
     joins_every_quote: bool,
     result_rows: int,
@@ -2304,19 +2304,21 @@ def estimate_choice_query_peak_bytes(
 
     Each term is one pass the query makes; the passes run one after another,
     so the peak is the largest of them. A streamed scan of every chosen row
-    decodes whole row groups on every Polars thread at once; the side table's
-    key fingerprint scans it the same way (*analysis_row_width_bytes*, ``None``
-    without analysis columns); a whole-table join (*joins_every_quote*) holds
-    its hash table and both sides' in-flight rows; the reducer keeps
-    *result_rows*. The multipliers are calibrated against measured peaks
-    ("Measured choice-query memory" in the optimiser low-level specification).
+    decodes whole row groups on every Polars thread at once; a side table's
+    key fingerprint scans it the same way (*side_row_width_bytes*, the summed
+    decoded width of the side tables the query leases -- the analysis table and,
+    for a factor breakdown, the ratebook factor rows -- ``None`` without one); a
+    whole-table join (*joins_every_quote*) holds its hash table and both sides'
+    in-flight rows; the reducer keeps *result_rows*. The multipliers are
+    calibrated against measured peaks ("Measured choice-query memory" in the
+    optimiser low-level specification).
     """
-    full_width = choice_row_width_bytes + (analysis_row_width_bytes or 0.0)
+    full_width = choice_row_width_bytes + (side_row_width_bytes or 0.0)
     passes = [
         _CHOICE_SCAN_FACTOR * row_count * choice_row_width_bytes if scans_every_quote else 0.0,
         0.0
-        if analysis_row_width_bytes is None
-        else _CHOICE_SCAN_FACTOR * row_count * analysis_row_width_bytes,
+        if side_row_width_bytes is None
+        else _CHOICE_SCAN_FACTOR * row_count * side_row_width_bytes,
         _CHOICE_JOIN_FACTOR * row_count * full_width if joins_every_quote else 0.0,
     ]
     kept = 2 * result_rows * full_width

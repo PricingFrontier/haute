@@ -1526,12 +1526,18 @@ export interface OptimiserSolveResult {
  * and, per computed weighting (quote count first), the summary figures. A
  * refused weighting (a negative value or a zero total) is named in
  * ``diagnostics_errors`` and appears nowhere else.
+ *
+ * ``deployed_factor_differs`` is, for a ratebook target, how many quotes'
+ * deployed factor (the unsnapped product of the rates, collared to the
+ * scenario range) differs from the grid step the solver evaluated; ``None``
+ * for an online target, whose deployed scenario is the chosen step.
  */
 export interface OptimiserAdjustmentReport {
   /**
    * @minItems 1
    */
   bars: OptimiserAdjustmentBar[];
+  deployed_factor_differs: number | null;
   diagnostics_errors: OptimiserDiagnosticError[];
   has_unadjusted: boolean;
   n_quotes: number;

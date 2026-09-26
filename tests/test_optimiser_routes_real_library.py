@@ -7,9 +7,8 @@ routes end-to-end with the real solver behind them.
 Pinned here:
 
 1. The real ``RatebookResult`` shape — it has NO per-quote ``dataframe``
-   and NO ``iterations`` attribute.  The ``/apply`` ("Load detail") route
-   therefore cannot produce per-quote detail for ratebook jobs and must
-   fail with a clean 422 contract error instead of an opaque 500.
+   and NO ``iterations`` attribute; its per-quote frame is the canonical
+   ``quote_results`` evaluation (see ``test_optimiser_ratebook_choices.py``).
 2. The real ``SolveResult.dataframe`` / ``ApplyResult.dataframe`` schema
    the online apply/detail path serves, end-to-end through solve →
    apply → artifact round-trip.
@@ -421,63 +420,16 @@ class TestRealLibraryShapeContracts:
 
 
 # ---------------------------------------------------------------------------
-# 2. Ratebook apply / "Load detail" contract (HTTP, real solver)
+# 2. Ratebook result contract (HTTP, real solver)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
-class TestRatebookApplyDetailContract:
-    """The UI's "Load detail" button posts ``/apply``.  For ratebook jobs
-    the real library has no per-quote detail to serve, so the backend
-    must answer with an explicit 422 contract error — never a 500 and
-    never silently-wrong online-style output."""
+class TestRatebookResultContract:
+    """Save and frontier-point selection against the real ``RatebookResult``.
 
-    def test_apply_without_point_is_clean_contract_error(self, client, tmp_path):
-        scored_path, banding_path = _ratebook_fixture_paths(tmp_path)
-        job_id = _solve_completed(client, _ratebook_graph(scored_path, banding_path))
-
-        resp = client.post("/api/optimiser/apply", json={"job_id": job_id})
-
-        assert resp.status_code == 422, resp.text
-        detail = resp.json()["detail"]
-        assert "ratebook" in detail.lower()
-        assert "factor tables" in detail.lower()
-
-    def test_apply_frontier_point_is_clean_contract_error(
-        self,
-        client,
-        tmp_path,
-        clean_job_store,
-    ):
-        scored_path, banding_path = _ratebook_fixture_paths(tmp_path)
-        job_id = _solve_completed(client, _ratebook_graph(scored_path, banding_path))
-
-        frontier_status = run_frontier_and_wait(
-            client,
-            {
-                "job_id": job_id,
-                "threshold_ranges": {"volume": [4.0, 6.0]},
-                "n_points_per_dim": 2,
-            },
-        )
-        assert frontier_status["status"] == "completed", frontier_status.get("message", "")
-        assert frontier_status["result"]["n_points"] == 2
-
-        resp = client.post(
-            "/api/optimiser/apply",
-            json={"job_id": job_id, "point_index": 0},
-        )
-
-        assert resp.status_code == 422, resp.text
-        detail = resp.json()["detail"]
-        assert "ratebook" in detail.lower()
-        assert "factor tables" in detail.lower()
-        # The gate fires before any materialisation work: no frontier apply
-        # artifact appears and no frontier point gets selected as a side
-        # effect of the rejected detail request.
-        job = clean_job_store.require_job(job_id)
-        assert "frontier_apply_result:0" not in job.get("artifact_handles", {})
-        assert job.get("selected_frontier_point") is None
+    Its per-quote detail (``quote_results``, served by ``/apply`` and the choice
+    queries) is covered by ``tests/test_optimiser_ratebook_choices.py``."""
 
     def test_select_and_save_work_against_real_ratebook_result(
         self,

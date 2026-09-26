@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
-from tests.job_store_support import replace_job, seed_job
+from tests.job_store_support import seed_job
 from tests.optimiser_fixtures import (
     make_frontier_data as _frontier_data,
 )
@@ -353,42 +353,6 @@ def test_frontier_point_artifact_handles_are_capped_oldest_first():
     assert "frontier_apply_result:0" not in updated
     assert updated["frontier_apply_result:99"] == {"path": "point-99"}
     assert evicted == [{"path": "point-0"}]
-
-
-def test_apply_explicit_ratebook_frontier_point_is_contract_error(
-    client,
-    clean_job_store,
-):
-    """Ratebook apply/detail is gated with 422 before any runtime-state or
-    solver work: the real ``RatebookResult`` carries factor tables only, so
-    there is no per-quote dataframe for the detail endpoint to serve."""
-    solver = MagicMock()
-    seed_job(
-        clean_job_store,
-        "apply_ratebook_point",
-        _online_frontier_job(
-            solver=solver,
-            quote_grid=MagicMock(),
-        ),
-    )
-
-    def set_ratebook_mode(job):
-        job["config"] = {**job["config"], "mode": "ratebook"}
-        job["result"] = {**job["result"], "mode": "ratebook"}
-        return job
-
-    replace_job(clean_job_store, "apply_ratebook_point", set_ratebook_mode)
-
-    resp = client.post(
-        "/api/optimiser/apply",
-        json={"job_id": "apply_ratebook_point", "point_index": 0},
-    )
-
-    assert resp.status_code == 422
-    detail = resp.json()["detail"].lower()
-    assert "ratebook" in detail
-    assert "factor tables" in detail
-    solver.solve.assert_not_called()
 
 
 def test_select_frontier_point_returns_distinct_data_for_each_index(

@@ -642,3 +642,21 @@ def setup_grid_stub(grid: object | None = None) -> Any:
     from haute.routes._optimiser_service import SetupGrid
 
     return SetupGrid(grid=object() if grid is None else grid, quote_analysis_handle=None)
+
+
+def make_ratebook_quote_results(constraint_names: list[str]) -> pl.DataFrame:
+    """A canonical ratebook per-quote frame: two quotes at ``SOLVE_SCENARIO_GRID``'s step 1."""
+    import price_contour as pc
+
+    schema = pc.quote_results_schema(constraint_names)
+    values: dict[str, list[Any]] = {
+        "quote_id": ["q1", "q2"],
+        "optimal_step": [1, 1],
+        "optimal_scenario_value": [1.0, 1.0],
+        "optimal_objective": [50.0, 60.0],
+        **{f"optimal_{name}": [0.4, 0.5] for name in constraint_names},
+        "factor_product": [1.02, 1.0],
+        "clamped_low": [False, False],
+        "clamped_high": [False, False],
+    }
+    return pl.DataFrame(values, schema=schema)

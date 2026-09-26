@@ -1105,18 +1105,3 @@ class TestChoiceQueries:
             _choices(job_id, ScenarioHistogram())
         assert caught.value.status_code == 400
         assert "optimal_objective" in str(caught.value.detail)
-
-
-def test_a_ratebook_job_is_refused_by_name(clean_job_store):
-    from fastapi import HTTPException
-
-    from haute.routes._optimiser_outcomes import ScenarioHistogram
-    from tests.job_store_support import seed_job
-    from tests.optimiser_fixtures import make_ratebook_frontier_job
-
-    seed_job(clean_job_store, "ratebook_choices", make_ratebook_frontier_job())
-    with pytest.raises(HTTPException) as caught:
-        _choices("ratebook_choices", ScenarioHistogram())
-    assert caught.value.status_code == 422
-    assert caught.value.detail["error_code"] == "optimiser_choices_online_only"
-    assert "ratebook" in caught.value.detail["message"].lower()
