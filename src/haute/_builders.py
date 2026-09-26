@@ -1346,19 +1346,30 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
     if code:
 
-        def transform_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
-            if dfs_by_name:
-                dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
-            else:
-                dfs = dfs_positional
+        def run(program: str, dfs: tuple[_Frame, ...]) -> _Frame:
             return _exec_user_code(
-                code,
+                program,
                 _src_names,
                 dfs,
                 extra_ns=_preamble,
                 orig_source_names=_orig_src,
                 input_mapping=_in_map,
             )
+
+        def transform_fn(*dfs_positional: _Frame, **dfs_by_name: _Frame) -> _Frame:
+            if dfs_by_name:
+                dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
+            else:
+                dfs = dfs_positional
+            return run(code, dfs)
+
+        if isinstance(steps, list) and not any(s["kind"] == "free_code" for s in steps):
+            # Free code can replace the frame, and replaying it would run
+            # authored code twice, so only closed-vocabulary steps are located.
+            def failed_step_line(*dfs: _Frame) -> int | None:
+                return _failed_step_line(steps, lambda program: run(program, dfs))
+
+            transform_fn.failed_step_line = failed_step_line  # type: ignore[attr-defined]
 
         # A polars node with self-contained code and no upstream wiring
         # is effectively a source: there is no dataframe to receive, so
@@ -1374,6 +1385,36 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     # With no upstream, mark the node as a source so the executor invokes the
     # placeholder instead of failing first with its generic no-input guard.
     return ctx.func_name, _incomplete_transform(INCOMPLETE_TRANSFORM_MESSAGE), incoming_count == 0
+
+
+def _failed_step_line(steps: list[dict[str, Any]], run: Callable[[str], _Frame]) -> int | None:
+    """The first line of the step whose lazy plan first fails to resolve, or None.
+
+    A stepped transform's plan errors (a missing column, a type mismatch)
+    surface when its schema is resolved, after its code ran, so no line comes
+    with them. *run* executes a program exactly as the transform ran its code,
+    on the input frames the run built. The node's full plan is resolved first:
+    when it resolves, the failure was not the steps' plan (a strict cast
+    meeting a bad value fails only on data) and no step is named. Otherwise
+    each prefix of the steps is rendered and its schema resolved, which reads
+    no rows; the first prefix that fails names its last step.
+    """
+    rendered = render_polars_steps(steps, start="input")
+    if _plan_resolves(run(rendered.code)):
+        return None
+    for count in range(1, len(steps)):
+        if not _plan_resolves(run(render_polars_steps(steps[:count], start="input").code)):
+            return rendered.step_lines[count - 1][0]
+    # Every shorter prefix resolves, and the whole program does not.
+    return rendered.step_lines[-1][0]
+
+
+def _plan_resolves(frame: _Frame) -> bool:
+    try:
+        frame.collect_schema()
+    except pl.exceptions.PolarsError:
+        return False
+    return True
 
 
 def stepped_code_problem(

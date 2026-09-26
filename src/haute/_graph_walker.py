@@ -50,6 +50,7 @@ from haute._execute_lazy import (
     _edge_join_recipe,
     _extract_error_line,
     _is_plain_model_score,
+    _located_step_line,
     _pick_source_frame,
     _PlannedCaptures,
     _prepare_execution,
@@ -425,6 +426,9 @@ class _Walk:
         self.collected: dict[str, _Collected] = {}
         self.errors: dict[str, str] = {}
         self.error_lines: dict[str, int] = {}
+        # The input frames of a node that failed while built, kept until its
+        # failure is recorded so a stepped transform can name its failing step.
+        self.failed_inputs: dict[str, list[_Frame]] = {}
         self.timings: dict[str, float] = {}
         self.memory_bytes: dict[str, int] = {}
         self.available_columns: dict[str, _SchemaItems] = {}
@@ -1003,11 +1007,16 @@ class _Walk:
         A chunk walk then narrows the output to its chunk plan's demand.
         """
         with self._stage(_NODE_STAGES.get(self.policy.purpose), node_id):
-            if boundary.is_source:
-                frame = self.boundaries.invoke(boundary)
-            else:
-                frame = self.boundaries.invoke(boundary, self._node_inputs(boundary))
-            built = self._shape_output(boundary, frame)
+            inputs = [] if boundary.is_source else self._node_inputs(boundary)
+            try:
+                frame = self.boundaries.invoke(boundary, inputs)
+                # A display walk resolves the node's schema here, so a lazy
+                # plan's failure surfaces while the inputs are still in hand.
+                built = self._shape_output(boundary, frame)
+            except Exception:
+                if inputs and self.policy.record_failures:
+                    self.failed_inputs[node_id] = inputs
+                raise
             if self.chunk:
                 built.frame = project_output(
                     built.frame,
@@ -1697,6 +1706,10 @@ class _Walk:
         self.collected[node_id] = None
         self.errors[node_id] = str(exc)
         error_line = _extract_error_line(exc)
+        inputs = self.failed_inputs.pop(node_id, None)
+        if error_line is None and inputs is not None:
+            # A lazy plan fails after its code ran, so no line came with it.
+            error_line = _located_step_line(self.funcs[node_id][0], inputs, exc)
         if error_line is not None:
             self.error_lines[node_id] = error_line
 

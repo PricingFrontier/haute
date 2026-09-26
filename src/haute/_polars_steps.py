@@ -8,11 +8,13 @@ parser validate input references through it, and the render endpoint shows
 its output in the editor. Every consumer therefore executes exactly the same
 program.
 
-Rendering is a pure function of ``(steps, input_names)``. Structured steps
-render to one line; free-code steps can span several lines. The renderer
-records each step's inclusive line range. Output is a fixpoint of the polars
-user-code extractor (no node-level ``return``, and the leading
-``df = <input>`` line is authored code).
+Rendering is a pure function of ``(steps, input_names)``. Each structured step
+renders one statement, which :mod:`haute._polars_steps_layout` breaks over
+several lines when it is longer than 88 columns, in a layout ``ruff format``
+keeps; free-code steps keep their authored lines. The renderer records each
+step's inclusive line range. Output is a
+fixpoint of the polars user-code extractor (no node-level ``return``, and the
+leading ``df = <input>`` line is authored code).
 
 Validation fails loudly: any malformed, unknown or incomplete field raises
 :class:`PolarsStepError` carrying the offending step index.
@@ -31,6 +33,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal
 
+from haute._polars_steps_layout import layout_statement
 from haute._types import NodeType
 
 __all__ = [
@@ -520,7 +523,12 @@ class _Renderer:
             elif index > 0 and kind == "source":
                 raise self.fail("Only the first step can choose the input to start from.")
             start = len(lines) + 1
-            lines.extend(getattr(self, f"_render_{kind}")(step).split("\n"))
+            statement = getattr(self, f"_render_{kind}")(step)
+            if kind != "free_code":
+                # Authored code keeps its own layout; a long structured
+                # statement breaks over several lines, as ``ruff format`` keeps it.
+                statement = layout_statement(statement)
+            lines.extend(statement.split("\n"))
             step_lines.append((start, len(lines)))
         code = "\n".join(lines)
         if any(step["kind"] == "free_code" for step in self.steps):

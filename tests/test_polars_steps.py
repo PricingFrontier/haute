@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import pickle
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ from haute._polars_steps import (
     stepped_surface_for,
     validate_polars_steps,
 )
+from haute._polars_steps_layout import layout_statement
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -64,6 +66,7 @@ from tests.conftest import (
     make_source_node,
 )
 from tests.test_codegen_execution_equivalence import _collect, _write_and_import
+from tests.test_polars_steps_corpus import TRANSLATIONS as CORPUS_TRANSLATIONS
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -157,13 +160,26 @@ GOLDEN_CODE = "\n".join(
         "ipt_rate = 0.12",
         "df = df.filter((pl.col('premium') > 100) & (pl.col('region').is_in(['north', 'south'])))",
         "df = df.with_columns((pl.col('premium') * ipt_rate).alias('gross'))",
-        "df = df.with_columns((pl.when((pl.col('gross') >= 500)).then(pl.lit('high'))"
-        ".otherwise(pl.lit('low'))).alias('band'))",
+        "df = df.with_columns(",
+        "    (",
+        "        pl.when((pl.col('gross') >= 500)).then(pl.lit('high')).otherwise(pl.lit('low'))",
+        "    ).alias('band')",
+        ")",
         "df = df.join(rates, left_on=['region'], right_on=['region'], how='left', suffix='_rate')",
-        "df = df.group_by(['band'], maintain_order=True).agg([pl.col('gross').sum()"
-        ".alias('gross_total'), pl.len().alias('rows')])",
+        "df = df.group_by(['band'], maintain_order=True).agg(",
+        "    [pl.col('gross').sum().alias('gross_total'), pl.len().alias('rows')]",
+        ")",
     ]
 )
+#: Each golden step's inclusive line range: a statement longer than 88
+#: columns is laid out over several lines, as ``ruff format`` lays it out.
+GOLDEN_STEP_LINES = ((1, 1), (2, 2), (3, 3), (4, 4), (5, 9), (10, 10), (11, 13))
+
+
+def step_text(rendered: RenderedSteps, index: int) -> str:
+    """The code step *index* rendered, read through its line range."""
+    start, end = rendered.step_lines[index]
+    return "\n".join(rendered.code.split("\n")[start - 1 : end])
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +190,7 @@ GOLDEN_CODE = "\n".join(
 def test_golden_payload_renders_exactly() -> None:
     rendered = render_polars_steps(GOLDEN_STEPS, ["quotes", "rates"], start="input")
     assert rendered.code == GOLDEN_CODE
-    assert rendered.step_lines == tuple((i + 1, i + 1) for i in range(len(GOLDEN_STEPS)))
+    assert rendered.step_lines == GOLDEN_STEP_LINES
 
 
 def test_rendered_code_is_a_fixpoint_of_user_code_extraction() -> None:
@@ -184,6 +200,154 @@ def test_rendered_code_is_a_fixpoint_of_user_code_extraction() -> None:
         '    """doc"""\n    df: pl.LazyFrame\n' + body, ["quotes", "rates"]
     )
     assert extracted == code
+
+
+#: Steps whose statements run past 88 columns: a select, a two-aggregation
+#: group-by and a join one column wider than the golden join, which fits.
+LONG_STEPS: list[dict[str, Any]] = [
+    source(),
+    step(
+        "sel",
+        "select",
+        columns=[
+            "quote_id",
+            "policy_id",
+            "region",
+            "channel",
+            "premium",
+            "sum_insured",
+            "start_date",
+            "age",
+        ],
+    ),
+    step(
+        "g",
+        "group_by",
+        keys=["region"],
+        aggregations=[
+            {"column": "premium", "agg": "sum", "name": "premium_total"},
+            {"column": "sum_insured", "agg": "mean", "name": "average_sum_insured"},
+        ],
+    ),
+    step(
+        "j",
+        "join",
+        input="rates",
+        how="left",
+        leftOn=["region"],
+        rightOn=["region"],
+        suffix="_rates",
+    ),
+    step("l", "limit", n=5),
+]
+
+LONG_CODE = "\n".join(
+    [
+        "df = quotes",
+        "df = df.select(",
+        "    [",
+        "        'quote_id',",
+        "        'policy_id',",
+        "        'region',",
+        "        'channel',",
+        "        'premium',",
+        "        'sum_insured',",
+        "        'start_date',",
+        "        'age',",
+        "    ]",
+        ")",
+        "df = df.group_by(['region'], maintain_order=True).agg(",
+        "    [",
+        "        pl.col('premium').sum().alias('premium_total'),",
+        "        pl.col('sum_insured').mean().alias('average_sum_insured'),",
+        "    ]",
+        ")",
+        "df = df.join(",
+        "    rates,",
+        "    left_on=['region'],",
+        "    right_on=['region'],",
+        "    how='left',",
+        "    suffix='_rates',",
+        ")",
+        "df = df.head(5)",
+    ]
+)
+
+
+def test_long_statements_break_one_argument_per_line() -> None:
+    rendered = render_polars_steps(LONG_STEPS, ["quotes", "rates"], start="input")
+    assert rendered.code == LONG_CODE
+    assert rendered.step_lines == ((1, 1), (2, 13), (14, 19), (20, 26), (27, 27))
+    # The golden join is exactly 88 columns and stays on one line.
+    assert step_text(render_polars_steps(GOLDEN_STEPS, ["quotes", "rates"], start="input"), 5) == (
+        "df = df.join(rates, left_on=['region'], right_on=['region'], how='left', suffix='_rate')"
+    )
+    body = "\n".join(f"    {line}" for line in rendered.code.splitlines()) + "\n    return df"
+    assert _extract_user_code(body, ["quotes", "rates"]) == rendered.code
+
+
+#: Text variables past 88 columns: the first fits once parenthesised, the second never does.
+LONG_VARIABLE_STEPS: list[dict[str, Any]] = [
+    source(),
+    step("a", "variable", name="long_threshold_label", value=text("x" * 70)),
+    step("b", "variable", name="longer_threshold_label", value=text("y" * 90)),
+]
+
+
+def test_a_long_variable_is_parenthesised_only_when_that_makes_it_fit() -> None:
+    rendered = render_polars_steps(LONG_VARIABLE_STEPS, ["quotes"], start="input")
+    assert step_text(rendered, 1) == f"long_threshold_label = (\n    '{'x' * 70}'\n)"
+    assert step_text(rendered, 2) == f"longer_threshold_label = '{'y' * 90}'"
+    assert rendered.step_lines == ((1, 1), (2, 4), (5, 5))
+
+
+def test_the_layout_refuses_a_statement_outside_the_renderer_vocabulary() -> None:
+    for statement in ("df = df[0]", "df = lambda: df", "df.head(1)", "df = df.head(1"):
+        with pytest.raises(ValueError, match="Cannot lay out the rendered statement"):
+            layout_statement(statement)
+
+
+def test_free_code_keeps_its_authored_layout_however_long() -> None:
+    authored = (
+        "df = df.with_columns((pl.col('premium') * 2)"
+        ".alias('doubled_premium_for_the_quote_report'))"
+    )
+    rendered = render_polars_steps(
+        [source(), step("c", "free_code", code=authored)], ["quotes"], start="input"
+    )
+    assert rendered.code == f"df = quotes\n{authored}"
+    assert rendered.step_lines == ((1, 1), (2, 2))
+
+
+#: ``ruff format`` as the renderer's layout targets it: its default line
+#: length, no project configuration, and the renderer's ``repr`` quotes kept.
+RUFF_FORMAT = [
+    sys.executable,
+    "-m",
+    "ruff",
+    "format",
+    "--isolated",
+    "--line-length",
+    "88",
+    "--config",
+    "format.quote-style='preserve'",
+    "-",
+]
+
+
+def test_rendered_code_is_a_fixed_point_of_ruff_format() -> None:
+    programs = [GOLDEN_STEPS, LONG_STEPS, LONG_VARIABLE_STEPS]
+    for entry in CORPUS_TRANSLATIONS.values():
+        if entry.get("steps") is not None:
+            programs.extend([entry["steps"], *(entry.get("aux") or {}).values()])
+    codes = [render_polars_steps(steps, start="input").code for steps in programs]
+    # Not vacuous: many of these statements are laid out over several lines.
+    assert sum(code.count("\n)") for code in codes) > 20
+    module = "\n".join(codes) + "\n"
+    formatted = subprocess.run(
+        RUFF_FORMAT, input=module, capture_output=True, text=True, encoding="utf-8", check=True
+    ).stdout
+    assert formatted == module
 
 
 def test_free_code_renders_multiline_statements_and_tracks_following_steps() -> None:
@@ -306,8 +470,10 @@ def test_free_code_validation_never_executes_the_snippet(tmp_path: Path) -> None
                     cond("a", "starts_with", value=col("b")),
                 ],
             ),
-            "df = df.filter((pl.col('a').str.contains('x', literal=True)) & "
-            "(pl.col('a').str.starts_with(pl.col('b'))))",
+            "df = df.filter(\n"
+            "    (pl.col('a').str.contains('x', literal=True))\n"
+            "    & (pl.col('a').str.starts_with(pl.col('b')))\n"
+            ")",
         ),
         (
             step(
@@ -338,8 +504,9 @@ def test_free_code_validation_never_executes_the_snippet(tmp_path: Path) -> None
                     )
                 ],
             ),
-            "df = df.filter((pl.col('d').is_in(pl.Series(['2026-01-01', '2026-02-01'])"
-            ".str.to_date())))",
+            "df = df.filter(\n"
+            "    (pl.col('d').is_in(pl.Series(['2026-01-01', '2026-02-01']).str.to_date()))\n"
+            ")",
         ),
         (
             step("x", "with_column", name="n", expr={"type": "operand", "operand": num(2)}),
@@ -399,7 +566,7 @@ def test_free_code_validation_never_executes_the_snippet(tmp_path: Path) -> None
 )
 def test_each_step_kind_renders_its_statement(kind_step: dict[str, Any], expected: str) -> None:
     rendered = render_polars_steps([source(), kind_step], ["quotes", "rates"], start="input")
-    assert rendered.code.splitlines()[1] == expected
+    assert step_text(rendered, 1) == expected
 
 
 def test_variable_receiver_and_then_branch_render_as_expressions() -> None:
@@ -420,11 +587,16 @@ def test_variable_receiver_and_then_branch_render_as_expressions() -> None:
             },
         ),
     ]
-    lines = render_polars_steps(steps, ["quotes"], start="input").code.splitlines()
-    assert lines[2] == "df = df.with_columns((pl.lit(rate)).alias('x'))"
-    assert lines[3] == (
-        "df = df.with_columns((pl.when((pl.col('premium') > rate)).then(pl.lit(rate))"
-        ".otherwise(pl.col('premium'))).alias('y'))"
+    rendered = render_polars_steps(steps, ["quotes"], start="input")
+    assert step_text(rendered, 2) == "df = df.with_columns((pl.lit(rate)).alias('x'))"
+    assert step_text(rendered, 3) == (
+        "df = df.with_columns(\n"
+        "    (\n"
+        "        pl.when((pl.col('premium') > rate))\n"
+        "        .then(pl.lit(rate))\n"
+        "        .otherwise(pl.col('premium'))\n"
+        "    ).alias('y')\n"
+        ")"
     )
 
 
@@ -677,29 +849,54 @@ def window(
                 ["region"],
                 [("premium", False), ("quote_id", False)],
             ),
-            "df = df.with_columns((pl.int_range(1, pl.len() + 1).over(['region'], "
-            "order_by=['premium', 'quote_id'], descending=False)).alias('rn'))",
+            "df = df.with_columns(\n"
+            "    (\n"
+            "        pl.int_range(1, pl.len() + 1).over(\n"
+            "            ['region'],\n"
+            "            order_by=['premium', 'quote_id'],\n"
+            "            descending=False,\n"
+            "        )\n"
+            "    ).alias('rn')\n"
+            ")",
         ),
         (
             window("cs", "cum_sum", "premium", ["region"], [("quote_id", True)]),
-            "df = df.with_columns((pl.col('premium').cum_sum().over(['region'], "
-            "order_by=['quote_id'], descending=True)).alias('cs'))",
+            "df = df.with_columns(\n"
+            "    (\n"
+            "        pl.col('premium')\n"
+            "        .cum_sum()\n"
+            "        .over(['region'], order_by=['quote_id'], descending=True)\n"
+            "    ).alias('cs')\n"
+            ")",
         ),
         (
             window("prev", "shift", "premium", ["region"], [("quote_id", False)]),
-            "df = df.with_columns((pl.col('premium').shift(1).over(['region'], "
-            "order_by=['quote_id'], descending=False)).alias('prev'))",
+            "df = df.with_columns(\n"
+            "    (\n"
+            "        pl.col('premium')\n"
+            "        .shift(1)\n"
+            "        .over(['region'], order_by=['quote_id'], descending=False)\n"
+            "    ).alias('prev')\n"
+            ")",
         ),
         (
             window("rk", "dense_rank", "premium", ["region"], descending=True),
-            "df = df.with_columns((pl.col('premium').rank(method='dense', descending=True)"
-            ".over(['region'])).alias('rk'))",
+            "df = df.with_columns(\n"
+            "    (pl.col('premium').rank(method='dense', descending=True).over(['region']))"
+            ".alias(\n"
+            "        'rk'\n"
+            "    )\n"
+            ")",
         ),
         (
             window("ff", "forward_fill", "premium", ["region"], [("quote_id", False)]),
-            "df = df.with_columns((pl.col('premium').fill_null(strategy='forward')"
-            ".over(['region'], "
-            "order_by=['quote_id'], descending=False)).alias('ff'))",
+            "df = df.with_columns(\n"
+            "    (\n"
+            "        pl.col('premium')\n"
+            "        .fill_null(strategy='forward')\n"
+            "        .over(['region'], order_by=['quote_id'], descending=False)\n"
+            "    ).alias('ff')\n"
+            ")",
         ),
         (
             window("tot", "sum", "premium", []),
@@ -750,8 +947,9 @@ def window(
                     "args": [text(" "), num(0)],
                 },
             ),
-            "df = df.with_columns((pl.col('pc').str.split(' ').list.get(0, null_on_oob=True))"
-            ".alias('p'))",
+            "df = df.with_columns(\n"
+            "    (pl.col('pc').str.split(' ').list.get(0, null_on_oob=True)).alias('p')\n"
+            ")",
         ),
         (
             step(
@@ -816,8 +1014,10 @@ def window(
                 name="k",
                 expr={"type": "concat", "parts": [col("a"), text("-"), col("b")], "separator": ""},
             ),
-            "df = df.with_columns((pl.concat_str([pl.col('a'), pl.lit('-'), pl.col('b')], "
-            "separator='')).alias('k'))",
+            "df = df.with_columns(\n"
+            "    (pl.concat_str([pl.col('a'), pl.lit('-'), pl.col('b')], separator=''))"
+            ".alias('k')\n"
+            ")",
         ),
         (
             step(
@@ -832,8 +1032,10 @@ def window(
                     "otherwise": null(),
                 },
             ),
-            "df = df.with_columns((pl.when((pl.col('a') == 1)).then(pl.col('b'))"
-            ".otherwise(pl.lit(None))).alias('k'))",
+            "df = df.with_columns(\n"
+            "    (pl.when((pl.col('a') == 1)).then(pl.col('b')).otherwise(pl.lit(None)))"
+            ".alias('k')\n"
+            ")",
         ),
         (
             step(
@@ -854,8 +1056,12 @@ def window(
                     {"column": "a", "agg": "len", "name": "n"},
                 ],
             ),
-            "df = df.select([pl.col('a').quantile(0.95, interpolation='linear').alias('p95'), "
-            "pl.len().alias('n')])",
+            "df = df.select(\n"
+            "    [\n"
+            "        pl.col('a').quantile(0.95, interpolation='linear').alias('p95'),\n"
+            "        pl.len().alias('n'),\n"
+            "    ]\n"
+            ")",
         ),
         (
             step(
@@ -883,9 +1089,12 @@ def window(
                     },
                 ],
             ),
-            "df = df.group_by(['k'], maintain_order=True).agg([pl.col('a')"
-            ".filter((pl.col('s') == 'open')).sum().alias('open'), "
-            "((pl.col('a') > 9) | (pl.col('s').is_null())).sum().alias('big')])",
+            "df = df.group_by(['k'], maintain_order=True).agg(\n"
+            "    [\n"
+            "        pl.col('a').filter((pl.col('s') == 'open')).sum().alias('open'),\n"
+            "        ((pl.col('a') > 9) | (pl.col('s').is_null())).sum().alias('big'),\n"
+            "    ]\n"
+            ")",
         ),
         (
             step(
@@ -899,8 +1108,15 @@ def window(
                 validate="m:1",
                 maintainOrder="left",
             ),
-            "df = df.join(rates, left_on=['region'], right_on=['region'], how='left', "
-            "suffix='_r', validate='m:1', maintain_order='left')",
+            "df = df.join(\n"
+            "    rates,\n"
+            "    left_on=['region'],\n"
+            "    right_on=['region'],\n"
+            "    how='left',\n"
+            "    suffix='_r',\n"
+            "    validate='m:1',\n"
+            "    maintain_order='left',\n"
+            ")",
         ),
         (
             step("x", "unique", columns=["a"], keep="none"),
@@ -918,7 +1134,7 @@ def window(
 )
 def test_extended_vocabulary_renders(kind_step: dict[str, Any], expected: str) -> None:
     rendered = render_polars_steps([source(), kind_step], ["quotes", "rates"], start="input")
-    assert rendered.code.splitlines()[1] == expected
+    assert step_text(rendered, 1) == expected
 
 
 def test_window_quantile_renders() -> None:
@@ -937,9 +1153,12 @@ def test_window_quantile_renders() -> None:
             },
         ),
     ]
-    assert render_polars_steps(steps, ["quotes"], start="input").code.splitlines()[1] == (
-        "df = df.with_columns((pl.col('premium').quantile(0.9, interpolation='linear')"
-        ".over(['region'])).alias('p90'))"
+    assert step_text(render_polars_steps(steps, ["quotes"], start="input"), 1) == (
+        "df = df.with_columns(\n"
+        "    (pl.col('premium').quantile(0.9, interpolation='linear').over(['region'])).alias(\n"
+        "        'p90'\n"
+        "    )\n"
+        ")"
     )
 
 
@@ -1446,8 +1665,10 @@ def fn(name: str, operand: dict[str, Any], *args: dict[str, Any]) -> dict[str, A
                     num(3),
                 ),
             ),
-            "df = df.with_columns(((pl.lit(1000) * pl.col('premium') / pl.col('sum_insured'))"
-            ".round(3)).alias('rate'))",
+            "df = df.with_columns(\n"
+            "    ((pl.lit(1000) * pl.col('premium') / pl.col('sum_insured')).round(3))"
+            ".alias('rate')\n"
+            ")",
         ),
         (
             step(
@@ -1460,8 +1681,9 @@ def fn(name: str, operand: dict[str, Any], *args: dict[str, Any]) -> dict[str, A
                     ex({"type": "window", "agg": "mean", "column": "premium", "over": ["region"]}),
                 ),
             ),
-            "df = df.with_columns((pl.col('premium') - pl.col('premium').mean().over(['region']))"
-            ".alias('dev'))",
+            "df = df.with_columns(\n"
+            "    (pl.col('premium') - pl.col('premium').mean().over(['region'])).alias('dev')\n"
+            ")",
         ),
         (
             step(
@@ -1481,8 +1703,14 @@ def fn(name: str, operand: dict[str, Any], *args: dict[str, Any]) -> dict[str, A
                     ),
                 ),
             ),
-            "df = df.with_columns((pl.when((pl.col('region') == 'north')).then(pl.col('premium'))"
-            ".otherwise((pl.col('premium') * -1)).abs()).alias('size'))",
+            "df = df.with_columns(\n"
+            "    (\n"
+            "        pl.when((pl.col('region') == 'north'))\n"
+            "        .then(pl.col('premium'))\n"
+            "        .otherwise((pl.col('premium') * -1))\n"
+            "        .abs()\n"
+            "    ).alias('size')\n"
+            ")",
         ),
         (
             step(
@@ -1506,8 +1734,14 @@ def fn(name: str, operand: dict[str, Any], *args: dict[str, Any]) -> dict[str, A
                     "separator": "-",
                 },
             ),
-            "df = df.with_columns((pl.concat_str([pl.col('region').str.to_uppercase(), "
-            "pl.col('north')], separator='-')).alias('key'))",
+            "df = df.with_columns(\n"
+            "    (\n"
+            "        pl.concat_str(\n"
+            "            [pl.col('region').str.to_uppercase(), pl.col('north')],\n"
+            "            separator='-',\n"
+            "        )\n"
+            "    ).alias('key')\n"
+            ")",
         ),
         (
             step(
@@ -1531,7 +1765,7 @@ def fn(name: str, operand: dict[str, Any], *args: dict[str, Any]) -> dict[str, A
 )
 def test_nested_expressions_render(kind_step: dict[str, Any], expected: str) -> None:
     rendered = render_polars_steps([source(), kind_step], ["quotes"], start="input")
-    assert rendered.code.splitlines()[1] == expected
+    assert step_text(rendered, 1) == expected
 
 
 def _nested(depth: int) -> dict[str, Any]:
@@ -1792,8 +2026,10 @@ def pivot_column(value: dict[str, Any], name: str) -> dict[str, Any]:
     [
         (
             step("x", "select", columns=["region"], dtypes=["Float64", "Int64"]),
-            "df = df.select(['region', pl.col(pl.Float64).exclude('region'), "
-            "pl.col(pl.Int64).exclude('region')])",
+            "df = df.select(\n"
+            "    ['region', pl.col(pl.Float64).exclude('region'), "
+            "pl.col(pl.Int64).exclude('region')]\n"
+            ")",
         ),
         (
             step("x", "select", columns=[], dtypes=["Float64"]),
@@ -1819,9 +2055,13 @@ def pivot_column(value: dict[str, Any], name: str) -> dict[str, Any]:
                     {"dtype": "Int64", "agg": "quantile", "quantile": 0.5, "suffix": "_q"},
                 ],
             ),
-            "df = df.group_by(['region'], maintain_order=True).agg([pl.len().alias('n'), "
-            "pl.col(pl.Float64).mean().name.suffix('_mean'), "
-            "pl.col(pl.Int64).quantile(0.5, interpolation='linear').name.suffix('_q')])",
+            "df = df.group_by(['region'], maintain_order=True).agg(\n"
+            "    [\n"
+            "        pl.len().alias('n'),\n"
+            "        pl.col(pl.Float64).mean().name.suffix('_mean'),\n"
+            "        pl.col(pl.Int64).quantile(0.5, interpolation='linear').name.suffix('_q'),\n"
+            "    ]\n"
+            ")",
         ),
         (
             step(
@@ -1833,9 +2073,13 @@ def pivot_column(value: dict[str, Any], name: str) -> dict[str, Any]:
                 values="premium",
                 agg="mean",
             ),
-            "df = df.group_by(['region'], maintain_order=True).agg(["
-            "pl.col('premium').filter(pl.col('channel') == 'web').mean().alias('web'), "
-            "pl.col('premium').filter(pl.col('channel') == 'phone').mean().alias('by_phone')])",
+            "df = df.group_by(['region'], maintain_order=True).agg(\n"
+            "    [\n"
+            "        pl.col('premium').filter(pl.col('channel') == 'web').mean().alias('web'),\n"
+            "        pl.col('premium').filter(pl.col('channel') == 'phone').mean()"
+            ".alias('by_phone'),\n"
+            "    ]\n"
+            ")",
         ),
         (
             step(
@@ -1847,8 +2091,9 @@ def pivot_column(value: dict[str, Any], name: str) -> dict[str, Any]:
                 values="premium",
                 agg="len",
             ),
-            "df = df.group_by(['region', 'fuel'], maintain_order=True).agg(["
-            "pl.col('premium').filter(pl.col('year') == 2024).len().alias('y2024')])",
+            "df = df.group_by(['region', 'fuel'], maintain_order=True).agg(\n"
+            "    [pl.col('premium').filter(pl.col('year') == 2024).len().alias('y2024')]\n"
+            ")",
         ),
         (
             step(
@@ -1859,8 +2104,12 @@ def pivot_column(value: dict[str, Any], name: str) -> dict[str, Any]:
                 variableName="measure",
                 valueName="value",
             ),
-            "df = df.unpivot(on=['premium', 'sum_insured'], index=['quote_id'], "
-            "variable_name='measure', value_name='value')",
+            "df = df.unpivot(\n"
+            "    on=['premium', 'sum_insured'],\n"
+            "    index=['quote_id'],\n"
+            "    variable_name='measure',\n"
+            "    value_name='value',\n"
+            ")",
         ),
         (
             step("x", "unpivot", on=["premium"], index=[], variableName="m", valueName="v"),
@@ -1870,7 +2119,7 @@ def pivot_column(value: dict[str, Any], name: str) -> dict[str, Any]:
 )
 def test_reshaping_and_dtype_selectors_render(kind_step: dict[str, Any], expected: str) -> None:
     rendered = render_polars_steps([source(), kind_step], ["quotes"], start="input")
-    assert rendered.code.splitlines()[1] == expected
+    assert step_text(rendered, 1) == expected
 
 
 @pytest.mark.parametrize(
@@ -2148,7 +2397,7 @@ def test_pivot_values_are_compared_exactly() -> None:
             agg="sum",
         ),
     ]
-    line = render_polars_steps(steps, ["rows"], start="input").code.splitlines()[1]
+    line = step_text(render_polars_steps(steps, ["rows"], start="input"), 1)
     assert f"== {big})" in line and f"== {big + 1})" in line
 
 
@@ -2771,6 +3020,158 @@ def test_stepped_original_rejects_input_mapping(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# A failed plan names its step
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def replays(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
+    """The length of every step list the builders render and every program they run."""
+    import haute._builders as builders
+
+    seen: dict[str, list[Any]] = {"rendered": [], "run": []}
+    real_render, real_run = builders.render_polars_steps, builders._exec_user_code
+
+    def render(steps: Any, *args: Any, **kwargs: Any) -> RenderedSteps:
+        seen["rendered"].append(len(steps))
+        return real_render(steps, *args, **kwargs)
+
+    def run(code: str, *args: Any, **kwargs: Any) -> pl.LazyFrame:
+        seen["run"].append(code)
+        return real_run(code, *args, **kwargs)
+
+    monkeypatch.setattr(builders, "render_polars_steps", render)
+    monkeypatch.setattr(builders, "_exec_user_code", run)
+    return seen
+
+
+def _no_prefix_ran(replays: dict[str, list[Any]], steps: list[dict[str, Any]], code: str) -> bool:
+    return all(n >= len(steps) for n in replays["rendered"]) and set(replays["run"]) <= {code}
+
+
+#: A multi-line derived column, then a filter whose second condition names a
+#: column the input does not have: the plan fails only when its schema resolves.
+MISSING_COLUMN_STEPS: list[dict[str, Any]] = [
+    source(),
+    step(
+        "w",
+        "with_column",
+        name="premium_including_insurance_premium_tax_at_twelve_percent",
+        expr=binary(col("premium"), "*", num(1.12)),
+    ),
+    step(
+        "f",
+        "filter",
+        match="all",
+        conditions=[
+            cond("premium", "gt", value=num(100)),
+            cond("number_of_claims_in_the_last_five_years", "gt", value=num(2)),
+        ],
+    ),
+    step("l", "limit", n=2),
+]
+
+
+def test_a_plan_error_is_located_on_the_step_that_caused_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replays: dict[str, list[Any]]
+) -> None:
+    from haute import _graph_walker
+    from haute.executor import _preview_cache
+
+    quotes, _rates = _frames(tmp_path)
+    rendered = render_polars_steps(MISSING_COLUMN_STEPS, ["quotes"], start="input")
+    first, last = rendered.step_lines[2]
+    assert (first, last) == (7, 9)
+    graph = PipelineGraph(
+        nodes=[quotes, _stepped("t", MISSING_COLUMN_STEPS)], edges=[make_edge("quotes", "t")]
+    )
+    located = execute_graph(graph, target_node_id="t", execution_context=_capped_context())["t"]
+    assert located.status == "error"
+    assert "number_of_claims_in_the_last_five_years" in str(located.error)
+    assert located.error_line == first
+    assert any(n < len(MISSING_COLUMN_STEPS) for n in replays["rendered"])
+
+    # Only the line is added: without the locator the run reports the same message.
+    _preview_cache.clear()
+    monkeypatch.setattr(_graph_walker, "_located_step_line", lambda *_args: None)
+    unlocated = execute_graph(graph, target_node_id="t", execution_context=_capped_context())["t"]
+    assert unlocated.error == located.error
+    assert unlocated.error_line is None
+
+
+def test_the_step_locator_resolves_the_whole_plan_before_any_prefix(
+    replays: dict[str, list[Any]],
+) -> None:
+    frame = pl.LazyFrame({"premium": [150.0], "region": ["north"]})
+    _name, fn, _is_source = _build_node_fn(
+        _stepped("t", MISSING_COLUMN_STEPS), source_names=["quotes"], source_ids=["quotes"]
+    )
+    assert fn.failed_step_line(frame) == 7
+    # A strict cast meeting a bad value fails only on data: its plan resolves.
+    cast = [source(), step("c", "cast", casts=[{"column": "region", "dtype": "Int64"}])]
+    _name, fn, _is_source = _build_node_fn(
+        _stepped("c", cast), source_names=["quotes"], source_ids=["quotes"]
+    )
+    replays["rendered"].clear()
+    replays["run"].clear()
+    assert fn.failed_step_line(frame) is None
+    assert replays["rendered"] == [len(cast)]
+    assert replays["run"] == [render_polars_steps(cast, start="input").code]
+
+
+def test_a_strict_cast_data_error_keeps_no_line(
+    tmp_path: Path, replays: dict[str, list[Any]]
+) -> None:
+    quotes, _rates = _frames(tmp_path)
+    steps = [source(), step("c", "cast", casts=[{"column": "region", "dtype": "Int64"}])]
+    graph = PipelineGraph(nodes=[quotes, _stepped("t", steps)], edges=[make_edge("quotes", "t")])
+    result = execute_graph(graph, target_node_id="t", execution_context=_capped_context())["t"]
+    assert result.status == "error"
+    assert "region" in str(result.error)
+    assert result.error_line is None
+    assert _no_prefix_ran(replays, steps, render_polars_steps(steps, start="input").code)
+
+
+def test_a_free_code_step_keeps_the_failure_unlocated(
+    tmp_path: Path, replays: dict[str, list[Any]]
+) -> None:
+    quotes, _rates = _frames(tmp_path)
+    steps = [*MISSING_COLUMN_STEPS, step("c", "free_code", code="df = df.head(1)")]
+    graph = PipelineGraph(nodes=[quotes, _stepped("t", steps)], edges=[make_edge("quotes", "t")])
+    result = execute_graph(graph, target_node_id="t", execution_context=_capped_context())["t"]
+    assert result.status == "error"
+    assert "number_of_claims_in_the_last_five_years" in str(result.error)
+    assert result.error_line is None
+    assert _no_prefix_ran(replays, steps, render_polars_steps(steps, start="input").code)
+
+
+def test_a_data_input_step_failure_stays_unlocated(
+    tmp_path: Path, replays: dict[str, list[Any]]
+) -> None:
+    quotes, _rates = _frames(tmp_path)
+    steps = MISSING_COLUMN_STEPS[1:]
+    result = execute_graph(PipelineGraph(nodes=[_stepped_input(quotes, steps)], edges=[]))["quotes"]
+    assert result.status == "error"
+    assert "number_of_claims_in_the_last_five_years" in str(result.error)
+    assert result.error_line is None
+    assert _no_prefix_ran(replays, steps, render_polars_steps(steps, start="frame").code)
+
+
+def test_a_successful_stepped_run_replays_nothing(
+    tmp_path: Path, replays: dict[str, list[Any]]
+) -> None:
+    quotes, _rates = _frames(tmp_path)
+    steps = [*MISSING_COLUMN_STEPS[:2], step("l", "limit", n=2)]
+    code = render_polars_steps(steps, start="input").code
+    graph = PipelineGraph(nodes=[quotes, _stepped("t", steps)], edges=[make_edge("quotes", "t")])
+    result = execute_graph(graph, target_node_id="t", execution_context=_capped_context())["t"]
+    assert result.status == "ok", result.error
+    assert result.error_line is None
+    assert replays["run"] == [code]
+    assert _no_prefix_ran(replays, steps, code)
+
+
+# ---------------------------------------------------------------------------
 # Codegen, parse, sidecars
 # ---------------------------------------------------------------------------
 
@@ -3279,7 +3680,7 @@ def test_frame_start_renders_without_a_source_step() -> None:
     # Every other kind renders byte-identically in both modes.
     frame = render_polars_steps(GOLDEN_STEPS[1:], ["quotes", "rates"], start="frame")
     assert frame.code == "\n".join(GOLDEN_CODE.splitlines()[1:])
-    assert frame.step_lines == tuple((i + 1, i + 1) for i in range(len(GOLDEN_STEPS) - 1))
+    assert frame.step_lines == tuple((a - 1, b - 1) for a, b in GOLDEN_STEP_LINES[1:])
 
     with pytest.raises(TypeError):
         render_polars_steps(GOLDEN_STEPS)  # type: ignore[call-arg]
